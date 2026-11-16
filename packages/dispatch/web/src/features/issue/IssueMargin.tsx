@@ -3,7 +3,7 @@ import { type ReactNode, type RefCallback, useEffect, useId, useState } from "re
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { projectsQuery, referenceTargetsQuery } from "../../api/queries";
+import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { NoTooltips } from "../../components/tooltips";
@@ -19,7 +19,6 @@ import {
   pageRowHoverBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useMarginDrawer, useMarginDrawsSlot } from "../margin/margin-slot";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
@@ -183,8 +182,7 @@ export function IssueMarginPanel({
   }, [openCollaborators]);
   // What Details reads beyond the issue - the titles of the issues around this one, and the
   // issue's event log - only while the drawer is open, so a load that leaves it shut costs no
-  // request for it; the Blocks row is drawn once its read has answered. Outside the shell, where
-  // no drawer holds the panel, it is always open.
+  // request for it. Outside the shell, where no drawer holds the panel, it is always open.
   const drawer = useMarginDrawer();
   const reading = drawer?.open === true;
   const historyShown = drawer === undefined || reading || history.open;
@@ -208,9 +206,14 @@ export function IssueMarginPanel({
     .filter((edge) => edge.kind === "blocked_by" && edge.node.issue_key !== undefined)
     .map((edge) => ({ key: edge.node.issue_key ?? "", title: edge.node.text ?? "" }));
   // Approve and Request changes are here wherever no approval request waits on the reader,
-  // and in the header while one does (R31).
-  const decisions = useQuery(issueDecisionsQuery(issue.key, true));
-  const approvalWaits = waitingOnReader(issue, decisions.data).approvals.length > 0;
+  // and in the header while one does (R31): the approvals are all this reads of the count, so it
+  // hands it no decisions.
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const approvalWaits =
+    waitingOnReader(issue, viewer, undefined, () => false, undefined).approvals.length > 0;
+  // The status as the header draws it: the one being saved while its write is in flight, so the
+  // page never says two statuses at once.
+  const status = writes.pendingStatus ?? issue.status;
   const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
   const gated = gatedStepEntries(
     projects.data?.find((candidate) => candidate.key === issue.project),
@@ -237,11 +240,11 @@ export function IssueMarginPanel({
       <PropertySection name="development" sections={sections}>
         <Row glyph="◐" label={PROPERTY_LABELS.status}>
           <span
-            className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(issue.status)}`}
+            className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(status)}`}
             {...pageChrome}
           >
-            <span aria-hidden="true">{statusGlyph(issue.status)}</span>
-            {issueStatusWord(issue.status)}
+            <span aria-hidden="true">{statusGlyph(status)}</span>
+            {issueStatusWord(status)}
           </span>
         </Row>
         <Row glyph="▮" label={PROPERTY_LABELS.priority}>
@@ -317,12 +320,34 @@ export function IssueMarginPanel({
         </Row>
         <Row glyph="⊘" label={PROPERTY_LABELS.blocked_by}>
           <BlockedByControl issue={issue} titleOf={titleOf} />
+          {/* The blockers are drawn by their keys where their titles could not be read, and the
+              row says so rather than drawing keys alone as though they had none. */}
+          {blockerTitles.isError ? (
+            <QueryError
+              error={blockerTitles.error}
+              message="Could not read the titles of these issues."
+              onRetry={() => void blockerTitles.refetch()}
+              retrying={blockerTitles.isFetching}
+            />
+          ) : null}
         </Row>
-        {blocking.data === undefined ? null : (
-          <Row glyph="⊙" label={PROPERTY_LABELS.blocks}>
-            {blocks.length === 0 ? none : <IssueList issues={blocks} />}
-          </Row>
-        )}
+        {/* What this issue blocks: drawn whenever the panel is, with None where nothing waits
+            on it and the failure where the read failed, as every other row of the panel says
+            what it holds. */}
+        <Row glyph="⊙" label={PROPERTY_LABELS.blocks}>
+          {blocking.isError ? (
+            <QueryError
+              error={blocking.error}
+              message="Could not read what this issue blocks."
+              onRetry={() => void blocking.refetch()}
+              retrying={blocking.isFetching}
+            />
+          ) : blocks.length === 0 ? (
+            none
+          ) : (
+            <IssueList issues={blocks} />
+          )}
+        </Row>
         <Row glyph="⌂" label={PROPERTY_LABELS.repository}>
           <RepoControl
             disabled={isClosed}

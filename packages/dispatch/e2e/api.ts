@@ -763,6 +763,29 @@ export function resolveAsk(
   return post("/api/v1/asks/{id}/resolve", { body: input, params: { id } }, options);
 }
 
+/** A person declining to answer an ask, with the note they leave (c-decisions). */
+export function declineAsk(
+  id: string,
+  input: Body<"/api/v1/asks/{id}/decline", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/asks/{id}/decline", { body: input, params: { id } }, options);
+}
+
+/** A person keeping one decision as its text reads now (`getIssueDecisions`'s `text_sha256`). */
+export function keepDecision(
+  artifact: string,
+  block: string,
+  textSha256: string,
+  options: ApiOptions = {}
+) {
+  return post(
+    "/api/v1/artifacts/{id}/blocks/{block_id}/keep",
+    { body: { text_sha256: textSha256 }, params: { block_id: block, id: artifact } },
+    options
+  );
+}
+
 export function createComment(
   issue: string,
   input: Body<"/api/v1/issues/{key}/comments", "post">,

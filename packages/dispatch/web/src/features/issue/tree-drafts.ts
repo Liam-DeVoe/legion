@@ -1,12 +1,13 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
-import type { Actor, Ask, CheckBlock, Decision, DisplayTree } from "../../api/types";
+import type { Actor, Ask, CheckBlock, Decision, DisplayTree, IssueChild } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
+import { type ChangeComment, decisionChanges, inReviewList } from "./decision-review";
 import type {
   IssueTreeReads,
   NodeAnswer,
@@ -18,6 +19,7 @@ import type {
 } from "./issue-tree";
 import {
   type AskState,
+  blockAttributeLabel,
   type CheckState,
   coverageGapKind,
   type DecisionState,
@@ -48,9 +50,9 @@ import {
  * The tree is the issue's conversation and what it revealed (dispatch://INFRA-1196 R1, R3): a
  * document, an artifact and a handoff are nodes of the issue and not of its conversation, so no
  * builder here drafts one. A document's typed blocks are drafted without it, under the issue
- * unless the model gives a block a parent of its own (R4). A child issue is a node of the tree
- * where the model places it, which today is under the issue, as well as a line of the children
- * section above it (`IssueChildren.tsx`, R12).
+ * unless the model gives a block a parent of its own (R4). The issue's children are rows of the
+ * tree, one group of them where the model places them, which today is under the issue: the page
+ * draws no section of them above the outline (the architect's ruling 5 on R12).
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -72,6 +74,10 @@ export interface Draft {
   facts: NodeFact[];
   gaps: GapKind[];
   readonly id: string;
+  /** The child issue this node is, as the issue read carries it (`TreeNode.child`). */
+  child?: IssueChild;
+  /** The person who kept this decision as it reads now (`TreeNode.keptBy`). */
+  keptBy?: Actor;
   /** Whether this ask takes more than one of its options (`TreeNode.multiple`). */
   multiple?: true;
   /** The choices an ask offers (`TreeNode.options`). */
@@ -95,8 +101,8 @@ export interface Draft {
   type: NodeType;
   /** Whether the model marks this decision unsure (`Decision.unsure`). */
   unsure?: true;
-  /** Whether this node waits on the reader: a decision waiting for their review
-   *  (`Decision.waiting_review`), or an open question whose turn is a person's. */
+  /** Whether this node waits on the reader: a decision in their review list (`inReviewList`),
+   *  or an open question whose turn is the reader's own (`waiting_on_person`). */
   waiting: boolean;
 }
 
@@ -104,19 +110,21 @@ export interface Draft {
  * Where a child of the issue sits among the issue's own children: the typed blocks of its
  * documents first, the spec's before the rest, each in its own document's order, so the
  * questions inside the spec open at the top of the tree; then the decisions no question holds,
- * then the requirements, then the questions asked of the issue itself, then its child issues,
- * and the conversation last. A node's order under any other parent is its own place in what it
- * came from.
+ * then the requirements, then the group of its child issues, and the conversation last: the
+ * questions asked of the issue itself and the turns, together, in the order they were made
+ * (`orderConversation`), so a question and a comment the reader writes from the line at the
+ * foot both land at the outline's end, where the reader is taken once it is sent. A node's order
+ * under any other parent is its own place in what it came from.
  */
 export const ROOT_ORDER = {
-  ask: 3000,
   /** The first block of the issue's spec; every other document's blocks follow, one whole
    *  number per document (`documentRanks`), which keeps them under the decisions' `1000`. */
   block: 0,
-  child: 4000,
+  child: 3000,
+  /** A question of the issue's own and a turn: `orderConversation` counts up from here. */
+  conversation: 4000,
   decision: 1000,
   requirement: 2000,
-  turn: 5000,
 } as const;
 
 /** What every builder needs of the reads: how this issue addresses a node, and what a reference
@@ -131,6 +139,12 @@ export interface TreeContext {
   readonly specSlug: string;
   /** The slug of one document of the issue, by its artifact id. */
   readonly slugOf: (artifactId: string) => string | undefined;
+  /** The server's reading of what `reference` points at, where the batched reference read sent
+   *  one: a typed block's own inner content, whole, references kept (`ReferenceTarget.text_tree`). */
+  readonly treeOf: (reference: string) => DisplayTree | undefined;
+  /** The reader's login, which an open question waits on where its turn is theirs; undefined
+   *  until the login resolves, and nothing waits on nobody. */
+  readonly viewer: string | undefined;
 }
 
 export function treeContext(reads: IssueTreeReads): TreeContext {
@@ -169,6 +183,8 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
     nodeIdOf,
     specSlug,
     slugOf: (artifactId: string) => slugs.get(artifactId),
+    treeOf: (reference: string) => names.get(reference)?.text_tree,
+    viewer: reads.viewer,
   };
 }
 
@@ -184,7 +200,7 @@ const DIRECTIVE_FENCE = /^:{3,}\s*$/;
  * left out, as the head's three sentences leave them out of the callout they read
  * (`IssueThreeThings.tsx`). Any other name is its own words already.
  */
-function blockWords(name: string): string {
+export function blockWords(name: string): string {
   const lines = name.trimEnd().split("\n");
   if (!DIRECTIVE_OPENER.test(lines[0] ?? "")) return name;
   lines.shift();
@@ -198,13 +214,48 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addDocumentBlocks(drafts, reads, context);
   addChildren(drafts, reads);
   const asks = addAsks(drafts, reads, context);
-  addTurns(drafts, reads, context, asks);
-  addDecisions(drafts, reads, context, asks);
+  const changes = decisionChanges(reads.decisions, reads.comments);
+  addTurns(drafts, reads, context, asks, changes);
+  orderConversation(drafts);
+  addDecisions(drafts, reads, context, asks, changes);
   addRequirements(drafts, reads, context);
   addChecks(drafts, reads, context);
+  // What waits for the reader's review is the review list's one rule (R35): the tie to a
+  // statement decides it, and a decision the reader asked to change waits on its agent, not on
+  // the reader (`decision-review.ts`). It is read once every statement has its draft.
+  for (const decision of reads.decisions?.decisions ?? []) {
+    const draft = drafts.get(context.nodeIdOf(decision.ref) ?? "");
+    if (draft === undefined) continue;
+    draft.waiting = inReviewList(
+      decision,
+      (reference) => drafts.get(context.nodeIdOf(reference) ?? "")?.type === "requirement",
+      changes.has(decision.ref)
+    );
+  }
   servePlacements(drafts, context);
   addDocumentChips(drafts, reads, context);
   return drafts;
+}
+
+/**
+ * The conversation's own nodes under the issue - a question asked of the issue itself and each
+ * turn - in the one order they were made, a question among the comments it was asked between
+ * (`ROOT_ORDER.conversation`): the questions and the reader's threads are the Contents list's
+ * entries in that order, as the approved pictures draw them, and a write from the line at the
+ * foot is the newest, so it lands at the end, where the page takes the reader once it is sent.
+ * Two made in the same instant are drawn by id, so the same reads always draw the same tree.
+ */
+function orderConversation(drafts: Map<string, Draft>): void {
+  const conversation = [...drafts.values()].filter(
+    (draft) => draft.order >= ROOT_ORDER.conversation
+  );
+  conversation.sort(
+    (one, other) =>
+      compareTimestamps(one.at ?? "", other.at ?? "") || one.id.localeCompare(other.id)
+  );
+  conversation.forEach((draft, index) => {
+    draft.order = ROOT_ORDER.conversation + index;
+  });
 }
 
 /**
@@ -325,6 +376,13 @@ function addDocumentBlocks(
       draft.pointers = pointers;
       draft.reference = reference;
       draft.text = context.chipOf(reference).name;
+      // The block's own words whole, as the server reads them, where the reference read sent
+      // them: the name above is the stored excerpt, cut at 480 runes and unread.
+      const tree = context.treeOf(reference);
+      if (tree !== undefined) {
+        draft.tree = tree;
+        draft.source = textSourceOf("artifact", document.artifactId);
+      }
       // A check with no result recorded against it is in no state the results read would name,
       // and `no-result` is that state (`NODE_STATE_WORDS.check`), so a check drawn before the
       // results read answers says so rather than drawing a state nothing recorded.
@@ -334,21 +392,19 @@ function addDocumentBlocks(
   }
 }
 
-/** The issue's children, each one node under the issue, where the model places every child
- *  today (R4, R12): a child's own tree is its own page. */
+/**
+ * The issue's children, each a node of the tree and a row of the outline, one group of them in
+ * the issue read's order: its title as its words, and how it stands, what blocks it, who holds it
+ * and its key as the tag drawn from the child itself (the architect's ruling 5 on R12,
+ * `IssueChildren.tsx`). The model places a child under the words that filed it once it holds
+ * that edge (dispatch://INFRA-1253); today it holds none, so the group sits under the issue. A
+ * child's own tree is its own page, so a child holds no node below it.
+ */
 function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
   (reads.issue.children ?? []).forEach((child, index) => {
     const draft = add(drafts, blank(child.key, "child_issue", ROOT_ORDER.child + index));
+    draft.child = child;
     draft.text = child.title;
-    // Named by the issue read itself rather than by the batched reference read, so there is
-    // nothing left to wait for: a blocking issue's key is both its name here and its whole
-    // address (`answered`, `NodeChip`).
-    draft.chips = (child.blocked_by ?? []).map((blocked) => ({
-      answered: true,
-      gone: false,
-      name: blocked,
-      ref: `dispatch://${blocked}`,
-    }));
   });
 }
 
@@ -379,7 +435,7 @@ function addAsks(
     const slug = ask.block_artifact?.slug ?? context.slugOf(ask.artifact_id ?? "");
     const block = ask.block_id ?? undefined;
     const id = slug !== undefined && block !== undefined ? blockNodeId(slug, block) : ask.id;
-    const draft = drafts.get(id) ?? add(drafts, blank(id, "ask", ROOT_ORDER.ask));
+    const draft = drafts.get(id) ?? add(drafts, blank(id, "ask", ROOT_ORDER.conversation));
     placed.set(ask.id, id);
     draft.at = ask.created_at;
     draft.author = ask.author;
@@ -400,9 +456,16 @@ function addAsks(
     draft.tree = ask.question_tree;
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
-    // An open question whose turn is a person's waits on the reader, and is what the header's
-    // count of what waits puts the focus on (R13, `waiting.ts`).
-    draft.waiting = ask.state === "open" && ask.waiting_on === "human";
+    // An open question whose turn is the reader's own waits on the reader, and is what the
+    // header's count of what waits puts the focus on (R13, `waiting.ts`): the person the server
+    // resolved it waits on (`waiting_on_person`), as every other count of what waits on the
+    // reader reads it (`inbox/BlockedOnYou.tsx`'s `waitingOnYou`). A question waiting on
+    // somebody else is open all the same, and the fold still unfolds the path to it.
+    draft.waiting =
+      ask.state === "open" &&
+      ask.waiting_on === "human" &&
+      context.viewer !== undefined &&
+      ask.waiting_on_person === context.viewer;
   }
   return placed;
 }
@@ -459,8 +522,7 @@ interface Turn {
  * One conversation is one order, so the turns are drawn by the time they were made and not by
  * their place in the read that carried them: the comments and the messages are two lists, each
  * counting from zero, and a message sent today drawn among yesterday's comments is the reader
- * reading the conversation out of order. Two turns made in the same instant are drawn by id, so
- * the same reads always draw the same tree.
+ * reading the conversation out of order (`orderConversation`).
  *
  * A comment is drawn under the entry it answers: `answers`, the comment its write named, and
  * never `reply_to`, which that same write climbed to the head of the thread before it stored
@@ -470,7 +532,9 @@ interface Turn {
  * then the one entry it names. A reply to an ask names the ask alone (`ask_id`) and is drawn
  * under the ask's node, whatever state the ask is in, a resolved one included
  * (dispatch://INFRA-3677). A message carries no such column, so its thread stays as
- * `in_reply_to` holds it.
+ * `in_reply_to` holds it. A comment that is a change a person asked of a decision, and answers
+ * nothing else, is drawn under that decision (`decision-review.ts`'s `decisionChanges`), so the
+ * change stands tied to the decision it changes.
  *
  * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
  * `?comment=`) is therefore an address of a row of this tree.
@@ -479,9 +543,11 @@ function addTurns(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
   context: TreeContext,
-  asks: ReadonlyMap<string, string>
+  asks: ReadonlyMap<string, string>,
+  changes: ReadonlyMap<string, ChangeComment>
 ): void {
   const history = agentsOnlyIds(reads.comments, reads.messages);
+  const changeOf = new Map([...changes].map(([ref, comment]) => [comment.id, ref]));
   const turns: Turn[] = [
     ...(reads.comments ?? []).map((comment) => ({
       at: comment.created_at,
@@ -493,7 +559,9 @@ function addTurns(
       replyTo:
         comment.answers ??
         comment.reply_to ??
-        (comment.ask_id === null ? null : (asks.get(comment.ask_id) ?? comment.ask_id)),
+        (comment.ask_id === null
+          ? (context.nodeIdOf(changeOf.get(comment.id) ?? "") ?? null)
+          : (asks.get(comment.ask_id) ?? comment.ask_id)),
     })),
     ...(reads.messages ?? [])
       .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
@@ -507,9 +575,8 @@ function addTurns(
         replyTo: message.in_reply_to,
       })),
   ].filter((turn) => !history.has(turn.id));
-  turns.sort((one, other) => compareTimestamps(one.at, other.at) || one.id.localeCompare(other.id));
-  turns.forEach((turn, index) => {
-    const draft = add(drafts, blank(turn.id, turn.kind, ROOT_ORDER.turn + index));
+  for (const turn of turns) {
+    const draft = add(drafts, blank(turn.id, turn.kind, ROOT_ORDER.conversation));
     draft.at = turn.at;
     draft.author = turn.author;
     draft.parents = turn.replyTo === null ? [] : [turn.replyTo];
@@ -517,7 +584,7 @@ function addTurns(
     draft.source = textSourceOf(turn.kind, turn.id);
     draft.text = turn.body;
     draft.tree = turn.bodyTree;
-  });
+  }
 }
 
 /**
@@ -535,7 +602,8 @@ function addDecisions(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
   context: TreeContext,
-  asks: ReadonlyMap<string, string>
+  asks: ReadonlyMap<string, string>,
+  changes: ReadonlyMap<string, ChangeComment>
 ): void {
   (reads.decisions?.decisions ?? []).forEach((decision, index) => {
     const id = context.nodeIdOf(decision.ref);
@@ -569,31 +637,29 @@ function addDecisions(
     draft.text = decision.text;
     draft.tree = decision.text_tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape
-    // the way every other state is (R21). It is what the old Decisions tab's four sections
-    // told a reader by grouping, and the one a reader looks for - what waits for their review
-    // - wins where a decision would be in two (`NODE_STATE_WORDS.decision`).
-    draft.state = decisionState(decision);
-    // What waits for the reader: its node is where Keep and Change are drawn, and the one the
-    // Decisions preset opens on (R7, `DecisionActions.tsx`).
-    draft.waiting = decision.waiting_review;
+    // the way every other state is (R21). Whether it waits for the reader's review is the
+    // review list's rule, read once every statement has its draft (`treeDrafts`).
+    draft.state = decisionState(decision, changes.has(decision.ref));
+    if (decision.kept !== null && !decision.waiting_review) {
+      draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
+    }
     if (decision.unsure) draft.unsure = true;
   });
 }
 
 /**
- * How a decision stands with the reader, in the three states the page draws
- * (`NODE_STATE_WORDS.decision`). The reading is the one the old Decisions tab grouped by, in
- * the order a reader reads it: what waits for their review first, because that is what they
- * come to the preset for; then a decision replaced by a later one; then one that is theirs - a
- * person's own, or an agent's they kept. A decision in none of the three is an agent's that
- * nobody has reviewed and nothing replaced, which stood in no section of that tab, so it is in
- * no state here and the row draws none.
+ * How a decision stands with the reader, in the states the page draws
+ * (`NODE_STATE_WORDS.decision`, R2): replaced by a later one first, since nothing waits on it
+ * any longer; then a change the reader asked for, which waits on its agent and not on the
+ * reader (`decision-review.ts`); then waiting for review; then kept, by the person whose name the
+ * row draws after it (`TreeNode.keptBy`). A person's own decision is in none of them: it is
+ * theirs, and the row draws no state.
  */
-function decisionState(decision: Decision): DecisionState | undefined {
-  if (decision.waiting_review) return "waiting_review";
+function decisionState(decision: Decision, changed: boolean): DecisionState | undefined {
   if (decision.replaced) return "replaced";
-  if (decision.kind === "person" || decision.kept !== null) return "yours";
-  return undefined;
+  if (changed) return "change_requested";
+  if (decision.waiting_review) return "waiting_review";
+  return decision.kept === null ? undefined : "kept";
 }
 
 /**
@@ -620,6 +686,8 @@ function addRequirements(
       shapedBy.set(shaped, (shapedBy.get(shaped) ?? 0) + 1);
     }
   }
+  // The spec, which a statement's words are a block of and its references resolve against.
+  const specId = (reads.issue.artifacts ?? []).find((artifact) => artifact.primary)?.id;
   (reads.coverage?.requirements ?? []).forEach((requirement, index) => {
     const id = blockNodeId(context.specSlug, requirement.block_id);
     const held = drafts.get(id);
@@ -634,6 +702,13 @@ function addRequirements(
     draft.pointers = held?.pointers ?? {};
     draft.reference = requirement.ref;
     draft.text = requirement.text;
+    // The server's reading of the statement's own words, with the references the coverage
+    // read's plain words leave out: the read's own, else the one its block carried.
+    const tree = requirement.text_tree ?? held?.tree;
+    if (tree !== undefined) {
+      draft.tree = tree;
+      draft.source = held?.source ?? textSourceOf("artifact", specId);
+    }
   });
 }
 
@@ -672,6 +747,11 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     draft.reference = check.ref;
     draft.state = checkState(check);
     draft.text = check.text;
+    const tree = check.text_tree ?? held?.tree;
+    if (tree !== undefined) {
+      draft.tree = tree;
+      draft.source = held?.source ?? textSourceOf("artifact", check.artifact_id);
+    }
     (check.results ?? []).forEach((result, index) => {
       const row = add(drafts, blank(result.id, "result", index));
       row.at = result.created_at;
@@ -781,6 +861,12 @@ function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void
     ) {
       draft.gaps = [...draft.gaps, "nobody_asked"];
     }
-    draft.chips = [...draft.chips, ...(draft.pointers.needs ?? []).map(context.chipOf)];
+    draft.chips = [
+      ...draft.chips,
+      ...(draft.pointers.needs ?? []).map((reference) => ({
+        ...context.chipOf(reference),
+        label: blockAttributeLabel("needs"),
+      })),
+    ];
   }
 }

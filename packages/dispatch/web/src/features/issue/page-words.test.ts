@@ -22,6 +22,7 @@ import {
   CHECK_WHEN_WORDS,
   CONTENTS_MARK_WORDS,
   CONTROL_LABELS,
+  DECISIONS_WORDS,
   DECLARED_WORDS,
   DELIVERY_STATE_WORDS,
   EMPTY_STATE_LINES,
@@ -34,6 +35,7 @@ import {
   ISSUE_STATUS_WORDS,
   issueStatusWord,
   NODE_FACT_LABELS,
+  NODE_REFERENCES_WORDS,
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
   NODE_TYPES,
@@ -42,13 +44,16 @@ import {
   nodeStateWord,
   nodeStateWords,
   nodeTypeName,
+  PLAN_WORDS,
   PRESET_NAMES,
   PRESET_ORDER,
   PROGRESS_NOUNS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
+  SPEC_WORDS,
   STATE_LINES,
   UNASKED_SOURCES,
+  VERIFICATION_WORDS,
   wordsIn,
 } from "./page-words";
 
@@ -121,6 +126,11 @@ const UNASKED: readonly unknown[] = [
   NODE_FACT_LABELS,
   AUTHOR_KIND_WORDS,
   FILE_WORDS,
+  SPEC_WORDS,
+  DECISIONS_WORDS,
+  VERIFICATION_WORDS,
+  PLAN_WORDS,
+  NODE_REFERENCES_WORDS,
 ];
 
 const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LINES, KEY_REPORTS];
@@ -180,15 +190,18 @@ test("a type the model gives no state has no state words, and the ask, the check
     "unmarked",
     "unreadable",
   ]);
-  // The three the old Decisions tab grouped by, which a decision's row now says in a word.
+  // Spec R2's three, "wherever a decision is drawn", and the change a reader asked for.
   expect(Object.keys(NODE_STATE_WORDS.decision).sort()).toEqual([
+    "change_requested",
+    "kept",
     "replaced",
     "waiting_review",
-    "yours",
   ]);
   expect(nodeStateWord("no-result")).toBe("No result");
   expect(nodeStateWord("answered")).toBe("Answered");
-  expect(nodeStateWord("waiting_review")).toBe("Waiting for your review");
+  expect(nodeStateWord("waiting_review")).toBe("Waiting for review");
+  expect(nodeStateWord("kept")).toBe("Kept by");
+  expect(nodeStateWord("replaced")).toBe("Replaced");
 });
 
 // A row draws its node's state through `nodeStateWord`, which takes the state alone, so a
@@ -217,11 +230,15 @@ test("no two types share a glyph token, and no two states of one surface share o
   expect(new Set(decisionTokens).size).toBe(decisionTokens.length);
   expect(checkTokens.length).toBe(7);
 
+  const statementTokens = [...Object.values(GLYPH_TOKENS.statements), GLYPH_TOKENS.no_check];
+  expect(new Set(statementTokens).size).toBe(statementTokens.length);
+
   const everyToken = [
     ...typeTokens,
     ...askTokens,
     ...checkTokens,
     ...decisionTokens,
+    ...statementTokens,
     ...Object.values(GLYPH_TOKENS.authors),
   ];
   expect(new Set(everyToken).size).toBe(everyToken.length);
@@ -233,6 +250,9 @@ test("every glyph token has an accessible name", () => {
     ...Object.values(GLYPH_TOKENS.states.ask),
     ...Object.values(GLYPH_TOKENS.states.check),
     ...Object.values(GLYPH_TOKENS.states.decision),
+    // How a statement stands, and that no check serves it (R17).
+    ...Object.values(GLYPH_TOKENS.statements),
+    GLYPH_TOKENS.no_check,
     // One shape per kind of author, so a person and an agent never share one (R9).
     ...Object.values(GLYPH_TOKENS.authors),
   ];
@@ -241,7 +261,12 @@ test("every glyph token has an accessible name", () => {
   }
   expect(Object.keys(GLYPH_NAMES).sort()).toEqual([...tokens].sort());
   expect(GLYPH_NAMES["check-passed"]).toBe("Passed check");
-  expect(GLYPH_NAMES["decision-waiting-review"]).toBe("Waiting for your review decision");
+  expect(GLYPH_NAMES["decision-waiting-review"]).toBe("Waiting for review decision");
+  // "Kept by" is followed by a name on the row; its shape is named without the word that
+  // leads to it.
+  expect(GLYPH_NAMES["decision-kept"]).toBe("Kept decision");
+  expect(GLYPH_NAMES[GLYPH_TOKENS.statements.met]).toBe(VERIFICATION_WORDS.states.met);
+  expect(GLYPH_NAMES[GLYPH_TOKENS.no_check]).toBe(GAP_WORDS.no_check);
   expect(GLYPH_NAMES["plan-task"]).toBe("plan task");
   expect(GLYPH_NAMES[GLYPH_TOKENS.authors.person]).toBe("Written by a person");
   expect(GLYPH_NAMES[GLYPH_TOKENS.authors.agent]).toBe("Written by an agent");
@@ -312,10 +337,13 @@ test("the five controls are named in the order the row draws them, and none is c
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
   }
-  // The page draws Statement, never Requirement (R22): no word of the row says requirement.
+  // The page draws Statement, never Requirement (R22): the kind's own name is the word, and no
+  // word the page declares anywhere says requirement.
+  expect(NODE_TYPE_NAMES.requirement).toBe("statement");
   for (const word of [...Object.values(PRESET_NAMES), ...Object.values(FILTER_SIGNAL_WORDS)]) {
     expect(word).not.toMatch(/tree|requirement|proven/iu);
   }
+  expect(DECLARED_WORDS.filter((word) => /requirement/iu.test(word))).toEqual([]);
 });
 
 test("every empty-state line is one sentence a person reads", () => {

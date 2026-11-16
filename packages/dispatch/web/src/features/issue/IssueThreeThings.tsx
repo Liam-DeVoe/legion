@@ -1,7 +1,5 @@
 import type { ReactNode } from "react";
-import { Link } from "react-router-dom";
 
-import type { Artifact } from "../../api/types";
 import {
   pageInkBg,
   pageInkText,
@@ -9,76 +7,54 @@ import {
   pageMutedText,
   pageQuietText,
 } from "../../theme/classes";
-import { presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
-import { NodeGlyph } from "./NodeGlyph";
 import { authorText, pageChrome } from "./page-structure";
-import {
-  approvalStateWord,
-  type CheckState,
-  CONTROL_LABELS,
-  EMPTY_STATE_LINES,
-  GLYPH_TOKENS,
-  NODE_STATE_WORDS,
-  PRESET_NAMES,
-} from "./page-words";
+import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
+
+/** Each sentence's label, in the order the summary holds them (R8). */
+const LABELS = [
+  CONTROL_LABELS.in_short_what,
+  CONTROL_LABELS.in_short_why,
+  CONTROL_LABELS.in_short_done,
+] as const;
 
 /**
- * The head of the page: the issue's three sentences under "In short", and the two rows under
- * them (dispatch://INFRA-1196 R8, `dispatch://INFRA-1196/artifact/plan-md#b-t10`).
+ * The issue's three sentences under "In short", each after its label - what it is, why it
+ * matters, done when (dispatch://INFRA-1196 R8, the architect's ruling 5).
  *
- * It is drawn with every filter, because what the issue is does not change with the filter a
- * reader has on: from 1024 px up it heads the Contents pane at the left of the
- * page, as the prototype's `.brief` does, and below that it heads the reading column, above the
- * outline, since a reader of a phone must not press a control to read what the issue is
- * (`IssueBody.tsx`).
+ * Where the approved pictures draw them: with no filter on, at the head of the Contents pane from
+ * 1024 px up (`look="pane"`) and in the Outline sheet below that (`look="sheet"`, never above
+ * the outline, where they cost a phone's first screen 160 px to 239 px); under the Spec filter,
+ * as its first group (`look="spec"`, `spec-filter/`). Under Verification, Plan and Decisions
+ * they are not drawn. The two rows the spec named under them, "How it gets done" and "What you
+ * will be shown", are not drawn at any width: the Plan and Verification controls' signals say
+ * the same (ruling 5).
  *
  * The sentences are the spec's summary, as the spec stores them: the summary node's own text,
- * read as the sentences it holds, and at most the three the requirement names - what this is,
- * why it matters, and what is different when it is done. An author who wrote two sentences gets
- * two, with nothing drawn in the place of a third. The text is the node's own (`specSummary`),
- * which the tree the page already draws carries, so the head reads no document and costs no
- * request of its own (R20). That text is the server's stored excerpt of the block, and no read
- * the first load makes sends the server's reading of it (`ReferenceTarget` carries `name` and
- * nothing beside it), so the head reads the excerpt's own characters for three things and no
- * more: the block's fence, a list item's marker and the emphasis around words
- * (`spokenSentences`). It parses no stored markdown. A text that ends mid-sentence - the
- * excerpt is cut at `BlockExcerptRunes`, 480 runes (`packages/envoy/internal/dispatch/refs/excerpts.go`)
- * - ends in a fragment nobody wrote, and a fragment is not a spoken sentence, so it is left
- * undrawn rather than drawn cut off. Who wrote the bullets and when they were last read back are
- * dispatch://INFRA-1278 and the model holds neither for any issue, so the head draws no author
- * and says nothing about either: a lack every issue shares tells the reader nothing about this
- * one - and it never guesses an author from the version the summary last changed in.
+ * read as the sentences it holds, and at most the three the requirement names. An author who
+ * wrote two sentences gets two, with nothing drawn in the place of a third. The text is the
+ * node's own (`specSummary`), which the tree the page already draws carries, so the head reads no
+ * document and costs no request of its own (R20). That text is the server's stored excerpt of
+ * the block, and no read the first load makes sends the server's reading of it, so the head reads
+ * the excerpt's own characters for three things and no more: the block's fence, a list item's
+ * marker and the emphasis around words (`spokenSentences`). It parses no stored markdown. A text
+ * that ends mid-sentence - the excerpt is cut at `BlockExcerptRunes`, 480 runes
+ * (`packages/envoy/internal/dispatch/refs/excerpts.go`) - ends in a fragment nobody wrote, so it
+ * is left undrawn rather than drawn cut off. Who wrote the sentences and when ("from your comment
+ * of 5 Nov" in the pictures) is dispatch://INFRA-1278, and the model holds neither for any issue,
+ * so the head draws no author.
  *
  * Until the reads that carry the summary answer, the head says nothing about it: the tree is
  * drawn before the spec's blocks arrive, and its summary node before the batched reference read
  * names it, and a summary not read yet is no spec without one.
- *
- * The two rows are the page's own words and hold no author's text, so the sentences above them
- * are the only thing a reader of the head quotes. Each names one source and no second: the
- * Plan filter with how the plan stands with its reviewers, and the Verification filter with the
- * state every criterion's latest result is in. The count behind each of those states is in the
- * filter itself, one row per criterion, which is one press away.
  */
 export function IssueThreeThings({
-  checks,
-  inPane,
-  issueKey,
-  plan,
-  planTasks,
+  look,
   reading,
   summary,
 }: {
-  /** Every check of the issue, as the tree holds them: each one's state is its latest result. */
-  checks: readonly TreeNode[];
-  /** Whether it heads the Contents pane, from 1024 px up, rather than the reading column above
-   *  the outline below that width (R8). */
-  inPane: boolean;
-  issueKey: string;
-  /** The issue's plan document, where it has one. */
-  plan: Artifact | undefined;
-  /** How many plan tasks the Plan preset holds. */
-  planTasks: number;
+  /** Where it is drawn: the Contents pane, the Outline sheet, or the Spec filter's first group. */
+  look: "pane" | "sheet" | "spec";
   /** Whether the spec's blocks are still being read, which is what says whether the spec holds
    *  a summary node at all. */
   reading: boolean;
@@ -90,14 +66,11 @@ export function IssueThreeThings({
   // yet - a stored block always holds its own fence - so it says no more than a summary whose
   // blocks are still out.
   const known = !reading && (summary === undefined || summary.text !== "");
-  const states = Object.keys(NODE_STATE_WORDS.check).filter((state) =>
-    checks.some((check) => check.state === state)
-  ) as CheckState[];
-  const approval = plan?.approval?.state;
+  const spec = look === "spec";
   return (
     <section
-      className={`flex min-w-0 shrink-0 flex-col border-b ${pageLineBorder} ${
-        inPane ? "px-3.5 pt-3 pb-2.5" : "mb-2 pb-2.5"
+      className={`flex min-w-0 shrink-0 flex-col ${
+        spec ? "mb-4" : `border-b ${pageLineBorder} px-3.5 pt-3 pb-2.5`
       }`}
       data-testid="issue-three-things"
     >
@@ -108,17 +81,28 @@ export function IssueThreeThings({
         {CONTROL_LABELS.in_short}
       </h2>
       {sentences.length > 0 ? (
-        <ul className="mt-1.5 mb-1 flex min-w-0 flex-col">
+        <ul className={`mt-1.5 mb-1 flex min-w-0 flex-col ${spec ? "gap-0.5" : ""}`}>
           {sentences.map((sentence, index) => (
             <li
-              className={`relative mb-1 pl-3 text-sm leading-5 break-words ${pageInkText}`}
+              className={`relative break-words ${pageInkText} ${
+                spec ? "pl-5 text-[15px] leading-[26px]" : "mb-1 pl-3 text-sm leading-5"
+              }`}
               // biome-ignore lint/suspicious/noArrayIndexKey: a summary may say one sentence twice, and its place is what tells the two apart.
               key={`${index}:${sentence}`}
             >
-              <span
-                aria-hidden="true"
-                className={`absolute top-2 left-px size-1 rounded-full ${pageInkBg}`}
-              />
+              {/* The Spec filter's group is one statement of three lines, one bullet (the
+                  approved Spec picture); the pane's and the sheet's are three bullets. */}
+              {spec && index > 0 ? null : (
+                <span
+                  aria-hidden="true"
+                  className={`absolute rounded-full ${pageInkBg} ${
+                    spec ? "top-[9px] left-0.5 size-[7px]" : "top-2 left-px size-1"
+                  }`}
+                />
+              )}
+              <span className="font-semibold" {...pageChrome}>
+                {LABELS[index]}
+              </span>{" "}
               <span {...authorText}>{sentence}</span>
             </li>
           ))}
@@ -134,52 +118,6 @@ export function IssueThreeThings({
               : EMPTY_STATE_LINES.spec_summary}
         </p>
       ) : null}
-      {/* The two rows, in the pane's small type. Each keeps its own box, because each names one
-          source and no second (R5); below 1024 px they share one wrapping line, which the first
-          open question needs on a phone's first screen (R7). */}
-      <div
-        className={`flex min-w-0 gap-x-4 gap-y-0.5 text-xs leading-[18px] ${pageQuietText} ${
-          inPane ? "flex-col" : "flex-wrap items-baseline"
-        }`}
-      >
-        <p className="flex min-w-0 flex-wrap items-baseline gap-x-2" data-testid="issue-plan-row">
-          <span {...pageChrome}>{CONTROL_LABELS.how_it_gets_done}</span>
-          {/* `dispatch-inline-link`: below 1280 px every other link is a 44 px control box
-              (`styles.css`), and two of them here cost the head two lines the first open
-              question needs (R6). A link inside a line of text keeps its line box and grows
-              its hit area by padding instead. */}
-          <Link
-            className={`dispatch-inline-link underline ${pageInkText}`}
-            to={presetPath(issueKey, "plan")}
-          >
-            <span {...pageChrome}>{PRESET_NAMES.plan}</span>
-          </Link>
-          {planTasks === 0 ? (
-            <span {...pageChrome}>{EMPTY_STATE_LINES.plan}</span>
-          ) : approval === undefined ? null : (
-            <span {...pageChrome}>{approvalStateWord(approval)}</span>
-          )}
-        </p>
-        <p className="flex min-w-0 flex-wrap items-baseline gap-x-2" data-testid="issue-checks-row">
-          <span {...pageChrome}>{CONTROL_LABELS.what_you_will_be_shown}</span>
-          <Link
-            className={`dispatch-inline-link underline ${pageInkText}`}
-            to={presetPath(issueKey, "verification")}
-          >
-            <span {...pageChrome}>{PRESET_NAMES.verification}</span>
-          </Link>
-          {states.length === 0 ? (
-            <span {...pageChrome}>{EMPTY_STATE_LINES.verification}</span>
-          ) : (
-            states.map((state) => (
-              <span className="flex items-center gap-1" key={state} {...pageChrome}>
-                <NodeGlyph token={GLYPH_TOKENS.states.check[state]} />
-                <span>{NODE_STATE_WORDS.check[state]}</span>
-              </span>
-            ))
-          )}
-        </p>
-      </div>
     </section>
   );
 }

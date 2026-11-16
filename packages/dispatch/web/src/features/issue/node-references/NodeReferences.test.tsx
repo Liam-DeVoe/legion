@@ -8,7 +8,8 @@ import { graphNodeFields } from "../../../__tests__/graph-fixture";
 import { api } from "../../../api/client";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { MarginSlotProvider } from "../../margin/margin-slot";
-import { NODE_REFERENCES_WORDS, NodeReferences } from "./NodeReferences";
+import { NODE_REFERENCES_WORDS } from "../page-words";
+import { NodeReferences } from "./NodeReferences";
 
 const STATEMENT = "dispatch://LAY-2/spec#b-r1";
 
@@ -212,4 +213,59 @@ test("an edge of a kind or to a node this page does not know is left out", async
   );
   await screen.findByRole("link", { name: "Thread 1 opens here." });
   expect(screen.getAllByRole("listitem")).toHaveLength(1);
+});
+
+// The graph resolves a mention in a comment's words to that comment's block, with the comment
+// as its parent and no document. The list reads it as the comment it is: named "comment", not
+// "document", opened at the comment, once however many of its blocks hold the mention. A citing
+// node of another issue says which, and each row says when the reference was made (R19).
+test("a comment's block that mentions the row reads as that comment, with where it is from and when", async () => {
+  const block = (id: string, text: string): GraphEdge => ({
+    created_at: "2026-11-14T10:00:00Z",
+    direction: "in",
+    excerpt: { text },
+    kind: "mentions",
+    node: {
+      ...graphNodeFields(),
+      id,
+      issue_key: "LAY-9",
+      kind: "block",
+      parent: {
+        id: "22222222-2222-4222-8222-222222222222",
+        kind: "comment",
+        ref: "dispatch://LAY-9/comment/22222222-2222-4222-8222-222222222222",
+      },
+      ref: `dispatch://LAY-9/comment/22222222-2222-4222-8222-222222222222#${id}`,
+    },
+    source_seq: null,
+  });
+  const [mention] = ANSWER.edges ?? [];
+  if (mention === undefined) throw new Error("the answer lost its edges");
+  draw(true, STATEMENT_ROW, {
+    ...ANSWER,
+    edges: [
+      block("b1", "It cites the statement from another issue."),
+      block("b2", "Twice."),
+      mention,
+    ],
+  });
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  const link = await screen.findByRole("link", {
+    name: "It cites the statement from another issue.",
+  });
+  expect(link.getAttribute("href")).toBe(
+    "/issues/LAY-9/comments/22222222-2222-4222-8222-222222222222"
+  );
+  const items = screen.getAllByRole("listitem");
+  expect(items).toHaveLength(2);
+  const text = (item: HTMLElement | undefined) => (item?.textContent ?? "").replace(/\s+/g, " ");
+  expect(text(items[0])).toContain(NODE_REFERENCES_WORDS.kinds.comment);
+  expect(text(items[0])).not.toContain(NODE_REFERENCES_WORDS.kinds.block);
+  // The other issue's key and the day the reference was made; a node of this issue names none.
+  expect(items[0]?.querySelector("[data-reference-source]")?.textContent).toBe("LAY-9");
+  expect(items[0]?.querySelector("[data-reference-time]")?.textContent).toBe("14 Nov");
+  expect(items[1]?.querySelector("[data-reference-source]")).toBeNull();
+  expect(items[1]?.querySelector("[data-reference-time]")?.textContent).toBe("15 Nov");
 });

@@ -6,8 +6,7 @@ import {
   getArtifactBlocks,
   getArtifactText,
 } from "./api";
-import { connectedDot, documentEditor, specAddress } from "./editor";
-import { historyPanel } from "./issue-page";
+import { connectedDot, documentEditor } from "./editor";
 import { sql } from "./psql";
 import {
   ANCHOR,
@@ -103,10 +102,6 @@ test("an item address that writes its id short opens the item and is replaced by
   }
 });
 
-// A `/spec` address naming a comment by `?comment=` opens the issue page on that comment, not the
-// spec it quotes (dispatch://INFRA-1196 R20); written short, the id is resolved first and the
-// address replaced by the whole one. An agent wrote this comment, in a thread no person wrote in,
-// so it lands in the history in Details, which marks its turn.
 test("a spec address that writes an anchored comment's id short opens it and is replaced by the whole id", async ({
   browser,
 }) => {
@@ -123,11 +118,8 @@ test("a spec address that writes an anchored comment's id short opens it and is 
     const page = await context.newPage();
     const address = `/issues/${world.host.key}/spec?comment=`;
     await page.goto(`${address}${short(anchored.id)}`);
+    await expectOpenedMarginItem(page, anchored.id);
     await expect(page).toHaveURL(`${address}${anchored.id}`);
-    const turn = conversationTurn(page, "comment", anchored.id);
-    await expect(turn).toHaveAttribute("aria-current", "true");
-    await expect(turn).toContainText("Anchored on the first line.");
-    await expect(historyPanel(page)).toBeVisible();
   } finally {
     await context.close();
   }
@@ -169,7 +161,7 @@ test("a document address whose block fragment writes the block's id short opens 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const address = `${await specAddress(world.host.key)}#b-`;
+    const address = `/issues/${world.host.key}/spec#b-`;
     await page.goto(`${address}${short(block)}`);
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page).locator(`[data-block-id="${block}"]`)).toBeInViewport();
@@ -243,9 +235,7 @@ test("a comment that writes an ask's id short reads as the ask's title, opens it
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    // An agent wrote this comment, in a thread no person wrote in, so it is a turn of the
-    // history, in Details, which `/activity` opens (dispatch://INFRA-1196 R15).
-    await page.goto(`/issues/${world.host.key}/activity`);
+    await page.goto(`/issues/${world.host.key}/conversation`);
     const link = conversationTurn(page, "comment", comment.id).locator(
       `a[data-dispatch-ref="${world.items.ask.reference}"]`
     );

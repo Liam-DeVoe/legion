@@ -1,6 +1,6 @@
 import { type RefObject, useLayoutEffect, useState } from "react";
 
-import { firstLineOf } from "./issue-tree";
+import { drawnLine, firstLineOf } from "./issue-tree";
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (dispatch://INFRA-1196
@@ -29,11 +29,19 @@ export interface OneLineBox {
 
 /**
  * The list's one reading of its own width, for its one-line entries: taken as the list is first
- * laid out, before it is painted, and again whenever its box changes size, by one
- * `ResizeObserver` on the list and none on any entry. A reading that says what it said before
- * leaves the entries alone. Undefined while `oneLine` is false, and where the page has no
- * canvas to measure words on, which is no browser this page runs in; an entry given none draws
- * its first line uncut.
+ * laid out, before it is painted, again whenever its box changes size, by one `ResizeObserver`
+ * on the list and none on any entry, and again whenever the document's fonts finish loading. A
+ * reading that says what it said before leaves the entries alone. Undefined while `oneLine` is
+ * false, and where the page has no canvas to measure words on, which is no browser this page
+ * runs in; an entry given none draws its first line uncut.
+ *
+ * The fonts are read because `styles.css` loads Inter with `font-display: swap`: the list's
+ * first frames are drawn in the fallback while Inter's file is on its way, and drawn again in
+ * Inter once it arrives, and neither the family the list names nor its width changes then. An
+ * entry cut in the first face would keep that cut: where that face is wider it leaves out a
+ * word its box has room for, and where it is narrower its line runs past its box. So each
+ * `loadingdone` - a face the document was loading has arrived, or failed - makes a new reading
+ * whatever the width, and each entry measures its words again in the face that now draws them.
  */
 export function useOneLineBox(
   tree: RefObject<HTMLElement | null>,
@@ -45,12 +53,16 @@ export function useOneLineBox(
     if (!oneLine || element === null) return;
     const context = document.createElement("canvas").getContext("2d");
     if (context === null) return;
-    const read = (width: number) => {
+    let width = element.getBoundingClientRect().width;
+    // `faces`: the document's fonts changed, so the same family and width draw other widths.
+    const read = (faces: boolean) => {
       const family = window.getComputedStyle(element).fontFamily;
       const rem = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize);
       if (!(width > 0 && rem > 0)) return;
       setBox((held) => {
-        if (held?.width === width && held.rem === rem && held.family === family) return held;
+        if (!faces && held?.width === width && held.rem === rem && held.family === family) {
+          return held;
+        }
         // Setting a canvas's font parses it, so a run of words in one size sets it once.
         let set = "";
         return {
@@ -68,21 +80,32 @@ export function useOneLineBox(
         };
       });
     };
-    read(element.getBoundingClientRect().width);
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      if (entry !== undefined) read(entry.contentRect.width);
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
+    read(false);
+    const fonts = "fonts" in document ? document.fonts : undefined;
+    const loaded = () => read(true);
+    fonts?.addEventListener("loadingdone", loaded);
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? undefined
+        : new ResizeObserver((entries) => {
+            const entry = entries[entries.length - 1];
+            if (entry === undefined) return;
+            width = entry.contentRect.width;
+            read(false);
+          });
+    observer?.observe(element);
+    return () => {
+      fonts?.removeEventListener("loadingdone", loaded);
+      observer?.disconnect();
+    };
   }, [oneLine, tree]);
   return oneLine ? box : undefined;
 }
 
 /** What a one-line entry draws of its node's first line, and where it draws it. */
 export interface OneLineCut {
-  /** Whether the node's text carries on past `line`, which the row draws its ellipsis for. */
+  /** Whether the node's text carries on past `line`, which the entry draws its ellipsis for
+   *  where the line ends inside a sentence (`drawnLine`). */
   readonly cut: boolean;
   readonly line: string;
   /** Whether the line is drawn on a line of its own under the row's other words, because
@@ -100,11 +123,12 @@ const ROUNDING = 1;
 /**
  * The node's first line as a one-line entry draws it: `firstLineOf`'s line, cut again at a word
  * to the pixels the entry's own box leaves it (R1). The line is the longest run of its own
- * words, the ellipsis included where the text carries on, that fits beside the entry's other
- * parts. Where those leave it less than its first word it goes on a line of its own under them,
- * where it has the whole width; a first word no such line holds - a token as long as
- * `firstLineOf` lets one be - is drawn whole, wrapping inside itself, since a box that cut its
- * tail would cut inside a word, which is the one thing R1 bans.
+ * words, measured as it is drawn (`drawnLine`: with its ellipsis where the text carries on past
+ * a line that ends inside a sentence), that fits beside the entry's other parts. Where those
+ * leave it less than its first word it goes on a line of its own under them, where it has the
+ * whole width; a first word no such line holds - a token as long as `firstLineOf` lets one be -
+ * is drawn whole, wrapping inside itself, since a box that cut its tail would cut inside a
+ * word, which is the one thing R1 bans.
  *
  * `widthOf` is how wide a run of the line's words is drawn; `before` and `after` are the pixels
  * the entry's other parts take on either side of the line, the gaps to it included; `room` is
@@ -131,9 +155,11 @@ export function oneLineCut({
   }
   // The longest of the line's own words that fits `budget`. A run of more words is never
   // narrower than a run of fewer, so the runs are searched by halves; the whole line is read on
-  // its own first, since it carries no ellipsis where the text ends with it.
+  // its own first, since it carries no ellipsis where the text ends with it or it is a whole
+  // sentence. A run cut at a word inside the line ends inside its sentence, so it always
+  // carries one.
   const fitting = (budget: number): { cut: boolean; line: string } | undefined => {
-    if (widthOf(first.cut ? `${first.line}…` : first.line) <= budget) return first;
+    if (widthOf(drawnLine(first)) <= budget) return first;
     let found: number | undefined;
     let low = 0;
     let high = ends.length - 1;

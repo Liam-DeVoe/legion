@@ -56,9 +56,7 @@ Every requirement of the spec is listed.
     await expect(served.getByTestId("spec-requirement-gap")).toHaveCount(0);
     // The issue has no plan document yet, so the one thing this requirement lacks is a check.
     await expect(unserved).toHaveAttribute("data-covered", "false");
-    // The flag is the page's own few words for the gap, never the server's line, which names
-    // the block by its id (`GAP_WORDS`, dispatch://INFRA-1196 R21).
-    await expect(unserved.getByTestId("spec-requirement-gap")).toHaveText("No check");
+    await expect(unserved.getByTestId("spec-requirement-gap")).toHaveText("has no check");
     await page.screenshot({ path: testInfo.outputPath("spec-requirement-gap.png") });
 
     // A check that serves it is the whole of what it lacked: the next version of the

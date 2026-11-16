@@ -367,14 +367,11 @@ export function inboxReplyTurn(page: Page, threadId: string, turnId: string): Lo
     .locator(`[data-inbox-thread-turn="${turnId}"]`);
 }
 
-/** Where the issue page draws a conversation item (dispatch://INFRA-1196 R1, R15): the ask's,
- *  comment's or message's node in the outline, or, for a comment or message agents wrote among
- *  themselves, its turn in the history in Details. `kind` names which of the three the id is. */
+/** A Conversation turn: the comment, message or ask the id names. */
 export function conversationTurn(
   page: Page,
   kind: "comment" | "message" | "ask",
   id: string
 ): Locator {
-  const history = kind === "ask" ? "" : `, [data-history-item="${id}"]`;
-  return page.locator(`[data-node-row][data-node-id="${id}"]${history}`).first();
+  return page.locator(`[data-turn="${kind}:${id}"]`);
 }

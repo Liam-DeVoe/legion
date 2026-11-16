@@ -60,35 +60,37 @@ test("issue tabs are URL-driven and keyboard-navigable, and titles follow direct
   await page.clock.install();
   await page.goto(`/issues/${scene.issueKey}`);
   await expect(page).toHaveTitle(`${scene.issueKey} · ${scene.issueTitle} · Dispatch`);
-  // The nine tabs are the filter row's five controls now (dispatch://INFRA-1196 R2), each with
-  // an address of its own, and the issue's own address is the page with no filter on. The
-  // children are a section of the page rather than a tab, and `/children` still resolves.
-  const toggle = (name: string) => page.getByRole("button", { exact: true, name });
-  await expect(toggle("Conversation")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("tab", { name: "Spec" })).toHaveAttribute("aria-selected", "true");
 
-  await page.goto(`/issues/${scene.issueKey}/children`);
-  await expect(page.getByTestId("issue-children")).toContainText("Child task");
+  await page.getByRole("tab", { name: "Children" }).click();
+  await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/children$`));
   await page.reload();
-  await expect(toggle("Conversation")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("tab", { name: "Children" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(page.getByRole("tabpanel")).toContainText("Child task");
 
-  // The arrows move between the five, and Enter presses the one they land on.
-  await toggle("Conversation").focus();
-  await page.keyboard.press("ArrowRight");
-  await expect(toggle("Spec")).toBeFocused();
+  await page.getByRole("tab", { name: "Children" }).focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByRole("tab", { name: "Conversation" })).toBeFocused();
+  await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/conversation$`));
+
+  // Collaborators is the last tab, with Decisions and Activity before it, each with its own
+  // route.
   await page.keyboard.press("End");
-  await expect(toggle("Decisions")).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(toggle("Decisions")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("tab", { name: "Collaborators" })).toBeFocused();
+  await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/collaborators$`));
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByRole("tab", { name: "Decisions" })).toBeFocused();
   await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/decisions$`));
-
-  // Each filter keeps the address its tab answered; pressing the one on turns it off.
-  await toggle("Plan").click();
-  await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/plan$`));
-  await toggle("Spec").click();
-  await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/spec$`));
-  await toggle("Spec").click();
-  await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}$`));
-  await page.goto(`/issues/${scene.issueKey}/activity`);
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByRole("tab", { name: "Activity" })).toBeFocused();
+  await expect(page).toHaveURL(new RegExp(`/issues/${scene.issueKey}/activity$`));
   await expect(page.getByRole("list", { name: "Issue activity" })).toBeVisible();
 
   // A read the server answers 404 is asked again twice, QUERY_RETRY_DELAY_MS apart

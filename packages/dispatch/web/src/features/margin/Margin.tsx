@@ -214,7 +214,10 @@ function DetailsDrawer({
     // drawer's alone, so the outline, the filters and an opened document wait for the next one.
     // A field keeps its own Escape, which leaves the field, wherever it is - inside the drawer,
     // or a header select or the caret in a node beside it - as the page's Escape leaves the
-    // caret first (dispatch://INFRA-1196, the key table).
+    // caret first (dispatch://INFRA-1196, the key table). So does a layer over the drawer or
+    // inside it: a dialog the focus is in - the navigation's sheet, the list of keys - closes on
+    // its own Escape and leaves the drawer open under it, and a menu open in the drawer closes
+    // before the drawer does, since Escape closes the innermost layer.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;
@@ -226,6 +229,8 @@ function DetailsDrawer({
           (target instanceof HTMLInputElement &&
             !["button", "checkbox", "radio", "reset", "submit"].includes(target.type)));
       if (field) return;
+      if (target instanceof Element && target.closest('[role="dialog"]') !== null) return;
+      if (box.current?.querySelector('[role="menu"]') != null) return;
       event.preventDefault();
       setOpen(false);
     };
@@ -252,6 +257,20 @@ function DetailsDrawer({
       data-testid="desktop-margin-shell"
       {...{ [DETAILS_ATTRIBUTE]: "" }}
       hidden={!open}
+      // On a phone the sheet covers the whole page, so a link followed inside it - a pin, an
+      // entry of the history, a file - would land under it: the sheet closes as the link is
+      // followed, and an address that is Details' own opens it again (`IssuePage.tsx`).
+      onClickCapture={(event) => {
+        if (!isPhoneViewport || !(event.target instanceof Element)) return;
+        const link = event.target.closest("a[href]");
+        if (
+          link !== null &&
+          !link.hasAttribute("download") &&
+          link.getAttribute("target") === null
+        ) {
+          setOpen(false);
+        }
+      }}
       ref={(element) => {
         box.current = element;
         sheet.containerRef.current = element;

@@ -165,9 +165,9 @@ and an agent names the first one in the call that creates the project.
 
 ### Labels
 
-Choose **+N labels** at the end of the header's line to open **Details** at its **Labels** row,
-then **Edit labels** there; `l` does both. The list offers every label used in the project, and
-you can create a new one from the search box. Your changes save when the list closes.
+Choose **Labels** in the issue header to edit an issue's labels. The list offers every label used
+in the project, and you can create a new one from the search box. Your changes save when the list
+closes.
 
 ### Filters
 
@@ -211,59 +211,31 @@ shows that issue and offers **Create anyway**. A new issue opens as soon as it i
 
 ## The issue page
 
-![An issue's spec in the editor, with a decision block in the document and a comment thread in the margin.](/legion/media/dispatch/issue-spec.png)
-
-The issue page draws one issue as one tree. From the top down it holds the header, a row of five
-controls - **Conversation** and the four filters - up to three sentences that say what the issue
-is, the issue's child issues, and the outline. A filter chooses which kinds of node the outline
-draws. The panel on the right holds the rest of the issue's properties and its conversation.
+![An issue page: the header, the Spec tab with its document, and the margin](/legion/media/dispatch/issue-spec.png)
 
 ### The header
 
-The header stays at the top of the screen while you scroll. It holds what tells you to act and
-nothing else, in three lines on a desktop screen:
+The header holds the issue's key, title, and pin, then its controls:
 
-1. The parent issue as a link, when there is one, then the issue's key, a control that copies
-   it, and **Issue actions**, the `⋯`; at the right end, **Details**, which opens the panel. On a
-   screen narrower than 768 px the row starts with `☰`. **Issue actions** holds **Pin issue**, or
-   **Unpin issue** on a pinned issue, **Close issue**, or **Reopen into Backlog** on a closed
-   issue, and **Set parent issue**, or **Edit parent issue** when the issue has a parent.
-2. The title. On a screen 768 px wide or more it shows two lines; on a phone it shows all of it.
-   Choose it, or press `e`, to edit it: the box you type in wraps as the title does and shows all
-   of it, so ending the edit moves nothing under it.
-3. **Status**, priority and assignee; the children's progress, **Children N of M done** with a
-   bar and **Whole tree N of M done**; `Waiting on you (N)`, or `Waiting on agents (N)` while the
-   issue's open asks wait on agents alone; the approval control; and the labels that fit on the
-   line, then **+N labels**, which opens **Details** at its **Labels** row.
+- **Status**, priority, and assignee.
+- An approval chip once someone has asked for the spec to be approved.
+- **Close issue**, or **Reopen** on a closed issue.
+- Whose turn it is: `Waiting on you (N)` or `Waiting on agents (N)`, counting the issue's open
+  asks.
 
-`Waiting on you (N)` counts three things: the open asks whose turn is yours, the decisions
-waiting for your review, and an approval request waiting on you. Choose it, or press Enter on it,
-to turn the **Decisions** filter on with the first of them focused; when only the approval request
-waits, it moves you to the approval control instead. From a document, it returns to the outline
-first.
+A line of details follows: labels, subscribers, the parent issue, linked GitHub issues and pull
+requests, and **Referenced by**. Choose the title, or press `e`, to edit it.
 
-The approval control reads **Not requested** until somebody asks for the spec to be approved.
-While a request waits on you it carries **Approve** and **Request changes**; on a phone they are
-on the line under it. A root issue of a project that gates steps shows one entry per step instead,
-in the project's order. Where the issue's messages reach nobody, the line ends with a marker that
-says so.
+A title shows in full, wrapped at any width, rather than cut off after two lines. A list that
+still clamps a title shows the whole of it on hover.
 
-A closed issue shows **This issue is closed.** above the rows.
-
-A list that still clamps a title shows the whole of it on hover.
-
-Up to three sentences say what the issue is, under **In short**. On a screen 1024 px wide or
-more they head the **Contents** pane at the left of the page; on a narrower screen they are above
-the outline. They are the sentences of the
-spec's first `callout` block, and an unfinished last sentence is left out. Nothing is drawn there
-until the spec has loaded. A spec with no such block reads **This spec has no summary.** A
-summary cut inside its first sentence reads **The summary is too long to show here.**, and one
-with no sentence end at all reads **The summary has no complete sentence.** Two lines follow:
-
-- **How it gets done** links the **Plan** filter and gives the plan's approval state, such as
-  **Awaiting approval**, or says **This issue has no plan tasks yet.**
-- **What you will be shown** links the **Verification** filter and names each state its checks
-  are in, such as **Passed** or **Failed**, or says **This issue has no checks yet.**
+- **Parent** shows the parent issue or **None**. You can edit it to move the issue under another.
+- **Subscribers: N** lists the agent sessions subscribed to the issue. **Unsubscribe** stops
+  delivery to one and tells it so.
+- **Referenced by (N)** lists every issue, document, ask, comment, and message that links here.
+- **Components** appears when the project has an architecture source. It shows which parts of the
+  architecture the issue belongs to, and lets you change them, picking from the components of
+  every source of the project.
 
 ### Changes Dispatch has not confirmed
 
@@ -309,10 +281,9 @@ than five minutes ago is not sent on its own: the corner lists it as **Not saved
 name, so it is saved at most once if you retry within 24 hours of the first try; after that
 Dispatch no longer knows the name, and the change may be made twice. The corner says so.
 
-A closed issue takes no upload and no new document. In the **Files and documents** menu, which
-`/issues/<KEY>/artifacts` opens, **Upload** and **New document** are each shown as unavailable,
-with **This issue is closed. Reopen it to add a document.**: neither picks a file or opens a form,
-no key opens a file picker there, and a file dropped on the menu is ignored.
+A closed issue takes no upload: the Artifacts tab's **Upload** says **This issue is closed. Reopen
+it to upload.** and picks no file, no key opens a file picker there, and a file dropped on it is
+ignored.
 
 Now and then Dispatch makes a change but its answer is lost on the way back. The change is made;
 the page says so (for example **The issue “…” was made, but Dispatch lost its answer, so it may
@@ -322,270 +293,80 @@ label made since you pressed **New token** and offers to revoke it and mint anot
 if it finds more than one, you pick which, and every revoke asks you to confirm first, since
 agents using it stop working at once.
 
-### The tree
+### The tabs
 
-The tree is the issue's conversation and what it revealed, one row per node: every note, ask,
-statement (a `requirement` block), plan task and check block of its documents; its decisions; the
-results recorded against each check; each comment and message a person wrote or that sits in a
-thread a person wrote in; and its child issues, under the issue. It draws no document or file:
-those are in **Files and documents**. A check and a plan task sit under each statement they
-serve, a result under its check, a decision under the ask it answers, and a reply under the entry
-it answers - a reply to an ask under the ask, whatever state the ask is in. A thread only agents
-wrote in is no row: it is in the panel's **History** until a person replies in it. A node whose
-source Dispatch does not hold sits under the issue. An answered ask carries its answer in its own
-row: **Answer**, who answered, what they chose and what they wrote, as they wrote it.
+- **Spec** is the issue's main document. [Documents](/legion/dispatch/documents/) covers it. Under
+  the document the spec's requirements are listed, each flagged with what it lacks: a requirement
+  no check serves reads `has no check`, and one no plan task serves reads `has no plan task` once
+  the issue has a plan document.
+- **Verification** is the issue's Verification document and, under it, each check the document
+  marks, with every result recorded against that check, newest first. Each check says whether a
+  pass stands and from which roles, and names what Dispatch compared the results with: each head
+  of the issue's pull requests for a before-merge check, the branches for the other two kinds,
+  or the reason there is nothing to compare with, which is that the issue has no pull request
+  and no branch, or that Dispatch could not read the repository. Each result carries the whole
+  commit, the reading its role recorded, whether that commit is one of the compared commits, and
+  whether the check's words moved after the result was recorded. A retracted result shows as
+  retracted with its reason, and counts as no evidence.
+- **Plan** is the issue's plan document, the plan review's approval, and each plan task the
+  document marks, with the requirements that task serves and the tasks it needs.
+- **Conversation** is the issue's conversations, one card each: every ask with its replies and
+  its answer, every comment thread with its replies, every message thread with its replies. The
+  conversation with the newest reply is at the top, so a thread rises when someone answers it,
+  and the whole list is there however old a conversation is. **All**, **Open** and **Closed**
+  filter it: an ask is Closed once it is answered, resolved or retracted, a comment thread once
+  it is resolved or its suggestion is accepted or rejected, and a message thread is never
+  closed. The filter opens on **All** every visit. A conversation holding something you have
+  not read is marked **New**, and **Jump to latest** counts those and takes you to the top.
+- **Children** lists the issue's child issues, each with its status, how much of its own tree is
+  done, and its latest activity.
+- **Artifacts** lists the issue's documents and files, with a count. Pick a file, or drop one on the
+  tab, add an optional summary, and choose **Upload**. Uploading a file with the same name adds a
+  new version.
+- **Activity** is the issue's whole history, one line each, newest first: every comment, ask and
+  message as it was posted, and everything else that happened to the issue — status moves,
+  claims, document versions, uploads, subscriptions, changes to child issues. It has **Load
+  older** at the bottom, a divider for each day, and a mark where your last read ends.
+- **Decisions** is a view of the issue's `decisions.md`, in order: the open questions its spec
+  asks, the agent decisions waiting for your review, each with **Keep** and **Change**, your own
+  decisions, and the ones since replaced. Each decision links the spec blocks it shaped.
+- **Collaborators** lists everyone who has worked the issue: Legion's agents by role, each role's
+  newest session first and a superseded session naming the one that replaced it; then every other
+  agent session, the most recently active first; then the people, with why each is a collaborator
+  and when they last worked it. Every agent is one click from its conversation and shows whether
+  it is running. When Legion's record of this issue's agents cannot be read, the tab says so
+  instead of listing nothing. An issue nobody has worked reads **No one has worked this issue
+  yet.**
 
-The tree opens folded to its frontier. The path down to each thing that is open and unanswered
-is unfolded, however deep it is: a question nobody has answered, a check that has not passed, a
-decision that waits for your review, and a statement no check serves. Every other branch is one
-line - the first sentence of its node, or its first 100 characters cut at a word - with how
-many rows it hides, such as **3 rows hidden inside**, and a replaced decision's branch stays
-folded. A branch you fold stays folded, and a branch you unfold stays open. On a screen 1024 px
-wide or more the tree draws three levels below the node it starts at, and below that one level:
-unfolding a branch deeper than that shows one row, such as **3 more rows below**, which opens
-the rest.
+Press `t` and then `s`, `k`, `p`, `c`, `h`, `a`, `v`, `d`, or `o` to switch to Spec, Verification,
+Plan, Conversation, Children, Artifacts, Activity, Decisions, or Collaborators.
 
-A row reads from the left: its bullet, in its kind's colour, then its words, whole. The bullet of
-a node that holds others is its fold control, with a halo while the branch is folded. At the
-right end of the row's first line stand its kind on one tag - **statement**, **check**,
-**question**, **decision** and so on; a comment or a message has none - then who wrote it and
-when, in grey, and under them its state. Every node's words start at one left edge; your own
-words carry a dark rule and start a little further in. An agent's words, and an answered
-question, are cut at six lines when more than 20 words would be hidden, and **more · 80 words**
-opens the rest where they stand; your own words and a question waiting on you are never cut.
-Who wrote a node is a name and a shape: a person by their login, with one shape, and an
-agent by its session's title, with another, or **An agent** when the session has no title; where
-Dispatch holds no author, as for a statement, a check, a plan task or a decision, the row says
-**Author unknown**, with a shape of its own. A decision marked unsure says **Unsure**. A row
-marks what it lacks only where that sets it apart from rows of its kind and names work someone
-owes: **No check** on a statement no check serves, **No reason given** on a plan task that
-serves no statement, and **Not a statement** on a check or a plan task whose **serves** names
-something else. Focus a row, with the pointer or a key, and its body
-opens under its words with the rest: its whole words where the row was cut, the facts, and each
-lack as a sentence. The body closes when the
-focus moves on, unless you choose **Keep open**; **Let it close** undoes that. A faint row is
-there to place the rows under it: a statement under **Verification**, or the rows above a match
-of the **Filter** box. A decision that waits for your review has
-**Keep** and **Change** in its body: **Change** opens **Your change**, with **Send change** and
-**Cancel**.
+An issue with no Verification document, or no plan document, shows on that tab the
+`dispatch artifact` command that makes one.
 
-Nothing on the issue page opens when you rest the pointer on it, a link included. A link's
-preview card opens when you focus the link with the keyboard, or, in a document you are editing,
-when the caret is in the link. Following a link or a row's link to another node of the issue puts
-the focus on that node's row, with whichever filter the link opens.
+### Writing in the Conversation
 
-Press `Enter` on a row to edit its text where it stands; `Escape` takes you back to the row. `.`
-zooms into the focused row: the tree is drawn from that row down, and the path above it is a line
-of names, each of which zooms back to it. `,` zooms back out. Below 1024 px the tree is always
-read one node at a time: it shows the node you are on, the rows under it, and every path down to
-what is open and unanswered, with the path above it as that line of names. Opening a row's
-branch there draws one line under it saying how many rows it holds, and pressing that line draws
-them in its place.
-[Keyboard shortcuts](/legion/dispatch/keyboard/#issue-tree) lists every key of the tree.
-
-### The filters
-
-The row under the header holds five controls: **Conversation**, then the **Spec**,
-**Verification**, **Plan** and **Decisions** filters. One filter is on at a time, or none:
-choose a filter to turn it on and any other off, choose it again to turn it off, and choose
-**Conversation** to turn every filter off. The page opens with none on.
-
-Each control draws a count after its name. A filter's count is how many nodes of its own kind it
-draws, such as **Spec 21** or **Plan 13 steps**; **Verification** adds how many checks failed,
-such as **11 · 2 failing**, and **Decisions** how many decisions wait for your review, such as
-**9 · 6 to review**. **Conversation**'s count is how many entries the **Contents** list holds.
-
-A filter draws only its own kinds as rows. The issue is no row of a filter, and any other parent
-of a row the filter draws - an ask, a comment, a statement under **Plan** - is one line on that
-row, its kind and its first line.
-
-| Control | What it draws | Address |
-| --- | --- | --- |
-| **Conversation** | The whole outline, folded to its frontier | `/issues/<KEY>` |
-| **Spec** | The statements | `/issues/<KEY>/spec` |
-| **Verification** | Each statement, faint, with the checks that serve it and the results recorded against each | `/issues/<KEY>/verification` |
-| **Plan** | The plan tasks, each once | `/issues/<KEY>/plan` |
-| **Decisions** | The asks and the decisions. It opens the body of the first decision that waits for your review | `/issues/<KEY>/decisions` |
-
-No filter draws a document under the outline. A document, the spec included, opens from **Files
-and documents** in place of the outline; [Documents](/legion/dispatch/documents/) covers it. The
-plan's approval chip is on the plan's own page.
-
-A check reads **Passed**, **Failed**, **Out of date**, **No result**, **Retracted**, **Cannot
-tell** or **Could not read**. Its body shows its **when**, **surface**, **run** command and
-**negative control**. Each result under it shows its **verdict**, **Pass** or **Fail**, and, where
-Dispatch can tell, **how it stands**: **Up to date**, or **Out of date** when its commit is not
-one the check compares results with or the check's words changed after it. It also shows its
-**role**, its **commit**, and what it counted.
-
-While a control of the row has the focus, `←` and `→` move to the previous and next one, `Home`
-and `End` to the first and last, and `Enter` or `Space` chooses it. At 1024 px and below the row
-is one control that names the one you are on, with its count, and opens a menu of the five;
-with no filter on, **Outline** stands beside it.
-
-Beside the five:
-
-- The version control: **Version**, **Name**, the connection dot, the copy control and **Copy
-  link**, for the document you opened or, with a filter on, the filter's own document: the spec
-  under **Spec**, the Verification document under **Verification**, the plan under **Plan**.
-  **Decisions** and **Conversation** draw none.
-  [Documents](/legion/dispatch/documents/#versions) covers them. The approval chip is in the
-  identity block. On a screen narrower than 768 px the version control is under the outline, or
-  above the document you opened.
-- **Files and documents** lists every document and file of the issue, each with a copy control,
-  the download of its latest version and, for a document the issue can drop, **Remove**. Choose
-  one to open it in place of the outline, at its own address; `Escape` or **Back to the
-  conversation** returns to where you opened it from. The box at the top of the menu narrows it
-  by name or kind. The menu also holds **Upload**, which uploads the file you pick at once, and
-  **New document**, which asks for a title; a file dropped on the open menu uploads. `t a` opens
-  it.
-- The **Filter** box narrows the outline to the rows whose text holds what you type, and the rows
-  above them, with every branch it keeps unfolded. The counts follow it, and the address keeps it
-  as `?q=`. `t f` puts the focus in it.
-- **Keys**, at the right end, lists every key of the page, as `?` does.
-
-### The navigation and the Contents pane
-
-On the issue page the navigation is a column of icons at the left, one for each entry of the
-sidebar; the arrow at its foot opens the whole navigation over the page. On a screen narrower
-than 768 px the `☰` at the start of the header opens it.
-
-On a screen 1024 px wide or more, the **Contents** pane stands at the left of the outline: the
-three sentences, then each question and each thread you began, one line each. Choose one, or
-press Enter on it, to go to it in the outline; the one you are in is marked. **Focus branch**
-draws that branch of the outline alone, and pressing it again draws the whole outline. On a
-narrower screen **Outline**, beside the one control of the row, opens the same list.
-
-### The panel
-
-The panel is **Details**, which opens over the right of the page from the **Details** control at
-the right of the header's first row, or with `Shift+M`; **Close** or Escape closes it. It shows
-the facts of the node you stand on in the outline, and opening it keeps them. Every page load
-opens it closed. The issue's `/conversation`, `/activity` and `/collaborators` addresses open it,
-and so does a link to a comment beside the document it quotes. Commenting on a document's words
-or choosing a highlighted passage opens it too, since the comment is drawn there. Drag its left
-edge to change its width, which this browser keeps. On a phone it covers the screen. The
-margin's own comment cards are at its top, and the issue's conversation is in it.
-
-**Details** holds every property of the issue, the header's included, each on a row of its own
-with its name at the left, so nothing has to be opened to be seen. A property with no value reads
-**None**. Three sections hold them. Choose a section's name to close or open it. This browser
-keeps your choice for the next issue you open.
-
-- **Development**: **Status**, **Priority**, **Assignee**, and **Labels** with every label listed
-  and **Edit labels**; **Advances**, the priorities the issue advances, with the control that adds
-  and removes one; **Parent**; **Blocked by**, each issue this one waits on with its title, and
-  **Blocks**, the issues that wait on it; **Repository**; **Pull request**, each with its state;
-  **Links**, the other GitHub issues linked to it; **Claimed by**, the agent that holds the issue
-  and since when, with **Release**; **Messages go to**, the issue's route and whether it reaches
-  anyone, with its editor; **Components**, the parts of the project's architecture the issue
-  belongs to, which you can change when the project has an architecture source; and **Tasks**,
-  the spec's task list counted. **Add** lists each property the issue has no value for yet:
-  **Parent**, **Assignee**, **Labels**, **Messages go to**, **Blocked by**, **Repository** and
-  **Components**. Pick one to open the control that sets it. A closed issue has no **Add**.
-- **People**: **Opened by**; **Subscribers: N**, which lists the agent sessions subscribed to the
-  issue, where **Unsubscribe** stops delivery to one and tells it so; and **Collaborators**,
-  which lists everyone who has worked the issue. That list has Legion's agents by role, each
-  role's newest session first and a replaced session naming the one that replaced it; then every
-  other agent session, the most recently active first; then the people, with why each is a
-  collaborator and when they last worked it. Every agent is one click from its conversation and
-  shows whether it is running. When Legion's record of this issue's agents cannot be read, the
-  list says so instead of listing nothing. An issue nobody has worked reads **No one has worked
-  this issue yet.**
-- **References**: **Approval**, each approval step with the reason a reviewer gave, and
-  **Approve** and **Request changes** when no request waits on you; **Referenced by (N)**, every
-  issue, document, ask, comment, and message that links here; and **Files and documents**, every
-  document and file of the issue, the first ten and then **Show all N**.
-
-**The row you are on** gives the focused row's kind and text, its **Status**, and **Written by**
-with its author. With no row focused, it gives the issue's. On an ask, a comment or a message it
-also offers **Pin** (or **Unpin**), and on a comment that opens a thread **Resolve** (or
-**Reopen**), with **Accept** and **Reject** on a suggestion nobody has decided.
-
-**Pinned** lists what you pinned, each a link to its row in the outline, with **Unpin**.
-
-**History** is the issue's history, newest first: its status moves, claims and releases,
-handoffs, the Legion daemon's messages, the documents added and removed, and every other event
-that is no row of the outline. Today's events are listed; each earlier day is one line with how
-many it holds, which opens it. One author's uploads within a minute are one line that opens each
-file. A document's new version is no upload and is not listed: a document's versions are in its
-own toolbar. Nor is anything the outline draws: an ask asked, answered or resolved, a comment or
-message the outline draws and what happened to it, a result recorded against a check, or a child
-issue's status move. A thread only agents wrote in is listed whole, each turn's words with its
-**Reply**; once you reply, the thread is in the outline. The history has **Load older** at the
-bottom, **New since you last read** where your last read ends, and a pin on each event line.
-
-The panel holds no list of the conversation: the outline is the conversation.
-
-### Child issues
-
-An issue with child issues has a **Children** section above the outline, with every filter. Its line
-has a progress bar and two counts: **Children done**, for the issue's own children, and **Whole
-tree done**, for every issue under it. Open, it lists each child on one line: its key and title,
-its status, **Blocked by** and the issues it waits on, **Claimed by** and the agent that holds
-it, its latest activity, and its GitHub links. This browser keeps whether the section is open for
-the next issue you open.
-
-### Addresses
-
-Each of these addresses opens the issue page, and links made before the page had filters still
-open:
-
-| Address | What it opens |
-| --- | --- |
-| `/issues/<KEY>` | The page with no filter on |
-| `/issues/<KEY>/spec` | The **Spec** filter |
-| `/issues/<KEY>/verification` | The **Verification** filter |
-| `/issues/<KEY>/plan` | The **Plan** filter |
-| `/issues/<KEY>/decisions` | The **Decisions** filter |
-| `/issues/<KEY>/conversation` | The page with no filter on |
-| `/issues/<KEY>/activity` | The page with no filter on, with the panel open at its **History** |
-| `/issues/<KEY>/children` | The page with no filter on. The **Children** section is above the outline with every filter |
-| `/issues/<KEY>/artifacts` | The page with no filter on, with the **Files and documents** menu open |
-| `/issues/<KEY>/collaborators` | The page with no filter on, with **Collaborators** open in the panel's **People** section |
-| `/issues/<KEY>/artifacts/<name>` | That document or file in place of the outline, with its editor, its versions, its details and what references the issue. A `#b-` naming a block the outline holds as a node opens the outline at that node instead |
-| `/issues/<KEY>/asks/<id>`, `/comments/<id>` or `/messages/<id>` | The page with no filter on, with the outline unfolded to that entry's row and the focus on it; for a comment or message of a thread only agents wrote in, the panel open at its **History** with the entry marked |
-
-On any of them, `?q=` fills the **Filter** box, and `#b-` with a block's id, `?ask=` or
-`?comment=` unfolds the outline down to that node. `?v=` with a version number pins the version
-control to that version on a filter's address, and reads that version of the document on
-`/issues/<KEY>/artifacts/<name>`. On `/issues/<KEY>/spec`, a `?comment=`, or a `#b-` naming a
-block of the spec's own text, opens the spec in place of the outline at that comment or block, as
-the spec's own address does; a `#b-` naming a statement or another node the outline draws opens
-the **Spec** filter at that node.
-
-### Writing in the conversation
-
-The line at the foot of the outline is where you write, and it stays at the foot of the screen
-as you read. With nothing chosen it posts a comment on the issue, or a question with
-**Question** pressed beside it; `Enter` sends and `Shift+Enter` starts a new line.
-
-Focus a row and its actions show under it. **Reply** - or `r` - is on every ask, comment and
-message, an answered or resolved ask included, and on the issue itself: the line then names the
-entry it replies to, and your reply is drawn under it. **Answer** - or `a` - is on an open ask:
-the line answers it, its options are chips you pick, and **Send answer** records the answer;
-**Decline to answer** is beside it. Picking an option on the row does the same. **Change answer**
-is on an ask you answered. `Escape`, or the line's ×, sets the line back to a comment on the
-issue. Under a filter the line shows only once you reply or answer there.
-
-It works on a closed issue too: there comments and replies, and **Reply** on a message, all work,
-and you can still comment on a quote of its documents: open the document from **Files and
-documents**, select the text and choose **Comment**, the one action the selection bar offers on a
-closed issue's document, and the comment opens in the panel beside the document. Type `@` to
-mention an agent role or a live agent session; the comment is then delivered to it. The picker
+The box at the foot of the Conversation posts a comment on the issue, on a closed issue too: its
+composers, **Reply** on a message and a delivery's **Retry** all work there, and you can still
+comment on a quote of its documents: select the text and choose **Comment**, the one action the
+selection bar offers on a closed issue's document, and the comment opens in the margin. Type `@`
+to mention an agent role or a live agent session; the comment is then delivered to it. The picker
 also offers, under **Not running**, this issue's Legion roles that no running agent holds; a
 mention picked there is addressed to the role, and the comment is posted on the issue, but its
-delivery fails while nobody holds that role, since there is no session to take it. Start the
-comment with `/btw ` or `/aside ` to choose how a mentioned agent receives it.
+delivery fails while nobody holds that role, since there is no session to take it. The thread
+shows that failed attempt with **Retry** beside it, which sends to whoever holds the role at the
+time; that Retry is offered for three days, after which a fresh comment is the way to reach the
+role. Start the comment with `/btw ` or `/aside ` to choose how a mentioned agent receives it.
 [Agents](/legion/dispatch/agents/#sending-to-one-agent) explains the delivery modes.
+
+Press `Ctrl+Enter` (`⌘Enter` on a Mac) to send. `Enter` alone starts a new line.
 
 ## Pins
 
 Pins keep things you return to within reach.
 
-- **An issue.** Choose **Pin issue** in the header's **Issue actions**, or press `Shift+P`. Pinned
-  issues appear under **Pinned** in the sidebar, with their open-ask counts.
-- **An ask, a comment or a message.** Focus its row and choose **Pin** under **The row you are
-  on** in the panel. Pinned entries are listed under **Pinned** in the panel, each a link to its
-  row with **Unpin**.
+- **An issue.** Choose the pin next to the title, or press `Shift+P`. Pinned issues appear under
+  **Pinned** in the sidebar, with their open-ask counts.
+- **A Conversation entry.** Every entry has a pin at its top right. Pinned entries appear in the
+  margin's **Pinned** tab beside the document, each with **Unpin**.
 - **An agent.** On the Agents page, a pinned agent stays at the top of the list.

@@ -11,8 +11,7 @@ import {
   getIssueEvents,
   listMyAnswers,
 } from "./api";
-import { documentEditor, specAddress } from "./editor";
-import { focusedNodeId } from "./issue-page";
+import { documentEditor } from "./editor";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -27,7 +26,15 @@ function answerRows(page: Page): Locator {
   return page.locator("[data-answer-row]");
 }
 
-/** An unanchored ask's item route also has the Conversation mark its turn. */
+/** The answered ask an item route selected on its document: the margin's decided card. */
+async function expectSelectedMarginAsk(page: Page, id: string): Promise<void> {
+  const sheet = page.getByTestId("margin-sheet");
+  const item = sheet.locator(`[data-margin-item="${id}"]`);
+  await expect(item).toHaveAttribute("aria-current", "true");
+  await expect(item).toBeInViewport();
+}
+
+/** An unanchored ask's item route lands on its Conversation turn, focused. */
 async function expectFocusedAskTurn(page: Page, id: string): Promise<void> {
   const turn = page.locator(`li[data-turn="ask:${id}"][aria-current="true"]`);
   await expect(turn).toBeVisible();
@@ -116,11 +123,11 @@ test("the answers page lists a person's answers and replies, opens each ask, and
     await expect(rowOf(replied.id)).toContainText("Does nightly count?");
     await expect(rowOf(replied.id).getByRole("button", { name: "Change answer" })).toHaveCount(0);
 
-    // Open lands on the ask's node in its issue's outline, focused, wherever the ask is anchored
-    // (dispatch://INFRA-1196 R20); the Conversation marks an unanchored one's turn too.
+    // Open lands on the ask: an anchored one selected on its document, an unanchored one on its
+    // Conversation turn.
     await rowOf(anchored.id).getByRole("link", { exact: true, name: "Open" }).click();
-    await expect(page).toHaveURL(`/issues/${anchoredIssue.key}/asks/${anchored.id}`);
-    await expect.poll(() => focusedNodeId(page)).toBe(anchored.id);
+    await expect(page).toHaveURL(`/issues/${anchoredIssue.key}/spec?ask=${anchored.id}`);
+    await expectSelectedMarginAsk(page, anchored.id);
     for (const [id, issue] of [
       [changed.id, changedIssue],
       [replied.id, repliedIssue],
@@ -128,7 +135,6 @@ test("the answers page lists a person's answers and replies, opens each ask, and
       await navigateInApp(page, "/answers");
       await rowOf(id).getByRole("link", { exact: true, name: "Open" }).click();
       await expect(page).toHaveURL(`/issues/${issue.key}/asks/${id}`);
-      await expect.poll(() => focusedNodeId(page)).toBe(id);
       await expectFocusedAskTurn(page, id);
     }
 
@@ -272,7 +278,7 @@ test("changing a decision block's answer rewrites the block in the document", as
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     const block = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
     const hosted = block.locator("article[data-testid^=ask-]");
     await expect(hosted).toBeVisible();

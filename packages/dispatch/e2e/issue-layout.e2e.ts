@@ -7,26 +7,34 @@ import { presetPath } from "../web/src/features/issue/issue-address";
 import { firstLineOf } from "../web/src/features/issue/issue-tree";
 import {
   ANSWER_PHRASES,
+  BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
+  type CheckState,
   CONTROL_LABELS,
+  DECISIONS_WORDS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_NAMES,
   GLYPH_TOKENS,
+  NODE_REFERENCES_WORDS,
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
   type NodeType,
   nodeStateWords,
+  PLAN_WORDS,
   PRESET_NAMES,
   PRESET_ORDER,
   type Preset,
+  SPEC_WORDS,
   STATE_LINES,
   UNASKED_SOURCES,
+  VERIFICATION_WORDS,
   wordsIn,
 } from "../web/src/features/issue/page-words";
 import { blockNodeId, checkState } from "../web/src/features/issue/tree-drafts";
+import { agentRoleWord } from "../web/src/features/refs/agent-role";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
 import { getUnsubscribeCalls } from "./agents";
 import {
@@ -55,8 +63,10 @@ import {
   listIssueMessages,
   listMyReplies,
   patchIssue,
+  recordCheckResult,
   requestApproval,
   resolveAsk,
+  retractCheckResult,
   reviewArtifact,
   setGatedSteps,
 } from "./api";
@@ -64,10 +74,13 @@ import { placeCaret } from "./editor";
 import {
   type BaselineSeed,
   seedConversationState,
+  seedDecisionsFilter,
   seedNoChildren,
   seedNoSummary,
+  seedPlanOrder,
   seedReplyNesting,
   seedRequestBaseline,
+  seedReviewList,
   seedSpineCases,
   seedTwiceTheNodes,
   seedUnbrokenChildTitle,
@@ -79,6 +92,7 @@ import {
 } from "./issue-layout-seed";
 import {
   asPlanner,
+  HEAD_SHA,
   PLANNER,
   PLANNER_TITLE,
   PROJECT,
@@ -87,9 +101,10 @@ import {
   WHOLE_REPO,
 } from "./issue-layout-seed-support";
 import {
-  checkBlockId,
   OPEN_QUESTION_BLOCK_ID,
+  PLAN_ORDER_TASKS,
   planTaskBlockId,
+  planTaskText,
   requirementBlockId,
   requirementText,
   SPINE_ANSWERED_QUESTION,
@@ -100,31 +115,32 @@ import {
 import {
   activePreset,
   addControl,
-  ancestorsOfRow,
   badgeValue,
+  becauseLines,
   boxesPastTheirCard,
   branchMoreRows,
   caretInNode,
-  checksRow,
   childRow,
   childRows,
-  childrenBar,
-  childrenDirectCount,
-  childrenDisclosure,
   childrenSection,
-  childrenSubtreeCount,
   chromeTexts,
   closeDetails,
   composer,
+  composerField,
   contentsEntries,
   contentsPane,
   copyCommandControls,
   type DrawnRow,
+  decidedByCells,
+  decisionsFoot,
+  decisionsPartsDrawn,
   detailsControl,
   detailsRow,
   drawnRows,
   expectActivePreset,
   filterBox,
+  filterControl,
+  filterRowReading,
   focusBranchControl,
   focusedNodeFacts,
   focusedNodeId,
@@ -147,6 +163,7 @@ import {
   marginSectionDisclosure,
   marginShell,
   marginSlot,
+  namedCommit,
   nodeBodies,
   nodeCommands,
   nodeMenuButton,
@@ -163,6 +180,7 @@ import {
   openIssueActions,
   openMenu,
   openPreset,
+  openVersionControl,
   optionsOf,
   outlineControl,
   outlineSheet,
@@ -171,7 +189,8 @@ import {
   parentOfRow,
   pickPreset,
   pinnedBodies,
-  planRow,
+  planChartRows,
+  planView,
   presetChooser,
   presetCount,
   presetMenuItem,
@@ -187,13 +206,14 @@ import {
   rowGaps,
   rowLayouts,
   rowMore,
+  rowsOfType,
   rowsWithoutAuthorScrollers,
   rowWords,
   scrollersOutsideAuthorText,
   sendFromComposer,
+  stickyReading,
   TYPEFACE,
   threeThings,
-  threeThingsSentences,
   tooltipTexts,
   tree,
   treeText,
@@ -202,9 +222,11 @@ import {
   undividedTexts,
   unfoldEveryBranch,
   uploadInput,
+  verificationCards,
   versionControl,
   versionPicker,
   waitingCount,
+  watchPanelDraws,
 } from "./issue-page";
 import {
   assertInventoryCarried,
@@ -788,10 +810,12 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
       expect(required?.expanded, `the first requirement is not folded at ${width} px`).toBe(
         "false"
       );
+      // Ruling 5: the model holds no author for a requirement, so its row draws none; its
+      // opened body says so, which is read below once the row has the focus.
       expect(
         required?.author,
-        `the first requirement's row does not say its author is unknown at ${width} px`
-      ).toBe(CONTROL_LABELS.unknown_author);
+        `the first requirement's row draws an author the model does not hold at ${width} px`
+      ).toBeNull();
       expectCutAtAWord(
         required,
         requirementText(1),
@@ -811,6 +835,10 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
         message: "the focused row does not draw the node's whole stored text",
       })
       .toContain(requirementText(1));
+    await expect(
+      rowBody(opened).locator("[data-node-author]"),
+      "the focused requirement's body does not say its author is unknown"
+    ).toHaveText(CONTROL_LABELS.unknown_author);
   });
 });
 
@@ -832,10 +860,17 @@ const READER = "alice";
  * start at one left edge from the node's own bullet, so the fold's indent is not in the number,
  * and the reader's own words at a second, inside it, behind their ink rule; nothing stands
  * between a bullet and its words; a node that holds others has its bullet as its fold control;
- * the bullet is its kind's colour; a typed kind draws one tag naming it at the right end of its
- * words' first line, with its author and its time after it, in grey, and a turn draws none.
+ * the bullet is its kind's colour; a typed kind draws one tag naming it - a child issue's is its
+ * key (ruling 5) - with its author and its time after it, in grey, and a turn draws none. At
+ * 761 px and above the tag stands at the right end of the words' first line; at 760 px and below
+ * the group stands under the words (ruling 4), which `expectRowGroups` reads.
  */
-function expectRowLayouts(layouts: readonly RowLayout[], where: string, ownDrawn: boolean): void {
+function expectRowLayouts(
+  layouts: readonly RowLayout[],
+  where: string,
+  ownDrawn: boolean,
+  width: number
+): void {
   expect(layouts.length, `${where} draws no row`).toBeGreaterThan(0);
   const edge = (row: RowLayout) => Math.round(row.wordsLeft - row.bullet.left);
   const others = [...new Set(layouts.filter((row) => !row.own).map(edge))];
@@ -876,10 +911,10 @@ function expectRowLayouts(layouts: readonly RowLayout[], where: string, ownDrawn
       expect(row.tag, `${at} draws a tag, which a turn of the conversation has none of`).toBeNull();
     } else {
       expect(row.tag?.text, `${at} does not name its kind on one tag`).toBe(
-        NODE_TYPE_NAMES[row.type as NodeType]
+        row.type === "child_issue" ? row.id : NODE_TYPE_NAMES[row.type as NodeType]
       );
       // A node the model holds no words for draws no first line to stand the tag beside.
-      if (row.line.right > 0) {
+      if (row.line.right > 0 && width > 760) {
         expect(
           row.tag?.left ?? -1,
           `${at} draws its tag before the end of its words' first line`
@@ -892,12 +927,13 @@ function expectRowLayouts(layouts: readonly RowLayout[], where: string, ownDrawn
           row.line.bottom
         );
       }
-      const after =
-        (row.byline?.left ?? -1) >= (row.tag?.right ?? 0) - 1 ||
-        (row.byline?.top ?? -1) > (row.tag?.top ?? 0) + 1;
-      expect(after, `${at} draws its author and its time before its tag`).toBe(true);
+      // A node the model holds no author for, and no time, draws neither (ruling 5).
+      if (row.byline !== null) {
+        const after =
+          row.byline.left >= (row.tag?.right ?? 0) - 1 || row.byline.top > (row.tag?.top ?? 0) + 1;
+        expect(after, `${at} draws its author and its time before its tag`).toBe(true);
+      }
     }
-    expect(row.author, `${at} names no author`).not.toBeNull();
     if (row.author !== null && row.author.name !== READER) {
       expect(row.author.color, `${at} draws its author other than in grey`).toBe(row.quiet);
     }
@@ -907,10 +943,209 @@ function expectRowLayouts(layouts: readonly RowLayout[], where: string, ownDrawn
   }
 }
 
-// c-row. Every row of every view, at both widths, read off the page's layout; then the
-// architect's ruling 1 on R1: an agent's words that run past six lines with more than 20 words
-// hidden are cut, "more · N words" opens the rest in place, and the reader's own words and
-// answer are never cut. The seed adds those three long texts to the whole issue.
+/** What the architect's rulings 4 and 5 read of one row, off the page's own layout (c-row): the
+ *  line of the kind's tag, the author and the time and where it stands against the row's words,
+ *  the state under it, the chips that name what the node points at, the links in its words, and
+ *  its fold control's box. */
+interface RowGroup {
+  /** The author the row's group names, or null where it names none. */
+  readonly author: string | null;
+  /** Each chip: the words it names its target by, all it draws, and whether it stands inside
+   *  the box of the node's words and on their first line. */
+  readonly chips: readonly {
+    readonly inWords: boolean;
+    readonly name: string;
+    readonly onFirstLine: boolean;
+    readonly text: string;
+  }[];
+  /** The bottom of what the row draws under its bullet's line: its words, its options, its
+   *  answer and its body. */
+  readonly contentBottom: number;
+  /** Whether the row's words are cut, which draws the chips beside the control that opens the
+   *  rest. */
+  readonly cut: boolean;
+  /** The fold control's box, or null for a row that holds no node. */
+  readonly fold: { readonly height: number; readonly width: number } | null;
+  /** The page's grey for a bullet, as computed, which underlines a link in a node's words. */
+  readonly grey: string;
+  /** The group's first line - the tag, the author and the time: how many lines of its own line
+   *  height it takes, and its top. Null where the row draws no group. */
+  readonly group: { readonly lines: number; readonly top: number } | null;
+  readonly id: string;
+  /** Each link in the row's words: its colour, the colour of the words it stands in, and its
+   *  underline's. */
+  readonly links: readonly {
+    readonly color: string;
+    readonly underline: string;
+    readonly words: string;
+  }[];
+  /** Whether the row draws its body. */
+  readonly open: boolean;
+  /** The top of the state's word, or null where the row draws no state. */
+  readonly stateTop: number | null;
+  readonly type: string;
+}
+
+/** Every visible row's group, chips and links, in document order (c-row, rulings 4 and 5). */
+function rowGroups(page: Page): Promise<RowGroup[]> {
+  return nodeRows(page).evaluateAll((rows) => {
+    const text = (element: Element | null | undefined): string | null =>
+      element == null ? null : (element.textContent ?? "").replace(/\s+/g, " ").trim();
+    const probe = document.createElement("i");
+    probe.style.color = "var(--color-page-bullet)";
+    document.body.append(probe);
+    const grey = getComputedStyle(probe).color;
+    probe.remove();
+    return rows
+      .filter((row) => row.getClientRects().length > 0)
+      .map((row) => {
+        const words = row.querySelector("[data-node-words]");
+        const margin = row.querySelector("[data-node-margin]");
+        const line = margin?.firstElementChild ?? null;
+        const lineBox = line?.getBoundingClientRect();
+        const pitch = line === null ? 0 : Number.parseFloat(getComputedStyle(line).lineHeight);
+        // The top of the words' first line, read from their text alone, the chips' left out.
+        const tops: number[] = [];
+        if (words !== null) {
+          const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            if (node.parentElement?.closest("[data-node-trail]") != null) continue;
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            for (const rect of range.getClientRects()) if (rect.width > 0) tops.push(rect.top);
+          }
+        }
+        const firstTop = tops.length === 0 ? null : Math.min(...tops);
+        const fold = row.querySelector("button[data-node-bullet]")?.getBoundingClientRect();
+        return {
+          author: text(margin?.querySelector("[data-node-author]")),
+          chips: [...row.querySelectorAll("[data-node-chip]")].map((chip) => {
+            const name = chip.querySelector("[data-chip-name]");
+            const box = (name ?? chip).getClientRects()[0];
+            return {
+              inWords: words?.contains(chip) === true,
+              name: text(name) ?? "",
+              onFirstLine:
+                firstTop !== null && box !== undefined && Math.abs(box.top - firstTop) < 8,
+              text: text(chip) ?? "",
+            };
+          }),
+          contentBottom:
+            row.querySelector("[data-node-content]")?.getBoundingClientRect().bottom ?? 0,
+          cut: row.querySelector("[data-node-more]") !== null,
+          fold: fold === undefined ? null : { height: fold.height, width: fold.width },
+          grey,
+          group:
+            lineBox === undefined || lineBox.height === 0
+              ? null
+              : {
+                  lines: Math.round(lineBox.height / (Number.isFinite(pitch) ? pitch : 24)),
+                  top: lineBox.top,
+                },
+          id: row.getAttribute("data-node-id") ?? "",
+          links: [...(words?.querySelectorAll("a[href]") ?? [])]
+            // The node's own words: not its chips, and not a child issue's facts after its title,
+            // which draw their keys as the ink on the quiet grey (`IssueChildren.tsx`).
+            .filter((link) => link.closest("[data-node-trail], [data-child-facts]") === null)
+            .map((link) => ({
+              color: getComputedStyle(link).color,
+              underline: getComputedStyle(link).textDecorationColor,
+              words: link.parentElement === null ? "" : getComputedStyle(link.parentElement).color,
+            })),
+          open: row.querySelector("[data-node-body]") !== null,
+          stateTop: margin?.querySelector("[data-node-state]")?.getBoundingClientRect().top ?? null,
+          type: row.getAttribute("data-node-type") ?? "",
+        };
+      });
+  });
+}
+
+/**
+ * The architect's rulings 4 and 5 on every row one view draws (c-row). At 761 px and above a
+ * row that is not open draws its kind, its author and its time on one line, and its state on a
+ * second line under it; at 760 px and below that line stands under the row's words. No row
+ * draws the page's words for an author nobody recorded: its opened body says them. Each tie is a
+ * chip inside the box of the node's words, named by at most 32 characters and by no address,
+ * slug or short form of one (`addresses`). A link in a node's words is the words' own colour,
+ * underlined in the bullets' grey. On a phone a fold control is 24 px square at least (WCAG
+ * 2.5.8).
+ */
+function expectRowGroups(
+  groups: readonly RowGroup[],
+  where: string,
+  width: number,
+  addresses: RegExp
+): void {
+  for (const row of groups) {
+    const at = `the ${row.type} ${row.id} on ${where}`;
+    expect(
+      row.author,
+      `${at} draws the page's words for an author nobody recorded on its row`
+    ).not.toBe(CONTROL_LABELS.unknown_author);
+    if (row.group !== null && width > 760) {
+      if (!row.open) {
+        expect(
+          row.group.lines,
+          `${at} draws its kind, its author and its time on more than one line`
+        ).toBe(1);
+      }
+      if (row.stateTop !== null) {
+        expect(
+          row.stateTop,
+          `${at} draws its state on the line of its kind, its author and its time`
+        ).toBeGreaterThan(row.group.top + 8);
+      }
+    }
+    if (row.group !== null && width <= 760) {
+      expect(
+        row.group.lines,
+        `${at} draws its kind, its author and its time on more than one line`
+      ).toBe(1);
+      expect(
+        row.group.top,
+        `${at} draws its kind, its author and its time beside its words and not under them`
+      ).toBeGreaterThanOrEqual(row.contentBottom - 1);
+    }
+    for (const chip of row.chips) {
+      expect(
+        chip.name.length,
+        `${at} names a target by more than 32 characters: "${chip.name}"`
+      ).toBeLessThanOrEqual(32);
+      expect(
+        addresses.test(chip.text),
+        `${at} draws an address or a slug on a chip: "${chip.text}"`
+      ).toBe(false);
+      if (!row.cut) {
+        expect(chip.inWords, `${at} draws the chip "${chip.text}" on a line under its words`).toBe(
+          true
+        );
+      }
+    }
+    for (const link of row.links) {
+      expect(link.color, `${at} draws a link in its words in another colour than the words'`).toBe(
+        link.words
+      );
+      expect(
+        link.underline,
+        `${at} underlines a link in its words in another colour than the bullets' grey`
+      ).toBe(row.grey);
+    }
+    if (width <= 760 && row.fold !== null) {
+      expect(
+        Math.min(row.fold.width, row.fold.height),
+        `${at}'s fold control is smaller than 24 px at ${width} px`
+      ).toBeGreaterThanOrEqual(24);
+    }
+  }
+}
+
+// c-row. Every row of every view, at both widths, read off the page's layout, with the
+// architect's rulings 4 and 5 beside R34; then ruling 1 on R1: an agent's words and an answered
+// question that run past six lines with more than 20 words hidden are cut, "more · N words"
+// opens the rest in place and is drawn on no row whose body draws the words whole, and the
+// reader's own words, their answer and a question that waits on them are never cut. The seed
+// adds those five long texts to the whole issue, and an agent's message holding a link an author
+// wrote and a reference to an issue, which the row draws by its key and title (R19, F14).
 test("a node draws its kind at the right of its row and every node starts at one left edge @phone", async ({
   browser,
 }) => {
@@ -929,7 +1164,42 @@ test("a node draws its kind at the right of its row and every node starts at one
         asPlanner
       );
       await answerAsk(asked.id, { expected_edited_at: null, selected: [], text: answerWords });
-      return { agent: agent.id, answered: asked.id, key: seeded.key, own: own.id };
+      const longAnswered = await createAsk(
+        seeded.key,
+        { question: longWords("asked", 160), urgency: "high" },
+        asPlanner
+      );
+      await answerAsk(longAnswered.id, {
+        expected_edited_at: null,
+        selected: [],
+        text: "The first of the two.",
+      });
+      const waiting = await createAsk(
+        seeded.key,
+        { question: longWords("waits", 160), urgency: "high" },
+        asPlanner
+      );
+      // An agent's words holding a link its author wrote, a reference to another issue, and a
+      // word the reference grammar reads as an issue key and no issue is.
+      const cited = seeded.children.keys[0] ?? "";
+      const linked = await createMessage(
+        seeded.key,
+        {
+          body: `Read [the notes](https://example.com/notes) with dispatch://${cited} beside them, in UTF-16.`,
+        },
+        asPlanner
+      );
+      return {
+        agent: agent.id,
+        answered: asked.id,
+        cited,
+        key: seeded.key,
+        linked: linked.id,
+        longAnswered: longAnswered.id,
+        own: own.id,
+        title: (await getIssue(cited)).title,
+        waiting: waiting.id,
+      };
     },
     async (page, seeded) => {
       for (const size of [DESKTOP, PHONE]) {
@@ -939,15 +1209,28 @@ test("a node draws its kind at the right of its row and every node starts at one
           await gotoIssue(page, presetPath(seeded.key, preset));
           await expectLoadSettled(settling);
           await expectIssuePageDrawn(page);
+          // Plan opens on its chart; its steps are rows of the outline, which its Steps control
+          // draws.
+          if (preset === "plan") await page.locator('[data-plan-view="steps"]').click();
           await expect
             .poll(() => nodeRows(page).count(), {
               message: `${PRESET_NAMES[preset]} at ${size.width} px draws no row`,
             })
             .toBeGreaterThan(0);
-          expectRowLayouts(
-            await rowLayouts(page),
-            `${PRESET_NAMES[preset]} at ${size.width} px`,
-            preset === "conversation"
+          const where = `${PRESET_NAMES[preset]} at ${size.width} px`;
+          // R34's layout is read where the page draws the outline's rows: with no filter, under
+          // Decisions and in Plan's steps. Spec, Verification and Plan's chart are drawn as their
+          // own approved pictures (ruling 5), which c-home, c-checks-readable and c-plan-order
+          // read.
+          if (preset === "conversation" || preset === "decisions" || preset === "plan") {
+            expectRowLayouts(await rowLayouts(page), where, preset === "conversation", size.width);
+          }
+          // Rulings 4 and 5. No chip draws an address, the short form of one, or a slug.
+          expectRowGroups(
+            await rowGroups(page),
+            where,
+            size.width,
+            new RegExp(`dispatch://|${seeded.key} \\S+( block)?$|-md\\b`, "u")
           );
         }
       }
@@ -957,6 +1240,17 @@ test("a node draws its kind at the right of its row and every node starts at one
       const settling = watchApiRequests(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectLoadSettled(settling);
+      // R21, F17: a row names what its words cite from the page's one batched read, so this
+      // load reads no summary of the issue the message cites and asks nothing about `UTF-16`.
+      expect(
+        settling.requests
+          .map((request) => request.path)
+          .filter(
+            (path) =>
+              path.includes(`/issues/${seeded.cited}/summary`) || path.includes("/issues/UTF-16")
+          ),
+        "the rows read a target of their own for a reference their words cite"
+      ).toEqual([]);
       const agent = nodeRow(page, seeded.agent).first();
       await expect(agent, "the agent's long message draws no row").toBeVisible();
       const cut = (await rowLayouts(page)).find((row) => row.id === seeded.agent);
@@ -995,6 +1289,83 @@ test("a node draws its kind at the right of its row and every node starts at one
         await answer.evaluate((element) => element.scrollHeight - element.clientHeight),
         "the reader's long answer is cut"
       ).toBeLessThanOrEqual(1);
+
+      // Ruling 1 on a question: a long one a person answered is cut as an agent's words are,
+      // and a long one that waits on the reader is drawn whole.
+      expect(
+        (await getAsk(seeded.waiting)).ask.waiting_on_person,
+        "the seeded open question does not wait on the reader"
+      ).toBe(READER);
+      expect(
+        layouts.find((row) => row.id === seeded.longAnswered)?.more ?? "",
+        "the long answered question is drawn whole"
+      ).toMatch(/^more · [\d,]+ words$/u);
+      expect(
+        layouts.find((row) => row.id === seeded.waiting),
+        "the long question that waits on the reader is cut"
+      ).toMatchObject({ more: null, wordsHidden: 0 });
+
+      // A body draws its node's words whole, so a row whose body is open draws no control that
+      // would open what is open already; the control is back once the focus has left.
+      const answered = nodeRow(page, seeded.longAnswered).first();
+      await answered.focus();
+      await expect(
+        rowMore(answered),
+        "a focused row draws more beside words its body draws whole"
+      ).toHaveCount(0);
+      expect(
+        await rowWords(answered).evaluate((element) => element.scrollHeight - element.clientHeight),
+        "a focused row's words are still cut"
+      ).toBeLessThanOrEqual(1);
+      await focusThePage(page);
+      await expect(rowMore(answered), "more is gone once the focus has left").toHaveCount(1);
+
+      // A folded branch keeps its count once its focus draws its words whole, and a node the
+      // model holds no author for says so in its opened body and nowhere on its row (ruling 5).
+      const folded = nodeRow(
+        page,
+        blockNodeId(await primarySlug(seeded.key), requirementBlockId(1))
+      ).first();
+      await expect(folded, "the first requirement is not folded").toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      await folded.focus();
+      await expect(
+        folded.locator("[data-node-words] [data-node-count]"),
+        "a focused folded branch no longer says how many rows it hides"
+      ).toHaveText(
+        new RegExp(`^\\d+ (${CONTROL_LABELS.folded_row}|${CONTROL_LABELS.folded_rows})$`, "u")
+      );
+      await expect(
+        rowBody(folded).locator("[data-node-author]"),
+        "an opened body does not say its node's author is unknown"
+      ).toHaveText(CONTROL_LABELS.unknown_author);
+      await expect(
+        folded.locator("[data-node-margin] [data-node-author]"),
+        "a row draws an author the model does not hold"
+      ).toHaveCount(0);
+
+      // A reference in a node's words is a link named by its target's key and title, never a
+      // gap; a word that only looks like a key is the word it is; and both of the message's
+      // links are the words' colour over the bullets' grey, which the walk above read on every
+      // view.
+      const linked = nodeRow(page, seeded.linked).first();
+      await expect(
+        linked.locator("[data-node-words] a[data-row-reference]"),
+        "a reference in a node's words is not drawn by its target's key and title"
+      ).toHaveText(`${seeded.cited} ${seeded.title}`);
+      await expect(
+        linked.locator("a", { hasText: "UTF-16" }),
+        "a word that names no issue is drawn as a link"
+      ).toHaveCount(0);
+      await expect(rowWords(linked), "the row drops a word that names no issue").toContainText(
+        "in UTF-16."
+      );
+      expect(
+        (await rowGroups(page)).find((row) => row.id === seeded.linked)?.links,
+        "the message's link and its reference are not both links of its words"
+      ).toHaveLength(2);
     }
   );
 });
@@ -1229,8 +1600,69 @@ test("the five controls are toggles that draw their query's answer @phone", asyn
         );
       }
       await expectIssuePageDrawn(page);
-      const drawn = await drawnRows(page);
       const name = PRESET_NAMES[filter];
+      // Each filter draws as its approved picture does (ruling 5 of build-rulings-md).
+      // Verification draws the body of `verification-filter/` and no row of the outline: each
+      // statement as context with the checks that serve it under it and their newest results
+      // (R2, R17, ruling 6), read here in the body's own terms.
+      if (filter === "verification") {
+        await expect
+          .poll(async () => (await verificationCards(page)).length, {
+            message: `${name} draws no statement`,
+          })
+          .toBeGreaterThan(0);
+        const cards = await verificationCards(page);
+        const wholeChecks = whole.filter((row) => row.type === "check");
+        expect(
+          cards.map((card) => card.id).sort(),
+          `${name} draws other statements than the issue's`
+        ).toEqual(
+          [...kindOf]
+            .filter(([, kind]) => kind === "requirement")
+            .map(([id]) => id)
+            .sort()
+        );
+        expect(
+          cards.filter((card) => !card.context).map((card) => card.id),
+          `${name} draws a statement that is no context row`
+        ).toEqual([]);
+        // Each check under every statement it serves, once under each, as the outline draws it.
+        for (const check of new Set(wholeChecks.map((row) => row.id ?? ""))) {
+          const placements = cards.filter((card) =>
+            card.checks.some((drawnCheck) => drawnCheck.id === check)
+          ).length;
+          expect(
+            placements,
+            `${check} is drawn under ${placements} statements, not under each it serves`
+          ).toBe(wholeChecks.filter((row) => row.id === check).length);
+        }
+        // Every check that holds a result draws its newest one, and one only.
+        expect(
+          cards
+            .flatMap((card) => card.checks)
+            .filter((check) => check.results !== (check.state === "no-result" ? 0 : 1))
+            .map((check) => check.id),
+          `${name} draws other than the newest result of a check`
+        ).toEqual([]);
+        // The count is the checks it draws, each counted once.
+        expect(
+          Number(await presetCount(page, filter).textContent()),
+          `${name}'s count is not the checks it draws`
+        ).toBe(new Set(wholeChecks.map((row) => row.id)).size);
+        await expect(versionControl(page), `${name} draws no version control`).toHaveCount(1);
+        // Pressed again, the filter turns off: the page with no filter on.
+        await presetToggle(page, filter).click();
+        await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+        await expect(presetToggle(page, "conversation")).toHaveAttribute("aria-pressed", "true");
+        await expect(versionControl(page)).toHaveCount(0);
+        continue;
+      }
+      // Plan opens on the chart of time (c-plan-order reads it); its control switches to the
+      // ordered steps, which are the rows read here. Decisions folds the agents' decisions no
+      // statement rests on at its foot, unfolded here so that every entry it holds is a row.
+      if (filter === "plan") await planView(page, "steps").click();
+      if (filter === "decisions") await decisionsFoot(page).click();
+      const drawn = await drawnRows(page);
 
       // The rows are the filter's kinds and no other: no issue row, no comment or message.
       expect(
@@ -1239,9 +1671,16 @@ test("the five controls are toggles that draw their query's answer @phone", asyn
           .map((row) => `${row.type}:${row.id}`),
         `${name} draws rows of kinds it does not draw`
       ).toEqual([]);
-      // Every node of those kinds the outline holds is drawn, and nothing else.
+      // Every node of those kinds the outline holds is drawn, and nothing else. One kind of
+      // node is the exception the Decisions filter makes (R2, R9): the section of decisions.md
+      // that restates a person's answer hangs under that answer in the outline, and is no entry
+      // of the filter, whose entry for that decision is the answer itself.
+      const restated = (id: string): boolean =>
+        filter === "decisions" &&
+        kindOf.get(id) === "decision" &&
+        [...(wholeParents.get(id) ?? [])].some((parent) => kindOf.get(parent ?? "") === "ask");
       const wanted = [...kindOf]
-        .filter(([, kind]) => (kinds as readonly string[]).includes(kind))
+        .filter(([id, kind]) => (kinds as readonly string[]).includes(kind) && !restated(id))
         .map(([id]) => id)
         .sort();
       expect([...new Set(idsOf(drawn))].sort(), `${name} draws other nodes than its kinds`).toEqual(
@@ -1257,29 +1696,17 @@ test("the five controls are toggles that draw their query's answer @phone", asyn
         Number(await presetCount(page, filter).textContent()),
         `${name}'s count is not the ${counted.join(" and ")} it draws`
       ).toBe(main.size);
-      // Verification's requirements are context, faint and marked; nothing else is.
+      // Only Verification draws context, and it is read above: no row of these three is one.
       expect(
         drawn.filter((row) => row.context).map((row) => row.type),
-        `${name} marks rows as context that are not its requirements`
-      ).toEqual(
-        drawn
-          .filter((row) => filter === "verification" && row.type === "requirement")
-          .map((row) => row.type)
-      );
-      if (filter === "verification") {
-        for (const check of drawn.filter((row) => row.type === "check")) {
-          const placements = drawn.filter((row) => row.id === check.id).length;
-          expect(
-            placements,
-            `${check.id} is drawn under ${placements} requirements, not under each it serves`
-          ).toBe(whole.filter((row) => row.id === check.id).length);
-        }
-      }
+        `${name} marks rows as context`
+      ).toEqual([]);
 
       // Every other parent is one line on its child's row, read from that parent: a row at the
       // top whose parent in the outline is no row here and not the issue carries the line, and
       // the line names that parent by its id, its kind and its first line.
       const drawnParents = parentsOf(drawn);
+      let parentLines = 0;
       for (const row of drawn) {
         const id = row.id ?? "";
         const above = [...(wholeParents.get(id) ?? [])];
@@ -1298,11 +1725,24 @@ test("the five controls are toggles that draw their query's answer @phone", asyn
         );
         expect(row.parent?.type).toBe(kindOf.get(row.parent?.id ?? ""));
         const parentRow = rowOf(whole, row.parent?.id ?? "");
+        // The line holds the parent's own words: not empty, no longer than R1's first line, and
+        // the start of what the parent's own row draws.
+        const line = row.parent?.line ?? "";
+        expect(line, `${id}'s parent line draws no words`).not.toBe("");
         expect(
-          row.parent?.line.length ?? 0,
+          line.length,
           `${id}'s parent line is longer than R1's first line`
         ).toBeLessThanOrEqual(100);
-        expect(parentRow?.firstLine ?? "").toContain((row.parent?.line ?? "").slice(0, 20));
+        expect(
+          parentRow?.words ?? parentRow?.firstLine ?? "",
+          `${id}'s parent line is not its parent's first line`
+        ).toContain(line.slice(0, 20));
+        parentLines += 1;
+      }
+      // The seed's plan tasks serve statements, which Plan draws as no rows: the loop above read
+      // at least one parent line there, so its assertions are not passing on nothing.
+      if (filter === "plan") {
+        expect(parentLines, "Plan drew no row with a parent line to read").toBeGreaterThan(0);
       }
 
       // The version control reads the filter's own document, and Decisions has none.
@@ -1348,13 +1788,10 @@ test("the five controls are toggles that draw their query's answer @phone", asyn
       await assertPageFits(page);
       await assertWhole(presetRow(page));
     }
-    // The row is the prototype's: each toggle 35 px tall from 1280 px up. Below 1280 px every
-    // control keeps the app's 44 px touch floor (`styles.css`), the row of five included.
-    for (const [width, floor] of [
-      [1440, 32],
-      [1279, 44],
-      [1100, 44],
-    ] as const) {
+    // The row is the prototype's at every width that draws the five (ruling 5): each toggle its
+    // `.tab`, 33 px of button over its 2 px rule, never the 44 px floor the rest of the app keeps
+    // below 1280 px and never under 24 px (WCAG 2.5.8).
+    for (const width of [1440, 1279, 1100] as const) {
       await page.setViewportSize({ height: DESKTOP.height, width });
       await expect.poll(presetShape).toMatch(/^(5\/0|0\/1)$/);
       await assertPageFits(page);
@@ -1365,9 +1802,8 @@ test("the five controls are toggles that draw their query's answer @phone", asyn
       );
       console.log(`c-presets: toggle heights at ${width} px: ${heights.join(", ")}`);
       for (const height of heights) {
-        expect(height, `a toggle is ${height} px tall at ${width} px`).toBeGreaterThanOrEqual(
-          floor
-        );
+        expect(height, `a toggle is ${height} px tall at ${width} px`).toBeGreaterThanOrEqual(24);
+        expect(height, `a toggle is ${height} px tall at ${width} px`).toBeLessThanOrEqual(36);
       }
     }
     for (const width of [1024, 390, 320]) {
@@ -1588,87 +2024,69 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
   });
 });
 
-// c-three-things. Partial on today's data: the node that holds the bullets, its author and
-// `last_read_back_at` are dispatch://INFRA-1278, so the head draws neither and this test never
-// asserts that an author is drawn. Its placement is R8's and R14's: at 1440 px in the Contents
-// pane at the left of the outline, and at 390 px above the outline's first row, with no filter on
-// and with each of the four.
-test("the three things are at the head with every filter @phone", async ({ browser }) => {
-  // Ten loads of the page - the five presets at each of two widths - each read for its head,
-  // its boxes and the page's own draw. Measured on an issue pod's two CPUs across four whole
-  // runs: 25.3 s to 29.1 s, against a default deadline of 30 s, so the row failed the run it
-  // was slowest in rather than on anything it asserts. Four times the measurement leaves room
-  // for a loaded box.
-  test.setTimeout(120_000);
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
-    for (const size of [DESKTOP, PHONE]) {
-      await page.setViewportSize({ height: size.height, width: size.width });
-      for (const preset of PRESET_ORDER) {
-        await gotoIssue(page, presetPath(seeded.key, preset));
-        expect(
-          await threeThings(page).count(),
-          `the ${PRESET_NAMES[preset]} preset draws no three things at ${size.width} px`
-        ).toBe(1);
-        await expectIssuePageDrawn(page);
-        await expect
-          .poll(() => nodeRows(page).count(), {
-            message: `the ${PRESET_NAMES[preset]} preset draws no outline at ${size.width} px`,
-          })
-          .toBeGreaterThan(0);
-
-        const head = await threeThings(page).boundingBox();
-        const outline = await tree(page).boundingBox();
-        expect(head, "the three things have no box").not.toBeNull();
-        expect(outline, "the outline has no box").not.toBeNull();
-        if (size.width >= 1024) {
-          expect(
-            await contentsPane(page).getByTestId("issue-three-things").count(),
-            `the three things are not in the Contents pane with the ${PRESET_NAMES[preset]} preset at ${size.width} px`
-          ).toBe(1);
-          const pane = await contentsPane(page).boundingBox();
-          expect(
-            (pane?.x ?? 0) + (pane?.width ?? 0),
-            `the Contents pane is not at the left of the outline at ${size.width} px`
-          ).toBeLessThanOrEqual((outline?.x ?? 0) + 1);
-        } else {
-          expect(
-            await contentsPane(page).count(),
-            `a Contents pane is drawn at ${size.width} px`
-          ).toBe(0);
-          const firstRow = await nodeRows(page).first().boundingBox();
-          expect(
-            head?.y ?? Number.POSITIVE_INFINITY,
-            `the three things are not above the outline's first row with the ${PRESET_NAMES[preset]} preset at ${size.width} px`
-          ).toBeLessThan(firstRow?.y ?? 0);
-        }
-
-        // The sentences are the summary node's words, which the batched reference read names
-        // last of the page's reads, so the reading waits for them rather than racing that read.
-        await expect
-          .poll(
-            async () =>
-              (await threeThingsSentences(page).allInnerTexts()).map((sentence) =>
-                sentence.replace(/\s+/g, " ").trim()
-              ),
-            {
-              message: `the ${PRESET_NAMES[preset]} preset does not draw the spec's own three sentences at ${size.width} px`,
-            }
-          )
-          .toEqual([...SUMMARY_SENTENCES]);
-        expect(
-          (await planRow(page).innerText()).replace(/\s+/g, " "),
-          `the ${PRESET_NAMES[preset]} preset's head points at no Plan preset`
-        ).toContain(PRESET_NAMES.plan);
-        expect(
-          (await checksRow(page).innerText()).replace(/\s+/g, " "),
-          `the ${PRESET_NAMES[preset]} preset's head points at no Verification filter`
-        ).toContain(PRESET_NAMES.verification);
-      }
+// c-three-things, as the architect's ruling 5 reads R8 (build-rulings-md): the three sentences
+// stand each after its label; with no filter on they are in the Contents pane at 1440 px and in
+// the Outline sheet at 390 px, never above the outline; under Spec they are the filter's first
+// group; under Verification, Plan and Decisions they are not drawn; no Contents pane is drawn
+// under a filter; and the two rows "How it gets done" and "What you will be shown" are drawn
+// nowhere. Partial on today's data: who wrote the sentences and when they were last read back
+// are dispatch://INFRA-1278, so the head draws neither and this test never asserts an author.
+test("the three sentences stand with their labels in the Contents pane, the Spec filter and the Outline sheet @phone", async ({
+  browser,
+}) => {
+  // Twelve loads of the page, each read for its head and the page's own draw.
+  test.setTimeout(180_000);
+  const labels = [
+    CONTROL_LABELS.in_short_what,
+    CONTROL_LABELS.in_short_why,
+    CONTROL_LABELS.in_short_done,
+  ];
+  const spoken = async (head: Locator): Promise<string[]> =>
+    (await head.locator("li [data-author-text]").allInnerTexts()).map((sentence) =>
+      sentence.replace(/\s+/g, " ").trim()
+    );
+  const labelled = async (head: Locator): Promise<string[]> =>
+    (await head.locator("li [data-page-chrome]").allInnerTexts()).map((label) => label.trim());
+  /** The head `head` draws: the spec's own three sentences, each after its label, and neither
+   *  of the two rows. The sentences are the summary node's words, which the batched reference
+   *  read names last of the page's reads, so the reading waits for them. */
+  const expectTheThree = async (head: Locator, where: string): Promise<void> => {
+    await expect(head, `the three sentences are not drawn ${where}`).toHaveCount(1);
+    await expect
+      .poll(() => spoken(head), {
+        message: `the spec's own three sentences are not drawn ${where}`,
+      })
+      .toEqual([...SUMMARY_SENTENCES]);
+    expect(await labelled(head), `the three sentences carry no labels ${where}`).toEqual(labels);
+    const words = (await head.innerText()).replace(/\s+/g, " ");
+    for (const row of ["How it gets done", "What you will be shown"]) {
+      expect(words, `"${row}" is drawn ${where}`).not.toContain(row);
     }
+    expect(await head.getByRole("link").count(), `the head holds a link ${where}`).toBe(0);
+  };
 
-    // Who wrote the bullets and when they were last read back wait on dispatch://INFRA-1278, and
-    // no issue holds either, so the head draws no author and no gap for them: a lack every
-    // issue shares tells the reader nothing about this one.
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    // 1440 px, no filter: in the Contents pane, at the left of the outline.
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(contentsPane(page), "no Contents pane is drawn with no filter on").toHaveCount(1);
+    await expectTheThree(
+      contentsPane(page).getByTestId("issue-three-things"),
+      "in the Contents pane at 1440 px"
+    );
+    expect(await threeThings(page).count(), "the three sentences are drawn twice").toBe(1);
+    const pane = await contentsPane(page).boundingBox();
+    const outline = await tree(page).boundingBox();
+    expect(pane, "the Contents pane has no box").not.toBeNull();
+    expect(outline, "the outline has no box").not.toBeNull();
+    expect(
+      (pane?.x ?? 0) + (pane?.width ?? 0),
+      "the Contents pane is not at the left of the outline"
+    ).toBeLessThanOrEqual((outline?.x ?? 0) + 1);
+
+    // Who wrote the sentences and when they were last read back wait on dispatch://INFRA-1278,
+    // and no issue holds either, so the head draws no author and no gap for them.
     expect(
       await rowAuthor(threeThings(page)).count(),
       "the head names an author, which the model does not hold"
@@ -1678,208 +2096,215 @@ test("the three things are at the head with every filter @phone", async ({ brows
       "the head draws a gap that every issue has, which tells the reader nothing about this one"
     ).toBe(0);
 
-    // The second row draws one word and one shape per state the issue's checks are in, read
-    // with the page's own rule for a check's state over the results the seed recorded.
-    const states = [
-      ...new Set(((await getIssueResults(seeded.key)).checks ?? []).map(checkState)),
-    ].sort();
-    const checksShapes = await checksRow(page)
-      .locator("svg[data-glyph]")
-      .evaluateAll((glyphs) => glyphs.map((glyph) => glyph.getAttribute("data-glyph") ?? ""));
-    expect(
-      checksShapes.sort(),
-      "the checks row draws a shape per state other than one each"
-    ).toEqual(states.map((state) => GLYPH_TOKENS.states.check[state]).sort());
-    const checksWords = (await checksRow(page).innerText()).replace(/\s+/g, " ");
-    for (const state of states) {
-      expect(checksWords, `the checks row draws no word for ${state}`).toContain(
-        NODE_STATE_WORDS.check[state]
-      );
-    }
-  });
-
-  await phase(browser, seedNoSummary, async (page, seeded) => {
+    // Under a filter, at both widths: no Contents pane; the Spec filter draws the three as its
+    // first group, above its first statement; the other three draw none.
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
-      expect(
-        await threeThings(page).count(),
-        `a spec with no summary draws no row in that same place at ${size.width} px`
-      ).toBe(1);
-      await expectIssuePageDrawn(page);
-      // The line waits on the spec's blocks read, which says whether the spec holds a summary
-      // node at all: until it answers the head says nothing about one
-      // (`web/src/features/issue/IssueThreeThings.tsx`), so the reading waits for the line.
-      await expect(
-        threeThings(page),
-        "that row says something other than the page's own line for a spec with no summary"
-      ).toContainText(EMPTY_STATE_LINES.spec_summary);
-      expect(
-        await threeThingsSentences(page).count(),
-        "a spec with no summary draws sentences all the same"
-      ).toBe(0);
-      // An issue with no checks says so in one line, in the row that would name their states.
-      await expect(
-        checksRow(page),
-        "the checks row of an issue with no checks does not say so"
-      ).toContainText(EMPTY_STATE_LINES.verification);
-    }
-  });
-});
-
-// c-open-questions.
-test("an open question is unfolded and on the first screen @phone", async ({ browser }) => {
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
-
-    for (const size of [DESKTOP, PHONE]) {
-      await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
-      // The head's own parts fill after the first paint, so a box read before they are drawn
-      // measures a page no reader ever sees, in either direction: this page settles first and
-      // reads once. The order below is the order the head stacks in, and the children section
-      // is last because it is the part that fills last - 213 px of the head on this seed.
-      await expectIssuePageDrawn(page);
-      await expect(
-        threeThings(page),
-        `the head of the page is not drawn at ${size.width}x${size.height}`
-      ).toHaveCount(1);
-      await expect(
-        childrenSection(page),
-        `the children section is not drawn at ${size.width}x${size.height}`
-      ).toHaveCount(1);
-      // Drawn with its content, which is its rows where the section opens and its two counts
-      // where it opens closed (R6, below `md`): either way the section has its height.
-      await expect
-        .poll(
-          async () =>
-            (await childRows(page).count()) > 0 || (await childrenDirectCount(page).count()) > 0,
-          {
-            message: `the children section is still empty at ${size.width}x${size.height}, so the head has not settled`,
-          }
-        )
-        .toBe(true);
-      await expect(
-        nodeRow(page, question).first(),
-        `the open question's row is not drawn at ${size.width}x${size.height}, so there is nothing settled to measure`
-      ).toBeVisible();
-
-      const rows = await drawnRows(page);
-      const row = rowOf(rows, question);
-      expect(
-        row,
-        `the open question draws no row at ${size.width}x${size.height} with nothing unfolded by hand`
-      ).toBeDefined();
-      const box = row?.box ?? null;
-      expect(box, "the open question's row has no box").not.toBeNull();
-      const headerBottom = (await identityBlockBottom(page)) ?? 0;
-      expect(
-        box?.y ?? -1,
-        `the open question's row sits under the sticky identity block at ${size.width}x${size.height}`
-      ).toBeGreaterThanOrEqual(headerBottom - 1);
-      expect(
-        (box?.y ?? 0) + (box?.height ?? 0),
-        `the open question's row is below the first screen at ${size.width}x${size.height}`
-      ).toBeLessThanOrEqual(size.height);
-      for (const ancestor of await ancestorsOfRow(page, question)) {
+      for (const preset of PRESET_ORDER) {
+        if (preset === "conversation") continue;
+        const where = `with the ${PRESET_NAMES[preset]} filter at ${size.width} px`;
+        // A filter's body draws rows of its own shape - a table under Verification, a chart
+        // under Plan - so the page is waited for until it has stopped reading, which is what
+        // says it has drawn everything it is going to.
+        const traffic = watchApiRequests(page);
+        await gotoIssue(page, presetPath(seeded.key, preset));
+        await expectIssuePageDrawn(page);
+        await expectLoadSettled(traffic);
+        expect(await contentsPane(page).count(), `a Contents pane is drawn ${where}`).toBe(0);
+        if (preset !== "spec") {
+          expect(await threeThings(page).count(), `the three sentences are drawn ${where}`).toBe(0);
+          continue;
+        }
+        await expectTheThree(threeThings(page), where);
+        const head = await threeThings(page).boundingBox();
+        const firstRow = await nodeRows(page).first().boundingBox();
         expect(
-          rowOf(rows, ancestor)?.expanded,
-          `the question's ancestor ${ancestor} is folded, so its path is not unfolded`
-        ).toBe("true");
+          head?.y ?? Number.POSITIVE_INFINITY,
+          `the three sentences are not the Spec filter's first group ${where}`
+        ).toBeLessThan(firstRow?.y ?? 0);
       }
     }
 
-    // The next-question key moves to the next open question and says so when there is none.
+    // 390 px, no filter: not above the outline, and in the sheet the Outline control opens.
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(() => nodeRows(page).count(), { message: "no row is drawn at 390 px" })
+      .toBeGreaterThan(0);
+    expect(await contentsPane(page).count(), "a Contents pane is drawn at 390 px").toBe(0);
+    expect(
+      await threeThings(page).count(),
+      "the three sentences are drawn above the outline at 390 px"
+    ).toBe(0);
+    await outlineControl(page).click();
+    await expectTheThree(
+      outlineSheet(page).getByTestId("issue-three-things"),
+      "in the Outline sheet at 390 px"
+    );
+  });
+
+  await phase(browser, seedNoSummary, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
-    await expect(nodeRow(page, question).first()).toBeVisible();
-    await focusThePage(page);
-    await page.keyboard.press("q");
-    expect(await focusedNodeId(page), "the next-question key did not reach the open question").toBe(
-      question
-    );
-    await page.keyboard.press("q");
+    await expectIssuePageDrawn(page);
+    // The line waits on the spec's blocks read, which says whether the spec holds a summary
+    // node at all: until it answers the head says nothing about one
+    // (`web/src/features/issue/IssueThreeThings.tsx`), so the reading waits for the line.
+    await expect(
+      threeThings(page),
+      "the head says something other than the page's own line for a spec with no summary"
+    ).toContainText(EMPTY_STATE_LINES.spec_summary);
     expect(
-      await pageStatus(page).count(),
-      "with no further open question the key reports nothing"
-    ).toBeGreaterThan(0);
+      await threeThings(page).locator("li").count(),
+      "a spec with no summary draws sentences all the same"
+    ).toBe(0);
+  });
+});
+
+// c-open-questions (R7). The page opens with the keyboard focus on the first open question that
+// waits on the reader, in the outline's order, its row inside the viewport with nothing unfolded
+// or scrolled by hand; `q` moves to the next one; and where none waits on the reader the page
+// opens with the focus on the outline's first row. The second question is asked after forty
+// older nodes, so the scroll is what puts it in the viewport: on a seed whose one question is
+// the outline's first row, the row is on the first screen whatever the page does.
+test("an open question is unfolded and on the first screen @phone", async ({ browser }) => {
+  // Eight cold loads of an issue of some ninety rows, at two sizes.
+  test.setTimeout(240_000);
+  /** Whether node `id`'s row is whole inside what the reader sees: under the band that stays at
+   *  the top of the screen and above the box at its foot. */
+  const inView = (page: Page, id: string): Promise<boolean> =>
+    nodeRow(page, id)
+      .first()
+      .evaluate((row) => {
+        const style = getComputedStyle(document.documentElement);
+        const band = Number.parseFloat(style.getPropertyValue("--issue-identity-height")) || 0;
+        const foot = Number.parseFloat(style.getPropertyValue("--issue-composer-height")) || 0;
+        const card = row.querySelector("[data-node-card]") ?? row;
+        const box = card.getBoundingClientRect();
+        return box.top >= band - 1 && box.top < window.innerHeight - foot;
+      });
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const first = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
+    // Forty nodes a person wrote, each a row of the outline, and then a question asked of the
+    // issue itself, which the outline draws after them, by the time it was asked.
+    for (let older = 1; older <= 40; older += 1) {
+      await createComment(seeded.key, { body: `Older words, number ${older}.` });
+    }
+    const later = await createAsk(
+      seeded.key,
+      {
+        options: [{ label: "Left" }, { label: "Right" }],
+        question: "Which of the two ships first?",
+      },
+      asPlanner
+    );
+
+    // Both wait on the reader: the page opens on the first of them in the outline's order.
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the page does not open with the focus on the first open question that waits on the reader at ${at}`,
+        })
+        .toBe(first);
+      expect(
+        await inView(page, first),
+        `the focused question is not in the viewport at ${at}`
+      ).toBe(true);
+    }
+
+    // The next-question key moves to the next open question and says so, at the row, when there
+    // is none; the reader's next move lets that line go.
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expect.poll(() => focusedNodeId(page)).toBe(first);
+    await page.keyboard.press("q");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "q did not reach the second open question" })
+      .toBe(later.id);
+    expect(await inView(page, later.id), "q left the second question off screen").toBe(true);
+    await page.keyboard.press("q");
+    await expect(
+      nodeRow(page, later.id).first().locator("[data-row-report]"),
+      "with no further open question the key says nothing at the row it was pressed on"
+    ).toHaveCount(1);
+    expect(await pageStatus(page).count(), "the key's report is drawn at more than one row").toBe(
+      1
+    );
     expect(
       wordsIn(await pageStatus(page).first().innerText()).filter(
         (word) => !DECLARED_WORDS.includes(word)
       ),
       "that report uses words the page does not declare"
     ).toEqual([]);
+    await page.keyboard.press("k");
+    await expect(pageStatus(page), "the report stays after the reader moved on").toHaveCount(0);
 
-    // Those rows are not counted against the fold budget: with the question answered, the fold
-    // closes its path and unfolds no other branch to spend what it freed.
-    const withQuestion = idsOf(await drawnRows(page));
-    const branch = await ancestorsOfRow(page, question);
-    const outside = (ids: readonly string[]) =>
-      ids.filter((id) => !branch.includes(id) && id !== question);
-    const traffic = watchApiRequests(page);
+    // With the first answered, the one question that waits is under forty older nodes: the page
+    // opens on it, and the scroll is what puts it in the viewport.
     await answerAsk(seeded.openQuestion.askId, {
       expected_edited_at: null,
       selected: [],
       text: "1280 px.",
     });
-    await page.reload();
-    await expectIssuePageDrawn(page);
-    // `expectIssuePageDrawn` is satisfied by the tree's own element, which is drawn empty and
-    // fills as the reads land, and every reading below passes on a tree that holds nothing: it
-    // draws no row for the question, it adds no row outside the question's path, and it draws
-    // fewer rows than the tree that held the question. So the tree is waited for until the
-    // page has stopped reading, which is what says it has every row it is going to draw, and
-    // then read for drawing rows outside the question's path at all.
-    //
-    // The wait is not for a named row of another branch, because which rows a reload draws is
-    // not which rows a cold load drew: the reader's own state decides which path is unfolded,
-    // and on this seed the reload leaves the spec's summary row (`spec#b-summary`) folded
-    // away, which is why the reading below is of what the fold added outside the path and
-    // never of the whole set. The two ends of the branch are waited for by name, since the
-    // tree draws them whichever path it unfolds: its root, and the document the question's own
-    // block sat in. The question's own row is not waited for - the answer takes it off the
-    // tree, which is the first reading below.
-    await expectLoadSettled(traffic);
-    const holder = branch[branch.length - 1] ?? seeded.key;
-    await expect(
-      nodeRow(page, seeded.key).first(),
-      "the reloaded tree draws no row for the issue itself"
-    ).toBeVisible();
-    await expect(
-      nodeRow(page, holder).first(),
-      `the reloaded tree draws no row for ${holder}, which holds the question's own block`
-    ).toBeVisible();
-    const withoutQuestion = idsOf(await drawnRows(page));
-    expect(
-      outside(withoutQuestion).length,
-      "the reloaded tree draws no row outside the question's own path, so the two readings below are read against nothing"
-    ).toBeGreaterThan(0);
-    expect(
-      withoutQuestion,
-      "the answered question's row is still drawn as an open question's path would be"
-    ).not.toContain(question);
-    expect(
-      outside(withoutQuestion).filter((id) => !outside(withQuestion).includes(id)),
-      "the fold changed outside the question's own path, so those rows were charged against it"
-    ).toEqual([]);
-    expect(
-      withoutQuestion.length,
-      "the tree draws as many rows without the open question as with it, so its path cost the fold nothing to prove"
-    ).toBeLessThan(withQuestion.length);
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the page does not open with the focus on the question under forty older nodes at ${at}`,
+        })
+        .toBe(later.id);
+      await expect
+        .poll(() => inView(page, later.id), {
+          message: `the question under forty older nodes is not in the viewport at ${at}`,
+        })
+        .toBe(true);
+      expect(
+        await page.evaluate(() => window.scrollY),
+        `the page did not scroll to the question at ${at}, so the seed put it on the first screen`
+      ).toBeGreaterThan(size.height);
+    }
+
+    // With neither waiting on the reader, the page opens with the focus on the outline's first
+    // row, at the top.
+    await answerAsk(later.id, { expected_edited_at: null, selected: ["Left"] });
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(async () => (await focusedNodeId(page)) !== null, {
+          message: `the page opens with the focus on no row at ${at}`,
+        })
+        .toBe(true);
+      const rows = await drawnRows(page);
+      expect(
+        await focusedNodeId(page),
+        `the page does not open with the focus on the outline's first row at ${at}`
+      ).toBe(rows[0]?.id ?? "");
+      expect(await page.evaluate(() => window.scrollY), `the page opens scrolled at ${at}`).toBe(0);
+    }
   });
 });
 
-// c-children. The children are one section above the outline on every preset, and each child
-// is also a row of the outline where the model places it, which for every child today is under
-// the issue (spec v71's R12).
-test("the children are a section above the outline with the bar and both counts @phone", async ({
+// c-children, as the architect's ruling 5 reads R12 (build-rulings-md): no view draws a
+// children's section above the outline; the children are one group of rows of the outline, where
+// the model places them, which for every child today is under the issue; each child's row holds
+// its title, its status, what blocks it and who holds it, with its key as the tag; the header
+// keeps the bar and both counts; and `/children` and `t h` move the focus to that group.
+test("the children are rows of the outline, and the header keeps the bar and both counts @phone", async ({
   browser,
 }) => {
-  // Two whole seeds and fifteen page loads, each one a cold load of the issue page: the work
-  // is the check's own, not a page that got slower, and on the emulated-phone project it runs
-  // within a second or two of the 30 s default. The repo's way of saying a test is long is to
-  // name its own budget (`e2e/heavy-document-writes.e2e.ts`, `e2e/cli-body-cap.e2e.ts`).
-  test.setTimeout(90_000);
+  // Two whole seeds and some fifteen cold loads of the issue page.
+  test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // No seed claims a child, and the check reads who holds the running one, so this test puts a
     // child in progress and claims it: that is the state the assertion is read against.
@@ -1887,96 +2312,126 @@ test("the children are a section above the outline with the bar and both counts 
     await patchIssue(running, { status: "in_progress" });
     await claimIssue(running, asPlanner);
     const blocked = seeded.children.blocked;
-    const blockerTitle = (await getIssue(running)).title;
 
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
+        // A filter's body draws rows of its own shape, so the page is waited for until it has
+        // stopped reading rather than for a row of the outline.
+        const traffic = watchApiRequests(page);
         await gotoIssue(page, presetPath(seeded.key, preset));
+        await expectIssuePageDrawn(page);
+        await expectLoadSettled(traffic);
         expect(
           await childrenSection(page).count(),
-          `the ${PRESET_NAMES[preset]} preset draws no children section at ${size.width} px`
-        ).toBe(1);
-        await expectIssuePageDrawn(page);
-        const section = await childrenSection(page).boundingBox();
-        const body = await tree(page).boundingBox();
-        // Both boxes are read before they are compared: a section with no box answers `null`,
-        // and `?? 0` would then read as "at the very top" and pass.
+          `the ${PRESET_NAMES[preset]} view draws a children's section above the outline at ${size.width} px`
+        ).toBe(0);
+        // The header keeps the bar and both counts at every width, with every view.
+        const direct = identityBlock(page).getByTestId("issue-progress-children");
+        const whole = identityBlock(page).getByTestId("issue-progress-subtree");
+        await expect(
+          direct,
+          `the header draws no children's count at ${size.width} px`
+        ).toBeVisible();
+        await expect(
+          whole,
+          `the header draws no whole-tree count at ${size.width} px`
+        ).toBeVisible();
+        // The bar is the count's own shape, drawn beside its words and hidden from a reader of
+        // the words, who hears the count.
         expect(
-          section,
-          `the children section has no box in the ${PRESET_NAMES[preset]} preset at ${size.width} px`
-        ).not.toBeNull();
+          await direct.locator('[aria-hidden="true"] > *').count(),
+          `the header draws no completion bar at ${size.width} px`
+        ).toBeGreaterThan(0);
         expect(
-          body,
-          `the tree has no box in the ${PRESET_NAMES[preset]} preset at ${size.width} px`
-        ).not.toBeNull();
-        expect(
-          section?.y ?? 0,
-          `the children section is not the first thing in the ${PRESET_NAMES[preset]} preset's content at ${size.width} px`
-        ).toBeLessThanOrEqual((body?.y ?? 0) + 1);
-        // With no filter on, each child is a row of the outline under the issue, as well as a
-        // line of the section.
+          (await direct.innerText()).replace(/\s+/g, " "),
+          `the header's count does not read one of ${seeded.children.keys.length} children done`
+        ).toMatch(new RegExp(`1\\D+${seeded.children.keys.length}`));
         if (preset !== "conversation") continue;
+
+        // With no filter on, each child is a row of the outline, the group of them together,
+        // under no other row: the issue itself is no row.
+        await expect(
+          childRows(page),
+          `the outline draws other than one row a child at ${size.width} px`
+        ).toHaveCount(seeded.children.keys.length);
         const rows = await drawnRows(page);
+        const places = seeded.children.keys.map((key) => idsOf(rows).indexOf(key));
+        expect(
+          places.map((place, index) => place - (places[0] ?? 0) - index),
+          `the children are not one group of rows at ${size.width} px`
+        ).toEqual(places.map(() => 0));
         for (const key of seeded.children.keys) {
           expect(
             ancestorsIn(rows, key),
-            `the child ${key} is no row under the issue at ${size.width} px`
-          ).toEqual([seeded.key]);
+            `the child ${key} sits under another row at ${size.width} px`
+          ).toEqual([]);
         }
       }
     }
 
+    // What a child's row holds: its title as its words, how it stands, what blocks it, who
+    // holds it, and its key as the tag, which opens the child's own page.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
-    expect(await childRows(page).count(), "the open section lists no children").toBe(
-      seeded.children.keys.length
-    );
+    await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
     for (const key of seeded.children.keys) {
+      const child = await getIssue(key);
+      const row = childRow(page, key).first();
+      await expect(rowWords(row), `the row for ${key} does not draw its title`).toContainText(
+        child.title
+      );
       expect(
-        await childRow(page, key).first().getAttribute("data-child-status"),
+        await row.locator("[data-child-facts]").getAttribute("data-child-status"),
         `the row for ${key} does not name its status`
-      ).toBe((await getIssue(key)).status);
+      ).toBe(child.status);
+      const tag = row.locator("[data-child-key]");
+      await expect(tag, `the row for ${key} does not carry its key as the tag`).toHaveText(key);
+      expect(await tag.getAttribute("href"), `the tag of ${key} opens another page`).toBe(
+        `/issues/${key}`
+      );
+      // Every colour is the page's own palette: the old application's link blue is gone.
+      expect(
+        await row
+          .locator("a")
+          .evaluateAll((links) => links.map((link) => getComputedStyle(link).color)),
+        `a link of the row for ${key} is drawn in the old application's blue`
+      ).not.toContain("rgb(0, 105, 168)");
     }
     expect(
       (await childRow(page, blocked).first().innerText()).replace(/\s+/g, " "),
       "the blocked child's row does not name the issue that blocks it"
-    ).toMatch(new RegExp(`${running}|${blockerTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    ).toContain(`Blocked by ${running}`);
     expect(
       (await childRow(page, running).first().innerText()).replace(/\s+/g, " "),
       "the running child's row does not say who holds it"
-    ).toContain(PLANNER_TITLE);
+    ).toMatch(/Claimed by \S/);
 
-    // Collapsed, the header keeps the bar and both counts, each labelled.
-    await childrenDisclosure(page).click();
-    expect(await childRows(page).count(), "the collapse left the child rows on the page").toBe(0);
-    expect(await childrenBar(page).count(), "the collapsed header lost its completion bar").toBe(1);
+    // The children's own address, and `t h`, put the focus on the group's first row, on screen;
+    // from there the rows are moved through like any other.
+    const [firstChild, secondChild] = seeded.children.keys;
+    await gotoIssue(page, `/issues/${seeded.key}/children`);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "/children does not focus the group's first row",
+      })
+      .toBe(firstChild ?? "");
     expect(
-      (await childrenDirectCount(page).innerText()).replace(/\s+/g, " "),
-      "the collapsed header's direct count carries no visible label"
-    ).toContain(CONTROL_LABELS.children_done);
-    expect(
-      (await childrenSubtreeCount(page).innerText()).replace(/\s+/g, " "),
-      "the collapsed header's subtree count carries no visible label"
-    ).toContain(CONTROL_LABELS.subtree_done);
-    expect(
-      (await childrenDirectCount(page).innerText()).replace(/\s+/g, " "),
-      `the direct count does not read one of ${seeded.children.keys.length} children done`
-    ).toMatch(new RegExp(`1\\D+${seeded.children.keys.length}`));
-
-    // The reader's choice is kept for the next issue they open. The section itself is read
-    // first: the next issue draws one (its child is the issue this phase is about), so zero
-    // rows mean the reader's collapse and not a section that is absent or not yet drawn.
-    await gotoIssue(page, `/issues/${seeded.parentKey}`);
-    await expectIssuePageDrawn(page);
-    await expect(
-      childrenSection(page),
-      "the next issue draws no children section, so its rows say nothing about the collapse"
-    ).toHaveCount(1);
-    expect(
-      await childRows(page).count(),
-      "the next issue opens the children section this reader collapsed"
-    ).toBe(0);
+      await onScreen(childRow(page, firstChild ?? "").first()),
+      "/children leaves it off screen"
+    ).toBe(true);
+    await page.keyboard.press("j");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "j does not move to the next child's row" })
+      .toBe(secondChild ?? "");
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
+    await page.keyboard.press("t");
+    await page.keyboard.press("h");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "t h does not focus the group's first row" })
+      .toBe(firstChild ?? "");
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/children$`));
   });
 
   await phase(browser, seedNoChildren, async (page, seeded) => {
@@ -1985,9 +2440,382 @@ test("the children are a section above the outline with the bar and both counts 
       await expectIssuePageDrawn(page);
       expect(
         await childrenSection(page).count(),
-        `an issue with no children draws a children section on the ${PRESET_NAMES[preset]} preset`
+        `an issue with no children draws a children section with the ${PRESET_NAMES[preset]} view`
+      ).toBe(0);
+      expect(
+        await childRows(page).count(),
+        `an issue with no children draws a child's row with the ${PRESET_NAMES[preset]} view`
       ).toBe(0);
     }
+  });
+});
+
+// The first screen, as the architect's rulings 5 and 8 measure it (build-rulings-md): at
+// 1440 x 900 the first node of the conversation starts at most 150 px down and at least six nodes
+// have their words on the first screen in full; at 390 px, in the tests' browser, it starts at
+// most 305 px down while no approval request waits on the reader and at most 335 px while one
+// does (ruling 8, which replaces ruling 5's 280 px and 310 px). Read on this issue's own
+// 115-character title with twenty labels, with the page at its top.
+test("the first node starts on the first screen, with six nodes in full at 1440 px @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  /** Where the outline's first row starts, and how many rows stand whole between the band at
+   *  the top and the box at the foot, with the page scrolled to its top. */
+  const firstScreen = (page: Page): Promise<{ top: number; whole: number }> =>
+    tree(page).evaluate((outline) => {
+      window.scrollTo(0, 0);
+      const style = getComputedStyle(document.documentElement);
+      const foot = Number.parseFloat(style.getPropertyValue("--issue-composer-height")) || 0;
+      const cards = [...outline.querySelectorAll<HTMLElement>("[data-node-row]")].map((row) =>
+        (row.querySelector("[data-node-card]") ?? row).getBoundingClientRect()
+      );
+      return {
+        top: cards[0]?.top ?? Number.POSITIVE_INFINITY,
+        whole: cards.filter((card) => card.top >= 0 && card.bottom <= window.innerHeight - foot)
+          .length,
+      };
+    });
+  await phase(browser, seedWholeIssueAdvancing, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
+    const desktopProject = test.info().project.name !== "iphone";
+    for (const requestWaiting of [false, true]) {
+      if (requestWaiting)
+        await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
+      const seed = requestWaiting ? "a request waiting" : "no request waiting";
+      for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
+        await page.setViewportSize(viewportAt(width));
+        await gotoIssue(page, `/issues/${seeded.key}`);
+        await expectIssuePageDrawn(page);
+        await expect(identityBlock(page)).toContainText(MEASURED_TITLE);
+        await expect(
+          nodeRows(page).first(),
+          `the outline draws no row at ${width} px`
+        ).toBeVisible();
+        // The page opens with the focus on what waits on the reader, which is drawn by then.
+        await expect.poll(async () => (await focusedNodeId(page)) !== null).toBe(true);
+        const reading = await firstScreen(page);
+        const limit = width === DESKTOP.width ? 150 : requestWaiting ? 335 : 305;
+        console.log(
+          `first screen at ${width} px with ${seed}: first node at ${reading.top.toFixed(1)} px, ${reading.whole} nodes whole`
+        );
+        test.info().annotations.push({
+          description: `${width} px, ${seed}: first node at ${reading.top.toFixed(1)} px, ${reading.whole} nodes whole`,
+          type: "first-screen",
+        });
+        expect
+          .soft(
+            reading.top,
+            `the first node starts ${reading.top.toFixed(1)} px down, past ${limit} px, at ${width} px with ${seed}`
+          )
+          .toBeLessThanOrEqual(limit);
+        if (width !== DESKTOP.width) continue;
+        expect
+          .soft(
+            reading.whole,
+            `${reading.whole} nodes have their words on the first screen in full at 1440 x 900 with ${seed}`
+          )
+          .toBeGreaterThanOrEqual(6);
+      }
+    }
+  });
+});
+
+// R16, the tester's F1, and the placement of a new write. What the reader sends from the box at
+// the foot is drawn at once, its branch unfolded, inside the viewport and with the focus on it,
+// whether it is a reply under a folded thread, a reply under an answered question, or a new
+// comment or question on the issue, which both land at the outline's end.
+test("what the reader sends from the box is drawn, in view and focused, wherever it lands", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(nodeRow(page, seeded.head).first()).toBeVisible();
+    /** The row drawing `words`, which the reader has just sent: drawn, focused and on screen. */
+    const expectLandedOn = async (words: string, how: string): Promise<string> => {
+      const row = nodeRows(page).filter({ hasText: words }).first();
+      await expect(row, `${how}: the reader's own new words are not drawn`).toBeVisible();
+      const id = (await row.getAttribute("data-node-id")) ?? "";
+      await expect
+        .poll(() => focusedNodeId(page), { message: `${how}: the focus is not on the new row` })
+        .toBe(id);
+      expect(await onScreen(row), `${how}: the new row is off screen`).toBe(true);
+      return id;
+    };
+    /** Sends `words` from the box with the keyboard alone, after `key` on node `id`'s row. */
+    const sendWithKeys = async (id: string, key: string, words: string): Promise<void> => {
+      await focusRow(page, id);
+      await page.keyboard.press(key);
+      await expect(composerField(page), `${key} put no caret in the box`).toBeFocused();
+      await page.keyboard.type(words);
+      await page.keyboard.press("Enter");
+    };
+
+    // A reply under a thread the page folds: `r`, the words, Enter.
+    await expect(
+      nodeRow(page, seeded.first),
+      "the seed's thread is open, so a reply under it proves nothing about the fold"
+    ).toHaveCount(0);
+    await sendWithKeys(seeded.head, "r", "A reply under the folded thread.");
+    const reply = await expectLandedOn("A reply under the folded thread.", "a reply under a fold");
+    expect(await parentOfRow(page, reply), "the reply is not drawn under the row it answers").toBe(
+      seeded.head
+    );
+    // The focus is the reader's place: the next move goes on from the new row, to the row
+    // after it, and not from the page with nothing focused, which starts at the first row.
+    await page.keyboard.press("j");
+    await expect
+      .poll(
+        async () => {
+          const on = await focusedNodeId(page);
+          return on === reply ? "still on the new row" : on === seeded.head ? "the first row" : on;
+        },
+        { message: "after a keyboard send the next key does not go on from the new row" }
+      )
+      .toBe(seeded.answeredAsk);
+
+    // A reply under an answered question.
+    await sendWithKeys(seeded.answeredAsk, "r", "A word under the answered question.");
+    const under = await expectLandedOn(
+      "A word under the answered question.",
+      "a reply under an answered question"
+    );
+    expect(await parentOfRow(page, under), "that reply is not drawn under the question").toBe(
+      seeded.answeredAsk
+    );
+
+    // A new comment and a new question on the issue both land at the outline's end, in the
+    // order they were written, each where the reader is taken.
+    await composerField(page).click();
+    await sendFromComposer(page, "A new comment on the issue.");
+    const comment = await expectLandedOn("A new comment on the issue.", "a new comment");
+    await composerField(page).click();
+    await composer(page).locator('[data-composer-kind="ask"]').click();
+    await sendFromComposer(page, "A new question of the issue?");
+    const question = await expectLandedOn("A new question of the issue?", "a new question");
+    const top = (await drawnRows(page)).filter((row) => row.level === "1").map((row) => row.id);
+    expect(
+      top.slice(-2),
+      "a new comment and a new question do not land together at the outline's end"
+    ).toEqual([comment, question]);
+  });
+});
+
+// The tester's F10 (and the reviewer's IssueComposer.tsx:160): a send made with the keyboard
+// alone - `a` on an open question, the words, Enter - leaves the focus on a row of the outline,
+// the question's own, and the next key goes on from there, not from the outline's first row.
+test("a send with the keyboard leaves the focus on the reader's row of the outline", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, seeded.openAsk);
+    await page.keyboard.press("a");
+    await expect(composerField(page), "a put no caret in the box").toBeFocused();
+    await page.keyboard.type("Left, in my own words.");
+    await page.keyboard.press("Enter");
+    await expect(nodeRow(page, seeded.openAsk).first()).toContainText("Left, in my own words.");
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "after an answer sent with the keyboard the focus is not on the question's row",
+      })
+      .toBe(seeded.openAsk);
+    await page.keyboard.press("k");
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "the next key does not go on from the question's row",
+      })
+      .toBe(seeded.resolvedAsk);
+  });
+});
+
+// The tester's F16: what a key says when it has nowhere to go - `w` on a row no decision stands
+// behind - is drawn at the row it was pressed on, once, and the reader's next move lets it go.
+test("a key with nowhere to go says so at its row, and the next move lets it go", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, seeded.answeredAsk);
+    await page.keyboard.press("w");
+    await expect(
+      nodeRow(page, seeded.answeredAsk).first().locator("[data-row-report]"),
+      "the key's report is not drawn at the row it was pressed on"
+    ).toHaveCount(1);
+    expect(
+      await issuePage(page).locator("[data-row-report]").count(),
+      "the key's report is drawn at more than one place"
+    ).toBe(1);
+    expect(
+      (await issuePage(page).getByRole("status").allInnerTexts()).filter(
+        (words) => words.trim() !== ""
+      ).length,
+      "the key's report is drawn a second time away from the row"
+    ).toBe(1);
+    await page.keyboard.press("j");
+    await expect(
+      issuePage(page).locator("[data-row-report]"),
+      "the report stays after the reader moved on"
+    ).toHaveCount(0);
+  });
+});
+
+// The box at the foot (the tester's F2 and F9, the architect's ruling 5): empty and at rest it is
+// one line with Send, as the pictures draw it, at 390 px as at 1440 px; while it replies its
+// placeholder says where the words go; and on a phone the box that answers a question has the
+// line's width, with the options under it.
+test("the box at the foot is one line at rest, and says where a reply goes @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect(composerField(page), `the box is not drawn at ${at}`).toBeVisible();
+      // At rest: no caret in it. The page opens with the focus on a row of the outline.
+      await expect.poll(async () => (await focusedNodeId(page)) !== null).toBe(true);
+      const box = await composer(page).locator("form").first().boundingBox();
+      expect(box, `the box has no box at ${at}`).not.toBeNull();
+      console.log(`the box at rest at ${at}: ${box?.width.toFixed(0)} x ${box?.height.toFixed(0)}`);
+      expect(
+        box?.height ?? Number.POSITIVE_INFINITY,
+        `the empty box at rest is ${box?.height.toFixed(0)} px tall at ${at}, where the picture draws one line, 38 px`
+      ).toBeLessThanOrEqual(40);
+      await expect(composerField(page)).toHaveAttribute(
+        "placeholder",
+        CONTROL_LABELS.write_placeholder
+      );
+      // The box stands at the foot of the screen.
+      const foot = await composer(page).boundingBox();
+      expect(
+        Math.round((foot?.y ?? 0) + (foot?.height ?? 0)),
+        `the box does not stand at the foot of the screen at ${at}`
+      ).toBe(size.height);
+
+      // While it replies, its placeholder says where the words go.
+      await focusRow(page, seeded.head);
+      await page.keyboard.press("r");
+      await expect(composerField(page)).toBeFocused();
+      await expect(
+        composerField(page),
+        `while replying, the box still says its words go to the top of the conversation at ${at}`
+      ).toHaveAttribute("placeholder", CONTROL_LABELS.reply_placeholder);
+      await page.keyboard.press("Escape");
+
+      // The box that answers a question: its field has room to type in.
+      await focusRow(page, seeded.openAsk);
+      await page.keyboard.press("a");
+      await expect(composerField(page)).toBeFocused();
+      const field = await composerField(page).boundingBox();
+      console.log(
+        `the answer field at ${at}: ${field?.width.toFixed(0)} x ${field?.height.toFixed(0)}`
+      );
+      expect(
+        field?.width ?? 0,
+        `the answer's field is ${field?.width.toFixed(0)} px wide at ${at}`
+      ).toBeGreaterThanOrEqual(240);
+      await page.keyboard.press("Escape");
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `Escape from the answering box does not give the question's row back at ${at}`,
+        })
+        .toBe(seeded.openAsk);
+    }
+  });
+});
+
+// c-tree, the places that draw one line for a node (the architect's ruling 1): a Contents entry
+// and a crumb are the node's first line by R1's rule, cut at a word, never cut again mid-word by
+// their box, and a line that is a whole sentence carries no ellipsis after its own full stop.
+// The issue itself is no entry of the list, and its crumb is its key (ruling 5).
+test("a Contents entry and a crumb draw a node's first line, cut at a word", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const words = new Map<string, string>([
+      ...(await listComments(seeded.key)).map((one) => [one.id, one.body] as const),
+      ...(await listIssueAsks(seeded.key)).map((one) => [one.id, one.question] as const),
+    ]);
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    const entries = contentsEntries(contentsPane(page));
+    await expect
+      .poll(() => entries.count(), { message: "the list holds no entry" })
+      .toBeGreaterThan(0);
+    const drawn = await entries.evaluateAll((rows) =>
+      rows.map((row) => ({
+        id: row.getAttribute("data-contents-entry") ?? "",
+        line: (row.querySelector("[data-contents-line]")?.textContent ?? "").trim(),
+      }))
+    );
+    // A line that is a whole sentence carries no ellipsis after its own full stop: "Thread 1
+    // opens here.…" read as four dots.
+    expect(
+      drawn.filter((entry) => /[.!?]…$/.test(entry.line)).map((entry) => entry.line),
+      "an entry ends a sentence and then an ellipsis"
+    ).toEqual([]);
+    expect(
+      drawn.map((entry) => entry.id),
+      "the issue itself is an entry of the list, which repeats the header"
+    ).not.toContain(seeded.key);
+    const thread = drawn.find((entry) => entry.id === seeded.comments.threads[0]);
+    expect(thread, "the reader's own thread is no entry of the list").toBeDefined();
+    for (const entry of drawn) {
+      const whole = words.get(entry.id);
+      if (whole === undefined) continue;
+      const first = firstLineOf(whole).line;
+      const cut = entry.line.endsWith("…") ? entry.line.slice(0, -1) : entry.line;
+      expect(first.startsWith(cut), `the entry ${entry.id} draws other than its first line`).toBe(
+        true
+      );
+      expect(
+        cut.length === first.length || first.charAt(cut.length) === " ",
+        `the entry ${entry.id} is cut inside a word: "${entry.line}"`
+      ).toBe(true);
+    }
+
+    // The crumb, where the tree is read one node at a time: zoomed into a reply of a thread, the
+    // issue's crumb is its key and the thread's is its first line, whole.
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })
+      .toBe(seeded.comments.replies[0] ?? "");
+    await page.keyboard.press(".");
+    const crumbs = tree(page).locator("xpath=..").locator("[data-crumb]");
+    await expect.poll(() => crumbs.count(), { message: "no crumb is drawn" }).toBeGreaterThan(1);
+    const texts = (await crumbs.allInnerTexts()).map((crumb) => crumb.trim());
+    expect(texts[0], "the issue's crumb repeats its title").toBe(seeded.key);
+    for (const crumb of texts.slice(1)) {
+      expect(crumb, `the crumb "${crumb}" ends a sentence and then an ellipsis`).not.toMatch(
+        /[.!?]…$/
+      );
+      expect(crumb.length, `the crumb "${crumb}" is longer than a first line`).toBeLessThanOrEqual(
+        101
+      );
+    }
+    expect(
+      await crumbs.evaluateAll(
+        (all) =>
+          all.filter(
+            (crumb) =>
+              getComputedStyle(crumb).textOverflow === "ellipsis" ||
+              crumb.scrollWidth > crumb.clientWidth + 1
+          ).length
+      ),
+      "a crumb is cut by its box, which cuts inside a word"
+    ).toBe(0);
   });
 });
 
@@ -2035,8 +2863,9 @@ function headerParts(page: Page): Promise<string[]> {
  * The header's controls a phone reader presses that fail WCAG 2.2's target size (2.5.8) as
  * written: each target at least 24 by 24 CSS px, or, where one is smaller, a 24 px circle
  * centred on it that overlaps no other target. The header's controls are 24 px on a phone, as
- * the prototype draws them, because R13's 180 px leave no room for the 44 px the rest of a
- * phone page gives a control.
+ * the prototype draws them, because the header there is held to eight lines and 250 px, nine
+ * and 280 px while an approval request waits on the reader (ruling 8), which leaves no room for
+ * the 44 px the rest of a phone page gives a control.
  */
 function undersizedTargets(page: Page): Promise<string[]> {
   return identityBlock(page).evaluate((header) => {
@@ -2074,25 +2903,32 @@ function viewportAt(width: number): { readonly height: number; readonly width: n
 
 /**
  * R13's limit on the header, measured from the top of the identity block to the top of the
- * filter row, as dispatch://INFRA-1196/artifact/build-rulings-md ruling 3 (version 2) sets it:
- * 3 lines and 130 px at 1440 px; at 390 px, with the title whole, 7 lines and 215 px while no
- * approval request waits on the reader and 8 lines and 245 px while one does, since Approve and
- * Request changes take a line of their own there. No other width has one.
+ * filter row, as dispatch://INFRA-1196/artifact/build-rulings-md ruling 8 sets it: 3 lines and
+ * 130 px at 1440 px; at 390 px, on the 20-label seed and this issue's 115-character title drawn
+ * whole - four lines of 20/26 px in the browser the checks run in, as the prototype itself is
+ * there - with the prototype's 8 px above the filter control, 8 lines and 250 px while no
+ * approval request waits on the reader and 9 lines and 280 px while one does, since Approve
+ * and Request changes take a line of their own there. `firstRow` is how far down the outline's
+ * first row may start at 390 px by the same ruling: 305 px and 335 px. No other width has a
+ * limit.
  */
 function headerLimit(
   width: number,
   requestWaiting: boolean
-): { readonly height: number; readonly lines: number } | undefined {
+): { readonly firstRow?: number; readonly height: number; readonly lines: number } | undefined {
   if (width === DESKTOP.width) return { height: 130, lines: 3 };
   if (width !== IPHONE_13.width) return undefined;
-  return requestWaiting ? { height: 245, lines: 8 } : { height: 215, lines: 7 };
+  return requestWaiting
+    ? { firstRow: 335, height: 280, lines: 9 }
+    : { firstRow: 305, height: 250, lines: 8 };
 }
 
 /**
  * The header read against its limit at `width`, softly so one run reports every width and seed;
- * and at 390 px what the limit is for (ruling 3, version 2): the title drawn whole, with no
- * clamp, and the top of the outline's first row inside the iPhone 13's 390 x 664 viewport with
- * the page at its top. `drawnIn` names the typeface the page is drawn in, for the message.
+ * and at 390 px what the limit is for (ruling 8): the title drawn whole, with no clamp,
+ * and the top of the outline's first row within its own limit, in the iPhone 13's 390 x 664
+ * viewport with the page at its top. `drawnIn` names the typeface the page is drawn in, for the
+ * message.
  */
 async function expectHeaderWithinItsLimit(
   page: Page,
@@ -2103,9 +2939,18 @@ async function expectHeaderWithinItsLimit(
   const limit = headerLimit(width, requestWaiting);
   if (limit === undefined) return;
   const where = `at ${width} px in ${drawnIn} with ${requestWaiting ? "a request" : "no request"} waiting`;
+  // Read with the page at its top, once the outline has drawn: at 760 px and below the filter
+  // row stays at the top of the screen while the header scrolls away, so on a page a load or a
+  // key has scrolled past the header the row stands lower than the header's own end.
+  await expect(
+    tree(page).locator("[data-node-row]").first(),
+    `no row is drawn ${where}`
+  ).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, 0));
   const reading = await headerReading(page);
   if (reading === null) throw new Error(`the page draws no header or no filter row ${where}`);
   const drawnAs = `${reading.lines.length} lines, ${reading.height.toFixed(1)} px`;
+  console.log(`header ${where}: ${drawnAs}`);
   test.info().annotations.push({ description: `${where}: ${drawnAs}`, type: "header" });
   expect
     .soft(
@@ -2116,7 +2961,7 @@ async function expectHeaderWithinItsLimit(
   expect
     .soft(reading.height, `the header takes ${drawnAs} ${where}`)
     .toBeLessThanOrEqual(limit.height);
-  if (width !== IPHONE_13.width) return;
+  if (limit.firstRow === undefined) return;
 
   await assertWhole(identityBlock(page).getByRole("heading", { level: 1 }));
   const firstRow = tree(page).locator("[data-node-row]").first();
@@ -2126,6 +2971,7 @@ async function expectHeaderWithinItsLimit(
     window.scrollTo(0, 0);
     return row.getBoundingClientRect().top;
   });
+  console.log(`header ${where}: the outline's first row starts at ${top.toFixed(1)} px`);
   test.info().annotations.push({
     description: `${where}: the outline's first row starts at ${top.toFixed(1)} px`,
     type: "outline",
@@ -2133,9 +2979,9 @@ async function expectHeaderWithinItsLimit(
   expect
     .soft(
       top,
-      `the outline's first row starts ${top.toFixed(1)} px down, off the ${IPHONE_13.height} px screen, ${where}`
+      `the outline's first row starts ${top.toFixed(1)} px down, past ${limit.firstRow} px, ${where}`
     )
-    .toBeLessThan(IPHONE_13.height);
+    .toBeLessThanOrEqual(limit.firstRow);
 }
 
 // c-properties.
@@ -2152,9 +2998,9 @@ test("every property with a value is visible at every width @phone", async ({ br
     await patchIssue(seeded.parentKey, { route: "role:nobody-holds-this" });
     const desktopProject = test.info().project.name !== "iphone";
 
-    // Ruling 3's first seed (dispatch://INFRA-1196/artifact/build-rulings-md, version 2): no
-    // approval request waits on the reader, so the approval control reads Not requested and
-    // carries no Approve, and the header holds its limit for that case.
+    // The first seed of the header's limit (dispatch://INFRA-1196/artifact/build-rulings-md,
+    // ruling 8): no approval request waits on the reader, so the approval control reads Not
+    // requested and carries no Approve, and the header holds its limit for that case.
     for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
@@ -2167,9 +3013,14 @@ test("every property with a value is visible at every width @phone", async ({ br
 
     // Its second: an approval request that waits on the reader here and on no other issue.
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
-    // R13's list, each part of the header by what it is: nothing else may be drawn there.
+    // An issue that waits on this one, which is what Details' Blocks row reads.
+    const waiter = await createIssue({ force: true, project: PROJECT, title: "Waits on it" });
+    await patchIssue(waiter.key, { blocked_by: [seeded.key] });
+    // R13's list, each part of the header by what it is: nothing else may be drawn there. Its one
+    // link is the parent's, named exactly, so no property Details holds as a link - the pull
+    // request, a blocker, a priority - passes for it.
     const named = [
-      /^a /,
+      new RegExp(`^a ${seeded.parentKey}$`),
       /^button Open navigation$/,
       /^button Copy issue key /,
       /^button Issue actions$/,
@@ -2196,6 +3047,10 @@ test("every property with a value is visible at every width @phone", async ({ br
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
       await expect(identityBlock(page)).toContainText(MEASURED_TITLE);
+      // At 760 px and below the header scrolls with the page (ruling 5), and a load may have
+      // moved the page to what waits: the header is read with the page at its top.
+      await expect(tree(page).locator("[data-node-row]").first()).toBeVisible();
+      await page.evaluate(() => window.scrollTo(0, 0));
 
       // The header's own values, each where it is drawn, with no control opened.
       const header = identityBlock(page);
@@ -2295,6 +3150,7 @@ test("every property with a value is visible at every width @phone", async ({ br
             .getByRole("link", { name: /^notes\.md/ }),
         ],
         ["what blocks it", detailsRow(page, "Blocked by"), "None"],
+        ["what it blocks", detailsRow(page, "Blocks"), waiter.key],
       ];
       for (const [name, at, words] of inDetails) {
         await expect(at, `${name} is not drawn in Details at ${width} px`).toBeVisible();
@@ -2342,6 +3198,19 @@ test("every property with a value is visible at every width @phone", async ({ br
     await gotoIssue(page, `/issues/${plain.key}`);
     await openDetails(page);
     await expect(detailsRow(page, "Advances")).toHaveCount(0);
+    // What nothing waits on reads None in its Blocks row, drawn all the same.
+    await expect(detailsRow(page, "Blocks")).toContainText("None");
+    // The add control's entry opens the control it names: on this load, with no repository set,
+    // Repository puts the focus in the repository's own select, on screen in Details.
+    await addControl(page).click();
+    await openMenu(page).getByRole("menuitem", { exact: true, name: "Repository" }).click();
+    const repository = marginSlot(page).getByRole("combobox", {
+      exact: true,
+      name: `Repository of ${plain.key}`,
+    });
+    await expect(repository, "the add control's Repository focused nothing").toBeFocused();
+    await expect(repository, "the repository's select is off the screen").toBeInViewport();
+    await expect(openMenu(page), "the add menu stayed open over what it opened").toHaveCount(0);
     await marginSlot(page)
       .getByRole("button", { name: `${CONTROL_LABELS.add_priority} to ${plain.key}` })
       .click();
@@ -2434,6 +3303,42 @@ test("the count of what waits on the reader opens the first thing that waits @ph
         })
         .not.toBe("");
       expect(await focusedNodeId(page)).toBe(await firstWaitingRow(page));
+
+      // Each press after the first goes on to the next item that waits, in the filter's order,
+      // and round to the first again (the tester's F12): every item the count holds is reached
+      // by pressing it, an open question among them, with no key a phone lacks.
+      const first = (await focusedNodeId(page)) ?? "";
+      const walked = [first];
+      for (let press = 0; press < counted; press += 1) {
+        const from = walked.at(-1) ?? "";
+        if (key === "click") await waitingCount(page).click();
+        else {
+          await waitingCount(page).focus();
+          await page.keyboard.press("Enter");
+        }
+        await expect
+          .poll(async () => (await focusedNodeId(page)) ?? "", {
+            message: `press ${press + 2} of the count left the focus on ${from} at ${width} px`,
+          })
+          .not.toBe(from);
+        const next = (await focusedNodeId(page)) ?? "";
+        if (next === first) break;
+        walked.push(next);
+      }
+      expect(
+        (await focusedNodeId(page)) ?? "",
+        `the count's presses did not come round to the first item in ${counted} at ${width} px`
+      ).toBe(first);
+      expect(new Set(walked).size, "a press of the count went back to an item it had left").toBe(
+        walked.length
+      );
+      expect(walked.length, "the count's presses reach one item only").toBeGreaterThanOrEqual(2);
+      const kinds = await Promise.all(
+        walked.map((id) => nodeRow(page, id).first().getAttribute("data-node-type"))
+      );
+      expect(kinds, `the count's presses reach no open question: ${walked.join(", ")}`).toContain(
+        "ask"
+      );
     }
 
     // An approval request is all that waits: the count puts the focus on the approval control.
@@ -2452,6 +3357,282 @@ test("the count of what waits on the reader opens the first thing that waits @ph
       await page.evaluate(() => document.activeElement?.closest("[data-issue-header]") !== null),
       "the focus is on an approval control outside the header"
     ).toBe(true);
+  });
+});
+
+// The tester's F4, under R13: the count holds what waits on the reader and nothing that waits on
+// somebody else. A question waits on the person the server resolves it to - whoever it was handed
+// to, else the issue's assignee - so a question on an issue another person holds does not raise
+// this reader's count, the reader's own question there does not either, and handing the issue to
+// the reader moves both to them.
+test("the count of what waits holds only what waits on the reader", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedNoChildren, async (alice) => {
+    const issue = await createIssue({ force: true, project: PROJECT, title: "Whose turn" });
+    const bobs = await asUser(browser, "bob");
+    try {
+      const bob = await bobs.newPage();
+      await bob.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+      await patchIssue(issue.key, { assignee: "alice" });
+      await createAsk(issue.key, { question: "Which way does it go?" }, asPlanner);
+
+      // The agent's question waits on alice, who holds the issue: her count, not bob's.
+      await gotoIssue(alice, `/issues/${issue.key}`);
+      await expectIssuePageDrawn(alice);
+      await expect(waitingCount(alice)).toHaveText("Waiting on you (1)");
+      await gotoIssue(bob, `/issues/${issue.key}`);
+      await expectIssuePageDrawn(bob);
+      await expect(rowsOfType(bob, "ask"), "bob's page draws no question yet").not.toHaveCount(0);
+      await expect(waitingCount(bob), "a question waiting on alice counts for bob").toHaveCount(0);
+
+      // Bob's own question waits on alice too: it raises her count and not his.
+      await createAsk(issue.key, { question: "And who decides it?" }, { as: "user", login: "bob" });
+      await gotoIssue(bob, `/issues/${issue.key}`);
+      await expect(rowsOfType(bob, "ask")).toHaveCount(2);
+      await expect(waitingCount(bob), "bob's own question raised bob's count").toHaveCount(0);
+      await gotoIssue(alice, `/issues/${issue.key}`);
+      await expect(waitingCount(alice)).toHaveText("Waiting on you (2)");
+
+      // The issue handed to bob: both questions wait on him now, and none on alice.
+      await patchIssue(issue.key, { assignee: "bob" });
+      await gotoIssue(bob, `/issues/${issue.key}`);
+      await expect(waitingCount(bob)).toHaveText("Waiting on you (2)");
+      await gotoIssue(alice, `/issues/${issue.key}`);
+      await expect(rowsOfType(alice, "ask")).toHaveCount(2);
+      await expect(
+        waitingCount(alice),
+        "the count stayed with alice after the issue went to bob"
+      ).toHaveCount(0);
+    } finally {
+      await bobs.close();
+    }
+  });
+});
+
+// The tester's F5, under R13: the title saves when its editor loses the focus, and the press
+// that took the focus lands on what it pressed. A press on the status straight out of an edited
+// title puts the focus on the status, as the same press does with nothing edited, and a status
+// picked then is written.
+test("a press on the status straight out of the title's editor lands on the status", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    const title = identityBlock(page).getByRole("heading", { level: 1 });
+    const editor = identityBlock(page).getByRole("textbox", { name: "Issue title" });
+    const status = identityBlock(page).getByRole("combobox", { name: "Status" });
+
+    // The control: with nothing edited, the press out of the editor focuses the status.
+    await title.click();
+    await expect(editor).toBeFocused();
+    await status.click();
+    await expect(status, "the status took no focus with nothing edited").toBeFocused();
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+
+    // The same press with the title edited, and no Enter: the title saves and the press lands.
+    await title.click();
+    await expect(editor).toBeFocused();
+    await editor.pressSequentially("edited ");
+    await status.click();
+    await expect(status, "the press out of an edited title landed on nothing").toBeFocused();
+    await expect
+      .poll(async () => (await getIssue(seeded.key)).title, {
+        message: "the title the reader left was not saved",
+      })
+      .toContain("edited");
+    await status.selectOption("todo");
+    await expect
+      .poll(async () => (await getIssue(seeded.key)).status, {
+        message: "the status picked straight after the title was not written",
+      })
+      .toBe("todo");
+
+    // Escape and Enter leave the title's editor with the focus on the heading it opened from,
+    // which does not open the editor again (R11).
+    for (const leave of ["Escape", "Enter"] as const) {
+      await page.keyboard.press("Escape");
+      await title.click();
+      await expect(editor).toBeFocused();
+      await page.keyboard.press(leave);
+      await expect(editor, `${leave} left the title's editor open`).toHaveCount(0);
+      await expect(title, `${leave} dropped the focus out of the header`).toBeFocused();
+    }
+  });
+});
+
+// c-header, the part of it ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md adds
+// ("What stays when the page scrolls", and the defect it names in `identity-block.ts`). With the
+// page at its top the header is not stuck and the title is 600 22/29 px, 20/26 px at 760 px and
+// below. Scrolled, at 761 px and above the identity and the title stay, 63 px tall, in the same
+// type, and the properties line goes under them; at 760 px and below the whole header scrolls
+// away and the filter control stays at the top, and the page publishes the height of whichever
+// stays.
+test("the identity and the title stay when the page scrolls, and on a phone the filter control @phone", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const desktopProject = test.info().project.name !== "iphone";
+    for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
+      const wide = width > 760;
+      // A short screen, so the seeded page is taller than it and scrolls.
+      await page.setViewportSize({ height: 420, width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect(tree(page).locator("[data-node-row]").first()).toBeVisible();
+      await page.evaluate(() => window.scrollTo(0, 0));
+
+      // The defect ruling 5 names, read off the header and its heading themselves: at the top
+      // of the page the header is not stuck, and the title is drawn in its own type.
+      await expect(
+        identityBlock(page),
+        `the header is stuck with the page at its top at ${width} px`
+      ).toHaveAttribute("data-condensed", "false");
+      expect(
+        await identityBlock(page)
+          .getByRole("heading", { level: 1 })
+          .evaluate((heading) => {
+            const type = getComputedStyle(heading);
+            return [type.fontWeight, type.fontSize, type.lineHeight];
+          }),
+        `the title's type at ${width} px with the page at its top`
+      ).toEqual(wide ? ["600", "22px", "29px"] : ["600", "20px", "26px"]);
+      const top = await stickyReading(page);
+      if (top === null) throw new Error(`the page draws no header or no filter row at ${width} px`);
+      console.log(`c-header at ${width} px, at the top: ${JSON.stringify(top)}`);
+      expect(
+        top.properties.top,
+        "the properties line is not under the title"
+      ).toBeGreaterThanOrEqual(top.block.bottom - 1);
+
+      await page.evaluate(() => window.scrollTo(0, 320));
+      await expect
+        .poll(async () => (await stickyReading(page))?.scrolled ?? 0, {
+          message: `the page did not scroll at ${width} px`,
+        })
+        .toBeGreaterThan(300);
+      await expect
+        .poll(async () => (await stickyReading(page))?.condensed, {
+          message: `the header's stuck state is wrong once scrolled at ${width} px`,
+        })
+        .toBe(wide);
+      const scrolled = await stickyReading(page);
+      if (scrolled === null) throw new Error("the header left the page as it scrolled");
+      console.log(`c-header at ${width} px, scrolled: ${JSON.stringify(scrolled)}`);
+      if (wide) {
+        // The identity and the title stay, 63 px, in the type they had; the properties are gone.
+        expect(Math.abs(scrolled.block.top), "the identity block left the top").toBeLessThanOrEqual(
+          1
+        );
+        expect(scrolled.block.height, "the block that stays is not 63 px").toBeGreaterThanOrEqual(
+          62
+        );
+        expect(scrolled.block.height, "the block that stays is not 63 px").toBeLessThanOrEqual(64);
+        expect([scrolled.title.size, scrolled.title.line]).toEqual(["22px", "29px"]);
+        expect(scrolled.title.top).toBeGreaterThanOrEqual(0);
+        expect(scrolled.title.bottom).toBeLessThanOrEqual(scrolled.block.bottom);
+        expect(
+          scrolled.properties.bottom,
+          "the properties line stayed on screen with the identity block"
+        ).toBeLessThanOrEqual(scrolled.block.bottom);
+        expect(scrolled.published, "the page publishes another height than the block's").toBe(
+          Math.round(scrolled.block.height)
+        );
+      } else {
+        // The header is gone and the filter control is at the top, one line of it.
+        expect(scrolled.block.bottom, "the header stayed on a phone").toBeLessThanOrEqual(0);
+        expect(scrolled.properties.bottom).toBeLessThanOrEqual(0);
+        expect(
+          Math.abs(scrolled.filters.top),
+          "the filter control left the top"
+        ).toBeLessThanOrEqual(1);
+        expect(
+          scrolled.filters.height,
+          "the filter control's band is taller than the picture's"
+        ).toBeLessThanOrEqual(52);
+        await expect(presetChooser(page)).toBeInViewport();
+        expect(scrolled.published, "the page publishes another height than the band's").toBe(
+          Math.round(scrolled.filters.height)
+        );
+      }
+    }
+  });
+});
+
+// Ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md, "The filter row": one line at
+// every width. From 761 px up the node menu, the filter by words, Keys and - with a filter on -
+// the version control are small controls at its right end, and the words box opens from its
+// control; at 760 px and below the row is the one control and Outline, and those three are in
+// the Outline sheet.
+test("the filter row is one line at every width @phone", async ({ browser }) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const desktopProject = test.info().project.name !== "iphone";
+    const small = [CONTROL_LABELS.other_nodes, CONTROL_LABELS.filter, CONTROL_LABELS.keys];
+    for (const width of desktopProject ? [1440, 1279, 1025, 1024, 761, 390] : [390]) {
+      for (const preset of ["conversation", "spec"] as const) {
+        await page.setViewportSize(viewportAt(width));
+        await gotoIssue(page, presetPath(seeded.key, preset));
+        await expectIssuePageDrawn(page);
+        await expectActivePreset(page, PRESET_NAMES[preset]);
+        const at = `at ${width} px with ${preset === "spec" ? "the Spec filter" : "no filter"} on`;
+        const row = await filterRowReading(page);
+        if (row === null) throw new Error(`the page draws no filter row ${at}`);
+        console.log(`filter row ${at}: ${JSON.stringify(row)}`);
+        expect(row.lines, `the filter row is not one line ${at}: ${row.controls.join(" | ")}`).toBe(
+          1
+        );
+        expect(row.overflow, `the filter row runs past its own edge ${at}`).toBeLessThanOrEqual(1);
+        // 35 px for the row of five, drawn from 1280 px, and 8 px above and below the 34 px one
+        // control below that.
+        expect(row.height, `the filter row is taller than the picture's ${at}`).toBeLessThanOrEqual(
+          width >= 1280 ? 36 : 51
+        );
+        await assertPageFits(page);
+        const version = preset === "spec" ? [CONTROL_LABELS.version] : [];
+        if (width > 760) {
+          expect(row.controls.slice(-(3 + version.length)), `the small controls ${at}`).toEqual([
+            ...version,
+            ...small,
+          ]);
+          continue;
+        }
+        // On a phone the row holds the one control and Outline alone, and the sheet the rest.
+        expect(row.controls.length, `the row draws more than its two controls ${at}`).toBe(2);
+        expect(row.controls.at(-1)).toBe(CONTROL_LABELS.outline);
+        await outlineControl(page).click();
+        const sheet = outlineSheet(page);
+        await expect(sheet).toBeVisible();
+        await expect(
+          sheet.getByRole("button", { exact: true, name: CONTROL_LABELS.other_nodes })
+        ).toBeVisible();
+        await expect(sheet.getByRole("searchbox", { name: CONTROL_LABELS.filter })).toBeVisible();
+        await expect(sheet.getByTestId("issue-version-control")).toHaveCount(version.length);
+        await page.keyboard.press("Escape");
+        await expect(sheet).toHaveCount(0);
+      }
+    }
+
+    // The words box opens from its control with the caret in it, narrows the outline by `?q=`,
+    // stays open while it holds words, and shuts back into its control once emptied and left.
+    await page.setViewportSize(viewportAt(DESKTOP.width));
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expect(
+      filterBox(page),
+      "the words box is drawn before its control is pressed"
+    ).toHaveCount(0);
+    await filterControl(page).click();
+    await expect(filterBox(page)).toBeFocused();
+    await filterBox(page).fill("zzz-no-such-words");
+    await expect(page).toHaveURL(/[?&]q=zzz-no-such-words/);
+    await filterBox(page).blur();
+    await expect(filterBox(page), "the box shut while it held words").toBeVisible();
+    expect((await filterRowReading(page))?.lines, "the open words box broke the line").toBe(1);
+    await filterBox(page).fill("");
+    await filterBox(page).blur();
+    await expect(filterBox(page), "the emptied box stayed open").toHaveCount(0);
+    await expect(filterControl(page)).toBeVisible();
   });
 });
 
@@ -2583,27 +3764,28 @@ function headerRowsBox(page: Page): Promise<{ width: number; x: number; y: numbe
 // outline keep the window less the rail and its 28 px insets: 1328 px. The panel holds the
 // properties and the focused node's facts and the Contents pane holds none; its content is
 // drawn once per load; its handle, its collapse and its kept width work; at 390 px it is the
-// phone's sheet. That the panel holds no conversation list is pass E's to assert, in the commit
-// that moves the composer and the reply controls into the outline and takes the list out.
+// phone's sheet. The panel holds no conversation list: no comment, message or ask the outline
+// draws is drawn in it.
 test("one panel of properties holds no conversation list @phone", async ({ browser }, testInfo) => {
   // Four loads of the issue page and one of a project document, each read for its frame.
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const traffic = watchApiRequests(page);
+    const panelDraws = await watchPanelDraws(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expect.poll(() => nodeRows(page).count()).toBeGreaterThan(0);
     await expectLoadSettled(traffic);
-    // The panel's content is drawn once per load: its reads of the asks that wait on the reader
-    // and of the reader's read state are one each, where a panel drawn plain and again inside
-    // the page's slot reads them again (INFRA-2004).
-    for (const route of ["/api/v1/inbox", "/api/v1/me/state"]) {
-      expect(
-        traffic.requests.filter((request) => request.route === route).length,
-        `the first load reads ${route} other than once`
-      ).toBe(1);
-    }
+    // The panel's content is drawn once per load: one element for a section of it, through the
+    // load, Details opening and Details closing, where a panel drawn plain and again inside the
+    // page's slot is two (INFRA-2004). Its reads cannot say so: a second copy reads the first
+    // one's answers from the cache and sends nothing.
+    await openDetails(page);
+    await closeDetails(page);
+    await openDetails(page);
+    expect(await panelDraws(), "the load drew the panel's content other than once").toBe(1);
+    await closeDetails(page);
 
     // The rail: 56 px at the left edge, the whole height, an icon with its accessible name for
     // each of the sidebar's own entries, none carrying a tooltip, and the sidebar drawn nowhere.
@@ -2769,6 +3951,66 @@ test("one panel of properties holds no conversation list @phone", async ({ brows
       await focusedNodeFacts(page).innerText(),
       "the panel's facts did not follow the focus to the next node"
     ).not.toBe(first);
+
+    // What references the focused row (R14; R19's table: "A block's 'Referenced by' list" ->
+    // "The focused node's facts in the panel"). The outline draws what serves a node as its
+    // parent row and what needs it as a chip, and nothing pointing back from a node to what
+    // mentions it, so this list is where a reader reads that. It costs nothing per row (R21):
+    // the list is read when the reader opens it, once, and the focus moving to the next row
+    // closes it again and reads nothing.
+    const referenced = nodeRow(
+      page,
+      blockNodeId(await primarySlug(seeded.key), requirementBlockId(1))
+    ).first();
+    await expect(referenced, "the outline draws no row for the first statement").toHaveCount(1);
+    await referenced.focus();
+    const referencesControl = focusedNodeFacts(page).getByRole("button", {
+      exact: true,
+      name: NODE_REFERENCES_WORDS.what_references,
+    });
+    await expect(
+      referencesControl,
+      "the focused row's facts carry no control for what references it"
+    ).toHaveAttribute("aria-expanded", "false");
+    traffic.reset();
+    await referencesControl.click();
+    // The plan task that serves it, which the list names by the task's own words, and the
+    // decisions document's block that mentions it, which the outline draws no link to from
+    // this row; every row of the list lands inside the issue.
+    await expect(
+      focusedNodeFacts(page).getByRole("link", { exact: true, name: planTaskText(1) }),
+      "the list does not name the plan task that serves the statement"
+    ).toHaveCount(1);
+    const citing = await focusedNodeFacts(page)
+      .getByRole("listitem")
+      .getByRole("link")
+      .evaluateAll((links) => links.map((link) => link.getAttribute("href") ?? ""));
+    expect(
+      citing.some((href) => href.includes("/artifacts/decisions-md#b-")),
+      `the list holds no mention of the statement: ${JSON.stringify(citing)}`
+    ).toBe(true);
+    expect(
+      citing.every((href) => href.startsWith(`/issues/${seeded.key}`)),
+      `a row of the list lands outside the issue: ${JSON.stringify(citing)}`
+    ).toBe(true);
+    expect(
+      traffic.requests.filter((request) => request.path.startsWith("/api/v1/references")).length,
+      "opening the list read other than once"
+    ).toBe(1);
+    traffic.reset();
+    await referenced.focus();
+    await page.keyboard.press("j");
+    await expect(
+      focusedNodeFacts(page).getByRole("button", {
+        exact: true,
+        name: NODE_REFERENCES_WORDS.what_references,
+      }),
+      "the list stayed open when the focus moved to another row"
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      traffic.requests.filter((request) => request.path.startsWith("/api/v1/references")).length,
+      "moving the focus read what references the next row"
+    ).toBe(0);
 
     // Its collapse: Escape and Close close it, and its one key opens it.
     await page.keyboard.press("Escape");
@@ -3282,12 +4524,52 @@ test("the spec is a preset over the tree and an approval still names it", async 
   });
 });
 
-// c-checks-readable. The seeded Verification document carries no screenshot - no `check` block in
-// `e2e/issue-layout-seed-text.ts` holds a picture - so "a screenshot renders as a picture" is
-// asserted on the issue's image node in c-nodes instead, and not here.
+// c-checks-readable. The body the Verification filter draws is
+// `web/src/features/issue/verification-filter/`: each statement with the checks that serve it,
+// each check beside its newest result, and its earlier results folded to one line (ruling 6 of
+// build-rulings-md, the tester's F15). Two of the seven states the seed cannot make, so this
+// row makes them: `retracted` by withdrawing every result of one check, and `unreadable` by
+// taking `pass_stands` out of the results answer in a route handler of its own, which is the
+// one way a page meets a server that does not send it. The seeded Verification document holds
+// no picture, so the row records a result carrying the issue's own uploaded shot.
 test("the Verification filter is readable @phone", async ({ browser }) => {
+  // Four loads of the filter - three widths and the rewritten answer - each read clause by
+  // clause.
+  test.setTimeout(240_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = await primarySlug(seeded.key);
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+
+    await recordCheckResult(
+      seeded.key,
+      {
+        check: seeded.checks.passed,
+        commit: HEAD_SHA,
+        failed: 0,
+        negative_control: "Removed the row's state and the run failed.",
+        observed: "1 passed, with a shot of the page",
+        role: "tester",
+        run: "bun run e2e -- e2e/issue-layout.e2e.ts",
+        screenshots: [`dispatch://${seeded.key}/artifact/${seeded.documents.image}`],
+        surface: "browser",
+        verdict: "pass",
+      },
+      { actor: recorderActor, as: "agent" }
+    );
+    const recorded = await getIssueResults(seeded.key);
+    const withdrawing = (recorded.checks ?? []).find(
+      (check) => check.block_id === seeded.checks.uncontrolled
+    );
+    expect(withdrawing?.results ?? [], "the seed recorded no result to withdraw").not.toEqual([]);
+    for (const result of withdrawing?.results ?? []) {
+      await retractCheckResult(result.id, { reason: "The run was wrong." });
+    }
+
+    // What the issue's own reads say, which the page is read against.
+    const statements = (await getIssueCoverage(seeded.key)).requirements ?? [];
+    const covered = statements.filter((statement) => statement.checks > 0).length;
+    const nodeOf = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
+    const twice = blockNodeId(verificationSlug, seeded.checks.passed);
 
     for (const width of [1440, 1024, 390]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
@@ -3296,76 +4578,265 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         PRESET_NAMES.verification
       );
       await expectIssuePageDrawn(page);
-      // A filter draws every branch it kept open, at every width: its rows are each statement
-      // with its checks and their results (R2), drawn whole rather than one node at a time.
-      const ids = (await drawnRows(page))
-        .filter((row) => row.type === "check")
-        .map((row) => row.id ?? "");
+      await expect
+        .poll(async () => (await verificationCards(page)).length, {
+          message: `the Verification filter draws no statement at ${width} px`,
+        })
+        .toBeGreaterThan(0);
+      const cards = await verificationCards(page);
+
+      // Each statement of the issue is drawn, with the checks that serve it under it (R2).
       expect(
-        new Set(ids).size,
-        `the Verification filter draws ${new Set(ids).size} checks at ${width} px, not the six seeded`
+        cards.map((card) => card.id).sort(),
+        `the Verification filter draws other statements than the issue's at ${width} px`
+      ).toEqual(statements.map((statement) => blockNodeId(specSlug, statement.block_id)).sort());
+      expect(
+        new Set(cards.flatMap((card) => card.checks.map((check) => check.id))).size,
+        `the Verification filter draws no six checks at ${width} px`
       ).toBe(6);
+
+      // No value renders outside its card at any width, and no two values overlap: the sixteen
+      // faults of the old tab this requirement is here for.
       expect(
-        await boxesPastTheirCard(page, "rows"),
+        await boxesPastTheirCard(page, "verification"),
         `an element reaches past its card at ${width} px`
       ).toEqual([]);
       expect(
-        await overlappingTexts(page, "rows"),
+        await overlappingTexts(page, "verification"),
         `two pieces of text are drawn over each other at ${width} px`
       ).toEqual([]);
+
+      // The page names one commit for the issue's results, the newest standing result's, drawn
+      // once, in the ten characters the prototype draws a commit in, and on no result's own
+      // line.
+      expect(
+        await namedCommit(page),
+        `the page names no one commit for the issue's results at ${width} px`
+      ).toBe(HEAD_SHA.slice(0, 10));
+      expect(
+        (await page.locator("[data-verification-result]").allInnerTexts()).filter((drawn) =>
+          drawn.includes(HEAD_SHA.slice(0, 10))
+        ),
+        `a result draws a commit of its own at ${width} px`
+      ).toEqual([]);
+
+      // How many statements carry a check is drawn as covered, and no count, legend or heading
+      // reads proven or met for it.
+      expect(
+        (await page.locator("[data-verification-covered]").innerText()).replace(/\s+/g, " "),
+        `the count of the statements that carry a check does not read covered at ${width} px`
+      ).toBe(
+        `${covered} ${VERIFICATION_WORDS.of} ${statements.length} ${VERIFICATION_WORDS.covered}`
+      );
+      for (const part of [
+        "[data-verification-covered]",
+        "[data-verification-legend]",
+        "[data-verification-head]",
+      ]) {
+        const read = (await page.locator(part).allInnerTexts()).join(" ").toLowerCase();
+        expect(read, `${part} reads proven at ${width} px`).not.toContain("proven");
+      }
+      expect(
+        (await page.locator("[data-verification-covered]").innerText()).toLowerCase(),
+        `the coverage count reads met at ${width} px`
+      ).not.toContain("met");
+
+      // A statement reads Met where every check of it passed at that commit, Not met where one
+      // failed there, and Unknown otherwise - here no result, an out-of-date one, a commit
+      // Dispatch cannot place, and a withdrawn one.
+      const stateOf = new Map(cards.map((card) => [card.id, card.state]));
+      expect(
+        [1, 2, 3, 4, 5, 6].map((index) => stateOf.get(nodeOf(index))),
+        `a statement does not read by how its checks stand at ${width} px`
+      ).toEqual(["met", "not_met", "unknown", "unknown", "unknown", "unknown"]);
+      expect(
+        cards.find((card) => card.id === nodeOf(1))?.stateWord,
+        `the statement every check of which passed does not read Met at ${width} px`
+      ).toBe(VERIFICATION_WORDS.states.met);
+      expect(
+        cards.find((card) => card.id === nodeOf(2))?.stateWord,
+        `the statement one check of which failed does not read Not met at ${width} px`
+      ).toBe(VERIFICATION_WORDS.states.not_met);
+
+      // A statement no check serves carries its gap (R10).
+      expect(
+        cards.find((card) => card.id === nodeOf(7))?.gapKinds,
+        `a statement no check serves carries no gap at ${width} px`
+      ).toEqual(["no_check"]);
+      expect(
+        (await page.locator('[data-gap-kind="no_check"]').first().innerText()).trim(),
+        `the gap is not said in the page's own words at ${width} px`
+      ).toBe(GAP_LINES.no_check);
+
+      // Each of the seven states a check can be in is told apart by a word and a shape. Six of
+      // them stand on the seeded checks; the seventh is below, on the rewritten answer.
+      const drawnChecks = cards.flatMap((card) => card.checks);
+      const states = new Map(
+        drawnChecks.map((check) => [check.state ?? "", `${check.word} ${check.shape}`])
+      );
+      expect(
+        [...states.keys()].sort(),
+        `the Verification filter draws not every seeded state at ${width} px`
+      ).toEqual(["failed", "no-result", "older", "passed", "retracted", "unmarked"]);
+      expect(
+        [...states].map(([state, drawn]) => [state, drawn]),
+        `a state is drawn in other words or another shape than the page declares at ${width} px`
+      ).toEqual(
+        [...states.keys()].map((state) => [
+          state,
+          `${NODE_STATE_WORDS.check[state as CheckState]} ${GLYPH_TOKENS.states.check[state as CheckState]}`,
+        ])
+      );
+      expect(
+        new Set([...states.values()]).size,
+        `two of the seeded states are drawn the same way at ${width} px: ${JSON.stringify([...states])}`
+      ).toBe(states.size);
+
+      // Ruling 6: the body draws the newest result of each check, and its earlier results are
+      // one line with their count, which opens them in place. The check with two results draws
+      // one, says "1 earlier result", and draws both once that line is pressed.
+      expect(
+        drawnChecks.filter((check) => check.results > 1).map((check) => check.id),
+        `a check draws more than its newest result at ${width} px`
+      ).toEqual([]);
+      expect(
+        drawnChecks.find((check) => check.id === twice)?.earlier,
+        `the check with two results does not say how many earlier ones it holds at ${width} px`
+      ).toBe(`1 ${VERIFICATION_WORDS.earlier_one}`);
+      const folded = page.locator(
+        `[data-verification-check][data-node-id="${twice}"] [data-verification-earlier]`
+      );
+      await folded.click();
+      await expect(folded, "the line does not say it opened").toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
+      expect(
+        (await verificationCards(page))
+          .flatMap((card) => card.checks)
+          .find((check) => check.id === twice)?.results,
+        `the line does not open the earlier result in place at ${width} px`
+      ).toBe(2);
+      await folded.click();
+
+      // A command renders as code with a copy control, and `when` reads as words: both in the
+      // check's own facts, which the reader's press on its words opens (R6).
+      const opened = page.locator(`[data-verification-check][data-node-id="${twice}"]`);
+      await opened.locator("[data-verification-check-words]").click();
+      expect(
+        await nodeCommands(page).count(),
+        `the check's command is not drawn as code at ${width} px`
+      ).toBeGreaterThan(0);
+      expect(
+        (
+          await nodeCommands(page)
+            .first()
+            .evaluate((element) => getComputedStyle(element).fontFamily)
+        ).toLowerCase(),
+        `the command is not set in a monospace face at ${width} px`
+      ).toMatch(/mono/);
+      expect(
+        await copyCommandControls(page).count(),
+        `a command has no copy control at ${width} px`
+      ).toBe(await nodeCommands(page).count());
+      expect(
+        (await opened.innerText()).replace(/\s+/g, " "),
+        `the check draws its when attribute as a schema token at ${width} px`
+      ).toContain(CHECK_WHEN_WORDS.before_merge);
+      expect(
+        await opened.innerText(),
+        `the check draws the schema's own token at ${width} px`
+      ).not.toContain("before_merge");
+
+      // The screenshot the result recorded renders as a picture.
+      const shot = opened.locator("[data-node-body] img").first();
+      await expect(
+        shot,
+        `the seeded screenshot is drawn as no picture at ${width} px`
+      ).toBeVisible();
+      await expect
+        .poll(() => shot.evaluate((element: HTMLImageElement) => element.naturalWidth), {
+          message: `the seeded screenshot draws no image at ${width} px`,
+        })
+        .toBeGreaterThan(0);
+      // The opened facts stay inside their card too.
+      expect(
+        await boxesPastTheirCard(page, "verification"),
+        `an element of the opened check reaches past its card at ${width} px`
+      ).toEqual([]);
+
+      // Nothing the body draws is told apart by colour alone.
+      await page.emulateMedia({ forcedColors: "active" });
+      const forced = await verificationCards(page);
+      expect(
+        forced.flatMap((card) => card.checks.map((check) => `${check.word} ${check.shape}`)),
+        `the states are told apart differently once the colours are forced at ${width} px`
+      ).toEqual(drawnChecks.map((check) => `${check.word} ${check.shape}`));
+      expect(
+        forced.map((card) => card.stateWord),
+        `the statements are told apart differently once the colours are forced at ${width} px`
+      ).toEqual(cards.map((card) => card.stateWord));
+      await page.emulateMedia({ forcedColors: "none" });
     }
 
-    // A command renders as code with a copy control, and `when` reads as words. The filter
-    // draws every one of the six as a row, which the seeded states below are read from too.
+    // The seventh state: a payload carrying no answer over a check's results at all, which is
+    // an older build behind the same load balancer as the one this page came from. The page
+    // says what is true of it - that it could not read how the check stands - and never one of
+    // the other six.
+    await page.route("**/api/v1/issues/*/results", async (route) => {
+      const answer = await route.fetch();
+      // The results answer as the server sends it, of which this handler reads two fields.
+      const body: { checks?: { block_id: string; pass_stands?: unknown }[] } = await answer.json();
+      for (const check of body.checks ?? []) {
+        if (check.block_id === seeded.checks.passed) delete check.pass_stands;
+      }
+      await route.fulfill({ json: body, response: answer });
+    });
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await openPreset(page, seeded.key, "verification");
     await expectIssuePageDrawn(page);
-    const passed = nodeRow(page, blockNodeId(verificationSlug, checkBlockId(1))).first();
-    await passed.focus();
-    expect(await nodeCommands(page).count(), "the check's command is not drawn as code").toBe(1);
-    expect(
-      (
-        await nodeCommands(page)
-          .first()
-          .evaluate((element) => getComputedStyle(element).fontFamily)
-      ).toLowerCase(),
-      "the command is not set in a monospace face"
-    ).toMatch(/mono/);
-    expect(await copyCommandControls(page).count(), "the command has no copy control").toBe(1);
-    expect(
-      (await passed.innerText()).replace(/\s+/g, " "),
-      "the check draws its when attribute as a schema token instead of words"
-    ).toContain(CHECK_WHEN_WORDS.before_merge);
-    expect(
-      await boxesPastTheirCard(page, "bodies"),
-      "an element of the opened check reaches past its body"
-    ).toEqual([]);
+    await expect
+      .poll(
+        async () =>
+          (await verificationCards(page))
+            .flatMap((card) => card.checks)
+            .filter((check) => check.state === "unreadable")
+            .map((check) => [check.word, check.shape]),
+        { message: "a check whose results the page cannot read draws no state of its own" }
+      )
+      .toEqual([[NODE_STATE_WORDS.check.unreadable, GLYPH_TOKENS.states.check.unreadable]]);
+    await page.unroute("**/api/v1/issues/*/results");
+  });
+});
 
-    // Every state the seed can produce carries a word and a shape no other state carries,
-    // colours forced as well. Two states are not among them, and are named rather than left
-    // out: `retracted` needs a result the seed withdraws none of, and `unreadable` needs a
-    // server that sends no `pass_stands` at all, which this one always sends. A state added
-    // to the page and not to this list fails here until somebody says which it is.
-    const unseeded = ["retracted", "unreadable"];
-    const states = statesDrawn((await drawnRows(page)).filter((row) => row.type === "check"));
-    expect(
-      [...states.keys()].sort(),
-      "the Verification filter draws not every seeded state"
-    ).toEqual(
-      Object.keys(NODE_STATE_WORDS.check)
-        .filter((state) => !unseeded.includes(state))
-        .map((state) => `check:${state}`)
-        .sort()
-    );
-    expect(
-      [...new Set(states.values())].length,
-      `two of the seeded states are drawn the same way: ${JSON.stringify([...states])}`
-    ).toBe(states.size);
-    await page.emulateMedia({ forcedColors: "active" });
-    expect(
-      [...statesDrawn((await drawnRows(page)).filter((row) => row.type === "check"))],
-      "the seeded states are told apart differently once the colours are forced"
-    ).toEqual([...states]);
+// R17, R20, the reviewer's finding on verification.e2e.ts:440: an issue that holds no statement
+// and no check says so in the Verification filter's own column once the load has settled, in
+// the page's one line for it, and the line is read inside the tree the filter draws and not off
+// the whole page, which says it nowhere else.
+test("the Verification filter says an issue holds no checks, in its own column", async ({
+  browser,
+}) => {
+  const bare = async () => {
+    await createProject({ key: PROJECT, name: "Issue layout" });
+    return await createIssue({ force: true, project: PROJECT, title: "Nothing to verify yet" });
+  };
+  await phase(browser, bare, async (page, seeded) => {
+    const settling = watchApiRequests(page);
+    await openPreset(page, seeded.key, "verification");
+    await expectLoadSettled(settling);
+    await expectIssuePageDrawn(page);
+    const body = issuePage(page).locator("[data-verification-body]");
+    await expect(body, "the Verification filter draws no body of its own").toHaveCount(1);
+    await expect(
+      tree(page).getByText(EMPTY_STATE_LINES.verification, { exact: true }),
+      "the filter's tree does not say the issue holds no checks"
+    ).toHaveCount(1);
+    await expect(
+      page.getByText(EMPTY_STATE_LINES.verification, { exact: true }),
+      "the line is drawn outside the Verification filter's tree as well"
+    ).toHaveCount(1);
+    expect(await verificationCards(page), "an issue with no statement draws one").toEqual([]);
+    expect(await nodeRows(page).count(), "an issue with no check draws a row").toBe(0);
   });
 });
 
@@ -3426,10 +4897,11 @@ async function storedAuthors(key: string): Promise<Map<string, Actor>> {
   return authors;
 }
 
-/** The name the page must draw for `actor`: a person by their login, which is their address,
- *  and an agent by the title its session stamped on the write - the seed stamps every agent's. */
+/** The name a row must draw for `actor`: a person by their login, which is their address, and
+ *  an agent by its role's word, as the title its session stamped on the write gives it - the
+ *  seed stamps every agent's (R9, the architect's ruling 6). */
 function expectedAuthorName(actor: Actor): string {
-  return actor.kind === "user" ? actor.id : (actor.origin?.session_title ?? "");
+  return actor.kind === "user" ? actor.id : agentRoleWord(actor.origin?.session_title ?? "");
 }
 
 /** An identifier where a name belongs: a UUID, which is what an Envoy session id is, or the
@@ -3437,16 +4909,17 @@ function expectedAuthorName(actor: Actor): string {
 const SESSION_ID_SHAPE = /[0-9a-f]{8}-[0-9a-f]{4}-|\bsession:/iu;
 
 /** Every way the drawn authors of `rows` differ from what the model holds: a row whose node
- *  has an author and draws another name or an id, and a row whose node has none and draws
- *  anything but the page's own "Author unknown"; once every name is right, a row drawing a shape
- *  of another kind than its author's. The names are read first, because a name drawn as an id
- *  is the defect this reading exists for. */
+ *  has an author and draws another name or an id, and a row whose node has none and draws one
+ *  - it draws none, and only its opened body says the page's own "Author unknown" (ruling 5);
+ *  once every name is right, a row drawing a shape of another kind than its author's. The names
+ *  are read first, because a name drawn as an id is the defect this reading exists for. */
 function authorOffences(rows: readonly DrawnRow[], stored: ReadonlyMap<string, Actor>): string[] {
   const offences: string[] = [];
   const ids = new Set([...stored.values()].map((actor) => actor.id));
   for (const row of rows) {
     const actor = stored.get(row.id ?? "");
-    const name = actor === undefined ? CONTROL_LABELS.unknown_author : expectedAuthorName(actor);
+    const unrecorded = row.body ? CONTROL_LABELS.unknown_author : null;
+    const name = actor === undefined ? unrecorded : expectedAuthorName(actor);
     if (row.author !== name) {
       offences.push(
         `${row.id} draws its ${actor?.kind ?? "unrecorded"} author as "${row.author}", not "${name}"`
@@ -3463,9 +4936,10 @@ function authorOffences(rows: readonly DrawnRow[], stored: ReadonlyMap<string, A
   if (offences.length > 0) return offences;
   for (const row of rows) {
     const actor = stored.get(row.id ?? "");
+    const unrecorded = row.body ? GLYPH_TOKENS.authors.unknown : null;
     const shape =
       actor === undefined
-        ? GLYPH_TOKENS.authors.unknown
+        ? unrecorded
         : actor.kind === "user"
           ? GLYPH_TOKENS.authors.person
           : GLYPH_TOKENS.authors.agent;
@@ -3509,8 +4983,8 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
     expect(PLANNER).toBe(plannerActor.id);
 
     // At 1440 px with every branch open, every node of the issue is a row: each node the model
-    // holds an author for draws that author's name and its kind's shape, and every other draws
-    // the page's own "Author unknown" with a shape of its own.
+    // holds an author for draws that author's name - an agent's by its role's word - and its
+    // kind's shape, and every other draws no author on its row (rulings 5 and 6).
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
@@ -3533,12 +5007,31 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
       );
     expect([...shapes("user")], "the people's rows do not share one shape").toHaveLength(1);
     expect([...shapes("session")], "the agents' rows do not share one shape").toHaveLength(1);
-    expect([...shapes(undefined)], "the unrecorded authors do not share one shape").toHaveLength(1);
-    const drawnShapes = [...shapes("user"), ...shapes("session"), ...shapes(undefined)];
+    // A node the model holds no author for says so in its opened body, in the page's own words
+    // and with a shape neither other kind draws, and an agent's opened body gives the whole
+    // title its row's one word stands for.
+    const unrecorded = rows.find(
+      (row) => row.type === "requirement" && !stored.has(row.id ?? "") && !row.body
+    );
     expect(
-      new Set(drawnShapes).size,
+      unrecorded,
+      "the unfolded tree draws no statement the model holds no author for"
+    ).toBeDefined();
+    const opened = await focusRow(page, unrecorded?.id ?? "");
+    const said = rowBody(opened).locator("[data-node-author]");
+    await expect(said, "an opened body does not say its node's author is unknown").toHaveText(
+      CONTROL_LABELS.unknown_author
+    );
+    const unknownShape = await said.locator("svg[data-glyph]").getAttribute("data-glyph");
+    expect(
+      new Set([...shapes("user"), ...shapes("session"), unknownShape]).size,
       "a person, an agent and an author nobody recorded do not each have a shape of their own"
     ).toBe(3);
+    const planned = rows.find((row) => stored.get(row.id ?? "")?.id === plannerActor.id);
+    await expect(
+      rowBody(await focusRow(page, planned?.id ?? "")).locator("[data-node-author-title]"),
+      "the opened body of an agent's node does not give its session's whole title"
+    ).toHaveText(PLANNER_TITLE);
 
     // The person's answer is drawn word for word, as the store holds it, and carries neither an
     // uncertainty nor a reason.
@@ -3713,74 +5206,6 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
       [...new Set(await listed.allInnerTexts())],
       "the Spec preset's list draws a gap other than no check"
     ).toEqual([GAP_WORDS.no_check]);
-  });
-});
-
-// c-decisions, on the Decisions preset, which is the filter today's page draws for it. What
-// waits on another issue, and is not read here: an agent decision's author, its level of
-// uncertainty and its reason, the reading under it, and the decision whose `shaped` tuple names
-// three requirements (dispatch://INFRA-1150); and the answered ask's options, which the seed's
-// answered ask has none of. The order after the first entry - each answered ask and each agent
-// decision, newest first - is the filters' own item of this round.
-test("the Decisions filter lists open asks first and quotes the person's answer", async ({
-  browser,
-}) => {
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const specSlug = await primarySlug(seeded.key);
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
-    const stored = (await getAsk(seeded.answeredAskId)).ask.answer;
-    expect(stored?.text ?? "", "the seed's answered ask holds no answer").not.toBe("");
-    await openPreset(page, seeded.key, "decisions");
-    await expectIssuePageDrawn(page);
-
-    // The open ask is the first entry.
-    const entries = (await drawnRows(page)).filter((row) => !row.context && row.id !== seeded.key);
-    expect(entries[0]?.id, "the Decisions filter's first entry is not the open question").toBe(
-      blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID)
-    );
-
-    // The answered ask quotes the person's answer character for character as the store holds
-    // it, in its own row and its body, by who answered.
-    const asked = nodeRow(page, seeded.answeredAskId).first();
-    await asked.focus();
-    await expect
-      .poll(async () => rowOf(await drawnRows(page), seeded.answeredAskId)?.answerText ?? null, {
-        message: "the answered ask does not draw the person's answer as the store holds it",
-      })
-      .toBe(stored?.text ?? "");
-    const drawn = rowOf(await drawnRows(page), seeded.answeredAskId);
-    expect(drawn?.answerAuthor, "the answered ask does not name who answered").toBe(stored?.user);
-    expect(drawn?.answerLine ?? "", "the answered ask's own row draws no answer").toContain(
-      firstLineOf(stored?.text ?? "").line
-    );
-    // No sentence beside it restates the answer: what the page writes of its own on the ask's
-    // row and body is its type, its state, the word naming the answer and the body's one control,
-    // and the rest is the asker's and the person's own words.
-    const own = await asked.evaluate((row) =>
-      [...row.querySelectorAll("[data-page-chrome]")]
-        .map((element) => {
-          const copy = element.cloneNode(true) as Element;
-          for (const authored of copy.querySelectorAll("[data-author-text]")) authored.remove();
-          return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
-        })
-        .filter((text) => text !== "")
-    );
-    const expected: readonly string[] = [
-      NODE_TYPE_NAMES.ask,
-      NODE_STATE_WORDS.ask.answered,
-      CONTROL_LABELS.answer,
-      CONTROL_LABELS.keep_open,
-    ];
-    expect(
-      own.filter((text) => !expected.includes(text)),
-      "the answered ask draws words of the page's own beside the person's answer"
-    ).toEqual([]);
-
-    // The decision that answers the ask sits under it, in the filter as in the outline.
-    expect(
-      await parentOfRow(page, blockNodeId(decisionsSlug, seeded.decisions[1] ?? "")),
-      "the decision that answers the ask is not drawn under it"
-    ).toBe(seeded.answeredAskId);
   });
 });
 
@@ -4251,13 +5676,10 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
   });
 });
 
-// c-reflow again, on the other surface the same run reaches: a child's own title. The children
-// section draws `{key} · {title}` in a link, and the touch-target floor makes every link a flex
-// box (`web/src/styles.css`), so the link's text is an anonymous flex item whose automatic
-// minimum size is its min-content width - which `overflow-wrap` does not move. Measured at
-// 320 px with the same 118 character path on 2026-11-09 at 454f2a3107a6: 807 px of text in a
-// 288 px box and a page 823 px wide. Below `md` the section opens closed (R6), so this opens
-// it, which is what a reader waiting on a child does.
+// c-reflow again, on the other surface the same run reaches: a child's own title, which is the
+// words of the child's row of the outline (the architect's ruling 5). Measured at 320 px with
+// the same 118 character path on 2026-11-09 at 454f2a3107a6, in the children's section the page
+// drew then: 807 px of text in a 288 px box and a page 823 px wide.
 test("a child whose title holds an unbroken run keeps the page inside its viewport @phone", async ({
   browser,
 }) => {
@@ -4266,12 +5688,11 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
-      if ((await childRows(page).count()) === 0) await childrenDisclosure(page).click();
       // The title is on the page before it is measured, so a fit read before the rows draw
       // cannot pass for the fit of a page that holds them.
       await expect(
-        childRow(page, seeded.childKey),
-        `the children section draws no row for ${seeded.childKey} at ${width} px`
+        childRow(page, seeded.childKey).first(),
+        `the outline draws no row for ${seeded.childKey} at ${width} px`
       ).toBeVisible();
       await expect(
         page.getByText(UNBROKEN_PATH, { exact: false }).first(),
@@ -4328,11 +5749,12 @@ test("the header holds its rule when the typeface does not load @phone", async (
       "SIL OPEN FONT LICENSE Version 1.1"
     );
 
-    // On each of ruling 3's two seeds (dispatch://INFRA-1196/artifact/build-rulings-md, version
-    // 2), no approval request waiting on the reader and then one waiting, the header holds its
-    // limit at 1440 px and at 390 px in the typeface; and with every request for that file
-    // refused, the page is drawn in the fallback and holds the same limit, and R18's reflow rule
-    // at four widths. Each reading is soft, so one run reports every width.
+    // On each of ruling 3's two seeds, no approval request waiting on the reader and then one
+    // waiting, the header holds its limit at 1440 px and at 390 px in the typeface, and at
+    // 390 px the outline's first row starts within its own (`headerLimit`:
+    // dispatch://INFRA-1196/artifact/build-rulings-md, ruling 8); and with every request
+    // for that file refused, the page is drawn in the fallback and holds the same limits, and
+    // R18's reflow rule at four widths. Each reading is soft, so one run reports every width.
     const blocked = await asUser(browser, "alice");
     try {
       let refused = 0;
@@ -4394,6 +5816,126 @@ test("the header holds its rule when the typeface does not load @phone", async (
       expect(refused, "no request for the typeface reached the refusal").toBeGreaterThan(0);
     } finally {
       await blocked.close();
+    }
+  });
+});
+
+// c-typeface, the typeface arriving late. The Contents list cuts each entry's first line at a word
+// to the room its box leaves it, measuring the words on a canvas in the face the list is drawn in
+// (`one-line.ts`), and `font-display: swap` (`styles.css`) draws the page's first frames in the
+// fallback while Inter's file is on its way. This question is made of words the two faces draw at
+// very different widths - at 14 px a "1" is 5 px in Inter and 8 px in the DejaVu fallback the
+// browser suite's machines draw - so at the pane's width and at the sheet's the fallback's cut
+// holds two words or more fewer than Inter's: an entry not cut again once the file arrives leaves
+// out words its box has room for.
+const FACE_MOVING_QUESTION =
+  "Roll 1.1.11, 1.11.1, 11.1.1, 1.1.1, 11.11, 1.111, 111.1, 11.1.11 and 1.11.11 to the hosts first?";
+
+/**
+ * What is wrong with the line a Contents entry draws of `text`, read from the browser's own
+ * layout in the face the page draws in now: the line must fit the box the entry leaves it, and
+ * must hold the next word of `text` too wherever that word and the ellipsis fit there (R1's
+ * first-line rule, cut at a word to the entry's width). Empty where the line is the right one.
+ */
+function contentsLineFaults(entry: Locator, text: string): Promise<string[]> {
+  return entry.evaluate((element, text) => {
+    const line = element.querySelector<HTMLElement>("[data-contents-line]");
+    if (line === null) return ["the entry draws no line"];
+    const shown = line.textContent ?? "";
+    const words = shown.endsWith("…") ? shown.slice(0, -1) : shown;
+    if (!text.startsWith(words)) {
+      return [`the entry draws "${shown}", which "${text}" does not begin with`];
+    }
+    const room = line.getBoundingClientRect().width;
+    const drawn = document.createRange();
+    drawn.selectNodeContents(line);
+    const width = drawn.getBoundingClientRect().width;
+    const faults: string[] = [];
+    if (width > room + 1) {
+      faults.push(`"${shown}" is ${width.toFixed(1)} px, past its ${room.toFixed(1)} px box`);
+    }
+    const next = text.slice(words.length).trim().split(" ")[0] ?? "";
+    if (next === "") return faults;
+    // The line with its next word, laid out beside it in the same face and size.
+    const probe = line.cloneNode(false) as HTMLElement;
+    probe.textContent = `${words} ${next}…`;
+    probe.style.cssText =
+      "position: absolute; visibility: hidden; flex: none; width: auto; white-space: nowrap";
+    line.after(probe);
+    const longer = probe.getBoundingClientRect().width;
+    probe.remove();
+    if (longer <= room - 2) {
+      faults.push(
+        `"${shown}" leaves out "${next}", though "${words} ${next}…" is ${longer.toFixed(1)} px, inside its ${room.toFixed(1)} px box`
+      );
+    }
+    return faults;
+  }, text);
+}
+
+test("a Contents entry is cut again in the typeface once its file arrives @phone", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page, seeded) => {
+    const question = await createAsk(seeded.key, { question: FACE_MOVING_QUESTION });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    const address = await typefaceAddress(page);
+    if (address === null) {
+      throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
+    }
+
+    // A reader whose request for the file is held until the list is drawn in the fallback: the
+    // pane at 1440 px, and on a phone the Outline sheet, opened before the file arrives.
+    const phone = test.info().project.name === "iphone";
+    const reader = await asUser(browser, "alice");
+    const arrives = Promise.withResolvers<void>();
+    try {
+      let held = 0;
+      await reader.route(address, async (route) => {
+        held += 1;
+        await arrives.promise;
+        await route.continue();
+      });
+      const late = await reader.newPage();
+      await late.setViewportSize(phone ? IPHONE_13 : DESKTOP);
+      // `commit`, because the page's load event waits on the held file.
+      await late.goto(`/issues/${seeded.key}`, { waitUntil: "commit" });
+      await expectIssuePageDrawn(late);
+      if (phone) await outlineControl(late).click();
+      const entry = (phone ? outlineSheet(late) : contentsPane(late)).locator(
+        `[data-contents-entry="${question.id}"]`
+      );
+      await expect(entry, "the Contents list does not list the question").toBeVisible();
+      await expect
+        .poll(() => typefaceStatuses(late), { message: `the ${TYPEFACE} file is not held` })
+        .toEqual(["loading"]);
+      expect(held, "no request for the typeface reached the hold").toBeGreaterThan(0);
+      await expect
+        .poll(() => contentsLineFaults(entry, FACE_MOVING_QUESTION), {
+          message: "the entry's line is not cut to its box in the fallback",
+        })
+        .toEqual([]);
+      const inFallback = await entry.locator("[data-contents-line]").textContent();
+
+      arrives.resolve();
+      await expect
+        .poll(() => typefaceStatuses(late), {
+          message: `the ${TYPEFACE} face did not load once its file was let through`,
+        })
+        .toEqual(["loaded"]);
+      await expect
+        .poll(() => contentsLineFaults(entry, FACE_MOVING_QUESTION), {
+          message: `the entry's line is not cut again in ${TYPEFACE} once its file arrived`,
+        })
+        .toEqual([]);
+      expect(
+        await entry.locator("[data-contents-line]").textContent(),
+        "the typeface moved no word of the cut, so this row read nothing"
+      ).not.toBe(inFallback);
+    } finally {
+      arrives.resolve();
+      await reader.close();
     }
   });
 });
@@ -4571,9 +6113,18 @@ test("the new page carries every element of the old one @phone", async ({ browse
           openedEditor(page),
           "the spec opened from the menu draws no editor"
         ).toBeVisible();
+        // The version control opens from its own small control (ruling 5), or from the Outline
+        // sheet at 760 px and below; Escape shuts it again and leaves the document open.
+        await openVersionControl(page);
         await expect(
           versionControl(page).getByRole("button", { name: "Copy link to block" })
         ).toHaveCount(1);
+        await page.keyboard.press("Escape");
+        await expect(versionControl(page)).toBeHidden();
+        await expect(
+          openedEditor(page),
+          "Escape on the version control shut the document"
+        ).toBeVisible();
         // The margin's cards beside the opened spec - its decisions, its comments - are in
         // Details, which a reader opens to read them beside the document (R14).
         await openDetails(page);
@@ -4649,20 +6200,13 @@ test("the new page carries every element of the old one @phone", async ({ browse
         }
         return true;
       },
-      // The preset row below 1280 px is one chooser rather than a row of tabs, the children
-      // section opens closed below `md` (`useChildrenSection.ts`), and the panel is Details, which
-      // a reader opens from the header at every width (R14): each is a view of the page, and at
-      // a width where it is already open the view is the page with the menus closed, which is
-      // the page a reader is left on there.
+      // The preset row below 1280 px is one chooser rather than a row of tabs, and the panel is
+      // Details, which a reader opens from the header at every width (R14): each is a view of
+      // the page, and at a width where it is already open the view is the page with the menus
+      // closed, which is the page a reader is left on there.
       async () => {
         await closeOpenControls(page);
         if ((await presetChooser(page).count()) === 1) await presetChooser(page).click();
-        return true;
-      },
-      async () => {
-        await closeOpenControls(page);
-        const disclosure = childrenDisclosure(page);
-        if ((await disclosure.getAttribute("aria-expanded")) === "false") await disclosure.click();
         return true;
       },
       async () => {
@@ -5047,6 +6591,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
     // draws reading the spec; with no filter on none is drawn (R2).
     await page.keyboard.press("Escape");
     await pickPreset(page, PRESET_NAMES.spec);
+    await openVersionControl(page);
     await versionControl(page).getByRole("button", { name: "Name version" }).click();
     const naming = page.getByRole("dialog", { name: "Name this version" });
     await naming.getByRole("textbox", { name: "What changed?" }).fill("Carried over");
@@ -5136,7 +6681,7 @@ test("every address of the old page still resolves", async ({ browser }) => {
     // The children, a document, and each entry of the conversation.
     await gotoIssue(page, `/issues/${seeded.key}/children`);
     await expectIssuePageDrawn(page);
-    expect(await childRows(page).count(), "/children opens no children").toBe(
+    await expect(childRows(page), "/children draws no row a child").toHaveCount(
       seeded.children.keys.length
     );
 
@@ -5361,5 +6906,634 @@ test("the first load stays inside its request budget", async ({ browser }) => {
       traffic.total(),
       `twice the nodes cost ${traffic.total()} requests where the baseline cost ${baseline?.total}: ${byRoute} against ${baseline?.byRoute}`
     ).toBe(baseline?.total);
+  });
+});
+
+// c-plan-order, as the architect's ruling 5 reads R26 (build-rulings-md): the Plan filter opens
+// on the chart of time, and one control switches to the ordered steps. The order and each bar's
+// place are the page's own, worked out from the `needs` the plan document holds
+// (`web/src/features/issue/plan-filter/plan-order.ts`), because today's reads give no plan
+// read. What waits on dispatch://INFRA-1253, and is not read here: the position and the size
+// the plan read gives each task - so every bar is one unit long and its row says "No size" -
+// and a parent's Plan filter drawing its children's tasks from one request. The overtaken task
+// waits on dispatch://INFRA-1950 R5, which is the state the model holds none of today. The
+// tester's F19 is read here too: each task is drawn once, and after every task it needs.
+test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser }) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedPlanOrder, async (page, seeded) => {
+    const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
+    const specSlug = await primarySlug(seeded.key);
+    const step = (blockId: string) => blockNodeId(planSlug, blockId);
+    const T = PLAN_ORDER_TASKS;
+    // Each task after every task in its needs, which is not the order the plan is written in:
+    // the document holds t1, t2, t3, and t1 needs t2 and t2 needs t3. The two that need each
+    // other stand where the order puts them; the task whose need the plan no longer holds
+    // waits on nothing.
+    const bars = [step(T.third), step(T.second), step(T.first), step(T.loose)];
+    const charted = [step(T.third), step(T.second), step(T.first), "cycle", step(T.loose)];
+    const stepped = [
+      step(T.third),
+      step(T.second),
+      step(T.first),
+      step(T.knotA),
+      step(T.knotB),
+      step(T.loose),
+    ];
+    const chartOrder = async () =>
+      (await planChartRows(page)).map((row) => (row.kind === "cycle" ? "cycle" : row.id));
+
+    await openPreset(page, seeded.key, "plan");
+    await expectIssuePageDrawn(page);
+
+    // The filter opens on the chart, and its one control says so.
+    await expect(planView(page, "chart"), "Plan does not open on the chart").toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    await expect(planView(page, "steps")).toHaveAttribute("aria-pressed", "false");
+    await expect
+      .poll(chartOrder, { message: "the chart does not draw each step after the steps it needs" })
+      .toEqual(charted);
+    const chart = await planChartRows(page);
+    const bar = (id: string) => chart.find((row) => row.id === id);
+
+    // One bar per step, each drawn once, starting where every task it needs has ended.
+    expect(
+      new Set(chart.filter((row) => row.kind === "bar").map((row) => row.id)).size,
+      "a step is drawn more than once"
+    ).toBe(bars.length);
+    expect(
+      bars.map((id) => bar(id)?.start),
+      "a bar does not start after the tasks it needs"
+    ).toEqual([0, 1, 2, 0]);
+    for (const [task, needed] of [
+      [T.first, T.second],
+      [T.second, T.third],
+    ] as const) {
+      const mine = bar(step(task))?.bar;
+      const theirs = bar(step(needed))?.bar;
+      expect(
+        mine?.left ?? -1,
+        `the bar of ${task} starts before the bar of ${needed}, which it needs, has ended`
+      ).toBeGreaterThanOrEqual((theirs?.left ?? 0) + (theirs?.width ?? 1e6) - 1);
+    }
+    // Today's model holds no size, so each bar is one unit long and its row says so (R26).
+    const widths = bars.map((id) => Math.round(bar(id)?.bar?.width ?? 0));
+    expect(new Set(widths).size, `the bars are not one unit long each: ${widths}`).toBe(1);
+    expect(widths[0] ?? 0, "a bar draws no box").toBeGreaterThan(20);
+    expect(
+      bars.map((id) => bar(id)?.size),
+      "a bar whose task holds no size does not say so"
+    ).toEqual(bars.map(() => PLAN_WORDS.no_size));
+
+    // Each step shows what it needs and the statements it serves, each statement a link to it;
+    // the step that serves two statements is one row naming both.
+    expect(bar(step(T.first))?.needs, `${T.first} does not name the step it needs`).toEqual([
+      step(T.second),
+    ]);
+    expect(bar(step(T.third))?.needs, `${T.third} names a step it does not need`).toEqual([]);
+    expect(bar(step(T.loose))?.needs, `${T.loose} names a step the plan does not hold`).toEqual([]);
+    expect(
+      bar(step(T.first))?.serves,
+      `${T.first} names other than the one statement it serves`
+    ).toHaveLength(1);
+    expect(
+      bar(step(T.third))?.serves,
+      `${T.third} does not name both statements it serves`
+    ).toHaveLength(2);
+    await expect(
+      nodeRow(page, step(T.first)).locator(
+        `a[data-plan-serve][href$="#b-${requirementBlockId(1)}"]`
+      ),
+      `${T.first} does not link the statement it serves`
+    ).toHaveCount(1);
+    // The lines between a step and the steps it needs: two on this plan.
+    await expect(
+      issuePage(page).locator("[data-plan-link]"),
+      "the chart does not draw one line for each need"
+    ).toHaveCount(2);
+
+    // The two tasks that need each other are one line that lists both, each a link to its own
+    // node, and neither is a bar: no order can put either after every task it needs.
+    const cycle = issuePage(page).locator("[data-plan-chart] [data-plan-cycle]");
+    await expect(cycle, "the cycle is not drawn as one line").toHaveCount(1);
+    await expect(cycle).toContainText(PLAN_WORDS.cycle);
+    for (const knot of [T.knotA, T.knotB]) {
+      await expect(cycle, `the cycle's line does not list ${knot}`).toContainText(`Task ${knot}`);
+      await expect(
+        cycle.locator(`a[href$="#b-${knot}"]`),
+        `the cycle's line does not link ${knot} to its own node`
+      ).toHaveCount(1);
+      expect(bar(step(knot)), `${knot} is drawn as a bar as well as in the cycle`).toBeUndefined();
+    }
+
+    // The keys reach the bars in order.
+    await nodeRow(page, step(T.third)).first().focus();
+    for (const next of bars.slice(1)) {
+      await page.keyboard.press("ArrowDown");
+      await expect
+        .poll(() => focusedNodeId(page), { message: `the arrow did not reach ${next}` })
+        .toBe(next);
+    }
+
+    // The control switches to the ordered steps, which are the outline's own rows in the same
+    // order, with the cycle's tasks as rows where the order puts the cycle.
+    await planView(page, "steps").click();
+    await expect(planView(page, "steps")).toHaveAttribute("aria-pressed", "true");
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => idsOf(await drawnRows(page)), {
+        message: "the steps are not drawn after the steps they need",
+      })
+      .toEqual(stepped);
+    const rows = await drawnRows(page);
+    const first = rowOf(rows, step(T.first));
+    expect(first?.chips.join(" "), `${T.first} does not say what it needs`).toContain(
+      BLOCK_ATTRIBUTE_LABELS.needs
+    );
+    expect(first?.chips.join(" "), `${T.first} does not name the task it needs`).toContain(
+      `Task ${T.second}`
+    );
+    expect(first?.parent?.id, `${T.first} does not name the statement it serves`).toBe(
+      blockNodeId(specSlug, requirementBlockId(1))
+    );
+    expect(first?.parent?.type).toBe("requirement");
+    await expect(
+      issuePage(page).locator("[data-plan-cycle]"),
+      "the steps do not draw the cycle's one line"
+    ).toHaveCount(1);
+
+    // The same order on a phone, in both views, where the page fits in one direction (R18).
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => idsOf(await drawnRows(page)), {
+        message: "the steps' order is not the same at 390 px",
+      })
+      .toEqual(stepped);
+    await assertPageFits(page);
+    await planView(page, "chart").click();
+    await expect
+      .poll(chartOrder, { message: "the chart's order is not the same at 390 px" })
+      .toEqual(charted);
+    expect(
+      (await planChartRows(page)).filter((row) => row.kind === "bar").map((row) => row.size),
+      "a bar does not say it holds no size at 390 px"
+    ).toEqual(bars.map(() => PLAN_WORDS.no_size));
+    await assertPageFits(page);
+  });
+});
+
+// c-review-list (R35). What waits on dispatch://INFRA-1150: the `shaped` tuple itself; today's
+// tie is a decision block's link to a block of the spec.
+test("only a decision that changed a statement waits for review @phone", async ({ browser }) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
+    const partRows = async (part: string) =>
+      (await decisionsPartsDrawn(page)).find((one) => one.part === part)?.rows ?? [];
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `at ${size.width} px`;
+      await page.setViewportSize(size);
+      await openPreset(page, seeded.key, "decisions");
+      await expectIssuePageDrawn(page);
+      // The review list holds the two a tie names a statement for, newest first.
+      await expect
+        .poll(() => partRows("review"), { message: `the review list ${at}` })
+        .toEqual([id(seeded.tiedNewer), id(seeded.tiedOlder)]);
+      // Each with its Keep and Change controls, with no focus on it.
+      for (const block of [seeded.tiedNewer, seeded.tiedOlder]) {
+        await expect(
+          nodeRow(page, id(block)).locator("button[data-row-action]"),
+          `${block} draws no Keep and Change ${at}`
+        ).toHaveText([CONTROL_LABELS.keep_decision, CONTROL_LABELS.change_decision]);
+      }
+      // The count holds those two and the two open questions, four, and neither other decision.
+      await expect(waitingCount(page), `the count ${at}`).toHaveText("Waiting on you (4)");
+      // The other two are in the filter's foot, with no Keep and no Change.
+      expect(await partRows("agents"), `the foot draws its rows unasked ${at}`).toEqual([]);
+      await decisionsFoot(page).click();
+      await expect
+        .poll(async () => [...(await partRows("agents"))].sort(), {
+          message: `the foot's rows ${at}`,
+        })
+        .toEqual([id(seeded.tiedToNote), id(seeded.untied)].sort());
+      for (const block of [seeded.tiedToNote, seeded.untied]) {
+        await expect(
+          nodeRow(page, id(block)).locator("button[data-row-action]"),
+          `${block} draws a Keep or a Change ${at}`
+        ).toHaveCount(0);
+      }
+    }
+    // The other two are drawn in the outline under the issue, with no Keep or Change control,
+    // the focus on them included.
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    for (const block of [seeded.tiedToNote, seeded.untied]) {
+      const row = await focusRow(page, id(block));
+      expect(await parentOfRow(page, id(block)), `${block} hangs under another row`).toBeNull();
+      await expect(
+        row.locator("button[data-row-action]"),
+        `${block} draws a Keep or a Change in the outline`
+      ).toHaveCount(0);
+    }
+    await expect(waitingCount(page)).toHaveText("Waiting on you (4)");
+  });
+});
+
+// The tester's F6, under R7 and R35: a Change sent on a decision is a comment anchored to the
+// decision's words. Once it is sent the decision says a change was asked for, leaves the review
+// list for the reader's own decisions, takes no Keep and no Change, and draws the change under
+// its words with a link to it; the count of what waits on the reader drops by one; and with no
+// filter on the decision says the same and the change hangs under it.
+test("a change sent on a decision is drawn on it, and the decision leaves the review list", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
+    const changed = id(seeded.tiedNewer);
+    const words = "Tie it to the first statement instead.";
+    const partRows = async (part: string) =>
+      (await decisionsPartsDrawn(page)).find((one) => one.part === part)?.rows ?? [];
+
+    await openPreset(page, seeded.key, "decisions");
+    await expectIssuePageDrawn(page);
+    await expect.poll(() => partRows("review")).toEqual([changed, id(seeded.tiedOlder)]);
+    await expect(waitingCount(page)).toHaveText("Waiting on you (4)");
+
+    const row = nodeRow(page, changed).first();
+    await row.locator('button[data-row-action="change"]').click();
+    await row.getByLabel(CONTROL_LABELS.your_change).fill(words);
+    await row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change }).click();
+
+    // The decision leaves the review list and stands with the reader's own decisions.
+    await expect
+      .poll(() => partRows("review"), { message: "the changed decision still waits for review" })
+      .toEqual([id(seeded.tiedOlder)]);
+    expect(await partRows("yours"), "the changed decision is not among the reader's own").toEqual([
+      changed,
+    ]);
+    // It says a change was asked for, by a word and a shape, and takes no Keep and no Change.
+    expect(rowOf(await drawnRows(page), changed)).toMatchObject({
+      state: "change_requested",
+      stateWord: NODE_STATE_WORDS.decision.change_requested,
+    });
+    await expect(row.locator("button[data-row-action]")).toHaveCount(0);
+    // The change is drawn under the decision's words, word for word, by who asked, with a link
+    // to it in the conversation.
+    const comment = (await listComments(seeded.key)).find((one) => one.body === words);
+    expect(comment, "the server holds no comment for the change").toBeDefined();
+    await expect(row.locator("[data-decision-change] [data-change-words]")).toHaveText(words);
+    await expect(row.locator("[data-decision-change] [data-change-by]")).toHaveText("alice");
+    await expect(row.locator("[data-decision-change] [data-change-link]")).toHaveAttribute(
+      "href",
+      `/issues/${seeded.key}/comments/${comment?.id}`
+    );
+    // The counts move: one decision fewer waits on the reader.
+    await expect(waitingCount(page), "the count did not move").toHaveText("Waiting on you (3)");
+
+    // With no filter on, the decision says the same and the change hangs under it.
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    expect(rowOf(await drawnRows(page), changed)).toMatchObject({
+      state: "change_requested",
+      stateWord: NODE_STATE_WORDS.decision.change_requested,
+    });
+    expect(
+      await parentOfRow(page, comment?.id ?? ""),
+      "the change is not drawn under the decision it changes"
+    ).toBe(changed);
+    const outlined = await focusRow(page, changed);
+    await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
+    await expect(waitingCount(page)).toHaveText("Waiting on you (3)");
+  });
+});
+
+// c-home. The Spec filter's body: the decision beside the statements it shaped, in the words it
+// came from, and one line on each statement's own row (R5), drawn with the focus elsewhere and
+// the pointer off the page; the tester's F7 is read here too - the line is a link to the
+// decision, and `w` moves the focus to it. Partial on today's data: a statement carries no
+// `from` (dispatch://INFRA-1098 item 21), so no statement hangs under an answered ask and the
+// body draws one group with no heading; a criterion is dispatch://INFRA-1253's; an agent
+// decision's level of uncertainty and its reason are dispatch://INFRA-1150's; and the versions
+// of a filter's query are dispatch://INFRA-1253 R8, so this row reads the live Spec filter.
+test("a spec node shows the decisions that shaped it at every version", async ({ browser }) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const statement = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const decisionNode = (index: number) =>
+      blockNodeId(decisionsSlug, seeded.decisions[index] ?? "");
+    const stored = (await getIssueDecisions(seeded.key)).decisions ?? [];
+    expect(
+      stored.some((one) => one.kind === "person"),
+      "the seed holds no decision the server reads as a person's"
+    ).toBe(true);
+    const answered = await getAsk(seeded.answeredAskId);
+    const answer = answered.ask.answer?.text ?? "";
+    expect(answer, "the seeded ask holds no answer to quote").not.toBe("");
+    const quote = firstLineOf(answer).line;
+
+    await openPreset(page, seeded.key, "spec");
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await decidedByCells(page)).filter((cell) => cell.said !== null).length, {
+        message: "the Spec filter draws no decision beside its statements",
+      })
+      .toBeGreaterThan(0);
+    // Nothing is focused and nothing is hovered: the lines are drawn by the page itself.
+    await focusThePage(page);
+
+    // The person's decision draws the three statements its ties point to, once, under one
+    // cell, in the words it came from: the person's own answer to its first sentence end, the
+    // question it answers, who answered, and a link to the whole answer.
+    const cells = await decidedByCells(page);
+    const mine = cells.filter((cell) => cell.said === "you");
+    expect(mine, "the person's decision is not drawn once").toHaveLength(1);
+    expect(
+      mine[0]?.ids,
+      "the person's decision does not stand beside the three statements it shaped"
+    ).toEqual([statement(3), statement(4), statement(5)]);
+    expect(mine[0]?.text).toContain(SPEC_WORDS.said_you);
+    expect(mine[0]?.text).toContain(`“${quote}”`);
+    expect(mine[0]?.text).toContain(answered.ask.question);
+    expect(mine[0]?.text).toContain("alice");
+    await expect(
+      issuePage(page).locator('[data-spec-cell][data-said="you"] [data-spec-whole]'),
+      "the cell carries no link to the whole answer"
+    ).toHaveAttribute("href", `/issues/${seeded.key}/asks/${seeded.answeredAskId}`);
+
+    // The agent's decision stands beside the two it shaped, marked as an agent's, in its own
+    // words.
+    const agents = cells.filter(
+      (cell) => cell.said === "agent" && cell.text.includes("Chosen so the page makes no request")
+    );
+    expect(
+      agents.flatMap((cell) => cell.ids).sort(),
+      "the agent's decision does not stand beside the two statements it shaped"
+    ).toEqual([statement(1), statement(2)].sort());
+    expect(agents[0]?.text).toContain(SPEC_WORDS.said_agent);
+
+    // One line on each statement's own row, with the same words, who decided and when; a
+    // statement a second decision shaped names it after the first.
+    const lines = await becauseLines(page);
+    for (const index of [3, 4, 5]) {
+      expect(
+        lines[statement(index)],
+        `statement ${index} carries no line for its decision`
+      ).toContain(`${SPEC_WORDS.because} “${quote}”`);
+      expect(lines[statement(index)]).toContain("alice");
+    }
+    expect(lines[statement(4)], "the second decision that shaped it is not named").toContain(
+      SPEC_WORDS.informed_by
+    );
+    expect(lines[statement(1)], "the agent's line is drawn on the wrong statement").toContain(
+      "Chosen so the page makes no request per node."
+    );
+    // A replaced decision draws no line: the statement it shaped stands with none, and its
+    // cell says so, as does the cell of a statement no decision shaped (R35).
+    expect(lines[statement(6)] ?? "", "the replaced decision draws a line").toBe("");
+    expect(lines[statement(7)] ?? "", "a statement no decision shaped carries a line").toBe("");
+    const unshaped = cells.find((cell) => cell.ids.includes(statement(6)));
+    expect(
+      unshaped?.said,
+      "a statement only a replaced decision shaped names a decision"
+    ).toBeNull();
+    expect([
+      EMPTY_STATE_LINES.spec_no_decision_one,
+      EMPTY_STATE_LINES.spec_no_decision_many,
+    ]).toContain(unshaped?.text);
+
+    // Every statement of the query is a row of this body, and no decision and no issue is.
+    const rows = await drawnRows(page);
+    for (const requirement of seeded.requirements) {
+      expect(
+        rowOf(rows, blockNodeId(specSlug, requirement)),
+        `the Spec filter does not draw ${requirement}`
+      ).toBeDefined();
+    }
+    expect(
+      rowOf(rows, decisionNode(0)),
+      "the Spec filter draws a decision as a row"
+    ).toBeUndefined();
+    expect(rowOf(rows, seeded.key), "the Spec filter draws the issue as a row").toBeUndefined();
+
+    // Nothing opens on hover: the pointer crosses every cell and the body's text is the same.
+    const before = await issuePage(page).locator("[data-spec-body]").innerText();
+    for (const cell of await issuePage(page).locator("[data-spec-cell]").all()) await cell.hover();
+    expect(
+      await issuePage(page).locator("[data-spec-body]").innerText(),
+      "the body changed under the pointer"
+    ).toBe(before);
+
+    // F7: with the focus on a statement, its line is the link to the decision that shaped it,
+    // and `w` moves the focus to that decision, which then draws the whole answer.
+    const shaped = nodeRow(page, statement(3)).first();
+    await shaped.focus();
+    await expect(
+      shaped.locator("[data-spec-because] a[data-spec-because-link]"),
+      "the focused statement does not link the decision that shaped it"
+    ).toHaveAttribute("href", `/issues/${seeded.key}/asks/${seeded.answeredAskId}`);
+    await page.keyboard.press("w");
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => ({
+            cell: document.activeElement?.hasAttribute("data-spec-cell") ?? false,
+            said: document.activeElement?.getAttribute("data-said") ?? null,
+          })),
+        { message: "w did not move the focus to the decision behind the statement" }
+      )
+      .toEqual({ cell: true, said: "you" });
+    await expect(
+      issuePage(page).locator('[data-spec-cell][data-said="you"] [data-spec-whole-answer]'),
+      "the focused decision does not draw the person's whole answer"
+    ).toHaveText(answer, { useInnerText: true });
+  });
+});
+
+// The reviewer's finding on the not-found page (deep-links.e2e.ts:1193 on main reads "Ask not
+// found"): the page's word for an ask is "question" (R34), and the article follows the noun.
+test("an address naming a question the issue does not hold says so in the page's own words", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page, seeded) => {
+    await page.goto(`/issues/${seeded.key}/asks/00000000-0000-4000-8000-000000000000`);
+    await expect(
+      page.getByRole("heading", { exact: true, name: "Question not found" }),
+      "the page does not say the question was not found"
+    ).toBeVisible();
+    const said = (await page.locator("main").innerText()).replace(/\s+/g, " ");
+    expect(said, "the page says 'an question'").not.toMatch(/\ban question\b/iu);
+    expect(said, "the page calls the question an ask").not.toMatch(/\bask\b/iu);
+  });
+});
+
+// c-decisions. Clause by clause, at 1440 px and at 390 px. What waits on dispatch://INFRA-1150
+// and is not read here: an agent decision's author (`decided_by`), its level of uncertainty and
+// its reason, the reading under an agent's decision, and the `shaped` tuple itself (today's tie
+// is a decision block's link to a spec block). What waits on dispatch://INFRA-1253: the
+// unconverted issue, `?view=decisions`, and "the page makes no request to /decisions".
+test("the Decisions filter draws its four parts and quotes the person's answer", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedDecisionsFilter, async (page, seeded) => {
+    const specSlug = await primarySlug(seeded.key);
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const D = (index: number) => blockNodeId(decisionsSlug, seeded.decisions[index] ?? "");
+    const open = blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID);
+    const stored = (await getAsk(seeded.optionedAskId)).ask.answer;
+    expect(stored?.text ?? "", "the seed's answered ask holds no answer").not.toBe("");
+    // A heading is its words and its count; the foot's is its control's, which says whether the
+    // rows under it are drawn. White space between the parts of one is the browser's to lay out.
+    const squeezed = (text: string) => text.replace(/\s+/gu, "");
+    const headings = {
+      agents: squeezed(`▸ 3 ${DECISIONS_WORDS.agents_many}`),
+      open_questions: squeezed(`${DECISIONS_WORDS.parts.open_questions} 1`),
+      review: squeezed(`${DECISIONS_WORDS.parts.review} 2`),
+      yours: squeezed(`${DECISIONS_WORDS.parts.yours} 4`),
+    };
+    const parts = async () =>
+      (await decisionsPartsDrawn(page)).map((part) => ({
+        ...part,
+        heading: squeezed(part.heading),
+      }));
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `at ${size.width} px`;
+      await page.setViewportSize(size);
+      await openPreset(page, seeded.key, "decisions");
+      await expectIssuePageDrawn(page);
+      // Four parts under their own headings, in this order: the open question first, the two
+      // decisions waiting for review newest first, the reader's own decisions newest first -
+      // the one kept, the question declined, the two answered - and the foot, folded.
+      await expect.poll(parts, { message: `the four parts ${at}` }).toEqual([
+        { count: "1", heading: headings.open_questions, part: "open_questions", rows: [open] },
+        { count: "2", heading: headings.review, part: "review", rows: [D(5), D(0)] },
+        {
+          count: "4",
+          heading: headings.yours,
+          part: "yours",
+          rows: [D(4), seeded.declinedAskId, seeded.optionedAskId, seeded.answeredAskId],
+        },
+        { count: "3", heading: headings.agents, part: "agents", rows: [] },
+      ]);
+      // No other sentence stands over them or between them.
+      expect(
+        await page.evaluate(() => {
+          const body = document.querySelector("[data-decisions-body]")?.cloneNode(true);
+          if (!(body instanceof Element)) return null;
+          for (const row of body.querySelectorAll("[data-node-row]")) row.remove();
+          return {
+            paragraphs: body.querySelectorAll("p").length,
+            text: (body.textContent ?? "").replace(/\s+/gu, ""),
+          };
+        }),
+        `words outside the rows ${at}`
+      ).toEqual({
+        paragraphs: 0,
+        text: `${headings.open_questions}${headings.review}${headings.yours}${headings.agents}`,
+      });
+
+      // A declined ask reads as a question the person declined, never as an answer.
+      const declined = nodeRow(page, seeded.declinedAskId).first();
+      await expect(declined.locator("[data-ask-declined] p").first()).toHaveText(
+        `alice ${DECISIONS_WORDS.declined}`
+      );
+      await expect(declined.locator("[data-declined-note]")).toHaveText(
+        "The release owner decides this one."
+      );
+      expect(rowOf(await drawnRows(page), seeded.declinedAskId)).toMatchObject({
+        answerLine: null,
+        answerText: null,
+        state: "declined",
+        stateWord: NODE_STATE_WORDS.ask.declined,
+      });
+
+      // The answered ask draws its question and options; with the focus on it, the person's
+      // answer character for character as the store holds it, by who answered, with no reading
+      // under it: the section of decisions.md that restates it is no row of the filter.
+      const asked = nodeRow(page, seeded.optionedAskId).first();
+      await asked.focus();
+      await expect
+        .poll(async () => rowOf(await drawnRows(page), seeded.optionedAskId)?.answerText ?? null, {
+          message: `the answered ask does not draw the person's answer as the store holds it ${at}`,
+        })
+        .toBe(stored?.text ?? "");
+      await expect(asked.locator('[data-node-option="chosen"]')).toHaveCount(1);
+      await expect(asked.locator('[data-node-option="chosen"]')).toContainText("Rail");
+      await expect(asked.locator("[data-node-option]")).toHaveCount(2);
+      expect(
+        rowOf(await drawnRows(page), seeded.optionedAskId)?.answerAuthor,
+        `the answered ask does not name who answered ${at}`
+      ).toBe(stored?.user);
+      expect(await nodeRow(page, D(1)).count(), `the reading is a row of the filter ${at}`).toBe(0);
+
+      // The three states, as words: waiting for review, kept with the keeper's name, replaced.
+      await decisionsFoot(page).click();
+      await expect
+        .poll(async () => (await parts()).find((part) => part.part === "agents")?.rows.length, {
+          message: `the foot did not unfold ${at}`,
+        })
+        .toBe(3);
+      const rows = await drawnRows(page);
+      expect(rowOf(rows, D(5))).toMatchObject({
+        state: "waiting_review",
+        stateWord: NODE_STATE_WORDS.decision.waiting_review,
+      });
+      expect(rowOf(rows, D(4))).toMatchObject({
+        state: "kept",
+        stateWord: `${NODE_STATE_WORDS.decision.kept} alice`,
+      });
+      expect(rowOf(rows, D(6))).toMatchObject({
+        state: "replaced",
+        stateWord: NODE_STATE_WORDS.decision.replaced,
+      });
+      expect(rowOf(rows, D(2))?.unsure, `the unsure decision does not say so ${at}`).toBe(
+        CONTROL_LABELS.unsure
+      );
+
+      // The person's decision that shaped three statements is one entry with one node id - the
+      // answer itself - and it reaches each of the three; the agent's reaches its two.
+      expect(await nodeRow(page, seeded.answeredAskId).count()).toBe(1);
+      await expect(
+        nodeRow(page, seeded.answeredAskId).locator("[data-decision-statement] a"),
+        `the person's decision does not reach the three statements it shaped ${at}`
+      ).toHaveCount(3);
+      await expect(nodeRow(page, D(0)).locator("[data-decision-statement] a")).toHaveCount(2);
+
+      // Each entry links to the node that holds it, in the conversation.
+      expect(
+        await page.evaluate(() =>
+          [...document.querySelectorAll("[data-decisions-body] [data-node-row]")]
+            .filter((row) => row.querySelectorAll("a[data-entry-link]").length !== 1)
+            .map((row) => row.getAttribute("data-node-id"))
+        ),
+        `entries with no link of their own ${at}`
+      ).toEqual([]);
+      await expect(
+        nodeRow(page, seeded.optionedAskId).locator("a[data-entry-link]")
+      ).toHaveAttribute("href", `/issues/${seeded.key}/asks/${seeded.optionedAskId}`);
+    }
+
+    // The same three words wherever a decision is drawn: with no filter on too, where the
+    // section that restates the person's answer hangs under the ask it answers.
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    const outline = await drawnRows(page);
+    expect(rowOf(outline, D(5))?.stateWord).toBe(NODE_STATE_WORDS.decision.waiting_review);
+    expect(rowOf(outline, D(4))?.stateWord).toBe(`${NODE_STATE_WORDS.decision.kept} alice`);
+    expect(rowOf(outline, D(6))?.stateWord).toBe(NODE_STATE_WORDS.decision.replaced);
+    expect(
+      await parentOfRow(page, D(1)),
+      "the decision that answers the ask is not drawn under it"
+    ).toBe(seeded.answeredAskId);
   });
 });

@@ -18,8 +18,9 @@ import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { IssueThreeThings, specSummary } from "./IssueThreeThings";
-import { IssueTree, ZOOMED_TREE_QUERY } from "./IssueTree";
+import { IssueTree, type OutlineRequest, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
+import { KEY_REPORTS } from "./page-structure";
 import type { NodeType } from "./page-words";
 import { blockNodeId } from "./tree-drafts";
 
@@ -118,13 +119,16 @@ function IssueScope(): ReactNode {
 
 function renderTree(
   root: TreeNode,
-  { artifacts = [], decisions }: { artifacts?: Artifact[]; decisions?: IssueDecisions } = {}
+  {
+    artifacts = [],
+    decisions,
+    request,
+  }: { artifacts?: Artifact[]; decisions?: IssueDecisions; request?: OutlineRequest } = {}
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
-  const reports: string[] = [];
   const edited: (string | undefined)[] = [];
   const view = render(
     <MemoryRouter>
@@ -141,7 +145,7 @@ function renderTree(
               holdsEscape={false}
               isClosed={false}
               onEditing={(artifactId) => edited.push(artifactId)}
-              onReport={(report) => reports.push(report)}
+              {...(request === undefined ? {} : { request })}
               reveal={undefined}
               root={root}
               rootRow
@@ -151,7 +155,12 @@ function renderTree(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { edited, reports, ...view };
+  return { edited, ...view };
+}
+
+/** What a key reported at the row it was pressed on, or undefined where no row draws one. */
+function rowReport(container: HTMLElement): string | undefined {
+  return container.querySelector("[data-row-report]")?.textContent ?? undefined;
 }
 
 /** Every row drawn for `nodeId`, in the order the tree drew them: one per placement (R23). */
@@ -403,7 +412,7 @@ test("q reaches every open question while the tree is read one node at a time", 
   await waitFor(() => expect(focusedRow(view.container)).toBe("ask-1"));
   await user.keyboard("q");
   await waitFor(() => expect(focusedRow(view.container)).toBe("ask-2"));
-  expect(view.reports.at(-1)).toBe("");
+  expect(rowReport(view.container)).toBeUndefined();
 });
 
 // R6: `.` zooms into the focused node, and the key then takes the reader to that node so its
@@ -485,10 +494,11 @@ test("on a phone a branch's counted line opens its nodes in place", async () => 
   const open = line.querySelector("button");
   if (open === null) throw new Error("the counted line opens nothing");
   await user.click(open);
-  // Pressing the line draws what it holds in its place, under the head the reader was on.
+  // Pressing the line draws what it holds in its place, under the head the reader was on: the
+  // outline is still read from the issue, with no crumb above it.
   await waitFor(() => expect(rowsFor(view.container, "first")).toHaveLength(1));
   expect(rowsFor(view.container, "head")).toHaveLength(1);
-  expect(rowsFor(view.container, KEY)).toHaveLength(1);
+  expect(view.container.querySelector("[data-crumb]")).toBeNull();
 });
 
 // R9: a row's key is the path from the issue down to it, and it holds the pin, the open body
@@ -523,7 +533,7 @@ test("a row keeps its key, and its pin, through a zoom in and back out", async (
   // the reader pinned open is still open.
   await act(async () => requirement.focus());
   await user.keyboard(".");
-  await waitFor(() => expect(rowsFor(view.container, KEY).length).toBe(0));
+  await waitFor(() => expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull());
   const [zoomedCheck] = rowsFor(view.container, "verification#b-c1");
   expect(zoomedCheck?.getAttribute("data-row-key")).toBe(keyOfCheck);
   expect(zoomedCheck?.querySelector("[data-pinned]")).toBeTruthy();
@@ -534,7 +544,7 @@ test("a row keeps its key, and its pin, through a zoom in and back out", async (
     expect(rowsFor(view.container, "spec#b-r1")[0]?.querySelector("[data-pinned]")).toBeTruthy()
   );
   await user.keyboard(",");
-  await waitFor(() => expect(rowsFor(view.container, KEY).length).toBe(1));
+  await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
   expect(rowsFor(view.container, "spec#b-r1")[0]?.querySelector("[data-pinned]")).toBeTruthy();
   expect(
     rowsFor(view.container, "verification#b-c1")[0]?.querySelector("[data-pinned]")
@@ -657,15 +667,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
   const view = renderTree(root, { artifacts: [decisionsDocument] });
   const head = render(
     <MemoryRouter>
-      <IssueThreeThings
-        checks={[]}
-        inPane={false}
-        issueKey={KEY}
-        plan={undefined}
-        planTasks={0}
-        reading={false}
-        summary={specSummary(root, "spec")}
-      />
+      <IssueThreeThings look="pane" reading={false} summary={specSummary(root, "spec")} />
     </MemoryRouter>
   );
   try {
@@ -679,7 +681,9 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
       );
     expect(kinds(rowsFor(view.container, requirement)[0])).toEqual(["no_check"]);
     expect(kinds(rowsFor(view.container, settled)[0])).toEqual([]);
-    expect(head.container.querySelector("li")?.textContent).toBe("What this is.");
+    expect(head.container.querySelector("li [data-author-text]")?.textContent).toBe(
+      "What this is."
+    );
     expect(kinds(head.container)).toEqual([]);
     for (const words of ["No source given", "Not confirmed in Dispatch", "No author in Dispatch"]) {
       expect(view.container.textContent).not.toContain(words);
@@ -689,4 +693,140 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
     head.unmount();
     view.unmount();
   }
+});
+
+// The architect's ruling 5: the header is the issue, so the outline draws no row that repeats its
+// key and title, and its first row is the first node under the issue. R7: the page opens with
+// the focus on that row where no open question waits on the reader.
+test("the outline draws no row of the issue, and opens with the focus on its first row", async () => {
+  setViewport(1440);
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "ask-1", question: true, text: "Which flag?", type: "ask" }),
+    ],
+    id: KEY,
+    text: `${KEY} The issue's own title`,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  expect(rowsFor(view.container, KEY)).toHaveLength(0);
+  const rows = [...view.container.querySelectorAll("[data-node-row]")];
+  expect(rows.map((row) => row.getAttribute("data-node-id"))).toEqual(["comment-1", "ask-1"]);
+  expect(rows.map((row) => row.getAttribute("aria-level"))).toEqual(["1", "1"]);
+  // The open question waits on somebody else, so the first row is where the page opens.
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+});
+
+// R7: the page opens with the focus on the first open question that waits on the reader, in the
+// outline's own order, its path unfolded.
+test("the page opens with the focus on the first open question that waits on the reader", async () => {
+  setViewport(1440);
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({
+        children: [
+          node({ id: "ask-theirs", question: true, text: "Not yours?", type: "ask" }),
+          node({ id: "ask-mine", question: true, text: "Yours?", type: "ask", waiting: true }),
+        ],
+        held: 2,
+        id: "comment-2",
+        text: "A thread.",
+        type: "comment",
+      }),
+      node({ id: "ask-later", question: true, text: "Also yours?", type: "ask", waiting: true }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("ask-mine"));
+});
+
+// The tester's F16: what a key reports when it has nowhere to go is drawn at the row it was
+// pressed on, and the reader's next move lets it go.
+test("a key with nowhere to go says so at its row, until the next move", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("w");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.no_decision));
+  const [first] = rowsFor(view.container, "comment-1");
+  expect(first?.querySelector("[data-row-report]")).not.toBeNull();
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  expect(rowReport(view.container)).toBeUndefined();
+});
+
+// The reviewer's finding on the Contents pane's asks: an ask is acted on once, whatever draws
+// the tree again in between - a document opened in its place and closed mounts a new tree with
+// the page's last ask still in hand, and that ask must not move the reader a second time.
+test("an ask of the Contents pane is acted on once, across the tree being drawn again", async () => {
+  setViewport(1440);
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const request: OutlineRequest = { focusBranch: false, id: "comment-2", seq: 1 };
+  const first = renderTree(root, { request });
+  await waitFor(() => expect(focusedRow(first.container)).toBe("comment-2"));
+  first.unmount();
+  const again = renderTree(root, { request });
+  await waitFor(() => expect(focusedRow(again.container)).toBe("comment-1"));
+  expect(focusedRow(again.container)).not.toBe("comment-2");
+});
+
+// The architect's ruling 1: a crumb draws one line for a node, so it is R1's first line, cut at a
+// word, never cut again mid-word by its box; the issue's crumb is its key.
+test("a crumb is its node's first line cut at a word, and the issue's is its key", async () => {
+  setViewport(1000);
+  const user = userEvent.setup();
+  const long =
+    "A first sentence that runs on well past the hundred characters a first line may hold so it is cut at a word boundary";
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "comment-2", text: "Under it.", type: "comment" })],
+        held: 1,
+        id: "comment-1",
+        text: long,
+        type: "comment",
+      }),
+    ],
+    id: KEY,
+    text: `${KEY} The issue's own title`,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard(".");
+  await waitFor(() => expect(rowsFor(view.container, "comment-2")).toHaveLength(1));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  await user.keyboard(".");
+  const crumbs = await waitFor(() => {
+    const found = [...view.container.querySelectorAll<HTMLElement>("[data-crumb]")];
+    if (found.length < 2) throw new Error("the breadcrumb holds no crumb of the comment");
+    return found;
+  });
+  expect(crumbs[0]?.textContent).toBe(KEY);
+  const crumb = crumbs[1]?.textContent ?? "";
+  expect(crumb.endsWith("…")).toBe(true);
+  expect(long.startsWith(crumb.slice(0, -1))).toBe(true);
+  expect(long.charAt(crumb.length - 1)).toBe(" ");
+  expect(crumbs[1]?.className).not.toContain("truncate");
 });

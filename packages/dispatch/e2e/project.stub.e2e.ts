@@ -158,11 +158,7 @@ filterTest(
 referencesTest(
   "an issue's Artifacts tab lists its reference closure and a document page lists its referrers @pr",
   async ({ page, scene }, testInfo) => {
-    // The issue's reference closure is drawn on each of its artifacts' own pages, where the
-    // Artifacts tab's list went (dispatch://INFRA-1196, the Design's "Where each thing goes";
-    // `features/artifacts/IssueReferenceClosure.tsx`): `/issues/<key>/artifacts` opens the node
-    // menu, which carries no closure.
-    await page.goto(`/issues/${scene.issue}/artifacts/source-doc`);
+    await page.goto(`/issues/${scene.issue}/artifacts`);
     await page.getByText(/References \(\d+\)/).click();
     const references = page.getByRole("region", { name: "References" });
     await expect(references.getByRole("link", { name: "Design notes" })).toHaveAttribute(
@@ -172,23 +168,23 @@ referencesTest(
     await expect(references).toContainText("via artifact");
     await expect(references).toContainText("depth 1");
     await expect(references).toContainText("depth 2");
-    const toggles = page
-      .getByRole("main")
-      .locator('[data-testid="issue-presets"] button[aria-pressed]');
-    await expect(toggles).toHaveCount(5);
+    const tabs = page.getByRole("main").getByRole("tab");
+    await expect(tabs).toHaveCount(9);
     for (const [index, name] of [
-      "Conversation",
       "Spec",
       "Verification",
       "Plan",
+      "Conversation",
+      "Children",
+      "Artifacts 2",
+      "Activity",
       "Decisions",
+      "Collaborators",
     ].entries()) {
-      await expect(toggles.nth(index)).toHaveAccessibleName(name);
+      await expect(tabs.nth(index)).toHaveAccessibleName(name);
     }
     await expect(page.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-    // The opened document draws its own mention of Design notes as a chip too, so the link the
-    // row follows is the closure's.
-    await references.getByRole("link", { name: "Design notes" }).click();
+    await page.getByRole("link", { name: "Design notes" }).click();
     await expect(page).toHaveURL("/projects/CORE/documents/design-notes");
     await expect(page.getByRole("region", { name: "Referenced by" })).toContainText(
       `Comment · ${scene.issue}`

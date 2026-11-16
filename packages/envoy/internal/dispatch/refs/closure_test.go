@@ -120,13 +120,10 @@ func insertDocumentBlock(t *testing.T, tx pgx.Tx, artifactID, blockID, nodeID st
 	}
 }
 
-// closureStatementRows runs one closure statement and answers the four columns both it and
-// main's oracle carry, in the order the statement gave them, which is how the two statements'
-// answers are compared here. The closure answers a fifth column main's did not — the blocks of
-// the member's via that cite it — which is read through Closure itself, whose members carry it.
-func closureStatementRows(t *testing.T, database *store.Store, statement string, args ...any) []closureRow {
+// closureStatementRows runs statement and answers its rows in the order it gave them.
+func closureStatementRows(t *testing.T, database *store.Store, statement, issueKey string) []closureRow {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), statement, args...)
+	rows, err := database.Pool.Query(context.Background(), statement, issueKey)
 	if err != nil {
 		t.Fatalf("run the closure statement: %v", err)
 	}
@@ -134,12 +131,7 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 	var got []closureRow
 	for rows.Next() {
 		var row closureRow
-		var viaBlocks []string
-		targets := []any{&row.refKey, &row.depth, &row.viaKind, &row.viaID}
-		if len(rows.FieldDescriptions()) == len(targets)+1 {
-			targets = append(targets, &viaBlocks)
-		}
-		if err := rows.Scan(targets...); err != nil {
+		if err := rows.Scan(&row.refKey, &row.depth, &row.viaKind, &row.viaID); err != nil {
 			t.Fatalf("scan a closure row: %v", err)
 		}
 		got = append(got, row)
@@ -160,7 +152,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	if len(want) < 9 {
 		t.Fatalf("main's closure answered %d rows, too few for the comparison to decide anything: %v", len(want), want)
 	}
-	if got := closureStatementRows(t, fixture.database, closureQuery, "CORE-1", false); !reflect.DeepEqual(got, want) {
+	if got := closureStatementRows(t, fixture.database, closureQuery, "CORE-1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the closure answered\n%v\nwant main's rows\n%v", got, want)
 	}
 
@@ -184,7 +176,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	if !wantTruncated {
 		t.Fatal("main's closure reached no ninth hop, so the fixture decides nothing about truncation")
 	}
-	members, truncated, err := Closure(context.Background(), fixture.database.Pool, "CORE-1", false)
+	members, truncated, err := Closure(context.Background(), fixture.database.Pool, "CORE-1")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -220,7 +212,7 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 		t.Fatalf("set local enable_seqscan = off: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery, "CORE-1", false).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery, "CORE-1").Scan(&raw); err != nil {
 		t.Fatalf("explain the closure: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)

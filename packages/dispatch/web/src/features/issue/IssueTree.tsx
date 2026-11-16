@@ -1,12 +1,15 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { DETAILS_ATTRIBUTE } from "../margin/margin-slot";
 import { useMediaQuery } from "../shell/useDialog";
 import { useSetFocusedNode } from "./focused-node";
 import { bringOnScreen } from "./identity-block";
-import { firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
+import { pathToTarget } from "./issue-address";
+import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
@@ -21,7 +24,7 @@ import {
   treeRows,
   zoomBreadcrumb,
 } from "./tree-fold";
-import { everythingOpened, rowKeyOf } from "./tree-keys";
+import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
 import { useNodeEditing } from "./useNodeEditing";
 import { useTreeKeymap } from "./useTreeKeymap";
 
@@ -35,15 +38,22 @@ import { useTreeKeymap } from "./useTreeKeymap";
  * drawn by `TreeRows.tsx` and the caret in a node's own text is `useNodeEditing.ts`'s.
  *
  * The tree is the one body the page and every filter draw: the page hands it the tree its view
- * left. With no filter on the issue is its first row; a filter draws its own kinds as rows and
- * no other (R2), so there the issue is no row and the filter's rows are the tree's top level,
- * each drawn whole at every width, its parent a line on it where that parent is no row. A row
- * drawn to place the filter's own - a requirement under Verification - is context, faint and
- * marked, and reached by the arrow keys like any other row.
+ * left. The issue is never a row: the header is the issue, so the outline's first row is the
+ * first node under it (the architect's ruling 5). A filter draws its own kinds as rows and no
+ * other (R2), each drawn whole at every width, its parent a line on it where that parent is no
+ * row. A row drawn to place the filter's own - a requirement under Verification - is context,
+ * faint and marked, and reached by the arrow keys like any other row.
  *
  * The tree answers the WAI-ARIA tree pattern's roles and properties and keeps one tab stop: the
  * focused row is the only row that takes the focus. The keys that move it are
  * `dispatch://INFRA-1196/artifact/plan-md#b-t15`'s, so a reader uses the pointer until they land.
+ * A key that has nowhere to go says so at the row it was pressed on, until the reader's next
+ * key or move.
+ *
+ * The page opens with the focus on the first open question that waits on the reader, its path
+ * unfolded and its row in the viewport, and on the outline's first row where none does (R7). A
+ * write from the line at the foot takes the reader to what they wrote once its read has drawn
+ * it, its branch unfolded (R16, `outline-writer.tsx`'s `Landing`).
  *
  * Below 1024 px the page with no filter on is read one node at a time (R16): the path down to
  * the node the reader is on is a breadcrumb, and the outline draws that node and one level
@@ -60,7 +70,6 @@ export function IssueTree({
   holdsEscape,
   isClosed,
   onEditing,
-  onReport,
   openBody,
   request,
   reveal,
@@ -94,10 +103,6 @@ export function IssueTree({
    *  editor rather than leaving the row with nothing to put a caret in; `undefined` whenever
    *  the reader is editing nothing. */
   onEditing: (artifactId: string | undefined) => void;
-  /** What a key reported when it had nowhere to go, which the page draws in its own status
-   *  at the top of the body (R9, R21): the tree raises it rather than drawing it, so the
-   *  page's one report is the first status a reader of the page meets. */
-  onReport: (report: string) => void;
   /** The node this preset draws the body of without being asked: what waits for the reader
    *  there, such as a decision waiting for their review (R7). It opens that body and takes no
    *  focus, which stays the reader's. */
@@ -111,8 +116,9 @@ export function IssueTree({
   reveal: readonly TreeNode[] | undefined;
   /** The tree as the view left it. */
   root: TreeNode;
-  /** Whether the issue itself is the tree's first row, which it is with no filter on and never
-   *  under a filter (`presets.ts`'s `PresetView.rootRow`). */
+  /** Whether no filter is on (`presets.ts`'s `PresetView.rootRow`): the conversation, which is
+   *  read one node at a time below 1024 px (R16) and which the page opens on what waits on the
+   *  reader (R7). A filter's rows are drawn whole at every width. */
   rootRow: boolean;
 }): ReactNode {
   const [opened, setOpened] = useState<OpenedBranches>(NOTHING_OPENED);
@@ -127,17 +133,35 @@ export function IssueTree({
   const [cycle, setCycle] = useState(0);
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
+  // What a key reported when it had nowhere to go, and the row it was pressed on: the row draws
+  // it, so the reader reads it where they are, and the next key, move or leaving the tree lets
+  // it go. `row` is undefined where the key was pressed with no row focused.
+  const [report, setReport] = useState<{ readonly line: string; readonly row?: string }>();
   // A filter's rows are drawn whole at every width: they are its own kinds alone, a level or two
   // deep, and the one-node-at-a-time reading is the conversation's.
   const zoomed = useMediaQuery(ZOOMED_TREE_QUERY) && rootRow;
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
+  // The reader, whose own new words a write from the line takes them to.
+  const reader = useQuery(whoAmIQuery()).data?.login;
   const body = useRef<HTMLDivElement | null>(null);
+  const reportHere = useCallback((line: string) => {
+    if (line === "") {
+      setReport(undefined);
+      return;
+    }
+    const row = document.activeElement?.closest<HTMLElement>("[data-node-row]");
+    const inTree = row != null && body.current?.contains(row) === true;
+    setReport({
+      line,
+      ...(inTree && row.dataset.rowKey !== undefined ? { row: row.dataset.rowKey } : {}),
+    });
+  }, []);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
     container: body,
     onEditing,
-    onReport,
+    onReport: reportHere,
   });
 
   const target = reveal?.at(-1);
@@ -189,13 +213,14 @@ export function IssueTree({
     rootedAbove,
     zoomed ? NARROW_LEVELS : DRAWN_LEVELS
   );
-  // Under a filter the issue is no row: its rows are the tree's top level (R2). A zoom into one
-  // of them keeps that row, which the filter draws.
+  // The issue is no row: the header is the issue (the architect's ruling 5), so the nodes under
+  // it are the tree's top level, with no filter on as under one (R2). A zoom into a node keeps
+  // that node's own row, which is the node the reader reads from there.
   const head = drawn[0];
   const rows =
-    rootRow || head?.kind !== "node" || head.node.id !== root.id
-      ? drawn
-      : drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }));
+    head?.kind === "node" && head.node.id === root.id
+      ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
+      : drawn;
   const breadcrumb: readonly TreeNode[] =
     rootedAt === undefined ? [] : zoomBreadcrumb(root, rootedAt);
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
@@ -205,11 +230,14 @@ export function IssueTree({
     (row: string, node: TreeNode) => {
       setFocused(row);
       setStop(row);
+      // A move to a row is the reader going on from what a key reported.
+      setReport(undefined);
       const item = conversationItem(node);
       setFocusedNode({
         ...(node.author === undefined ? {} : { author: node.author }),
         id: node.id,
         ...(item === undefined ? {} : { item }),
+        ...(node.reference === undefined ? {} : { reference: node.reference }),
         ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
         title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
         type: node.type,
@@ -229,6 +257,7 @@ export function IssueTree({
       if (editing !== undefined) return;
       if (to instanceof Node && event.currentTarget.contains(to)) return;
       setFocused(undefined);
+      setReport(undefined);
       if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
       setFocusedNode(undefined);
     },
@@ -301,6 +330,18 @@ export function IssueTree({
     },
     [root, zoomed]
   );
+  /** The row of `id` where it is drawn already, focused where it stands; else `goToNode`, which
+   *  unfolds the path to it and, where the tree is read one node at a time, zooms to it. */
+  const reach = useCallback(
+    (id: string) => {
+      const row = body.current?.querySelector<HTMLElement>(
+        `[data-node-row][data-node-id="${CSS.escape(id)}"]`
+      );
+      if (row === null || row === undefined) goToNode(id);
+      else row.focus();
+    },
+    [goToNode]
+  );
 
   useEffect(() => {
     if (wanted === undefined) return;
@@ -313,10 +354,12 @@ export function IssueTree({
   // The Contents pane's asks, each acted on once. With Focus branch on, the outline is zoomed to
   // the node, which is then the tree's first row and takes the focus; turned off, the zoom is
   // left and the reader is taken to the node in the whole outline, as any other move takes them.
-  const handledRequest = useRef<number | undefined>(undefined);
+  // What was acted on is held by the ask itself (`HANDLED`), which the page keeps across this
+  // tree being drawn again - a filter or a document drawn in its place and closed - so an ask
+  // made for the tree as it stood before does not move the reader again when it comes back.
   useEffect(() => {
-    if (request === undefined || request.seq === handledRequest.current) return;
-    handledRequest.current = request.seq;
+    if (request === undefined || HANDLED.has(request)) return;
+    HANDLED.add(request);
     if (request.focusBranch && request.id !== undefined) {
       setZoom(request.id);
       setWanted(request.id);
@@ -335,7 +378,7 @@ export function IssueTree({
     onFold: unfold,
     onOpenDeeper: openDeeper,
     onPin: pin,
-    onReport,
+    onReport: reportHere,
     onReveal: goToNode,
     onZoom: setZoom,
     oneNodeAtATime: zoomed,
@@ -353,10 +396,10 @@ export function IssueTree({
   // alone until another address names another node.
   const taken = useRef<string | undefined>(undefined);
   // The rows around a landed node are still arriving when it takes the focus - the outline's
-  // other reads, the children's section above it - and each pushes it down the page, out of
-  // sight: the node an address names is focused *and on screen* (R20). Until the reader acts,
-  // the page puts it back on screen whenever the page grows (`bringOnScreen`); a key, a press, a
-  // wheel or a touch is the reader taking over, and a focus that has moved off it ends the hold.
+  // other reads - and each pushes it down the page, out of sight: the node an address names is
+  // focused *and on screen* (R20). Until the reader acts, the page puts it back on screen
+  // whenever the page grows (`bringOnScreen`); a key, a press, a wheel or a touch is the reader
+  // taking over, and a focus that has moved off it ends the hold.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
   const targetId = target?.id;
@@ -377,7 +420,7 @@ export function IssueTree({
     landingHold.current?.abort();
     const hold = new AbortController();
     landingHold.current = hold;
-    for (const type of ["keydown", "pointerdown", "wheel", "touchstart"] as const) {
+    for (const type of READER_ACTS) {
       window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
     }
     if (typeof ResizeObserver === "undefined") return;
@@ -388,6 +431,124 @@ export function IssueTree({
     grown.observe(document.body);
     hold.signal.addEventListener("abort", () => grown.disconnect());
   }, [focusReveal, rows, targetId]);
+
+  // The page opens with the keyboard focus on the first open question that waits on the reader,
+  // in the outline's own order, its path unfolded and its row in the viewport; where none waits
+  // on them, on the outline's first row (R7). It is the page opening: with no filter on, on an
+  // address that names no node, before the reader has pressed, scrolled or touched anything and
+  // while nothing else holds the focus. The reads arrive one after another, so the first row
+  // takes the focus as soon as it is drawn and gives it to the question once the question's
+  // read has answered; the question is where it stays.
+  const opening = useRef<{ done: boolean; on?: string }>({ done: false });
+  useEffect(() => {
+    const settle = new AbortController();
+    for (const type of READER_ACTS) {
+      window.addEventListener(
+        type,
+        () => {
+          opening.current.done = true;
+          settle.abort();
+        },
+        { capture: true, signal: settle.signal }
+      );
+    }
+    return () => settle.abort();
+  }, []);
+  useEffect(() => {
+    const held = opening.current;
+    if (held.done) return;
+    if (!rootRow || targetId !== undefined) {
+      held.done = true;
+      return;
+    }
+    const active = document.activeElement;
+    const free =
+      held.on === undefined
+        ? active === null || active === document.body
+        : active?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId === held.on;
+    if (!free) {
+      held.done = true;
+      return;
+    }
+    const question = nodesInOrder(root).find((node) => node.type === "ask" && node.waiting);
+    if (question !== undefined) {
+      held.done = true;
+      held.on = question.id;
+      reach(question.id);
+      return;
+    }
+    const first = rows.find((row) => row.kind === "node");
+    if (first?.kind !== "node" || first.node.id === held.on) return;
+    const row = body.current?.querySelector<HTMLElement>(
+      `[data-node-row][data-row-key="${CSS.escape(rowKeyOf(first))}"]`
+    );
+    if (row === null || row === undefined) return;
+    held.on = first.node.id;
+    row.focus({ preventScroll: true });
+  }, [reach, root, rootRow, rows, targetId]);
+
+  // A write from the line at the foot takes the reader to what they wrote (R16): their newest
+  // node under what the write answered - the reply, the comment, the question - its branch
+  // unfolded, inside the viewport and focused, or, for an answer, the question's own row. The
+  // send has landed when the line asks, but the read that draws it is still out, so the nodes
+  // of theirs already under it are noted first and the one that is new is gone to once a read
+  // draws it. A read that never draws one where it was looked for - a filter's view that holds
+  // no such row - leaves the reader on their newest node there, or on the row they wrote under.
+  const landing = writer?.landing;
+  const landedFrom = useRef<
+    { readonly before: ReadonlySet<string>; readonly landing: object } | undefined
+  >(undefined);
+  const latest = useRef({ reach, reader, root, writer });
+  latest.current = { reach, reader, root, writer };
+  useEffect(() => {
+    const { writer: line } = latest.current;
+    if (landing === undefined || line === undefined) return;
+    const parent = landingParent(root, landing.under);
+    if (parent === undefined) {
+      line.landed();
+      return;
+    }
+    if (landing.to === "self") {
+      line.landed();
+      reach(parent.id);
+      return;
+    }
+    const own = parent.children.filter(
+      (child) => reader !== undefined && child.author?.kind === "user" && child.author.id === reader
+    );
+    const held = landedFrom.current;
+    if (held?.landing !== landing) {
+      landedFrom.current = { before: new Set(own.map((child) => child.id)), landing };
+      return;
+    }
+    const made = own.find((child) => !held.before.has(child.id));
+    if (made === undefined) return;
+    line.landed();
+    reach(made.id);
+  }, [landing, reach, reader, root]);
+  useEffect(() => {
+    if (landing === undefined) return;
+    const late = window.setTimeout(() => {
+      const now = latest.current;
+      const parent = landingParent(now.root, landing.under);
+      now.writer?.landed();
+      if (parent === undefined) return;
+      const newest = parent.children
+        .filter(
+          (child) =>
+            now.reader !== undefined &&
+            child.author?.kind === "user" &&
+            child.author.id === now.reader
+        )
+        .reduce<TreeNode | undefined>(
+          (last, child) =>
+            last === undefined || (child.at ?? "") >= (last.at ?? "") ? child : last,
+          undefined
+        );
+      now.reach((newest ?? parent).id);
+    }, LANDING_WAIT_MS);
+    return () => window.clearTimeout(late);
+  }, [landing]);
 
   // The tree is one tab stop, and it rests where the reader last stood: before they have
   // touched it that is its first row, so Tab reaches the tree rather than passing it by, and
@@ -409,14 +570,20 @@ export function IssueTree({
               // A crumb is a word in a line of text, not a control box: below 1280 px a plain
               // button is 44 px tall (`styles.css`), which is a third of the head the first
               // open question needs on a phone (R6). Its hit box grows by padding instead.
-              className="dispatch-inline-link max-w-full truncate underline"
+              // It draws one line for a node, so it is R1's first line, cut at a word, and it
+              // wraps rather than being cut again mid-word by its box; the issue is named by
+              // its key, since the header above draws its title.
+              className="dispatch-inline-link max-w-full text-left underline [overflow-wrap:anywhere]"
+              data-crumb={above.id}
               key={above.id}
               onClick={() => setZoom(above.id)}
               tabIndex={-1}
               type="button"
               {...authorText}
             >
-              {above.text === "" ? above.id : firstLineOf(nodeWords(above)).line}
+              {above.id === root.id || above.text === ""
+                ? above.id
+                : drawnLine(firstLineOf(nodeWords(above)))}
             </button>
           ))}
           <span {...pageChrome}>/</span>
@@ -445,6 +612,9 @@ export function IssueTree({
           onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
           {...(openBody === undefined ? {} : { openBody })}
           pinned={pinned}
+          {...(report === undefined
+            ? {}
+            : { report: { line: report.line, row: report.row ?? tabStop } })}
           rows={rows}
           tabStop={tabStop}
           threads={threads}
@@ -459,6 +629,29 @@ export function IssueTree({
   );
 }
 
+/** A reader's own acts, any of which ends the page's own placing of the focus: a key, a press,
+ *  a wheel and a touch. */
+const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
+
+/** How long a write's landing waits for the read that draws it before it takes the reader to
+ *  their newest node where it looked, in milliseconds: the line's send has landed and its read
+ *  is a request away, so a read that has not drawn the node by then is not going to. */
+const LANDING_WAIT_MS = 10_000;
+
+/** The node a write was made under, by the item the line wrote to; the tree's own root for a
+ *  write on the issue itself; undefined where the view the tree draws holds no such node. */
+function landingParent(
+  root: TreeNode,
+  under: { readonly id: string; readonly kind: string } | undefined
+): TreeNode | undefined {
+  return under === undefined ? root : pathToTarget(root, { id: under.id, kind: "item" })?.at(-1);
+}
+
+/** The asks of the Contents pane the outline has acted on (`OutlineRequest`): held by the ask
+ *  itself, which the page keeps while the tree is drawn again, so each is acted on once
+ *  whatever mounts the tree in between. */
+const HANDLED = new WeakSet<OutlineRequest>();
+
 /** The widths the tree is read one node at a time at, one level below the node it is on: below
  *  1024 px (R16), where three levels of indent and a row's own words do not fit together. It is
  *  the exact negation of the width the Contents pane is drawn from (`IssueBody.tsx`'s
@@ -467,7 +660,8 @@ export function IssueTree({
 export const ZOOMED_TREE_QUERY = "not all and (min-width: 64rem)";
 
 /** One ask the Contents pane makes of the outline: the node to go to, where there is one, and
- *  whether Focus branch is on as it asks. `seq` tells two asks for the same node apart. */
+ *  whether Focus branch is on as it asks. Each ask is a value of its own, acted on once
+ *  (`HANDLED`); `seq` tells two asks for the same node apart where they are compared. */
 export interface OutlineRequest {
   readonly focusBranch: boolean;
   readonly id: string | undefined;

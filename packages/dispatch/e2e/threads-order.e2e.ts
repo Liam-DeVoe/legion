@@ -1,4 +1,3 @@
-import { specAddress } from "./editor";
 import { expect, test } from "./test";
 import {
   DECISION_BLOCK,
@@ -40,7 +39,7 @@ test("a document block's thread folds and places its box by the chosen order", a
     for (const [order, expected] of FOLD_ORDERS) {
       await page.goto("/");
       await setThreadOrder(page, order);
-      await page.goto(await specAddress(seeded.blockIssue));
+      await page.goto(`/issues/${seeded.blockIssue}/spec`);
       // The block holds the thread's section and, beside it, the control that reveals the
       // reply box: a collapsed thread puts the box after its own Write a reply (`AskCard`'s
       // `thread="collapsed"`), so the block is what the order places both in.
@@ -82,11 +81,8 @@ test("a margin thread and the Conversation show every reply in the chosen order"
       REPLIES.map((reply) => expect.stringContaining(reply))
     );
 
-    // The issue's margin draws the same thread, the same way, beside the document "View in
-    // document" opens with the comment marked (`?mark=`; `?comment=` opens the issue's outline
-    // on the comment's node, dispatch://INFRA-1196 R20).
-    const marked = `/issues/${seeded.commentIssue}/artifacts/spec?mark=${seeded.comment}`;
-    await page.goto(marked);
+    // The issue's margin draws the same thread, the same way.
+    await page.goto(`/issues/${seeded.commentIssue}/spec?comment=${seeded.comment}`);
     const margin = page.locator(`[data-margin-item="${seeded.comment}"]`);
     await expect(margin).toBeVisible();
     await expand(margin);
@@ -113,7 +109,7 @@ test("a margin thread and the Conversation show every reply in the chosen order"
       [...REPLIES].reverse().map((reply) => expect.stringContaining(reply))
     );
 
-    await page.goto(marked);
+    await page.goto(`/issues/${seeded.commentIssue}/spec?comment=${seeded.comment}`);
     await expect(margin).toBeVisible();
     await expand(margin);
     await expect(marginReplies).toHaveCount(6);

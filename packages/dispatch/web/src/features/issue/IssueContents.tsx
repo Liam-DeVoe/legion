@@ -23,9 +23,10 @@ import {
   pageQuietText,
   pageWaitingBg,
 } from "../../theme/classes";
+import { isViewer } from "../refs/actor";
 import { useDialog } from "../shell/useDialog";
 import { useFocusedNode } from "./focused-node";
-import { nodeWords, type TreeNode } from "./issue-tree";
+import { drawnLine, nodeWords, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { oneLineCut, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -42,9 +43,10 @@ import { pathTo } from "./tree-fold";
 /**
  * The Contents pane at the left of the issue page (dispatch://INFRA-1196 R14, R8, the
  * prototype's `#left`): the issue's three sentences under "In short", then the list of each
- * question and each of the reader's own threads, which go to their node in the outline. From
- * 1024 px up it stands beside the outline; below that the sentences are drawn above the outline
- * and the list is behind the Outline control beside the filters (`OutlineSheet`).
+ * question and each of the reader's own threads, which go to their node in the outline. It is
+ * drawn from 1024 px up with no filter on, beside the outline; under a filter it is not drawn,
+ * and the filter's body has the whole width (the architect's ruling 5). Below 1024 px the
+ * sentences and the list are in the sheet the Outline control opens (`OutlineSheet`).
  *
  * The pane holds no property of the issue, and no sentence about itself: its two headings and
  * its one toggle are its whole chrome (R22).
@@ -71,11 +73,24 @@ export function IssueContentsPane({
 }
 
 /**
- * The list below 1024 px: the Outline control beside the filters, and the sheet it opens over
- * the page, which holds the list and closes once an entry is chosen, as the prototype's `#sheet`
- * does. The three sentences are not in it: below that width they are above the outline (R8).
+ * What the page keeps behind the Outline control below 1024 px, as the 390 px picture draws it
+ * (the prototype's `#viewbar .ob` and `#sheet`): the control beside the one filter control, and
+ * the sheet it opens over the page. The sheet holds, from its head down, the filter row's own
+ * tools at that width (`tools`: the node menu, the words filter and the version control, which
+ * the filter row moves here), the issue's three sentences (`brief`, the architect's ruling 5:
+ * above the outline they cost a phone's first screen 160 px to 239 px), and the list, which
+ * closes the sheet once an entry is chosen. Under a filter and over an opened document it holds
+ * the tools alone.
  */
-export function OutlineSheet({ list }: { list: (close: () => void) => ReactNode }): ReactNode {
+export function OutlineSheet({
+  brief,
+  list,
+  tools,
+}: {
+  brief?: ReactNode;
+  list?: (close: () => void) => ReactNode;
+  tools?: ReactNode;
+}): ReactNode {
   const [open, setOpen] = useState(false);
   const closeButton = useRef<HTMLButtonElement>(null);
   const dialog = useDialog<HTMLDivElement>({
@@ -85,10 +100,12 @@ export function OutlineSheet({ list }: { list: (close: () => void) => ReactNode 
   });
   return (
     <>
+      {/* The prototype's `#viewbar .ob`: 34 px, beside the filter control, inside the filter
+          row, which takes the header's 24 px target size rather than the 44 px floor. */}
       <button
         aria-expanded={open}
         aria-haspopup="dialog"
-        className={`min-h-11 shrink-0 rounded-lg border px-3 text-sm font-semibold ${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusVisibleRing}`}
+        className={`shrink-0 rounded-lg border px-3 py-1.5 text-sm leading-5 font-semibold ${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusVisibleRing}`}
         onClick={() => setOpen(true)}
         type="button"
         {...pageChrome}
@@ -104,7 +121,8 @@ export function OutlineSheet({ list }: { list: (close: () => void) => ReactNode 
           ref={dialog.containerRef}
           role="dialog"
         >
-          <div className="flex shrink-0 justify-end px-3.5 pt-2.5">
+          <div className="flex shrink-0 items-start gap-2 px-3.5 pt-2.5">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">{tools}</div>
             <button
               className={`rounded-[7px] border px-3 py-[3px] text-sm font-medium ${pageHairBorder} ${pagePaperBg} ${pageMutedText} ${focusVisibleRing}`}
               onClick={() => setOpen(false)}
@@ -115,7 +133,12 @@ export function OutlineSheet({ list }: { list: (close: () => void) => ReactNode 
               {CONTROL_LABELS.close}
             </button>
           </div>
-          {list(() => setOpen(false))}
+          {brief === undefined && list === undefined ? null : (
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+              {brief}
+              {list?.(() => setOpen(false))}
+            </div>
+          )}
         </div>
       ) : null}
     </>
@@ -131,15 +154,18 @@ export interface ContentsEntry {
 }
 
 /**
- * The entries of the list, read off the tree the outline draws: the issue itself first, then
- * each ask and each comment or message the reader wrote that begins a thread, each under the
- * nearest such entry above it in the tree, in the tree's own order. A node drawn under a second
- * parent is listed once, at its own place.
+ * The entries of the list, read off the tree the outline draws: each ask and each comment or
+ * message the reader wrote that begins a thread, each under the nearest such entry above it in
+ * the tree, in the tree's own order. The issue itself is no entry: the header is the issue (the
+ * architect's ruling 5), as the outline draws no row of it. A node drawn under a second parent is
+ * listed once, at its own place, and counted once: a transcluded copy and the branch under it
+ * are the same nodes as at the edited place, so they are neither listed nor counted again.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
  * to it, so a node counts once, on the entry whose branch it is read in (the prototype's
  * `branchCounts`): its statements, its decisions waiting for the reader's review, its child
- * issues, and its statements a check under them failed.
+ * issues, and its statements a check under them failed. What sits under the issue and under no
+ * entry is counted on none, since the issue has no entry; the filter row's signals count it.
  */
 export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
   const TURNS: Partial<Record<TreeNode["type"], true>> = { comment: true, message: true };
@@ -165,13 +191,13 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
     marks: Record<ContentsMark, number>
   ): void => {
     for (const child of node.children) {
+      if (child.transcluded) continue;
       const begunByReader =
         TURNS[child.type] === true &&
         TURNS[node.type] !== true &&
-        child.author?.kind === "user" &&
-        viewer !== undefined &&
-        child.author.id === viewer;
-      if (!child.transcluded && (child.type === "ask" || begunByReader)) {
+        child.author !== undefined &&
+        isViewer(child.author, viewer);
+      if (child.type === "ask" || begunByReader) {
         const children: ContentsEntry[] = [];
         const own = tally();
         walk(child, children, own);
@@ -182,10 +208,9 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
       }
     }
   };
-  const below: ContentsEntry[] = [];
-  const issue = tally();
-  walk(root, below, issue);
-  return [{ children: [], marks: issue, node: root }, ...below];
+  const entries: ContentsEntry[] = [];
+  walk(root, entries, tally());
+  return entries;
 }
 
 /** Each mark's shape and colour, in the order an entry draws them (the prototype's `.cnts`). */
@@ -471,7 +496,7 @@ export function ContentsList({
                 data-contents-line=""
                 {...authorText}
               >
-                {line.cut ? `${line.line}…` : line.line}
+                {drawnLine(line)}
               </span>
               {/* An entry whose question waits on the reader carries the waiting dot, and says so
                   in words to a reader who cannot see it (the prototype's `.mrow .dot`). */}

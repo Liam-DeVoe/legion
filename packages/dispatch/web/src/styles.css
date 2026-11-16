@@ -5,13 +5,17 @@
    (dispatch://INFRA-1196 R36), shipped in the bundle so that no reader is drawn in whatever face
    their machine happens to hold. `fonts/inter/subset.sh` cuts the file from rsms/inter's release
    4.1 to the weights 400 to 700 and to the characters `unicode-range` lists, and the two lists
-   are one list: change both. `fonts/inter/package.json`, beside the release's LICENSE.txt, is what
-   lists it under the SIL Open Font License 1.1 in the build's THIRD_PARTY_NOTICES.txt.
+   are one list: change both, and record the new file's SHA-256 in the script, which holds what
+   it writes to it. `fonts/inter/package.json`, beside the release's LICENSE.txt, is what lists
+   it under the SIL Open Font License 1.1 in the build's THIRD_PARTY_NOTICES.txt.
 
    `font-display: swap` draws the text at once in the fallback below and redraws it in Inter
    when the file arrives, so a reader on a slow network reads straight away and still ends on the
    page the pictures show. `block` would hide the text for up to 3 s, and `optional` would keep a
-   first visit in the fallback for as long as that page stays open. */
+   first visit in the fallback for as long as that page stays open. The swap changes neither a
+   family's name nor a box's width, so what measures words in script and not in layout measures
+   them again on the document's `loadingdone`, as the Contents list's cut does
+   (`features/issue/one-line.ts`). */
 @font-face {
   font-family: Inter;
   font-style: normal;
@@ -319,9 +323,10 @@ a {
 
      `:not([data-issue-header] *)`: the issue page's header draws its controls at the
      prototype's size, 24 px on a phone - each at least 24 by 24 px or spaced so a 24 px circle
-     on it meets no other target, WCAG 2.2's 2.5.8 as written - because the header's six lines
-     at 390 px leave no room for 44 (dispatch://INFRA-1196 R13). The title's editor is the
-     heading's own box, at least 28 px tall, so ending an edit never moves what is under it.
+     on it meets no other target, WCAG 2.2's 2.5.8 as written - because the header at 390 px is
+     held to eight lines and 250 px, nine and 280 px while an approval request waits (ruling 8
+     of dispatch://INFRA-1196/artifact/build-rulings-md). The filter row under it,
+     `[data-filter-row]`, is one line of 35 px at every width (ruling 5); its sheet keeps the floor.
 
      `:not([data-node-bullet])`: a node's bullet in the issue outline is its fold control, the
      prototype's 18 by 24 px `.bul` (R34). Its row is at least 28 px tall and nothing else in
@@ -330,14 +335,17 @@ a {
 
      `:not([data-issue-composer] *)`: the issue page's one place to write, at the foot of its
      outline, is the prototype's one line (`#composer`, R16): its line is 26 px tall, Send
-     24 px, and each chip 22 px with 5 px between them, so a 24 px circle on one meets no other
-     target (2.5.8's spacing). A 44 px floor makes it three lines a phone's foot cannot spare. */
+     24 px, and each chip 22 px with 5 px between them (2.5.8's spacing). */
   button:not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *):not(
       [data-node-bullet]
-    ):not([data-issue-composer] *),
+    ):not([data-issue-composer] *):not([data-filter-row] :not([role="dialog"] *)),
   a:not(.prose a):not(.dispatch-inline-link):not(.sr-only:not(:focus)):not([data-issue-header] *),
-  input:not([type="checkbox"]):not([type="radio"]):not(.sr-only:not(:focus)),
-  select:not(.sr-only:not(:focus)):not([data-issue-header] *),
+  input:not([type="checkbox"]):not([type="radio"]):not(.sr-only:not(:focus)):not(
+      [data-filter-row] :not([role="dialog"] *)
+    ),
+  select:not(.sr-only:not(:focus)):not([data-issue-header] *):not(
+      [data-filter-row] :not([role="dialog"] *)
+    ),
   textarea:not(.sr-only:not(:focus)):not([data-issue-header] *):not([data-issue-composer] *) {
     min-width: 44px;
     min-height: 44px;
@@ -885,6 +893,31 @@ a {
 [data-node-words] .dispatch-markdown :where(h1, h2, h3, h4, h5, h6) {
   margin: 6px 0 2px;
   line-height: inherit;
+}
+
+/* A link in a node's words is the words' own ink, underlined in the bullets' grey 3 px under the
+   text (the prototype's `.body a`), never the app's link blue: the underline says it is a link,
+   and the page's colours are its palette's (dispatch://INFRA-1196 ruling 5). */
+[data-node-words] .dispatch-markdown {
+  --tw-prose-links: currentColor;
+}
+
+[data-node-words] .dispatch-markdown a {
+  font-weight: inherit;
+  text-decoration-color: var(--color-page-bullet);
+  text-underline-offset: 3px;
+}
+
+/* A node's ties stand at the end of its words, on their line (the prototype's `.trail` inside its
+   `.body`, ruling 5): the words' own box, and the last paragraph of a drawn text, flow inline, so
+   the trail follows the last word (`NodeRow.tsx`). */
+[data-node-words]:has(> [data-node-trail]) > [data-author-text],
+[data-node-words]:has(> [data-node-trail]) > [data-author-text] > .dispatch-markdown,
+[data-node-words]:has(> [data-node-trail])
+  > [data-author-text]
+  > .dispatch-markdown
+  > p:last-child {
+  display: inline;
 }
 
 /* A `MarkdownPreview` sits inside a control (a link, a search option, a card's toggle), so its

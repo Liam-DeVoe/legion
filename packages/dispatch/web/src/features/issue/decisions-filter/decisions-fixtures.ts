@@ -246,7 +246,7 @@ export function decision(block: string, partial: Partial<Decision> = {}): Decisi
   };
 }
 
-/** The decisions read over `made`. */
+/** The decisions read over `made`, which names the decisions document they are blocks of. */
 export function decisionsRead(made: readonly Decision[]): IssueDecisions {
-  return { decisions: [...made], document: null, open_questions: [] };
+  return { decisions: [...made], document: DECISIONS_DOCUMENT.id, open_questions: [] };
 }

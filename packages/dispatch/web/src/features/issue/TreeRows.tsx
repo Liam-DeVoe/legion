@@ -35,6 +35,7 @@ export function TreeRows({
   onToggle,
   openBody,
   pinned,
+  report,
   rows,
   tabStop,
   threads,
@@ -58,6 +59,9 @@ export function TreeRows({
   openBody?: string;
   /** The keys of the rows whose bodies the reader pinned open. */
   pinned: ReadonlySet<string>;
+  /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
+   *  which draws it (`NodeRow`'s `report`). */
+  report?: { readonly line: string; readonly row: string | undefined };
   rows: readonly DrawnRow[];
   /** The key of the row that is the tree's one tab stop. */
   tabStop: string | undefined;
@@ -118,6 +122,7 @@ export function TreeRows({
             onToggle={() => onToggle(row.node, row.expanded)}
             ownAnswer={isReader(row.node.answer?.by, reader)}
             pinned={pinned.has(key)}
+            {...(report?.row === key ? { report: report.line } : {})}
             rowKey={key}
             tabStop={tabStop === key}
             {...(mark === undefined ? {} : { threadRead: mark })}

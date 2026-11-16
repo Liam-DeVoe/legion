@@ -194,6 +194,9 @@ function filterView(
         : {
             id: node.id,
             line: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
+            // The parent's own address, which makes its line the link a reader follows to it
+            // (R18, and R26: a step's row reaches the statement it serves).
+            ...(node.reference === undefined ? {} : { reference: node.reference }),
             type: node.type,
           };
     const below = parts.flatMap((part) =>
@@ -230,12 +233,30 @@ export interface PresetSignal {
   readonly unit?: keyof typeof FILTER_SIGNAL_WORDS;
 }
 
-/** The distinct nodes of `type` in `state` the view draws. */
-function inState(root: TreeNode, type: NodeType, state: string): number {
+/** The distinct nodes of `type` the view draws that `counts` holds for. */
+function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boolean): number {
   const found = new Set<string>();
   const walk = (node: TreeNode): void => {
-    if (node.type === type && node.state === state) found.add(node.id);
+    if (node.type === type && counts(node)) found.add(node.id);
     for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return found.size;
+}
+
+/** The decisions of the view that restate a person's answer: the sections of `decisions.md`
+ *  the tree hangs under the answered question they name. The Decisions filter draws that
+ *  answer as the decision and the section as no entry (R2, R9, `decisions-filter/
+ *  decisions-parts.ts`), so its count leaves them out. */
+function restatedAnswers(root: TreeNode): number {
+  const found = new Set<string>();
+  const walk = (node: TreeNode): void => {
+    for (const child of node.children) {
+      if (node.type === "ask" && node.answer !== undefined && child.type === "decision") {
+        found.add(child.id);
+      }
+      walk(child);
+    }
   };
   walk(root);
   return found.size;
@@ -249,11 +270,14 @@ export function filterSignals(
   const view = (filter: Filter) => presetView(root, filter, query);
   const verification = view("verification");
   const decisions = view("decisions");
-  const failing = inState(verification.root, "check", "failed");
-  const toReview = inState(decisions.root, "decision", "waiting_review");
+  const failing = countOf(verification.root, "check", (node) => node.state === "failed");
+  // The decisions of the review list (R35): an agent's decision that waits and that a `shaped`
+  // tie names a statement for, which is what the tree marks `waiting` (`decision-review.ts`'s
+  // `inReviewList`), so the signal, the list and the header's count cannot disagree.
+  const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
   return {
     decisions: {
-      count: decisions.matches,
+      count: decisions.matches - restatedAnswers(decisions.root),
       ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
     },
     plan: { count: view("plan").matches, unit: "steps" },

@@ -12,7 +12,7 @@ import {
   editComment,
   getIssue,
 } from "./api";
-import { documentEditor, specAddress } from "./editor";
+import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { sql } from "./psql";
 import { expect, test } from "./test";
@@ -33,13 +33,12 @@ test("an issue and its ask show a cross-project message and structural backlinks
 
   await page.setViewportSize({ height: 900, width: 1440 });
   await page.goto(`/issues/${target.key}`);
-  // What references an issue is a property of it, so the backlink panel is the References
-  // section of the page's one panel (dispatch://INFRA-1196 R12), not the identity block. The
-  // margin's own cards carry backlink panels of their own, so the section is what is named.
-  const panel = page.locator('[data-margin-section="references"]');
-  await panel.getByRole("button", { name: /^Referenced by/ }).click();
+  await page
+    .getByTestId("issue-header")
+    .getByRole("button", { name: /^Referenced by/ })
+    .click();
 
-  const issueReferences = panel.getByRole("region", {
+  const issueReferences = page.getByTestId("issue-header").getByRole("region", {
     name: "Referenced by",
   });
   await expect(issueReferences).toContainText(`Message · ${source.key}`);
@@ -49,19 +48,19 @@ test("an issue and its ask show a cross-project message and structural backlinks
   await expect(issueReferences).toContainText(`Attached document · ${target.key}`);
   await expect(issueReferences).toContainText("spec.md");
 
-  const desktopPanel = testInfo.outputPath("referenced-by-panel-1440.png");
-  await panel.screenshot({ path: desktopPanel });
-  await testInfo.attach("Referenced by issue panel (1440px)", {
+  const desktopHeader = testInfo.outputPath("referenced-by-issue-header-1440.png");
+  await page.getByTestId("issue-header").screenshot({ path: desktopHeader });
+  await testInfo.attach("Referenced by issue header (1440px)", {
     contentType: "image/png",
-    path: desktopPanel,
+    path: desktopHeader,
   });
 
   await page.setViewportSize({ height: 844, width: 390 });
-  const phonePanel = testInfo.outputPath("referenced-by-panel-390.png");
-  await panel.screenshot({ path: phonePanel });
-  await testInfo.attach("Referenced by issue panel (390px)", {
+  const phoneHeader = testInfo.outputPath("referenced-by-issue-header-390.png");
+  await page.getByTestId("issue-header").screenshot({ path: phoneHeader });
+  await testInfo.attach("Referenced by issue header (390px)", {
     contentType: "image/png",
-    path: phonePanel,
+    path: phoneHeader,
   });
   await expect(
     page.evaluate(
@@ -115,9 +114,8 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
   // one per second (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
   await page.clock.install();
   await page.goto(`/issues/${target.key}`);
-  const panel = page.locator('[data-margin-section="references"]');
-  await panel.getByRole("button", { name: /^Referenced by/ }).click();
-  const references = panel.getByRole("region", {
+  await page.getByRole("button", { name: /^Referenced by/ }).click();
+  const references = page.getByTestId("issue-header").getByRole("region", {
     name: "Referenced by",
   });
   // Each step waits on a server write, the live event feed, and the panel's refetch, so these are
@@ -250,7 +248,7 @@ test("an answered decision keeps its backlink control and still moves with a lat
   // The later citation reaches the card over the event feed, whose refetch is held to one per
   // second (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
   await page.clock.install();
-  await page.goto(await specAddress(target.key));
+  await page.goto(`/issues/${target.key}`);
   // The page hosts this ask twice — the decision block and the margin sheet; the block is the
   // one the reader answers in, and it keeps rendering the card once the ask is answered.
   const card = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
@@ -341,10 +339,8 @@ test("an Inbox card gains its count when a document edit cites the ask", async (
 });
 
 // An ask's question is indexed like any other body, so opening one that cites an issue moves
-// that issue's own backlink count on the page already showing it. The count is drawn in the
-// panel's References section, where what references the issue is one of its properties
-// (dispatch://INFRA-1196 R12).
-test("an issue panel's count follows an ask whose question cites it", async ({ page }) => {
+// that issue's own header count on the page already showing it.
+test("an issue header's count follows an ask whose question cites it", async ({ page }) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Operations" });
   const target = await createIssue({ project: "CORE", title: "Cited by a question" });
@@ -354,27 +350,27 @@ test("an issue panel's count follows an ask whose question cites it", async ({ p
   // (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
   await page.clock.install();
   await page.goto(`/issues/${target.key}`);
-  const panel = page.locator('[data-margin-section="references"]');
+  const header = page.getByTestId("issue-header");
   // The issue's own spec document is attached to it, so it starts at one.
-  await expect(panel.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible();
+  await expect(header.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible();
 
   const decision = await createAsk(source.key, {
     question: `Does dispatch://${target.key} ship first?`,
   });
   await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-  await expect(panel.getByRole("button", { name: /^Referenced by \(2\)$/ })).toBeVisible({
+  await expect(header.getByRole("button", { name: /^Referenced by \(2\)$/ })).toBeVisible({
     timeout: 30_000,
   });
 
   await editAsk(decision.id, { question: "Does anything ship first?" });
   await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-  await expect(panel.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible({
+  await expect(header.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible({
     timeout: 30_000,
   });
 });
 
 // A database a newer build has written to can hold an edge from a node kind this build does not
-// know. The panel counts only the edges it can list, and lists them rather than
+// know. The header counts only the edges its panel can list, and the panel lists them rather than
 // failing on the one it cannot.
 test("an issue's backlinks skip an edge of a node kind this build does not know", async ({
   page,
@@ -389,10 +385,10 @@ test("an issue's backlinks skip an edge of a node kind this build does not know"
   );
 
   await page.goto(`/issues/${target.key}`);
-  const panel = page.locator('[data-margin-section="references"]');
+  const header = page.getByTestId("issue-header");
   // The issue's own spec document and the message: the unknown edge would make it three.
-  await panel.getByRole("button", { name: /^Referenced by \(2\)$/ }).click();
-  const references = panel.getByRole("region", { name: "Referenced by" });
+  await header.getByRole("button", { name: /^Referenced by \(2\)$/ }).click();
+  const references = header.getByRole("region", { name: "Referenced by" });
   await expect(references).toContainText(`Message · ${source.key}`);
   await expect(references).toContainText(`Waiting on dispatch://${target.key}`);
   await expect(references).not.toContainText("Referenced by unavailable.");

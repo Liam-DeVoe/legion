@@ -9,8 +9,11 @@ import {
   createMessage,
   createPriority,
   createProject,
+  declineAsk,
   editArtifact,
+  getIssueDecisions,
   getIssueEvents,
+  keepDecision,
   patchIssue,
   putIssueState,
   replyToMessageBlock,
@@ -21,6 +24,7 @@ import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   asPlanner,
+  awaitBlockAsk,
   awaitSeededCheckStates,
   BASELINE_REPO,
   PLANNER,
@@ -35,6 +39,8 @@ import {
   checkBlockId,
   citationRequirement,
   OPEN_QUESTION_BLOCK_ID,
+  PLAN_ORDER_TASKS,
+  planOrderDocument,
   planTaskBlockId,
   requirementBlockId,
   requirementText,
@@ -44,6 +50,7 @@ import {
   SPINE_REQUIREMENTS,
   SPINE_SPEC,
   SUMMARY_BLOCK_ID,
+  specBlockRef,
   specDocument,
   spineDecisionsDocument,
   spineVerificationDocument,
@@ -683,5 +690,166 @@ export async function seedConversationState(): Promise<ConversationStateSeed> {
     daemonMessage: daemon.id,
     statusNote: note.id,
     uploads,
+  };
+}
+
+/** The whole issue with every kind of entry the Decisions filter draws (c-decisions). */
+export interface DecisionsFilterSeed extends WholeIssueSeed {
+  /** A question alice declined, with a note. */
+  readonly declinedAskId: string;
+  /** The agent decision alice kept: decision 5, which shapes the fourth requirement. */
+  readonly keptBlock: string;
+  /** The agent decision whose words changed last, so it heads the review list: decision 6. */
+  readonly newestBlock: string;
+  /** A question with two options, which alice answered with one of them and words of her own. */
+  readonly optionedAskId: string;
+}
+
+/** `seedWholeIssue` and, on top of it, an ask answered by an option with words whose line
+ *  breaks and spaces are the person's own, an ask the reader declined, a decision the reader
+ *  kept, and a decision whose words changed after every other. */
+export async function seedDecisionsFilter(): Promise<DecisionsFilterSeed> {
+  const seeded = await seedWholeIssue();
+  const optioned = await createAsk(
+    seeded.key,
+    {
+      options: [{ label: "Rail" }, { label: "Sidebar" }],
+      question: "Which navigation does the issue page keep?",
+      urgency: "med",
+    },
+    asPlanner
+  );
+  await answerAsk(optioned.id, {
+    expected_edited_at: null,
+    selected: ["Rail"],
+    text: "The rail.\n\n  It is 56 px wide -  no wider.",
+  });
+  const declined = await createAsk(
+    seeded.key,
+    { question: "On a phone, where does the box you write in sit?", urgency: "med" },
+    asPlanner
+  );
+  await declineAsk(declined.id, { note: "The release owner decides this one." });
+  const keptBlock = seeded.decisions[4] ?? "";
+  const row = ((await getIssueDecisions(seeded.key)).decisions ?? []).find(
+    (one) => one.block_id === keptBlock
+  );
+  await keepDecision(seeded.decisionsArtifactId, keptBlock, row?.text_sha256 ?? "");
+  await editArtifact(seeded.decisionsArtifactId, {
+    ops: [
+      {
+        find: "A document is a node under the block that cites it.",
+        op: "replace",
+        with: "A document is one node under the block that cites it.",
+      },
+    ],
+  });
+  return {
+    ...seeded,
+    declinedAskId: declined.id,
+    keptBlock,
+    newestBlock: seeded.decisions[5] ?? "",
+    optionedAskId: optioned.id,
+  };
+}
+
+/** Four agent decisions, by what each one's link names (c-review-list, R35). */
+export interface ReviewListSeed {
+  readonly decisionsSlug: string;
+  readonly key: string;
+  /** Tied to the second statement, and changed after the others: the newest of the list. */
+  readonly tiedNewer: string;
+  /** Tied to the first statement. */
+  readonly tiedOlder: string;
+  /** Tied to the spec's summary callout, which is no statement. */
+  readonly tiedToNote: string;
+  /** Tied to nothing. */
+  readonly untied: string;
+}
+
+/** An issue with two open questions that wait on alice and four agent decisions, of which two
+ *  name a statement: only those two wait for her review (R35). */
+export async function seedReviewList(): Promise<ReviewListSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    spec: specDocument({ openQuestion: true, requirements: 2, summary: true }),
+    title: "Only a decision that changed a statement waits",
+  });
+  await patchIssue(issue.key, { assignee: "alice" });
+  await awaitBlockAsk(issue.key, OPEN_QUESTION_BLOCK_ID);
+  await createAsk(issue.key, { question: "Does the foot stay folded?", urgency: "med" }, asPlanner);
+  const ref = (block: string) => specBlockRef(issue.key, block);
+  const headings = [
+    "Tie the first statement",
+    "Tie the second statement",
+    "Tie the note",
+    "Tie nothing",
+  ];
+  const made = await createIssueArtifact(issue.key, {
+    content:
+      `## ${headings[0]}\n\nShapes ${ref(requirementBlockId(1))}.\n\n` +
+      `## ${headings[1]}\n\nShapes ${ref(requirementBlockId(2))}.\n\n` +
+      `## ${headings[2]}\n\nShapes ${ref(SUMMARY_BLOCK_ID)}.\n\n` +
+      `## ${headings[3]}\n\nA choice no statement rests on.\n`,
+    name: "decisions.md",
+  });
+  await editArtifact(made.artifact.id, {
+    ops: [
+      {
+        find: `Shapes ${ref(requirementBlockId(2))}.`,
+        op: "replace",
+        with: `It shapes ${ref(requirementBlockId(2))}.`,
+      },
+    ],
+  });
+  const ids = await Promise.all(
+    headings.map((heading) => blockId(made.artifact.id, `## ${heading}`))
+  );
+  return {
+    decisionsSlug: made.artifact.slug,
+    key: issue.key,
+    tiedNewer: ids[1] ?? "",
+    tiedOlder: ids[0] ?? "",
+    tiedToNote: ids[2] ?? "",
+    untied: ids[3] ?? "",
+  };
+}
+
+export interface PlanOrderSeed {
+  readonly key: string;
+  readonly planArtifactId: string;
+  readonly specArtifactId: string;
+}
+
+/** The plan c-plan-order reads: tasks written in an order their `needs` refuse, two tasks that
+ *  need each other, and a task whose `needs` names a task the plan no longer holds. The second
+ *  write is what leaves that pointer dangling, and it changes no pointer of its own. */
+export async function seedPlanOrder(): Promise<PlanOrderSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    spec: specDocument({ openQuestion: false, requirements: 3, summary: true }),
+    title: "The plan is drawn as ordered steps",
+  });
+  const plan = await createIssueArtifact(issue.key, {
+    content: planOrderDocument(issue.key, true),
+    name: "plan.md",
+  });
+  await editArtifact(plan.artifact.id, {
+    ops: [
+      {
+        find: `\n\n:::plan_task{#${PLAN_ORDER_TASKS.gone} serves="${specBlockRef(issue.key, requirementBlockId(1))}"}\nTask ${PLAN_ORDER_TASKS.gone} of the redesign is one step of the build.\n:::`,
+        op: "replace",
+        with: "",
+      },
+    ],
+  });
+  return {
+    key: issue.key,
+    planArtifactId: plan.artifact.id,
+    specArtifactId: issue.primary_artifact_id ?? "",
   };
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -189,10 +190,11 @@ func TestTheIssueChildrenReadEveryIssueThroughTheParentIndex(t *testing.T) {
 	}
 }
 
-// Each child of the issue read carries what blocks it and who holds it, in the issue's own two
-// shapes: the child waiting on two issues answers their keys sorted and no claim, the claimed
-// child answers the claim and an empty list, and both answers are what that child's own issue
-// read gives — one shape for an issue and for a child, which is what lets the page read either.
+// Each child of the issue read carries what it waits on and who holds it: the child waiting on
+// two issues answers their keys sorted as `needs` and no claim, the claimed child answers the
+// claim and no `needs`, and both answers are what that child's own issue read gives — the
+// elements of its `blocked_by` and its `claim` — so the page reads a child as it reads an issue.
+// A child with nothing to say for either leaves the field out rather than sending it empty.
 func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 	fixture := newIssueChildrenFixture(t)
 	children := map[string]model.IssueChild{}
@@ -204,16 +206,16 @@ func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 	}
 
 	blocked := children[fixture.leaf]
-	if !slices.Equal(blocked.BlockedBy, fixture.blockers) {
-		t.Errorf("the blocked child's blocked_by = %v, want %v", blocked.BlockedBy, fixture.blockers)
+	if !slices.Equal(blocked.Needs, fixture.blockers) {
+		t.Errorf("the blocked child's needs = %v, want %v", blocked.Needs, fixture.blockers)
 	}
 	if blocked.Claim != nil {
 		t.Errorf("the blocked child's claim = %#v, want none: nobody claimed it", blocked.Claim)
 	}
 
 	claimed := children[fixture.branch]
-	if len(claimed.BlockedBy) != 0 {
-		t.Errorf("the claimed child's blocked_by = %v, want an empty list: it waits on nothing", claimed.BlockedBy)
+	if claimed.Needs != nil {
+		t.Errorf("the claimed child's needs = %v, want none: it waits on nothing", claimed.Needs)
 	}
 	if claimed.Claim == nil || claimed.Claim.Actor.Kind != "user" || claimed.Claim.Actor.ID != "alice" {
 		t.Fatalf("the claimed child's claim = %#v, want alice's", claimed.Claim)
@@ -221,12 +223,33 @@ func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 
 	for _, child := range []model.IssueChild{blocked, claimed} {
 		own := readIssue(t, fixture.handler, child.Key)
-		if !slices.Equal(child.BlockedBy, own.BlockedBy) {
-			t.Errorf("%s is blocked by %v as a child and %v as an issue", child.Key, child.BlockedBy, own.BlockedBy)
+		if !slices.Equal(child.Needs, own.BlockedBy) {
+			t.Errorf("%s needs %v as a child and is blocked by %v as an issue", child.Key, child.Needs, own.BlockedBy)
 		}
 		if !reflect.DeepEqual(child.Claim, own.Claim) {
 			t.Errorf("%s is claimed by %#v as a child and %#v as an issue", child.Key, child.Claim, own.Claim)
 		}
+	}
+
+	response := dispatchRequest(t, fixture.handler, http.MethodGet, "/api/v1/issues/"+fixture.root, nil, "alice")
+	fields := map[string]map[string]json.RawMessage{}
+	for _, child := range decodeBody[struct {
+		Children []map[string]json.RawMessage `json:"children"`
+	}](t, response).Children {
+		var key string
+		if err := json.Unmarshal(child["key"], &key); err != nil {
+			t.Fatalf("read a child's key: %v", err)
+		}
+		fields[key] = child
+	}
+	if _, sent := fields[fixture.leaf]["claim"]; sent {
+		t.Errorf("the unclaimed child sends claim %s, want the field left out", fields[fixture.leaf]["claim"])
+	}
+	if _, sent := fields[fixture.branch]["needs"]; sent {
+		t.Errorf("the child waiting on nothing sends needs %s, want the field left out", fields[fixture.branch]["needs"])
+	}
+	if _, sent := fields[fixture.leaf]["blocked_by"]; sent {
+		t.Errorf("a child sends blocked_by %s, which is the issue's own name and no child's", fields[fixture.leaf]["blocked_by"])
 	}
 }
 

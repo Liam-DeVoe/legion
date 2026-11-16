@@ -11,10 +11,9 @@ test.beforeEach(async ({ context }) => {
   await signIn(context, "alice");
 });
 
-/** The whole press a person makes in the node menu, which took the Artifacts tab's list
- *  (dispatch://INFRA-1196 R3): `New document`, the title, `Create`. */
+/** The whole press a person makes on the Documents tab: `New document`, the title, `Create`. */
 async function createDocument(page: Page, title: string): Promise<void> {
-  await page.getByRole("menuitem", { name: "New document" }).click();
+  await page.getByRole("button", { name: "New document" }).click();
   const form = page.getByRole("form", { name: "New document" });
   await form.getByRole("textbox", { name: "Title" }).fill(title);
   await form.getByRole("button", { name: "Create" }).click();
@@ -61,20 +60,17 @@ test("a document's title is corrected and a document made by mistake is removed,
   await expect(page).toHaveURL(`${documents}/lauch-notes`);
   expect((await issueDocument(issue.key, "lauch-notes")).name).toBe("Launch notes");
 
-  // The issue's node menu, reached without loading the page again, reads the new title too.
-  const files = page.getByRole("menu");
+  // The issue's document list, reached without loading the page again, reads the new title too.
   await navigateInApp(page, documents);
-  await expect(files.getByRole("button", { exact: true, name: "Launch notes" })).toBeVisible();
-  await expect(files.getByRole("button", { exact: true, name: "Lauch notes" })).toHaveCount(0);
+  await expect(page.getByRole("link", { exact: true, name: "Launch notes" })).toBeVisible();
+  await expect(page.getByRole("link", { exact: true, name: "Lauch notes" })).toHaveCount(0);
 
-  // A second document, made by mistake and removed from its item in that menu.
+  // A second document, made by mistake and removed from its row in that list.
   await createDocument(page, "Draft notes");
   await expect(page).toHaveURL(`${documents}/draft-notes`);
   await expect(documentEditor(page)).toBeAttached();
   await navigateInApp(page, documents);
-  const draftRow = files
-    .getByRole("menuitem")
-    .filter({ has: page.getByRole("button", { exact: true, name: "Draft notes" }) });
+  const draftRow = page.getByTestId("artifact-draft-notes");
   await draftRow.getByRole("button", { name: "Remove" }).click();
   await expect(draftRow).toHaveCount(0);
 
@@ -114,9 +110,8 @@ test("a document's title is corrected and a document made by mistake is removed,
   expect((await listIssueArtifacts(issue.key)).map((item) => item.slug)).toContain("kept-notes");
 
   // What the issue records of all of it: one line for the correction, naming both titles, and
-  // one for each removal, naming the document. The issue page has no Activity tab
-  // (dispatch://INFRA-1196 R3): the issue's whole history is its `/activity` address.
-  await page.goto(`/issues/${issue.key}/activity`);
+  // one for each removal, naming the document.
+  await page.getByRole("tab", { name: "Activity" }).click();
   const lines = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
   await expect(lines.filter({ hasText: "renamed Lauch notes to Launch notes" })).toHaveCount(1);
   await expect(lines.filter({ hasText: "removed Draft notes" })).toHaveCount(1);

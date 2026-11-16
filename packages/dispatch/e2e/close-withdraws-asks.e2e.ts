@@ -11,13 +11,7 @@ import {
   requestApproval,
   withOpenedAsk,
 } from "./api";
-import {
-  connectedDot,
-  countDocumentSockets,
-  documentEditor,
-  reconnectedSockets,
-  specAddress,
-} from "./editor";
+import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -105,18 +99,14 @@ async function openIssueAndInbox(
   const sockets = countDocumentSockets(page, seeded.artifactId);
   // Neither page waits on the other, and each keeps its own checks below.
   if (clock) await page.clock.install();
-  await Promise.all([inbox.goto("/"), page.goto(await specAddress(seeded.key))]);
+  await Promise.all([inbox.goto("/"), page.goto(`/issues/${seeded.key}`)]);
   for (const id of seeded.askIds) {
     await expect(inboxRow(inbox, id)).toBeVisible();
   }
   const decision = documentEditor(page).locator('[data-dispatch-ask-block="decision"]');
   await expectOpenDecision(decision);
   await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (3)");
-  // The approval chip is drawn in the identity block's state row and again in the open
-  // preset's toolbar (dispatch://INFRA-1196 R16); the issue's own state is the row's.
-  await expect(
-    page.getByTestId("issue-state-actions").getByRole("button", { name: "Awaiting approval" })
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Awaiting approval" })).toBeVisible();
   return { decision, inbox, page, sockets };
 }
 
@@ -135,9 +125,7 @@ async function expectWithdrawn(
   seeded: Seeded,
   closer: string
 ): Promise<void> {
-  // The issue says it is closed in the identity block; reopening it is behind that block's one
-  // actions control (dispatch://INFRA-1196 R11).
-  await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
   await expect(page.getByTestId("issue-whose-turn")).toHaveCount(0);
   await expect(decision.getByTestId("ask-resolution-badge")).toHaveText("Withdrawn");
   await expect(decision).toContainText(`Withdrawn when ${closer} closed the issue`);
@@ -169,9 +157,6 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
   const opened = await openIssueAndInbox(browser, seeded, { clock: true });
   const { decision, inbox, page, sockets } = opened;
   try {
-    // Close, reopen and the control that sets the parent sit behind the identity block's one
-    // actions control (dispatch://INFRA-1196 R11).
-    await page.getByRole("button", { name: "Issue actions" }).click();
     await page.getByRole("button", { name: "Close issue" }).click();
     await expectWithdrawn(opened, seeded, "alice");
 
@@ -204,11 +189,8 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
-    await page.getByRole("button", { name: "Issue actions" }).click();
-    await page.getByRole("button", { name: "Reopen into Backlog" }).click();
-    await page.getByRole("button", { name: "Issue actions" }).click();
+    await page.getByRole("button", { name: "Reopen" }).click();
     await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
-    await page.getByRole("button", { name: "Issue actions" }).click();
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (3)");
     // The reopen wrote the block back to open, so the record is gone at once, and it dropped the
     // document's socket again, so its reconnect, a draw of its own, is admitted writable: the row
@@ -222,9 +204,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
     await expectOpenDecision(decision);
     await expect(decision.getByRole("radio", { name: "Hold Wait for review" })).toBeVisible();
-    await expect(
-      page.getByTestId("issue-state-actions").getByRole("button", { name: "Awaiting approval" })
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Awaiting approval" })).toBeVisible();
     for (const id of seeded.askIds) {
       await expect(inboxRow(inbox, id)).toBeVisible();
     }
@@ -295,7 +275,7 @@ test("a closed issue's document names no unsent edit to a person who typed nothi
     // The second load reads what the first left in this browser's store of unsent edits.
     for (const load of ["first", "reload"]) {
       if (load === "first") {
-        await page.goto(await specAddress(issue.key));
+        await page.goto(`/issues/${issue.key}/spec`);
       } else {
         await page.reload();
       }

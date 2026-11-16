@@ -1,14 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../api/issue-cache";
-import { whoAmIQuery } from "../../api/queries";
-import type { Artifact, IssueDetails } from "../../api/types";
-import { pageLineBorder, textMutedOnCanvas } from "../../theme/classes";
+import { issueResultsQuery, whoAmIQuery } from "../../api/queries";
+import type { IssueDetails } from "../../api/types";
+import { pageLineBorder, pagePaperBg } from "../../theme/classes";
 import { useKeymap } from "../shell/keymap";
-import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
-import { IssueChildren } from "./IssueChildren";
+import { useMediaQuery } from "../shell/useDialog";
+import { DecisionsFilterBody } from "./decisions-filter/DecisionsFilterBody";
 import { IssueComposer } from "./IssueComposer";
 import {
   type ContentsEntry,
@@ -19,17 +19,18 @@ import {
 } from "./IssueContents";
 import { IssuePresets } from "./IssuePresets";
 import { IssueReadMark } from "./IssueReadMark";
-import { IssueThreeThings, nodesOfType, specSummary } from "./IssueThreeThings";
+import { IssueThreeThings, specSummary } from "./IssueThreeThings";
 import { IssueTree, type OutlineRequest } from "./IssueTree";
 import type { AddressTarget, IssueAddress } from "./issue-address";
 import { pathToTarget, presetPath } from "./issue-address";
 import { artifactsBySlug } from "./issue-artifacts";
-import type { TreeNode } from "./issue-tree";
-import { pageChrome } from "./page-structure";
 import { EMPTY_STATE_LINES, type Preset } from "./page-words";
+import { PlanFilterBody } from "./plan-filter/PlanFilterBody";
 import { filterSignals, isFilter, presetView } from "./presets";
+import { SpecFilterBody } from "./spec-filter/SpecFilterBody";
 import { useIssueTree } from "./useIssueTree";
-import { firstWaitingNode, waitingPressOf } from "./waiting";
+import { VerificationFilterBody } from "./verification-filter/VerificationFilterBody";
+import { waitingPressOf } from "./waiting";
 
 /** The width the Contents pane stands beside the outline from (R8, R14): 1024 px, in `rem` so
  *  it switches with Tailwind's `lg:` at any default font size. */
@@ -40,22 +41,22 @@ export const CONTENTS_PANE_QUERY = "(min-width: 64rem)";
 export const PAGE_INSET = "px-3.5 md:px-7";
 
 /**
- * The issue's body on every address: its three sentences, the filter row, the children section
- * and the one tree the page and its filters draw (dispatch://INFRA-1196 R1, R2, R3, R5, R10) -
- * or, where the address opens a document, that document in place of the children section and
- * the tree.
+ * The issue's body on every address: the filter row and the one tree the page and its filters
+ * draw (dispatch://INFRA-1196 R1, R2, R3, R5, R10) - or, where the address opens a document,
+ * that document in place of the tree.
  *
- * It is one component because all four read the same tree: the head reads the spec's summary
- * node and the issue's checks, the row's signals count what each view holds, and the tree draws
- * what the view on left. Building that tree is this page's one model read (`useIssueTree.ts`),
- * so it happens here, once, below the guards `IssuePage` draws for an issue it could not load.
+ * It is one component because every view reads the same tree: the row's signals count what
+ * each view holds, and each view draws what its query left. Building that tree is this page's
+ * one model read (`useIssueTree.ts`), so it happens here, once, below the guards `IssuePage`
+ * draws for an issue it could not load.
  *
- * Under the filter row the body is two columns from 1024 px up: the Contents pane against the
- * rail, with the three sentences and the list of questions and the reader's own threads, and
- * the reading column with the outline (R8, R14). Below 1024 px the pane is not drawn: the three
- * sentences head the reading column, above the outline, and the list is behind the Outline
- * control beside the one control the row is there, with no filter on, as the 390 px pictures
- * draw it.
+ * With no filter on the outline is the conversation (`IssueTree`), and from 1024 px up the
+ * Contents pane stands against the rail with the three sentences and the list of questions and
+ * the reader's own threads (R8, R14); below 1024 px both are in the Outline sheet behind the
+ * control beside the filters, as the 390 px pictures draw it. Under a filter the pane is not
+ * drawn and the filter's own body takes the column (ruling 5 of build-rulings-md): the Spec
+ * filter's decided-by columns, the Verification filter's table, the Plan filter's chart and its
+ * steps, and the Decisions filter's four parts, each the approved picture of that view.
  *
  * Escape takes the steps of the key table in its order: a caret is left first (the outline's
  * and a document's own), then an opened document is closed (`OpenedDocument.tsx`), then the
@@ -70,14 +71,13 @@ export function IssueBody({
   issue,
   onEditing,
   onLeave,
-  plan,
   toolbar,
 }: {
   address: IssueAddress;
   /** What the page draws under the outline, in the reading column (`IssuePresetPanels`). */
   below?: ReactNode;
-  /** The document the address opens, drawn in place of the children section and the tree
-   *  (R3), with its version control beside the filters; undefined where the outline is drawn. */
+  /** The document the address opens, drawn in place of the tree (R3), with its version control
+   *  beside the filters; undefined where the outline is drawn. */
   openedDocument?: { readonly panel: ReactNode; readonly toolbar: ReactNode };
   /** Whether the issue is closed, which the node menu's upload reads. */
   isClosed: boolean;
@@ -88,14 +88,18 @@ export function IssueBody({
   /** Called before a preset's own control leaves this address, so the page can record where
    *  the reader was before the move. */
   onLeave: () => void;
-  /** The issue's plan document, whose state the head's first row draws. */
-  plan: Artifact | undefined;
   /** The version control beside the filters while the outline is drawn. */
   toolbar?: ReactNode;
 }): ReactNode {
   const navigate = useNavigate();
   const { hash, pathname, search, state: locationState } = useLocation();
   const { blocksRead, root } = useIssueTree(issue);
+  // The issue's checks with the results recorded against them, under the key `useIssueTree.ts`
+  // already reads them with, so the Verification filter's body costs no request of its own
+  // (R20): it is what holds a result's commit, its verdict and its withdrawal, which the tree
+  // does not carry (`verification-filter/statement-state.ts`).
+  const results = useQuery(issueResultsQuery(issue.key)).data;
+  const checks = useMemo(() => results?.checks ?? [], [results]);
   // Who the reader is, which the Contents list's entries are read for: a thread is an entry
   // where the reader began it (`contentsOf`).
   const viewer = useQuery(whoAmIQuery()).data?.login;
@@ -129,21 +133,6 @@ export function IssueBody({
     return { id: targetId, kind: targetKind } as AddressTarget;
   }, [targetDocument, targetId, targetKind]);
   const reveal = useMemo(() => pathToTarget(root, target), [root, target]);
-  // The node the address named when the page was first drawn here: a fresh load's own, which
-  // keeps the rule below, where a document the preset draws lands on its own node. A node named
-  // after that was named by a link or a chip the reader followed on this page, and a keyboard
-  // reader reaches the chain only if the focus goes where that link went (R10): its row takes
-  // the focus whatever preset draws it.
-  const landedOn = useRef(target);
-  const followed = target !== undefined && target !== landedOn.current;
-  // The node the preset draws the body of without being asked: the decision waiting for the
-  // reader's review, whose body holds Keep and Change, so a reader who opens the preset is in
-  // front of what waits for them (R7). It opens the body and never takes the focus, which is
-  // the reader's.
-  const opened = useMemo(
-    () => (target === undefined ? opensOn(root, address.preset) : undefined),
-    [address.preset, root, target]
-  );
   const named = useMemo(() => {
     const node = reveal?.at(-1);
     return new Set(node === undefined ? [] : [node.id]);
@@ -158,23 +147,6 @@ export function IssueBody({
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const drawsDocument = openedDocument !== undefined;
   const shownToolbar = openedDocument === undefined ? toolbar : openedDocument.toolbar;
-  // What a key reported when it had nowhere to go, raised by the tree (`IssueTree`'s
-  // `onReport`) and drawn here as the page's own status.
-  const [report, setReport] = useState("");
-  // Where the version control goes. From `md` it sits beside the filters, as the design draws
-  // it (R2), while a filter is on or a document is open in place of the outline. Below `md` it
-  // is 96 px of a 844 px screen - the version picker, the name-a-version control and the link,
-  // two lines of 44 px controls - and the identity block, the head, the filter row and the
-  // children section already take 700 px of it, so it is drawn under the tree instead: the
-  // same move the identity block's fourth row makes at that width (`IssueHeader.tsx`), and for
-  // the same reason - the first open question has to be on a phone's first screen (R6). A
-  // document opened in place of the tree has no tree to go under, so there it is drawn above
-  // the document it reads. Nothing is behind a control either way (R18).
-  const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
-  const phoneToolbar =
-    isPhoneViewport && shownToolbar !== undefined ? (
-      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">{shownToolbar}</div>
-    ) : null;
   // Where the three sentences and the list are drawn: in the Contents pane from 1024 px up, and
   // below that the sentences over the outline and the list behind the Outline control (R8).
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
@@ -243,25 +215,9 @@ export function IssueBody({
     },
   ]);
   // The header's count of what waits on the reader turns the Decisions filter on and leaves its
-  // press in the history entry (`IssuePropertiesRow.tsx`): once the filter has drawn the first
-  // node that waits - an open question whose turn is the reader's, or a decision waiting for
-  // their review, in the filter's order - the outline goes to it as the Contents pane's list
-  // goes to a node, once per press (R13, dispatch://INFRA-3678).
+  // press in the history entry (`IssuePropertiesRow.tsx`): the Decisions filter's body takes the
+  // press, in its own order, once per press (R13, dispatch://INFRA-3678).
   const waitingPress = waitingPressOf(locationState);
-  const waitingNode = useMemo(
-    () =>
-      waitingPress === undefined || address.preset !== "decisions"
-        ? undefined
-        : firstWaitingNode(view.root),
-    [address.preset, view.root, waitingPress]
-  );
-  const tookPress = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    if (waitingPress === undefined || waitingNode === undefined || drawsDocument) return;
-    if (tookPress.current === waitingPress) return;
-    tookPress.current = waitingPress;
-    setRequest((held) => ({ focusBranch, id: waitingNode, seq: (held?.seq ?? 0) + 1 }));
-  }, [drawsDocument, focusBranch, waitingNode, waitingPress]);
   const list = (close?: () => void) =>
     drawsDocument ? null : (
       <ContentsList
@@ -277,30 +233,91 @@ export function IssueBody({
         root={view.root}
       />
     );
+  // The three sentences, with no filter on: in the Contents pane from 1024 px up, and in the
+  // Outline sheet below it (R8, ruling 5). The Spec filter draws them as its first group.
   const head = (
     <IssueThreeThings
-      checks={nodesOfType(root, "check")}
-      inPane={paned}
-      issueKey={issue.key}
-      plan={plan}
-      planTasks={nodesOfType(root, "plan_task").length}
+      look={paned ? "pane" : "sheet"}
       reading={!blocksRead}
       summary={specSummary(root, specSlug)}
     />
   );
+  // What the filter by words leaves of the view: where it holds words and leaves nothing, the
+  // view says so in its own line rather than that the issue holds nothing of its kind.
+  const emptyLine =
+    address.filter === "" ? EMPTY_STATE_LINES[address.preset] : EMPTY_STATE_LINES.no_match;
+  const holdsEscape = filterOn || address.filter !== "";
+  const body = (() => {
+    switch (address.preset) {
+      case "spec":
+        return (
+          <SpecFilterBody
+            context={view.context}
+            emptyLine={emptyLine}
+            holdsEscape={holdsEscape}
+            issue={issue}
+            reader={viewer}
+            reading={!blocksRead}
+            request={request}
+            reveal={reveal?.at(-1)?.id}
+            root={root}
+            view={view.root}
+          />
+        );
+      case "verification":
+        return (
+          <VerificationFilterBody
+            checks={checks}
+            context={view.context}
+            emptyLine={emptyLine}
+            view={view.root}
+          />
+        );
+      case "decisions":
+        return (
+          <DecisionsFilterBody
+            artifacts={artifacts}
+            emptyLine={emptyLine}
+            holdsEscape={holdsEscape}
+            isClosed={isClosed}
+            issue={issue}
+            reader={viewer}
+            request={request}
+            reveal={reveal?.at(-1)?.id}
+            root={root}
+            view={view.root}
+            waitingPress={waitingPress}
+          />
+        );
+      default: {
+        const Outline = address.preset === "plan" ? PlanFilterBody : IssueTree;
+        return (
+          <Outline
+            artifacts={artifacts}
+            context={view.context}
+            emptyLine={emptyLine}
+            filtering={view.filtering}
+            focusReveal
+            holdsEscape={holdsEscape}
+            isClosed={isClosed}
+            onEditing={onEditing}
+            request={request}
+            reveal={reveal}
+            root={view.root}
+            rootRow={view.rootRow}
+          />
+        );
+      }
+    }
+  })();
 
   return (
     <>
-      {/* What a key reported when it had nowhere to go: the page's one `role="status"`, which
-          is empty while every key the reader pressed went somewhere (R9, R21). It is drawn
-          here, above everything, so the page's own report is the first status a reader meets -
-          ahead of the live-connection status a document's toolbar carries. */}
-      <p className={`text-xs ${PAGE_INSET} ${textMutedOnCanvas}`} role="status" {...pageChrome}>
-        {report}
-      </p>
       {/* The filter row's rule runs the column's whole width, as the prototype's `#tabs` does,
           and its controls keep the page's inset. */}
-      <div className={`border-b ${PAGE_INSET} ${pageLineBorder}`}>
+      <div
+        className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[760px]:sticky max-[760px]:top-0 max-[760px]:z-[25]`}
+      >
         <IssuePresets
           active={address.preset}
           artifacts={issue.artifacts ?? []}
@@ -310,55 +327,53 @@ export function IssueBody({
           nodeMenu={address.nodeMenu}
           onFilterChange={setWords}
           onLeave={onLeave}
-          // The list is the conversation's, as the 390 px pictures draw it: beside the one
-          // control with no filter on, and not under a filter, whose rows are the list.
-          outline={paned || drawsDocument || filterOn ? undefined : <OutlineSheet list={list} />}
+          // Below 1024 px the Outline sheet holds what the pane holds with no filter on - the
+          // three sentences and the list - and at 760 px and below the row's own small controls
+          // as well (`tools`: the node menu, the filter by words and the version control), so
+          // the row is one line at every width (ruling 5).
+          outline={
+            paned
+              ? undefined
+              : (tools) =>
+                  drawsDocument || filterOn ? (
+                    tools === undefined ? null : (
+                      <OutlineSheet tools={tools} />
+                    )
+                  ) : (
+                    <OutlineSheet brief={head} list={list} tools={tools} />
+                  )
+          }
           signals={signals}
-          toolbar={isPhoneViewport ? undefined : shownToolbar}
+          toolbar={shownToolbar}
         />
       </div>
       <div className="flex min-w-0 items-start">
-        {paned ? <IssueContentsPane brief={head} list={list()} /> : null}
-        <div className={`flex min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}>
-          {paned ? null : head}
+        {paned && !filterOn ? <IssueContentsPane brief={head} list={list()} /> : null}
+        {/* At least the screen's height, so the box the reader writes in stands at the foot of
+            the screen however short the outline is (ruling 5: "fixed to the foot"). */}
+        <div className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}>
           {drawsDocument ? (
-            <>
-              {phoneToolbar}
-              {openedDocument?.panel}
-            </>
+            openedDocument?.panel
           ) : (
-            // The outline's own measure, the prototype's `#pane`: 1000 px, in the middle of the
-            // column, and on a phone 4 px from the left edge and 10 px from the right, as its
-            // `#reading` is there, so the bullets keep the picture's place.
-            <div className="mx-auto flex w-full max-w-[1000px] min-w-0 flex-col max-[760px]:-mr-1 max-[760px]:-ml-2.5 max-[760px]:w-auto">
-              <IssueChildren issue={issue} />
-              <IssueTree
-                artifacts={artifacts}
-                context={view.context}
-                emptyLine={EMPTY_STATE_LINES[address.preset]}
-                filtering={view.filtering}
-                focusReveal={followed || address.preset !== "spec" || targetKind === "item"}
-                holdsEscape={filterOn || address.filter !== ""}
-                isClosed={isClosed}
-                onEditing={onEditing}
-                onReport={setReport}
-                openBody={opened}
-                request={request}
-                reveal={reveal}
-                root={view.root}
-                rootRow={view.rootRow}
-              />
-              {phoneToolbar}
+            // The view's own measure, in the middle of the column: the outline's 1000 px (the
+            // prototype's `#pane`), and under a filter the width its picture draws its body at
+            // (`.spec`, `.ver`, `.plan`, `.decs`). On a phone 4 px from the left edge and 10 px
+            // from the right, as the prototype's `#reading` is there, so the bullets keep the
+            // picture's place.
+            <div
+              className={`mx-auto flex w-full min-w-0 flex-col max-[760px]:-mr-1 max-[760px]:-ml-2.5 max-[760px]:w-auto ${MEASURES[address.preset]}`}
+            >
+              {body}
               {/* The end of the conversation, which reads the issue once the reader has seen
                   it (`IssueReadMark.tsx`). */}
               {address.preset === "conversation" ? <IssueReadMark issueKey={issue.key} /> : null}
             </div>
           )}
           {below}
-          {/* The one place to write, at the outline's foot (R16), in the outline's measure. It
-              stays mounted while a filter or an opened document hides it, so a draft outlives
-              the reader's way through the page. */}
-          <div className="sticky bottom-0 z-[15] mx-auto w-full max-w-[1000px] min-w-0 max-[760px]:-mr-1 max-[760px]:-ml-2.5 max-[760px]:w-auto">
+          {/* The one place to write, fixed to the foot of the screen (R16, ruling 5), in the
+              outline's measure. It stays mounted while a filter or an opened document hides it,
+              so a draft outlives the reader's way through the page. */}
+          <div className="sticky bottom-0 z-[15] mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[760px]:-mr-1 max-[760px]:-ml-2.5 max-[760px]:w-auto">
             <IssueComposer
               documentOpen={drawsDocument}
               filterOn={filterOn}
@@ -372,12 +387,13 @@ export function IssueBody({
   );
 }
 
-/**
- * The chain down to the node a filter opens on when the address names none: on the Decisions
- * filter the first decision waiting for the reader's review, so the reader lands on what waits
- * for them with Keep and Change in its body (R6, R7). Every other view opens on no node.
- */
-function opensOn(root: TreeNode, preset: Preset): string | undefined {
-  if (preset !== "decisions") return undefined;
-  return nodesOfType(root, "decision").find((node) => node.waiting)?.id;
-}
+/** How wide each view draws its body: the outline's measure with no filter on, and under a
+ *  filter the width the approved picture draws that filter's body at (ruling 5: "the filter's
+ *  body has the whole width"). */
+const MEASURES: Readonly<Record<Preset, string>> = {
+  conversation: "max-w-[1000px]",
+  decisions: "max-w-[960px]",
+  plan: "max-w-[1300px]",
+  spec: "max-w-[1080px]",
+  verification: "max-w-[1180px]",
+};

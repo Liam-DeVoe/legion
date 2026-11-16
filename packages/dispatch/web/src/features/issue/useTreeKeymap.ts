@@ -52,8 +52,8 @@ export interface TreeKeyboard {
   readonly onOpenDeeper: (id: string) => void;
   /** Keeps one row's body open, or lets it close. */
   readonly onPin: (row: string) => void;
-  /** Says where a key could not go, in the page's own status, and clears that line with `""`
-   *  whenever a key does go somewhere. */
+  /** Says where a key could not go, which the tree draws at the row the key was pressed on, and
+   *  clears that line with `""` whenever a key does go somewhere. */
   readonly onReport: (line: string) => void;
   /** Unfolds the path down to one node and puts the focus on it. */
   readonly onReveal: (id: string) => void;
@@ -404,27 +404,21 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     },
     {
       // Reply to the focused row (R16): a comment, a message or an ask whatever its state sets
-      // the line at the outline's foot to reply to it, and the issue itself to a new comment on
-      // it, as the row's own Reply does; the caret goes to the line.
+      // the line at the outline's foot to reply to it, as the row's own Reply does; the caret
+      // goes to the line.
       id: "tree-reply",
       keys: "r",
       label: `${CONTROL_LABELS.reply} to the focused row`,
       run: () => {
         const node = focusedRow()?.node;
-        const writer = tree.writer;
-        if (node === undefined || writer === undefined) return;
+        const item = node === undefined ? undefined : replyItemOf(node);
+        if (item === undefined || tree.writer === undefined) return;
         tree.onReport("");
-        const item = replyItemOf(node);
-        if (item === undefined) writer.writeOnIssue();
-        else writer.replyTo(item);
+        tree.writer.replyTo(item);
       },
       when: () => {
         const node = focusedRow()?.node;
-        return (
-          tree.writer !== undefined &&
-          node !== undefined &&
-          (node.type === "issue" || replyItemOf(node) !== undefined)
-        );
+        return tree.writer !== undefined && node !== undefined && replyItemOf(node) !== undefined;
       },
     },
     {

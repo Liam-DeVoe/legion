@@ -11,9 +11,7 @@ import {
   setSessionSendState,
   setSessionStopped,
 } from "./agents";
-import { createIssue, createMessage, createProject, listComments } from "./api";
-import { focusedNodeFacts, focusedNodeId, openDetails } from "./issue-page";
-import { navigateInApp } from "./sends";
+import { createIssue, createMessage, createProject } from "./api";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -50,21 +48,12 @@ const observer: FakeSession = {
   title: "Observer",
 };
 
-/** The deliveries of the row the issue's own address for `kind` and `id` focuses: the issue page
- *  draws a message's and a comment's deliveries under that row's facts in Details
- *  (`FocusedNodeFacts.tsx`), where the old Conversation drew them on its cards
- *  (dispatch://INFRA-1196 R14). The move is inside the page, as a link's is, so the agent list it
- *  already read stays as it was. */
-async function deliveriesOf(
-  page: Page,
-  issue: string,
-  kind: "comments" | "messages",
-  id: string
-): Promise<Locator> {
-  await navigateInApp(page, `/issues/${issue}/${kind}/${id}`);
-  await expect.poll(() => focusedNodeId(page)).toBe(id);
-  await openDetails(page);
-  return focusedNodeFacts(page).locator("[data-deliveries]");
+/** A top-level Conversation turn containing `text` exactly. */
+function turn(page: Page, text: string): Locator {
+  return page
+    .getByRole("list", { name: "Conversation turns" })
+    .locator(":scope > li")
+    .filter({ has: page.getByText(text, { exact: true }) });
 }
 
 /** The ids every send the fake listener took was aimed at, in order. */
@@ -85,25 +74,20 @@ test("a person's message to a stopped but known session is queued for it, and th
   const issue = await issueFor("Message to a stopped session");
   await setSessionStopped(planner.session_id, true);
   const body = "Report status when you are back.";
-  const message = await createMessage(issue, {
-    body,
-    delivery: "steer",
-    target: `session:${planner.session_id}`,
-  });
+  await createMessage(issue, { body, delivery: "steer", target: `session:${planner.session_id}` });
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue}`);
-    const deliveries = await deliveriesOf(page, issue, "messages", message.id);
-    // The registry no longer holds the session, so the line names it by the short form of its
+    await page.goto(`/issues/${issue}/conversation`);
+    // The registry no longer holds the session, so the card names it by the short form of its
     // id, as it names every session that has left.
-    await expect(deliveries).toContainText(QUEUED(shortSessionId(planner.session_id)));
-    await expect(deliveries).not.toContainText("no live session");
+    await expect(turn(page, body)).toContainText(QUEUED(shortSessionId(planner.session_id)));
+    await expect(turn(page, body)).not.toContainText("no live session");
     // Queued is the listener having taken it, so the send is real and Retry is not offered: a
     // second copy is exactly what the stored message makes unnecessary.
     expect(await sentTo()).toEqual([planner.session_id]);
-    await expect(deliveries.getByRole("button", { name: "Retry" })).toHaveCount(0);
+    await expect(turn(page, body).getByRole("button", { name: "Retry" })).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -119,18 +103,13 @@ test("a message whose registry read found the session live and whose send answer
   const issue = await issueFor("Message to a session that crashed");
   await setSessionSendState(planner.session_id, "stopped");
   const body = "Did you survive the deploy?";
-  const message = await createMessage(issue, {
-    body,
-    delivery: "steer",
-    target: `session:${planner.session_id}`,
-  });
+  await createMessage(issue, { body, delivery: "steer", target: `session:${planner.session_id}` });
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue}`);
-    const deliveries = await deliveriesOf(page, issue, "messages", message.id);
-    await expect(deliveries).toContainText(QUEUED("Planner"));
+    await page.goto(`/issues/${issue}/conversation`);
+    await expect(turn(page, body)).toContainText(QUEUED("Planner"));
     expect(await sentTo()).toEqual([planner.session_id]);
   } finally {
     await alice.close();
@@ -160,14 +139,11 @@ test("a mention of a stopped but known session is queued for it, and the listene
       .getByRole("form", { name: "Comment composer" })
       .getByRole("button", { name: "Send" })
       .click();
-    // The comment is a row of the outline, and its deliveries are that row's facts in Details.
-    await expect.poll(sentTo).toEqual([planner.session_id]);
-    const [comment] = await listComments(issue);
-    if (comment === undefined) throw new Error("the send made no comment");
-    const deliveries = await deliveriesOf(page, issue, "comments", comment.id);
+    const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText(QUEUED("Planner"));
     await expect(deliveries).not.toContainText("no live session");
     await expect(deliveries.getByRole("button", { name: "Retry" })).toHaveCount(0);
+    await expect.poll(sentTo).toEqual([planner.session_id]);
   } finally {
     await alice.close();
   }
@@ -300,21 +276,16 @@ test("a message to a session Envoy does not know is still refused as no live ses
   const issue = await issueFor("Message to a session nobody knows");
   await setSessionRecord(planner.session_id, "absent");
   const body = "Are you there at all?";
-  const message = await createMessage(issue, {
-    body,
-    delivery: "steer",
-    target: `session:${planner.session_id}`,
-  });
+  await createMessage(issue, { body, delivery: "steer", target: `session:${planner.session_id}` });
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue}`);
-    const deliveries = await deliveriesOf(page, issue, "messages", message.id);
-    await expect(deliveries).toContainText(`no live session ${planner.session_id}`, {
+    await page.goto(`/issues/${issue}/conversation`);
+    await expect(turn(page, body)).toContainText(`no live session ${planner.session_id}`, {
       timeout: 30_000,
     });
-    await expect(deliveries).not.toContainText("Queued:");
+    await expect(turn(page, body)).not.toContainText("Queued:");
     expect(await sentTo()).toEqual([]);
   } finally {
     await alice.close();

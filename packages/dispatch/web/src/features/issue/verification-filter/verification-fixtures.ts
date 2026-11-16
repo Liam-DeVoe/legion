@@ -2,7 +2,7 @@ import type { CheckBlock, CheckResult } from "../../../api/types";
 import { checkFacts, resultFacts } from "../check-facts";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
-import { presetView } from "../presets";
+import { type PresetView, presetView } from "../presets";
 import { blockNodeId, checkState } from "../tree-drafts";
 
 /**
@@ -131,13 +131,22 @@ export function statementNode(
   });
 }
 
-/** The tree as the Verification filter leaves it (`presetView`), over the statements of the
- *  issue and whatever else sits under it. `named` is what the address names, which outranks
- *  the filter: a node of any kind it names is drawn (`presets.ts`). */
+/** The Verification filter's own view (`presetView`) over the statements of the issue and
+ *  whatever else sits under it: the tree it leaves, and the ids it draws as context, which is
+ *  every statement. `named` is what the address names, which outranks the filter: a node of any
+ *  kind it names is drawn (`presets.ts`). */
+export function verificationPreset(
+  under: readonly TreeNode[],
+  named: readonly string[] = []
+): PresetView {
+  const issue = node({ children: under, id: ISSUE_KEY, text: "An issue", type: "issue" });
+  return presetView(issue, "verification", "", new Set(named));
+}
+
+/** The tree as the Verification filter leaves it. */
 export function verificationView(
   under: readonly TreeNode[],
   named: readonly string[] = []
 ): TreeNode {
-  const issue = node({ children: under, id: ISSUE_KEY, text: "An issue", type: "issue" });
-  return presetView(issue, "verification", "", new Set(named)).root;
+  return verificationPreset(under, named).root;
 }

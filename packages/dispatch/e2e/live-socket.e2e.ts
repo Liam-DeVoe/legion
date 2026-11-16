@@ -4,15 +4,12 @@ import {
   createComment,
   createIssue,
   createProject,
-  getIssueEvents,
   patchIssue,
   publishAgentStreamFrame,
-  putIssueState,
   rotateLiveSockets,
   setAgentStreamResponder,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { historyPanel } from "./issue-page";
 import { navigateInApp } from "./sends";
 import {
   type WebSocket as BrowserWebSocket,
@@ -349,11 +346,7 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     const controlReads = trackIssueReads(control, baselineIssue.key);
     const controlSocket = control.waitForEvent("websocket", isLiveSocket);
     await control.goto(`/issues/${baselineIssue.key}/activity`);
-    // The title is drawn as the page's heading and again as a fact of the focused node
-    // (dispatch://INFRA-1196 R12): the page has loaded when its heading says it.
-    await expect(
-      control.getByRole("heading", { exact: true, name: "Comment request control" })
-    ).toBeVisible();
+    await expect(control.getByText("Comment request control", { exact: true })).toBeVisible();
     await controlSocket;
     // The rotating page's window opens long after its first reads; this leaves the control page
     // in that same state, so that neither window holds a read the page would have made anyway.
@@ -393,8 +386,11 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     });
     const first = page.waitForEvent("websocket", isLiveSocket);
     await page.goto(`/issues/${issue.key}/activity`);
-    await expect(page.getByRole("heading", { exact: true, name: "Rotation target" })).toBeVisible();
-    await expect(historyPanel(page)).toBeVisible();
+    await expect(page.getByText("Rotation target", { exact: true })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
     await first;
     await expect.poll(() => sockets.received.includes("events_start")).toBe(true);
     await untilIssueReadsSettle(reads, pending);
@@ -446,10 +442,7 @@ test("a change committed while the page loads is shown without a reload @pr", as
     });
 
     await page.goto(`/issues/${issue.key}/conversation`);
-    // The title is the page's heading; the focused node's facts draw it a second time.
-    await expect(
-      page.getByRole("heading", { exact: true, name: "Before the page load" })
-    ).toBeVisible();
+    await expect(page.getByText("Before the page load", { exact: true })).toBeVisible();
     await expect.poll(() => held !== undefined).toBe(true);
     await waitForReads(pending);
 
@@ -459,9 +452,9 @@ test("a change committed while the page loads is shown without a reload @pr", as
     firstSocketReleased.resolve();
     await opened;
 
-    await expect(
-      page.getByRole("heading", { exact: true, name: "Committed during the page load" })
-    ).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("Committed during the page load", { exact: true })).toBeVisible({
+      timeout: 5_000,
+    });
     expect(loaded).toHaveLength(1);
   } finally {
     await alice.close();
@@ -471,14 +464,6 @@ test("a change committed while the page loads is shown without a reload @pr", as
 test("a first live socket opening without a change makes no API request", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Quiet page load" });
-  // The reader has read this issue through its head already. The outline's end is on screen the
-  // moment an empty issue loads, and a second there writes an unread issue's read mark
-  // (`IssueReadMark.tsx`): a change of the reader's state, whose own event the opening socket
-  // then delivers and the page reads the state back for. That is the reader reading, not the
-  // socket's open, so the seed leaves the mark nothing to write, and the open is the one thing
-  // left that could cause a request.
-  const [head] = await getIssueEvents(issue.key, { limit: 1, order: "desc" });
-  await putIssueState(issue.key, { last_read_seq: head?.seq ?? 0 }, { login: "alice" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -496,23 +481,12 @@ test("a first live socket opening without a change makes no API request", async 
     let countRequests = false;
     page.on("request", (request) => {
       if (countRequests && new URL(request.url()).pathname.startsWith("/api/")) {
-        requestsAfterOpen.push(`${request.method()} ${request.url()}`);
-      }
-    });
-    // Nothing writes the reader's state on this load: a mark written here would be a change.
-    const stateWrites: string[] = [];
-    page.on("request", (request) => {
-      if (
-        request.method() === "PUT" &&
-        new URL(request.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
-      ) {
-        stateWrites.push(request.postData() ?? "");
+        requestsAfterOpen.push(request.url());
       }
     });
 
     await page.goto(`/issues/${issue.key}/conversation`);
-    // The title is the page's heading; the focused node's facts draw it a second time.
-    await expect(page.getByRole("heading", { exact: true, name: "Quiet page load" })).toBeVisible();
+    await expect(page.getByText("Quiet page load", { exact: true })).toBeVisible();
     await expect.poll(() => held !== undefined).toBe(true);
     await waitForReads(pending);
     if (held === undefined) throw new Error("the first live socket was not held");
@@ -526,7 +500,6 @@ test("a first live socket opening without a change makes no API request", async 
     // credential poll (15 s, `features/credentials/pending.ts`), a read on a cadence of its own
     // that this row does not count.
     await page.waitForTimeout(1_000);
-    expect(stateWrites, "the load wrote the reader's state of an issue they had read").toEqual([]);
     expect(requestsAfterOpen).toEqual([]);
   } finally {
     await alice.close();

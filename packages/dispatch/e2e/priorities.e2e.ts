@@ -1,6 +1,6 @@
 /** The priority, read and written in a browser against the real stack: the list page and its two
- *  fault lists, a priority's own page and its margin, the line an issue page's panel carries, and
- *  the rail's count. Five checks of dispatch://INFRA-2947 are this one file - the page's order, the
+ *  fault lists, a priority's own page and its margin, the line an issue's header carries, and the
+ *  rail's count. Five checks of dispatch://INFRA-2947 are this one file - the page's order, the
  *  writes a person makes, the margin, the issue's line and the two absences - so a row that fails
  *  fails all five, and each row below is one of their sentences.
  *
@@ -21,7 +21,6 @@ import {
   patchIssue,
   patchPriority,
 } from "./api";
-import { openDetails } from "./issue-page";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -227,16 +226,6 @@ async function columnTexts(table: Locator, header: string): Promise<string[]> {
 /** The badge beside the rail's Priorities entry, which is its last span; an entry with no count
  *  draws two spans and no third. */
 const railEntry = (page: Page): Locator => page.getByRole("link", { name: /^Priorities/ });
-
-/** An issue page's priority row: the priorities the issue advances and the control that adds
- *  and removes one, which the Details panel's Development section draws and the identity block
- *  does not (dispatch://INFRA-1196 R13). Each row below reads it there, so a row drawn anywhere
- *  else on the page is not found. */
-const advancesRow = (page: Page): Locator =>
-  page
-    .getByTestId("issue-margin")
-    .locator('[data-margin-section="development"]')
-    .getByTestId("issue-advances");
 
 // SLOW(>=2s): three projects, three priorities and ten issues, then the whole page read cell by
 // cell.
@@ -520,9 +509,7 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     const page = await context.newPage();
     await priorityPage(page);
     // Read from another page, because the number is the rail's and not the priorities page's.
-    // The issue page draws the shell as an icon rail with no counts (dispatch://INFRA-1196
-    // R14), so the number is read where the whole sidebar is drawn: the Inbox.
-    await page.goto("/");
+    await page.goto(`/issues/${seed.rollout}`);
     const entry = railEntry(page);
     await expect(entry).toBeVisible();
     await expect(entry.locator("span").last()).toHaveText("5");
@@ -722,9 +709,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.rollout}`);
-    // The priority row is Details', closed on a load (dispatch://INFRA-1196 R13, R14).
-    await openDetails(page);
-    const line = advancesRow(page);
+    const line = page.getByTestId("issue-advances");
     await expect(line).toContainText("Advances");
     const link = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
     await expect(link).toBeVisible();
@@ -735,18 +720,16 @@ test("an issue's header names the priorities it advances and links to each", asy
     // An issue that advances none carries no line at all: no label, no name, only the control
     // that places it under a priority.
     await page.goto(`/issues/${seed.clock}`);
-    await openDetails(page);
-    await expect(advancesRow(page).getByRole("link")).toHaveCount(0);
-    await expect(advancesRow(page)).not.toContainText("Advances");
+    await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
+    await expect(page.getByTestId("issue-advances")).not.toContainText("Advances");
     await expect(
-      advancesRow(page).getByRole("button", { name: `Add a priority to ${seed.clock}` })
+      page.getByRole("button", { name: `Add a priority to ${seed.clock}` })
     ).toBeVisible();
 
     // A priority an issue inherits says so and carries no remove: that relation is the
     // ancestor's, and a relation on a child places nothing above it.
     await page.goto(`/issues/${seed.child}`);
-    await openDetails(page);
-    const inherited = advancesRow(page);
+    const inherited = page.getByTestId("issue-advances");
     await expect(inherited.getByRole("link", { name: `P3 ${seed.titles[2]}` })).toBeVisible();
     await expect(inherited).toContainText("inherited");
     await expect(
@@ -827,18 +810,15 @@ test("a person places an issue under a priority from the issue and takes it off 
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.clock}`);
-    // The priority row is Details', closed on a load (dispatch://INFRA-1196 R13, R14).
-    await openDetails(page);
 
-    await advancesRow(page)
-      .getByRole("button", { name: `Add a priority to ${seed.clock}` })
-      .click();
-    await advancesRow(page).getByLabel("Priority to advance").selectOption(seed.ids[1]);
-    await advancesRow(page).getByRole("button", { name: "Add", exact: true }).click();
-    const named = advancesRow(page).getByRole("link", { name: `P2 ${seed.titles[1]}` });
+    await page.getByRole("button", { name: `Add a priority to ${seed.clock}` }).click();
+    await page.getByLabel("Priority to advance").selectOption(seed.ids[1]);
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    const named = page
+      .getByTestId("issue-advances")
+      .getByRole("link", { name: `P2 ${seed.titles[1]}` });
     await expect(named).toBeVisible();
     await page.reload();
-    await openDetails(page);
     await expect(named).toBeVisible();
 
     // The priority's own page lists the issue among its work, which is the same relation read
@@ -852,13 +832,12 @@ test("a person places an issue under a priority from the issue and takes it off 
 
     // Taken off from the same line, and gone from both ends after a reload.
     await page.goto(`/issues/${seed.clock}`);
-    await openDetails(page);
-    await advancesRow(page)
+    await page
       .getByRole("button", { name: `Remove P2 ${seed.titles[1]} from ${seed.clock}` })
       .click();
-    await expect(advancesRow(page).getByRole("link")).toHaveCount(0);
+    await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
     await page.reload();
-    await expect(advancesRow(page).getByRole("link")).toHaveCount(0);
+    await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
     await page.goto(`/priorities/${seed.ids[1]}`);
     await expectRowNames(section(page, "Work advancing this priority"), [
       `${seed.queue} Review queue triage`,
@@ -898,29 +877,27 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     const reader = await alice.newPage();
     await priorityPage(reader);
     await reader.goto(`/issues/${seed.smoke}`);
-    // The priority row is Details', closed on a load (dispatch://INFRA-1196 R13, R14).
-    await openDetails(reader);
     await reader.evaluate(() => {
       document.documentElement.dataset.heldOpen = "yes";
     });
-    const line = advancesRow(reader);
+    const line = reader.getByTestId("issue-advances");
     const kept = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
     const deleted = line.locator(`a[href="/priorities/${seed.ids[2]}"]`);
     await expect(kept).toBeVisible();
     await expect(deleted).toHaveText(`P3 ${seed.titles[2]}`);
 
-    // Another person retires P3 over the API. The open panel stops naming it, by its title or
+    // Another person retires P3 over the API. The open header stops naming it, by its title or
     // by its id, with no reload: the issue's read is fetched again, so the set the next write
     // sends is the one the server holds.
     await endPriority(seed.ids[2], { login: "bob" });
     await expect(deleted).toHaveCount(0);
     await expect(kept).toBeVisible();
 
-    // The reader places the issue under P2 from the panel's own control. The write sends P1 and
+    // The reader places the issue under P2 from the header's own control. The write sends P1 and
     // P2, which the server takes; a set still naming P3 would be refused, a priority that is gone.
-    await line.getByRole("button", { name: `Add a priority to ${seed.smoke}` }).click();
-    await line.getByLabel("Priority to advance").selectOption(seed.ids[1]);
-    await line.getByRole("button", { name: "Add", exact: true }).click();
+    await reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` }).click();
+    await reader.getByLabel("Priority to advance").selectOption(seed.ids[1]);
+    await reader.getByRole("button", { name: "Add", exact: true }).click();
     const added = line.getByRole("link", { name: `P2 ${seed.titles[1]}` });
     await expect(added).toBeVisible();
     expect(await reader.evaluate(() => document.documentElement.dataset.heldOpen)).toBe("yes");
@@ -932,7 +909,6 @@ test("another person's delete of a priority leaves an open issue page, whose nex
       )
       .toEqual([seed.ids[0], seed.ids[1]].sort());
     await reader.reload();
-    await openDetails(reader);
     await expect(kept).toBeVisible();
     await expect(added).toBeVisible();
     await expect(deleted).toHaveCount(0);

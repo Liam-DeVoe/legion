@@ -30,9 +30,7 @@ import {
   resolveAsk,
   resolveComment,
 } from "./api";
-import { scrollAwayFromLatest } from "./conversation-scroll";
 import { conversationFilter } from "./editor";
-import { openDetails } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -110,38 +108,27 @@ test("Conversation owns the route, lists one card per message newest first, and 
     await expect(subscribedAgents.getByText("Planner (e2e)", { exact: true })).toBeVisible();
     await expect(subscribedAgents.getByText("ghost-session-0000", { exact: true })).toHaveCount(0);
 
-    // The nine tabs are the filter row's five controls (dispatch://INFRA-1196 R2), so the
-    // ordered label list this test carried is the row's own, and `/conversation` is the page
-    // with no filter on and the panel's `words` state rather than a tab of its own.
-    await expect(
-      page.getByTestId("issue-margin").locator('[data-conversation-state="words"]')
-    ).toHaveAttribute("aria-selected", "true");
-    // At 1025 px and above the five are a row of toggles; at 1024 px and below - every phone -
-    // they are one control naming the one on, which opens a menu of the five (R2). The row is
-    // read in whichever shape the width gives it, and the five names and their order are
-    // asserted in both.
-    const presetRow = page.getByTestId("issue-presets");
-    const names = ["Conversation", "Spec", "Verification", "Plan", "Decisions"];
-    const presets = presetRow.locator("button[aria-pressed]");
-    if ((await presets.count()) > 0) {
-      await expect(presets).toHaveCount(5);
-      for (const [index, name] of names.entries()) {
-        await expect(presets.nth(index)).toHaveAccessibleName(name);
-      }
-      await expect(presets.first()).toHaveAttribute("aria-pressed", "true");
-    } else {
-      const chooser = presetRow.getByRole("button", { name: /^Conversation\b/ });
-      await expect(chooser).toHaveCount(1);
-      await chooser.click();
-      const offered = presetRow.getByRole("menuitem");
-      await expect(offered).toHaveCount(5);
-      for (const [index, name] of names.entries()) {
-        await expect(offered.nth(index)).toHaveAccessibleName(name);
-      }
-      await page.keyboard.press("Escape");
-    }
+    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await expect(page.getByRole("tablist", { name: "Issue detail" }).getByRole("tab")).toHaveText([
+      "Spec",
+      "Verification",
+      "Plan",
+      "Conversation",
+      "Children",
+      "Artifacts 1",
+      "Activity",
+      "Decisions",
+      "Collaborators",
+    ]);
 
     await page.goto(`/issues/${issue.key}/conversation`);
+    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
 
     // One card per root message, newest activity first: five messages, five cards, no event row
     // between them.
@@ -235,14 +222,14 @@ test("Conversation updates an open ask in place after an agent edit and preserve
     await expect(card.getByRole("list", { name: "Options" })).toContainText("REST");
     await expect(card.getByRole("list", { name: "Options" })).toContainText("gRPC");
 
-    await page.goto(`/issues/${issue.key}/activity`);
+    await page.getByRole("tab", { name: "Activity" }).click();
     await expect(
       page
         .getByRole("list", { name: "Issue activity" })
         .getByRole("listitem")
         .filter({ hasText: 'edited the question "Which transport' })
     ).toHaveCount(1);
-    await page.goto(`/issues/${issue.key}/conversation`);
+    await page.getByRole("tab", { name: "Conversation" }).click();
 
     await navigateInApp(page, "/");
     const inboxCard = page.getByTestId(`ask-${ask.id}`);
@@ -551,7 +538,7 @@ test("Conversation answers an ask in place, draws no event row, and keeps its ca
     await expect(page.locator(`[data-turn="ask:${ask.id}"]`)).toHaveCount(1);
     expect(await handle.evaluate((element) => element.isConnected)).toBe(true);
 
-    await page.goto(`/issues/${issue.key}/activity`);
+    await page.getByRole("tab", { name: "Activity" }).click();
     const activity = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
     await expect(activity.filter({ hasText: "updated the issue" })).not.toHaveCount(0);
     await expect(activity.filter({ hasText: `moved ${child.key} from` })).toHaveCount(1);
@@ -638,7 +625,7 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
       await page.evaluate(() => window.innerHeight)
     );
 
-    await scrollAwayFromLatest(page);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     const firstTurn = turn(page, "First message");
     const before = (await firstTurn.boundingBox())?.y;
     // Everything on screen is read, so the count the pill carries is exactly the conversations
@@ -685,9 +672,6 @@ test("the iPhone Conversation fits controls and keeps the composer above the rev
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    // The conversation is in Details, the phone's sheet the header's control opens
-    // (dispatch://INFRA-1196 R14); its composer stays on screen as the sheet scrolls.
-    await openDetails(page);
     await expect(turn(page, "Phone turn 9")).toBeVisible();
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
@@ -721,19 +705,24 @@ test("the iPhone Conversation fits controls and keeps the composer above the rev
     const message = page.getByRole("textbox", { name: "Comment" });
     await message.focus();
     const composer = page.getByRole("form", { name: "Comment composer" });
-    const scroller = page.getByTestId("margin-sheet");
-    const positions = [0, await scroller.evaluate((element) => element.scrollHeight)];
+    const reviewPanelButton = page.getByRole("button", { name: /Open review panel/ });
+    const positions = [0, await page.evaluate(() => document.documentElement.scrollHeight)];
     for (const position of positions) {
-      await scroller.evaluate((element, top) => element.scrollTo(0, top), position);
-      // Two measurements of one layout: they are read together rather than one after another.
-      const [composerBox, viewportHeight] = await Promise.all([
+      await page.evaluate((top) => window.scrollTo(0, top), position);
+      // Three measurements of one layout: they are read together rather than one after another.
+      const [composerBox, reviewBox, viewportHeight] = await Promise.all([
         composer.boundingBox(),
+        reviewPanelButton.boundingBox(),
         page.evaluate(() => window.innerHeight),
       ]);
       expect(composerBox).not.toBeNull();
       expect(composerBox?.y ?? -1).toBeGreaterThanOrEqual(0);
       expect((composerBox?.y ?? 0) + (composerBox?.height ?? 0)).toBeLessThanOrEqual(
         viewportHeight
+      );
+      expect(reviewBox).not.toBeNull();
+      expect((composerBox?.y ?? 0) + (composerBox?.height ?? 0)).toBeLessThanOrEqual(
+        reviewBox?.y ?? 0
       );
     }
 

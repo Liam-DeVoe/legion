@@ -1,5 +1,4 @@
 import { createAsk, createComment, createIssue, createProject, getAsk } from "./api";
-import { focusedNodeId, historyItem, nodeRow, openDetails } from "./issue-page";
 import { expect, type Locator, type Page, test } from "./test";
 
 // A part of an ask - its question, each of its options and its answer - is a block of the
@@ -23,9 +22,9 @@ test.beforeEach(async () => {
 });
 
 /** Opens the hover card of `link` from the keyboard, which every project can do (the phone
- *  project has no hover), and answers the card. No Escape first: the link may be in Details,
- *  which Escape closes, and no card is open before this. */
+ *  project has no hover), and answers the card. */
 async function openCard(page: Page, link: Locator): Promise<Locator> {
+  await page.keyboard.press("Escape");
   await page.mouse.move(0, 0);
   await page.keyboard.press("Tab");
   await link.focus();
@@ -66,12 +65,10 @@ test("a reference to an ask's option in a comment is a link that opens the ask a
   // description.
   const optionText = "Tuesday — Ship once the review lands.";
   const reference = `dispatch://${issue.key}/ask/${ask.id}#b-${part}`;
-  const comment = await createComment(issue.key, { body: `We take ${reference}.` }, agent);
+  await createComment(issue.key, { body: `We take ${reference}.` }, agent);
 
-  // An agent wrote the comment, in a thread no person wrote in, so it is a turn of the history,
-  // in Details, which `/activity` opens (dispatch://INFRA-1196 R15).
-  await page.goto(`/issues/${issue.key}/activity`);
-  const turns = historyItem(page, comment.id);
+  await page.goto(`/issues/${issue.key}/conversation`);
+  const turns = page.getByRole("list", { name: "Conversation turns" });
   // The link's text is the part's own text, read from the graph, not the reference it was
   // written as.
   const link = turns.getByRole("link", { name: optionText });
@@ -90,12 +87,10 @@ test("a reference to an ask's option in a comment is a link that opens the ask a
   await page.keyboard.press("Escape");
   await expect(page.getByRole("tooltip")).toHaveCount(0);
 
-  // Following it opens the ask at that part: the ask's node of the outline takes the focus, on
-  // screen (R20).
+  // Following it opens the ask's own page at that part, with the ask the current turn.
   await link.click();
   await expect(page).toHaveURL(`/issues/${issue.key}/asks/${ask.id}#b-${encodeURIComponent(part)}`);
-  await expect.poll(() => focusedNodeId(page)).toBe(ask.id);
-  const turn = nodeRow(page, ask.id).first();
+  const turn = page.locator(`li[data-turn="ask:${ask.id}"][aria-current="true"]`);
   await expect(turn).toBeVisible();
   await expect(turn).toBeInViewport();
   // The ask shows an option as its label and its description, which the part's stored text joins
@@ -128,12 +123,9 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
   const optionText = `Wait — Hold until dispatch://${target.key} ships.`;
 
   await page.goto(`/issues/${target.key}`);
-  // The backlink panel is the References section of the issue page's one panel, Details, where
-  // what references the issue is one of its properties (dispatch://INFRA-1196 R12, R14).
-  await openDetails(page);
-  const panel = page.locator('[data-margin-section="references"]');
-  await panel.getByRole("button", { name: /^Referenced by/ }).click();
-  const references = panel.getByRole("region", { name: "Referenced by" });
+  const header = page.getByTestId("issue-header");
+  await header.getByRole("button", { name: /^Referenced by/ }).click();
+  const references = header.getByRole("region", { name: "Referenced by" });
 
   // The source is the ask the part belongs to, as a block of a comment reads as its comment, and
   // it links to the ask at that part. A part of an ask is no document, so nothing here reads

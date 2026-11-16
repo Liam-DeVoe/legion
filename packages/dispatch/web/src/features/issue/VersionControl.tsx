@@ -5,13 +5,11 @@ import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import {
   dangerText,
-  inputClasses,
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
+  focusVisibleRing,
+  pageField,
+  pageHeaderControl,
+  pageQuietText,
   successText,
-  textMutedOnCanvas,
 } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { ConnectionDot } from "../doc/ConnectionDot";
@@ -24,8 +22,8 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
-/** The control's button: a 44 px tap target through tablet widths, 32 px from `md`. */
-const toolbarButton = `min-h-11 shrink-0 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+/** The control's buttons: the page's small control, as the row's other controls are. */
+const toolbarButton = `disabled:cursor-not-allowed disabled:opacity-50 ${pageHeaderControl}`;
 
 /**
  * The version control beside the filters (dispatch://INFRA-1196 R2, R3, and the Design's "Where
@@ -67,21 +65,17 @@ export function VersionControl({
   const [copyFeedback, setCopyFeedback] = useState<"copied" | "failed" | undefined>(undefined);
   const versions = toolbar?.versions ?? versionsNewestFirst(artifact.versions);
   return (
-    <div
-      className="flex w-full min-w-0 flex-wrap items-center gap-2 md:ml-auto md:w-auto"
-      data-testid="issue-version-control"
-    >
+    <div className="flex min-w-0 flex-wrap items-center gap-2" data-testid="issue-version-control">
       {version === undefined ? null : (
-        <span className={`text-xs ${textMutedOnCanvas}`} {...pageChrome}>
+        <span className={`text-xs ${pageQuietText}`} {...pageChrome}>
           {CONTROL_LABELS.version} <span {...authorText}>{version}</span>
         </span>
       )}
       {/* The control names itself rather than carrying a separate label element: every option
-          says "version", so the closed select reads as a version picker and the strip still
-          shares the filter row instead of taking a row of its own. */}
+          says "version", so the closed select reads as a version picker. */}
       <select
         aria-label={CONTROL_LABELS.version}
-        className={`min-h-11 min-w-0 max-w-48 truncate rounded border px-2 py-2 text-sm md:min-h-8 md:py-1 ${inputClasses(false)}`}
+        className={`min-h-6 min-w-0 max-w-48 truncate rounded-[7px] border px-2 text-xs leading-5 outline-none md:min-h-0 md:py-px ${pageField} ${focusVisibleRing}`}
         onChange={(event) =>
           onVersionChange(event.target.value === "" ? null : Number(event.target.value))
         }
@@ -99,14 +93,13 @@ export function VersionControl({
         <NameVersion artifact={artifact} isClosed={isClosed} />
       ) : (
         <button
-          aria-label={CONTROL_LABELS.name_version}
-          className={`${toolbarButton} ${secondaryButtonDisabledText}`}
+          className={toolbarButton}
           disabled={isClosed || toolbar.isNamingVersion}
           onClick={toolbar.requestNamedVersion}
           type="button"
           {...pageChrome}
         >
-          {CONTROL_LABELS.name}
+          {CONTROL_LABELS.name_version}
         </button>
       )}
       {toolbar === undefined ? null : (
@@ -128,7 +121,7 @@ export function VersionControl({
             // The name the old page's inventory recorded for this control, which says what the
             // link addresses; the word it draws is the page's own (`page-words.ts`).
             aria-label="Copy link to block"
-            className={`${toolbarButton} ${secondaryButtonDisabledText}`}
+            className={toolbarButton}
             onClick={() => {
               void toolbar.copyBlockLink().then(
                 (copied) => setCopyFeedback(copied ? "copied" : "failed"),
@@ -178,14 +171,13 @@ function NameVersion({ artifact, isClosed }: { artifact: Artifact; isClosed: boo
   return (
     <>
       <button
-        aria-label={CONTROL_LABELS.name_version}
-        className={`${toolbarButton} ${secondaryButtonDisabledText}`}
+        className={toolbarButton}
         disabled={isClosed || name.isPending}
         onClick={() => setOpen(true)}
         type="button"
         {...pageChrome}
       >
-        {CONTROL_LABELS.name}
+        {CONTROL_LABELS.name_version}
       </button>
       <NameVersionDialog
         error={name.isError}

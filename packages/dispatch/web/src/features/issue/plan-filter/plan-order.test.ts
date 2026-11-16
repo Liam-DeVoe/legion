@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 
 import type { NodeChip, TreeNode } from "../issue-tree";
-import type { NodeType } from "../page-words";
+import { BLOCK_ATTRIBUTE_LABELS, type NodeType } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
-import { type PlanEntry, planOrder } from "./plan-order";
+import { type PlanEntry, planChart, planOrder } from "./plan-order";
 
 /**
  * The plan's order, read off the edges today's model holds (dispatch://INFRA-1196 R26).
@@ -25,6 +25,12 @@ function chip(ref: string, name = ""): NodeChip {
   return { answered: name !== "", gone: false, name, ref };
 }
 
+/** The chip the tree draws for one `needs` pointer of a task's block (`tree-drafts.ts`'s
+ *  `placeBlocks`): the target's name under the attribute's own word. */
+function need(blockId: string): NodeChip {
+  return { ...chip(taskRef(blockId), blockId), label: BLOCK_ATTRIBUTE_LABELS.needs };
+}
+
 /** One plan task, by its block id, with the block ids of the tasks it needs. */
 function task(
   blockId: string,
@@ -34,7 +40,7 @@ function task(
   return {
     alsoUnder: [],
     children: [],
-    chips: needs.map((needed) => chip(taskRef(needed), needed)),
+    chips: needs.map(need),
     facts: [],
     gaps: [],
     held: 0,
@@ -114,18 +120,21 @@ test("a task whose needs names a task the plan does not hold waits on nothing", 
   expect(drawn(entries)).toEqual(["t2", "t1", "t3"]);
 });
 
-test("a chip that names no block of the plan is no need", () => {
+test("a chip that is no needs pointer is no need, whatever it names", () => {
   // The chip a task's own words earn, which names a document and no block of it
-  // (`tree-drafts.ts`'s `addDocumentChips`), and a chip naming a block of another document.
+  // (`tree-drafts.ts`'s `addDocumentChips`); a chip naming a block of another document whose
+  // block id a task of this plan also has; and a chip naming a task of this plan that the
+  // task's words cite and its `needs` do not. None of them says "needs", so none is one.
   const cited = task("t2");
   const needing: TreeNode = {
     ...cited,
     chips: [
       chip(`dispatch://${KEY}/artifact/${PLAN}`, "The plan"),
       chip(`dispatch://${KEY}/spec#b-r1`, "A statement"),
+      chip(taskRef("t1"), "Task t1"),
     ],
   };
-  expect(drawn(planOrder([needing, task("t1")]))).toEqual(["t2", "t1"]);
+  expect(drawn(planOrder([needing, task("r1"), task("t1")]))).toEqual(["t2", "r1", "t1"]);
 });
 
 test("a node that is no plan task keeps its place and holds nothing up", () => {
@@ -135,4 +144,46 @@ test("a node that is no plan task keeps its place and holds nothing up", () => {
 
 test("a plan with no tasks draws nothing", () => {
   expect(planOrder([])).toEqual([]);
+});
+
+// R26's chart of time: "one bar per task, starting after every task it needs has ended ... a
+// task with no size is a short bar marked No size". Today's model holds no size, so each bar is
+// one unit long.
+test("a bar starts where every task it needs has ended", () => {
+  const chart = planChart(
+    planOrder([task("t1"), task("t2", ["t1"]), task("t3", ["t1"]), task("t4", ["t2", "t3"])])
+  );
+  expect(
+    chart.rows.map((row) => (row.kind === "bar" ? [blockOf(row.task.id), row.start] : ["cycle"]))
+  ).toEqual([
+    ["t1", 0],
+    ["t2", 1],
+    ["t3", 1],
+    ["t4", 2],
+  ]);
+  expect(chart.end).toBe(3);
+  // Each bar names the tasks it needs, which is what the lines between them are drawn from.
+  expect(
+    chart.rows.map((row) => (row.kind === "bar" ? row.needs.map((one) => blockOf(one.id)) : []))
+  ).toEqual([[], ["t1"], ["t1"], ["t2", "t3"]]);
+});
+
+test("a cycle is one row of the chart at its place, and what waits on it starts after it", () => {
+  const chart = planChart(
+    planOrder([task("t4", ["t3"]), task("t2", ["t3", "t1"]), task("t3", ["t2"]), task("t1")])
+  );
+  expect(
+    chart.rows.map((row) =>
+      row.kind === "bar"
+        ? `${blockOf(row.task.id)}@${row.start}`
+        : `cycle ${row.tasks.map((one) => blockOf(one.id)).join(" ")}`
+    )
+  ).toEqual(["t1@0", "cycle t2 t3", "t4@2"]);
+  // The step that waits on the cycle names the task of it that it needs.
+  const last = chart.rows.at(-1);
+  expect(last?.kind === "bar" ? last.needs.map((one) => blockOf(one.id)) : []).toEqual(["t3"]);
+});
+
+test("a plan with no tasks is a chart with no rows", () => {
+  expect(planChart([])).toEqual({ end: 1, rows: [] });
 });

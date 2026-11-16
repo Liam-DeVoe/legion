@@ -48,8 +48,8 @@ These work on every page.
 | `g s` | Go to Settings |
 | `g d` | Go to the current project's Documents (on a project or issue page) |
 | `g p` | Go to project… |
-| `Shift+S` | Toggle the sidebar (wide screens; the issue page has its icon column instead) |
-| `Shift+M` | Toggle the margin (wide screens, on a page with a document); on an issue, open or close **Details** |
+| `Shift+S` | Toggle the sidebar (wide screens) |
+| `Shift+M` | Toggle the margin (wide screens, on a page with a document) |
 
 ## Inbox
 
@@ -125,78 +125,22 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `s` | Focus the status |
 | `p` | Focus the priority |
 | `0` – `3` | Set priority P0–P3 |
-| `l` | Edit labels, in **Details**' **Labels** row |
+| `l` | Edit labels |
 | `e` | Edit the title |
 | `Shift+P` | Pin or unpin the issue |
-| `t s` | Turn the Spec filter on or off |
-| `t k` | Turn the Verification filter on or off |
-| `t p` | Turn the Plan filter on or off |
-| `t d` | Turn the Decisions filter on or off |
-| `t c` | Conversation: turn every filter off |
-| `t v` | Open the issue's history in **Details** |
-| `t h` | Open the issue's children |
-| `t a` | Open the Files and documents menu |
-| `t o` | Open the issue's collaborators in **Details** |
-| `t f` | Filter by words |
+| `t s` | Spec tab |
+| `t k` | Verification tab |
+| `t p` | Plan tab |
+| `t c` | Conversation tab |
+| `t h` | Children tab |
+| `t a` | Artifacts tab |
+| `t v` | Activity tab |
+| `t d` | Decisions tab |
+| `t o` | Collaborators tab |
 | `Escape` | Back out of the focused status or priority |
-| `Enter` on a file in **Files and documents** | Open it in place of the tree |
-| `Escape` | In this order: leave the caret, then close a document opened in place of the tree, then clear the **Filter** box, then turn every filter off, then leave the tree |
-| `Escape` while **Details** is open | Close **Details** first; in a text field or a select, leave the field first |
 
 `0` – `3` and `Shift+P` do nothing while focus is in an ask's card or on a checkbox or option,
 where the key belongs to that control.
-
-Each `t` key but `t f` opens an address of the issue page and puts the focus in what it opens; a
-filter's key turns its filter off when it is the one on. `t f` puts the focus in the **Filter**
-box. While a control of the filter row has the focus, `←` and `→` move to the previous and next
-one, `Home` and `End` to the first and last, and `Enter` or `Space` chooses it. At 1024 px and
-below the row is one menu instead. **Keys**, at the right of the row, opens this list.
-
-## Issue tree
-
-These keys move through the issue page's tree, where each node is a row.
-
-| Keys | Action |
-| --- | --- |
-| `Tab` / `Shift+Tab` | Move into the tree (from the page itself) |
-| `j` / `↓` | Move to the next row |
-| `k` / `↑` | Move to the previous row |
-| `Home` | Move to the first row |
-| `End` | Move to the last row |
-| `→` | Unfold the focused row, or move into it |
-| `←` | Fold the focused row, or move to its parent |
-| `Enter` | Put the caret in the focused row |
-| `Escape` in a row's text | Leave the row's text |
-| `Escape` | Leave the control, then the tree |
-| `o` | Keep the focused row's body open |
-| `f` | Move to the next link on the focused row |
-| `Shift+K` | Keep the focused decision |
-| `Shift+C` | Change the focused decision |
-| `r` | Reply to the focused row: the line at the foot of the outline replies to it |
-| `a` | Answer the focused open question: the line answers it |
-| `.` | Zoom into the focused row |
-| `,` | Zoom back out one level |
-| `q` | Move to the next open question |
-| `w` | Move into the decision behind the focused row |
-| `z` | Cycle how much of the tree is drawn |
-
-The tree is one stop of `Tab`: `Tab` from a row leaves the tree. `Home` and `End` move through
-the tree only while the focus is in it, and scroll the page everywhere else. `j`, `k`, `↓`, `↑`,
-`,`, `q`, `w` and `z` also work from the page itself, but not from a control elsewhere on the
-page. `Shift+K` and `Shift+C` work only while the focused row shows **Keep** or **Change**. While
-the caret is in a row's text, the tree's keys stop, and `Escape` takes you back to the row.
-
-On a check, `w` moves to the decision behind the requirement the check serves. No link on the
-issue page opens its preview card for a resting pointer: the card opens when `Tab` focuses the
-link, or when the caret stands in a link of a document you are editing.
-
-Below 1024 px the tree shows one node at a time, and there `→` and `←` zoom into the focused row
-and back out to its parent.
-
-`z` steps through three views: the rows as the fold leaves them; those rows with every body down
-to the second level open; and every branch unfolded with every body open. Your own folds and pins
-stay as they were. A key that has nowhere to go says so in a line under the header, such as
-**No further open question.**
 
 ## Document
 

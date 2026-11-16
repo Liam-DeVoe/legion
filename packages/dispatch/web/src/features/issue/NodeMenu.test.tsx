@@ -71,6 +71,7 @@ function Menu({
   const [open, setOpen] = useState(true);
   return (
     <NodeMenu
+      align="end"
       artifacts={artifacts}
       isClosed={isClosed}
       issueKey="CORE-1"

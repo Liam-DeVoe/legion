@@ -26,12 +26,9 @@ import {
   openSpecAndAwaitHeadingIds,
   placeCaret,
   selectEditorText,
-  specAddress,
   typeAtEnd,
 } from "./editor";
-import { historyItem, tree } from "./issue-page";
 import { engineParagraphs } from "./read-back";
-import { navigateInApp } from "./sends";
 import { type BrowserContext, expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -39,9 +36,6 @@ const session = {
   actor: { kind: "session" as const, id: "e2e-doc-editor", origin: { tmux: "dispatch:1.3" } },
   as: "agent" as const,
 };
-/** A person writing on the issue, whose message is a node of the outline (dispatch://INFRA-1196
- *  R1): an agent's message no person took part in is the history's, in Details (R15). */
-const carol = { login: "carol" };
 const longToken = `sjawhar/legion#838-${"unbreakable".repeat(12)}`;
 const initialMarkdown = `## Database\n\nUse SQLite\n\n| col | value |\n|---|---|\n| a | 1 |\n| b | ${longToken} |\n\n- [ ] task\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\nEnd of spec.\n`;
 
@@ -58,7 +52,7 @@ test("the spec opens as a formatted, editable document with no source pane", asy
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}/spec`);
 
     const documentArticle = page.locator('article[aria-label="Document"]');
     const editor = documentEditor(page);
@@ -108,7 +102,7 @@ test("the spec opens as a formatted, editable document with no source pane", asy
     await expect(editor.locator('input[type="checkbox"]')).toBeVisible();
     await expect(editor.locator("pre code")).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Edit|Preview)$/ })).toHaveCount(0);
-    await expect(page.getByTestId("opened-artifact").locator("textarea")).toHaveCount(0);
+    await expect(page.getByRole("tabpanel", { name: "Spec" }).locator("textarea")).toHaveCount(0);
 
     await page.screenshot({ path: testInfo.outputPath("rendered-document.png"), fullPage: true });
   } finally {
@@ -132,7 +126,7 @@ test("a spec whose table holds an unbreakable token keeps the page within the sc
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}/spec`);
     const table = documentEditor(page).locator("table");
     await expect(table).toBeVisible();
     expect(
@@ -216,8 +210,8 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     const [alicePage, bobPage] = await Promise.all([alice.newPage(), bob.newPage()]);
     // The two readers' loads overlap: neither waits on the other to mount its editor.
     await Promise.all([
-      alicePage.goto(await specAddress(issue.key)),
-      bobPage.goto(await specAddress(issue.key)),
+      alicePage.goto(`/issues/${issue.key}/spec`),
+      bobPage.goto(`/issues/${issue.key}/spec`),
     ]);
     const aliceEditor = documentEditor(alicePage);
     const bobEditor = documentEditor(bobPage);
@@ -279,7 +273,7 @@ test("named versions, the version picker, and the diff stay current across users
   try {
     const page = await alice.newPage();
     const sockets = countDocumentSockets(page);
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}/spec`);
     const editor = documentEditor(page);
     await expect(editor).toContainText("Use SQLite");
     await expect.poll(sockets).toBe(1);
@@ -349,8 +343,8 @@ test("an agent edit lands live in every open editor @pr", async ({ browser }) =>
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(await specAddress(issue.key)),
-      bobPage.goto(await specAddress(issue.key)),
+      alicePage.goto(`/issues/${issue.key}/spec`),
+      bobPage.goto(`/issues/${issue.key}/spec`),
     ]);
     const aliceEditor = documentEditor(alicePage);
     const bobEditor = documentEditor(bobPage);
@@ -385,8 +379,8 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
     const aliceSockets = countDocumentSockets(alicePage);
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(await specAddress(issue.key)),
-      bobPage.goto(await specAddress(issue.key)),
+      alicePage.goto(`/issues/${issue.key}/spec`),
+      bobPage.goto(`/issues/${issue.key}/spec`),
     ]);
     const bobEditor = documentEditor(bobPage);
     await expect(documentEditor(alicePage)).toContainText("Use SQLite");
@@ -409,7 +403,7 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
   }
 });
 
-test("round-trips through the filters leave one open document connection and the typed text", async ({
+test("tab round-trips keep one document connection, the typed text, and the Conversation scroll position", async ({
   browser,
 }) => {
   await createProject({ key: "TABS", name: "Tabs" });
@@ -419,49 +413,40 @@ test("round-trips through the filters leave one open document connection and the
     title: "Mounted panels",
   });
   for (let index = 0; index < 30; index += 1) {
-    await createMessage(issue.key, { body: `Existing message ${index}` }, carol);
+    await createMessage(issue.key, { body: `Existing message ${index}` }, session);
   }
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // Open connections, not connections ever opened: a document opened in place of the outline
-    // is unmounted when the reader leaves it for a filter (dispatch://INFRA-1196 R3), which
-    // closes its socket, and coming back opens one again. What must never happen is a tab that
-    // accumulates live rooms.
-    const sockets = openDocumentSockets(page);
-    await page.goto(await specAddress(issue.key));
+    const sockets = countDocumentSockets(page);
+    await page.goto(`/issues/${issue.key}/spec`);
     const editor = documentEditor(page);
     await typeAtEnd(page, "stay mounted");
     await expect(editor).toContainText("stay mounted");
     await expect.poll(sockets).toBe(1);
 
-    // The conversation is the outline, at its own address, reached by a move inside the page as
-    // the Conversation tab was (dispatch://INFRA-1196 R1, R20): a fresh load of the address
-    // would open a second document connection by itself and prove nothing.
-    await navigateInApp(page, `/issues/${issue.key}/conversation`);
-    await expect(tree(page).getByText("Existing message 29")).toBeVisible();
+    await page.getByRole("tab", { name: "Conversation" }).click();
+    await expect(page.getByRole("tab", { name: "Conversation" })).toBeFocused();
+    await expect(page.getByText("Existing message 29")).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, 500));
+    const scrollPosition = await page.evaluate(() => window.scrollY);
+    expect(scrollPosition).toBeGreaterThan(0);
 
-    // A round-trip through the filter row: the Spec filter on, then every filter off again with
-    // Conversation (dispatch://INFRA-1196 R2), the outline drawn again at the end of it.
-    //
-    // Where in the outline the reader was is not read here. The position this row held the page
-    // to was the panel's list of the conversation, its own scrollport, which went with the list
-    // (R14); the page keeps a place per view of its own (`IssuePage.tsx`'s `panelScroll`), and
-    // on this round-trip it does not restore it - an open defect of the page, reported with
-    // this pass and covered by no row.
-    const spec = page.getByRole("button", { exact: true, name: "Spec" });
-    const conversation = page.getByRole("button", { exact: true, name: "Conversation" });
-    await spec.click();
-    await expect(spec).toHaveAttribute("aria-pressed", "true");
-    await conversation.click();
-    await expect(conversation).toHaveAttribute("aria-pressed", "true");
-    await expect(tree(page).getByText("Existing message 29")).toBeVisible();
-
-    // Back to the document, with the text typed into it and one connection open, not two.
-    await navigateInApp(page, await specAddress(issue.key));
+    // Three tabs sit between them — Spec, Verification, Plan, Conversation — and the arrow
+    // activates each tab it lands on, so the walk back mounts the two in between on the way.
+    for (const from of ["Conversation", "Plan", "Verification"]) {
+      await page.getByRole("tab", { name: from }).press("ArrowLeft");
+    }
+    await expect(page.getByRole("tab", { name: "Spec" })).toBeFocused();
     await expect(editor).toContainText("stay mounted");
+    for (const from of ["Spec", "Verification", "Plan"]) {
+      await page.getByRole("tab", { name: from }).press("ArrowRight");
+    }
+    await expect(page.getByRole("tab", { name: "Conversation" })).toBeFocused();
+    await expect(page.getByText("Existing message 29")).toBeVisible();
     await expect.poll(sockets).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrollPosition);
   } finally {
     await alice.close();
   }
@@ -539,14 +524,14 @@ test("a dropped document transport reconnects the mounted editor and leaves one 
     const sockets = countDocumentSockets(page);
     const open = openDocumentSockets(page);
     const transport = await documentTransport(page);
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}/spec`);
     const editor = documentEditor(page);
     await expect(editor).toContainText("Original body.");
     await expect(connectedDot(page)).toHaveText("connected");
     await expect.poll(sockets).toBe(1);
 
     const bobPage = await bob.newPage();
-    await bobPage.goto(await specAddress(issue.key));
+    await bobPage.goto(`/issues/${issue.key}/spec`);
     await expect(documentEditor(bobPage)).toContainText("Original body.");
 
     await transport.sever();
@@ -609,7 +594,7 @@ for (const row of [
       // clock spends it rather than the run (`artifacts.e2e.ts:478` drives the same connection).
       await page.clock.install();
       const sockets = countDocumentSockets(page, issue.primary_artifact_id);
-      await page.goto(await specAddress(issue.key));
+      await page.goto(`/issues/${issue.key}/spec`);
       await expect(documentEditor(page)).toContainText("It stays connected.");
       if (row.readOnly) {
         await expect(
@@ -667,7 +652,7 @@ test("document marks and table alignment use classes rather than inline styles",
   ]);
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}/spec`);
     const editor = documentEditor(page);
     const decoration = editor.locator(".mark-comment");
     const rightCell = editor.locator("tbody td").nth(1);
@@ -679,10 +664,10 @@ test("document marks and table alignment use classes rather than inline styles",
     );
 
     const selectionPage = await selectionAlice.newPage();
-    await selectionPage.goto(await specAddress(issue.key));
+    await selectionPage.goto(`/issues/${issue.key}/spec`);
     const selectionEditor = documentEditor(selectionPage);
     const bobPage = await selectionBob.newPage();
-    await bobPage.goto(await specAddress(issue.key));
+    await bobPage.goto(`/issues/${issue.key}/spec`);
     await selectEditorText(bobPage, "marked phrase");
     const selection = selectionEditor.locator(".proof-collab-selection");
     await expect(selection).toHaveCount(1);
@@ -702,7 +687,7 @@ test("document marks and table alignment use classes rather than inline styles",
 // is the Hocuspocus provider. Dispatch's own host code calls these; only the libraries define them.
 const editorTransportMarkers = [/[^.\w$]getXmlFragment\(/u, /permissionDeniedHandler/u];
 
-test("the conversation downloads no editor transport; a document loads it on demand", async ({
+test("the Conversation tab downloads no editor transport; the Spec tab loads it on demand", async ({
   browser,
 }) => {
   await createProject({ key: "LAZY", name: "Lazy" });
@@ -711,7 +696,7 @@ test("the conversation downloads no editor transport; a document loads it on dem
     spec: "# Lazy\n\nUse SQLite\n",
     title: "Transport on demand",
   });
-  await createMessage(issue.key, { body: "A message, no document" }, carol);
+  await createMessage(issue.key, { body: "A message, no document" }, session);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -734,11 +719,15 @@ test("the conversation downloads no editor transport; a document loads it on dem
     };
 
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(tree(page).getByText("A message, no document")).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await expect(page.getByText("A message, no document")).toBeVisible();
     expect(scripts.size).toBeGreaterThan(1);
     expect(await transportChunks()).toEqual([]);
 
-    await navigateInApp(page, await specAddress(issue.key));
+    await page.getByRole("tab", { name: "Spec" }).click();
     await expect(documentEditor(page)).toContainText("Use SQLite");
     expect((await transportChunks()).length).toBeGreaterThan(0);
   } finally {
@@ -802,24 +791,15 @@ test("clicking a Markdown dispatch:// link in the live editor navigates in-app w
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(source.key));
+    await page.goto(`/issues/${source.key}/spec`);
 
     const editor = documentEditor(page);
     // The live editor keeps the author's own link text (`@legion/proof-editor` exposes no
     // decoration hook to safely replace a live editable mark's rendered text) and surfaces the
-    // resolved target in the link's card instead. The issue page opens no card on hover
-    // (dispatch://INFRA-1196 R6), and a link inside an editor takes no focus of its own, so the
-    // keyboard reaches it the way a reader's arrows do: the caret standing in the link.
+    // resolved target in the hover card instead.
     const link = editor.getByRole("link", { name: "the other issue" });
     await expect(link).toBeVisible();
-    await link.evaluate((anchor) => {
-      anchor.closest<HTMLElement>('[contenteditable="true"]')?.focus();
-      const range = document.createRange();
-      range.setStart(anchor.firstChild ?? anchor, 2);
-      range.collapse(true);
-      document.getSelection()?.removeAllRanges();
-      document.getSelection()?.addRange(range);
-    });
+    await link.hover();
     await expect(page.getByRole("tooltip")).toContainText("Navigation target");
     await page.keyboard.press("Escape");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
@@ -856,7 +836,7 @@ test("a backslash before a character reference reads as its text in a document, 
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}/spec`);
     const editor = documentEditor(page);
     await expect.poll(() => editor.locator("p").allTextContents()).toEqual([text]);
 
@@ -866,11 +846,11 @@ test("a backslash before a character reference reads as its text in a document, 
     expect(engineParagraphs(stored)).toEqual([text]);
 
     // A comment's body is rendered by the engine alone: the control for the document's reading.
-    // An agent wrote it, in a thread no person wrote in, so its own address lands on its turn in
-    // the history, in Details (dispatch://INFRA-1196 R15, R20).
     const comment = await createComment(issue.key, { body: written }, session);
-    await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
-    await expect(historyItem(page, comment.id).getByText(text, { exact: true })).toBeVisible();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await expect(
+      page.locator(`[data-turn="comment:${comment.id}"]`).getByText(text, { exact: true })
+    ).toBeVisible();
 
     // The command runs outside the browser, so one project runs it.
     if (testInfo.project.name === "chromium") {

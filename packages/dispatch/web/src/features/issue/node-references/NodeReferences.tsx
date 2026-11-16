@@ -6,60 +6,13 @@ import { linkHoverText, linkText, pageHeaderControl, pageQuietText } from "../..
 import { useMarginDrawer } from "../../margin/margin-slot";
 import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
-import { buildReferencePath, parseNodeReference, shortForm } from "../../refs/routes";
+import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../../shell/useDialog";
 import type { FocusedNode } from "../focused-node";
-import { authorText, freeze, pageChrome } from "../page-structure";
-import { CONTROL_LABELS } from "../page-words";
+import { shortDay } from "../node-time";
+import { authorText, pageChrome } from "../page-structure";
+import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
 import { referenceRows } from "./references-list";
-
-/**
- * Every word this part draws. Integration moves them into `page-words.ts`: the control and the
- * two tables into `CONTROL_LABELS`' neighbours, and the two sentences into `ANSWER_LINES`,
- * which is where what the page says in answer to the reader's own act is declared (R22).
- */
-export const NODE_REFERENCES_WORDS = freeze({
-  /**
-   * The relation each kind of tuple puts the citing node in with the row the reader is on.
-   * They are the words the old page's Referenced-by panel drew for the same edges
-   * (`features/refs/ReferencedBy.tsx`'s `STRUCTURAL_LABELS`), lowercase because the row draws
-   * them beside the node's own words, where a capital reads as a proper noun (R19, R22).
-   */
-  edges: {
-    anchored_to: "anchored item",
-    answers: "answer",
-    attached_to: "attached document",
-    blocked_by: "blocked issue",
-    child_of: "child issue",
-    followed_by: "follower",
-    needs: "needed by",
-    owned_by: "owned item",
-    replies_to: "reply",
-    serves: "served by",
-  },
-  /**
-   * The page's word for each kind of node the graph answers with, which names a row whose edge
-   * is a mention. `artifact` and `block` are both a document to a reader, and a session is the
-   * conversation of one agent (R22: no schema token where a word belongs).
-   */
-  kinds: {
-    artifact: "document",
-    ask: "question",
-    block: "document",
-    comment: "comment",
-    component: "component",
-    issue: "issue",
-    message: "message",
-    session: "agent",
-  },
-  /** What the list says while its read is out, and when the read failed. */
-  loading: "Loading references…",
-  unreadable: "Could not load the references.",
-  /** The control in Details that lists what references the row the reader is on (R14, R19).
-   *  It names the row, because Details' References section holds the issue's own Referenced by
-   *  beside it and two lists cannot share one name. */
-  what_references: "What references this row",
-} as const);
 
 const EDGE_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.edges;
 const KIND_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.kinds;
@@ -111,6 +64,10 @@ export function NodeReferences({
   // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
   // the node kind's, which says it was only named.
   const rows = referenceRows((query.data?.edges ?? []).filter(drawsEdge));
+  // The issue the focused row is of: a citing node of another issue, or of a project, says
+  // which, as the old panel's "Comment · LAY-9" did (R19).
+  const here = addressed === undefined ? undefined : parseNodeReference(addressed);
+  const issueKey = here !== undefined && "key" in here ? here.key : undefined;
   if (addressed === undefined) {
     return null;
   }
@@ -134,12 +91,12 @@ export function NodeReferences({
         <div id={panelId}>
           {reading && query.isPending ? (
             <p className={`mt-1 text-xs ${pageQuietText}`} {...pageChrome}>
-              {NODE_REFERENCES_WORDS.loading}
+              {ANSWER_LINES.references_loading}
             </p>
           ) : null}
           {query.isError ? (
             <p className={`mt-1 flex flex-wrap items-baseline gap-2 text-xs ${pageQuietText}`}>
-              <span {...pageChrome}>{NODE_REFERENCES_WORDS.unreadable}</span>
+              <span {...pageChrome}>{ANSWER_LINES.references_unreadable}</span>
               <button
                 className={`font-medium underline ${linkText} ${linkHoverText}`}
                 disabled={query.isFetching}
@@ -163,20 +120,21 @@ export function NodeReferences({
                 // The edge's own word where the model gives the tuple one, and the kind of
                 // node where it does not, which is every mention: the old panel's own rule.
                 const word = EDGE_WORDS[row.kind] ?? KIND_WORDS[row.nodeKind];
-                // A node the read carries no words of is named by its address's short form,
-                // "CORE-1 spec block", as a chip names such a target (`NodeRow.tsx`'s `Chip`).
-                // A node with neither is drawn as its word alone: its id is no name (R22).
-                const line = row.line === "" && route !== undefined ? shortForm(route) : row.line;
+                // A node the read carries no words of is named by its word alone, which is
+                // then the link: an address, a slug or an id is no name (R22, ruling 5).
+                const named = row.line !== "";
+                const elsewhere = row.source !== undefined && row.source !== issueKey;
+                const text = named ? row.line : (word ?? "");
                 return (
                   <li className="flex min-w-0 items-baseline gap-2 text-sm" key={row.key}>
-                    {word === undefined ? null : (
+                    {word === undefined || !named ? null : (
                       <span className={`shrink-0 text-xs ${pageQuietText}`} {...pageChrome}>
                         {word}
                       </span>
                     )}
-                    {line === "" ? null : route === undefined ? (
-                      <span className="min-w-0 truncate" {...authorText}>
-                        {line}
+                    {text === "" ? null : route === undefined ? (
+                      <span className="min-w-0 truncate" {...(named ? authorText : pageChrome)}>
+                        {text}
                       </span>
                     ) : (
                       <Link
@@ -186,11 +144,29 @@ export function NodeReferences({
                           if (phone) drawer?.setOpen(false);
                         }}
                         to={buildReferencePath(route)}
-                        {...authorText}
+                        {...(named ? authorText : pageChrome)}
                       >
-                        {line}
+                        {text}
                       </Link>
                     )}
+                    {/* Where the citing node is of another issue or of a project, which one;
+                        and when the reference was made. */}
+                    <span
+                      className={`shrink-0 text-xs whitespace-nowrap ${pageQuietText}`}
+                      data-reference-facts=""
+                    >
+                      {elsewhere ? (
+                        <>
+                          <span data-reference-source="" {...authorText}>
+                            {row.source}
+                          </span>
+                          <span {...pageChrome}> · </span>
+                        </>
+                      ) : null}
+                      <span data-reference-time="" {...authorText}>
+                        {shortDay(row.at)}
+                      </span>
+                    </span>
                   </li>
                 );
               })}

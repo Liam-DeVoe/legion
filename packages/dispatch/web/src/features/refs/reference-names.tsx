@@ -55,3 +55,13 @@ export function useKnownReferenceName(reference: string | undefined): string | u
   const names = useContext(ReferenceNamesContext);
   return reference === undefined ? undefined : names?.get(reference);
 }
+
+/** No name at all: what a page that published nothing has read. */
+const NO_NAMES: ReadonlyMap<string, string> = new Map();
+
+/** Every name the page read, by reference, for a surface that names what its own words cite
+ *  from the page's one batched read rather than asking for each (the issue page's rows,
+ *  `features/issue/row-references.ts`). Empty where the page published none. */
+export function useKnownReferenceNames(): ReadonlyMap<string, string> {
+  return useContext(ReferenceNamesContext) ?? NO_NAMES;
+}

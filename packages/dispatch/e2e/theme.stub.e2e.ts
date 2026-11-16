@@ -9,7 +9,6 @@ import { oklchToSrgb8 } from "../web/src/theme/contrast";
 import type { Swatch } from "../web/src/theme/palette";
 import { createAsk, createComment, createIssue, createProject } from "./api";
 import { conversationThreadScope } from "./editor";
-import { marginShell, openDetails, openIssueAddress } from "./issue-page";
 import { stubbed } from "./stub/stub-test";
 
 const session = {
@@ -168,7 +167,7 @@ test("the Inbox, an issue's spec and its Conversation render each palette token 
   const dock = page.getByRole("form", { name: "Comment composer" });
 
   await page.emulateMedia({ colorScheme: "light" });
-  await openIssueAddress(page, "conversation");
+  await page.goto(`/issues/${scene.issue}/conversation`);
   await expect(link).toBeVisible();
   await expectTextColor(link, C.LINK.light);
   await expect(dock).toBeVisible();
@@ -191,19 +190,16 @@ test("the Inbox, an issue's spec and its Conversation render each palette token 
   await page.emulateMedia({ colorScheme: "light" });
   await expectTextColor(bodyLink, C.LINK.light);
 
-  // On a phone viewport the issue page's panel is Details, a sheet over the whole screen the
-  // reader opens from the header (dispatch://INFRA-1196 R14), and its surface is the page's paper
-  // - `PAGE_COLORS`' own swatch in each scheme. No baseline reaches it either: the phone shots
-  // are taken with Details closed.
+  // On a phone viewport the review margin is a bottom sheet the reader opens, and its surface
+  // is `SURFACE` - the same token the Inbox card above reads, on a different component. No
+  // baseline reaches it either: the phone shots are taken with the sheet closed.
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto(`/issues/${scene.issue}/spec`);
-  await openDetails(page);
-  const sheet = marginShell(page);
+  await page.getByRole("button", { name: "Open review panel" }).click();
+  const sheet = page.getByTestId("margin-sheet");
   await expect(sheet).toBeVisible();
-  const paper = C.PAGE_COLORS["page-paper"];
-  if (paper === undefined) throw new Error("classes.ts names no page paper");
-  await expectBackgroundColor(sheet, paper.light);
+  await expectBackgroundColor(sheet, C.SURFACE.light);
 
   await page.emulateMedia({ colorScheme: "dark" });
-  await expectBackgroundColor(sheet, paper.dark);
+  await expectBackgroundColor(sheet, C.SURFACE.dark);
 });

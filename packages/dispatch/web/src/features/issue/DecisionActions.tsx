@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
+import type { Artifact, Decision, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -11,8 +11,8 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import { wordsOf } from "../refs/tree-fragment";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { anchorQuote } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
@@ -35,6 +35,12 @@ export const ROW_ACTION_MARKS: Readonly<Record<RowAction, Readonly<Record<string
 export function rowActionSelector(action: RowAction): string {
   return `button[${ROW_ACTION_ATTRIBUTE}="${action}"]`;
 }
+
+/** Keep and Change as the approved picture draws them (the prototype's `.dbtn`): 24 px tall, in
+ *  the decisions' violet, Keep filled and Change outlined; the words on them say which is which
+ *  (R6). */
+const DECISION_BUTTON =
+  "rounded-[7px] border-[1.5px] border-page-decision px-3 py-0.5 text-xs leading-5 font-semibold";
 
 /**
  * Moves the focus off `control` onto its decision's own row, where `control` holds it, before a
@@ -129,13 +135,13 @@ function DecisionControls({
   });
   return (
     <>
-      <p className="flex min-w-0 flex-wrap items-baseline gap-2">
+      <p className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-2">
         {decision.waiting_review ? (
           // Out of the tab order, as every control inside a row is, and found by its mark: the
           // tree is one tab stop and the row's own key presses this (R9, WCAG 2.1.1,
           // `useTreeKeymap.ts`'s `tree-keep`).
           <button
-            className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+            className={`${DECISION_BUTTON} bg-page-decision text-page-paper`}
             disabled={keep.isPending}
             onClick={(event) => {
               keepFocusOnRow(event.currentTarget);
@@ -152,7 +158,7 @@ function DecisionControls({
         {quote === undefined ? null : (
           <button
             aria-expanded={changing}
-            className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+            className={`${DECISION_BUTTON} bg-page-paper text-page-decision`}
             onClick={() => setChanging(!changing)}
             tabIndex={-1}
             type="button"
@@ -197,6 +203,7 @@ function ChangeComposer({
   quote: string;
 }): ReactNode {
   const [body, setBody] = useState("");
+  const queryClient = useQueryClient();
   const fieldId = useId();
   const send = useKeyedWrite({
     inline: true,
@@ -209,8 +216,12 @@ function ChangeComposer({
         { anchor: { artifact: documentId, quote: input.quote }, body: input.body },
         bounds
       ),
+    // The change is a comment of the issue's, and the comments read is what tells the page a
+    // decision was changed (`decision-review.ts`): read again, so the decision says so, leaves
+    // the review list and draws the change under it as soon as the comment lands.
     onSuccess: () => {
       setBody("");
+      void queryClient.invalidateQueries({ exact: true, queryKey: ["comments", issueKey] });
       onDone();
     },
   });
@@ -278,31 +289,4 @@ function ChangeComposer({
       </p>
     </form>
   );
-}
-
-/** The words of the decision's first block below its heading, which is what a change is
- *  anchored to: the server matches an anchor quote against the document's own text
- *  (`pmdoc.FindQuote`), never its markdown, so a list or a hard break quoted as markdown would
- *  anchor on nothing. They are read from the tree Go read the decision's text into
- *  (`Decision.text_tree`), whose top-level blocks are the paragraphs the markdown would have
- *  been split into; an answer that carried no reading - a pod of the build before during a
- *  rolling deploy - leaves the first paragraph's own markdown, which is all the browser has.
- *  Undefined for a decision whose heading is all it holds. */
-function anchorQuote(decision: Decision): string | undefined {
-  const content = decision.text_tree?.content;
-  if (!Array.isArray(content)) {
-    return firstParagraph(decision.text);
-  }
-  const first = (content as DisplayTree[]).find((node) => node.type !== "heading");
-  return first === undefined ? undefined : wordsOf(first);
-}
-
-/** The decision's first paragraph below its heading, as markdown: the quote of an answer that
- *  carried no reading of the decision's text. Undefined for a decision whose heading is all it
- *  holds. */
-function firstParagraph(text: string): string | undefined {
-  return text
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.trim())
-    .find((paragraph) => paragraph !== "" && !paragraph.startsWith("#"));
 }

@@ -81,7 +81,7 @@ function issue(): TreeNode {
       "ask",
       [
         node("spec#b-r1", "requirement", [check(false), node("plan#b-t1", "plan_task")]),
-        node("decision-1", "decision", [], { state: "yours" }),
+        node("decision-1", "decision", [], { state: "kept" }),
       ],
       { state: "answered", text: "Which layout does the page take? The three pictures show it." }
     ),
@@ -91,7 +91,9 @@ function issue(): TreeNode {
     ]),
     node("comment-1", "comment", [
       node("plan#b-t2", "plan_task"),
-      node("decision-2", "decision", [], { state: "waiting_review" }),
+      // A decision of the review list: one that waits and that a tie names a statement for,
+      // which is what the tree marks `waiting` (R35).
+      node("decision-2", "decision", [], { state: "waiting_review", waiting: true }),
     ]),
     node("ask-2", "ask", [], { question: true, state: "open" }),
   ]);
@@ -201,4 +203,56 @@ test("each filter's signal is its count, with what of it asks something of the r
   });
   // A filter by words narrows every count with it.
   expect(filterSignals(issue(), "b-t2").plan.count).toBe(1);
+});
+
+// R35: "to review" counts the review list alone. A decision that waits and is tied to no
+// statement keeps its state word and is in no count of what waits on the reader.
+test("a waiting decision outside the review list is not counted as to review", () => {
+  const root = node("CORE-1", "issue", [
+    node("decision-1", "decision", [], { state: "waiting_review", waiting: true }),
+    node("decision-2", "decision", [], { state: "waiting_review" }),
+  ]);
+  expect(filterSignals(root, "").decisions).toEqual({
+    count: 2,
+    flag: { count: 1, word: "to_review" },
+  });
+});
+
+// R2, R9: the Decisions filter draws a person's answer as the decision and the section of
+// decisions.md that restates it as no entry, so its count holds the answer and not the section.
+// A decision under a question nobody answered restates nothing, and is counted.
+test("the Decisions count leaves out a section that restates a person's answer", () => {
+  const answer = {
+    at: "2026-11-14T08:00:00Z",
+    by: { id: "alice", kind: "user" as const },
+    selected: [],
+    text: "Yes.",
+  };
+  const root = node("CORE-1", "issue", [
+    node("ask-1", "ask", [node("decision-1", "decision")], { answer, state: "answered" }),
+    node("ask-2", "ask", [node("decision-2", "decision")], { question: true, state: "open" }),
+    node("decision-3", "decision"),
+  ]);
+  expect(filterSignals(root, "").decisions).toEqual({ count: 4 });
+});
+
+// R26, R18: the parent a filter draws as no row is one line on its child's row, and carries the
+// parent's own address where the model gives it one, so the line is the link to that node.
+test("a parent line carries the parent's own address", () => {
+  const root = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [node("plan#b-t1", "plan_task")], {
+      reference: "dispatch://CORE-1/spec#b-r1",
+    }),
+    node("comment-1", "comment", [node("plan#b-t2", "plan_task")]),
+  ]);
+  const lines = presetView(root, "plan", "").root.children.map((task) => task.parentLine);
+  expect(lines).toEqual([
+    {
+      id: "spec#b-r1",
+      line: "spec#b-r1",
+      reference: "dispatch://CORE-1/spec#b-r1",
+      type: "requirement",
+    },
+    { id: "comment-1", line: "comment-1", type: "comment" },
+  ]);
 });

@@ -27,7 +27,6 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { nodeRows } from "./issue-page";
 import {
   countParses,
   type ParseCounts,
@@ -157,9 +156,9 @@ async function seedStoredTexts(): Promise<Seeded> {
     { as: "agent" }
   );
 
-  // The issue's decisions.md, which the Decisions preset draws as a node of the issue's tree:
-  // its one decision holds a paragraph of its own so the preset has a stored text to draw, and
-  // it links no spec block, so the issue page above draws no margin card for it.
+  // The issue's decisions.md, which the Decisions tab draws block by block: its one decision
+  // holds a paragraph of its own so the tab has a stored text to draw, and it links no spec
+  // block, so the issue page above draws no margin card for it.
   await createIssueArtifact(issue.key, {
     content: "## Store the notices\n\nA **decided** thing.\n",
     name: "decisions.md",
@@ -219,14 +218,13 @@ function surfaces(seeded: Seeded): Surface[] {
       },
     },
     {
-      name: "the Decisions preset",
+      name: "the decisions panel",
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}/decisions`);
-        // The preset draws a decision as a node of the tree, its text as the decision holds it
-        // (`NodeRow.tsx`), so what says the stored text is on the screen is the node's own words.
-        // Until dispatch://INFRA-1196 this read the Decisions tab, which laid a decision out
-        // block by block from its tree (`DecisionsPanel.tsx`) and drew `decided` in bold.
-        await expect(nodeRows(page).filter({ hasText: "Store the notices" }).first()).toBeVisible();
+        // The panel lays a decision out block by block, so what it draws is the decision's own
+        // tree cut into its top-level blocks: a page that split the markdown instead would
+        // parse once per block, and the counter would see every one of them.
+        await expect(bold(page, "decided")).toBeVisible();
       },
     },
     {
@@ -282,10 +280,7 @@ function surfaces(seeded: Seeded): Surface[] {
       name: "a reference preview",
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}/conversation`);
-        // The issue page opens a reference's card from the keyboard alone (dispatch://INFRA-1196
-        // R6), so the reader reaches the reference by Tab and focus.
-        await page.keyboard.press("Tab");
-        await page.getByRole("link", { name: "Reference target" }).first().focus();
+        await page.getByRole("link", { name: "Reference target" }).first().hover();
         await expect(page.getByRole("tooltip")).toContainText(seeded.targetKey);
       },
     },
@@ -295,9 +290,7 @@ function surfaces(seeded: Seeded): Surface[] {
         await page.goto(`/issues/${seeded.issueKey}/conversation`);
         // A reference to a block of a comment is the surface `GET /api/v1/references` draws:
         // the link's title and the card under it are both the text that read's node carries.
-        // The card opens from the keyboard, as every card on the issue page does.
-        await page.keyboard.press("Tab");
-        await page.getByRole("link", { name: quotedTitle }).first().focus();
+        await page.getByRole("link", { name: quotedTitle }).first().hover();
         const card = page.getByRole("tooltip");
         await expect(card.locator("strong").filter({ hasText: /^quoted$/ })).toBeVisible();
       },

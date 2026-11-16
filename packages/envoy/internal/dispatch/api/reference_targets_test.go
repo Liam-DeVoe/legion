@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -69,16 +70,16 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	if len(targets) != 4 {
 		t.Fatalf("the read answered %#v, want one member per reference", targets)
 	}
-	if want := (model.ReferenceTarget{Ref: held, Kind: "block", Name: "First paragraph."}); targets[0] != want {
+	if want := (model.ReferenceTarget{Ref: held, Kind: "block", Name: "First paragraph."}); !reflect.DeepEqual(targets[0], want) {
 		t.Errorf("the block that exists answered %#v, want %#v", targets[0], want)
 	}
-	if want := (model.ReferenceTarget{Ref: gone, Kind: "block", Gone: true}); targets[1] != want {
+	if want := (model.ReferenceTarget{Ref: gone, Kind: "block", Gone: true}); !reflect.DeepEqual(targets[1], want) {
 		t.Errorf("the deleted block answered %#v, want it gone and unnamed", targets[1])
 	}
-	if want := (model.ReferenceTarget{Ref: "dispatch://" + other.Key, Kind: "issue", Name: other.Title}); targets[2] != want {
+	if want := (model.ReferenceTarget{Ref: "dispatch://" + other.Key, Kind: "issue", Name: other.Title}); !reflect.DeepEqual(targets[2], want) {
 		t.Errorf("the other issue answered %#v, want %#v", targets[2], want)
 	}
-	if want := (model.ReferenceTarget{Ref: padded, Kind: "issue", Name: other.Title}); targets[3] != want {
+	if want := (model.ReferenceTarget{Ref: padded, Kind: "issue", Name: other.Title}); !reflect.DeepEqual(targets[3], want) {
 		t.Errorf("the padded reference answered %#v, want it resolved and echoed as it was written: %#v", targets[3], want)
 	}
 }

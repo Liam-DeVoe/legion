@@ -7,6 +7,7 @@ import type {
   CommentWithTrees,
   DisplayTree,
   IssueCheckResults,
+  IssueChild,
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
@@ -43,7 +44,8 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
  *
  * The tree is the issue's conversation (R1, R3): a document, an artifact and a handoff are nodes
  * of the issue and no node of this tree, and a typed block of a document sits under the issue
- * unless the model gives it a parent of its own (R4). A child issue sits under the issue (R12).
+ * unless the model gives it a parent of its own (R4). The issue's children are one group of rows,
+ * each child a node, under the issue (R12, the architect's ruling 5).
  *
  * ## What today's reads hold, and what they do not
  *
@@ -87,6 +89,9 @@ export interface NodeChip {
   readonly answered: boolean;
   /** Whether nothing answers to this reference now. */
   readonly gone: boolean;
+  /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
+   *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
+  readonly label?: string;
   /** The words shown for the target, from the batched reference read; `""` until it answers. */
   readonly name: string;
   /** The target's own `dispatch://` address. */
@@ -143,6 +148,9 @@ export interface ParentLine {
   readonly id: string;
   /** The parent's own first line, cut by R1's rule (`firstLineOf`). */
   readonly line: string;
+  /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
+   *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */
+  readonly reference?: string;
   readonly type: NodeType;
 }
 
@@ -172,6 +180,13 @@ export interface TreeNode {
   /** The node's own address inside the issue: the issue key, `<slug>#b-<block id>`, else the id
    *  the model gives it. */
   readonly id: string;
+  /** The child issue a `child_issue` node is, as the issue read carries it: its row draws its
+   *  title as its words, how it stands, what blocks it and who holds it, and its key as the tag
+   *  (R12, the architect's ruling 5, `IssueChildren.tsx`). Absent for every other node. */
+  readonly child?: IssueChild;
+  /** The person who kept this decision as it reads now (`DecisionKeep.kept_by`), whose name the
+   *  row draws after "Kept by" (R2); absent for every other node. */
+  readonly keptBy?: Actor;
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
@@ -247,6 +262,9 @@ export interface IssueTreeReads {
   readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */
   readonly targets?: readonly ReferenceTarget[];
+  /** The reader's login, which an open question waits on where its turn is theirs
+   *  (`TreeNode.waiting`); undefined until the login resolves. */
+  readonly viewer?: string;
 }
 
 /** How many characters a row's first line may hold (R1). */
@@ -275,6 +293,17 @@ export function firstLineOf(text: string): { readonly cut: boolean; readonly lin
   return { cut: true, line };
 }
 
+/**
+ * A first line as a place that draws one line for a node draws it (R1, the architect's ruling
+ * 1): an ellipsis where the text carries on past a line the cut ended inside a sentence, and none
+ * where the line is a whole sentence, whose own mark already ends it - "Thread 1 opens here.…"
+ * reads as four dots. A line ending on its sentence's mark is a whole sentence; what follows it
+ * is the node's next sentence, which its row or its body holds.
+ */
+export function drawnLine({ cut, line }: { readonly cut: boolean; readonly line: string }): string {
+  return cut && !/[.!?]$/u.test(line) ? `${line}…` : line;
+}
+
 /** The node's own words as a reader reads them: the words of the server's reading of its text
  *  where its read sent one (`tree`), so its first line holds none of the symbols its body draws
  *  as formatting, and its text as stored otherwise. */
@@ -286,22 +315,6 @@ export function nodeWords(node: TreeNode): string {
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const context = treeContext(reads);
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
-}
-
-/**
- * Every `dispatch://` address the tree holds: each node's own, so a block's words can be read,
- * and each chip's, so a chip can name its target. This is what the one batched reference read is
- * given, which is why the page draws every chip in one request rather than one per node.
- */
-export function treeReferences(root: TreeNode): string[] {
-  const refs = new Set<string>();
-  const walk = (node: TreeNode): void => {
-    if (node.reference !== undefined) refs.add(node.reference);
-    for (const chip of [...node.chips, ...node.alsoUnder]) refs.add(chip.ref);
-    for (const child of node.children) walk(child);
-  };
-  walk(root);
-  return [...refs];
 }
 
 /**
@@ -360,6 +373,8 @@ function assemble(
       gaps: draft.gaps,
       held: children.reduce((total, child) => total + child.held + 1, 0),
       id: draft.id,
+      ...(draft.child === undefined ? {} : { child: draft.child }),
+      ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,
@@ -388,8 +403,9 @@ function assemble(
     id: key,
     question: false,
     replaced: false,
-    // How Dispatch names an issue everywhere: its key and then its title, which is also what
-    // tells this row from the title the identity block draws directly above it.
+    // How Dispatch names an issue everywhere: its key and then its title. The outline draws no
+    // row of it - the header is the issue (the architect's ruling 5) - and a line that names the
+    // issue, the breadcrumb's first crumb, names it by its key alone.
     text: `${key} ${issue.title}`,
     transcluded: false,
     type: "issue",

@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test";
 
-import type { Decision } from "../../../api/types";
+import type { CheckBlock, Decision } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
+import {
+  COMMIT,
+  check,
+  checkNode,
+  OTHER_COMMIT,
+  result,
+} from "../verification-filter/verification-fixtures";
 import { firstSentenceOf, type SpecGroup, specDecidedBy } from "./spec-decided-by";
 import {
   answeredAsk,
@@ -38,15 +45,17 @@ const { nodeIdOf } = treeContext({ issue: issueDetails() });
 function bodyOf(
   tree: TreeNode,
   made: readonly Decision[] = [],
-  reader: string | undefined = READER
+  reader: string | undefined = READER,
+  checks: readonly CheckBlock[] = []
 ): readonly SpecGroup[] {
   return specDecidedBy({
+    checks,
     decisions: decisionsRead(made),
     nodeIdOf,
     reader,
     root: tree,
     view: presetView(tree, "spec", "").root,
-  });
+  }).groups;
 }
 
 // R5: the first sentence is word for word, and a sentence as long as the person wrote it: the
@@ -269,30 +278,154 @@ test("every other decision that shaped a statement is named after the first", ()
     decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r1"))] }),
   ]);
   expect(groups[0]?.runs[0]?.decision?.id).toBe("decisions-md#b-d1");
-  expect(groups[0]?.runs[0]?.statements[0]?.alsoShapedBy.map((one) => one.id)).toEqual([
+  expect(groups[0]?.runs[0]?.statements[0]?.alsoShapedBy.map((one) => one.decision.id)).toEqual([
     "decisions-md#b-d2",
   ]);
 });
 
-// R17: the mark says how the checks that serve a statement stand, and a statement that carries
-// a check is covered, never proven.
-test("a statement's mark is read from the checks that serve it", () => {
-  const check = (id: string, state: string): TreeNode =>
-    node({ id, state: state as TreeNode["state"], type: "check" });
+// R5: "The line is drawn whether or not" other decisions apply: the answered question a
+// statement hangs under heads its run, so its parent line and its decision line stay one, and a
+// decision whose tie names the statement is named after it, not in its place.
+test("a statement under an answered question keeps that answer when a tie names it too", () => {
   const groups = bodyOf(
     issueTree([
-      statement("r1", { children: [check("c1", "passed"), check("c2", "passed")] }),
-      statement("r2", { children: [check("c3", "passed"), check("c4", "failed")] }),
-      statement("r3", { children: [check("c5", "no-result")] }),
-      statement("r4", { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check"] }),
+      answeredAsk("ask-1", { text: "Put the memo in the pane." }, [statement("r1")]),
+      decisionNode("d1"),
+    ]),
+    [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] })]
+  );
+  expect(groups[0]?.runs[0]?.decision).toMatchObject({ id: "ask-1", type: "ask" });
+  expect(groups[0]?.runs[0]?.statements[0]?.alsoShapedBy.map((one) => one.decision.id)).toEqual([
+    "decisions-md#b-d1",
+  ]);
+});
+
+// R5: "Changed since" is read from the tie: its far end carries the statement block's own last
+// change, and a statement whose words changed after the decision says so on that decision.
+test("a statement that changed after its decision says Changed since, and one that did not says nothing", () => {
+  const tie = (block: string, changed: string | null) => {
+    const link = shaped(statementRef(block));
+    return { ...link, to: { ...link.to, changed_at: changed } };
+  };
+  const groups = bodyOf(
+    issueTree([
+      statement("r1"),
+      statement("r2"),
+      statement("r3"),
+      decisionNode("d1", { at: "2026-11-13T07:00:00Z" }),
+    ]),
+    [
+      decision({
+        block_id: "d1",
+        changed_at: "2026-11-13T07:00:00Z",
+        kind: "agent",
+        links: [
+          tie("r1", "2026-11-14T09:00:00Z"),
+          tie("r2", "2026-11-12T09:00:00Z"),
+          tie("r3", null),
+        ],
+      }),
+    ]
+  );
+  expect(groups[0]?.runs[0]?.statements.map((one) => [one.node.id, one.changedSince])).toEqual([
+    ["spec#b-r1", true],
+    ["spec#b-r2", false],
+    ["spec#b-r3", false],
+  ]);
+});
+
+// R5: the focus on the line draws the whole answer word for word, so the model carries it
+// beside the first sentence, and carries none where the first sentence is all the person wrote.
+test("a person's decision carries their whole answer where it says more than its first sentence", () => {
+  const long = "Put the memo in the pane.\n\n  Not above the outline -  ever.";
+  const groups = bodyOf(
+    issueTree([
+      answeredAsk("ask-1", { text: long }, [statement("r1")]),
+      answeredAsk("ask-2", { text: "Keep it short." }, [statement("r2")]),
     ])
   );
-  expect(groups[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark])).toEqual([
-    ["spec#b-r1", "covered"],
-    ["spec#b-r2", "failing"],
-    ["spec#b-r3", "not_run"],
-    ["spec#b-r4", "no_check"],
+  expect(groups[0]?.runs[0]?.decision?.whole).toBe(long);
+  expect(groups[1]?.runs[0]?.decision?.whole).toBeUndefined();
+});
+
+// R9: no agent's words are drawn under a person's name. A section the server marks a person's
+// whose answered question this tree does not hold is the agent's record of that decision, so
+// it is drawn as an agent's words and never quoted as the person's.
+test("a person's decision whose question the tree does not hold is drawn as the agent's record", () => {
+  const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1")]), [
+    decision({
+      asks: ["an-ask-of-another-issue"],
+      block_id: "d1",
+      kind: "person",
+      links: [shaped(statementRef("r1"))],
+    }),
   ]);
+  expect(groups[0]?.runs[0]?.decision).toMatchObject({ said: "agent", type: "decision" });
+});
+
+// R17: the mark is how the statement stands at the commit the page names, in the Verification
+// filter's own reading, so one statement reads the same in both views: Met where every check of
+// it passed there, Not met where one failed there, Unknown otherwise, and no check where none
+// serves it. A pass recorded at another commit is no Met.
+test("a statement's mark is how it stands at the commit the page names", () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const failed = check({
+    block_id: "c2",
+    pass_stands: { answer: "no" },
+    results: [result({ created_at: "2026-11-14T01:10:00Z", id: "f1", verdict: "fail" })],
+  });
+  const elsewhere = check({
+    block_id: "c3",
+    results: [result({ commit_sha: OTHER_COMMIT, created_at: "2026-11-13T00:00:00Z", id: "o1" })],
+  });
+  const unrun = check({ block_id: "c4", pass_stands: { answer: "no" }, results: [] });
+  const groups = bodyOf(
+    issueTree([
+      statement("r1", { children: [checkNode(passed)] }),
+      statement("r2", { children: [checkNode(passed), checkNode(failed)] }),
+      statement("r3", { children: [checkNode(elsewhere)] }),
+      statement("r4", { children: [checkNode(unrun)] }),
+      statement("r5", { counts: { checks: 0, planTasks: 0 }, gaps: ["no_check"] }),
+      // A check of a child issue serves it: the coverage read counts it and this issue's tree
+      // holds no node for it, so it is covered and the page cannot say how it stands.
+      statement("r6", { counts: { checks: 1, planTasks: 0 } }),
+    ]),
+    [],
+    READER,
+    [passed, failed, elsewhere, unrun]
+  );
+  expect(COMMIT).not.toBe(OTHER_COMMIT);
+  expect(groups[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark])).toEqual([
+    ["spec#b-r1", "met"],
+    ["spec#b-r2", "not_met"],
+    ["spec#b-r3", "unknown"],
+    ["spec#b-r4", "unknown"],
+    ["spec#b-r5", "no_check"],
+    ["spec#b-r6", "unknown"],
+  ]);
+});
+
+// R20: a node an address names outranks the filter, whatever its kind. It is no statement: it
+// enters no run and carries no mark, and the body draws it by its kind and its words.
+test("a row the filter kept that is no statement is in no run", () => {
+  const tree = issueTree([
+    statement("r1"),
+    node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
+  ]);
+  const read = specDecidedBy({
+    checks: [],
+    decisions: decisionsRead([]),
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "", new Set(["comment-1"])).root,
+  });
+  expect(
+    read.groups.flatMap((group) =>
+      group.runs.flatMap((run) => run.statements.map((one) => one.node.id))
+    )
+  ).toEqual(["spec#b-r1"]);
+  expect(read.others.map((one) => one.id)).toEqual(["comment-1"]);
 });
 
 // R2: a statement's parent is no row of the Spec filter, so it heads the group its statements

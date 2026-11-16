@@ -35,7 +35,11 @@ export type AddressTarget =
    *  the focus on, wherever the item is anchored (R20), or, for a comment or message agents
    *  wrote outside every thread a person wrote in, an entry of the panel's history
    *  (`agentsOnlyItem`). */
-  | { readonly kind: "item"; readonly id: string };
+  | { readonly kind: "item"; readonly id: string }
+  /** The issue's children, by the issue's own key: the children's own address (`/children`,
+   *  `t h`) names the first row of their group in the outline (the architect's ruling 5 on R12),
+   *  which the page unfolds the path to and puts the focus on. */
+  | { readonly kind: "children"; readonly id: string };
 
 /** What one address of the issue page opens. */
 export interface IssueAddress {
@@ -104,6 +108,7 @@ function routeTarget(route: IssueRoute, specSlug: string | undefined): AddressTa
   if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
     return { id: route.id, kind: "item" };
   }
+  if (route.kind === "children") return { id: route.key, kind: "children" };
   if (route.kind === "artifact" || route.kind === "spec") {
     const block = "block" in route ? route.block : undefined;
     if (block !== undefined) {
@@ -223,13 +228,15 @@ function pathToNode(
  * `<slug>#b-<id>` (`tree-drafts.ts`'s `blockNodeId`) and a block id is the author's, unique
  * inside one document alone: `/issues/KEY/artifacts/plan-md#b-t1` would otherwise land on the
  * spec's own `#b-t1`. An address naming no document - a `#b-` fragment on the issue's own
- * address - has only the block id to go on, and the first node carrying it answers.
+ * address - has only the block id to go on, and the first node carrying it answers. The
+ * children's address names the first child of their group.
  */
 export function pathToTarget(
   root: TreeNode,
   target: AddressTarget | undefined
 ): readonly TreeNode[] | undefined {
   if (target === undefined) return undefined;
+  if (target.kind === "children") return pathToNode(root, (node) => node.type === "child_issue");
   if (target.kind === "block") {
     if (target.document !== undefined) {
       const id = blockNodeId(target.document, target.id);

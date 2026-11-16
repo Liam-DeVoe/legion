@@ -57,7 +57,13 @@ const PAGE = 200;
  * `/activity`, `t v` and the address of a comment or message of such a thread open Details here
  * (R20); `item` is the entry such an address names, which is marked and brought into view, its
  * day opened. It writes no read mark: the outline's end is the issue's one writer of it
- * (`IssueReadMark.tsx`), so the watermark this draws has one author.
+ * (`IssueReadMark.tsx`), so the watermark this draws has one author - and the line that says
+ * what is new holds for the visit, where the reader's mark stood as the history first drew, so
+ * the outline's own write, a second after the page opens on a short outline, does not take the
+ * line away under the reader who came to read it.
+ *
+ * On a phone Details is a sheet over the page, so a link of the history that leaves it - a
+ * file, a document, a row of the outline - closes it, as a turn's Reply does.
  */
 export function IssueHistory({
   issue,
@@ -100,7 +106,31 @@ export function IssueHistory({
     queryKey: ["issue-messages", issueKey],
   });
   const issueState = stateForIssue(state, issueKey);
+  // The reader's read mark for this visit: where it stood when the history first drew for this
+  // issue, and lower once it has been moved back elsewhere, never higher - the page's own write
+  // of it is forwards.
+  const visitMark = useRef<{ readonly issue: string; readonly seq: number } | undefined>(undefined);
+  if (
+    state !== undefined &&
+    (visitMark.current?.issue !== issueKey || issueState.last_read_seq < visitMark.current.seq)
+  ) {
+    visitMark.current = { issue: issueKey, seq: issueState.last_read_seq };
+  }
+  const lastReadSeq = visitMark.current?.seq ?? issueState.last_read_seq;
   const events = useMemo(() => log.data?.pages.flat() ?? [], [log.data]);
+  // When the oldest event read so far was made, while older pages remain: a thread that began
+  // before it waits for its page (`HistoryInput.loadedFrom`).
+  const older = log.hasNextPage;
+  const loadedFrom = useMemo(
+    () =>
+      older
+        ? events.reduce<(typeof events)[number] | undefined>(
+            (oldest, event) => (oldest === undefined || event.seq < oldest.seq ? event : oldest),
+            undefined
+          )?.created_at
+        : undefined,
+    [events, older]
+  );
   // The day the reader is in, read every render so a midnight rollover moves the `Today` label;
   // the model is rebuilt only when one of its reads changes.
   const today = dateKey(new Date().toISOString());
@@ -110,29 +140,40 @@ export function IssueHistory({
         artifacts: issue.artifacts ?? [],
         comments: comments.data,
         events,
-        lastReadSeq: issueState.last_read_seq,
+        lastReadSeq,
+        ...(loadedFrom === undefined ? {} : { loadedFrom }),
         messages: messages.data,
         today,
       }),
-    [comments.data, events, issue.artifacts, issueState.last_read_seq, messages.data, today]
+    [comments.data, events, issue.artifacts, lastReadSeq, loadedFrom, messages.data, today]
   );
-  // The days before today the reader opened, and the one the address's entry is in.
+  // The days before today the reader opened; the day the address's entry is in is opened as
+  // the address names it, and the reader's own press closes it again like any other.
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const marked = item === undefined ? undefined : dayOf(days, item);
+  useEffect(() => {
+    if (marked === undefined) return;
+    setOpened((held) => (held.has(marked) ? held : new Set(held).add(marked)));
+  }, [marked]);
   const togglePin = (eventId: number) =>
     writePin(queryClient, issueKey, (dismissed) => ({
       id: eventItemId({ id: eventId }),
       op: isPinnedEvent(dismissed, eventId) ? "unpin" : "pin",
     }));
-  // The entry an address names is brought into view once, as the list first holds it.
+  // The entry an address names is brought into view once, as the list first draws it: an entry
+  // with no box yet - its day still folded, or Details still closed around the list, which the
+  // page opens a commit after this one mounts - is not landed on, so the render that draws it
+  // lands it.
   const landed = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (item === undefined || landed.current === item || marked === undefined) return;
     const entry = document.querySelector(`[data-history-item="${CSS.escape(item)}"]`);
-    if (entry === null) return;
+    if (entry === null || entry.getClientRects().length === 0) return;
     landed.current = item;
     entry.scrollIntoView({ block: "center" });
   });
+  const drawer = useMarginDrawer();
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
   // The history is newest first, so every event the feed prepends lands above a reader who is
   // down in it: the anchor holds the entry they are on where it was, in the box it scrolls in -
   // Details' own, or the document outside the shell. It follows each entry's own id
@@ -166,6 +207,14 @@ export function IssueHistory({
       aria-label={CONTROL_LABELS.history}
       className="flex min-w-0 flex-col gap-1 outline-none"
       data-testid="issue-history"
+      // On a phone Details covers the page, so a link that leaves the history closes it for the
+      // reader to see where the link went. A turn's own time is that turn's address, which
+      // opens Details here, so it stays.
+      onClickCapture={(event) => {
+        if (!phone || !(event.target instanceof Element)) return;
+        const link = event.target.closest("a[href]");
+        if (link !== null && !link.hasAttribute("data-history-time")) drawer?.setOpen(false);
+      }}
       tabIndex={-1}
     >
       <h2 className={`text-sm font-semibold ${pageInkText}`} {...pageChrome}>
@@ -188,7 +237,7 @@ export function IssueHistory({
         >
           <ol aria-label="Issue activity" className="flex min-w-0 flex-col gap-1" {...authorText}>
             {days.map((day) => {
-              const open = day.today || opened.has(day.date) || marked === day.date;
+              const open = day.today || opened.has(day.date);
               const count = day.entries.filter((entry) => entry.kind !== "unread").length;
               return (
                 <li
@@ -413,6 +462,7 @@ function Turn({
         <span aria-hidden="true">·</span>
         <Link
           className={`dispatch-inline-link ${pageMutedText}`}
+          data-history-time=""
           to={buildIssuePath({ id: turn.id, key: issueKey, kind: turn.kind })}
         >
           <Timestamp at={turn.at} />

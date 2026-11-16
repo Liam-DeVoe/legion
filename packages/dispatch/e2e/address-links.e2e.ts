@@ -1,7 +1,6 @@
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createComment, createIssue, createProject, getArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { nodeRow } from "./issue-page";
 import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
@@ -43,8 +42,8 @@ const links: { href: string; name: string }[][] = [
 test.describe("a bare web address is a link in a document written through the API, as in a comment", () => {
   // SLOW(>=2s): 3,811 ms in this head's four-worker CI report (`dispatch-e2e-report-1` of run
   // 42334783358), 2,545 ms at the merge base's merge-group run. Nine paragraphs, each a bare
-  // address, asserted twice - once in the comment's row of the outline and once in the document
-  // editor - which is ten link lookups per surface.
+  // address, asserted twice - once in the Conversation and once in the document editor - which
+  // is ten link lookups per surface.
   // @pr: The bare-address family's one row on the real stack: a link written through the API must read as a link in the document and in a comment.
   test("after punctuation or an escaped scheme colon @pr", async ({ browser }) => {
     await createProject({ key: "CORE", name: "Core" });
@@ -53,7 +52,7 @@ test.describe("a bare web address is a link in a document written through the AP
       spec: entry.markdown,
       title: "Address links",
     });
-    const comment = await createComment(issue.key, { body: entry.markdown });
+    await createComment(issue.key, { body: entry.markdown });
 
     const context = await asUser(browser, "alice");
     try {
@@ -78,10 +77,8 @@ test.describe("a bare web address is a link in a document written through the AP
         }
       };
 
-      // A person's comment is a node of the outline, drawn with its words in full
-      // (dispatch://INFRA-1196 R1, ruling 1).
       await page.goto(`/issues/${issue.key}/conversation`);
-      await expectRows(nodeRow(page, comment.id).first());
+      await expectRows(page.getByRole("list", { name: "Conversation turns" }));
 
       // Each row's text is asserted before its links, so a row Go read as text fails as "text
       // present, no link".

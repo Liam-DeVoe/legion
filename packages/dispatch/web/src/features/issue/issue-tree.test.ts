@@ -484,7 +484,10 @@ test("a pointer whose target is gone is drawn as a chip that says so", () => {
 
   const task = nodeOf(root, blockNodeId("plan-md", "t1"));
   expect(task?.text).toBe("Task 1 of the redesign is one step of the build.");
-  expect(task?.chips).toEqual([{ answered: true, gone: true, name: "", ref: gone }]);
+  // The chip of a `needs` edge carries the page's word for it (`BLOCK_ATTRIBUTE_LABELS.needs`).
+  expect(task?.chips).toEqual([
+    { answered: true, gone: true, label: "needs", name: "", ref: gone },
+  ]);
 });
 
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
@@ -634,8 +637,6 @@ test("no document is a node, and each typed block and child sits under the issue
       children: [
         {
           active_at: "2026-11-05T00:00:00Z",
-          blocked_by: [],
-          claim: null,
           external_links: [],
           key: "CORE-2",
           status: "todo",
@@ -667,7 +668,11 @@ test("no document is a node, and each typed block and child sits under the issue
     blockNodeId(SPEC, "r1"),
     "CORE-2",
   ]);
+  // Each child is a node of its own, carrying the child the issue read answered, whose row
+  // draws its status, what blocks it, who holds it and its key (the architect's ruling 5).
   expect(nodeOf(root, "CORE-2")?.type).toBe("child_issue");
+  expect(nodeOf(root, "CORE-2")?.text).toBe("A child.");
+  expect(nodeOf(root, "CORE-2")?.child?.status).toBe("todo");
   expect(placementsOf(root, blockNodeId("plan-md", "t1")).map((one) => one.parent)).toEqual([
     blockNodeId(SPEC, "r1"),
   ]);
@@ -842,6 +847,67 @@ test("the conversation's turns are drawn by the time each was made", () => {
   });
 
   expect(root.children.map((child) => child.id)).toEqual(["c0", "c1", "c2", "a-message"]);
+});
+
+// The tester's placement note: a question asked of the issue and a comment are one conversation,
+// so both are drawn by the time each was made, a question among the comments it was asked
+// between, and the newest write of either kind is the outline's last row. Two questions were
+// drawn in the order of their ids before, and every question before every comment.
+test("a question of the issue is drawn among the turns, by the time it was asked", () => {
+  const root = buildIssueTree({
+    asks: [
+      // Ids that sort against the time each was asked.
+      question("z-first", { created_at: "2026-11-04T09:30:00Z" }),
+      question("a-last", { created_at: "2026-11-04T12:00:00Z" }),
+    ],
+    comments: [comment("c0", "2026-11-04T09:00:00Z"), comment("c1", "2026-11-04T10:00:00Z")],
+    issue: {
+      ...issueDetails([]),
+      children: [
+        {
+          active_at: "2026-11-05T00:00:00Z",
+          external_links: [],
+          key: "CORE-2",
+          status: "todo",
+          subtree_done: 0,
+          subtree_total: 0,
+          title: "A child.",
+        },
+      ],
+    },
+  });
+
+  expect(root.children.map((child) => child.id)).toEqual([
+    "CORE-2",
+    "c0",
+    "z-first",
+    "c1",
+    "a-last",
+  ]);
+});
+
+// The tester's F4: an open question waits on the reader only where its turn is the reader's own
+// (`waiting_on_person`), as every other count of what waits on them reads it; a question that
+// waits on somebody else is open all the same, and the fold still opens the path to it.
+test("an open question waits on the reader only where its turn is theirs", () => {
+  const asks = [
+    question("mine", { waiting_on: "human", waiting_on_person: "alice" }),
+    question("theirs", { waiting_on: "human", waiting_on_person: "bob" }),
+    question("agents", { waiting_on: "agent", waiting_on_person: "alice" }),
+  ];
+  const waiting = (viewer: string | undefined): string[] => {
+    const root = buildIssueTree({
+      asks,
+      issue: issueDetails([]),
+      ...(viewer === undefined ? {} : { viewer }),
+    });
+    expect(root.children.map((child) => child.question)).toEqual([true, true, true]);
+    return root.children.filter((child) => child.waiting).map((child) => child.id);
+  };
+  expect(waiting("alice")).toEqual(["mine"]);
+  expect(waiting("bob")).toEqual(["theirs"]);
+  // Nobody is the reader until the login resolves.
+  expect(waiting(undefined)).toEqual([]);
 });
 
 // R14: a reply is drawn under the entry it answers. The write climbs `reply_to` to the head of

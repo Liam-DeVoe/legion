@@ -13,7 +13,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { paragraphsOf } from "./bodies";
-import { documentEditor, indexedBlockAsk, specAddress } from "./editor";
+import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
@@ -76,11 +76,10 @@ async function decline(page: Page, card: Locator, note: string): Promise<void> {
 }
 
 /** The question's card on the issue page, where the Conversation lists every question of the
- *  issue, open or closed. The address is the one the Conversation tab answered and still
- *  resolves (dispatch://INFRA-1196 R19), since the redesigned page draws no such tab; it is
- *  how every other spec of this suite reaches the conversation (`conversation.e2e.ts:209`). */
+ *  issue, open or closed. */
 async function conversationCard(page: Page, issueKey: string, askId: string): Promise<Locator> {
-  await page.goto(`/issues/${issueKey}/conversation`);
+  await page.goto(`/issues/${issueKey}`);
+  await page.getByRole("tab", { name: "Conversation" }).click();
   return page.getByRole("region", { name: "Conversation" }).getByTestId(`ask-${askId}`);
 }
 
@@ -229,7 +228,7 @@ test("a document's decision block and the issue page both draw Decline to answer
 
   // The control belongs to the one card every surface draws, so a question written into a
   // document is declinable where the document draws it as well as where the issue lists it.
-  await page.goto(await specAddress(issue.key));
+  await page.goto(`/issues/${issue.key}`);
   const hosted = documentEditor(page)
     .locator(`[data-dispatch-ask-block="${block}"]`)
     .locator("article[data-testid^=ask-]");
@@ -307,10 +306,7 @@ test("the margin folds a declined ask away with a retracted one and keeps the an
   await decline(page, await askCard(page, declined.id), "The lease owner decides this one.");
 
   await page.goto(`/issues/${issue.key}`);
-  await page
-    .getByTestId("issue-presets")
-    .getByRole("button", { exact: true, name: "Spec" })
-    .click();
+  await page.getByRole("tab", { name: "Spec" }).click();
   const margin = page.getByTestId("margin-sheet");
 
   // The answered question is a decision, and stays where a reader reads the decisions. The
@@ -345,7 +341,8 @@ test("an answered ask and a declined ask draw no Decline to answer, which an ope
 
   // A closed question is a record, whichever way it closed: the act is drawn on an open question
   // and nowhere else.
-  await page.goto(`/issues/${issue.key}/conversation`);
+  await page.goto(`/issues/${issue.key}`);
+  await page.getByRole("tab", { name: "Conversation" }).click();
   const conversation = page.getByRole("region", { name: "Conversation" });
   await expect(conversation.getByTestId(`ask-${answered.id}`)).toBeVisible();
   await expect(declineControl(conversation.getByTestId(`ask-${answered.id}`))).toHaveCount(0);

@@ -31,6 +31,13 @@ export interface OutlineWriter {
   readonly changeAnswer: (node: TreeNode) => void;
   /** Sets the line back to a new comment on the issue. */
   readonly clear: () => void;
+  /** Asks the outline to take the reader to what a write from the line just landed
+   *  (`Landing`), once its read has drawn it. */
+  readonly land: (landing: Landing) => void;
+  /** Says the outline has taken the reader there, which ends the ask. */
+  readonly landed: () => void;
+  /** Where the outline is asked to take the reader after a write; undefined once it has. */
+  readonly landing: Landing | undefined;
   /** Puts the caret in the line, once it is drawn. */
   readonly focus: () => void;
   /** What the line writes with no reply set: a comment, or a question. */
@@ -64,6 +71,22 @@ export interface OutlineWriter {
  *  statement and a decision written from the line need dispatch://INFRA-1253 and
  *  dispatch://INFRA-1150, and the line draws no chip that writes nothing. */
 export type WriterKind = "ask" | "comment";
+
+/**
+ * Where the page takes the reader once a write from the line has landed (R16): the row of what
+ * they wrote, its branch unfolded, inside the viewport and focused, so their own new words are
+ * never behind a fold and the focus never falls to the page with nothing on it, which would send
+ * the next `j` back to the first row - as the prototype's send jumps to the node it made.
+ */
+export interface Landing {
+  /** `newest`: the reader's newest node under `under` - the reply, the comment or the question
+   *  they just wrote; `self`: `under`'s own row - the question they answered, whose answer is
+   *  drawn on its row, and the comment they edited. */
+  readonly to: "newest" | "self";
+  /** What the write was made under: the item the line replied to or answered, or the comment
+   *  it edited; undefined for a write on the issue itself. */
+  readonly under: { readonly id: string; readonly kind: "ask" | "comment" | "message" } | undefined;
+}
 
 /** The question the line answers. */
 export interface AnswerTarget {
@@ -127,6 +150,8 @@ export function OutlineWriterProvider({
     store.get(sendKey)?.request.kind === "ask" ? "ask" : "comment"
   );
   const [answer, setAnswer] = useState<AnswerTarget | undefined>(undefined);
+  const [landing, setLanding] = useState<Landing | undefined>(undefined);
+  const landed = useCallback(() => setLanding(undefined), []);
   // The reader's own comment the line is editing, if it is: its id and its words as they stand.
   const [editing, setEditing] = useState<{ readonly body: string; readonly id: string }>();
   const agentText = useAgentText();
@@ -145,9 +170,13 @@ export function OutlineWriterProvider({
     queryKey: ["issue-messages", issueKey],
   });
   const focus = useCallback(() => {
+    // The field that is drawn: the line keeps its write field mounted, hidden, while it answers
+    // a question or edits a comment (`IssueComposer.tsx`), and a hidden field takes no caret.
     const place = (left: number) => {
-      const field = document.querySelector<HTMLTextAreaElement>(COMPOSER_FIELD);
-      if (field !== null) {
+      const field = [...document.querySelectorAll<HTMLTextAreaElement>(COMPOSER_FIELD)].find(
+        (one) => one.closest("[hidden]") === null
+      );
+      if (field !== undefined) {
         field.focus({ preventScroll: true });
         return;
       }
@@ -157,6 +186,10 @@ export function OutlineWriterProvider({
   }, []);
   const replyTo = useCallback(
     (item: ReplyItem) => {
+      // While a send of the line's own is out, a Reply is refused: the reply it was sent with is
+      // the one the line shows until Dispatch decides it, and the redirect below reads only a
+      // send that was refused or none (`held-sends.ts`'s `redirectedReplyTarget`).
+      if (store.sendingNow(sendKey)) return;
       const target = replyTargetOf(item, issueKey, comments.data, messages.data, agentText);
       setAnswer(undefined);
       setEditing(undefined);
@@ -240,6 +273,9 @@ export function OutlineWriterProvider({
       editing,
       focus,
       kind,
+      land: setLanding,
+      landed,
+      landing,
       pick,
       reply,
       replyTo,
@@ -258,6 +294,8 @@ export function OutlineWriterProvider({
       editing,
       focus,
       kind,
+      landed,
+      landing,
       pick,
       reply,
       replyTo,

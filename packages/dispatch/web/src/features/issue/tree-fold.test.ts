@@ -184,7 +184,7 @@ test("a decision waiting for the reader's review is open and a settled one is no
         [node("decisions-md#b-d1", "decision", [], { state: "waiting_review", waiting: true })],
         { state: "answered" }
       ),
-      node("spec#b-q2", "ask", [node("decisions-md#b-d2", "decision", [], { state: "yours" })], {
+      node("spec#b-q2", "ask", [node("decisions-md#b-d2", "decision", [], { state: "kept" })], {
         state: "answered",
       }),
     ])

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { Decision, DecisionLink } from "../../../api/types";
+import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import {
@@ -8,6 +9,7 @@ import {
   answeredAsk,
   ask,
   closing,
+  DECISIONS_DOCUMENT,
   decision,
   decisionNode,
   decisionRef,
@@ -17,6 +19,7 @@ import {
   KEY,
   node,
   openAsk,
+  READER,
   READER_ACTOR,
   SPEC_SLUG,
   shaped,
@@ -28,8 +31,7 @@ import {
   type DecisionsAsk,
   type DecisionsParts,
   decisionsParts,
-  firstWaiting,
-  inReviewList,
+  waitingOrder,
 } from "./decisions-parts";
 
 /**
@@ -45,12 +47,17 @@ function partsOf(
   children: readonly TreeNode[],
   made: readonly Decision[] = [],
   asks: readonly DecisionsAsk[] = [],
-  view?: TreeNode
+  view?: TreeNode,
+  comments: readonly ChangeComment[] = []
 ): DecisionsParts {
+  const decisions = decisionsRead(made);
   return decisionsParts({
     asks,
-    decisions: decisionsRead(made),
+    changes: decisionChanges(decisions, comments),
+    decisions,
+    issueKey: KEY,
     nodeIdOf,
+    reader: READER,
     root: issueTree(children),
     ...(view === undefined ? {} : { view }),
   });
@@ -63,6 +70,7 @@ function idsOf(parts: DecisionsParts): Record<keyof DecisionsParts, string[]> {
   return {
     agents: ids(parts.agents),
     open_questions: ids(parts.open_questions),
+    others: ids(parts.others),
     review: ids(parts.review),
     yours: ids(parts.yours),
   };
@@ -115,6 +123,7 @@ test("each ask and each decision stands in one of the four parts", () => {
     // A replaced decision is one no statement rests on any longer (R5).
     agents: [D("untied"), D("replaced")],
     open_questions: ["q-open", "q-agent"],
+    others: [],
     review: [D("review")],
     // The decision the reader kept, by the time they kept it, among the asks by the time each
     // closed.
@@ -200,10 +209,14 @@ test("a tie counts where it names a statement of this issue", () => {
 
 // R2, R9: the filter draws no agent's reading of a person's answer. Today's nearest thing is a
 // section of `decisions.md` the server marks a person's because its blocks name an ask: where
-// that ask is an answered ask of this issue, the ask's own row is the decision.
-test("a section that restates a person's answer is no entry", () => {
+// that ask is an answered ask of this issue, the ask's own row is the decision, and it carries
+// the statements that section's ties name, which is where today's read holds what the person's
+// decision shaped.
+test("a section that restates a person's answer is no entry, and its ties are the answer's", () => {
   const parts = partsOf(
     [
+      statement("s1"),
+      statement("s2"),
       answeredAsk(
         "a1",
         { at: "2026-11-12T09:00:00Z", text: "Keep the rail." },
@@ -215,7 +228,12 @@ test("a section that restates a person's answer is no entry", () => {
       decisionNode("foreign"),
     ],
     [
-      decision("restated", { asks: ["a1"], kind: "person", waiting_review: false }),
+      decision("restated", {
+        asks: ["a1"],
+        kind: "person",
+        links: [shaped(specRef("s1")), shaped(specRef("s2"))],
+        waiting_review: false,
+      }),
       // A section that names a question nobody answered restates no answer.
       decision("pending", { asks: ["q1"], kind: "person", waiting_review: false }),
       // And so does one that names an ask this issue does not hold.
@@ -225,17 +243,105 @@ test("a section that restates a person's answer is no entry", () => {
 
   const all = Object.values(idsOf(parts)).flat();
   expect(all).not.toContain(D("restated"));
-  // The server's word for whose they are stands, with no state of an agent's decision.
-  expect(idsOf(parts).yours).toContain(D("pending"));
-  expect(idsOf(parts).yours).toContain(D("foreign"));
-  expect(idsOf(parts).yours).toContain("a1");
-  expect(parts.yours.find((entry) => entry.node.id === D("pending"))).toMatchObject({
-    kind: "decision",
-    shapes: [],
+  expect(idsOf(parts).yours).toEqual(["a1"]);
+  expect(parts.yours[0]?.shapes.map((shape) => shape.id)).toEqual([
+    statement("s1").id,
+    statement("s2").id,
+  ]);
+  // The server's word for whose they are stands, and no read says which person, so they are
+  // no decision of the reader's; neither carries a state of an agent's decision.
+  expect(idsOf(parts).others).toEqual([D("pending"), D("foreign")]);
+  expect(parts.others[0]).toMatchObject({ kind: "decision", shapes: [] });
+  expect(parts.others.find((entry) => "standing" in entry)).toBeUndefined();
+});
+
+// R2: the third part is the reader's own decisions. What another person answered, declined or
+// kept is theirs, and so is a question its asker took back: each is still an entry of the
+// filter, under the heading that says it is not the reader's.
+test("another person's answer, decline and keep stand with what others decided", () => {
+  const bob = { id: "bob", kind: "user" as const };
+  const parts = partsOf(
+    [
+      statement("s1"),
+      answeredAsk("a-mine", { at: "2026-11-14T09:00:00Z", text: "Mine." }),
+      answeredAsk("a-bobs", { at: "2026-11-13T09:00:00Z", by: bob, text: "Bob's." }),
+      ask("declined-by-bob", { state: "declined" }),
+      decisionNode("kept-by-bob"),
+    ],
+    [
+      decision("kept-by-bob", {
+        kept: {
+          artifact_id: "artifact-decisions",
+          block_id: "kept-by-bob",
+          changed_version: 1,
+          kept_at: "2026-11-15T09:00:00Z",
+          kept_by: "bob",
+        },
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      }),
+    ],
+    [closing("declined-by-bob", { actor: bob, at: "2026-11-12T09:00:00Z", kind: "declined" })]
+  );
+
+  expect(idsOf(parts).yours).toEqual(["a-mine"]);
+  expect(idsOf(parts).others).toEqual([D("kept-by-bob"), "a-bobs", "declined-by-bob"]);
+});
+
+// The tester's F6: a Change is a comment a person anchored to the decision's words since it
+// last changed. The decision then waits on its agent: it says a change was asked for, it leaves
+// the review list for the decisions of whoever asked, and it carries what they wrote. A comment
+// older than the decision's words is no change of them, and the decision waits for review.
+test("a decision the reader asked to change leaves the review list and carries the change", () => {
+  const comment = (id: string, block: string, at: string): ChangeComment => ({
+    anchor: {
+      artifact_id: DECISIONS_DOCUMENT.id,
+      block_id: null,
+      mark_id: `mark-${id}`,
+      orphaned: false,
+      quote: `The decision ${block}.`,
+      version: 1,
+    },
+    author: READER_ACTOR,
+    body: `Change ${block}, please.`,
+    created_at: at,
+    id,
   });
+  const parts = partsOf(
+    [statement("s1"), decisionNode("asked"), decisionNode("stale"), decisionNode("waits")],
+    [
+      decision("asked", { links: [shaped(specRef("s1"))] }),
+      decision("stale", { links: [shaped(specRef("s1"))] }),
+      decision("waits", { links: [shaped(specRef("s1"))] }),
+    ],
+    [],
+    undefined,
+    [
+      comment("c-new", "asked", "2026-11-12T09:00:00Z"),
+      // Made before the decision last changed (2026-11-10T12:00Z): the agent has answered it.
+      comment("c-old", "stale", "2026-11-09T09:00:00Z"),
+    ]
+  );
+
+  expect(idsOf(parts).review).toEqual([D("stale"), D("waits")]);
+  expect(idsOf(parts).yours).toEqual([D("asked")]);
+  expect(parts.yours[0]).toMatchObject({
+    at: "2026-11-12T09:00:00Z",
+    change: {
+      at: "2026-11-12T09:00:00Z",
+      body: "Change asked, please.",
+      by: READER_ACTOR,
+      id: "c-new",
+      path: `/issues/${KEY}/comments/c-new`,
+    },
+    standing: "change_requested",
+  });
+  // The one rule the count of what waits on the reader reads too.
+  const isStatement = (reference: string) => /#b-s\d$/.test(reference);
   expect(
-    parts.yours.find((entry) => entry.node.id === D("pending") && "standing" in entry)
-  ).toBeUndefined();
+    inReviewList(decision("asked", { links: [shaped(specRef("s1"))] }), isStatement, true)
+  ).toBe(false);
+  expect(waitingOrder(parts)).toEqual([D("stale"), D("waits")]);
 });
 
 // R2: a declined ask reads as a question the person declined, never as an answer: the entry
@@ -265,8 +371,11 @@ test("a declined ask names who declined it and carries their note", () => {
     ]
   );
 
-  expect(idsOf(parts).yours).toEqual(["with-note", "no-note", "taken-back"]);
-  const [withNote, noNote, takenBack] = parts.yours;
+  // The two the reader declined are theirs; the one its asker took back is not.
+  expect(idsOf(parts).yours).toEqual(["with-note", "no-note"]);
+  expect(idsOf(parts).others).toEqual(["taken-back"]);
+  const [withNote, noNote] = parts.yours;
+  const [takenBack] = parts.others;
   expect(withNote).toMatchObject({
     declined: { by: READER_ACTOR, note: "The release owner decides this one." },
     kind: "ask",
@@ -299,17 +408,16 @@ test("closed asks stand by the time each closed, newest first", () => {
     "answered-13-first",
     "answered-13-second",
     "answered-12",
-    "asked-10",
-    "untimed",
   ]);
   expect(parts.yours.map((entry) => entry.at)).toEqual([
     "2026-11-14T09:00:00Z",
     "2026-11-13T09:00:00.5Z",
     "2026-11-13T09:00:00.500Z",
     "2026-11-12T09:00:00Z",
-    "2026-11-10T08:00:00Z",
-    undefined,
   ]);
+  // The two nobody is recorded as closing are no decision of the reader's, in the same order.
+  expect(idsOf(parts).others).toEqual(["asked-10", "untimed"]);
+  expect(parts.others.map((entry) => entry.at)).toEqual(["2026-11-10T08:00:00Z", undefined]);
 });
 
 // R2: a decision a person kept reads "Kept by" with their name, and stands among the reader's
@@ -472,6 +580,7 @@ test("the parts hold the nodes the filter's view left", () => {
   expect(idsOf(partsOf(children, made, [], view))).toEqual({
     agents: [],
     open_questions: ["q2"],
+    others: [],
     review: [D("two")],
     yours: [],
   });
@@ -479,24 +588,24 @@ test("the parts hold the nodes the filter's view left", () => {
   expect(partsOf(children, made, [], view).review[0]?.shapes).toHaveLength(1);
 });
 
-// R13: the count of what waits on the reader puts the focus on the first thing that waits, in
-// the filter's order: an open question whose turn is the reader's, else a decision of the
+// R13, the tester's F12: the count of what waits on the reader walks the things that wait, in
+// the filter's order: each open question whose turn is the reader's, then each decision of the
 // review list.
-test("the first thing that waits is an open question, else a decision to review", () => {
+test("what waits is each open question of the reader's, then each decision to review", () => {
   const made = [decision("review", { links: [shaped(specRef("s1"))] })];
   const both = partsOf(
     [statement("s1"), decisionNode("review"), openAsk("q-agent", false), openAsk("q-mine")],
     made
   );
-  expect(firstWaiting(both)).toBe("q-mine");
+  expect(waitingOrder(both)).toEqual(["q-mine", D("review")]);
 
   const review = partsOf(
     [statement("s1"), decisionNode("review"), openAsk("q-agent", false)],
     made
   );
-  expect(firstWaiting(review)).toBe(D("review"));
+  expect(waitingOrder(review)).toEqual([D("review")]);
 
-  expect(firstWaiting(partsOf([openAsk("q-agent", false)]))).toBeUndefined();
+  expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
 // The tree draws from the reads that have answered: before the decisions read and the asks
@@ -505,16 +614,20 @@ test("the parts are read before every read has answered", () => {
   const parts = decisionsParts({
     asks: undefined,
     decisions: undefined,
+    issueKey: KEY,
     nodeIdOf,
+    reader: undefined,
     root: issueTree([openAsk("q1"), ask("closed", { state: "declined" }), decisionNode("early")]),
   });
 
   expect(idsOf(parts)).toEqual({
     agents: [D("early")],
     open_questions: ["q1"],
+    // Nobody is known to have closed it yet, so it is no decision of the reader's.
+    others: ["closed"],
     review: [],
-    yours: ["closed"],
+    yours: [],
   });
-  expect(parts.yours[0]?.kind === "ask" ? parts.yours[0].declined : "none").toBeUndefined();
+  expect(parts.others[0]?.kind === "ask" ? parts.others[0].declined : "none").toBeUndefined();
   expect(parts.agents[0]?.standing).toBeUndefined();
 });

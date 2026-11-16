@@ -20,6 +20,10 @@ export interface FocusedNode {
    *  resolve are written to (`outline-writer.ts`'s `conversationItem`); absent for every other
    *  node. */
   readonly item?: { readonly id: string; readonly kind: "ask" | "comment" | "message" };
+  /** The node's own `dispatch://` address (`TreeNode.reference`), where the model gives it one:
+   *  what references it is read under that address, in Details
+   *  (`node-references/NodeReferences.tsx`). */
+  readonly reference?: string;
   /** How it stands, as the page's own word for that state, where its type has one. */
   readonly state?: string;
   /** The node's own first line, or an issue's title: the author's words. */

@@ -1,5 +1,4 @@
 import type { IssueDetails } from "../web/src/api/types";
-import { NODE_TYPE_NAMES } from "../web/src/features/issue/page-words";
 
 import {
   createComment,
@@ -12,7 +11,7 @@ import {
   patchIssue,
 } from "./api";
 import { expectTextOnlyDecisions, seedDecisionBody } from "./decision-bodies";
-import { documentEditor, indexedBlockAsk, openWithCaret, specAddress } from "./editor";
+import { documentEditor, indexedBlockAsk, openWithCaret } from "./editor";
 import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -64,8 +63,7 @@ test("a comment's callout shows the document's header with its kind and title", 
 
     const header = callout.locator("[data-proof-block-summary]");
     await expect(header).toBeVisible();
-    // The block type is still `callout`; what the header draws is the page's word for it.
-    await expect(callout.locator("[data-proof-block-name]")).toHaveText(NODE_TYPE_NAMES.callout);
+    await expect(callout.locator("[data-proof-block-name]")).toHaveText("callout");
 
     // The kind reads as a badge: a filled pill, not bare text.
     const badge = callout.locator("[data-proof-block-badge]");
@@ -195,7 +193,7 @@ async function replyUnderDocumentDecision(
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     const decision = documentEditor(page).locator('[data-dispatch-ask-block="storage"]');
     return { alice, decision, thread: decision.getByTestId(`thread-${storage.id}`) };
   } catch (error) {
@@ -385,7 +383,7 @@ test("a document's own decision block draws no line about opening an ask, live, 
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     const live = documentEditor(page).locator('[data-dispatch-ask-block="storage"]');
     const hosted = live.locator("article[data-testid^=ask-]");
     await expect(hosted).toBeVisible();
@@ -407,7 +405,7 @@ test("a document's own decision block draws no line about opening an ask, live, 
 
     // A closed issue's document draws the same record, read-only, and no line either.
     await patchIssue(issue.key, { status: "done" }, { login: "bob" });
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
     const closed = documentEditor(page).locator('[data-dispatch-ask-block="storage"]');
     await expect(closed.locator('ul[aria-label="Options"] > li')).toHaveCount(2);

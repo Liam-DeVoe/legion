@@ -410,13 +410,10 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
-      // The spec's editor is drawn at the spec's own address, in place of the outline: `/spec`
-      // is the Spec filter and draws no document (dispatch://INFRA-1196 R3, R20). An issue's
-      // spec is `spec.md` under the slug `spec` (`issue_create.go`).
       loads: ["editor"],
       route: "/issues/:key/*",
       shows: (page) => openDocument(page, shown.spec),
-      url: `${issue}/artifacts/spec`,
+      url: `${issue}/spec`,
     },
     {
       // The message's diagram is the Mermaid worker's: without it the body shows its source. Its
@@ -439,26 +436,12 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     {
       route: "/issues/:key/*",
-      // The child's own row, not a panel: `#issue-children-panel` went with the nine tab
-      // panels, and the children are a section of the page the tree sits under
-      // (`web/src/features/issue/IssueChildren.tsx`), drawn at every address and open from
-      // Tailwind's `md` for a reader who has never shut it (`useChildrenSection.ts`). The row
-      // is `[data-child-row]`, which is how `e2e/issue-page.ts` and `e2e/review-routes.ts`
-      // read one.
-      shows: (page) => [
-        page.locator('[data-testid="issue-children"] [data-child-row]').getByText(shown.child),
-      ],
+      shows: (page) => [page.locator("#issue-children-panel").getByText(shown.child)],
       url: `${issue}/children`,
     },
     {
       route: "/issues/:key/*",
-      // `/artifacts` opens the node menu, whose item for each file took the Artifacts tab's row.
-      shows: (page) => [
-        page
-          .getByRole("menu")
-          .getByRole("menuitem")
-          .filter({ has: page.getByRole("button", { exact: true, name: "rollout-notes.md" }) }),
-      ],
+      shows: (page) => [page.getByTestId(`artifact-${seed.issueArtifact}`)],
       url: `${issue}/artifacts`,
     },
     {

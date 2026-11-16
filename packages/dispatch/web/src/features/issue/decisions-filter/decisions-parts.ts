@@ -2,6 +2,7 @@ import type { Actor, Decision, IssueDecisions } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
+import { type ChangeComment, inReviewList } from "../decision-review";
 import {
   firstLineOf,
   nodeWords,
@@ -9,66 +10,34 @@ import {
   type TreeAsk,
   type TreeNode,
 } from "../issue-tree";
-import { freeze } from "../page-structure";
+import { type DecisionState, isReader } from "../page-words";
 
 /**
- * The words the Decisions filter draws of its own (dispatch://INFRA-1196 R2, R22, R35).
- * Integration moves them into `page-words.ts`. None is a sentence about the page or about
- * Dispatch, and no sentence explains the four parts: their headings are the whole of it.
- */
-export const DECISIONS_WORDS = freeze({
-  /** The fourth part's heading, which is the control that unfolds it, after the count of the
-   *  decisions it holds; the words agree with the count (R2: "folded at the foot, the agents'
-   *  decisions that no statement rests on"). */
-  agents_one: "agent decision that no statement rests on",
-  agents_many: "agent decisions that no statement rests on",
-  /** After the name of the person who declined a question, so the row reads as a question that
-   *  person declined and never as an answer (R2). */
-  declined: "declined to answer",
-  /** Before the statements a decision's `shaped` ties name (the picture's "informs R4 R21"). */
-  informs: "informs",
-  /** The link from an entry to the node that holds it, in the conversation. */
-  in_conversation: "in the conversation",
-  /** The headings of the first three parts, in the order the filter draws them (R2). */
-  parts: {
-    open_questions: "Open questions",
-    review: "Waiting for your review",
-    yours: "Your decisions",
-  },
-  /** The accessible name of each state's shape: the state and the kind it stands on, as every
-   *  other state's shape is named (`GLYPH_NAMES`). */
-  shapes: {
-    kept: "Kept decision",
-    replaced: "Replaced decision",
-    waiting_review: "Waiting for review decision",
-  },
-  /** How an agent's decision stands, wherever it is drawn (R2): one that waits for a person's
-   *  review, one a person kept, which is followed by that person's name, and a replaced one. */
-  states: {
-    kept: "Kept by",
-    replaced: "Replaced",
-    waiting_review: "Waiting for review",
-  },
-} as const);
-
-/**
- * The Decisions filter's four parts, read from the tree, the decisions read and the issue's
- * asks (dispatch://INFRA-1196 R2, R9, R35).
+ * The Decisions filter's parts, read from the tree, the decisions read, the issue's asks and its
+ * comments (dispatch://INFRA-1196 R2, R9, R35).
  *
- * The filter is one list in four parts, each under its own heading and in this order (R2):
+ * The filter is one list in parts, each under its own heading and in this order (R2):
  *
  * 1. **The open questions.** Every ask of the issue that is still open, those whose turn is the
  *    reader's first, each group in the order the outline draws them, which is the order the
  *    next-question key walks.
  * 2. **The decisions that wait for the reader's review** (R35): each agent decision that waits
  *    and that a `shaped` tie names a statement of this issue for, newest first. The list is
- *    read from the ties alone (`inReviewList`): a decision that waits and is tied to nothing,
- *    or to a node that is no statement, is no entry of it.
- * 3. **The reader's own decisions**, newest first: each closed ask by the time it closed - an
- *    answered one is the person's decision itself (dispatch://INFRA-1150 R1), and a declined
- *    one reads as a question the person declined, never as an answer - and each agent decision
- *    a statement rests on that a person kept, by the time it was kept.
- * 4. **The agents' decisions that no statement rests on**, folded at the foot: an agent
+ *    read from the ties alone (`decision-review.ts`'s `inReviewList`): a decision that waits and
+ *    is tied to nothing, or to a node that is no statement, is no entry of it, and neither is
+ *    one the reader sent a Change on, which waits on its agent.
+ * 3. **The reader's own decisions**, newest first: each ask the reader answered or declined,
+ *    and each agent decision a statement rests on that the reader kept or asked to change, by
+ *    the time they did. An answered ask is the person's decision itself
+ *    (dispatch://INFRA-1150 R1), and a declined one reads as a question the person declined,
+ *    never as an answer.
+ * 4. **What others decided**, newest first: the same entries where the person who answered,
+ *    declined, kept or changed is not the reader, a question its asker took back, and a section
+ *    of `decisions.md` the server marks a person's with nobody it can be laid to. R2 names the
+ *    third part "his own decisions", and Dispatch has several readers: another person's answer
+ *    is no decision of the reader's, and it is still an ask the filter draws (R2: "Decisions the
+ *    asks and the decisions"), so it stands under a heading that says whose it is.
+ * 5. **The agents' decisions that no statement rests on**, folded at the foot: an agent
  *    decision no `shaped` tie names a statement for, and a replaced one, which no statement
  *    stands on any longer (R5: "A replaced decision draws no line").
  *
@@ -77,11 +46,12 @@ export const DECISIONS_WORDS = freeze({
  * `reading` node is a section of `decisions.md` the server marks a person's because its blocks
  * name an ask (`Decision.kind`, `api/decisions.go`): where that ask is an answered ask of this
  * issue, the section restates the answer, the ask's own row is the decision, and the section is
- * drawn under the ask in the outline and nowhere in this filter (`isReading`).
+ * drawn under the ask in the outline and nowhere in this filter (`isReading`). That section is
+ * where today's read holds the decision's `shaped` ties, so the ask's entry carries the
+ * statements they name: the person's decision reaches every statement it shaped.
  *
  * This module is pure. It holds no React and makes no request, so the body
- * (`DecisionsFilterBody.tsx`), the count of what waits on the reader and the unit tests read
- * one model.
+ * (`DecisionsFilterBody.tsx`) and the unit tests read one model.
  *
  * ## What today's reads hold, and what they do not
  *
@@ -91,19 +61,24 @@ export const DECISIONS_WORDS = freeze({
  *   from the tree.
  * - **When a decision was made** is the time its words last changed (`Decision.changed_at`);
  *   the decisions read holds no other time for one.
+ * - **A Change** is a comment a person anchored to the decision's words since it last changed
+ *   (`decision-review.ts`'s `decisionChanges`); the decisions read holds no state for it.
  * - **An agent decision's author, its level of uncertainty, its reason and its readings** are
  *   dispatch://INFRA-1150's: the read holds no author and one yes or no, `unsure`, which the
  *   row draws as the one word it has.
  */
 
-/** The four parts, in the order the filter draws them (R2). */
-export const DECISIONS_PART_ORDER = ["open_questions", "review", "yours", "agents"] as const;
+/** The parts, in the order the filter draws them (R2). */
+export const DECISIONS_PART_ORDER = [
+  "open_questions",
+  "review",
+  "yours",
+  "others",
+  "agents",
+] as const;
 
 /** One part of the filter, by its own token, which is its `data-decisions-part`. */
 export type DecisionsPart = (typeof DECISIONS_PART_ORDER)[number];
-
-/** How an agent's decision stands (R2), by the token its word is declared under. */
-export type DecisionStanding = keyof typeof DECISIONS_WORDS.states;
 
 /** One statement a decision's `shaped` tie names, as the decision's row draws it. */
 export interface ShapedStatement {
@@ -121,7 +96,8 @@ export interface ShapedStatement {
 /** What every entry holds. */
 interface EntryBase {
   /** The moment the entry is ordered by, where the model holds one: when an ask closed, or was
-   *  asked while it is open, when a decision was kept, and otherwise when it was made. */
+   *  asked while it is open, when a decision was kept or asked to change, and otherwise when it
+   *  was made. */
   readonly at?: string;
   /** The node, as the whole tree holds it at the place it is edited. */
   readonly node: TreeNode;
@@ -130,6 +106,10 @@ interface EntryBase {
   readonly parent?: ParentLine;
   /** The address of the node in the conversation, which the entry links to. */
   readonly path?: string;
+  /** The statements of this issue the entry's `shaped` ties name, each once, in the ties' own
+   *  order: a decision's own, and for an answered ask those of the section of `decisions.md`
+   *  that restates its answer. */
+  readonly shapes: readonly ShapedStatement[];
 }
 
 /** One ask of the filter: an open question, or a closed one. */
@@ -140,50 +120,43 @@ export interface AskEntry extends EntryBase {
   readonly kind: "ask";
 }
 
+/** The change a person asked of a decision, as its row draws it under the decision's words. */
+export interface DecisionChange {
+  readonly at: string;
+  /** What the person wrote, as stored. */
+  readonly body: string;
+  readonly by: Actor;
+  /** The comment's own id, which is its node's in the conversation. */
+  readonly id: string;
+  /** The comment's address in the conversation. */
+  readonly path: string;
+}
+
 /** One decision of the filter. */
 export interface DecisionEntry extends EntryBase {
+  /** The change a person asked of it since it last changed, where one did (the tester's F6). */
+  readonly change?: DecisionChange;
   /** The person who kept it (`DecisionKeep.kept_by`), where it stands kept. */
   readonly keptBy?: Actor;
   readonly kind: "decision";
-  /** The statements of this issue its `shaped` ties name, each once, in the ties' own order. */
-  readonly shapes: readonly ShapedStatement[];
-  /** How it stands, where the model gives it one of the three states R2 names. */
-  readonly standing?: DecisionStanding;
+  /** How it stands, where the model gives it a state (`NODE_STATE_WORDS.decision`). */
+  readonly standing?: DecisionState;
 }
 
 /** One entry of the filter. */
 export type DecisionsEntry = AskEntry | DecisionEntry;
 
-/** The four parts, each in the order it is drawn. */
+/** The parts, each in the order it is drawn. */
 export interface DecisionsParts {
   readonly agents: readonly DecisionEntry[];
   readonly open_questions: readonly AskEntry[];
+  readonly others: readonly DecisionsEntry[];
   readonly review: readonly DecisionEntry[];
   readonly yours: readonly DecisionsEntry[];
 }
 
 /** What the model reads of an ask beside its node: how it was closed. */
 export type DecisionsAsk = Pick<TreeAsk, "id" | "resolution">;
-
-/**
- * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
- * person's review - neither kept as it reads now nor replaced, which is the server's
- * `waiting_review` (dispatch://INFRA-1150 R2) - and that a `shaped` tie names a statement of
- * this issue for. `isStatement` answers whether an address names one.
- *
- * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
- * filter's "to review" signal and the node's own `waiting` read it too and cannot disagree with
- * the list.
- */
-export function inReviewList(
-  decision: Pick<Decision, "links" | "waiting_review">,
-  isStatement: (reference: string) => boolean
-): boolean {
-  return (
-    decision.waiting_review &&
-    (decision.links ?? []).some((link) => link.to.ref !== undefined && isStatement(link.to.ref))
-  );
-}
 
 /**
  * The address of `node` in the conversation: an ask's own, and for a block of a document the
@@ -204,36 +177,46 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
 }
 
 /**
- * The first entry that waits on the reader, in the filter's order: an open question whose turn
- * is the reader's, else a decision of the review list. It is what the header's count of what
- * waits puts the focus on (R13).
+ * Every entry that waits on the reader, in the filter's order: each open question whose turn
+ * is the reader's, then each decision of the review list. It is what the header's count of
+ * what waits walks: each press goes to the next of them (R13, the tester's F12).
  */
-export function firstWaiting(parts: DecisionsParts): string | undefined {
-  return (
-    parts.open_questions.find((entry) => entry.node.waiting)?.node.id ?? parts.review[0]?.node.id
-  );
+export function waitingOrder(parts: DecisionsParts): readonly string[] {
+  return [
+    ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
+    ...parts.review.map((entry) => entry.node.id),
+  ];
 }
 
 /**
- * The filter's four parts.
+ * The filter's parts.
  *
  * `root` is the whole tree, which holds each ask and each decision with its words and each
  * statement a tie may name; `view` is the tree as the Decisions filter leaves it
  * (`presetView`), whose nodes are the ones the filter by words kept and the one the address
  * names. `nodeIdOf` is how this issue addresses a node (`tree-drafts.ts`'s `treeContext`), so
- * a tie resolves to the node it names however its address is written.
+ * a tie resolves to the node it names however its address is written. `changes` is the change
+ * a person asked of each decision, by the decision's address (`decisionChanges`), and `reader`
+ * who is reading, which is what tells their own decisions from other people's.
  */
 export function decisionsParts({
   asks,
+  changes,
   decisions,
+  issueKey,
   nodeIdOf,
+  reader,
   root,
   view,
 }: {
   /** The issue's asks, for how each closed one was closed. */
   readonly asks: readonly DecisionsAsk[] | undefined;
+  readonly changes?: ReadonlyMap<string, ChangeComment>;
   readonly decisions: IssueDecisions | undefined;
+  /** The issue's key, which a change's address in the conversation is built with. */
+  readonly issueKey: string;
   readonly nodeIdOf: (reference: string) => string | undefined;
+  readonly reader: string | undefined;
   /** The whole tree. */
   readonly root: TreeNode;
   /** The tree as the Decisions filter leaves it; the whole tree where none is given. */
@@ -253,11 +236,29 @@ export function decisionsParts({
     const id = askIdOf(node);
     if (id !== undefined && node.answer !== undefined) answered.add(id);
   }
+  // What each answered ask shaped: the ties of every section that restates its answer, which is
+  // where today's read holds a person's decision's `shaped` ties.
+  const shapedByAsk = new Map<string, Map<string, ShapedStatement>>();
+  for (const row of rows.values()) {
+    if (!isReading(row, answered)) continue;
+    for (const ask of (row.asks ?? []).filter((one) => answered.has(one))) {
+      const held = shapedByAsk.get(ask) ?? new Map<string, ShapedStatement>();
+      for (const shape of shapesOf(row, nodeIdOf, placed)) {
+        held.set(shape.id, { ...shape, stale: shape.stale || held.get(shape.id)?.stale === true });
+      }
+      shapedByAsk.set(ask, held);
+    }
+  }
 
   const open: AskEntry[] = [];
   const review: DecisionEntry[] = [];
   const yours: DecisionsEntry[] = [];
+  const others: DecisionsEntry[] = [];
   const agents: DecisionEntry[] = [];
+  // A decision of a person stands with the reader's own where that person is the reader, and
+  // with what others decided otherwise, a decision nobody is recorded for included.
+  const decidedBy = (by: Actor | undefined): DecisionsEntry[] =>
+    isReader(by, reader) ? yours : others;
   for (const { node, parent } of placed.values()) {
     if (kept !== undefined && !kept.has(node.id)) continue;
     const base = {
@@ -266,20 +267,22 @@ export function decisionsParts({
       ...pathOf(node),
     };
     if (node.type === "ask") {
-      const closing = closings.get(askIdOf(node) ?? "");
+      const askId = askIdOf(node) ?? "";
+      const shapes = [...(shapedByAsk.get(askId)?.values() ?? [])];
+      const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-drafts.ts`'s `addAsks`).
       if (node.question) {
-        open.push({ ...base, ...timeOf(node.at), kind: "ask" });
+        open.push({ ...base, ...timeOf(node.at), kind: "ask", shapes });
         continue;
       }
       const note = closing?.reason ?? "";
-      yours.push({
+      const declined = node.state === "declined" && closing !== undefined;
+      decidedBy(node.answer?.by ?? closing?.actor).push({
         ...base,
         ...timeOf(node.answer?.at ?? closing?.at ?? node.at),
-        ...(node.state !== "declined" || closing === undefined
-          ? {}
-          : { declined: { by: closing.actor, ...(note === "" ? {} : { note }) } }),
+        ...(declined ? { declined: { by: closing.actor, ...(note === "" ? {} : { note }) } } : {}),
         kind: "ask",
+        shapes,
       });
       continue;
     }
@@ -292,13 +295,25 @@ export function decisionsParts({
     }
     if (isReading(row, answered)) continue;
     const shapes = shapesOf(row, nodeIdOf, placed);
-    const standing = standingOf(row);
+    const asked = row.replaced ? undefined : changes?.get(row.ref);
+    const standing = standingOf(row, asked !== undefined);
+    const keptBy: Actor | undefined =
+      standing !== "kept" || row.kept === null ? undefined : { id: row.kept.kept_by, kind: "user" };
     const entry: DecisionEntry = {
       ...base,
       ...timeOf(row.changed_at ?? node.at),
-      ...(standing !== "kept" || row.kept === null
+      ...(asked === undefined
         ? {}
-        : { keptBy: { id: row.kept.kept_by, kind: "user" } }),
+        : {
+            change: {
+              at: asked.created_at,
+              body: asked.body,
+              by: asked.author,
+              id: asked.id,
+              path: buildIssuePath({ id: asked.id, key: issueKey, kind: "comment" }),
+            },
+          }),
+      ...(keptBy === undefined ? {} : { keptBy }),
       kind: "decision",
       shapes,
       ...(standing === undefined ? {} : { standing }),
@@ -306,10 +321,14 @@ export function decisionsParts({
     if (row.kind !== "agent") {
       // A section the server marks a person's that restates no answer of this issue: it names
       // an ask the tree does not hold, or one nobody answered. The server's word for whose it
-      // is stands, since no other read says (dispatch://INFRA-1150's `decided_by`).
-      yours.push(entry);
+      // is stands, and no read says which person (dispatch://INFRA-1150's `decided_by`).
+      others.push(entry);
     } else if (row.replaced) {
       agents.push(entry);
+    } else if (asked !== undefined) {
+      // The reader asked for a change: the decision waits on its agent, and stands with the
+      // decisions of whoever asked, by the time they did.
+      decidedBy(asked.author).push({ ...entry, ...timeOf(asked.created_at) });
     } else if (inReviewList(row, isStatement)) {
       review.push(entry);
     } else if (shapes.length === 0) {
@@ -317,7 +336,10 @@ export function decisionsParts({
     } else {
       // An agent's decision a statement rests on that does not wait: a person kept it as it
       // reads now, and it is ordered by the time they did.
-      yours.push({ ...entry, ...timeOf(row.kept?.kept_at ?? row.changed_at ?? node.at) });
+      decidedBy(keptBy).push({
+        ...entry,
+        ...timeOf(row.kept?.kept_at ?? row.changed_at ?? node.at),
+      });
     }
   }
   return {
@@ -328,6 +350,7 @@ export function decisionsParts({
       ...open.filter((entry) => entry.node.waiting),
       ...open.filter((entry) => !entry.node.waiting),
     ],
+    others: newestFirst(others),
     review: newestFirst(review),
     yours: newestFirst(yours),
   };
@@ -404,11 +427,12 @@ function isReading(row: Decision, answered: ReadonlySet<string>): boolean {
   return row.kind === "person" && (row.asks ?? []).some((ask) => answered.has(ask));
 }
 
-/** How a decision stands, in the three states R2 names, read as the server reads them
- *  (dispatch://INFRA-1150 R2): replaced first, then waiting, then kept as it reads now. A
- *  decision in none of them draws no state. */
-function standingOf(row: Decision): DecisionStanding | undefined {
+/** How a decision stands (`NODE_STATE_WORDS.decision`), read as the tree reads it
+ *  (`tree-drafts.ts`'s `decisionState`): replaced first, then a change a person asked for, then
+ *  waiting for review, then kept as it reads now. A decision in none of them draws no state. */
+function standingOf(row: Decision, changed: boolean): DecisionState | undefined {
   if (row.replaced) return "replaced";
+  if (changed) return "change_requested";
   if (row.waiting_review) return "waiting_review";
   return row.kept === null ? undefined : "kept";
 }

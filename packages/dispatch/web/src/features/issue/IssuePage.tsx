@@ -89,12 +89,14 @@ function ItemLandingFailure({
   route: ItemRoute;
 }): ReactNode {
   const noun = NODE_TYPE_NAMES[route.kind];
+  // The article follows the word the page draws, which is "question" for an ask (R22).
+  const article = /^[aeiou]/iu.test(noun) ? "an" : "a";
   if (landing.kind === "missing") {
     return (
       <NotFoundPage
         backLabel={`Back to ${route.key}`}
         backTo={`/issues/${route.key}`}
-        detail={`That link doesn't name ${route.kind === "ask" ? "an" : "a"} ${noun} on ${route.key} — it may have been deleted.`}
+        detail={`That link doesn't name ${article} ${noun} on ${route.key} — it may have been deleted.`}
         title={`${sentenceCase(noun)} not found`}
       />
     );
@@ -615,8 +617,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             restoringTo={restoringTo}
             state={issueState}
           />
-          {/* The preset row, then the Contents pane and the reading column: the three sentences,
-          the children section and the one folded tree the presets are queries over (R1, R3, R5,
+          {/* The preset row, then the Contents pane and the reading column: the one folded tree
+          the presets are queries over, or under a filter that filter's own body (R1, R2, R3, R5,
           R8, R10, R14) - or the document the address opens, in their place. A row being edited
           takes its own document's editor onto its stage (`document-stage.tsx`), and what the
           page draws under the outline is in that column too. */}
@@ -638,7 +640,6 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             onEditing={setEditing}
             onLeave={recordScroll}
             openedDocument={openedDocument}
-            plan={planArtifact}
             toolbar={outlineToolbar}
           />
           {/* Wherever the shell's margin draws no panel of its own - outside the shell, where no

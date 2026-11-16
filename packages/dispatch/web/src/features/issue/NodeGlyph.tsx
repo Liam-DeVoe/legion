@@ -60,10 +60,22 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   "check-retracted": "M3 9 l3 3 l7 -9 M2 14 l12 -12",
   "check-unmarked": "M8 2 a6 6 0 1 0 0.01 0 Z M5 8 h6",
   "check-unreadable": "M2 3 h12 v10 h-12 Z M2 13 l12 -10",
-  /** A decision's three states. */
+  /** A decision's states: replaced is struck under, waiting for review is an eye, kept is a
+   *  tick inside the decision's own outline, and a decision the reader asked to change is that
+   *  outline with a pen across it. */
+  "decision-change-requested": "M8 1 L15 5 v6 L8 15 L1 11 V5 Z M5 11 l6 -6 M9.5 4.5 l2 2",
+  "decision-kept": "M8 1 L15 5 v6 L8 15 L1 11 V5 Z M5 8 l2 2 l4 -4",
   "decision-replaced": "M2 11 h12 M4 4 l8 4 l-8 4 Z",
   "decision-waiting-review": "M1 8 a7 4 0 0 0 14 0 a7 4 0 0 0 -14 0 Z M8 6 v4",
-  "decision-yours": "M8 2 a3 3 0 1 0 0.01 0 Z M2 15 a6 6 0 0 1 12 0",
+  /** How a statement stands at the commit the page names, in the Verification filter and at the
+   *  right of its row in the Spec filter (R17): the statement's own pennant with the mark of how
+   *  it stands inside it, so no two of the three share a shape and none is told apart by colour
+   *  alone; and the pennant struck through for a statement no check serves (R10). */
+  "statement-no-check": "M3 1 h10 v14 l-5 -4 l-5 4 Z M1 14 l14 -12",
+  "statement-met": "M3 1 h10 v14 l-5 -4 l-5 4 Z M5.5 6 l2 2 l3.5 -4",
+  "statement-not-met": "M3 1 h10 v14 l-5 -4 l-5 4 Z M6 5 l4 4 M10 5 l-4 4",
+  "statement-unknown":
+    "M3 1 h10 v14 l-5 -4 l-5 4 Z M6.5 5.6 a1.6 1.6 0 1 1 1.6 1.7 v0.9 M8.1 10.6 v0.7",
 };
 
 /** One shape, by its token: `svg[data-glyph]` with the accessible name the token carries. */

@@ -2,7 +2,6 @@ import { type AddressInfo, createServer, type Socket } from "node:net";
 
 import { type DispatchEvent, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 
-import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { expiredRetryNote } from "../web/src/features/writes/keyed-write";
 import {
   baseUrl,
@@ -18,7 +17,6 @@ import {
   slowWrites,
   userHeaders,
 } from "./api";
-import { openDetails, openIssueActions, openIssueAddress } from "./issue-page";
 import {
   cutFirstAnswerBody,
   dropFirstAnswer,
@@ -33,17 +31,6 @@ import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
 import { expect, type Locator, type Page, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
-
-/** The download of version `version` of the file `name`, which its item of the node menu
- *  carries for the latest version (dispatch://INFRA-1196 R3): the item the Artifacts tab's row
- *  became, and the reading of how many versions the upload left. */
-function latestDownload(page: Page, name: string, version: number): Locator {
-  return page
-    .getByRole("menu")
-    .getByRole("menuitem")
-    .filter({ has: page.getByRole("button", { exact: true, name }) })
-    .getByRole("link", { exact: true, name: `Download version ${version}` });
-}
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
 // and the page tries it again under that key until Dispatch answers it (`ApiClient.send`). These
@@ -114,8 +101,6 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
   await page.bringToFront();
   await page.getByLabel("Status").selectOption("backlog");
   await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
-  // The labels' control is Details' Labels row (dispatch://INFRA-1196 R13).
-  await openDetails(page);
   const editLabels = page.getByRole("button", { name: "Edit labels" });
   await editLabels.click();
   const labelSearch = page.getByRole("combobox", { name: "Search or create label" });
@@ -276,13 +261,9 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
     // waiting out a backoff on a page timer the jump fires; the one that follows it is refused
     // before it goes out, so this count is the last.
     const spent = attempts.length;
-    // The page's word for the status, `Todo`, and not the token the write carries: the shell's
-    // indicator draws this line, but the issue page's own write hook composes it
-    // (`useIssueHeaderWrites.ts`'s `issueUpdateLabel`), and a word the page composes is the
-    // page's (dispatch://INFRA-1196 R21). Reworded on purpose from `set to todo`.
     await runClockUntil(
       page,
-      expect(indicator).toContainText(`Not saved: ${issue.key} set to Todo`)
+      expect(indicator).toContainText(`Not saved: ${issue.key} set to todo`)
     );
 
     await expect(indicator).toContainText(expiredRetryNote("saved"));
@@ -581,8 +562,8 @@ test("an upload throttled to take 30 s is one attempt and lands once @pr", async
     const answers = watchAnswers(page, "POST", path);
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
-    await openIssueAddress(page, "artifacts");
-    await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles({
+    await page.getByRole("tab", { name: "Artifacts" }).click();
+    await page.getByLabel("Upload artifact").setInputFiles({
       buffer: Buffer.alloc(bytes, 7),
       mimeType: "application/octet-stream",
       name: "slow-link.bin",
@@ -625,7 +606,7 @@ test("an upload throttled to take 30 s is one attempt and lands once @pr", async
 
     expect(keys).toEqual([expect.any(String)]);
     await expect.poll(() => answers).toEqual([expect.objectContaining({ status: 201 })]);
-    await expect(latestDownload(page, "slow-link.bin", 1)).toBeVisible();
+    await expect(page.getByTestId("artifact-slow-link-bin")).toContainText("1 version");
   } finally {
     await alice.close();
   }
@@ -664,8 +645,8 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
     const attempts = await recordUploadAttempts(page, path);
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
-    await openIssueAddress(page, "artifacts");
-    await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles({
+    await page.getByRole("tab", { name: "Artifacts" }).click();
+    await page.getByLabel("Upload artifact").setInputFiles({
       buffer: Buffer.alloc(bytes, 7),
       mimeType: "application/octet-stream",
       name: "in-flight.bin",
@@ -718,7 +699,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
     const key = first?.key;
     expect(key).toEqual(expect.any(String));
     expect(repeats.every((repeat) => repeat.key === key)).toBe(true);
-    await expect(latestDownload(page, "in-flight.bin", 1)).toBeVisible();
+    await expect(page.getByTestId("artifact-in-flight-bin")).toContainText("1 version");
     expect(
       await sql(
         `select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.issue_key = '${issue.key}' and a.name = 'in-flight.bin'`
@@ -828,15 +809,12 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
         status: 400,
       });
     });
-    // The nine tabs are five presets over one tree now (dispatch://INFRA-1196 R3), and the
-    // artifacts address is reached inside the page, as the tab it replaces was: a reload here
-    // would drop the kept write this row is about.
     const openArtifacts = async () => {
-      await openIssueAddress(page, "artifacts");
+      await page.getByRole("tab", { name: "Artifacts" }).click();
     };
     await page.goto(`/issues/${issue.key}`);
     await openArtifacts();
-    await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles({
+    await page.getByLabel("Upload artifact").setInputFiles({
       buffer: Buffer.from("kept through a retry\n"),
       mimeType: "application/octet-stream",
       name: "once.bin",
@@ -867,7 +845,9 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     answers = "through";
     await page.reload();
     await openArtifacts();
-    await expect(latestDownload(page, "once.bin", 1)).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("artifact-once-bin")).toContainText("1 version", {
+      timeout: 10_000,
+    });
     await expect(indicator).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
     expect(keys.length).toBeGreaterThanOrEqual(4);
@@ -941,7 +921,7 @@ test("a sign-out confirmed with a write queued behind a held one sends nothing a
       });
       await page.clock.install();
       await page.goto(`/issues/${issue.key}`);
-      await expect(page.getByRole("combobox", { name: "Status" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Edit labels" })).toBeVisible();
       tabs.push(page);
     }
     for (const [index, page] of tabs.entries()) {
@@ -953,10 +933,7 @@ test("a sign-out confirmed with a write queued behind a held one sends nothing a
     const [signingOut] = tabs;
     if (signingOut === undefined) throw new Error("no tab was opened");
     await signingOut.bringToFront();
-    // On the issue page the shell's navigation is an icon rail whose foot control opens the whole
-    // navigation, Sign out with it (dispatch://INFRA-1196 R14).
-    await signingOut.getByRole("button", { exact: true, name: "Open navigation" }).click();
-    await signingOut.getByRole("button", { exact: true, name: "Sign out" }).click();
+    await signingOut.getByRole("button", { name: "Sign out" }).click();
     await expect(signingOut.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
     expect(confirmedAt).toEqual(expect.any(Number));
     for (const page of tabs) {
@@ -1120,7 +1097,7 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
     });
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
-    await expect(page.getByRole("combobox", { name: "Status" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit labels" })).toBeVisible();
     await queueBehindAHeldStatus(page, issue.key, "alice-only");
 
     const other = await alice.newPage();
@@ -1211,8 +1188,6 @@ test("the issue header's pin pressed during an outage survives a reload and land
     const puts = watchWrites(page, "PUT", `/api/v1/me/issues/${issue.key}/state`);
     const network = await outage(page, "**/api/v1/me/issues/*/state", "PUT");
     await page.goto(`/issues/${issue.key}`);
-    // The pin is the header's overflow menu's (dispatch://INFRA-1196 R13).
-    await openIssueActions(page);
     await page.getByRole("button", { name: "Pin issue" }).click();
     await expect(pendingWrites(page)).toBeVisible();
     await expect.poll(() => keptWrites(page)).toBe(1);
@@ -1223,7 +1198,7 @@ test("the issue header's pin pressed during an outage survives a reload and land
     await expect
       .poll(async () => (await getMyState())[issue.key]?.pinned ?? false, { timeout: 30_000 })
       .toBe(true);
-    await expect(page.locator('[data-issue-action="pin"]')).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
     // The same press before and after the reload: one body, the header's own write.

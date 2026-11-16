@@ -135,7 +135,7 @@ function seededDecisions(options: { askRef: string; issueKey: string }): {
       heading: "Draw the tree from one read",
     },
     {
-      body: `Decided in ${options.askRef}. Shapes ${block(3)}.`,
+      body: `Decided in ${options.askRef}. Shapes ${block(3)}, ${block(4)} and ${block(5)}.`,
       heading: "Keep every address the old page answered",
     },
     {
@@ -155,7 +155,7 @@ function seededDecisions(options: { askRef: string; issueKey: string }): {
       heading: "Draw a document under the block that cites it",
     },
     {
-      body: "Replaced by the tree above: the rail hid 744 px at 1440 px.",
+      body: `Replaced by the tree above: the rail hid 744 px at 1440 px. Shapes ${block(6)}.`,
       heading: "Keep the metadata rail behind a sideways scroll",
       replaced: true,
     },
@@ -323,4 +323,46 @@ export function spineVerificationDocument(issueKey: string): string {
     `negative_control="Draw the check under one parent and the test fails."}\n` +
     "One check serves two requirements and is drawn under both.\n:::\n"
   );
+}
+
+/** The block ids of the plan `planOrderDocument` writes. */
+export const PLAN_ORDER_TASKS = {
+  /** Needs `second`, and is written first: the plan's own order is not the order of its needs. */
+  first: "t1",
+  /** The task `loose` needs, which the second version of the document drops. */
+  gone: "t9",
+  /** The two that need each other, which the page draws as one line that lists both. */
+  knotA: "t4",
+  knotB: "t5",
+  /** Needs nothing the plan holds any more: `seedPlanOrder` takes `gone` out again. */
+  loose: "t6",
+  second: "t2",
+  /** Needs nothing, so it is the first step drawn. */
+  third: "t3",
+} as const;
+
+/** A plan whose tasks are written in an order their `needs` refuse: `t1` needs `t2` and `t2`
+ *  needs `t3`, so the page draws `t3`, `t2`, `t1`; `t3` serves two statements, and is one task;
+ *  `t4` and `t5` need each other; `t6` needs `t9`, which `seedPlanOrder` then removes, leaving
+ *  a `needs` the plan does not hold - the one way such a pointer is made, since a write that
+ *  introduces one is refused and a write that keeps one unchanged is not
+ *  (`packages/envoy/internal/dispatch/pmdoc/pointers.go`). */
+export function planOrderDocument(issueKey: string, holdsGone: boolean): string {
+  const task = (id: string) => `dispatch://${issueKey}/artifact/plan-md#b-${id}`;
+  const T = PLAN_ORDER_TASKS;
+  const block = (id: string, serves: string, needs?: string, alsoServes?: string) =>
+    `:::plan_task{#${id} serves="${specBlockRef(issueKey, serves)}` +
+    `${alsoServes === undefined ? "" : ` ${specBlockRef(issueKey, alsoServes)}`}"` +
+    `${needs === undefined ? "" : ` needs="${task(needs)}"`}}\n` +
+    `Task ${id} of the redesign is one step of the build.\n:::`;
+  const blocks = [
+    block(T.first, requirementBlockId(1), T.second),
+    block(T.second, requirementBlockId(2), T.third),
+    block(T.third, requirementBlockId(3), undefined, requirementBlockId(1)),
+    block(T.knotA, requirementBlockId(1), T.knotB),
+    block(T.knotB, requirementBlockId(2), T.knotA),
+    block(T.loose, requirementBlockId(3), T.gone),
+    ...(holdsGone ? [block(T.gone, requirementBlockId(1))] : []),
+  ];
+  return `How the issue page gets built.\n\n${blocks.join("\n\n")}\n`;
 }

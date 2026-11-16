@@ -35,7 +35,8 @@ const (
 // GET /api/v1/issues/{key}/coverage  (any authenticated caller)
 //
 // What each requirement of the issue's spec lacks. An issue with no spec, or a spec that marks
-// no requirements, answers no requirements and the single gap line.
+// no requirements, answers no requirements and the single gap line. A caller that sent
+// `Dispatch-Trees: 1` is given each requirement's whole content as its text_tree.
 func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -45,18 +46,23 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, issueKey)
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, issueKey, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	trees.resolve()
 	WriteJSON(w, http.StatusOK, coverage)
 }
 
 // issueCoverage reads the issue's requirements and what serves each. The documents' blocks are
 // read from the block index (document_blocks and block_refs), which every accepted write leaves
 // in step with the document it wrote; the requirements' order and words come from the live spec.
-func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) (model.IssueCoverage, error) {
+// trees is the reader of a request that answers the requirements' trees, nil for every other
+// caller: each requirement registers its whole content with it (blockContent) where it stands in
+// the answer, and the caller resolves it.
+func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
 	err := q.QueryRow(ctx, `
 		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
@@ -69,7 +75,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) 
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	requirements, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID)
+	requirements, contents, err := s.requirementBlocksIn(ctx, coverage.SpecArtifactID, trees != nil)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -104,6 +110,9 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) 
 			coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+reason)
 		}
 	}
+	for index, content := range contents {
+		trees.text(&coverage.Requirements[index].TextTree, content)
+	}
 	return coverage, nil
 }
 
@@ -132,16 +141,21 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 }
 
 // requirementBlocksIn is every `requirement` block of one document, in document order, with its
-// words, read live out of the document's markdown (typedBlocksIn).
-func (s *server) requirementBlocksIn(ctx context.Context, artifactID string) ([]model.RequirementCoverage, error) {
+// words, read live out of the document's markdown (typedBlocksIn), and beside them, for a caller
+// that answers trees, each block's whole content in the same order (blockContent).
+func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees bool) ([]model.RequirementCoverage, []string, error) {
 	var requirements []model.RequirementCoverage
+	var contents []string
 	err := s.typedBlocksIn(ctx, artifactID, "requirement", func(node *pmdoc.Node, id string) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
+		if trees {
+			contents = append(contents, blockContent(node))
+		}
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return requirements, nil
+	return requirements, contents, nil
 }
 
 // servingCounts is how many `check` and `plan_task` blocks serve one requirement.
@@ -212,7 +226,7 @@ func (s *server) approvalCoverage(ctx context.Context, q queryer, id string) (ga
 	if !isSpecDocument(artifact) {
 		return []string{}, false, nil
 	}
-	coverage, err := s.issueCoverage(ctx, q, *artifact.IssueKey)
+	coverage, err := s.issueCoverage(ctx, q, *artifact.IssueKey, nil)
 	if err != nil {
 		slog.Warn("dispatch: read the coverage an approval request reports", "artifact", artifact.ID, "error", err)
 		return []string{}, true, nil

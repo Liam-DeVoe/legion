@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 
 import type { ArtifactUploadResponse } from "../web/src/api/types";
-import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { setLiveSessions } from "./agents";
 import {
   createIssue,
@@ -9,7 +8,6 @@ import {
   createProject,
   dashboardOrigin,
   editArtifact,
-  getArtifact,
   getArtifactVersion,
 } from "./api";
 import { connectedDot, documentEditor } from "./editor";
@@ -55,10 +53,10 @@ async function upload(
   return ((await answer.json()) as ArtifactUploadResponse).artifact;
 }
 
-/** Picks `file` in the node menu's own upload control and confirms it, as a person does:
- *  choosing a file only stages it until the staged row's "Upload" is pressed. */
-async function uploadFromMenu(page: Page, file: UploadFile): Promise<void> {
-  await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles(file);
+/** Picks `file` in the Artifacts tab's own upload control and confirms it, as a person does:
+ *  choosing a file only stages it until the row's "Upload" is pressed. */
+async function uploadOnTab(page: Page, file: UploadFile): Promise<void> {
+  await page.getByLabel("Upload artifact").setInputFiles(file);
   await page.getByRole("button", { exact: true, name: "Upload" }).click();
 }
 
@@ -76,25 +74,13 @@ function versionAddress(id: string, number: number, download = false): string {
   return `/api/v1/artifacts/${id}/versions/${number}${download ? "?download=true" : ""}`;
 }
 
-/** Opens the issue's node menu at the address the Artifacts tab answered, which opens the menu
- *  now: the menu took the tab's list (dispatch://INFRA-1196 R3), one item per file with the
- *  download of its latest version, and the file's versions and picture are on its own page. */
-async function openNodeMenu(page: Page, issueKey: string): Promise<void> {
-  await page.goto(`/issues/${issueKey}/artifacts`);
-  await expect(page.getByRole("menu")).toBeVisible();
+async function openArtifactsTab(page: Page, issueKey: string): Promise<void> {
+  await page.goto(`/issues/${issueKey}`);
+  await page.getByRole("tab", { name: "Artifacts" }).click();
 }
 
-/** The node menu's item for the file `name`: the control that opens it, by that name, and the
- *  download of its latest version beside it. */
-function menuItem(page: Page, name: string): Locator {
-  return page
-    .getByRole("menu")
-    .getByRole("menuitem")
-    .filter({ has: page.getByRole("button", { exact: true, name }) });
-}
-
-// SLOW(>=2s): a cold load of the issue and its node menu, then the artifact's page and its whole
-// version list, each link and picture read where it is drawn.
+// SLOW(>=2s): a cold load of the issue and its Artifacts tab, then the artifact's page and its
+// whole version list, each link and picture read where it is drawn.
 // @webkit @firefox: the address the engine follows for a download and the one it draws a picture
 // from, which the rows below read the saved names of.
 test("each Download version link names the download address and each picture the version address @webkit @firefox", async ({
@@ -110,15 +96,19 @@ test("each Download version link names the download address and each picture the
   const diagram = await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
   await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
 
-  await openNodeMenu(page, issue.key);
-  // The item draws no picture: the file's picture is on its own page, read below.
-  const item = menuItem(page, "diagram.png");
-  await expect(item.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
+  await openArtifactsTab(page, issue.key);
+  const row = page.getByTestId("artifact-diagram-png");
+  await expect(row).toContainText("2 versions");
+  await expect(row.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
     "href",
     versionAddress(diagram.id, 2, true)
   );
+  await expect(row.getByRole("img", { name: "diagram.png version 2" })).toHaveAttribute(
+    "src",
+    versionAddress(diagram.id, 2)
+  );
 
-  await item.getByRole("button", { exact: true, name: "diagram.png" }).click();
+  await row.getByRole("link", { name: "diagram.png" }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
   const shown = page.getByRole("region", { exact: true, name: "diagram.png version 2" });
   await expect(shown.getByRole("img", { name: "diagram.png version 2" })).toHaveAttribute(
@@ -138,8 +128,8 @@ test("each Download version link names the download address and each picture the
   }
 });
 
-// SLOW(>=2s): two uploads through the node menu, each written and listed, and four downloads the
-// browser saves from the menu, the artifact's page and its version list.
+// SLOW(>=2s): two uploads through the tab, each written and listed, and four downloads the
+// browser saves from the tab, the artifact's page and its version list.
 // @webkit @firefox: the name the engine saves from `filename*` and `filename`, and whether it asks
 // the server again for a download address it already followed: version 1's address saves a new
 // name once version 2 exists.
@@ -148,16 +138,17 @@ test("a file saves under its own name, and its older version under its number on
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Report downloads" });
-  await openNodeMenu(page, issue.key);
-  const item = menuItem(page, "report.pdf");
+  await openArtifactsTab(page, issue.key);
+  const row = page.getByTestId("artifact-report-pdf");
 
-  await uploadFromMenu(page, pdf("report.pdf", "first draft"));
-  const first = await saveFrom(page, item.getByRole("link", { name: "Download version 1" }));
+  await uploadOnTab(page, pdf("report.pdf", "first draft"));
+  await expect(row).toContainText("1 version");
+  const first = await saveFrom(page, row.getByRole("link", { name: "Download version 1" }));
   expect(first.suggestedFilename()).toBe("report.pdf");
 
-  await uploadFromMenu(page, pdf("report.pdf", "second draft"));
-  await expect(item.getByRole("link", { name: "Download version 2" })).toBeVisible();
-  await item.getByRole("button", { exact: true, name: "report.pdf" }).click();
+  await uploadOnTab(page, pdf("report.pdf", "second draft"));
+  await expect(row).toContainText("2 versions");
+  await row.getByRole("link", { name: "report.pdf" }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/report-pdf`);
   const shown = page.getByRole("region", { exact: true, name: "report.pdf version 2" });
   const current = await saveFrom(page, shown.getByRole("link", { name: "Download version 2" }));
@@ -172,8 +163,8 @@ test("a file saves under its own name, and its older version under its number on
   expect(newest.suggestedFilename()).toBe("report.pdf");
 });
 
-// SLOW(>=2s): a cold load of the issue and its node menu, an upload through it, and the download
-// the browser saves.
+// SLOW(>=2s): a cold load of the issue and its Artifacts tab, an upload through it, and the
+// download the browser saves.
 // @webkit @firefox: the name the engine saves from `filename*` where the name holds spaces and a
 // character outside ASCII, which the ASCII `filename` beside it cannot carry, and WebKit's own
 // rule of writing each space of the name it read as `_`.
@@ -183,22 +174,22 @@ test("a file whose name holds spaces and a character outside ASCII saves under t
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Accented downloads" });
-  await openNodeMenu(page, issue.key);
+  await openArtifactsTab(page, issue.key);
 
   const name = "Q3 final résumé.pdf";
-  await uploadFromMenu(page, pdf(name, "the quarter"));
-  const saved = await saveFrom(
-    page,
-    menuItem(page, name).getByRole("link", { name: "Download version 1" })
-  );
+  await uploadOnTab(page, pdf(name, "the quarter"));
+  const row = page
+    .getByRole("listitem")
+    .filter({ has: page.getByRole("link", { exact: true, name }) });
+  const saved = await saveFrom(page, row.getByRole("link", { name: "Download version 1" }));
   // WebKit reads `filename*`, since the `é` stays where the ASCII `filename` has `_`, and then
   // writes each space as `_` (CI run 43750246861). Chromium and Firefox save the name exactly.
   const expected = browserName === "webkit" ? "Q3_final_résumé.pdf" : name;
   expect(saved.suggestedFilename()).toBe(expected);
 });
 
-// SLOW(>=2s): a cold load of the issue and its node menu, and a download the browser saves and
-// the row reads back from disk.
+// SLOW(>=2s): a cold load of the issue and its Artifacts tab, and a download the browser saves
+// and the row reads back from disk.
 // @webkit @firefox: the name the engine saves a document's Markdown under, and the bytes it writes.
 test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({ page }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -207,11 +198,10 @@ test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({
     spec: "# Launch plan\n\nEvery download keeps its own name.\n",
     title: "Spec download",
   });
-  const specName = (await getArtifact(issue.primary_artifact_id)).name;
-  await openNodeMenu(page, issue.key);
+  await openArtifactsTab(page, issue.key);
 
-  const item = menuItem(page, specName);
-  const saved = await saveFrom(page, item.getByRole("link", { name: "Download version 1" }));
+  const row = page.getByTestId("artifact-spec");
+  const saved = await saveFrom(page, row.getByRole("link", { name: "Download version 1" }));
   expect(saved.suggestedFilename()).toBe("spec.md");
   const spec = await getArtifactVersion(issue.primary_artifact_id, 1);
   expect(spec.markdown).toContain("Every download keeps its own name.");

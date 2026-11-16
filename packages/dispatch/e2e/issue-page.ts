@@ -36,19 +36,24 @@ import { navigateInApp } from "./sends";
  *   `[data-testid="issue-children-direct-count"]` and
  *   `[data-testid="issue-children-subtree-count"]`, each with a visible label. c-children,
  *   c-nothing-lost, c-keyboard (`t h`).
- * - **The filter row** `[data-testid="issue-presets"]`. At 1280 px and above it is a
+ * - **The filter row** `[data-filter-row]`, one line at every width, and in it the five
+ *   controls `[data-testid="issue-presets"]`. At 1280 px and above they are a
  *   `role="toolbar"` named `CONTROL_LABELS.presets` of five toggle `button`s, Conversation,
  *   Spec, Verification, Plan and Decisions, each carrying `aria-pressed`, its accessible name
  *   the control's name alone, with its signal - its count in `[data-preset-count="<preset>"]`,
- *   and where it draws one what of it waits on the reader in `[data-preset-flag]` - beside it
- *   inside the control's own box and named as the button's description (`aria-describedby`): a
- *   word drawn inside a control has to be in that control's name (WCAG 2.5.3), and each is held
- *   to its name by the inventory of the page it replaced. At 1024 px and below the row becomes
- *   one control: a `button` with `aria-haspopup="menu"` drawing the one on and its signal, and
- *   so named by both, its name part `[data-preset-name]`, opening a `role="menu"` of five
- *   `role="menuitem"`s, each named by its control's name alone. Each control has its own
- *   address (`issue-address.ts`'s `presetPath`, which this module imports). c-presets,
- *   c-three-things, c-children, c-urls, c-plain-words, c-keyboard.
+ *   and where it draws one what of it waits on the reader in `[data-preset-flag]` - beside the
+ *   button and outside it, a `<label>` of the button in the same drawn box, named as the
+ *   button's description (`aria-describedby`): a word drawn inside a control has to be in that
+ *   control's name (WCAG 2.5.3), and each is held to its name by the inventory of the page it
+ *   replaced. Below 1280 px the five become one control: a `button` with `aria-haspopup="menu"`
+ *   drawing the one on and its signal, and so named by both, its name part
+ *   `[data-preset-name]`, opening a `role="menu"` of five `role="menuitemradio"`s, each named
+ *   by its control's name and its signal and checked where it is the one on. Each control has
+ *   its own address (`issue-address.ts`'s `presetPath`, which this module imports). At the
+ *   row's right end from 761 px up, each a small `button`: the version control's while a
+ *   filter is on, the node menu's, the filter by words' and Keys; at 760 px and below the
+ *   first three are in the Outline sheet. c-presets, c-three-things, c-children, c-urls,
+ *   c-plain-words, c-keyboard.
  * - **The node menu** beside the presets: a `button` named by `CONTROL_LABELS.other_nodes`,
  *   opening a `role="menu"` whose items are its rows: each document and artifact of the issue
  *   is a `role="menuitem"` holding the button that opens it and the `button` that copies its
@@ -185,7 +190,13 @@ const SELECTORS = {
   branchMore: "[data-branch-more]",
   details: '[data-testid="desktop-margin-shell"]',
   childRow: "[data-child-row]",
+  /** The whole filter row: the five controls or the one control, Outline, and the small
+   *  controls at its right end (`IssuePresets.tsx`). */
+  filterRow: "[data-filter-row]",
   gap: "[data-gap]",
+  /** The part of the identity block that stays at the top of the screen from 761 px up: the
+   *  key's row and the title (`IssueHeader.tsx`). */
+  identityBand: "[data-identity-block]",
   identityBlock: "header[data-issue-header]",
   issuePage: "[data-issue-page]",
   marginSlot: '[data-testid="issue-margin"]',
@@ -227,42 +238,20 @@ export function threeThingsSentences(page: Page): Locator {
   return threeThings(page).locator(SELECTORS.authorText);
 }
 
-export function planRow(page: Page): Locator {
-  return page.getByTestId("issue-plan-row");
-}
-
-export function checksRow(page: Page): Locator {
-  return page.getByTestId("issue-checks-row");
-}
-
+/** The children's section the page drew above the outline before the architect's ruling 5: no
+ *  view draws one now, and a check reads this to say so. */
 export function childrenSection(page: Page): Locator {
   return page.getByTestId("issue-children");
 }
 
-/** The one control that opens and closes the children section. */
-export function childrenDisclosure(page: Page): Locator {
-  return childrenSection(page).getByRole("button").first();
-}
-
+/** The children as the page draws them: rows of the outline, one group of them (ruling 5). */
 export function childRows(page: Page): Locator {
-  return childrenSection(page).locator(SELECTORS.childRow);
+  return tree(page).locator('[data-node-row][data-node-type="child_issue"]');
 }
 
+/** One child's row of the outline, by the child's key, which is its node's id. */
 export function childRow(page: Page, key: string): Locator {
-  return childRows(page).filter({ hasText: key });
-}
-
-export function childrenDirectCount(page: Page): Locator {
-  return page.getByTestId("issue-children-direct-count");
-}
-
-export function childrenSubtreeCount(page: Page): Locator {
-  return page.getByTestId("issue-children-subtree-count");
-}
-
-/** The completion bar the collapsed header keeps beside its two counts. */
-export function childrenBar(page: Page): Locator {
-  return childrenSection(page).getByRole("progressbar");
+  return tree(page).locator(`[data-node-row][data-node-id="${key}"]`);
 }
 
 export function presetRow(page: Page): Locator {
@@ -303,8 +292,12 @@ export function openMenu(page: Page): Locator {
   return page.getByRole("menu");
 }
 
+/** One item of the one control's menu: a `menuitemradio`, checked where it is the one on, named
+ *  by what it draws - its control's name, then its signal (WCAG 2.5.3). */
 export function presetMenuItem(page: Page, preset: Preset): Locator {
-  return openMenu(page).getByRole("menuitem", { exact: true, name: PRESET_NAMES[preset] });
+  return openMenu(page).getByRole("menuitemradio", {
+    name: new RegExp(`^${PRESET_NAMES[preset]}( |$)`),
+  });
 }
 
 export function nodeMenuButton(page: Page): Locator {
@@ -424,9 +417,10 @@ export function uploadInput(page: Page): Locator {
 }
 
 /** What the page says when a key has nowhere to go, such as the next-question key with no
- *  further question (c-open-questions, c-keyboard). */
+ *  further question: drawn at the row the key was pressed on, and gone with the reader's next
+ *  move (c-open-questions, c-keyboard). */
 export function pageStatus(page: Page): Locator {
-  return issuePage(page).getByRole("status");
+  return tree(page).locator("[data-row-report]");
 }
 
 /** A check's `run` command, drawn as code with its copy control beside it. */
@@ -438,23 +432,56 @@ export function copyCommandControls(page: Page): Locator {
   return issuePage(page).getByRole("button", { exact: true, name: CONTROL_LABELS.copy_command });
 }
 
-/** The filter the preset's filter key opens. */
+/** The box of the filter by words, which is `?q=`: drawn while it holds words or has the caret,
+ *  and in the Outline sheet at 760 px and below. */
 export function filterBox(page: Page): Locator {
   return page.getByTestId("issue-filter");
 }
 
-/** The version control beside the filters: the version picker, the name-a-version control, the
- *  link, and beside an open editor its live connection (`VersionControl.tsx`). */
+/** The filter by words' small control at the right end of the filter row, which opens its box
+ *  with the caret in it; `t f` does the same (`IssuePresets.tsx`). */
+export function filterControl(page: Page): Locator {
+  return issuePage(page).getByRole("button", { exact: true, name: CONTROL_LABELS.filter });
+}
+
+/** The version control: the version picker, the name-a-version control, the link, and beside an
+ *  open editor its live connection (`VersionControl.tsx`). It is drawn - and counted - while a
+ *  filter is on or a document is open, behind its small control at the right end of the filter
+ *  row, which `openVersionControl` presses; at 760 px and below it is in the Outline sheet. */
 export function versionControl(page: Page): Locator {
   return page.getByTestId("issue-version-control");
+}
+
+/** The version control's own small control at the right end of the filter row. */
+export function versionControlButton(page: Page): Locator {
+  return issuePage(page).getByRole("button", { exact: true, name: CONTROL_LABELS.version });
+}
+
+/** Opens the version control as a reader does, unless it is open: from its small control at the
+ *  right end of the filter row, or, at 760 px and below where the row draws none, by opening the
+ *  Outline sheet that holds it. */
+export async function openVersionControl(page: Page): Promise<void> {
+  if (await versionControl(page).isVisible()) return;
+  const own = versionControlButton(page);
+  await ((await own.count()) > 0 ? own : outlineControl(page)).click();
+  await expect(versionControl(page), "the version control did not open").toBeVisible();
+}
+
+/** Opens the box of the filter by words as a reader does, unless it is drawn: from its small
+ *  control, or, at 760 px and below, by opening the Outline sheet that holds it. */
+export async function openFilterBox(page: Page): Promise<void> {
+  if (await filterBox(page).isVisible()) return;
+  const own = filterControl(page);
+  await ((await own.count()) > 0 ? own : outlineControl(page)).click();
+  await expect(filterBox(page), "the filter by words did not open").toBeVisible();
 }
 
 /** Which version the version control is showing, as the picker's own value: the empty string
  *  for the current version and the number of a pinned one. The control's text cannot say it - a
  *  `select`'s option texts are part of its container's `innerText`, so "Version 1" is in that
- *  text whichever version is shown - so the value is what is read. */
+ *  text whichever version is shown - so the value is what is read, open or shut. */
 export function versionPicker(page: Page): Locator {
-  return versionControl(page).getByRole("combobox", { exact: true, name: CONTROL_LABELS.version });
+  return versionControl(page).locator(`select[aria-label="${CONTROL_LABELS.version}"]`);
 }
 
 /** The document or file opened in place of the outline (`ArtifactRoutePanel.tsx`). */
@@ -483,6 +510,34 @@ export function marginSectionDisclosure(page: Page, section: MarginSection): Loc
 
 export function focusedNodeFacts(page: Page): Locator {
   return page.getByTestId("focused-node-facts");
+}
+
+/**
+ * Counts, from the next load on, how many times the page draws the panel's content: each
+ * distinct element of one of the panel's sections attached to the document. The page draws the
+ * panel once and moves it between hosts (`IssuePage`'s `panelStage`), and a moved element is
+ * the same element, so it counts once; a panel drawn a second time is a new element, whatever
+ * its reads cost - a second copy over cached reads sends no request (INFRA-2004). Call it before
+ * the load, and the reader it returns once the load has settled. c-one-panel.
+ */
+export async function watchPanelDraws(page: Page): Promise<() => Promise<number>> {
+  await page.addInitScript(() => {
+    // Kept on the document's own root, which outlives every render of the app.
+    const seen = new Set<Element>();
+    new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          if (node.matches('[data-margin-section="development"]')) seen.add(node);
+          for (const section of node.querySelectorAll('[data-margin-section="development"]')) {
+            seen.add(section);
+          }
+        }
+      }
+      document.documentElement.dataset.panelDraws = String(seen.size);
+    }).observe(document, { childList: true, subtree: true });
+  });
+  return () => page.evaluate(() => Number(document.documentElement.dataset.panelDraws ?? "0"));
 }
 
 /** The shell's own margin, which on the issue page is the Details drawer over the right of the
@@ -575,9 +630,10 @@ export function composer(page: Page): Locator {
   return page.getByTestId("issue-composer");
 }
 
-/** The line of the place to write, whatever it is set to write. */
+/** The line of the place to write, whatever it is set to write: the one that is drawn. The
+ *  line that writes on the issue stays mounted, hidden, while the line answers or edits. */
 export function composerField(page: Page): Locator {
-  return composer(page).locator("textarea");
+  return composer(page).locator("textarea:visible");
 }
 
 /** One of the focused row's actions under its words: Reply, Answer or Change answer. */
@@ -1086,10 +1142,20 @@ export async function onScreen(scope: Locator): Promise<boolean> {
   if ((await scope.count()) === 0) return false;
   return await scope.first().evaluate((element, selectors) => {
     const rect = element.getBoundingClientRect();
-    const sticky =
-      element.closest(selectors.details) === null
-        ? (document.querySelector(selectors.identityBlock)?.getBoundingClientRect().bottom ?? 0)
-        : 0;
+    // What stays at the top of the screen: the identity block from 761 px up, and the filter
+    // row's band at 760 px and below - whichever is `position: sticky` and at the top now. The
+    // `<header>` itself draws no box (`IssueHeader.tsx`).
+    let sticky = 0;
+    if (element.closest(selectors.details) === null) {
+      for (const start of [selectors.identityBand, selectors.presetRow]) {
+        for (let at = document.querySelector(start); at !== null; at = at.parentElement) {
+          if (getComputedStyle(at).position !== "sticky") continue;
+          const band = at.getBoundingClientRect();
+          if (band.top <= 1) sticky = Math.max(sticky, band.bottom);
+          break;
+        }
+      }
+    }
     return (
       rect.height > 0 &&
       rect.top >= sticky - 1 &&
@@ -1192,13 +1258,144 @@ export function treeText(page: Page): Promise<string> {
   }, SELECTORS);
 }
 
-/** Where the sticky identity block ends, which is the line the focused row must clear. */
+/** Where the sticky identity block ends, which is the line the focused row must clear; 0 where
+ *  the block is not sticky, which is 760 px and below. */
 export function identityBlockBottom(page: Page): Promise<number | null> {
   return page.evaluate((selectors) => {
+    const block = document.querySelector(selectors.identityBand);
+    if (block === null) return null;
+    const rect = block.getBoundingClientRect();
+    return getComputedStyle(block).position === "sticky" ? rect.bottom : 0;
+  }, SELECTORS);
+}
+
+/** What stays at the top of the screen and what scrolls away (ruling 5 of
+ *  dispatch://INFRA-1196/artifact/build-rulings-md), read where the page stands now. */
+export interface StickyReading {
+  /** The identity block - the key's row and the title - by its box on the screen. */
+  readonly block: { readonly bottom: number; readonly height: number; readonly top: number };
+  /** Whether the header says it is stuck (`data-condensed`), which draws its shadow. */
+  readonly condensed: boolean;
+  /** The band that holds the filter row, by its box on the screen. */
+  readonly filters: { readonly bottom: number; readonly height: number; readonly top: number };
+  /** The properties line, by its box on the screen. */
+  readonly properties: { readonly bottom: number; readonly top: number };
+  /** The height the page publishes for whatever stays (`--issue-identity-height`), in px. */
+  readonly published: number;
+  /** How far the page has scrolled. */
+  readonly scrolled: number;
+  /** The title's box and its type, as computed. */
+  readonly title: {
+    readonly bottom: number;
+    readonly line: string;
+    readonly size: string;
+    readonly top: number;
+    readonly weight: string;
+  };
+}
+
+/** `StickyReading` of the page, or null where it draws no header or no filter row. The filter
+ *  row's band is the row's nearest `position: sticky` ancestor, or the row itself where none is. */
+export function stickyReading(page: Page): Promise<StickyReading | null> {
+  return page.evaluate((selectors) => {
     const header = document.querySelector(selectors.identityBlock);
-    if (header === null) return null;
-    const rect = header.getBoundingClientRect();
-    return getComputedStyle(header).position === "sticky" || rect.top <= 1 ? rect.bottom : 0;
+    const block = document.querySelector(selectors.identityBand);
+    const title = header?.querySelector("h1") ?? null;
+    const properties = header?.querySelector('[data-testid="issue-state-actions"]') ?? null;
+    const row = document.querySelector(selectors.filterRow);
+    if (
+      header === null ||
+      block === null ||
+      title === null ||
+      properties === null ||
+      row === null
+    ) {
+      return null;
+    }
+    let band: Element = row;
+    for (let at: Element | null = row; at !== null; at = at.parentElement) {
+      if (getComputedStyle(at).position === "sticky") {
+        band = at;
+        break;
+      }
+    }
+    const box = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      return { bottom: rect.bottom, height: rect.height, top: rect.top };
+    };
+    const type = getComputedStyle(title);
+    return {
+      block: box(block),
+      condensed: header.getAttribute("data-condensed") === "true",
+      filters: box(band),
+      properties: box(properties),
+      published: Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--issue-identity-height")
+      ),
+      scrolled: window.scrollY,
+      title: { ...box(title), line: type.lineHeight, size: type.fontSize, weight: type.fontWeight },
+    };
+  }, SELECTORS);
+}
+
+/** The filter row as it is drawn (ruling 5: one line at every width). */
+export interface FilterRowReading {
+  /** The name of each control the row draws, left to right: what a reader hears it called. */
+  readonly controls: readonly string[];
+  /** The row's own height in CSS pixels. */
+  readonly height: number;
+  /** How many lines its controls stand on: controls whose boxes overlap vertically are one. */
+  readonly lines: number;
+  /** How far the row's content runs past its own right edge, in px; 0 where it fits. */
+  readonly overflow: number;
+}
+
+/** `FilterRowReading` of the page, or null where it draws no filter row. A control is a button,
+ *  a box or a select the row draws on the page itself: one inside a menu, a dialog or a part
+ *  the row keeps shut is not on the row. */
+export function filterRowReading(page: Page): Promise<FilterRowReading | null> {
+  return page.evaluate((selectors) => {
+    const row = document.querySelector(selectors.filterRow);
+    if (row === null) return null;
+    const controls = [...row.querySelectorAll<HTMLElement>("button, input, select")]
+      .filter(
+        (control) =>
+          control.checkVisibility() &&
+          control.closest('[role="menu"], [role="dialog"], [hidden]') === null &&
+          control.getAttribute("type") !== "file"
+      )
+      .map((control) => {
+        // The name a reader hears: the label, what names it, or its own words less the parts
+        // hidden from them (a control's `▾`).
+        const heard = control.cloneNode(true) as HTMLElement;
+        for (const hidden of heard.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+        const named = control.getAttribute("aria-labelledby");
+        const name =
+          control.getAttribute("aria-label") ??
+          (named === null
+            ? null
+            : named
+                .split(" ")
+                .map((id) => document.getElementById(id)?.textContent ?? "")
+                .join(" ")) ??
+          heard.textContent ??
+          "";
+        return { box: control.getBoundingClientRect(), name: name.replace(/\s+/g, " ").trim() };
+      })
+      .sort((a, b) => a.box.left - b.box.left);
+    let lines = 0;
+    let lineBottom = Number.NEGATIVE_INFINITY;
+    for (const { box } of [...controls].sort((a, b) => a.box.top - b.box.top)) {
+      if (box.top >= lineBottom - 1) lines += 1;
+      lineBottom = Math.max(lineBottom, box.bottom);
+    }
+    const edge = row.getBoundingClientRect();
+    return {
+      controls: controls.map((control) => control.name),
+      height: edge.height,
+      lines,
+      overflow: Math.max(0, ...controls.map((control) => control.box.right - edge.right)),
+    };
   }, SELECTORS);
 }
 
@@ -1226,7 +1423,14 @@ export function headerReading(page: Page): Promise<HeaderReading | null> {
     const presets = document.querySelector(selectors.presetRow);
     const root = document.querySelector(selectors.issuePage);
     if (block === null || presets === null || root === null) return null;
-    const column = block.getBoundingClientRect();
+    // The `<header>` draws no box of its own (`display: contents`), so its column is the box
+    // around what it holds: the identity block, the properties line and what a write answers.
+    const parts = [...block.children].map((part) => part.getBoundingClientRect());
+    const column = {
+      left: Math.min(...parts.map((part) => part.left)),
+      right: Math.max(...parts.map((part) => part.right)),
+      top: Math.min(...parts.filter((part) => part.height > 0).map((part) => part.top)),
+    };
     const top = column.top;
     const bottom = presets.getBoundingClientRect().top;
     const inBand = (box: DOMRect): boolean =>
@@ -1370,8 +1574,12 @@ export interface Overflowing {
   readonly what: string;
 }
 
-/** Which boxes a measurement is read against: a node's row, or the body it opens. */
-export type CardScope = "bodies" | "rows";
+/** Which boxes a measurement is read against: a node's row, the body it opens, or a card of
+ *  the Verification filter, which draws its own (c-checks-readable). */
+export type CardScope = "bodies" | "rows" | "verification";
+
+/** The selector of the boxes one scope names. */
+const VERIFICATION_CARD = "[data-verification-card]";
 
 /**
  * Every element whose painted box reaches more than a pixel past the card it sits in. A card is a
@@ -1381,7 +1589,12 @@ export type CardScope = "bodies" | "rows";
 export function boxesPastTheirCard(page: Page, cards: CardScope): Promise<Overflowing[]> {
   return page.evaluate(
     ({ cards, selectors }) => {
-      const scope = cards === "rows" ? selectors.nodeRow : selectors.nodeBody;
+      const scope =
+        cards === "rows"
+          ? selectors.nodeRow
+          : cards === "bodies"
+            ? selectors.nodeBody
+            : selectors.verificationCard;
       const describe = (element: Element): string => {
         const id = element.closest(selectors.nodeRow)?.getAttribute("data-node-id") ?? "";
         const own = (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
@@ -1400,7 +1613,7 @@ export function boxesPastTheirCard(page: Page, cards: CardScope): Promise<Overfl
       }
       return found;
     },
-    { cards, selectors: SELECTORS }
+    { cards, selectors: { ...SELECTORS, verificationCard: VERIFICATION_CARD } }
   );
 }
 
@@ -1426,7 +1639,9 @@ export function overlappingTexts(page: Page, cards: CardScope | "details"): Prom
           ? selectors.nodeRow
           : cards === "bodies"
             ? selectors.nodeBody
-            : selectors.details;
+            : cards === "verification"
+              ? selectors.verificationCard
+              : selectors.details;
       const boxes: { label: string; rect: DOMRect }[] = [];
       for (const root of document.querySelectorAll(`${selectors.issuePage} ${scope}`)) {
         for (const element of root.querySelectorAll("*")) {
@@ -1455,7 +1670,7 @@ export function overlappingTexts(page: Page, cards: CardScope | "details"): Prom
       }
       return found;
     },
-    { cards, selectors: SELECTORS }
+    { cards, selectors: { ...SELECTORS, verificationCard: VERIFICATION_CARD } }
   );
 }
 
@@ -1659,4 +1874,215 @@ export async function runIssueAction(page: Page, name: string): Promise<void> {
  *  draws a bare control for a spec to wait on. */
 export async function expectIssueClosed(page: Page): Promise<void> {
   await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
+}
+
+/**
+ * The filter bodies' own marks (dispatch://INFRA-1196 ruling 5: each filter draws as its
+ * approved picture), read by c-decisions, c-review-list, c-home, c-checks-readable and
+ * c-plan-order:
+ *
+ * - **Decisions** `[data-decisions-body]`: each part `[data-decisions-part="open_questions" |
+ *   "review" | "yours" | "others" | "agents"]` with its heading `[data-decisions-heading]` and
+ *   count `[data-decisions-count]`, its rows the outline's own `[data-node-row]`; the foot's
+ *   control is the `button` in `[data-decisions-foot]`.
+ * - **Spec** `[data-spec-body]`: each Decided by cell `[data-spec-cell]` with `data-said`
+ *   (`you`, `person`, `agent`; absent where no decision shaped the run) and
+ *   `data-spec-statements`, the ids of the statements its bracket spans; each statement
+ *   `[data-spec-statement]` with `data-spec-mark` and its line `[data-spec-because]`.
+ * - **Plan** `[data-plan-body]`: the control `[data-plan-view="chart" | "steps"]`; the chart
+ *   `[data-plan-chart]`, each step's row `[data-plan-bar-row]` with `data-plan-start`, its bar
+ *   `[data-plan-bar]`, `[data-plan-no-size]`, what it needs `[data-plan-need]` and what it
+ *   serves `[data-plan-serve]`; a cycle's one line `[data-plan-cycle]`.
+ */
+export interface DrawnPart {
+  readonly count: string;
+  readonly heading: string;
+  readonly part: string;
+  readonly rows: readonly string[];
+}
+
+/** Each part of the Decisions filter's body, in the order it is drawn. */
+export function decisionsPartsDrawn(page: Page): Promise<DrawnPart[]> {
+  return page.evaluate((selector) => {
+    const text = (element: Element | null) =>
+      (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+    return [...document.querySelectorAll(`${selector} [data-decisions-part]`)].map((part) => ({
+      count: text(part.querySelector("[data-decisions-count]")),
+      heading: text(part.querySelector("[data-decisions-heading]")),
+      part: part.getAttribute("data-decisions-part") ?? "",
+      rows: [...part.querySelectorAll("[data-node-row]")].map(
+        (row) => row.getAttribute("data-node-id") ?? ""
+      ),
+    }));
+  }, SELECTORS.issuePage);
+}
+
+/** The control at the Decisions filter's foot, which unfolds the agents' untied decisions. */
+export function decisionsFoot(page: Page): Locator {
+  return issuePage(page).locator("[data-decisions-foot] button");
+}
+
+/** One Decided by cell of the Spec filter: whose words it draws, the statements its bracket
+ *  spans, and its drawn text. */
+export interface DecidedByCell {
+  readonly ids: readonly string[];
+  readonly said: string | null;
+  readonly text: string;
+}
+
+/** Each Decided by cell of the Spec filter, in the order they are drawn. */
+export function decidedByCells(page: Page): Promise<DecidedByCell[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll("[data-spec-cell]")].map((cell) => ({
+      ids: (cell.getAttribute("data-spec-statements") ?? "").split(" ").filter(Boolean),
+      said: cell.getAttribute("data-said"),
+      text: (cell.textContent ?? "").replace(/\s+/g, " ").trim(),
+    }))
+  );
+}
+
+/** The one line under each statement of the Spec filter that names the decision that shaped
+ *  it, by statement id; `""` for a statement that draws none. */
+export function becauseLines(page: Page): Promise<Record<string, string>> {
+  return page.evaluate(() =>
+    Object.fromEntries(
+      [...document.querySelectorAll("[data-spec-statement]")].map((row) => [
+        row.getAttribute("data-node-id") ?? "",
+        (row.querySelector("[data-spec-because]")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+      ])
+    )
+  );
+}
+
+/** One row of the Plan filter's chart: a step with where its bar starts, what it says of its
+ *  size, the steps it needs and the statements it serves; or a cycle's one line. */
+export interface ChartRow {
+  readonly id: string;
+  readonly kind: "bar" | "cycle";
+  readonly needs: readonly string[];
+  readonly serves: readonly string[];
+  readonly size: string;
+  /** The bar's left edge and its width, in px, or null for a cycle's line. */
+  readonly bar: { readonly left: number; readonly width: number } | null;
+  readonly start: number;
+  readonly text: string;
+}
+
+/** Every row of the Plan filter's chart, in the order it is drawn. */
+export function planChartRows(page: Page): Promise<ChartRow[]> {
+  return page.evaluate(() => {
+    const text = (element: Element | null) =>
+      (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+    return [
+      ...document.querySelectorAll("[data-plan-chart] :is([data-plan-bar-row], [data-plan-cycle])"),
+    ].map((row) => {
+      const bar = row.querySelector("[data-plan-bar]")?.getBoundingClientRect();
+      return {
+        bar: bar === undefined ? null : { left: bar.left, width: bar.width },
+        id: row.getAttribute("data-node-id") ?? "",
+        kind: row.hasAttribute("data-plan-cycle") ? ("cycle" as const) : ("bar" as const),
+        needs: [...row.querySelectorAll("[data-plan-need]")].map(
+          (need) => need.getAttribute("data-plan-need") ?? ""
+        ),
+        serves: [...row.querySelectorAll("[data-plan-serve]")].map(text),
+        size: text(row.querySelector("[data-plan-no-size]")),
+        start: Number(row.getAttribute("data-plan-start") ?? "-1"),
+        text: text(row),
+      };
+    });
+  });
+}
+
+/** One of the Plan filter's two controls, the chart or the ordered steps (R26). */
+export function planView(page: Page, view: "chart" | "steps"): Locator {
+  return issuePage(page).locator(`[data-plan-view="${view}"]`);
+}
+
+/**
+ * The Verification filter's body (`[data-verification-body]`): each statement a card
+ * `[data-verification-card]` with `data-node-id`, `data-statement-state` (met, not_met,
+ * unknown) and `data-node-context`; inside it each check `[data-verification-check]` with
+ * `data-node-id` and `data-node-state`, its words the control
+ * `[data-verification-check-words]` that opens its facts, its latest result
+ * `[data-verification-result]` (`data-result-stands` on the one its state stands on) and the
+ * control `[data-verification-earlier]` that opens its earlier ones. Over them the summary
+ * `[data-verification-summary]` with `[data-verification-covered]`, `[data-verification-bar]`,
+ * `[data-verification-legend]`, `[data-verification-check-legend]` and
+ * `[data-verification-commit]`, and the chips `[data-verification-chip]`.
+ */
+export interface DrawnCheck {
+  /** How many results the check's fold holds beside its latest, as its control says it. */
+  readonly earlier: string | null;
+  readonly id: string;
+  /** How many results the check draws. */
+  readonly results: number;
+  /** The id of the latest result drawn under it, or null where it draws none. */
+  readonly resultId: string | null;
+  /** The `data-glyph` token of the shape its state is drawn with, or null where it draws none. */
+  readonly shape: string | null;
+  /** `data-node-state`, the model's own token for how the check stands. */
+  readonly state: string | null;
+  /** The word the page draws for its state. */
+  readonly word: string | null;
+  readonly words: string;
+}
+
+/** One statement the Verification filter's body draws, with the checks that serve it. */
+export interface DrawnStatement {
+  readonly checks: readonly DrawnCheck[];
+  readonly context: boolean;
+  readonly gapKinds: readonly string[];
+  readonly id: string;
+  /** `data-statement-state`: met, not_met or unknown (R17). */
+  readonly state: string | null;
+  /** The word the page draws for that state. */
+  readonly stateWord: string | null;
+  readonly words: string;
+}
+
+/** Every statement the Verification filter's body draws, in document order, with its checks
+ *  and their latest results (c-checks-readable, c-presets). */
+export function verificationCards(page: Page): Promise<DrawnStatement[]> {
+  return page.evaluate(
+    ({ card, issue }) => {
+      const text = (element: Element | null): string =>
+        (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+      return [...document.querySelectorAll(`${issue} ${card}`)].map((drawn) => ({
+        checks: [...drawn.querySelectorAll("[data-verification-check]")].map((check) => ({
+          earlier: text(check.querySelector("[data-verification-earlier]")) || null,
+          id: check.getAttribute("data-node-id") ?? "",
+          resultId:
+            check.querySelector("[data-verification-result]")?.getAttribute("data-node-id") ?? null,
+          results: check.querySelectorAll("[data-verification-result]").length,
+          shape:
+            check
+              .querySelector("span[data-node-state]")
+              ?.parentElement?.querySelector("svg[data-glyph]")
+              ?.getAttribute("data-glyph") ?? null,
+          state: check.getAttribute("data-node-state"),
+          word: text(check.querySelector("span[data-node-state]")) || null,
+          words: text(check.querySelector("[data-node-words]")),
+        })),
+        context: drawn.hasAttribute("data-node-context"),
+        gapKinds: [...drawn.querySelectorAll("[data-gap-kind]")].map(
+          (gap) => gap.getAttribute("data-gap-kind") ?? ""
+        ),
+        id: drawn.getAttribute("data-node-id") ?? "",
+        state: drawn.getAttribute("data-statement-state"),
+        stateWord: text(drawn.querySelector("span[data-statement-state]")) || null,
+        words: text(drawn.querySelector("[data-node-words]")),
+      }));
+    },
+    { card: VERIFICATION_CARD, issue: SELECTORS.issuePage }
+  );
+}
+
+/** The one commit the page names for the issue's results, or null where it names none or more
+ *  than one. */
+export function namedCommit(page: Page): Promise<string | null> {
+  return page.evaluate((issue) => {
+    const drawn = document.querySelectorAll(`${issue} [data-verification-commit]`);
+    if (drawn.length !== 1) return null;
+    return (drawn[0]?.querySelector("code")?.textContent ?? "").trim();
+  }, SELECTORS.issuePage);
 }

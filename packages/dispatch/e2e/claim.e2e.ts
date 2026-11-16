@@ -1,11 +1,10 @@
 import { setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
-import { detailsRow, openDetails } from "./issue-page";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
-// A session title is free text of any length, and the claim renders it in the issue page's
-// Details, so a long holder name must not widen the page. The long-payload shape is
+// A session title is free text of any length, and the claim chip renders it on the issue
+// header, so a long holder name must not widen the page. The long-payload shape is
 // labels.e2e.ts's; the width assertion is the one above.
 // @pr: The claim chip's only width row: a session title is free text of any length and must not widen the issue page.
 test("a long holder name never widens the issue page @pr", async ({ browser }, testInfo) => {
@@ -29,15 +28,10 @@ test("a long holder name never widens the issue page @pr", async ({ browser }, t
     ]) {
       await page.setViewportSize({ height, width });
       await page.goto(`/issues/${issue.key}`);
-      // The claim is Details' Claimed by row (dispatch://INFRA-1196 R13): the row's name says
-      // Claimed by, and the chip beside it is the holder.
-      await openDetails(page);
-      const chip = detailsRow(page, "Claimed by").getByTestId("issue-claim");
+      const chip = page.getByTestId("issue-claim");
       await expect(chip).toBeVisible();
-      // The claim carries no tooltip: the whole holder is its own text, wrapping inside the
-      // row (dispatch://INFRA-1196 R17, R21), so the name is read where it is drawn.
-      await expect(chip.locator("[data-agent-name]")).toContainText(holder);
-      // The holder wraps inside the row; the page itself never grows a scrollbar.
+      await expect(chip).toHaveAttribute("title", /Claimed by Implementer whose session/);
+      // The holder ellipsizes inside the chip; the page itself never grows a scrollbar.
       const pageWidths = await page.evaluate(() => ({
         clientWidth: document.documentElement.clientWidth,
         scrollWidth: document.documentElement.scrollWidth,

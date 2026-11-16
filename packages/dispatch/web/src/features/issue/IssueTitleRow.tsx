@@ -15,9 +15,10 @@ import type { IssueDrafts } from "./useIssueDrafts";
  * Row two of the header: the issue's title, which is the issue as a person names it, and the
  * editor it becomes when the reader puts the caret in it.
  *
- * The type is the prototype's `.title`: 22 px on 29 px from the phone's width up, held to two
- * lines there, and 20 px on 26 px below it, where nothing clamps it (dispatch://INFRA-1196
- * R13). `condensed` takes the type down a step while the header is stuck to the top.
+ * The type is the prototype's `.title`: 600 weight, 22 px on 29 px from 761 px up, held to two
+ * lines there, and 20 px on 26 px at 760 px and below, where nothing clamps it (dispatch://
+ * INFRA-1196 R13, ruling 5). It keeps that size while the identity block is stuck to the top of
+ * the screen, as the approved picture of the scrolled page draws it.
  *
  * The heading and the editor are one box. Both sit in one grid cell, and while the reader
  * edits, the heading stays in that cell unseen, holding the draft and drawn whole, so the
@@ -28,15 +29,17 @@ import type { IssueDrafts } from "./useIssueDrafts";
  * title landed on nothing. A title longer than the clamp is drawn whole while it is edited, so
  * the read view keeps that height until the press that ended the edit has been delivered, and
  * only then clamps it again.
+ *
+ * Escape and Enter end the edit from the keyboard, and give the focus back to the heading the
+ * reader opened the editor from, so the keyboard reader is where they were (R11); the heading's
+ * own focus, which opens the editor, does not reopen it then.
  */
 export function IssueTitleRow({
-  condensed,
   drafts,
   editing,
   isClosed,
   onEditingChange,
 }: {
-  condensed: boolean;
   drafts: IssueDrafts;
   editing: boolean;
   isClosed: boolean;
@@ -48,6 +51,15 @@ export function IssueTitleRow({
   // the ones that bracket the press on every input.
   const pressing = useRef(false);
   const [held, setHeld] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
+  // back to it, and its `onFocus` - which opens the editor - lets that one focus pass.
+  const returning = useRef(false);
+  useEffect(() => {
+    if (editing || !returning.current) return;
+    heading.current?.focus({ preventScroll: true });
+    returning.current = false;
+  }, [editing]);
   useEffect(() => {
     if (!editing) return;
     const down = () => {
@@ -64,26 +76,27 @@ export function IssueTitleRow({
     };
   }, [editing]);
 
-  const type = condensed
-    ? "text-base leading-6"
-    : "text-xl leading-[26px] md:text-[22px] md:leading-[29px]";
+  const type = "text-xl leading-[26px] min-[761px]:text-[22px] min-[761px]:leading-[29px]";
   // The box both views share, to the pixel: the font, the wrapping and the rule the editor
-  // draws on focus, which the heading keeps transparent.
+  // draws on focus, which the heading keeps transparent. The rule and the padding inside it
+  // are 5 px on each side and 1 px above and below, which the wrapper's negative margins take
+  // back, so the words have the header's whole column - 362 px at 390 px, the prototype's own -
+  // and the row is the prototype's height: 2 px above the words and none below.
   const box = `[grid-area:1/1] min-w-0 rounded-md border px-1 font-semibold tracking-[-0.012em] whitespace-pre-wrap [overflow-wrap:anywhere] ${type} ${pageInkText}`;
   const whole = editing || held;
 
   return (
-    <div className="-mx-1 mt-0.5 grid min-w-0">
+    <div className="-mx-[5px] mt-px -mb-px grid min-w-0">
       <h1
         aria-hidden={editing ? true : undefined}
-        className={`${box} ${borderTransparent} ${whole ? "" : "md:line-clamp-2"} ${
+        className={`${box} ${borderTransparent} ${whole ? "" : "min-[761px]:line-clamp-2"} ${
           editing ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
         }`}
         onClick={() => {
           if (!isClosed) onEditingChange(true);
         }}
         onFocus={() => {
-          if (!isClosed) onEditingChange(true);
+          if (!isClosed && !returning.current) onEditingChange(true);
         }}
         onKeyDown={(event) => {
           if (!isClosed && (event.key === "Enter" || event.key === " ")) {
@@ -91,6 +104,7 @@ export function IssueTitleRow({
             onEditingChange(true);
           }
         }}
+        ref={heading}
         tabIndex={isClosed || editing ? -1 : 0}
         {...authorText}
       >
@@ -122,11 +136,13 @@ export function IssueTitleRow({
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               drafts.discardTitle();
+              returning.current = true;
               onEditingChange(false);
               return;
             }
             if (event.key === "Enter") {
               event.preventDefault();
+              returning.current = true;
               event.currentTarget.blur();
             }
           }}

@@ -89,8 +89,8 @@ test("the line names the priority an issue advances, by its order and title, and
       name: "P2 Rocq and Lean speed work restarted",
     });
     expect(link).toHaveAttribute("href", "/priorities/rocq-lean");
-    // The label "Advances" is the Details row's own (`IssueMargin.tsx`, R13), not the line's.
-    expect(view.q.queryByText("Advances")).toBeNull();
+    // The label "Advances" is the Details row's own (`IssueMargin.tsx`, R13), which
+    // `e2e/issue-layout.e2e.ts`'s c-properties reads there; the line draws no label to read.
     // The issue's own relation is the issue's to retract, so the entry carries the remove.
     view.q.getByRole("button", {
       name: "Remove P2 Rocq and Lean speed work restarted from CORE-9",
@@ -117,10 +117,9 @@ test("a priority an issue inherits says so on the same line, and is not the chil
   }
 });
 
-test("an issue that advances none carries no line and no empty label, and reads no priority", async () => {
+test("an issue that advances none carries no line, and reads no priority", async () => {
   const view = renderLine([]);
   try {
-    expect(view.q.queryByText("Advances")).toBeNull();
     expect(view.q.queryByRole("link")).toBeNull();
     // Only the way to place the issue under one, which a person reaches from a fault row.
     view.q.getByRole("button", { name: "Add a priority to CORE-9" });

@@ -6,9 +6,11 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import type { IssueChild } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { TreeNode } from "./issue-tree";
-import { NodeRow } from "./NodeRow";
+import { NodeOptions, NodeRow } from "./NodeRow";
+import type { OutlineWriter } from "./outline-writer";
 import {
   type AuthorKind,
   authorKind,
@@ -109,21 +111,26 @@ beforeAll(async () => {
 
 // R9: a node whose author the model holds says who made it by a name and a shape, never by
 // colour alone and never by an id, and two authors of different kinds never share a shape.
+// Ruling 5: a node the model holds no author for draws none on its row, and its opened body
+// says so. Ruling 6: an agent is named by its role's word, and its opened body gives its whole
+// title.
 test("an author is drawn by a name and a shape of its own kind", () => {
   // A comment, which a person and an agent both write: a decision's body draws Keep and
   // Change, which are writes, and this row is about the words and the shape alone.
-  const drawn = (author: Author) => {
-    const view = renderRow(node({ id: "comment-1", type: "comment" }), { author });
+  const drawn = (author: Author, body = true) => {
+    const view = renderRow(node({ id: "comment-1", type: "comment" }), { author, body });
     try {
       const shown = view.container.querySelector("[data-node-author]");
       const shape = shown?.querySelector("svg[data-glyph]");
       return {
-        chrome: shown?.querySelector("[data-page-chrome]") !== null,
-        margin: shown?.closest("[data-node-margin]") !== null,
-        name: shape?.getAttribute("aria-label"),
-        role: shape?.getAttribute("role"),
-        text: shown?.textContent,
-        token: shape?.getAttribute("data-glyph"),
+        body: shown === null ? null : shown.closest("[data-node-body]") !== null,
+        chrome: shown === null ? null : shown.querySelector("[data-page-chrome]") !== null,
+        margin: shown === null ? null : shown.closest("[data-node-margin]") !== null,
+        name: shape?.getAttribute("aria-label") ?? null,
+        role: shape?.getAttribute("role") ?? null,
+        text: shown?.textContent ?? null,
+        title: view.container.querySelector("[data-node-author-title]")?.textContent ?? null,
+        token: shape?.getAttribute("data-glyph") ?? null,
       };
     } finally {
       view.unmount();
@@ -134,29 +141,50 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   // shape carries its own accessible name: a reader who cannot see it still hears what kind of
   // author it stands for.
   expect(drawn({ kind: "person", name: "alice", reader: false })).toEqual({
+    body: false,
     chrome: false,
     margin: true,
     name: "Written by a person",
     role: "img",
     text: "alice",
+    title: null,
     token: "author-person",
   });
   expect(drawn({ kind: "agent", name: "Planner", reader: false })).toEqual({
+    body: false,
     chrome: false,
     margin: true,
     name: "Written by an agent",
     role: "img",
     text: "Planner",
+    title: null,
     token: "author-agent",
   });
-  // Where the model holds no author the row says so in the page's own words, which are marked
-  // as the page's rather than as somebody's name, with a shape neither other kind draws.
-  expect(drawn(NOBODY_RECORDED)).toEqual({
-    chrome: true,
+  // An agent whose session's title says more than its role is named by the role's word on the
+  // row, and the opened body gives the whole title; a row that is not open gives none.
+  const architect: Author = {
+    kind: "agent",
+    name: "Legion architect · CORE-1",
+    reader: false,
+  };
+  expect(drawn(architect)).toMatchObject({
     margin: true,
+    text: "architect",
+    title: "Legion architect · CORE-1",
+  });
+  expect(drawn(architect, false)).toMatchObject({ margin: true, text: "architect", title: null });
+  // Where the model holds no author the row draws none, and its opened body says so in the
+  // page's own words, which are marked as the page's rather than as somebody's name, with a
+  // shape neither other kind draws.
+  expect(drawn(NOBODY_RECORDED, false)).toMatchObject({ margin: null, text: null });
+  expect(drawn(NOBODY_RECORDED)).toEqual({
+    body: true,
+    chrome: true,
+    margin: false,
     name: "Written by an author nobody recorded",
     role: "img",
     text: "Author unknown",
+    title: null,
     token: "author-unknown",
   });
 });
@@ -195,14 +223,15 @@ test("a typed node draws its kind as one tag at the right, and a turn draws none
 
 // R1, ruling 1: a folded branch is the one place a row draws one line of its node: the first
 // line, cut at its first sentence end, and how many nodes it holds. The focus draws its words
-// whole.
+// whole, and keeps the count of what the fold still hides after them.
 test("a folded branch draws its first line and its count, and its focus its words", () => {
   const text = "The page draws the whole issue in one reading. Nothing is lost on the way.";
   const folded = node({ held: 3, id: "comment-1", text, type: "comment" });
   const shut = renderRow(folded, { body: false, expanded: false, folded: 3 });
   try {
+    // A line that is a whole sentence ends on the sentence's own mark, with no ellipsis after it.
     expect(shut.container.querySelector("[data-node-first-line]")?.textContent).toBe(
-      "The page draws the whole issue in one reading.…"
+      "The page draws the whole issue in one reading."
     );
     expect(shut.container.querySelector("[data-node-count]")?.textContent).toBe(
       `3 ${CONTROL_LABELS.folded_rows}`
@@ -216,7 +245,13 @@ test("a folded branch draws its first line and its count, and its focus its word
   const focused = renderRow(folded, { body: true, expanded: false, folded: 3 });
   try {
     expect(focused.container.querySelector("[data-node-first-line]")).toBeNull();
-    expect(focused.container.querySelector("[data-node-words]")?.textContent).toBe(text);
+    expect(
+      focused.container.querySelector("[data-node-words] [data-author-text]")?.textContent
+    ).toBe(text);
+    expect(
+      focused.container.querySelector("[data-node-words] [data-node-count]")?.textContent,
+      "a focused folded branch no longer says how many rows it hides"
+    ).toBe(`3 ${CONTROL_LABELS.folded_rows}`);
   } finally {
     focused.unmount();
   }
@@ -437,7 +472,7 @@ test("a decision whose text holds bold draws no literal asterisks", () => {
   const folded = renderRow({ ...decision, held: 1 }, { body: false, expanded: false, folded: 1 });
   try {
     expect(folded.container.querySelector("[data-node-first-line]")?.textContent).toBe(
-      "Store the notices A decided thing.…"
+      "Store the notices A decided thing."
     );
   } finally {
     folded.unmount();
@@ -488,6 +523,220 @@ test("the links a row's words draw are out of the tab order", async () => {
       expect(links.length).toBe(2);
       expect(links.map((link) => link.tabIndex)).toEqual([-1, -1]);
     });
+  } finally {
+    view.unmount();
+  }
+});
+
+// Ruling 5: a tie is a chip at the end of the node's words, named by its target's first words
+// cut at a word within 32 characters, and never by an address, a slug or a document's name
+// (R22). A target the reference read has not named yet draws nothing.
+test("a chip names its target by its first words and never by an address", () => {
+  const view = renderRow(
+    node({
+      chips: [
+        {
+          answered: true,
+          gone: false,
+          name: "The page draws the whole issue in one reading and nothing is lost.",
+          ref: "dispatch://CORE-1/spec#b-r2",
+        },
+        { answered: false, gone: false, name: "", ref: "dispatch://CORE-1/artifact/plan-md#b-t4" },
+        { answered: true, gone: true, name: "", ref: "dispatch://CORE-1/spec#b-r9" },
+        {
+          answered: true,
+          gone: false,
+          label: "Needs",
+          name: "Add the routes.",
+          ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
+        },
+      ],
+      id: "decisions-md#b-d1",
+      text: "Keep one reading.",
+      type: "decision",
+    }),
+    { body: false }
+  );
+  try {
+    const chips = [...view.container.querySelectorAll("[data-node-chip]")];
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "The page draws the whole issue…",
+      CONTROL_LABELS.target_gone,
+      "Needs Add the routes.",
+    ]);
+    for (const chip of chips) {
+      const name = chip.querySelector("[data-chip-name]")?.textContent ?? "";
+      expect(name.length, `"${name}" is longer than a chip's 32 characters`).toBeLessThanOrEqual(
+        32
+      );
+    }
+    const row = view.container.querySelector("[data-node-row]")?.textContent ?? "";
+    expect(row).not.toContain("dispatch://");
+    expect(row).not.toMatch(/CORE-1 (spec|plan-md)/u);
+    // The chips stand inside the words' own box, after the words, and on no line of their own.
+    const trail = view.container.querySelector("[data-node-trail]");
+    expect(trail?.parentElement?.hasAttribute("data-node-words")).toBe(true);
+    expect(trail?.previousElementSibling?.textContent).toBe("Keep one reading.");
+    // The named chip is the link a reader follows to its target.
+    expect(chips[0]?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-1/spec#b-r2");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Lays every element out `height` px tall for the rows drawn until the answer is called: no
+ *  DOM of a unit test lays anything out, and the cut reads the words' own boxes
+ *  (`measureClamp`). */
+function layOut(height: number): () => void {
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => height,
+  });
+  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 600, height)
+  );
+  return () => {
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+    else Object.defineProperty(HTMLElement.prototype, "scrollHeight", own);
+    box.mockRestore();
+  };
+}
+
+// Ruling 1, and the reviewer's reading of it: "more · N words" opens the rest of a cut text, so
+// it is drawn only while the words are cut. A row whose body is open draws its words whole, and
+// no control that would open what is already open. The count is written with its thousands
+// separator.
+test("more is drawn on a cut row and never beside words a body draws whole", () => {
+  const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const long = node({ id: "message-1", text, type: "message" });
+  const planner: Author = { kind: "agent", name: "Planner", reader: false };
+  // 3,000 words over 400 lines of 24 px: six lines are drawn and 394 of 400 parts are held back.
+  const restore = layOut(9600);
+  try {
+    const cut = renderRow(long, { author: planner, body: false });
+    try {
+      expect(cut.container.querySelector("[data-node-more]")?.textContent).toBe(
+        `${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`
+      );
+      expect(cut.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
+        "144px"
+      );
+    } finally {
+      cut.unmount();
+    }
+    const open = renderRow(long, { author: planner, body: true });
+    try {
+      expect(
+        open.container.querySelector("[data-node-more]"),
+        "a row whose body is open still draws more"
+      ).toBeNull();
+      expect(open.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
+        ""
+      );
+    } finally {
+      open.unmount();
+    }
+    // Ruling 6: a statement is an agent's words as much as its comment is, and is cut the same;
+    // a person's words never are.
+    const statement = renderRow(node({ id: "spec#b-r1", text, type: "requirement" }), {
+      body: false,
+    });
+    try {
+      expect(statement.container.querySelector("[data-node-more]")).not.toBeNull();
+    } finally {
+      statement.unmount();
+    }
+    const person = renderRow(node({ id: "comment-1", text, type: "comment" }), {
+      author: { kind: "person", name: "bob", reader: false },
+      body: false,
+    });
+    try {
+      expect(person.container.querySelector("[data-node-more]")).toBeNull();
+    } finally {
+      person.unmount();
+    }
+  } finally {
+    restore();
+  }
+});
+
+// R16: an open question's options are the choices of its answer. A press on one leaves the
+// focus where it is - a row that took the focus on mousedown would open its body, whose
+// options' own words push every option below one that has them down, and the press would end on
+// another option - and only a question that waits on the reader draws them in the waiting
+// colour.
+test("an option's press keeps the focus, and only a waiting question's are in the waiting colour", async () => {
+  const user = userEvent.setup();
+  const picked: string[] = [];
+  const writer = {
+    answer: undefined,
+    pick: (_node: TreeNode, label: string) => picked.push(label),
+  } as unknown as OutlineWriter;
+  const asked = (waiting: boolean) =>
+    node({
+      id: "ask-1",
+      options: [{ description: "Where the rail fits.", label: "1280 px" }, { label: "1024 px" }],
+      reference: "dispatch://CORE-1/ask/ask-1",
+      state: "open",
+      text: "At which width does the identity block condense?",
+      type: "ask",
+      waiting,
+    });
+  const view = render(<NodeOptions body={false} node={asked(true)} writer={writer} />);
+  try {
+    const option = view.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
+    expect(option).not.toBeNull();
+    if (option === null) return;
+    // The press is held: a mousedown that moved the focus would have put it on the control, and
+    // through it on the row.
+    await user.pointer({ keys: "[MouseLeft>]", target: option });
+    expect(
+      view.container.contains(document.activeElement),
+      "the press moved the focus into the row"
+    ).toBe(false);
+    await user.pointer({ keys: "[/MouseLeft]" });
+    expect(picked).toEqual(["1024 px"]);
+    expect(option.className).toContain("text-page-waiting-text");
+  } finally {
+    view.unmount();
+  }
+  const other = render(<NodeOptions body={false} node={asked(false)} writer={writer} />);
+  try {
+    const option = other.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
+    expect(option?.className).toContain("text-page-quiet");
+    expect(option?.className).not.toContain("text-page-waiting-text");
+  } finally {
+    other.unmount();
+  }
+});
+
+// Ruling 5: a child issue's row is one line - its title, then how it stands and what blocks it -
+// and its key is the row's tag, a link to the child's own page; it names no author and no time.
+test("a child issue's row draws its title, its facts and its key as the tag", () => {
+  const child: IssueChild = {
+    active_at: "2026-11-05T12:00:00Z",
+    external_links: null,
+    key: "CORE-2",
+    needs: ["CORE-3"],
+    status: "backlog",
+    subtree_done: 0,
+    subtree_total: 0,
+    title: "Draw the children in the outline",
+  };
+  const view = renderRow(node({ child, id: "CORE-2", text: child.title, type: "child_issue" }), {
+    body: false,
+  });
+  try {
+    expect(view.container.querySelector("[data-node-words] [data-author-text]")?.textContent).toBe(
+      child.title
+    );
+    expect(view.container.querySelector("[data-child-facts]")?.textContent).toContain("CORE-3");
+    const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+    expect(tag?.textContent).toBe("CORE-2");
+    expect(tag?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-2");
+    expect(view.container.querySelector("[data-node-author]")).toBeNull();
+    expect(view.container.querySelector("[data-node-time]")).toBeNull();
   } finally {
     view.unmount();
   }

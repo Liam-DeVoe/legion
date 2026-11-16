@@ -819,10 +819,19 @@ export const pageIssueBg = "bg-page-issue";
 export const pageWaitingBg = "bg-page-waiting";
 
 /** The header's small bordered control (the prototype's `.hbtn`): Details, the overflow menu and
- *  the phone's `☰`, 22 px tall from the phone's width up and 24 px below it, the least a touch
- *  target may be (WCAG 2.5.8), because the header's six lines at 390 px leave no room for more
- *  (dispatch://INFRA-1196 R13). */
+ *  the phone's `☰`, and the filter row's node menu, words filter, version control and Keys, 22 px
+ *  tall from the phone's width up and 24 px below it, the least a touch target may be (WCAG
+ *  2.5.8), because the header at 390 px is held to eight lines and 250 px, nine and 280 px while
+ *  an approval request waits on the reader, which leaves no room for more (dispatch://INFRA-1196
+ *  R13, ruling 8 of its build-rulings-md). */
 export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 rounded-[7px] border px-2.5 text-xs leading-5 font-medium md:min-h-0 md:min-w-0 md:py-px border-page-line bg-page-paper text-page-muted ${focusVisibleRing}`;
+/** The filter row's box for words, opened from its control (`IssuePresets.tsx`): the page's
+ *  hairline rule, its paper and its ink, the rule in the ink while it holds the caret. */
+export const pageField =
+  "border-page-hair bg-page-paper text-page-ink placeholder:text-page-quiet focus:border-page-ink";
+/** The header's one filled control, Approve, filled with the page's ink as the composer's Send
+ *  is (the prototype's own palette: the issue page draws no application blue). */
+export const pageInkFill = "bg-page-ink text-page-paper";
 /** An issue's status as the header's pill draws it (the prototype's `.st-*`): in progress, under
  *  test and in review in the in-progress blue, done in the passed green, and every other status
  *  in the not-run grey. The pill's glyph and its word say the status; the colour repeats it. */
@@ -936,8 +945,13 @@ export const pageComposer = {
     comment: "border-page-ink bg-page-ink text-page-paper",
   },
   controls: "flex flex-none flex-wrap items-center gap-[5px] pb-px",
+  // The placeholder is one line, cut by its box: the field grows with what is typed and reads
+  // its own scroll height for that (`MentionComposer`'s autosize), which a wrapped placeholder
+  // would count, so the empty box at rest would be as tall as its hint (162 px at 390 px).
+  // On a phone the field takes the line's whole width once the box holds the caret, and the
+  // kinds and Send stand under it (the prototype's `.cbox:focus-within .crow1`).
   field:
-    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:text-page-bullet",
+    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-bullet max-[760px]:group-focus-within:basis-full",
   foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[760px]:pt-2.5",
   line: "flex min-w-0 items-end gap-2 max-[760px]:group-focus-within:flex-wrap",
   option:
@@ -955,13 +969,15 @@ export const pageSendAnswer = `${pageSendBox} bg-page-waiting-text`;
 
 /** The quiet line of what the focused row's reader can do with it, under its words (the
  *  prototype's `.acts`): plain words in the muted grey, each a control that underlines on hover,
- *  and an open question's options as the choices of its answer, in the waiting colour, the
- *  picked one on its tint (`button.opt`). */
+ *  and an open question's options as the choices of its answer, the picked one on the waiting
+ *  tint (`button.opt`). An option's words are in the waiting colour only while the question
+ *  waits on the reader, which the row adds (`NodeRow.tsx`'s `NodeOptions`); every other open
+ *  question's are the quiet grey. */
 export const pageRowActs =
   "flex min-w-0 flex-wrap items-center gap-x-4 text-xs leading-6 font-medium text-page-muted";
 export const pageRowAct = "hover:text-page-ink hover:underline";
 export const pageRowOption =
-  "-ml-1.5 flex w-[calc(100%+6px)] items-baseline gap-2 rounded-[5px] px-1.5 text-left text-page-waiting-text hover:bg-page-waiting-tint aria-pressed:bg-page-waiting-tint aria-pressed:font-semibold aria-pressed:text-page-ink";
+  "-ml-1.5 flex w-[calc(100%+6px)] items-baseline gap-2 rounded-[5px] px-1.5 text-left hover:bg-page-waiting-tint aria-pressed:bg-page-waiting-tint aria-pressed:font-semibold aria-pressed:text-page-ink";
 
 for (const ground of ["page-paper", "page-pane"]) {
   for (const ink of ["page-ink", "page-words", "page-muted", "page-quiet"]) {

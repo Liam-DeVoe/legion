@@ -37,31 +37,52 @@ function summaryNode(text: string, cut = false): TreeNode {
   };
 }
 
-/** The bullets the head draws, in order. `reading` is whether the reads that carry the summary
- *  are still out. */
+/** The sentences the head draws, in order, and the label before each. `reading` is whether the
+ *  reads that carry the summary are still out. */
 function bullets(
   summary: TreeNode | undefined,
-  reading = false
-): { lines: string[]; unmount: () => void } {
+  reading = false,
+  look: "pane" | "sheet" | "spec" = "pane"
+): { labels: string[]; lines: string[]; unmount: () => void } {
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <IssueThreeThings
-        checks={[]}
-        inPane={false}
-        issueKey="CORE-1"
-        plan={undefined}
-        planTasks={0}
-        reading={reading}
-        summary={summary}
-      />
+      <IssueThreeThings look={look} reading={reading} summary={summary} />
     </MemoryRouter>
   );
-  const head = within(screen.getByTestId("issue-three-things"));
+  const items = within(screen.getByTestId("issue-three-things")).queryAllByRole("listitem");
   return {
-    lines: head.queryAllByRole("listitem").map((item) => item.textContent ?? ""),
+    labels: items.map((item) => item.querySelector("[data-page-chrome]")?.textContent ?? ""),
+    lines: items.map((item) => item.querySelector("[data-author-text]")?.textContent ?? ""),
     unmount: view.unmount,
   };
 }
+
+// The architect's ruling 5: each sentence stands after its label, in the order the summary
+// holds them, in the Contents pane, the Outline sheet and the Spec filter's first group alike;
+// and the two rows the spec named under them are drawn nowhere.
+test("each sentence stands after its label, and the two rows are not drawn", () => {
+  for (const look of ["pane", "sheet", "spec"] as const) {
+    const { labels, lines, unmount } = bullets(
+      summaryNode("One body. Every property shows. The reasoning is one press away."),
+      false,
+      look
+    );
+    try {
+      expect(labels).toEqual(["What it is:", "Why it matters:", "Done when:"]);
+      expect(lines).toEqual([
+        "One body.",
+        "Every property shows.",
+        "The reasoning is one press away.",
+      ]);
+      const head = screen.getByTestId("issue-three-things");
+      expect(head.textContent).not.toContain("How it gets done");
+      expect(head.textContent).not.toContain("What you will be shown");
+      expect(head.querySelector("a")).toBeNull();
+    } finally {
+      unmount();
+    }
+  }
+});
 
 test("a summary of four sentences draws the first three of them", () => {
   const { lines, unmount } = bullets(

@@ -19,7 +19,6 @@ import {
   openWithCaret,
   paste,
   selectEditorText,
-  specAddress,
 } from "./editor";
 import { navigateInApp } from "./sends";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
@@ -73,7 +72,7 @@ async function openAnsweredDecision(browser: Browser) {
   await answerAsk(blockAsk.id, { expected_edited_at: null, selected: ["A"], text: "Go A." });
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  await page.goto(await specAddress(issue.key));
+  await page.goto(`/issues/${issue.key}`);
   const decision = documentEditor(page).locator('[data-dispatch-ask-block="decision"]');
   await expect((await expectHosted(decision)).getByText("Go A.")).toBeVisible();
   return { alice, blockAsk, issue, page };
@@ -114,27 +113,16 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ width: 1770, height: 900 });
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     const ask = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
     await expect(ask).toContainText("Should we ship?");
     const decisions = page.getByRole("navigation", { name: "Open decisions" });
     await expect(decisions.getByText("1 open decision", { exact: true })).toBeVisible();
-    // The link says which decision it reaches and reaches it. It carries no `title`: the issue
-    // page draws no tooltip anywhere, because a fact a pointer alone can reach is a fact a
-    // reader on a phone and a reader on the keyboard do not have (dispatch://INFRA-1196 R2,
-    // R21; `components/tooltips.tsx`, which `ProofDocument`'s open-decisions link reads).
     const decisionLink = decisions.getByRole("link", { name: "Should we ship?" });
-    await expect(decisionLink).toHaveText("Should we ship?");
-    await expect(decisionLink).toHaveAttribute("href", "#b-ship-decision");
-    await expect(decisionLink).not.toHaveAttribute("title", /./);
+    await expect(decisionLink).toHaveAttribute("title", "Should we ship?");
     await expect(decisions).toHaveCSS("height", "28px");
     const header = page.getByTestId("issue-header");
     const specification = documentEditor(page).getByRole("heading", { name: "Specification" });
-    // The header is measured once its properties line is drawn from the issue's own read: a
-    // height taken before it arrives is the header half drawn. The route and the claim are
-    // Details' now (dispatch://INFRA-1196 R13), so the line is the header's last.
-    await expect(header.getByTestId("issue-state-actions")).toBeVisible();
-    await expect(header.getByRole("combobox", { name: "Status" })).toBeVisible();
     const desktopMetrics = await Promise.all([
       header.evaluate((element) => element.getBoundingClientRect().height),
       specification.evaluate((element) => element.getBoundingClientRect().y),
@@ -144,25 +132,14 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
       contentType: "application/json",
     });
     await page.screenshot({ path: testInfo.outputPath("specchrome-1770.png") });
-    // What these budgets guard is a header that grows a row nobody noticed, not any
-    // particular height: that the first open question still reaches the first screen is
-    // c-open-questions' check, at 1440 x 900 and 390 x 844, and it does not rest on these.
-    // The identity block is four rows (dispatch://INFRA-1196, the Design section's table: the
-    // parent and the key with their controls; the title; the status, priority, assignee and
-    // labels; the route with the claim), where the header this budget was first written for
-    // was a title and a metadata rail. Measured in Chromium with DejaVu Sans: 150 px at
-    // 1770 x 900, where the properties fit one line, and 186 px at 1280 x 800, where the
-    // panel's column leaves them two. Each budget leaves a row and a half of room over its
-    // measurement, so the block can be changed without breaking a row about ask blocks, and
-    // two rows more than it draws today fails here.
-    expect(desktopMetrics[0]).toBeLessThanOrEqual(200);
+    expect(desktopMetrics[0]).toBeLessThanOrEqual(96);
 
     await page.setViewportSize({ width: 1280, height: 800 });
     const tabletMetrics = await Promise.all([
       header.evaluate((element) => element.getBoundingClientRect().height),
       specification.evaluate((element) => element.getBoundingClientRect().y),
     ]);
-    expect(tabletMetrics[0]).toBeLessThanOrEqual(234);
+    expect(tabletMetrics[0]).toBeLessThanOrEqual(140);
     await testInfo.attach("specchrome-1280-metrics", {
       body: JSON.stringify({ headerHeight: tabletMetrics[0], specificationY: tabletMetrics[1] }),
       contentType: "application/json",
@@ -244,7 +221,7 @@ test("a reader asks back from a decision block: the question threads under the b
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     const block = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
     const hosted = await expectHosted(block);
     // No exchange yet: nothing to disclose.
@@ -322,7 +299,7 @@ test("a resolved decision block is read-only", async ({ browser }) => {
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     const ask = documentEditor(page).locator('[data-dispatch-ask-block="resolved-decision"]');
     // The hosted card's resolution record, with its reason; no composer.
     const hosted = await expectHosted(ask);
@@ -364,7 +341,7 @@ test("a failed in-document decision answer reports inside the failed block and c
         status: 400,
       });
     });
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     await expect(page.getByRole("navigation", { name: "Open decisions" })).toBeVisible();
     const ask = documentEditor(page).locator('[data-dispatch-ask-block="failing-decision"]');
     const hosted = await expectHosted(ask);
@@ -438,7 +415,7 @@ test("open decision navigation cycles through the available decisions", async ({
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     const decisions = page.getByRole("navigation", { name: "Open decisions" });
     await expect(decisions.getByText("2 open decisions", { exact: true })).toBeVisible();
     const firstDecision = await decisions.getByRole("link").textContent();
@@ -505,7 +482,7 @@ test("decision blocks read as urgency-accented cards in the document and its ver
       for (const scheme of ["light", "dark"] as const) {
         await page.emulateMedia({ colorScheme: scheme });
         await page.setViewportSize({ width, height });
-        await page.goto(await specAddress(issue.key));
+        await page.goto(`/issues/${issue.key}`);
         await expect(editor.locator('[data-dispatch-ask-block="naming"]')).toContainText(
           "Answered by bob"
         );
@@ -668,7 +645,7 @@ test("a pasted rendered callout and decision keep attributes, content, and the o
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}`);
     const clipboard = await copyWholeDocument(page);
     expect(clipboard.html).toContain('data-proof-block-attr-kind="warning"');
     expect(clipboard.html).toContain('data-proof-block-attr-title="Risk"');

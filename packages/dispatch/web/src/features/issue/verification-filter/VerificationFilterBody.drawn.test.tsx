@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type RenderResult, render } from "@testing-library/react";
+import { act, type RenderResult, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -19,9 +19,10 @@ import {
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
   sentenceCase,
+  VERIFICATION_WORDS,
 } from "../page-words";
 import { shortCommit } from "./statement-state";
-import { VERIFICATION_WORDS, VerificationFilterBody } from "./VerificationFilterBody";
+import { VerificationFilterBody } from "./VerificationFilterBody";
 import {
   COMMIT,
   check,
@@ -30,7 +31,7 @@ import {
   OTHER_COMMIT,
   result,
   statementNode,
-  verificationView,
+  verificationPreset,
 } from "./verification-fixtures";
 
 /**
@@ -45,13 +46,14 @@ import {
  * a unit test lays out, so the widths are read by the browser suite (c-checks-readable).
  */
 
-/** The body over the statements given, with `checks` as the issue's results read. */
+/** The body over the statements given, with `checks` as the issue's results read, drawn from
+ *  the Verification filter's own view: the tree it leaves and the rows it marks as context. */
 function drawBody(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
   { named = [] }: { named?: readonly string[] } = {}
 ): RenderResult {
-  const view = verificationView(statements, named);
+  const view = verificationPreset(statements, named);
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -60,8 +62,9 @@ function drawBody(
       <MemoryRouter>
         <VerificationFilterBody
           checks={checks}
-          context={new Set(statements.map((statement) => statement.id))}
-          view={view}
+          context={view.context}
+          emptyLine={EMPTY_STATE_LINES.verification}
+          view={view.root}
         />
       </MemoryRouter>
     </QueryClientProvider>
@@ -293,7 +296,8 @@ test("a statement no check serves carries its gap in full", () => {
 
 // R17: "a command renders as code with a copy control ... and `when` reads as words", and R15:
 // a check draws all four of its attributes and a result what it recorded. The body opens where
-// the reader's focus reaches the check (R6).
+// the reader's focus reaches the check and closes when the focus leaves it; a press keeps it
+// open once the focus has gone, and a press on an open one closes it (R6).
 test("a check's facts open where the reader's focus is: when as words, the run as a command", async () => {
   const user = userEvent.setup();
   const shot = "dispatch://CORE-1/artifact/screenshot-png@v1";
@@ -305,9 +309,10 @@ test("a check's facts open where the reader's focus is: when as words, the run a
   const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(seeded)])], [seeded]);
   try {
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    const words = view.container.querySelector("[data-verification-check-words]");
+    const words = view.container.querySelector<HTMLElement>("[data-verification-check-words]");
     expect(words).not.toBeNull();
-    await user.click(words as Element);
+    act(() => words?.focus());
+    expect(words?.getAttribute("aria-expanded")).toBe("true");
 
     const card = view.container.querySelector("[data-verification-check]");
     expect((card?.textContent ?? "").includes(CHECK_WHEN_WORDS.before_merge)).toBe(true);
@@ -321,17 +326,27 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     // The screenshot is drawn as a picture, through the bytes route every other picture of
     // Dispatch is drawn through.
     expect(view.container.querySelectorAll("[data-node-body] img").length).toBeGreaterThan(0);
-    // The reader pressed it open, so it stays open once the focus leaves it (R6).
-    await user.tab();
+
+    // The focus leaving it closes what the focus opened.
+    act(() => words?.blur());
+    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+    expect(words?.getAttribute("aria-expanded")).toBe("false");
+    // The reader pressed it open, so it stays open with the focus elsewhere.
+    await user.click(words as Element);
+    act(() => words?.blur());
     expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
+    // And a press on an open one closes it, which is what the control says it does.
+    await user.click(words as Element);
+    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+    expect(words?.getAttribute("aria-expanded")).toBe("false");
   } finally {
     view.unmount();
   }
 });
 
-// R2 and the architect's ruling on rows: a statement is drawn as context with its words in
-// full, and the node its words came from is one line on its row.
-test("a statement is marked as context, with its words in full and the node they came from", () => {
+// R2 and the architect's ruling on rows: a statement is drawn as context, as the filter's own
+// view marks it, with its words and the node its words came from as one line on its row.
+test("a statement is marked as context, with its words and the node they came from", () => {
   const served = passing("c-one");
   const statement = statementNode(
     "r1",
@@ -347,13 +362,91 @@ test("a statement is marked as context, with its words in full and the node they
   const view = drawBody([askedBy], [served]);
   try {
     const card = view.container.querySelector("[data-verification-card]");
-    expect(card?.hasAttribute("data-node-context")).toBe(false);
+    expect(card?.hasAttribute("data-node-context")).toBe(true);
     expect(card?.getAttribute("data-node-id")).toBe(statement.id);
     expect(card?.querySelector("[data-node-words]")?.textContent).toBe(statement.text);
     expect([
       card?.querySelector("[data-node-parent-line]")?.getAttribute("data-parent-type"),
       card?.querySelector("[data-node-parent-line]")?.textContent,
     ]).toEqual(["comment", `${NODE_TYPE_NAMES.comment}${askedBy.text}`]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Ruling 6: the body draws the newest result of each check; its earlier results are one line
+// with their count, which opens them in place, and the result the check's state stands on is
+// marked wherever it is drawn.
+test("a check draws its newest result, folds the rest behind their count, and marks the one that stands", async () => {
+  const user = userEvent.setup();
+  const busy = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [
+      result({ created_at: "2026-11-12T09:00:00Z", id: "oldest", observed: "38 passed" }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "newest", observed: "41 passed" }),
+      result({ created_at: "2026-11-13T09:00:00Z", id: "middle", observed: "40 passed" }),
+    ],
+  });
+  const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(busy)])], [busy]);
+  try {
+    const drawn = () =>
+      [...view.container.querySelectorAll("[data-verification-result]")].map((one) => [
+        one.getAttribute("data-node-id"),
+        one.hasAttribute("data-result-stands"),
+      ]);
+    expect(drawn()).toEqual([["newest", true]]);
+    expect(
+      view.container
+        .querySelector("[data-result-stands]")
+        ?.textContent?.startsWith(VERIFICATION_WORDS.stands)
+    ).toBe(true);
+    const earlier = view.container.querySelector("[data-verification-earlier]");
+    expect(earlier?.textContent?.replace(/\s+/gu, " ")).toBe(
+      `2 ${VERIFICATION_WORDS.earlier_many}`
+    );
+    expect(earlier?.getAttribute("aria-expanded")).toBe("false");
+    await user.click(earlier as Element);
+    expect(earlier?.getAttribute("aria-expanded")).toBe("true");
+    expect(drawn()).toEqual([
+      ["newest", true],
+      ["middle", false],
+      ["oldest", false],
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R17, R6: the seven states a check can be in are named once over the table, each by its word
+// and its shape with how many checks stand in it, so no shape of the table goes unnamed.
+test("the summary names all seven states a check can be in, with how many checks stand in each", () => {
+  const met = passing("c-one");
+  const failed = failing("c-two");
+  const view = drawBody(
+    [
+      statementNode("r1", "Every check of this one passed.", [checkNode(met)]),
+      // One check under two statements is one check.
+      statementNode("r2", "One check of this one failed.", [checkNode(failed), checkNode(met)]),
+    ],
+    [met, failed]
+  );
+  try {
+    expect(
+      [...view.container.querySelectorAll("[data-check-legend-state]")].map((one) => [
+        one.getAttribute("data-check-legend-state"),
+        one.querySelector("svg[data-glyph]")?.getAttribute("data-glyph"),
+        (one.textContent ?? "").replace(/\s+/gu, " ").trim(),
+      ])
+    ).toEqual(
+      (Object.keys(NODE_STATE_WORDS.check) as (keyof typeof NODE_STATE_WORDS.check)[]).map(
+        (state) => [
+          state,
+          GLYPH_TOKENS.states.check[state],
+          `${state === "passed" || state === "failed" ? 1 : 0}${NODE_STATE_WORDS.check[state]}`,
+        ]
+      )
+    );
   } finally {
     view.unmount();
   }

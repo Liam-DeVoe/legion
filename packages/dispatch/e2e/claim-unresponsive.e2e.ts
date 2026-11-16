@@ -1,6 +1,5 @@
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 
-import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { agentRow, setLiveSessions, setSessionLastSeen, setSessionState } from "./agents";
 import {
   claimIssue,
@@ -10,7 +9,6 @@ import {
   mintAgentToken,
   patchIssue,
 } from "./api";
-import { openDetails } from "./issue-page";
 import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
@@ -113,15 +111,11 @@ test("an unresponsive holder keeps its claim: the issue page says unresponsive s
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issueKey}`);
-    // The claim is Details' Claimed by row (dispatch://INFRA-1196 R13).
-    await openDetails(page);
     const chip = page.getByTestId("issue-claim");
     const stalled = page.getByTestId("issue-claim-unresponsive");
     await expect(stalled).toBeVisible();
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
-    // The issue page raises no tooltip at all (dispatch://INFRA-1196 R21): what the chip's
-    // `title` says on a List row or a Board card is drawn here, in the words below.
-    await expect(chip).not.toHaveAttribute("title", /./);
+    await expect(chip).toHaveAttribute("title", /missed its heartbeats without ending/);
     // R5's wording: the state, and the heartbeat the silence is dated from.
     await expect(stalled).toContainText("unresponsive since");
     await expectInstant(
@@ -185,15 +179,12 @@ test("an unresponsive holder past its takeable moment reads takeable now, is lis
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issueKey}`);
-    await openDetails(page);
     const chip = page.getByTestId("issue-claim");
     const stalled = page.getByTestId("issue-claim-unresponsive");
     await expect(stalled).toContainText("unresponsive since");
-    await expect(stalled.getByTestId("issue-claim-takeable")).toHaveText(
-      `, ${CONTROL_LABELS.takeable_now}`
-    );
+    await expect(stalled.getByTestId("issue-claim-takeable")).toHaveText(", takeable now");
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
-    await expect(chip).not.toHaveAttribute("title", /./);
+    await expect(chip).toHaveAttribute("title", /another agent may take it now/);
     await expect(chip.locator(`[data-agent-name="${holder.session_id}"]`)).toHaveAttribute(
       "data-agent-state",
       "unresponsive"
@@ -273,13 +264,10 @@ test("a route to an unresponsive session, and to a role it holds, reads holder_u
 
       const page = await alice.newPage();
       await page.goto(`/issues/${key}`);
-      // The route's reach is Details' route row (dispatch://INFRA-1196 R13).
-      await openDetails(page);
       const marker = page.getByTestId("issue-route-unresponsive");
       await expect(marker).toBeVisible();
       await expect(marker).toContainText("Unresponsive, still reached");
-      // The explanation is the marker's own text on a page that raises no tooltip (R21).
-      await expect(marker).toContainText("waits until it answers");
+      await expect(marker).toHaveAttribute("title", /waits until it answers/);
       // Neither of the other two answers: the route is not unreachable, and it is not unjudged.
       await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(0);
       await expect(page.getByTestId("issue-route-unknown")).toHaveCount(0);

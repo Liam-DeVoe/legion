@@ -7,6 +7,7 @@ import {
   issueCoverageQuery,
   issueResultsQuery,
   referenceTargetsQuery,
+  whoAmIQuery,
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
@@ -15,9 +16,10 @@ import {
   buildIssueTree,
   type DocumentBlocks,
   type IssueTreeReads,
+  nodeWords,
   type TreeNode,
-  treeReferences,
 } from "./issue-tree";
+import { citedReferences } from "./row-references";
 
 /** The issue's tree, and how far the reads it is built from have got. */
 export interface IssueTreeView {
@@ -28,6 +30,28 @@ export interface IssueTreeView {
    *  page cannot say what a document it could not read holds. */
   readonly blocksRead: boolean;
   readonly root: TreeNode;
+}
+
+/**
+ * Every `dispatch://` address the tree holds: each node's own, so a block's words can be read,
+ * each chip's, so a chip can name its target, and each one a node's words or its answer cite, so
+ * a row links what its words name from this read and makes none per mention
+ * (`row-references.ts`). This is what the one batched reference read is given, which is why the
+ * page draws every chip and every link in one request rather than one per node (R21). It is
+ * here and not beside the model, because reading a text's citations takes the page's markdown
+ * reading, which the model's own module stays clear of so the browser suite can import it.
+ */
+function treeReferences(root: TreeNode): string[] {
+  const refs = new Set<string>();
+  const walk = (node: TreeNode): void => {
+    if (node.reference !== undefined) refs.add(node.reference);
+    for (const chip of [...node.chips, ...node.alsoUnder]) refs.add(chip.ref);
+    for (const reference of citedReferences(nodeWords(node))) refs.add(reference);
+    for (const reference of citedReferences(node.answer?.text ?? "")) refs.add(reference);
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return [...refs];
 }
 
 /**
@@ -42,7 +66,8 @@ export interface IssueTreeView {
  * reads, so opening the Conversation or the Decisions panel after the tree finds them answered
  * rather than fetching again. The conversation's comments and messages are nodes of this tree
  * too, and a child issue's check reads them (`tree-drafts.ts`, `treeDrafts`). No document is a
- * node of the tree (R3), so nothing here reads a document's own text.
+ * node of the tree (R3), so nothing here reads a document's own text. The reader's login says
+ * which open questions wait on the reader (`IssueTreeReads.viewer`).
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
  * batched request (`referenceTargetsQuery`; a tree holding more addresses than the server reads
@@ -70,6 +95,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     queryKey: ["issue-messages", key],
     queryFn: () => api.listIssueMessages(key),
   });
+  // The reader, whose own turn an open question may be (`IssueTreeReads.viewer`): the shell's
+  // one read of who is signed in, so it costs no request of its own.
+  const viewer = useQuery(whoAmIQuery()).data?.login;
   const documentIds = (issue.artifacts ?? [])
     .filter((artifact) => artifact.kind === "doc")
     .map((artifact) => artifact.id);
@@ -100,6 +128,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       issue,
       messages: messages.data,
       results: results.data,
+      viewer,
     }),
     [
       asks.data,
@@ -110,6 +139,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       issue,
       messages.data,
       results.data,
+      viewer,
     ]
   );
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);

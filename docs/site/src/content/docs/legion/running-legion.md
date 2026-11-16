@@ -27,7 +27,7 @@ your cluster, from one published worker image.
 
 A project's repositories are Dispatch's mapping, set on Dispatch's Settings → Repositories →
 Projects page, one of them the project's default; `legion.yaml` names none. Each issue targets the
-repository Dispatch resolves for it: its own (the Repository picker in the issue's Details panel, or
+repository Dispatch resolves for it: its own (the issue header's Repository picker, or
 `dispatch issue-update --repo owner/name`), else its nearest ancestor's, else the project's default.
 The daemon records an issue on that repository, and its default branch as GitHub names it, when it
 first records the issue, and keeps both: a later change of the issue's repository in Dispatch is

@@ -250,12 +250,6 @@ type issueReferencesQuery struct {
 	// version, under its own ETag; absent, empty or `all` is the full answer, another value or
 	// a repeat is 400 INVALID_QUERY.
 	Versions string `query:"versions"`
-	// Own, `1`, answers the issue's own documents as members too, each with the blocks citing
-	// it; absent or `0` answers only the artifacts the issue reaches outside itself, and any
-	// other value - an own with no value, or a repeat - is 400 INVALID_QUERY. It is `0`/`1`
-	// rather than a boolean because ownRequested (references.go) reads those two spellings
-	// alone, which is what this enum declares.
-	Own string `query:"own" enum:"0,1"`
 }
 
 // referenceTargetsQuery is GET /api/v1/reference-targets's query: the references to resolve.

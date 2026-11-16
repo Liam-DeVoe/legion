@@ -5,7 +5,8 @@ import { outsideAskCard } from "../inbox/ask-card";
 import { buildIssuePath, type IssueTab, parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { useOpenDetailsAt } from "./details-rows";
-import { bringOnScreen } from "./identity-block";
+import { WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
+import { bringOnScreen, FILTER_ROW_ATTRIBUTE } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
 import type { IssuePriorityWrite } from "./useIssuePriority";
@@ -14,8 +15,8 @@ import type { IssuePriorityWrite } from "./useIssuePriority";
  * What the `issue` scope acts on. Every target is a control the header already renders - the
  * pin inside its overflow menu, which is drawn hidden while shut - so a key does exactly what a
  * click on it does. Scoping the lookup to `[data-issue-header]` keeps a child issue's row in the
- * children section at the top of the body - it carries the same accessible names - out of
- * reach. The labels' control is Details' (`labels` below).
+ * outline's children group - it carries the same accessible names - out of reach. The labels'
+ * control is Details' (`labels` below).
  */
 const HEADER = "[data-issue-header]";
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
@@ -76,10 +77,14 @@ function outsideInputsAndAskCards(): boolean {
  * checks look for the same element and neither has a name of its own for a part of the page.
  */
 const PARTS = {
-  children: '[data-testid="issue-children"]',
+  // The children's group row of the outline (ruling 5 of
+  // dispatch://INFRA-1196/artifact/build-rulings-md), which takes the focus itself.
+  children: '[data-node-row][data-node-type="child_issue"]',
   // The collaborators' row of Details (`IssueMargin.tsx`), whose own control opens the list.
   collaborators: '[data-details-row="collaborators"]',
-  filter: `input[aria-label="${CONTROL_LABELS.filter}"]`,
+  // The filter by words: its small control, which a press opens into the box, or the box
+  // (`IssuePresets.tsx`); at 760 px and below both are in the Outline sheet.
+  filter: `[${WORDS_FILTER_ATTRIBUTE}]`,
   // The issue's history, in Details (`IssueHistory.tsx`), which takes the focus itself.
   history: '[data-testid="issue-history"]',
   menu: '[role="menu"]',
@@ -89,16 +94,20 @@ const PARTS = {
 } as const;
 
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
- *  stop, the children's own disclosure, the collaborators' own control, and a menu's first item
- *  once it holds any (`dispatch://INFRA-1196/artifact/plan-md#b-t18`). */
+ *  stop, the collaborators' own control, and a menu's first item once it holds any
+ *  (`dispatch://INFRA-1196/artifact/plan-md#b-t18`). */
 const TAKES_FOCUS: Readonly<Record<keyof typeof PARTS, string | undefined>> = {
-  children: "button",
+  children: undefined,
   collaborators: "button",
   filter: undefined,
   history: undefined,
   menu: '[role="menuitem"]',
   tree: '[data-node-row][tabindex="0"]',
 };
+
+/** The Outline control of the filter row, which holds the filter by words at 760 px and below:
+ *  `t f` opens it where the words control is not drawn. */
+const OUTLINE_CONTROL = `[${FILTER_ROW_ATTRIBUTE}] button[aria-haspopup="dialog"]`;
 
 /** How many frames a chord waits for the page to draw what its address opened before it gives
  *  up on putting the focus there: a navigation renders on the next frame, and a panel that
@@ -137,6 +146,17 @@ function showPart(found: HTMLElement, takes: HTMLElement): HTMLElement {
 function reachPart(part: keyof typeof PARTS, left = DRAWING_FRAMES): void {
   const found = document.querySelector<HTMLElement>(PARTS[part]);
   if (found === null || found.closest("[hidden]") !== null) {
+    // The words are in the Outline sheet where the row has no room for them: the chord opens
+    // the sheet, as the reader's press would, and goes on to the words once it is drawn.
+    if (part === "filter" && left === DRAWING_FRAMES) {
+      document.querySelector<HTMLElement>(OUTLINE_CONTROL)?.click();
+    }
+    if (left > 0) requestAnimationFrame(() => reachPart(part, left - 1));
+    return;
+  }
+  // The words' small control opens into the box, which is what takes the caret.
+  if (part === "filter" && found instanceof HTMLButtonElement) {
+    found.click();
     if (left > 0) requestAnimationFrame(() => reachPart(part, left - 1));
     return;
   }
@@ -246,7 +266,7 @@ const CHORDS: readonly {
   },
   {
     keys: "t h",
-    label: "Open the issue's children",
+    label: "Move to the issue's children",
     part: "children",
     path: (key) => buildIssuePath({ key, kind: "children" }),
     tab: "children",

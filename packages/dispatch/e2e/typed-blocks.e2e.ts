@@ -1,4 +1,3 @@
-import { NODE_TYPE_NAMES } from "../web/src/features/issue/page-words";
 import { createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
 import { expect, test } from "./test";
@@ -19,9 +18,7 @@ test("typedBlockDirectiveRoundTrip", async ({ browser }) => {
     const callout = documentEditor(page).locator('[data-proof-block-type="callout"]');
     await expect(callout).toContainText("Body text.");
     await expect(callout).toHaveAttribute("data-block-id", "callout-1");
-    // The directive and the block type are still `callout`; the word the header draws is the
-    // page's word for that type, which the reader reads (`NODE_TYPE_NAMES`).
-    await expect(callout.locator("[data-proof-block-name]")).toHaveText(NODE_TYPE_NAMES.callout);
+    await expect(callout.locator("[data-proof-block-name]")).toHaveText("callout");
     await expect(callout.locator('[data-proof-block-attribute="kind"]')).toHaveText("warning");
     await expect(callout.locator('[data-proof-block-attribute="title"]')).toHaveText("Read this");
   } finally {
@@ -50,7 +47,7 @@ test("a typed block's header shows the author's attributes and none of the inter
     await expect(header).toBeVisible();
 
     // The author's own attributes, each in its own role.
-    await expect(header.locator("[data-proof-block-name]")).toHaveText(NODE_TYPE_NAMES.callout);
+    await expect(header.locator("[data-proof-block-name]")).toHaveText("callout");
     await expect(header.locator("[data-proof-block-badge]")).toHaveText("warning");
     await expect(header.locator("[data-proof-block-title]")).toHaveText("Read this");
 

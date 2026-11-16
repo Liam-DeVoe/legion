@@ -38,8 +38,14 @@ import type { IssuePriorityWrite } from "./useIssuePriority";
  * control at the right of row one opens; the writes both draw are the page's one set
  * (`useIssueHeaderWrites`), so a draft begun in either is the same draft.
  *
- * The header is sticky in a condensed form (`identity-block.ts`), which also publishes its own
- * height, so the tree's focused row can clear it rather than guess at it.
+ * Rows one and two are the identity block, which stays at the top of the screen from 761 px up
+ * while the properties line scrolls away under it, and which scrolls away with the rest of the
+ * header at 760 px and below, where the filter row stays instead (ruling 5 of
+ * dispatch://INFRA-1196/artifact/build-rulings-md, the prototype's `#hdr-sticky`): the
+ * `<header>` itself draws no box (`display: contents`), so the block's `position: sticky` holds
+ * against the page's whole column rather than against the header. The block publishes the
+ * height of whatever stays (`identity-block.ts`), so the tree's focused row can clear it rather
+ * than guess at it.
  *
  * `data-issue-header` is load-bearing for the keyboard: the `issue` scope's bindings find the
  * status, the priority, the title and the pin through it, and scoping to it is what keeps a
@@ -67,7 +73,7 @@ export function IssueHeader({
    *  priority rows, so a refusal of any of them is reported once and by this header. */
   priorityWrite: IssuePriorityWrite;
   /** Where the page is about to put the reader back, in pixels down the document, while it is
-   *  returning them to a tab they left: the block's form is decided for that place, not for
+   *  returning them to a tab they left: the block's shadow is decided for that place, not for
    *  where the page stands now (`identity-block.ts`). */
   restoringTo?: number;
   state: UserIssueState;
@@ -75,7 +81,7 @@ export function IssueHeader({
 }): ReactNode {
   const { drafts, pendingStatus, updateIssue } = writes;
   const [editingTitle, setEditingTitle] = useState(false);
-  const block = useRef<HTMLElement | null>(null);
+  const block = useRef<HTMLDivElement | null>(null);
   const { condensed } = useIdentityBlock(block, restoringTo);
   useIssuePalette({
     drafts,
@@ -120,15 +126,18 @@ export function IssueHeader({
 
   return (
     <header
-      className={`sticky top-0 z-20 flex min-w-0 flex-col ${pagePaperBg} ${pageInkText} ${
-        condensed ? "shadow-[0_6px_14px_rgba(28,25,23,0.06)]" : ""
-      }`}
+      className="contents"
       data-condensed={condensed ? "true" : "false"}
       data-issue-header=""
       data-testid="issue-header"
-      ref={block}
     >
-      <div className="flex min-w-0 flex-col px-3.5 pt-2 pb-0.5 md:px-7 md:pt-[7px] md:pb-px">
+      <div
+        className={`sticky top-0 z-20 flex min-w-0 flex-col px-3.5 pt-2 pb-0.5 max-[760px]:static min-[761px]:px-7 min-[761px]:pt-[7px] min-[761px]:pb-px ${pagePaperBg} ${pageInkText} ${
+          condensed ? "shadow-[0_1px_0_var(--color-page-line),0_6px_14px_rgba(28,25,23,0.06)]" : ""
+        }`}
+        data-identity-block=""
+        ref={block}
+      >
         {isClosed ? (
           <p
             className={`mb-1 rounded-lg border px-3 py-1 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
@@ -144,7 +153,6 @@ export function IssueHeader({
           project={issue.project}
         />
         <IssueTitleRow
-          condensed={condensed}
           drafts={drafts}
           editing={editingTitle}
           isClosed={isClosed}

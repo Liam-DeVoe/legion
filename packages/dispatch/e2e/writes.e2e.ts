@@ -6,8 +6,7 @@ import {
   listComments,
   putIssueState,
 } from "./api";
-import { barAction, selectEditorText, specAddress } from "./editor";
-import { openDetails, openIssueActions } from "./issue-page";
+import { barAction, selectEditorText } from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -51,18 +50,13 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
   const header = page.locator("header");
   await expect(page.getByRole("heading", { name: "Pinned" })).toHaveCount(0);
 
-  // The pin is the header's overflow menu's (dispatch://INFRA-1196 R13); its state is its
-  // `aria-pressed`, read with the menu shut.
-  const pin = header.locator('[data-issue-action="pin"]');
-  await openIssueActions(page);
   await header.getByRole("button", { name: "Pin issue" }).click();
   await expect(header.getByRole("alert")).toContainText("Could not save pin status.");
   const retry = header.getByRole("button", { name: "Retry" });
   await expect(retry).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("pin-error-retry.png"), fullPage: true });
   // The failed write must never be reflected anywhere: still "Pin issue", still no Pinned group.
-  await expect(pin).toHaveText("Pin issue");
-  await expect(pin).toHaveAttribute("aria-pressed", "false");
+  await expect(header.getByRole("button", { name: "Pin issue" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Pinned" })).toHaveCount(0);
 
   // Two synthetic clicks in the same task exercise the retry guard before React can render
@@ -80,14 +74,12 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
   await retryResponse;
   await expect.poll(() => retryRequests).toBe(1);
   await expect(header.getByRole("alert")).toHaveCount(0);
-  await expect(pin).toHaveAttribute("aria-pressed", "true");
+  await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
 
-  // The sidebar's Pinned group is the shell's whole navigation, which the issue page draws as an
-  // icon rail (dispatch://INFRA-1196 R14): the Inbox draws it whole.
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Pinned" })).toBeVisible();
   await page.goto(`/issues/${issue.key}`);
-  await expect(pin).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("heading", { name: "Pinned" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
 
   await context.close();
 });
@@ -103,7 +95,8 @@ test("double-clicking Submit posts exactly one comment @pr", async ({ browser })
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(await specAddress(issue.key));
+  await page.goto(`/issues/${issue.key}`);
+  await page.getByRole("tab", { name: "Spec" }).click();
   await selectEditorText(page, "brown");
   await barAction(page, "Comment");
   const composer = page.getByRole("form", { name: "Comment composer" });
@@ -163,8 +156,6 @@ test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ 
   await putIssueState(issue.key, { dismissed: [`pinned_items:event:${lifecycle.id}`] });
 
   await page.goto(`/issues/${issue.key}`);
-  // The margin's Pinned tab is in Details, closed on a load (R14).
-  await openDetails(page);
   await page.getByRole("tab", { name: "Pinned" }).click();
   const pinnedEvent = page.getByText("Comment resolved");
   await expect(pinnedEvent).toBeVisible();

@@ -45,7 +45,6 @@ test("the closure lists its members with their owner, via and depth, names trunc
         artifact: notes,
         depth: 1,
         via: { id: "comment-1", kind: "comment" },
-        via_blocks: ["b1"],
       },
     ],
     truncated: true,
@@ -99,9 +98,7 @@ test("the closure names the agent that owns a conversation's artifact", async ()
     slug: "shot-png",
   } satisfies Artifact;
   const { getIssueReferences, view } = renderClosure({
-    members: [
-      { artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" }, via_blocks: null },
-    ],
+    members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
     truncated: false,
   });
   try {

@@ -2,11 +2,11 @@ import type { ReactNode } from "react";
 
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
-  dangerText,
-  successText,
-  surfaceMutedBg,
-  textMutedOnCanvas,
-  textSecondaryOnCanvas,
+  pageFailedText,
+  pageMarkBg,
+  pageMutedText,
+  pageQuietText,
+  pageStateText,
 } from "../../theme/classes";
 import { DispatchPicture } from "../refs/DispatchPicture";
 import { parseNodeReference } from "../refs/routes";
@@ -51,7 +51,7 @@ export function NodeFacts({ facts }: { facts: readonly NodeFact[] }): ReactNode 
 function Fact({ fact }: { fact: NodeFact }): ReactNode {
   return (
     <>
-      <dt className={`min-w-0 break-words ${textMutedOnCanvas}`} {...pageChrome}>
+      <dt className={`min-w-0 break-words ${pageQuietText}`} {...pageChrome}>
         {nodeFactLabel(fact.name)}
       </dt>
       <dd className="m-0 min-w-0">
@@ -68,7 +68,7 @@ function FactValue({ fact }: { fact: NodeFact }): ReactNode {
     // A check that names no negative control says so by keeping the name with no value, which
     // is itself what a reader came to see.
     return (
-      <span className={textMutedOnCanvas} {...pageChrome}>
+      <span className={pageQuietText} {...pageChrome}>
         —
       </span>
     );
@@ -81,7 +81,7 @@ function FactValue({ fact }: { fact: NodeFact }): ReactNode {
   }
   return (
     <span
-      className={`block min-w-0 break-words ${textSecondaryOnCanvas}`}
+      className={`block min-w-0 break-words ${pageMutedText}`}
       {...(fact.draw === "word" ? pageChrome : authorText)}
     >
       {fact.value}
@@ -98,7 +98,7 @@ function Command({ command }: { command: string }): ReactNode {
   return (
     <span className="flex min-w-0 items-start gap-1">
       <code
-        className={`min-w-0 flex-1 rounded px-1 font-mono break-all whitespace-pre-wrap ${surfaceMutedBg} ${textSecondaryOnCanvas}`}
+        className={`min-w-0 flex-1 rounded px-1 font-mono break-all whitespace-pre-wrap ${pageMarkBg} ${pageMutedText}`}
         data-node-command=""
         {...authorText}
       >
@@ -106,7 +106,7 @@ function Command({ command }: { command: string }): ReactNode {
       </code>
       <button
         aria-label={CONTROL_LABELS.copy_command}
-        className={`shrink-0 underline ${textMutedOnCanvas}`}
+        className={`shrink-0 underline ${pageQuietText}`}
         onClick={() => copy(command)}
         tabIndex={-1}
         type="button"
@@ -117,7 +117,7 @@ function Command({ command }: { command: string }): ReactNode {
       {status === "idle" ? null : (
         <span
           aria-live="polite"
-          className={`shrink-0 ${status === "copied" ? successText : dangerText}`}
+          className={`shrink-0 ${status === "copied" ? pageStateText.passed : pageFailedText}`}
           {...pageChrome}
         >
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
@@ -132,7 +132,7 @@ function Picture({ reference }: { reference: string }): ReactNode {
   const route = parseNodeReference(reference);
   if (route === undefined) {
     return (
-      <span className={`block min-w-0 break-all ${textSecondaryOnCanvas}`} {...authorText}>
+      <span className={`block min-w-0 break-all ${pageMutedText}`} {...authorText}>
         {reference}
       </span>
     );

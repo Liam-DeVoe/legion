@@ -1,7 +1,9 @@
-import type { Actor, Decision, IssueDecisions } from "../../../api/types";
+import type { Actor, CheckBlock, Decision, IssueDecisions } from "../../../api/types";
+import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { parseNodeReference } from "../../refs/routes";
 import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
-import type { NodeState, NodeType } from "../page-words";
+import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
+import { statementStandings } from "../verification-filter/statement-state";
 
 /**
  * What decided each statement of the Spec filter, and the mark each statement carries
@@ -12,45 +14,47 @@ import type { NodeState, NodeType } from "../page-words";
  * the tree, and nothing else: it is pure, holds no React and makes no request, so the body
  * (`SpecFilterBody.tsx`) and the unit tests read one model.
  *
- * What a statement's decision is, in the order the rules are read:
+ * What a statement's decisions are, in the order they are drawn:
  *
- * 1. **A `shaped` tie.** A decision whose link names the statement shaped it
- *    (`Decision.links[].to`, dispatch://INFRA-1150 R1). The first such decision heads the
- *    statement's run; every other one is named at the end of the statement's own line, since
- *    R5 draws "the decisions that informed it" and a statement may rest on several. A replaced
+ * 1. **The answered question it hangs under.** A statement that hangs under an answered ask
+ *    carries that ask's line with no tuple, "since that decision is its parent" (R5), and "the
+ *    line is drawn whether or not" other decisions apply, so it heads the statement's run and
+ *    its parent line and its decision line stay one line.
+ * 2. **Each `shaped` tie.** A decision whose link names the statement shaped it
+ *    (`Decision.links[].to`, dispatch://INFRA-1150 R1). The first decision of the statement
+ *    heads its run; every other one is named at the end of the statement's own line, since R5
+ *    draws "the decisions that informed it" and a statement may rest on several. A replaced
  *    decision draws no line at all (R5).
- * 2. **The answered question it hangs under.** A statement that hangs under an answered ask
- *    carries that ask's line with no tuple, "since that decision is its parent" (R5).
  * 3. **Nothing.** A statement no decision shaped is drawn as such, which is what makes a
  *    missing tie visible (R35).
  *
  * What a person's decision quotes is the person's own answer, never a restatement of it
  * (dispatch://INFRA-1150 R4): the answer's first sentence word for word (`firstSentenceOf`),
- * or, where they wrote none, the options they chose. What an agent's decision quotes is its own
- * text, with the one word the model holds for how sure it was (`Decision.unsure`).
+ * or, where they wrote none, the options they chose; the whole answer is carried beside it, for
+ * the focus on the line to draw character for character (R5). A section of `decisions.md` the
+ * server marks a person's whose answered question this tree does not hold is the agent's record
+ * of that decision, so it is drawn as an agent's words and never quoted as the person's (R9).
+ * What an agent's decision quotes is its own text, with the one word the model holds for how
+ * sure it was (`Decision.unsure`).
  *
- * Two parts of R5 that today's reads do not hold, which the body draws nothing in the place of:
+ * **"Changed since"** is read from the tie itself: a `shaped` link's far end carries the
+ * statement block's own last change (`DecisionLink.to.changed_at`), and a statement whose words
+ * changed after the decision was made says so on that decision's line (R5). The line of the
+ * answered question a statement hangs under has no tie to read a time from, so it never says
+ * it: the coverage read holds a requirement's text and no time.
  *
- * - **"Changed since".** Whether a statement's own text changed after the decision needs the
- *   statement's last change beside the tie, and no read of this page carries one: the coverage
- *   read holds a requirement's text and no time, `ArtifactBlock` holds none, and
- *   `DecisionLink.stale` is the opposite question - the decision changed and the block did not
- *   (`features/doc/spec-marks.ts`). It is the tree read's `changed_at` (dispatch://INFRA-1253
- *   R8).
- * - **An agent's level of uncertainty and its reason.** The decisions read answers one boolean,
- *   `unsure` (dispatch://INFRA-1150); the level and the reason arrive with it.
+ * One part of R5 today's reads do not hold, which the body draws nothing in the place of: an
+ * agent's level of uncertainty and its reason. The decisions read answers one boolean, `unsure`
+ * (dispatch://INFRA-1150); the level and the reason arrive with it.
  */
-
-/** The four marks a statement carries at the right of its row, which the legend above the
- *  columns names (R17): a statement every check of passed, one a check failed, one whose checks
- *  have not all passed and none failed, and one no check serves. A statement that carries a
- *  check is drawn as covered and never as proven, because a statement that has a check is not a
- *  statement that is true (R17). */
-export type SpecMark = "covered" | "failing" | "no_check" | "not_run";
 
 /** Whose words a run of statements came from, which the column's heading says: the reader's own,
  *  another person's, or an agent's. */
 export type SpecSaid = "agent" | "person" | "you";
+
+/** The mark at the right of a statement's row: how it stands at the commit the page names, in
+ *  the Verification filter's own reading, or that no check serves it (R10, R17). */
+export type SpecMark = StatementState | "no_check";
 
 /** The decision that shaped a run of statements, as the left column draws it (R5). */
 export interface SpecDecision {
@@ -63,6 +67,10 @@ export interface SpecDecision {
   /** The node that holds the whole of it, which the link to it names: the answered ask whose
    *  answer this is, or the decision. */
   readonly id: string;
+  /** The decision node the tie came from, where the tree holds it: what the outline's `w` moves
+   *  to from a statement (`tree-keys.ts`'s `decisionBehind`). A person's decision is drawn by
+   *  their answer (`id`), and this is the section of `decisions.md` that names it. */
+  readonly node?: string;
   /** The question the words answer, its first line as R1 cuts a row's; absent where the words
    *  answer no question. */
   readonly question?: string;
@@ -78,14 +86,27 @@ export interface SpecDecision {
   readonly type: NodeType;
   /** Whether the model marks this decision unsure (`Decision.unsure`). */
   readonly unsure: boolean;
+  /** A person's whole answer as the store holds it, where it says more than `quote`: what the
+   *  focus on the decision's line draws, character for character (R5). */
+  readonly whole?: string;
+}
+
+/** One decision of a statement, with whether the statement's own words changed after it. */
+export interface SpecTie {
+  /** Whether the statement's block changed after the decision was made (R5's "Changed
+   *  since"), read from the tie's far end; false where the tie carries no time. */
+  readonly changedSince: boolean;
+  readonly decision: SpecDecision;
 }
 
 /** One statement of the Spec filter, as its row draws it. */
 export interface SpecStatement {
   /** Every other decision that shaped it, beyond the one its run is headed by (R5). */
-  readonly alsoShapedBy: readonly SpecDecision[];
+  readonly alsoShapedBy: readonly SpecTie[];
+  /** Whether its words changed after the decision its run is headed by. */
+  readonly changedSince: boolean;
   readonly mark: SpecMark;
-  /** The node as the filter's view left it, whose words the row draws in full. */
+  /** The node as the filter's view left it, whose words the row draws. */
   readonly node: TreeNode;
 }
 
@@ -115,23 +136,35 @@ export interface SpecGroup {
   readonly runs: readonly SpecRun[];
 }
 
+/** What the Spec filter's body draws. */
+export interface SpecReading {
+  readonly groups: readonly SpecGroup[];
+  /** Every row the filter kept that is no statement: a node an address named, which outranks
+   *  the filter (`presets.ts`), drawn by its kind and its words with no mark and no decision
+   *  beside it (R19, R20). */
+  readonly others: readonly TreeNode[];
+}
+
 /**
- * The Spec filter's body, read from the tree and the decisions.
+ * The Spec filter's body, read from the tree, the decisions and the results.
  *
  * `view` is the Spec filter's own view of the tree (`presetView`), whose rows are the
  * statements in the order the page draws them; `root` is the whole tree, which holds the asks,
  * the decisions and each statement's checks, none of which the Spec filter draws as rows (R2).
  * `nodeIdOf` is how this issue addresses a node, which is the one rule the tree is built with
  * (`tree-drafts.ts`'s `treeContext`), so a tie resolves to the node it names however its
- * address is written.
+ * address is written. `checks` is the issue's results read, which each statement's mark is
+ * read from as the Verification filter reads it (`statement-state.ts`).
  */
 export function specDecidedBy({
+  checks,
   decisions,
   nodeIdOf,
   reader,
   root,
   view,
 }: {
+  readonly checks: readonly CheckBlock[];
   readonly decisions: IssueDecisions | undefined;
   readonly nodeIdOf: (reference: string) => string | undefined;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
@@ -140,23 +173,36 @@ export function specDecidedBy({
   readonly root: TreeNode;
   /** The tree as the Spec filter leaves it. */
   readonly view: TreeNode;
-}): readonly SpecGroup[] {
+}): SpecReading {
   const nodes = nodesById(root);
   const asks = asksById(nodes);
   const shaped = shapedBy({ asks, decisions, nodeIdOf, nodes, reader });
+  const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
     runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
   }[] = [];
-  for (const node of statementsOf(view)) {
-    const ties = shaped.get(node.id) ?? [];
+  const rows = rowsOf(view);
+  for (const node of rows.filter((row) => row.type === "requirement")) {
     const parent = parentOf(node, nodes);
-    const decision = ties.at(0) ?? answerUnder(parent, nodes, reader);
+    const under = answerUnder(parent, nodes, reader);
+    // The answered question the statement hangs under first, then each tie, each decision once.
+    const ties = [
+      ...(under === undefined ? [] : [{ changedSince: false, decision: under }]),
+      ...(shaped.get(node.id) ?? []).filter((tie) => tie.decision.id !== under?.id),
+    ];
+    const head = ties.at(0);
+    const standing = standings.get(node.id);
     const statement: SpecStatement = {
       alsoShapedBy: ties.slice(1),
-      mark: markOf(node, nodes),
+      changedSince: head?.changedSince ?? false,
+      mark:
+        node.gaps.includes("no_check") || standing === undefined || !standing.covered
+          ? "no_check"
+          : standing.state,
       node,
     };
+    const decision = head?.decision;
     const group = groups.at(-1);
     if (group === undefined || group.parent?.id !== parent?.id) {
       groups.push({
@@ -175,7 +221,7 @@ export function specDecidedBy({
     }
     run.statements.push(statement);
   }
-  return groups;
+  return { groups, others: rows.filter((row) => row.type !== "requirement") };
 }
 
 /**
@@ -217,8 +263,8 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
   return asks;
 }
 
-/** Every row the Spec filter draws, in the order it draws them. */
-function statementsOf(view: TreeNode): readonly TreeNode[] {
+/** Every row the Spec filter kept, in the order it draws them. */
+function rowsOf(view: TreeNode): readonly TreeNode[] {
   const rows: TreeNode[] = [];
   const walk = (node: TreeNode): void => {
     rows.push(node);
@@ -229,7 +275,7 @@ function statementsOf(view: TreeNode): readonly TreeNode[] {
 }
 
 /** The decisions that shaped each statement, by the statement's node id, in the order the
- *  decisions read answers them. */
+ *  decisions read answers them, each with whether the statement changed after it. */
 function shapedBy({
   asks,
   decisions,
@@ -242,8 +288,8 @@ function shapedBy({
   nodeIdOf: (reference: string) => string | undefined;
   nodes: ReadonlyMap<string, TreeNode>;
   reader: string | undefined;
-}): ReadonlyMap<string, readonly SpecDecision[]> {
-  const shaped = new Map<string, SpecDecision[]>();
+}): ReadonlyMap<string, readonly SpecTie[]> {
+  const shaped = new Map<string, SpecTie[]>();
   for (const decision of decisions?.decisions ?? []) {
     // A replaced decision draws no line (R5): it is drawn where it sits in the outline, and a
     // statement it shaped is no longer standing on it.
@@ -254,12 +300,25 @@ function shapedBy({
     for (const link of links) {
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
-      const held = shaped.get(id);
-      if (held === undefined) shaped.set(id, [made]);
-      else held.push(made);
+      const held = shaped.get(id) ?? [];
+      // A decision that names one statement in two of its blocks is one decision of it, and
+      // the statement changed since it where either tie says so.
+      const changed = changedAfter(link.to.changed_at, made.at);
+      const before = held.findIndex((tie) => tie.decision.id === made.id);
+      if (before === -1) held.push({ changedSince: changed, decision: made });
+      else if (changed) held[before] = { changedSince: true, decision: made };
+      shaped.set(id, held);
     }
   }
   return shaped;
+}
+
+/** Whether a statement that last changed at `changed` changed after a decision made at
+ *  `decided`; false where either time is absent or unreadable. */
+function changedAfter(changed: string | null, decided: string | undefined): boolean {
+  if (changed === null || decided === undefined) return false;
+  if (!isTimestamp(changed) || !isTimestamp(decided)) return false;
+  return compareTimestamps(changed, decided) > 0;
 }
 
 /** One decision as the column draws it: a person's by the answer they gave, an agent's by its
@@ -285,18 +344,25 @@ function decisionOf(
     .map((ask) => asks.get(ask))
     .find((ask) => ask?.answer !== undefined);
   if (decision.kind === "person" && answered?.answer !== undefined) {
-    return answerDecision(answered, reader);
+    return {
+      ...answerDecision(answered, reader),
+      ...(node === undefined ? {} : { node: node.id }),
+    };
   }
+  // Every other section is drawn by its own words, which are an agent's: its decision, or its
+  // record of a person's decision whose answered question this tree does not hold - one the
+  // tree places elsewhere, or one whose read failed. That record is never put in the person's
+  // mouth (R9: "no agent's words are drawn under a person's name").
   const at = node?.at ?? decision.changed_at ?? undefined;
   return {
     ...(at === undefined ? {} : { at }),
     ...(node?.author === undefined ? {} : { by: node.author }),
     chose: [],
     id: node?.id ?? decision.ref,
+    ...(node === undefined ? {} : { node: node.id }),
     quote: node === undefined ? decision.text : nodeWords(node),
     reference: decision.ref,
-    said:
-      decision.kind === "person" ? (isReader(node?.author, reader) ? "you" : "person") : "agent",
+    said: "agent",
     ...(node?.state === undefined ? {} : { state: node.state }),
     type: "decision",
     unsure: decision.unsure,
@@ -304,7 +370,8 @@ function decisionOf(
 }
 
 /** A person's answer to `ask` as the column draws it: their first sentence word for word, or
- *  the options they chose where they wrote none (R5). */
+ *  the options they chose where they wrote none (R5), with the whole answer where it says
+ *  more. */
 function answerDecision(ask: TreeNode, reader: string | undefined): SpecDecision {
   const answer = ask.answer;
   if (answer === undefined) throw new Error("an answered ask with no answer");
@@ -320,6 +387,7 @@ function answerDecision(ask: TreeNode, reader: string | undefined): SpecDecision
     said: isReader(answer.by, reader) ? "you" : "person",
     type: "ask",
     unsure: false,
+    ...(answer.text.trim() === "" || answer.text.trim() === written ? {} : { whole: answer.text }),
   };
 }
 
@@ -349,41 +417,4 @@ function parentOf(node: TreeNode, nodes: ReadonlyMap<string, TreeNode>): SpecPar
     line: line.line,
     type: line.type,
   };
-}
-
-/**
- * The mark a statement carries, over the checks that serve it (R17).
- *
- * The checks are the statement's own children in the whole tree, where a check sits under each
- * requirement its `serves` names (R4); under the Spec filter the statement has no check under
- * it, because Spec draws the statements and no other kind (R2). That a statement has no check
- * at all is the coverage read's own gap, which is the one rule the page draws "No check serves
- * this statement" by (`GAP_LINES.no_check`, R10), with the coverage read's count beside it for
- * a read that carries the count and no gap line.
- *
- * A statement the coverage read counts a check for whose check the tree does not hold - a
- * child issue's check, which this issue's results read does not answer for - is "not run": the
- * page has no result of its own to draw, and it will not say a check passed that it cannot
- * read.
- */
-function markOf(node: TreeNode, nodes: ReadonlyMap<string, TreeNode>): SpecMark {
-  const checks = (nodes.get(node.id) ?? node).children.filter((child) => child.type === "check");
-  if (node.gaps.includes("no_check") || (node.counts?.checks === 0 && checks.length === 0)) {
-    return "no_check";
-  }
-  if (checks.some((check) => check.state === "failed")) return "failing";
-  if (checks.length > 0 && checks.every((check) => check.state === "passed")) return "covered";
-  return "not_run";
-}
-
-/** Whether `actor` is the reader writing as themselves: a person signed in as `reader`, and not
- *  an agent acting for them, whose words are the agent's (R9). It is `TreeRows.tsx`'s rule, which
- *  is not exported there; integration gives the two one copy. */
-function isReader(actor: Actor | undefined, reader: string | undefined): boolean {
-  return (
-    reader !== undefined &&
-    actor?.kind === "user" &&
-    actor.id === reader &&
-    (actor.act?.session ?? "") === ""
-  );
 }

@@ -1172,7 +1172,7 @@ var issueChildrenStatement = `
 		select i.key, i.title, i.status, r.done, r.total, r.active_at,
 		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
 		                 from issue_external_links l where l.issue_key = i.key), '[]'),
-		       coalesce(blockers.keys, '{}'),
+		       blockers.keys,
 		       ` + issueClaimColumns + `
 		from issues i join rollup r on r.root = i.key
 		left join lateral (
@@ -1183,7 +1183,8 @@ var issueChildrenStatement = `
 	`
 
 // scanIssueChildren reads the rows issueChildrenStatement returns. An issue with no child keeps
-// a non-nil empty list, which the response carries as [].
+// a non-nil empty list, which the response carries as []. A child waiting on nothing scans a null
+// array, so its Needs stays nil and the answer leaves it out, as it does a claim nobody holds.
 func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 	children := []model.IssueChild{}
 	for rows.Next() {
@@ -1191,7 +1192,7 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 		var links []byte
 		var claim claimScan
 		targets := []any{&child.Key, &child.Title, &child.Status,
-			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links, &child.BlockedBy}
+			&child.SubtreeDone, &child.SubtreeTotal, &child.ActiveAt, &links, &child.Needs}
 		if err := rows.Scan(append(targets, claim.targets()...)...); err != nil {
 			return nil, err
 		}

@@ -1,21 +1,14 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
-import {
-  borderDefault,
-  card,
-  focusVisibleRing,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { pageHeaderControl } from "../../theme/classes";
 import { useMarginDrawer } from "../margin/margin-slot";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { assigneeControlName } from "./AssigneeControl";
 import { blockedByControlName } from "./BlockedByControl";
 import { componentsControlName } from "./IssueComponentsLine";
 import type { IssueField } from "./IssueFieldForms";
+import { MENU_CLASS, MENU_ITEM_CLASS } from "./NodeMenu";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { repoControlName } from "./RepoControl";
@@ -67,12 +60,12 @@ export function IssueAddMenu({
   const empty = emptyFields(issue).filter((field) => field.reachable());
   if (isClosed || empty.length === 0) return null;
   return (
-    <div className="relative shrink-0" ref={wrapper}>
+    <div className="relative flex shrink-0" ref={wrapper}>
       <button
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={CONTROL_LABELS.add}
-        className={`min-h-11 rounded-lg px-2 text-sm font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${focusVisibleRing}`}
+        className={pageHeaderControl}
         onClick={() => setOpen((shown) => !shown)}
         type="button"
         {...pageChrome}
@@ -80,14 +73,10 @@ export function IssueAddMenu({
         {CONTROL_LABELS.add}
       </button>
       {open ? (
-        <div
-          aria-label={CONTROL_LABELS.add}
-          className={`absolute left-0 z-30 mt-1 flex w-56 flex-col rounded-lg border p-1 shadow-lg ${borderDefault} ${card}`}
-          role="menu"
-        >
+        <div aria-label={CONTROL_LABELS.add} className={`${MENU_CLASS} left-0`} role="menu">
           {empty.map((field) => (
             <button
-              className={`min-h-11 rounded-lg px-2 py-2 text-left text-sm ${textSecondaryOnSurface}`}
+              className={MENU_ITEM_CLASS}
               key={field.label}
               onClick={() => {
                 setOpen(false);
@@ -110,7 +99,8 @@ export function IssueAddMenu({
     // The name of a control the panel draws is that control's own, built by the function it
     // exports: neither side spells it, so renaming one renames both and the entry cannot go
     // missing on a word nobody meant to change. A control of the header - the assignee - is
-    // reached with Details closed, since on a phone Details covers it.
+    // reached with Details closed, since on a phone Details covers it; a control of Details is
+    // reached with Details open, since shut it takes neither a press nor the focus.
     const atControl = (name: string) => ({
       open: () => {
         const control = pageControl(name);
@@ -118,8 +108,10 @@ export function IssueAddMenu({
           if (control instanceof HTMLSelectElement) control.focus();
           else control?.click();
         };
-        if (control?.closest("[data-issue-header]") != null && drawer?.open === true) {
-          drawer.setOpen(false);
+        const inHeader = control?.closest("[data-issue-header]") != null;
+        const shut = control?.closest("[hidden]") != null;
+        if (drawer !== undefined && (inHeader ? drawer.open : shut && !drawer.open)) {
+          drawer.setOpen(!inHeader);
           requestAnimationFrame(() => requestAnimationFrame(reach));
           return;
         }

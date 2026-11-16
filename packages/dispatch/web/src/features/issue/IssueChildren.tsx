@@ -1,189 +1,71 @@
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { IssueChild, IssueDetails } from "../../api/types";
-import {
-  borderDefault,
-  linkHoverText,
-  linkText,
-  progressBarFill,
-  surfaceMutedStrongBg,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import type { IssueChild } from "../../api/types";
+import { pageInkText, pageKindTag, pageQuietText } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
-import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
-import { Timestamp } from "../refs/Timestamp";
-import { GitHubLink } from "./GitHubLink";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, issueStatusWord } from "./page-words";
-import { useChildrenSection } from "./useChildrenSection";
+import { issueStatusWord } from "./page-words";
 
 /**
- * The issue's children, one collapsible section at the top of every preset's content
- * (dispatch://INFRA-1196 R10, `dispatch://INFRA-1196/artifact/plan-md#b-t11`).
+ * What a child issue's row of the outline draws beside its title (dispatch://INFRA-1196 R12, the
+ * architect's ruling 5, the prototype's `.kr`): the children are one group of rows of the outline,
+ * each child a row the reader focuses and moves through as any other, and no section above the
+ * outline. The row's words are the child's title (`tree-drafts.ts`'s `addChildren`); after them,
+ * in the margin's small grey, how it stands, what blocks it and who holds it
+ * (`ChildIssueFacts`); and its key is the row's tag, a link to its own page (`ChildIssueTag`).
+ * The header keeps the children's bar and both counts (R13).
  *
- * Open, a row says what a reader asks of a child they are waiting on: how it stands, the issue
- * that blocks it, and who holds it. Collapsed, the header keeps the completion bar and both
- * counts, each labelled - the direct children done of total, and the whole subtree done of
- * total - because the two numbers differ and a reader cannot tell which is which from the
- * numbers alone.
- *
- * An issue with no children draws no section at all, so an issue nobody broke down stays quiet.
- * Whether the section is open is the reader's, kept for the next issue they open the way the
- * panel's own sections are kept (`useChildrenSection.ts`).
+ * Every colour is the page's own palette: the key in the child kind's colour, the links in the
+ * ink with the hairline under them, as a link in a node's words is drawn.
  */
-export function IssueChildren({ issue }: { issue: IssueDetails }): ReactNode {
-  const section = useChildrenSection();
-  const children = issue.children ?? [];
-  if (children.length === 0) {
-    return null;
-  }
-  const direct = {
-    done: children.filter((child) => child.status === "done").length,
-    total: children.length,
-  };
-  const subtree = children.reduce(
-    (total, child) => ({
-      done: total.done + child.subtree_done,
-      total: total.total + child.subtree_total,
-    }),
-    { done: 0, total: 0 }
-  );
+
+/** The key of a child issue as its row's tag: the child's own page, in the child kind's colour
+ *  (the prototype's `tagH`). */
+export function ChildIssueTag({ child }: { child: IssueChild }): ReactNode {
   return (
-    <section
-      className={`mb-0.5 flex min-w-0 flex-col gap-1 border-b pb-1 ${borderDefault}`}
-      data-testid="issue-children"
+    <Link
+      className={`dispatch-inline-link font-semibold whitespace-nowrap ${pageKindTag.child}`}
+      data-child-key=""
+      tabIndex={-1}
+      to={buildIssuePath({ key: child.key, kind: "issue" })}
+      {...authorText}
     >
-      {/* One line, bar and both counts beside the control: a second line here is a line of the
-          head the first open question needs on a phone (R6), so the bar gives up its width
-          rather than the labels their words. */}
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0">
-        <h2 className="min-w-0">
-          <button
-            aria-expanded={section.isOpen}
-            className={`flex min-h-11 items-center gap-2 text-sm font-semibold md:min-h-9 ${textPrimaryOnCanvas}`}
-            onClick={section.toggle}
-            type="button"
-            {...pageChrome}
-          >
-            <span>{CONTROL_LABELS.children}</span>
-            <span aria-hidden="true">{section.isOpen ? "−" : "+"}</span>
-          </button>
-        </h2>
-        <span
-          aria-label={CONTROL_LABELS.children_done}
-          aria-valuemax={direct.total}
-          aria-valuemin={0}
-          aria-valuenow={direct.done}
-          className={`h-1.5 w-10 shrink-0 overflow-hidden rounded-full ${surfaceMutedStrongBg}`}
-          role="progressbar"
-        >
-          <span
-            className={`block h-full rounded-full ${progressBarFill}`}
-            style={{ width: `${direct.total === 0 ? 0 : (100 * direct.done) / direct.total}%` }}
-          />
-        </span>
-        <Count done={direct.done} label={CONTROL_LABELS.children_done} total={direct.total} />
-        <Count
-          done={subtree.done}
-          label={CONTROL_LABELS.subtree_done}
-          testId="issue-children-subtree-count"
-          total={subtree.total}
-        />
-      </div>
-      {section.isOpen ? (
-        <ul className="flex min-w-0 flex-col">
-          {children.map((child) => (
-            <ChildRow child={child} key={child.key} />
-          ))}
-        </ul>
-      ) : null}
-    </section>
+      {child.key}
+    </Link>
   );
 }
 
-/** One labelled count: the label is the page's own word and the numbers are the issue's, which
- *  is why they are divided (R21). */
-function Count({
-  done,
-  label,
-  testId = "issue-children-direct-count",
-  total,
-}: {
-  done: number;
-  label: string;
-  testId?: string;
-  total: number;
-}): ReactNode {
+/**
+ * How a child stands, what blocks it and who holds it, after its title on its row, each in the
+ * page's own words and the child's own values. A part a child has no value for is not drawn:
+ * the issue read leaves `needs` out for a child that waits on nothing and `claim` out for one
+ * nobody holds. The keys and the holder can hold a run no space breaks, so a part breaks inside
+ * a word only where no space will do (`overflow-wrap: anywhere`), and the page never scrolls
+ * sideways (R17).
+ */
+export function ChildIssueFacts({ child }: { child: IssueChild }): ReactNode {
+  const blockers = child.needs ?? [];
   return (
-    <span className={`text-xs ${textMutedOnCanvas}`} data-testid={testId} {...pageChrome}>
-      {label} <span {...authorText}>{done}</span>/<span {...authorText}>{total}</span>
-    </span>
-  );
-}
-
-/** One child, on one line: what it is, how it stands, what blocks it and who holds it. The row
- *  is a line and not a card, because seven cards cost the page 600 px before its tree - half a
- *  laptop screen and the whole of a phone's - and R6 puts the first open question on the first
- *  screen. Its parts wrap at a narrow width rather than being cut (R17). */
-function ChildRow({ child }: { child: IssueChild }): ReactNode {
-  return (
-    <li
-      className={`flex min-w-0 flex-wrap items-baseline gap-x-3 py-0.5 text-sm ${textSecondaryOnSurface}`}
-      data-child-row=""
+    <span
+      className={`ml-1.5 text-xs leading-6 [overflow-wrap:anywhere] ${pageQuietText}`}
+      data-child-facts=""
       data-child-status={child.status}
-      key={child.key}
     >
-      {/* The child's own title can hold a run no space breaks - a path, a key, an address -
-          and the run has to break inside a word here, not merely wrap: the touch-target floor
-          draws every link `inline-flex` (`web/src/styles.css`), so the link's text is an
-          anonymous flex item whose automatic minimum size is its min-content width, and
-          `overflow-wrap: break-word` leaves that width alone. Measured at 320 px with a 118
-          character path: untouched and with `break-words`, 807 px of text in a 288 px box and
-          a page 823 px wide; with `overflow-wrap: anywhere`, with `word-break: break-word` and
-          with `break-all`, 288 px in 288 and a page that fits. Those four readings are what
-          make the reason above checkable rather than plausible: of the values tried, the only
-          one that left the page broken is `overflow-wrap: break-word`, whose "soft wrap
-          opportunities introduced by the word break are NOT considered when calculating
-          min-content intrinsic sizes" (CSS Text Level 4, read on the MDN `overflow-wrap`
-          reference), while `anywhere`'s are counted and `break-all` makes a break opportunity
-          of every character. A minimum size that reads min-content therefore moves under each
-          value that fixed it and not under the one that did not (R17).
-
-          Three of the four meet R17, so the value is not chosen by R17: the page takes
-          `anywhere` because it breaks at the space first. A child's title is author prose, and
-          `break-all` breaks an ordinary word mid-word on a phone, where `anywhere` breaks
-          inside a word only when no space will do. That is this page's idiom for prose
-          (`Pill.tsx`, `ApprovalSteps.tsx`, `ChangeView.tsx`, `CredentialSessionLines.tsx`,
-          `RelatedItems.tsx`); `GitHubLink.tsx` keeps `break-all` because its text is an
-          address with no space in it to break at, so there is no prose for it to spoil. For
-          the same reason `anywhere` leaves the key whole: `{key} · {title}` breaks at the two
-          spaces before it breaks inside anything, and a boundary falls inside the key itself
-          only where the key alone is wider than the box - about 36 characters at 320 px. */}
-      <Link
-        className={`min-w-0 [overflow-wrap:anywhere] font-medium ${linkText} ${linkHoverText}`}
-        to={buildIssuePath({ key: child.key, kind: "issue" })}
-        {...referenceTriggerProps({ key: child.key, kind: "issue" })}
-        {...authorText}
-      >
-        {child.key} · {child.title}
-      </Link>
       <span {...pageChrome}>{issueStatusWord(child.status)}</span>
-      {(child.blocked_by ?? []).length === 0 ? null : (
+      {blockers.length === 0 ? null : (
         // Two keys run together read as one key ("CORE-2CORE-3"), so each follows the last
-        // after a comma and a space, which is how a reader reads a list of keys in a line of
-        // text. The panel's own control has the room to space them out instead
-        // (`BlockedByControl.tsx`).
-        <span data-testid="issue-child-blocked-by" {...pageChrome}>
-          {PROPERTY_LABELS.blocked_by}{" "}
-          {(child.blocked_by ?? []).map((key, index) => (
+        // after a comma and a space, as a reader reads a list of keys in a line of text.
+        <span data-testid="issue-child-blocked-by">
+          <span {...pageChrome}> · </span>
+          <span {...pageChrome}>{PROPERTY_LABELS.blocked_by}</span>{" "}
+          {blockers.map((key, index) => (
             <Fragment key={key}>
               {index === 0 ? null : ", "}
               <Link
-                className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+                className={`dispatch-inline-link underline decoration-page-hair underline-offset-[3px] ${pageInkText}`}
+                tabIndex={-1}
                 to={buildIssuePath({ key, kind: "issue" })}
                 {...authorText}
               >
@@ -193,27 +75,18 @@ function ChildRow({ child }: { child: IssueChild }): ReactNode {
           ))}
         </span>
       )}
-      {/* `== null`: a Dispatch older than the claim this row draws answers the issue read with
-          children carrying no `claim` at all, and during a rollout two builds answer one load
-          balancer (`e2e/two-builds.multiprocess.e2e.ts`). `=== null` would let that `undefined`
-          through to `child.claim.actor` and drop the whole page into its error boundary, where
-          `blocked_by` above already reads an absent field as none. */}
+      {/* `== null`: a Dispatch older than this contract answers a child nobody holds with
+          `claim: null`, and during a rollout two builds answer one load balancer
+          (`e2e/two-builds.multiprocess.e2e.ts`). */}
       {child.claim == null ? null : (
-        <span {...pageChrome}>
-          {PROPERTY_LABELS.claim}{" "}
+        <span>
+          <span {...pageChrome}> · </span>
+          <span {...pageChrome}>{PROPERTY_LABELS.claim}</span>{" "}
           <span {...authorText}>
             <AgentName actor={child.claim.actor} inline />
           </span>
         </span>
       )}
-      <span {...authorText}>
-        <Timestamp at={child.active_at} />
-      </span>
-      {(child.external_links ?? []).map((link) => (
-        <span className="inline-flex min-w-0 items-center" key={link.url} {...authorText}>
-          <GitHubLink link={link} />
-        </span>
-      ))}
-    </li>
+    </span>
   );
 }

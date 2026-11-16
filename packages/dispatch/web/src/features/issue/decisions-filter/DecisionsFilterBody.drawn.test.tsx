@@ -6,13 +6,15 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
-import type { Decision, DecisionKeep } from "../../../api/types";
+import type { Comment, Decision, DecisionKeep } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
+import { KEY_REPORTS } from "../page-structure";
+import { DECISIONS_WORDS } from "../page-words";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
   answeredAsk,
@@ -27,11 +29,12 @@ import {
   KEY,
   openAsk,
   READER,
+  READER_ACTOR,
   shaped,
   specRef,
   statement,
 } from "./decisions-fixtures";
-import { DECISIONS_WORDS, type DecisionsAsk } from "./decisions-parts";
+import type { DecisionsAsk } from "./decisions-parts";
 
 /**
  * What the Decisions filter's body draws, read as a reader reads it (dispatch://INFRA-1196 R2,
@@ -134,7 +137,6 @@ function Where(): ReactNode {
 
 interface Drawn extends RenderResult {
   readonly client: QueryClient;
-  readonly reports: string[];
   /** Draws the body again with other props, as the page does when its address moves. */
   readonly again: (props: BodyProps) => void;
 }
@@ -147,12 +149,32 @@ interface BodyProps {
   readonly waitingPress?: number;
 }
 
+/** A Change a person sent on a decision: a comment of the issue anchored to the decision's own
+ *  words in the decisions document (`DecisionActions.tsx`). */
+function changeOf(block: string, at: string, body: string): Comment {
+  return {
+    anchor: {
+      artifact_id: DECISIONS_DOCUMENT.id,
+      block_id: null,
+      mark_id: `mark-${block}`,
+      orphaned: false,
+      quote: `The decision ${block}.`,
+      version: 1,
+    },
+    author: READER_ACTOR,
+    body,
+    created_at: at,
+    id: `change-${block}`,
+  } as Comment;
+}
+
 function renderBody(
   {
     asks = [],
     children,
+    comments = [],
     made = [],
-  }: { asks?: DecisionsAsk[]; children: TreeNode[]; made?: Decision[] },
+  }: { asks?: DecisionsAsk[]; children: TreeNode[]; comments?: Comment[]; made?: Decision[] },
   props: BodyProps = {}
 ): Drawn {
   const client = new QueryClient({
@@ -161,9 +183,9 @@ function renderBody(
   // The reads the page's tree is built from, under the keys it reads them by.
   client.setQueryData(["decisions", KEY], decisionsRead(made));
   client.setQueryData(["asks", KEY], asks);
+  client.setQueryData(["comments", KEY], comments);
   const issue = issueDetails();
   const root = issueTree(children);
-  const reports: string[] = [];
   const body = ({ isClosed = false, request, reveal, view = root, waitingPress }: BodyProps) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -177,7 +199,6 @@ function renderBody(
               holdsEscape={false}
               isClosed={isClosed}
               issue={issue}
-              onReport={(report) => reports.push(report)}
               reader={READER}
               {...(request === undefined ? {} : { request })}
               {...(reveal === undefined ? {} : { reveal })}
@@ -191,7 +212,7 @@ function renderBody(
     </MemoryRouter>
   );
   const view = render(body(props));
-  return { ...view, again: (next) => view.rerender(body(next)), client, reports };
+  return { ...view, again: (next) => view.rerender(body(next)), client };
 }
 
 /** An element's text as a reader reads it: every run of white space one space. */
@@ -283,8 +304,12 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   ]);
   expect(outside.querySelectorAll("p").length).toBe(0);
 
-  // One tree under the outline's own name, each part a group named by its heading, and every
-  // entry a row of it.
+  // One landmark named by the filter holds the list (R19), and in it one tree under the
+  // outline's own name, each headed part a group named by its heading, and every entry a row
+  // of it.
+  expect(view.getByRole("region", { name: "Decisions" })).toBe(
+    view.container.querySelector("[data-decisions-body]") as HTMLElement
+  );
   const tree = view.getByRole("tree", { name: "Issue tree" });
   expect(view.getAllByRole("tree").length).toBe(1);
   expect(
@@ -293,25 +318,26 @@ test("the four parts are drawn under their headings, in order, and no sentence e
         view.container.ownerDocument.getElementById(group.getAttribute("aria-labelledby") ?? "")
       )
     )
-  ).toEqual([
-    "Open questions",
-    "Waiting for your review",
-    "Your decisions",
-    "▸ 2 agent decisions that no statement rests on",
-  ]);
+  ).toEqual(["Open questions", "Waiting for your review", "Your decisions"]);
   expect(
     [...tree.querySelectorAll("[data-node-row]")].every(
       (row) => row.getAttribute("role") === "treeitem"
     )
   ).toBe(true);
 
-  // The foot unfolds from its own control, and folds again.
+  // The foot unfolds from its own control, which is a plain button in the tab order, and
+  // folds again. Its rows stand after it and are the tree's own.
   const foot = view.getByRole("button", { name: /agent decisions that no statement rests on/ });
   expect(foot.getAttribute("aria-expanded")).toBe("false");
+  expect(foot.hasAttribute("tabindex")).toBe(false);
+  expect(tree.hasAttribute("aria-owns")).toBe(false);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
   expect(foot.getAttribute("aria-expanded")).toBe("true");
   expect(words(foot)).toBe("▾ 2 agent decisions that no statement rests on");
+  const footRows = view.container.querySelector('[data-decisions-part="agents"] [role="group"]');
+  expect(tree.getAttribute("aria-owns")).toBe(footRows?.id ?? "no group");
+  expect(footRows?.getAttribute("aria-labelledby")).toBe(foot.id);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([]);
 });
@@ -413,8 +439,25 @@ test("Keep and Change are drawn on the review list's rows and on no other", asyn
   // Nor does the focus draw them on a row that is no entry of the list.
   await act(async () => rowOf(view, D("minor")).focus());
   expect(controls(D("minor"))).toEqual([]);
-  // The controls are out of the tab order, as every control inside a row is (R9).
-  expect(view.container.querySelectorAll('[tabindex="0"]').length).toBe(1);
+  // Every control inside a row is out of the tab order (R9): of everything in the body that
+  // can take the focus, only the row the tab stop rests on and the foot's own control are
+  // reachable by Tab, and every other one carries tabindex -1.
+  const reachable = [
+    ...view.container.querySelectorAll<HTMLElement>(
+      "[data-decisions-body] :is(button, a[href], input, textarea, select, [tabindex])"
+    ),
+  ].filter((element) => element.getAttribute("tabindex") !== "-1");
+  expect(
+    reachable
+      .map((element) =>
+        element.hasAttribute("data-node-row")
+          ? "the row"
+          : element.hasAttribute("data-decisions-heading")
+            ? "the foot's control"
+            : element.outerHTML
+      )
+      .sort()
+  ).toEqual(["the foot's control", "the row"]);
 });
 
 // R2, R35: Keep is `DecisionActions.tsx`'s own write. The kept decision leaves the review list
@@ -621,11 +664,12 @@ test("the page's ask and the address put the focus on an entry, unfolding the fo
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
 });
 
-// R13: the header's count of what waits on the reader turns the filter on and puts the focus
-// on the first thing that waits, in the filter's order, once per press: an open question whose
-// turn is the reader's, else a decision of the review list. A press that lands before the
-// reads are in is taken once the list holds something that waits.
-test("the count of what waits puts the focus on the first thing that waits", async () => {
+// R13, the tester's F12: the header's count of what waits on the reader turns the filter on
+// and puts the focus on a thing that waits, in the filter's order: each open question whose
+// turn is the reader's, then each decision of the review list. Each press goes to the next
+// of them and round to the first again. A press that lands before the reads are in is taken
+// once the list holds something that waits.
+test("each press of the count of what waits goes to the next thing that waits", async () => {
   const whole = wholeIssue();
   const view = renderBody(whole, { waitingPress: 1 });
   await waitFor(() => expect(focusedRow(view)).toBe("q-open"));
@@ -633,6 +677,14 @@ test("the count of what waits puts the focus on the first thing that waits", asy
   await act(async () => rowOf(view, D("kept")).focus());
   view.again({ waitingPress: 1 });
   expect(focusedRow(view)).toBe(D("kept"));
+  // The next press goes to the next thing that waits, wherever the reader has gone since.
+  view.again({ waitingPress: 2 });
+  await waitFor(() => expect(focusedRow(view)).toBe(D("second")));
+  view.again({ waitingPress: 3 });
+  await waitFor(() => expect(focusedRow(view)).toBe(D("first")));
+  // And round to the first again.
+  view.again({ waitingPress: 4 });
+  await waitFor(() => expect(focusedRow(view)).toBe("q-open"));
   view.unmount();
 
   // With no question waiting on the reader, the newest decision of the review list.
@@ -654,6 +706,97 @@ test("the count of what waits puts the focus on the first thing that waits", asy
     )
   );
   await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
+});
+
+// The tester's F6: a Change sent on a decision is a comment anchored to its words. Once it is
+// in the comments read the decision says a change was asked for, leaves the review list for
+// the reader's own decisions, draws no Keep or Change, and draws what the reader asked under
+// its words with a link to it in the conversation.
+test("a decision the reader sent a Change on says so, leaves the review list and draws the change", async () => {
+  const user = userEvent.setup();
+  const sent = changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.");
+  const create = spyOn(api, "createComment").mockResolvedValue(sent as never);
+  const list = spyOn(api, "listComments").mockResolvedValue([sent] as never);
+  const view = renderBody(wholeIssue());
+  try {
+    expect(rowsOfPart(view, "review")).toEqual([D("second"), D("first")]);
+    const change = rowOf(view, D("second")).querySelector('button[data-row-action="change"]');
+    if (change === null) throw new Error("the review row draws no Change");
+    await user.click(change);
+    await user.type(view.getByLabelText("Your change"), "Name the read, please.");
+    await user.click(view.getByRole("button", { name: "Send change" }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    // The comment is anchored to the decision's own words in the decisions document.
+    expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
+      KEY,
+      {
+        anchor: { artifact: DECISIONS_DOCUMENT.id, quote: "The decision second." },
+        body: "Name the read, please.",
+      },
+    ]);
+
+    // The comments are read again, and the decision is no longer the reader's to review.
+    await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
+    expect(list).toHaveBeenCalled();
+    expect(rowsOfPart(view, "yours")[0]).toBe(D("second"));
+    const row = rowOf(view, D("second"));
+    expect(row.getAttribute("data-node-state")).toBe("change_requested");
+    expect(words(row.querySelector("[data-node-margin] [data-node-state]"))).toBe(
+      "Change requested"
+    );
+    expect(row.querySelectorAll("button[data-row-action]").length).toBe(0);
+    expect(row.querySelector("[data-change-words]")?.textContent).toBe("Name the read, please.");
+    const link = row.querySelector("a[data-change-link]");
+    expect(words(link)).toBe(DECISIONS_WORDS.change);
+    expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/change-second`);
+    expect(words(row.querySelector("[data-change-by]"))).toBe("alice");
+    // The count of the review list's heading moved with it.
+    expect(
+      words(view.container.querySelector('[data-decisions-part="review"] [data-decisions-count]'))
+    ).toBe("1");
+  } finally {
+    create.mockRestore();
+    list.mockRestore();
+  }
+});
+
+// R2: the third part is the reader's own decisions. What another person answered stands under
+// the heading that says it is theirs, with their name on it.
+test("another person's answer stands under Decided by others", () => {
+  const view = renderBody({
+    children: [
+      answeredAsk("a-mine", { at: "2026-11-14T09:00:00Z", text: "Mine." }),
+      answeredAsk("a-bobs", {
+        at: "2026-11-13T09:00:00Z",
+        by: { id: "bob", kind: "user" },
+        text: "Bob's.",
+      }),
+    ],
+  });
+  expect(rowsOfPart(view, "yours")).toEqual(["a-mine"]);
+  expect(rowsOfPart(view, "others")).toEqual(["a-bobs"]);
+  expect(
+    words(
+      view.container.querySelector(
+        '[data-decisions-part="others"] [data-decisions-heading] [data-page-chrome]'
+      )
+    )
+  ).toBe(DECISIONS_WORDS.parts.others);
+});
+
+// The tester's F16: a key with nowhere to go says so at the row it was pressed on, and the
+// report goes when the reader moves on.
+test("a key with nowhere to go reports at the row it was pressed on", async () => {
+  const user = userEvent.setup();
+  const view = renderBody(wholeIssue());
+  await act(async () => rowOf(view, "q-open").focus());
+  await user.keyboard("w");
+  expect(words(rowOf(view, "q-open").querySelector("[data-row-report]"))).toBe(
+    KEY_REPORTS.no_decision
+  );
+  expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
+  await user.keyboard("j");
+  expect(view.container.querySelector("[data-row-report]")).toBeNull();
 });
 
 // R20: the filter by words narrows the list to the nodes the filter's own view kept.

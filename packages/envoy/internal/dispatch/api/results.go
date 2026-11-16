@@ -322,7 +322,8 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, body)
 		return
 	}
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact)
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -363,6 +364,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks
+	trees.resolve()
 	WriteJSON(w, http.StatusOK, body)
 }
 
@@ -668,16 +670,25 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 }
 
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes
-// and its words (typedBlocksIn).
-func (s *server) checkBlocksIn(ctx context.Context, artifactID string) ([]model.CheckBlock, error) {
+// and its words (typedBlocksIn). trees is the request's own reader, nil for a caller that asked
+// for no tree: each check registers its whole content with it as its text_tree (blockContent),
+// once the slice has stopped growing, since what is registered is a pointer into the row.
+func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
+	var contents []string
 	err := s.typedBlocksIn(ctx, artifactID, "check", func(node *pmdoc.Node, _ string) {
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
 		checks = append(checks, check)
+		if trees != nil {
+			contents = append(contents, blockContent(node))
+		}
 	})
 	if err != nil {
 		return nil, err
+	}
+	for index, content := range contents {
+		trees.text(&checks[index].TextTree, content)
 	}
 	return checks, nil
 }
@@ -686,8 +697,8 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string) ([]model.
 // digest filled in. The reference is built from the document's own slug, which is a property of
 // the artifacts row and not of a block row, so a Verification document whose blocks the index
 // does not hold yet still answers a reference every check can be addressed by.
-func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact) ([]model.CheckBlock, error) {
-	checks, err := s.checkBlocksIn(ctx, artifact.ID)
+func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
+	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
 	if err != nil {
 		return nil, err
 	}
@@ -731,7 +742,8 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
 // blanks, with the text of a link and every dispatch:// reference dropped, so the pull-request
-// body line the result implies carries no link and no Dispatch host.
+// body line the result implies carries no link and no Dispatch host. blockContent is the same
+// block with both kept.
 func blockWords(node *pmdoc.Node) string {
 	var words []string
 	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
@@ -752,6 +764,26 @@ func blockWords(node *pmdoc.Node) string {
 		return true
 	})
 	return strings.Join(words, " ")
+}
+
+// blockContent is a typed block's own content as markdown: what stands between its opening line
+// and its closing one, rendered as a document of its own, so neither the directive's line nor
+// its attributes are in it and every link and every dispatch:// reference is. It is the text a
+// block's text_tree is read from (displayTreeReader.text), as a decision's is read from its
+// section's markdown. A block holding nothing has no content and so no tree; one whose content
+// cannot be rendered apart from its document is logged and has none either, since the read's
+// other fields do not depend on it.
+func blockContent(node *pmdoc.Node) string {
+	if len(node.Children) == 0 {
+		return ""
+	}
+	markdown, err := pmdoc.Render(&pmdoc.Node{Type: "doc", Children: node.Children})
+	if err != nil {
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		slog.Warn("dispatch: render a typed block's content for its tree", "type", node.Type, "block", id, "error", err)
+		return ""
+	}
+	return markdown
 }
 
 // checkResultLine is the pull-request body line one recorded result implies. Dispatch writes it

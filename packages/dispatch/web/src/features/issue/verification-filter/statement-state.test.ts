@@ -8,6 +8,7 @@ import {
   namedCommit,
   shortCommit,
   statementCounts,
+  statementStandings,
   type VerificationReading,
   verificationReading,
 } from "./statement-state";
@@ -286,6 +287,94 @@ test("the latest result a check draws is the newest that stands", () => {
   expect(read.statements.map((held) => held.state)).toEqual(["met"]);
 });
 
+// R17: "Not met where one failed there". The server's `pass_stands` says yes for any pass at a
+// basis, whatever later fails exist, so a check with an older pass at another commit and a fail
+// at the commit the page names read "Out of date" and left its statement Unknown. The fail at
+// the named commit is what the page reads.
+test("a fail at the commit the page names reads Failed whatever older pass still stands", () => {
+  const regressed = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [
+      result({ created_at: "2026-11-15T09:00:00Z", id: "fail-here", verdict: "fail" }),
+      result({
+        commit_sha: OTHER_COMMIT,
+        created_at: "2026-11-13T09:00:00Z",
+        id: "pass-elsewhere",
+      }),
+    ],
+  });
+  const read = reading(
+    [statementNode("r1", "The page draws it.", [checkNode(regressed)])],
+    [regressed]
+  );
+
+  expect(read.commit).toBe(COMMIT);
+  expect(read.statements[0]?.checks[0]).toMatchObject({
+    atNamedCommit: true,
+    standsOn: "fail-here",
+    state: "failed",
+  });
+  expect(read.statements.map((held) => held.state)).toEqual(["not_met"]);
+});
+
+// Ruling 6: the body draws the newest result of each check and folds the rest, so the model
+// hands it the rest apart, newest first, and names the result the state stands on.
+test("a check's other results are handed apart from its latest, newest first", () => {
+  const busy = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [
+      result({ created_at: "2026-11-12T09:00:00Z", id: "oldest" }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "newest" }),
+      result({ created_at: "2026-11-13T09:00:00Z", id: "middle" }),
+    ],
+  });
+  const read = reading([statementNode("r1", "The page draws it.", [checkNode(busy)])], [busy]);
+  const drawn = read.statements[0]?.checks[0];
+
+  expect(drawn?.latest?.id).toBe("newest");
+  expect(drawn?.earlier.map((held) => held.id)).toEqual(["middle", "oldest"]);
+  expect(drawn?.standsOn).toBe("newest");
+});
+
+// R10: a check of a descendant issue counts. The coverage read counts it for the statement and
+// this issue's tree holds no node for it, so the statement is covered and draws no check.
+test("a statement a child issue's check serves is covered", () => {
+  const served = {
+    ...statementNode("r1", "The page draws it.", []),
+    counts: { checks: 2, planTasks: 0 },
+  };
+  const unserved = {
+    ...statementNode("r2", "The page draws that.", []),
+    counts: { checks: 0, planTasks: 0 },
+  };
+  const read = reading([served, unserved], []);
+
+  expect(read.covered).toBe(1);
+  expect(read.statements.map((held) => held.state)).toEqual(["unknown", "unknown"]);
+});
+
+// The Spec filter's mark is this reading, over the whole tree, so one statement reads the same
+// in both views.
+test("every statement of the whole tree is read as the Verification filter reads it", () => {
+  const passed = passing("c-one");
+  const tree = node({
+    children: [
+      statementNode("r1", "The page draws it.", [checkNode(passed)]),
+      statementNode("r2", "The page draws that.", []),
+    ],
+    id: "CORE-1",
+    type: "issue",
+  });
+  const standings = statementStandings(tree, [passed]);
+
+  expect([...standings]).toEqual([
+    ["spec#b-r1", { covered: true, state: "met" }],
+    ["spec#b-r2", { covered: false, state: "unknown" }],
+  ]);
+});
+
 // While the results read is still out the page has read nothing of how the check stands, so it
 // draws no state for it and no statement of it is Met.
 test("a check the results read has not answered for draws no state", () => {
@@ -319,6 +408,6 @@ test("the body is given the checks that serve no statement and every other row t
 // The page draws a commit as the picture draws it, in the short form git itself writes.
 test("a commit is drawn in the short form the picture draws", () => {
   expect(shortCommit(COMMIT)).toBe(COMMIT.slice(0, COMMIT_CHARACTERS));
-  expect(shortCommit(COMMIT)).toHaveLength(9);
+  expect(shortCommit(COMMIT)).toHaveLength(10);
   expect(shortCommit("abc")).toBe("abc");
 });

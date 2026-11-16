@@ -17,10 +17,8 @@ import {
   expectMark,
   marginCard,
   selectEditorQuote,
-  specAddress,
   typeAtEnd,
 } from "./editor";
-import { expectIssueClosed, runIssueAction } from "./issue-page";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -83,7 +81,7 @@ async function seedClosedIssue(): Promise<Fixture> {
 /** The Conversation's card for message `id`, opened on the closed issue's page. */
 async function openMessage(page: Page, issueKey: string, id: string) {
   await page.goto(`/issues/${issueKey}/conversation`);
-  await expectIssueClosed(page);
+  await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
   const card = page.locator(`[data-turn="message:${id}"]`).first();
   await expect(card).toBeVisible();
   return card;
@@ -109,7 +107,7 @@ test("a comment written in a closed issue's Conversation posts @pr", async ({ br
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issueKey}/conversation`);
-    await expectIssueClosed(page);
+    await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
     await expect(field).toBeVisible();
@@ -243,7 +241,7 @@ test("a margin comment on a closed issue's spec posts with its quote @phone", as
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issueKey));
+    await page.goto(`/issues/${issueKey}/spec`);
     await expect(documentEditor(page)).toContainText(spec);
     await selectEditorQuote(page, "brown");
     await expect(actionBar(page).getByRole("button")).toHaveText(["Comment"]);
@@ -283,7 +281,7 @@ test("a margin comment on a spec whose issue closed while the page was open post
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issue.key));
+    await page.goto(`/issues/${issue.key}/spec`);
     await expect(documentEditor(page)).toContainText(spec);
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "true");
     await selectEditorQuote(page, "brown");
@@ -325,12 +323,11 @@ test("a spec opened while its issue was closed takes edits once the issue is reo
 
   try {
     const page = await alice.newPage();
-    await page.goto(await specAddress(issueKey));
+    await page.goto(`/issues/${issueKey}/spec`);
     await expect(documentEditor(page)).toContainText(spec);
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
 
-    // Reopen is behind the identity block's one actions control (dispatch://INFRA-1196 R11).
-    await runIssueAction(page, "Reopen into Backlog");
+    await page.getByRole("button", { name: "Reopen issue" }).click();
     await expect(page.getByText("This issue is closed.", { exact: true })).toHaveCount(0);
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "true");
     await selectEditorQuote(page, "brown");

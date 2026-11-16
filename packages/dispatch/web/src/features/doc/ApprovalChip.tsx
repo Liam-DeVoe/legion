@@ -11,8 +11,10 @@ import {
   backdrop40,
   card,
   dangerText,
+  focusVisibleRing,
   inputClasses,
   pageHeaderControl,
+  pageInkFill,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -319,11 +321,12 @@ export function ApprovalChip({
               their own is forced, since an empty line costs the header a second row gap. */}
           {approval.state === "approved" ? null : (
             // One filled button per surface: approving is the action the header wants, and
-            // two outline buttons made a reader choose before reading either.
+            // two outline buttons made a reader choose before reading either. In the issue
+            // page's header it is filled with that page's ink, not the application's blue.
             <button
               className={
                 size === "compact"
-                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] px-2.5 text-xs leading-5 font-medium md:min-h-0 md:py-px ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
+                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] px-2.5 text-xs leading-5 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-px ${pageInkFill} ${focusVisibleRing}`
                   : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
               }
               disabled={review.isPending}

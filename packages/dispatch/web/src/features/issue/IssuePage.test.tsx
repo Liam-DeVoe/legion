@@ -179,6 +179,9 @@ const openIssueAsk: Ask = {
   question: "Should this ship?",
   state: "open",
   waiting_on: "human",
+  // The person the server resolved the question to: the reader these tests sign in as, so the
+  // header's count of what waits on the reader counts it (`waiting.ts`).
+  waiting_on_person: "alice",
   urgency: "med",
 };
 
@@ -468,12 +471,18 @@ async function expectPreset(name: string): Promise<void> {
   });
 }
 
+/** One item of that control's menu, by the filter's name: each is a `menuitemradio` named by
+ *  its name and its signal, so the name is matched at the start of it. */
+function presetItem(name: string): RegExp {
+  return new RegExp(`^${name}\\b`, "u");
+}
+
 /** Moves to `name` through that one control's menu. */
 async function openPreset(name: string): Promise<void> {
   const user = userEvent.setup();
   const row = await screen.findByTestId("issue-presets");
   await user.click(within(row).getByRole("button"));
-  await user.click(await screen.findByRole("menuitem", { name }));
+  await user.click(await screen.findByRole("menuitemradio", { name: presetItem(name) }));
   await expectPreset(name);
 }
 
@@ -568,11 +577,11 @@ test("IssuePage names an untitled session creator by a word, never by its id", a
   }
 });
 
-// dispatch://INFRA-1196 R10: a keyboard reader who follows a link on the page to a node lands on
-// that node's row, or the chain is out of their reach: the address moving to the Spec preset's
-// `#b-r1` puts the focus on the requirement's row, where a fresh load of that same address
-// leaves the focus to the spec the preset draws, as it always has.
-test("IssuePage focuses the node a link on the page leads to, and a fresh load keeps its landing", async () => {
+// dispatch://INFRA-1196 R10, R19: a reader who follows a link to a node lands on that node's
+// row, or the chain is out of their reach: the address moving to the Spec filter's `#b-r1` puts
+// the focus on the statement's row, and so does a fresh load of that same address, which is how
+// a citation pasted elsewhere arrives (the reviewer's finding on `/spec#b-<statement>`).
+test("IssuePage focuses the node its address names, followed on the page or freshly loaded", async () => {
   const restore = stubIssuePage(issue);
   answerRequests(
     http.get("/api/v1/issues/:key/coverage", () =>
@@ -625,7 +634,7 @@ test("IssuePage focuses the node a link on the page leads to, and a fresh load k
     const loaded = renderIssuePage("/issues/CORE-1/spec#b-r1");
     try {
       await waitFor(() => expect(row(loaded.container)).not.toBeNull());
-      expect(focusedRow()).not.toBe("spec#b-r1");
+      await waitFor(() => expect(focusedRow()).toBe("spec#b-r1"));
     } finally {
       loaded.unmount();
     }
@@ -1403,9 +1412,9 @@ test("IssuePage opens on Conversation and leaves open asks out of the main colum
     await expectPreset("Conversation");
     await user.click(within(await screen.findByTestId("issue-presets")).getByRole("button"));
     for (const preset of ["Conversation", "Spec", "Verification", "Plan", "Decisions"] as const) {
-      expect(screen.getByRole("menuitem", { name: preset })).toBeDefined();
+      expect(screen.getByRole("menuitemradio", { name: presetItem(preset) })).toBeDefined();
     }
-    expect(screen.queryByRole("menuitem", { name: "Tree" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitemradio", { name: "Tree" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Issue board")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -1463,7 +1472,7 @@ test("IssuePage names each chord by what it opens on this page", async () => {
     expect(labels.get("tab-decisions")).toBe("Turn the Decisions filter on or off");
     expect(labels.get("tab-conversation")).toBe("Conversation: turn every filter off");
     expect(labels.get("tab-activity")).toBe("Open the issue's history in Details");
-    expect(labels.get("tab-children")).toBe("Open the issue's children");
+    expect(labels.get("tab-children")).toBe("Move to the issue's children");
     expect(labels.get("tab-artifacts")).toBe("Open the Files and documents menu");
     expect([...labels.values()].filter((label) => label.includes("tab"))).toEqual([]);
     // `t o` is the collaborators, in the panel (the key table).
@@ -1985,6 +1994,8 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   try {
     await expectPreset("Conversation");
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
+    // The version control is behind its own small control at the filter row's right end.
+    await user.click(screen.getByRole("button", { name: "Version" }));
     expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
     await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "1");
     await waitFor(() =>
@@ -2124,8 +2135,9 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("combobox", { name: "Version" });
-    expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
+    // Drawn once, shut behind its small control until the reader opens it.
+    await screen.findByRole("combobox", { hidden: true, name: "Version" });
+    expect(screen.getAllByRole("combobox", { hidden: true, name: "Version" })).toHaveLength(1);
     expect(screen.queryByTestId("artifact-header")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -2147,10 +2159,17 @@ test("IssuePage draws the version control beside the filters, with no approval",
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
+    // The control is drawn shut, behind its small control, and holds what it held open.
     const control = await screen.findByTestId("issue-version-control");
-    expect(within(control).getByRole("combobox", { name: "Version" })).not.toBeNull();
-    expect(within(control).getByRole("button", { name: "Name version" })).not.toBeNull();
-    expect(within(control).queryByRole("button", { name: /^Approve/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Version" })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(within(control).getByRole("combobox", { hidden: true, name: "Version" })).not.toBeNull();
+    expect(
+      within(control).getByRole("button", { hidden: true, name: "Name version" })
+    ).not.toBeNull();
+    expect(within(control).queryByRole("button", { hidden: true, name: /^Approve/ })).toBeNull();
     // No editor is on the page, so no document's text was read for it (R21).
     expect(getArtifactText).not.toHaveBeenCalled();
 
@@ -2205,6 +2224,7 @@ test("IssuePage copies the issue key on click, its reference on a modifier click
     await user.keyboard("{/Control}");
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1"));
 
+    await user.click(await screen.findByRole("button", { name: "Version" }));
     await user.click(
       within(await screen.findByTestId("issue-version-control")).getByRole("button", {
         name: "Copy reference dispatch://CORE-1/spec",
@@ -2215,6 +2235,8 @@ test("IssuePage copies the issue key on click, its reference on a modifier click
     // The spec's own address at a version opens the spec there, and the control beside the
     // filters reads that version.
     await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
+    // The press on the link was a press outside the version control, which shut it.
+    await user.click(await screen.findByRole("button", { name: "Version" }));
     await user.click(
       await within(await screen.findByTestId("issue-version-control")).findByRole("button", {
         name: "Copy reference dispatch://CORE-1/artifact/spec@v1",
@@ -3421,8 +3443,9 @@ async function focusRow(id: string): Promise<HTMLElement> {
 // R16: the reader writes where they read. A focused comment's, message's and ask's Reply - `r` -
 // sets the line at the outline's foot to reply to it, naming it above the line, and Enter sends a
 // comment that answers it: `reply_to` for a comment, `in_reply_to` for a message, and `ask_id`
-// for an ask whatever its state, a resolved one included (dispatch://INFRA-3677). The issue's own
-// Reply, and the line with nothing set, write a comment on the issue.
+// for an ask whatever its state, a resolved one included (dispatch://INFRA-3677). The line with
+// nothing set writes a comment on the issue: the outline draws no row of the issue itself (the
+// architect's ruling 5), so the line is where a reader writes on it.
 test("IssuePage replies from the outline to a comment, a message and a resolved ask", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
@@ -3481,11 +3504,10 @@ test("IssuePage replies from the outline to a comment, a message and a resolved 
       ["CORE-1", { body: "A reply to the message.", in_reply_to: landingMessage.id }],
     ]);
 
-    // The issue's own Reply is a comment on the issue, from the same line with nothing set.
-    await focusRow("CORE-1");
-    await user.keyboard("r");
+    // With nothing set - a send sets the line back - the same line writes a comment on the issue.
     const composer = screen.getByRole("region", { name: "Write to the conversation" });
-    expect(composer.querySelector("[data-composer-target]")).toBeNull();
+    await waitFor(() => expect(composer.querySelector("[data-composer-target]")).toBeNull());
+    await user.click(within(composer).getByRole("textbox", { name: "Comment" }));
     await user.keyboard("On the issue.{Enter}");
     await waitFor(() =>
       expect(createComment.mock.calls.at(-1)?.[1]).toEqual({ body: "On the issue." })

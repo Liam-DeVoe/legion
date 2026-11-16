@@ -1,5 +1,6 @@
 import { parseNodeReference } from "../../refs/routes";
 import type { TreeNode } from "../issue-tree";
+import { BLOCK_ATTRIBUTE_LABELS } from "../page-words";
 
 /**
  * The plan's tasks as ordered steps (dispatch://INFRA-1196 R26).
@@ -48,8 +49,11 @@ function documentOf(id: string): string {
 }
 
 /**
- * The id of the node `reference` points at, as this issue addresses it, or undefined where the
- * reference names no block at all.
+ * The ids of the nodes `task` needs, as this issue addresses them: one per `needs` pointer of
+ * its block. The tree draws each as a chip that says it is a need (`tree-drafts.ts`'s
+ * `placeBlocks`, `NodeChip.label`), which is what tells it from a chip for anything else the
+ * task names - a document its words cite, a statement it is also under - so a chip naming a
+ * block of another document is no need, whatever that block's id is.
  *
  * `needs` points at a plan task of the task's own document (`blocks.json`: `targets:
  * ["plan_task"]`, `scope: "document"`), so the block id the reference carries is looked up in
@@ -57,10 +61,14 @@ function documentOf(id: string): string {
  * primary document is spelled `spec` in a reference and by its slug in a node's id, and one
  * block id is unique inside one document alone.
  */
-function neededId(task: TreeNode, reference: string): string | undefined {
-  const route = parseNodeReference(reference);
-  const block = route !== undefined && "block" in route ? route.block : undefined;
-  return block === undefined ? undefined : `${documentOf(task.id)}#b-${block.id}`;
+function neededIds(task: TreeNode): readonly string[] {
+  if (task.type !== "plan_task") return [];
+  return task.chips.flatMap((chip) => {
+    if (chip.label !== BLOCK_ATTRIBUTE_LABELS.needs) return [];
+    const route = parseNodeReference(chip.ref);
+    const block = route !== undefined && "block" in route ? route.block : undefined;
+    return block === undefined ? [] : [`${documentOf(task.id)}#b-${block.id}`];
+  });
 }
 
 /** Puts `group` into `ready`, which is kept in the plan's own order: the next group taken is the
@@ -74,25 +82,25 @@ function readyFor(ready: number[], group: number): void {
  * `nodes` as the plan's order draws them: each a step of its own, or, for tasks that need each
  * other, one cycle holding them all. `nodes` are the rows the Plan filter drew, in the plan's
  * own order, and a node that is no plan task needs nothing and is needed by nothing, so it keeps
- * the place the plan gave it.
+ * the place the plan gave it. A task the filter drew under two statements is one task here, at
+ * its first place: a plan holds each task once, and its second statement is its "Also under"
+ * chip (the tester's F19: task 1 was drawn twice).
  */
-export function planOrder(nodes: readonly TreeNode[]): readonly PlanEntry[] {
-  const at = new Map<string, number>();
-  nodes.forEach((node, index) => {
-    if (!at.has(node.id)) at.set(node.id, index);
+export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
+  const seen = new Set<string>();
+  const nodes = drawn.filter((node) => {
+    if (seen.has(node.id)) return false;
+    seen.add(node.id);
+    return true;
   });
-  // What each node needs, by index. A plan task's chips are the `needs` its block holds
-  // (`tree-drafts.ts`'s `placeBlocks`), so a chip naming a plan task of the same document is one
-  // of them; a chip naming anything else - a document the task's own words cite, a task this
-  // plan does not hold - is no edge, and puts the task under no order.
+  const at = new Map(nodes.map((node, index) => [node.id, index]));
+  // What each node needs, by index. A need naming a task this plan does not hold is no edge,
+  // and puts the task under no order.
   const needs = nodes.map((node) =>
-    node.type !== "plan_task"
-      ? []
-      : node.chips.flatMap((chip) => {
-          const needed = neededId(node, chip.ref);
-          const index = needed === undefined ? undefined : at.get(needed);
-          return index === undefined || nodes[index]?.type !== "plan_task" ? [] : [index];
-        })
+    neededIds(node).flatMap((needed) => {
+      const index = at.get(needed);
+      return index === undefined || nodes[index]?.type !== "plan_task" ? [] : [index];
+    })
   );
   // Every task each task needs, through the rest as well as directly, which is what tells a
   // cycle from a chain: a task is in a cycle with every task it needs that needs it back.
@@ -163,4 +171,71 @@ export function planOrder(nodes: readonly TreeNode[]): readonly PlanEntry[] {
     }
   }
   return entries;
+}
+
+/** One bar of the chart of time: one step and the unit it starts at. Every bar is one unit
+ *  long, because today's model holds no size for a task (R26: "a task with no size is a short
+ *  bar marked No size"); the length joins this once dispatch://INFRA-1253 gives the size. */
+export interface PlanBar {
+  readonly kind: "bar";
+  /** The tasks drawn above it that it needs, steps and tasks of a cycle alike. */
+  readonly needs: readonly TreeNode[];
+  /** Where it starts: after every task it needs has ended (R26). */
+  readonly start: number;
+  readonly task: TreeNode;
+}
+
+/** One cycle on the chart: the tasks that need each other, as one line at the place the order
+ *  gives them. */
+export interface PlanKnot {
+  readonly kind: "cycle";
+  readonly tasks: readonly TreeNode[];
+}
+
+/** One row of the chart, in the plan's order. */
+export type PlanChartRow = PlanBar | PlanKnot;
+
+/** The chart of time, as `planChart` answers it. */
+export interface PlanChart {
+  /** Where the last bar ends, which is how many units the chart's axis spans. */
+  readonly end: number;
+  readonly rows: readonly PlanChartRow[];
+}
+
+/**
+ * The chart of time over the plan's order (R26): one bar per step, starting after every task it
+ * needs has ended, and one line per cycle at its place in the order.
+ *
+ * Where a bar starts is worked out here from the `needs` the plan holds, since today's reads
+ * give no position (dispatch://INFRA-1253 R8 and R11), and every bar is one unit long, since
+ * they give no size. A cycle takes one unit after whatever its tasks need from outside it,
+ * since the order cannot say more of tasks that need each other.
+ */
+export function planChart(entries: readonly PlanEntry[]): PlanChart {
+  const ends = new Map<string, number>();
+  const tasks = new Map<string, TreeNode>();
+  const endOf = (ids: readonly string[]): number =>
+    Math.max(0, ...ids.map((id) => ends.get(id) ?? 0));
+  const rows = entries.map((entry): PlanChartRow => {
+    if (entry.kind === "cycle") {
+      const inside = new Set(entry.tasks.map((task) => task.id));
+      const start = endOf(
+        entry.tasks.flatMap((task) => neededIds(task).filter((id) => !inside.has(id)))
+      );
+      for (const task of entry.tasks) {
+        ends.set(task.id, start + 1);
+        tasks.set(task.id, task);
+      }
+      return { kind: "cycle", tasks: entry.tasks };
+    }
+    const needs = neededIds(entry.task).flatMap((id) => {
+      const needed = tasks.get(id);
+      return needed === undefined ? [] : [needed];
+    });
+    const start = endOf(needs.map((needed) => needed.id));
+    ends.set(entry.task.id, start + 1);
+    tasks.set(entry.task.id, entry.task);
+    return { kind: "bar", needs, start, task: entry.task };
+  });
+  return { end: Math.max(1, ...ends.values()), rows };
 }

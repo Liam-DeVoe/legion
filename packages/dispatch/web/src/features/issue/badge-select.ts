@@ -10,8 +10,9 @@ export const badgeSelectWrapper = `${badgeSelectFrame} md:min-h-8 has-focus-visi
 export const badgeSelectRailWrapper = `${badgeSelectFrame} md:min-h-7 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
 /** The same wrapper in the issue page's header properties line, where the controls are the
  *  line's own height, as the pictures draw them: 22 px, and 24 px on a phone, the least a touch
- *  target may be (WCAG 2.5.8), because the header's six lines at 390 px leave no room for more
- *  (dispatch://INFRA-1196 R13). */
+ *  target may be (WCAG 2.5.8), because the header at 390 px is held to eight lines and 250 px,
+ *  nine and 280 px while an approval request waits on the reader, which leaves no room for more
+ *  (dispatch://INFRA-1196 R13, ruling 8 of its build-rulings-md). */
 export const badgeSelectHeaderWrapper = `relative inline-flex min-h-6 shrink-0 items-center rounded-sm md:min-h-[22px] has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
 /** The visible badge; the caller appends its tone's `bg` and `text`. */
 export const badgeSelectBadge =

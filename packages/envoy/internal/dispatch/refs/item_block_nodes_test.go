@@ -206,12 +206,11 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/handbook-md.")
 	insertIndexedItem(t, tx, ItemComment, "CORE-1", "Cites dispatch://CORE-1/comment/"+comment+"#b-b2.")
 
-	members, truncated, err := Closure(ctx, tx, "CORE-1", false)
+	members, truncated, err := Closure(ctx, tx, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}, ViaBlocks: []string{"b2"}}}
-	if truncated || !reflect.DeepEqual(members, want) {
+	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; truncated || !reflect.DeepEqual(members, want) {
 		t.Errorf("closure = %#v (truncated %t); want %#v", members, truncated, want)
 	}
 	citers, err := ReferencedBy(ctx, tx, handbook)
@@ -250,12 +249,11 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 		t.Fatalf("the ask holds %d refs rows of its own; the link is meant to be its option's alone", own)
 	}
 
-	members, truncated, err := Closure(ctx, tx, "CORE-1", false)
+	members, truncated, err := Closure(ctx, tx, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "ask", ID: ask.ID}, ViaBlocks: []string{"b2"}}}
-	if truncated || !reflect.DeepEqual(members, want) {
+	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "ask", ID: ask.ID}}}; truncated || !reflect.DeepEqual(members, want) {
 		t.Errorf("closure = %#v (truncated %t); want %#v", members, truncated, want)
 	}
 }

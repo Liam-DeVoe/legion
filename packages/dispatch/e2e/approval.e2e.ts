@@ -28,17 +28,6 @@ import {
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
 import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
-import {
-  focusedNodeId,
-  historyEntries,
-  identityBlock,
-  marginShell,
-  nodeRow,
-  openDetails,
-  openedArtifact,
-  openIssueAddress,
-  tree,
-} from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertWhole } from "./unclipped";
@@ -109,13 +98,9 @@ test("a spec's approval is a human review pinned to its version: requested by th
       .poll(async () => (await getArtifact(artifactID, { login: "alice" })).approval?.state)
       .toBe("approved");
 
-    // The document header shows the approval pinned to version 1. The approval is drawn twice
-    // on the issue page by design: once in the identity block's state row for the issue's own
-    // document, and once in the toolbar of the preset that has that document open
-    // (dispatch://INFRA-1196 R16). This row reads the header's, so it names it.
+    // The document header shows the approval pinned to version 1.
     await page.goto(`/issues/${issue.key}`);
-    const header = page.getByTestId("issue-state-actions");
-    await expect(header.getByRole("button", { name: "Approved v1" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approved v1" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
 
     // The agent edits the spec: the approval goes stale.
@@ -129,18 +114,18 @@ test("a spec's approval is a human review pinned to its version: requested by th
       .toBeGreaterThan(1);
     await createNamedVersion(artifactID, "revised", { login: "alice" });
     await page.reload();
-    await expect(header.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
 
     // The human requests changes from the header; a reason is required.
-    await header.getByRole("button", { name: "Request changes" }).click();
+    await page.getByRole("button", { name: "Request changes" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByRole("button", { name: "Request changes" })).toBeDisabled();
     await dialog.getByLabel("Reason").fill("Name the rollback path.");
     await dialog.getByRole("button", { name: "Request changes" }).click();
-    await expect(header.getByRole("button", { name: "Changes requested" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Changes requested" })).toBeVisible();
 
     // The history lists both reviews with their versions.
-    await header.getByRole("button", { name: "Changes requested" }).click();
+    await page.getByRole("button", { name: "Changes requested" }).click();
     const reviews = page.getByRole("dialog", { name: "Reviews" });
     const afterReview = await getArtifact(artifactID, { login: "alice" });
     const pinned = afterReview.approval?.version;
@@ -305,9 +290,7 @@ test("the agent's undo of an accidental edit to an approved spec makes that appr
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    await expect(
-      page.getByTestId("issue-state-actions").getByRole("button", { name: "Approved v3" })
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approved v3" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
   } finally {
     await alice.close();
@@ -337,9 +320,8 @@ test("an undo one character away from the approved spec leaves its approval stal
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    const header = page.getByTestId("issue-state-actions");
-    await expect(header.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
-    await expect(header.getByRole("button", { name: "Approve v3" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve v3" })).toBeVisible();
   } finally {
     await alice.close();
   }
@@ -393,11 +375,7 @@ test("an undo that restores the approved text around a decision block the agent 
         version: 1,
       });
     await page.goto(`/issues/${issue.key}`);
-    await expect(
-      page
-        .getByTestId("issue-state-actions")
-        .getByRole("button", { name: "Approved v1 · changed since" })
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
   } finally {
     await alice.close();
   }
@@ -572,7 +550,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
   }
 });
 
-test("a hand-back is a line of the history, live and after a reload, and leaves one approval entry", async ({
+test("a hand-back is an Activity line, live and after a reload, and leaves one ask card", async ({
   browser,
 }) => {
   await createProject({ key: "LINE", name: "Hand-back line" });
@@ -601,7 +579,7 @@ test("a hand-back is a line of the history, live and after a reload, and leaves 
     );
     await page.goto(`/issues/${issue.key}/activity`);
     await streaming;
-    const rows = historyEntries(page);
+    const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
     const handBackLine = rows.filter({
       hasText: `handed “${requested.ask.question}” back for approval`,
     });
@@ -617,16 +595,15 @@ test("a hand-back is a line of the history, live and after a reload, and leaves 
     await page.reload();
     await expect(handBackLine).toHaveCount(1);
 
-    // The outline draws no row for an approval request - the identity block draws its step
-    // (dispatch://INFRA-1196 R31) - so the history keeps the request's events, and the request
-    // is still exactly one approval entry, with no line of the outline speaking of it.
-    await openIssueAddress(page, "conversation");
-    await expect(tree(page)).toBeVisible();
-    await expect(nodeRow(page, requested.ask.id)).toHaveCount(0);
+    // The Conversation draws no line for any of it: the ask is still exactly one card.
+    await page.getByRole("tab", { name: "Conversation" }).click();
+    const askTurn = page.locator(`[data-turn="ask:${requested.ask.id}"]`);
+    await expect(askTurn).toHaveCount(1);
     await expect(
-      identityBlock(page).locator(`[data-approval-artifact="${issue.primary_artifact_id}"]`)
-    ).toHaveCount(1);
-    await expect(tree(page).getByText("back for approval", { exact: false })).toHaveCount(0);
+      page
+        .getByRole("list", { name: "Conversation turns" })
+        .getByText("back for approval", { exact: false })
+    ).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -987,7 +964,7 @@ test("an approval request for an unassigned issue's non-primary document remains
   }
 });
 
-test("an approval ask's Inbox row lands on its approval in the identity block, its drawer link opens the document, and an anchored ask and an unanchored question land on their nodes", async ({
+test("an approval ask's Inbox row, drawer link and bare ask route land on the spec with the approve control in view, while an anchored ask and an unanchored question still land where they do today", async ({
   browser,
 }) => {
   await createProject({ key: "GATE", name: "Gate" });
@@ -995,6 +972,7 @@ test("an approval ask's Inbox row lands on its approval in the identity block, i
   // reader's own work; the agent still requests the approval.
   const issue = await createIssue({ project: "GATE", spec: "The plan.", title: "Design gate" });
   const requested = withOpenedAsk(await requestApproval(issue.primary_artifact_id, {}, session));
+  const specPath = `/issues/${issue.key}/spec?ask=${requested.ask.id}`;
 
   const anchoredAsk = await createAsk(
     issue.key,
@@ -1011,27 +989,23 @@ test("an approval ask's Inbox row lands on its approval in the identity block, i
   try {
     const page = await alice.newPage();
 
-    // The Inbox row's own link for the request is the request's own address. The outline draws
-    // no node for an approval request, so the address puts the focus on the approval the
-    // identity block draws for the spec, its approve control beside it (dispatch://INFRA-1196
-    // R20). From 1280 px the reading column's head carries the selected question's owner link
-    // too (INFRA-575), and it names the same address; following the row's link is the row's
-    // click, not the list's selection, so the issue it opens stays open.
+    // The Inbox row's own link for the request lands on the spec, approve control in view — not
+    // the Conversation turn `useItemLanding` fell through to before this fix. From 1280 px the
+    // reading column's head carries the selected question's owner link too (INFRA-575), and it
+    // names the same address; following the row's link is the row's click, not the list's
+    // selection, so the issue it opens stays open.
     await page.goto("/");
     const head = (await askControls(page, requested.ask.id)).locator("[data-inbox-owner]");
     const owner = inboxRow(page, requested.ask.id).locator("[data-inbox-owner]");
     await expect(owner).toHaveAttribute("href", (await head.getAttribute("href")) ?? "");
     await owner.click();
-    await expect(page).toHaveURL(`/issues/${issue.key}/asks/${requested.ask.id}`);
-    await expect(
-      identityBlock(page).locator(`[data-approval-artifact="${issue.primary_artifact_id}"]`)
-    ).toBeFocused();
+    await expect(page).toHaveURL(specPath);
+    await expect(page.getByRole("tab", { name: "Spec" })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
 
     // The drawer's card names the document and version it asks about, as a link; following it
-    // opens that document itself, in place of the outline, and closes the drawer. The drawer
-    // rides the shell the reader is already in, so this leg needs no cold route of its own.
-    const documentPath = `/issues/${issue.key}/artifacts/${(await getArtifact(issue.primary_artifact_id)).slug}`;
+    // opens the spec and closes the drawer. The drawer rides the shell the reader is already in,
+    // so this leg needs no cold route of its own.
     await navigateInApp(page, "/agents");
     await page.locator("body").focus();
     await page.keyboard.press("i");
@@ -1041,27 +1015,29 @@ test("an approval ask's Inbox row lands on its approval in the identity block, i
     const documentLink = drawerCard.getByRole("link", { name: "spec.md, version 1" });
     await expect(documentLink).toBeVisible();
     await documentLink.click();
-    await expect(page).toHaveURL(documentPath);
+    await expect(page).toHaveURL(specPath);
     await expect(drawer(page)).toHaveCount(0);
 
-    // An anchored ask lands on its node in the outline, focused, wherever it is anchored, and
-    // an unanchored question lands on its node too, which draws the question in place of the
-    // card the panel's old list of the conversation marked.
+    // An anchored ask still lands beside its document, and an unanchored question still lands
+    // on its Conversation turn: the approval fallback only fires when neither applies.
     await page.goto(`/issues/${issue.key}/asks/${anchoredAsk.id}`);
-    await expect(page).toHaveURL(`/issues/${issue.key}/asks/${anchoredAsk.id}`);
-    await expect.poll(() => focusedNodeId(page)).toBe(anchoredAsk.id);
+    await expect(page).toHaveURL(`/issues/${issue.key}/spec?ask=${anchoredAsk.id}`);
 
     await page.goto(`/issues/${issue.key}/asks/${unanchoredAsk.id}`);
     await expect(page).toHaveURL(`/issues/${issue.key}/asks/${unanchoredAsk.id}`);
-    await expect.poll(() => focusedNodeId(page)).toBe(unanchoredAsk.id);
-    await expect(nodeRow(page, unanchoredAsk.id).first()).toContainText("Ship it?");
-    await expect(page.locator("#issue-conversation-panel")).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await expect(
+      page.locator("#issue-conversation-panel").getByTestId(`ask-${unanchoredAsk.id}`)
+    ).toContainText("Ship it?");
   } finally {
     await alice.close();
   }
 });
 
-test("an open approval links its document at the version it asks about, and a project document's own approval link reaches its document, while the margin omits the link on both", async ({
+test("an open approval ask's document link reaches the issue's Conversation, and a project document's own approval link reaches its document, while the margin omits the link on both", async ({
   browser,
 }) => {
   await createProject({ key: "GATE", name: "Gate" });
@@ -1083,29 +1059,16 @@ test("an open approval links its document at the version it asks about, and a pr
   try {
     const page = await alice.newPage();
 
-    // The issue's open request is the identity block's approval entry for the document it is
-    // about (dispatch://INFRA-1196 R31). The header holds R13's list and nothing else, so the
-    // link to the version the request asks about is Details' approval entry's, which opens the
-    // document at that version in place of the outline (R19).
-    const slug = (await getArtifact(issue.primary_artifact_id)).slug;
+    // The issue's Conversation names the document the open request is about.
     await page.goto(`/issues/${issue.key}`);
-    await expect(
-      identityBlock(page).locator(`[data-approval-artifact="${issue.primary_artifact_id}"]`)
-    ).toHaveCount(1);
-    await expect(identityBlock(page).getByRole("link", { name: /spec\.md, version/ })).toHaveCount(
-      0
-    );
-    await openDetails(page);
-    const versionLink = marginShell(page)
-      .getByTestId("issue-details-approval-steps")
-      .getByRole("link", { name: "spec.md, version 1" });
-    await expect(versionLink).toHaveAttribute("href", `/issues/${issue.key}/artifacts/${slug}?v=1`);
-    await versionLink.click();
-    await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/${slug}?v=1`);
-    await expect(openedArtifact(page)).toBeVisible();
-    // The document as it stands, at its own address, is where the margin draws the request.
-    await page.goto(`/issues/${issue.key}/artifacts/${slug}`);
-    await openDetails(page);
+    await page.getByRole("tab", { name: "Conversation" }).click();
+    const conversationCard = page
+      .locator("#issue-conversation-panel")
+      .getByTestId(`ask-${requested.ask.id}`);
+    const conversationLink = conversationCard.getByRole("link", { name: "spec.md, version 1" });
+    await expect(conversationLink).toBeVisible();
+    await conversationLink.click();
+    await expect(page).toHaveURL(`/issues/${issue.key}/spec?ask=${requested.ask.id}`);
 
     // The issue margin lists the same ask (it is already on that document), without the link.
     const marginCard = needsYouCards(page).getByTestId(`ask-${requested.ask.id}`);
@@ -1135,7 +1098,7 @@ test("an open approval links its document at the version it asks about, and a pr
   }
 });
 
-test("an answered approval keeps linking the version it approved once the document moves further", async ({
+test("an approval ask keeps its document link and the version it asked about once it is answered, even after the document moves further", async ({
   browser,
 }) => {
   await createProject({ key: "GATE", name: "Gate" });
@@ -1167,22 +1130,16 @@ test("an answered approval keeps linking the version it approved once the docume
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // The approval entry is where an approval request stands on the issue page (R31): answered,
-    // it names the version it approved after the document moved past it, and Details' approval
-    // steps link the document at that version, opened in place of the outline (R19).
-    const slug = (await getArtifact(issue.primary_artifact_id)).slug;
     await page.goto(`/issues/${issue.key}`);
-    await expect(
-      identityBlock(page).locator(`[data-approval-artifact="${issue.primary_artifact_id}"]`)
-    ).toContainText("v1");
-    await openDetails(page);
-    const link = marginShell(page)
-      .getByTestId("issue-details-approval-steps")
-      .getByRole("link", { name: "spec.md, version 1" });
-    await expect(link).toHaveAttribute("href", `/issues/${issue.key}/artifacts/${slug}?v=1`);
+    await page.getByRole("tab", { name: "Conversation" }).click();
+    const conversationCard = page
+      .locator("#issue-conversation-panel")
+      .getByTestId(`ask-${requested.ask.id}`);
+    await expect(conversationCard).toContainText("Answered by");
+    const link = conversationCard.getByRole("link", { name: "spec.md, version 1" });
+    await expect(link).toBeVisible();
     await link.click();
-    await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/${slug}?v=1`);
-    await expect(openedArtifact(page)).toBeVisible();
+    await expect(page).toHaveURL(`/issues/${issue.key}/spec?ask=${requested.ask.id}`);
   } finally {
     await alice.close();
   }

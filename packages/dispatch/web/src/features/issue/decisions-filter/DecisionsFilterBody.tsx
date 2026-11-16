@@ -14,6 +14,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../../api/client";
 import type { Actor, Artifact, IssueDetails } from "../../../api/types";
 import {
+  focusVisibleRing,
   pageInkText,
   pageMutedText,
   pageQuietText,
@@ -22,6 +23,7 @@ import {
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { DETAILS_ATTRIBUTE } from "../../margin/margin-slot";
 import { useAgentText } from "../../refs/AgentName";
+import { decisionChanges } from "../decision-review";
 import { useSetFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
@@ -29,23 +31,34 @@ import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
 import { threadMarks } from "../outline-thread-read";
 import { conversationItem, useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
-import { authorKind, CONTROL_LABELS, nodeStateWord } from "../page-words";
+import {
+  authorKind,
+  CONTROL_LABELS,
+  DECISIONS_WORDS,
+  isReader,
+  nodeStateWord,
+  PRESET_NAMES,
+} from "../page-words";
 import { treeContext } from "../tree-drafts";
 import type { DrawnRow } from "../tree-fold";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow, type RowPerson } from "./DecisionsRow";
 import {
   conversationPath,
-  DECISIONS_WORDS,
   type DecisionsEntry,
   type DecisionsPart,
   decisionsParts,
-  firstWaiting,
+  waitingOrder,
 } from "./decisions-parts";
 
-/** The three parts drawn under a heading of their own, in the filter's order; the fourth, the
- *  foot, is headed by the control that unfolds it. */
-const HEADED = ["open_questions", "review", "yours"] as const satisfies readonly DecisionsPart[];
+/** The parts drawn under a heading of their own, in the filter's order; the last, the foot, is
+ *  headed by the control that unfolds it. */
+const HEADED = [
+  "open_questions",
+  "review",
+  "yours",
+  "others",
+] as const satisfies readonly DecisionsPart[];
 
 /** What a key that folds, zooms or opens a branch does here, where the list holds none. */
 const NOTHING = (): void => {};
@@ -54,23 +67,24 @@ const NOTHING = (): void => {};
  * The Decisions filter's body (dispatch://INFRA-1196 R2, R9, R22, R35, the picture
  * `page-v3-decisions-1440.png`, the prototype's `.decs`).
  *
- * It is one list in four parts, each under its own heading and in this order: the open
- * questions; the decisions that wait for the reader's review, each with Keep and Change; the
- * reader's own decisions, newest first; and, folded at the foot, the agents' decisions that no
- * statement rests on. Which entry stands in which part is `decisions-parts.ts`, which is pure;
- * this draws it. A part that holds nothing is not drawn, and no sentence explains the parts:
- * their headings are the whole of it (R22). It is drawn the same at every width: the rows are
- * the outline's own (`DecisionsRow.tsx`), which keep their words and their margin from 320 px.
+ * It is one list in parts, each under its own heading and in this order: the open questions;
+ * the decisions that wait for the reader's review, each with Keep and Change; the reader's own
+ * decisions, newest first; what other people decided; and, folded at the foot, the agents'
+ * decisions that no statement rests on. Which entry stands in which part is
+ * `decisions-parts.ts`, which is pure; this draws it. A part that holds nothing is not drawn,
+ * and no sentence explains the parts: their headings are the whole of it (R22). It is drawn the
+ * same at every width: the rows are the outline's own (`DecisionsRow.tsx`).
  *
- * The list answers the WAI-ARIA tree pattern as the outline does, under the outline's own name,
- * so a reader and the browser suite find one tree on the page whatever filter is on: each part
- * is a group named by its heading, each entry a row of the tree, and the foot is a row that
- * holds its entries one level down and says whether they are drawn. The focused row is the
- * list's one tab stop and nothing inside a row takes the tab order (R9); the keys are the
- * outline's own (`useTreeKeymap.ts`): the arrows and `j`/`k` move, `Shift+K` and `Shift+C`
- * press Keep and Change, `a` and `r` answer and reply, `f` steps through a row's links, Enter
- * goes to the entry's node in the conversation, and the key that cycles how much is drawn
- * unfolds the foot.
+ * The list is one landmark named by the filter, and inside it answers the WAI-ARIA tree pattern
+ * as the outline does, under the outline's own name, so a reader and the browser suite find one
+ * tree on the page whatever filter is on: each part is a group named by its heading and each
+ * entry a row of the tree. The focused row is the list's one tab stop and nothing inside a row
+ * takes the tab order (R9); the keys are the outline's own (`useTreeKeymap.ts`): the arrows and
+ * `j`/`k` move, `Shift+K` and `Shift+C` press Keep and Change, `a` and `r` answer and reply,
+ * `f` steps through a row's links, Enter goes to the entry's node in the conversation, and the
+ * key that cycles how much is drawn unfolds the foot. The foot's own control is a plain button
+ * in the tab order, as the prototype's is, so Tab reaches it where the foot is all the list
+ * holds. A key with nowhere to go says so at the row it was pressed on (the tester's F16).
  *
  * The reads are the ones the page's tree is built from, under the keys it reads them by
  * (`useIssueTree.ts`), so the body costs no request of its own (R20).
@@ -81,7 +95,6 @@ export function DecisionsFilterBody({
   holdsEscape,
   isClosed,
   issue,
-  onReport,
   reader,
   request,
   reveal,
@@ -100,9 +113,8 @@ export function DecisionsFilterBody({
   /** Whether the issue is closed, which Keep and Change are refused on. */
   isClosed: boolean;
   issue: IssueDetails;
-  /** What a key reported when it had nowhere to go, which the page draws in its own status. */
-  onReport: (report: string) => void;
-  /** Who is reading, whose own answer carries the ink rule (R34). */
+  /** Who is reading, whose own answer carries the ink rule (R34) and whose decisions stand
+   *  under "Your decisions". */
   reader: string | undefined;
   /** What the page last asked of the outline: go to a node, which the Contents pane's list
    *  asks (`IssueBody.tsx`). Each ask is acted on once. */
@@ -114,8 +126,8 @@ export function DecisionsFilterBody({
   /** The tree as the Decisions filter leaves it (`presetView`). */
   view: TreeNode;
   /** The press of the header's count of what waits on the reader that turned this filter on
-   *  (`waiting.ts`'s `waitingPressOf`): the first thing that waits, in the filter's order,
-   *  takes the focus, once per press (R13). */
+   *  (`waiting.ts`'s `waitingPressOf`): each press puts the focus on the next thing that waits,
+   *  in the filter's order (R13, the tester's F12). */
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
@@ -124,12 +136,28 @@ export function DecisionsFilterBody({
     queryFn: () => api.listIssueAsks(issue.key, "all"),
     queryKey: ["asks", issue.key],
   }).data;
+  // The issue's comments, which hold the changes a person asked of a decision
+  // (`decision-review.ts`), under the key the tree reads them by.
+  const comments = useQuery({
+    queryFn: () => api.listComments(issue.key),
+    queryKey: ["comments", issue.key],
+  }).data;
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const parts = useMemo(
-    () => decisionsParts({ asks, decisions, nodeIdOf, root, view }),
-    [asks, decisions, nodeIdOf, root, view]
+    () =>
+      decisionsParts({
+        asks,
+        changes: decisionChanges(decisions, comments),
+        decisions,
+        issueKey: issue.key,
+        nodeIdOf,
+        reader,
+        root,
+        view,
+      }),
+    [asks, comments, decisions, issue.key, nodeIdOf, reader, root, view]
   );
   // Each row's people by the page's one rule for naming one (`AgentText.author`), read once for
   // every row: a name and a shape, never an id (R9, R22).
@@ -143,7 +171,7 @@ export function DecisionsFilterBody({
   const threads = useMemo(() => threadMarks(root), [root]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
-  const body = useRef<HTMLDivElement | null>(null);
+  const body = useRef<HTMLElement | null>(null);
   const headings = useId();
 
   const [focused, setFocused] = useState<string | undefined>(undefined);
@@ -156,12 +184,20 @@ export function DecisionsFilterBody({
   const [everything, setEverything] = useState(false);
   // The node a key or the page is taking the reader to, once its row is drawn.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
+  // What a key reported when it had nowhere to go, and the row it was pressed on, which draws
+  // it until the reader moves on (`NodeRow`'s `report`).
+  const [report, setReport] = useState<{ readonly line: string; readonly row: string }>();
+  const reportHere = useCallback((line: string) => {
+    const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
+    setReport(line === "" || row === undefined ? undefined : { line, row });
+  }, []);
 
   const drawn = useMemo(
     () => [
       ...parts.open_questions,
       ...parts.review,
       ...parts.yours,
+      ...parts.others,
       ...(footShown ? parts.agents : []),
     ],
     [footShown, parts]
@@ -177,11 +213,14 @@ export function DecisionsFilterBody({
       const node = entry.node;
       setFocused(node.id);
       setStop(node.id);
+      // A move to a row is the reader going on from what a key reported.
+      setReport((held) => (held?.row === node.id ? held : undefined));
       const item = conversationItem(node);
       setFocusedNode({
         ...(node.author === undefined ? {} : { author: node.author }),
         id: node.id,
         ...(item === undefined ? {} : { item }),
+        ...(node.reference === undefined ? {} : { reference: node.reference }),
         ...(state === undefined ? {} : { state }),
         title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
         type: node.type,
@@ -233,17 +272,23 @@ export function DecisionsFilterBody({
     if (request.id !== undefined) goTo(request.id);
   }, [goTo, request]);
 
-  // The header's count of what waits on the reader puts the focus on the first thing that
-  // waits, in this filter's order: an open question whose turn is the reader's, else a decision
-  // of the review list (R13). The reads that hold it may still be out when the press lands, so
-  // the press is taken once the list holds something that waits.
+  // The header's count of what waits on the reader puts the focus on a thing that waits, in
+  // this filter's order: each open question whose turn is the reader's, then each decision of
+  // the review list (R13). Each press goes to the next of them after the one the last press
+  // went to, and round to the first again, so a reader works down what waits with the one
+  // control (the tester's F12). The reads that hold it may still be out when the press lands,
+  // so the press is taken once the list holds something that waits.
   const pressed = useRef<number | undefined>(undefined);
-  const waiting = firstWaiting(parts);
+  const went = useRef<string | undefined>(undefined);
+  const waiting = useMemo(() => waitingOrder(parts), [parts]);
   useEffect(() => {
     if (waitingPress === undefined || waitingPress === pressed.current) return;
-    if (waiting === undefined) return;
+    if (waiting.length === 0) return;
     pressed.current = waitingPress;
-    goTo(waiting);
+    const next = waiting[(waiting.indexOf(went.current ?? "") + 1) % waiting.length];
+    if (next === undefined) return;
+    went.current = next;
+    goTo(next);
   }, [goTo, waiting, waitingPress]);
 
   // An address that names an entry puts the focus on it, once per address (R19): the row is
@@ -262,11 +307,11 @@ export function DecisionsFilterBody({
     row.focus();
   }, [drawn, footed, reveal]);
 
-  // A decision the reader kept leaves the review list for their own decisions, and its row
-  // with it, which drops the focus to the page. The reader is working down the list, so the
-  // focus goes to the decision that stood after it, else the one before it (the prototype's
-  // `keepDecision`), else to the kept decision where it now stands. A reader who has moved
-  // somewhere else on the page keeps their place.
+  // A decision the reader kept or asked to change leaves the review list for their own
+  // decisions, and its row with it, which drops the focus to the page. The reader is working
+  // down the list, so the focus goes to the decision that stood after it, else the one before
+  // it (the prototype's `keepDecision`), else to the decision where it now stands. A reader who
+  // has moved somewhere else on the page keeps their place.
   const reviewing = useMemo(() => parts.review.map((entry) => entry.node.id), [parts.review]);
   const reviewed = useRef(reviewing);
   useLayoutEffect(() => {
@@ -304,7 +349,7 @@ export function DecisionsFilterBody({
     onFold: NOTHING,
     onOpenDeeper: NOTHING,
     onPin: pin,
-    onReport,
+    onReport: reportHere,
     onReveal: goTo,
     onZoom: NOTHING,
     oneNodeAtATime: false,
@@ -327,19 +372,20 @@ export function DecisionsFilterBody({
         ? agentText.author(entry.keptBy)
         : undefined;
     // How the node stands, as the panel's facts of the focused node say it.
+    const standing =
+      entry.kind === "ask" ? node.state : entry.kind === "decision" ? entry.standing : undefined;
     const state =
-      entry.kind === "ask"
-        ? node.state === undefined
-          ? undefined
-          : nodeStateWord(node.state)
-        : entry.standing === undefined
-          ? undefined
-          : `${DECISIONS_WORDS.states[entry.standing]}${keeper === undefined ? "" : ` ${keeper}`}`;
+      standing === undefined
+        ? undefined
+        : `${nodeStateWord(standing)}${keeper === undefined ? "" : ` ${keeper}`}`;
     return (
       <DecisionsRow
         {...(node.answer === undefined ? {} : { answerer: agentText.author(node.answer.by) })}
         author={person(node.author)}
         body={focused === id || pinned.has(id) || everything}
+        {...(entry.kind === "decision" && entry.change !== undefined
+          ? { changer: person(entry.change.by) }
+          : {})}
         {...(entry.kind === "ask" && entry.declined !== undefined
           ? { decliner: person(entry.declined.by) }
           : {})}
@@ -354,6 +400,7 @@ export function DecisionsFilterBody({
         onPin={() => pin(id)}
         ownAnswer={isReader(node.answer?.by, reader)}
         pinned={pinned.has(id)}
+        {...(report?.row === id ? { report: report.line } : {})}
         review={part === "review"}
         tabStop={tabStop === id}
         {...(mark === undefined ? {} : { threadRead: mark })}
@@ -361,16 +408,24 @@ export function DecisionsFilterBody({
     );
   };
   const foot = `${headings}-agents`;
+  const footRows = `${headings}-agents-rows`;
   return (
-    <div
+    // One landmark named by the filter, which is where a reader who knew the old tab's four
+    // sections finds them (R19). It holds the tree's rows and the foot's control, so the keys
+    // and the focus are read over the whole of it.
+    <section
+      aria-label={PRESET_NAMES.decisions}
       className="mx-auto mt-3.5 mb-[120px] flex w-full max-w-[960px] min-w-0 flex-col max-[760px]:mt-2.5"
       data-decisions-body=""
+      onBlur={releaseFocus}
+      ref={body}
     >
+      {/* The foot's rows stand after its control, outside this element, and are this tree's
+          all the same (`aria-owns`), so the page holds one tree. */}
       <div
         aria-label={CONTROL_LABELS.tree}
+        aria-owns={footShown && parts.agents.length > 0 ? footRows : undefined}
         className="flex min-w-0 flex-col"
-        onBlur={releaseFocus}
-        ref={body}
         role="tree"
       >
         {HEADED.map((part) => {
@@ -411,55 +466,50 @@ export function DecisionsFilterBody({
             </div>
           );
         })}
-        {parts.agents.length === 0 ? null : (
-          // biome-ignore lint/a11y/useSemanticElements: a tree owns only its rows and groups of rows; a fieldset is neither.
-          <div
-            aria-labelledby={foot}
-            className="flex min-w-0 flex-col"
-            data-decisions-part="agents"
-            role="group"
-          >
-            {/* The foot (the prototype's `.minor-t`): one row that says how many decisions it
-                holds and whether they are drawn, and whose control unfolds them. Out of the
-                tab order, as every control inside the tree is (R9): the key that cycles how
-                much is drawn unfolds it. */}
-            <div
-              aria-expanded={footShown}
-              aria-level={1}
-              className="mt-[22px] mb-1 flex min-w-0 max-[760px]:mt-[18px]"
-              data-decisions-foot=""
-              role="treeitem"
-              tabIndex={-1}
-            >
-              <button
-                aria-expanded={footShown}
-                className={`dispatch-inline-link py-1 text-left text-sm leading-5 font-medium hover:text-page-ink ${pageMutedText}`}
-                data-decisions-heading=""
-                id={foot}
-                onClick={() => setFootShown(!footShown)}
-                tabIndex={-1}
-                type="button"
-                {...pageChrome}
-              >
-                <span aria-hidden="true">{footShown ? "▾" : "▸"}</span>{" "}
-                <span data-decisions-count="" {...authorText}>
-                  {parts.agents.length}
-                </span>{" "}
-                {parts.agents.length === 1
-                  ? DECISIONS_WORDS.agents_one
-                  : DECISIONS_WORDS.agents_many}
-              </button>
-            </div>
-            {footShown ? parts.agents.map((entry) => rowFor(entry, "agents")) : null}
-          </div>
-        )}
       </div>
+      {parts.agents.length === 0 ? null : (
+        <div className="flex min-w-0 flex-col" data-decisions-part="agents">
+          {/* The foot (the prototype's `.minor-t`): one control that says how many decisions
+              it holds and whether they are drawn, and unfolds them. It is a plain button in
+              the tab order, as the prototype's is, so Tab reaches it where the foot is all the
+              list holds; the key that cycles how much is drawn unfolds it too. */}
+          <div className="mt-[22px] mb-1 flex min-w-0 max-[760px]:mt-[18px]" data-decisions-foot="">
+            <button
+              aria-controls={footShown ? footRows : undefined}
+              aria-expanded={footShown}
+              className={`dispatch-inline-link rounded py-1 text-left text-sm leading-5 font-medium hover:text-page-ink ${pageMutedText} ${focusVisibleRing}`}
+              data-decisions-heading=""
+              id={foot}
+              onClick={() => setFootShown(!footShown)}
+              type="button"
+              {...pageChrome}
+            >
+              <span aria-hidden="true">{footShown ? "▾" : "▸"}</span>{" "}
+              <span data-decisions-count="" {...authorText}>
+                {parts.agents.length}
+              </span>{" "}
+              {parts.agents.length === 1 ? DECISIONS_WORDS.agents_one : DECISIONS_WORDS.agents_many}
+            </button>
+          </div>
+          {footShown ? (
+            // biome-ignore lint/a11y/useSemanticElements: a tree owns only its rows and groups of rows; a fieldset is neither.
+            <div
+              aria-labelledby={foot}
+              className="flex min-w-0 flex-col"
+              id={footRows}
+              role="group"
+            >
+              {parts.agents.map((entry) => rowFor(entry, "agents"))}
+            </div>
+          ) : null}
+        </div>
+      )}
       {drawn.length === 0 && parts.agents.length === 0 ? (
         <p className={`py-1 text-sm ${textMutedOnCanvas}`} {...pageChrome}>
           {emptyLine}
         </p>
       ) : null}
-    </div>
+    </section>
   );
 }
 
@@ -468,17 +518,5 @@ function rowOf(container: HTMLElement | null, id: string): HTMLElement | null {
   return (
     container?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(id)}"]`) ??
     null
-  );
-}
-
-/** Whether `actor` is the reader writing as themselves: a person signed in as `reader`, and not
- *  an agent acting for them, whose words are the agent's (R9). It is `TreeRows.tsx`'s rule,
- *  which is not exported there; integration gives the two one copy. */
-function isReader(actor: Actor | undefined, reader: string | undefined): boolean {
-  return (
-    reader !== undefined &&
-    actor?.kind === "user" &&
-    actor.id === reader &&
-    (actor.act?.session ?? "") === ""
   );
 }

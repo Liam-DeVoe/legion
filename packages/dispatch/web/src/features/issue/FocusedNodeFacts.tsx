@@ -28,6 +28,7 @@ import { AgentParts, useAgentText } from "../refs/AgentName";
 import { sessionOfAddress } from "../refs/routes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { FocusedNode } from "./focused-node";
+import { NodeReferences } from "./node-references/NodeReferences";
 import { useOutlineWriter } from "./outline-writer";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, DELIVERY_STATE_WORDS, NODE_TYPE_NAMES, sentenceCase } from "./page-words";
@@ -80,6 +81,9 @@ export function FocusedNodeFacts({
       {node.item === undefined ? null : (
         <ItemControls issueKey={issueKey} item={node.item} state={state} />
       )}
+      {/* What references the row the reader is on, mentions included (R14, R19): read only when
+          the reader opens it, so it costs nothing on load and nothing per row (R21). */}
+      <NodeReferences node={node} reference={node.reference} />
     </section>
   );
 }

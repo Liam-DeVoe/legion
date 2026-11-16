@@ -26,7 +26,7 @@ questions, approve the spec, and review the pull request. Everything happens in
 
 ## Hand an issue to Legion
 
-1. Open the issue in Dispatch and add the label **`legion`** in its **Details** panel.
+1. Open the issue in Dispatch and add the label **`legion`** from the issue header.
 2. For a new issue (status `triage`), that is the whole handover: your label is queued by the
    daemon, and the issue moves to `todo` itself. For a parked issue (`backlog` or `icebox`), set
    its status to **`todo`**, or approve its spec: your approval queues it the same way when the

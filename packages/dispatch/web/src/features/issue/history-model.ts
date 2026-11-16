@@ -91,6 +91,11 @@ export interface HistoryInput {
   readonly events: readonly DispatchEvent[];
   /** `user_issue_state.last_read_seq`: the reader's read mark. */
   readonly lastReadSeq: number;
+  /** When the oldest event the log has read so far was made, while older pages of the log are
+   *  still to be read; undefined once the whole log is in. A thread that began before it is
+   *  left out until its page is read: its place among events not read yet is not known, and a
+   *  day drawn with that thread alone would count one entry where it holds many. */
+  readonly loadedFrom?: string;
   readonly messages: readonly MessageRead[] | undefined;
   /** Local YYYY-MM-DD. */
   readonly today: string;
@@ -100,11 +105,13 @@ export interface HistoryInput {
 const UPLOAD_RUN_MS = 60_000;
 
 /** The event types of a row the outline draws, which the history leaves out. A comment's and a
- *  message's are left out too: the outline draws those a person took part in, and this list
- *  draws the others from the issue's comments and messages themselves, whole. An ask's are left
- *  out for a question alone: an approval request is no row of the outline - the identity block
- *  draws its step (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's
- *  (`ofOutlineRow`). */
+ *  message's are left out where the outline draws that comment or message - one a person took
+ *  part in - and for its creation always, since this list draws a thread agents wrote among
+ *  themselves from the issue's comments and messages, each turn whole; what happened to such a
+ *  thread after - a mention that could not be delivered, a resolution, an edit - is no node's,
+ *  so it is a line here (R15, `ofOutlineRow`). An ask's are left out for a question alone: an
+ *  approval request is no row of the outline - the identity block draws its step
+ *  (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's. */
 const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "ask.anchor_refreshed": true,
   "ask.answered": true,
@@ -140,6 +147,7 @@ type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
 /** The issue's history by day, newest first (`HistoryDay`). */
 export function buildHistory(input: HistoryInput): HistoryDay[] {
   const kinds = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
+  const agentsOnly = agentsOnlyIds(input.comments, input.messages);
   const entries: Dated[] = [];
   let previousStatus: string | undefined;
   let run: { author: Actor; at: string; entry: Extract<Dated, { kind: "uploads" }> } | undefined;
@@ -156,7 +164,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         ? event.payload.status
         : undefined;
     const upload = uploadOf(event, kinds);
-    if (ofOutlineRow(event) || isDocumentVersion(event, kinds)) {
+    if (ofOutlineRow(event, agentsOnly) || isDocumentVersion(event, kinds)) {
       if (status !== undefined) previousStatus = status;
       continue;
     }
@@ -196,7 +204,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     });
     if (status !== undefined) previousStatus = status;
   }
-  entries.push(...threadsOf(input, seqOf));
+  entries.push(...threadsOf(input, agentsOnly, seqOf));
 
   // Newest first, by when each happened; one instant by the log's own order.
   entries.sort((one, other) => compareTimestamps(other.at, one.at) || other.seq - one.seq);
@@ -205,15 +213,18 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   let marked = !(read && unread);
   const days: { date: string; entries: HistoryEntry[] }[] = [];
   for (const entry of entries) {
+    // The line that says what is new stands after the oldest unread entry, in that entry's own
+    // day: where the reader last read through an earlier day, it closes today's list, which is
+    // open, rather than heading a day the list folds.
+    if (!marked && entry.seq > 0 && entry.seq <= input.lastReadSeq) {
+      days.at(-1)?.entries.push({ id: "unread", kind: "unread" });
+      marked = true;
+    }
     const date = dateKey(entry.at);
     let day = days.at(-1);
     if (day?.date !== date) {
       day = { date, entries: [] };
       days.push(day);
-    }
-    if (!marked && entry.seq > 0 && entry.seq <= input.lastReadSeq) {
-      day.entries.push({ id: "unread", kind: "unread" });
-      marked = true;
     }
     day.entries.push(entry);
   }
@@ -225,9 +236,13 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   }));
 }
 
-/** Each thread agents wrote among themselves, as one entry at its first turn. */
-function threadsOf(input: HistoryInput, seqOf: ReadonlyMap<string, number>): Dated[] {
-  const ids = agentsOnlyIds(input.comments, input.messages);
+/** Each thread agents wrote among themselves, as one entry at its first turn: every one that
+ *  began inside what the log has read (`HistoryInput.loadedFrom`). */
+function threadsOf(
+  input: HistoryInput,
+  ids: ReadonlySet<string>,
+  seqOf: ReadonlyMap<string, number>
+): Dated[] {
   const threads: Dated[] = [];
   const comments = (input.comments ?? []).filter((comment) => ids.has(comment.id));
   for (const root of comments.filter((comment) => comment.reply_to === null)) {
@@ -242,7 +257,10 @@ function threadsOf(input: HistoryInput, seqOf: ReadonlyMap<string, number>): Dat
       threadEntry(messageTurn(thread.message), (thread.replies ?? []).map(messageTurn), seqOf)
     );
   }
-  return threads;
+  const from = input.loadedFrom;
+  return from === undefined
+    ? threads
+    : threads.filter((thread) => compareTimestamps(thread.at, from) >= 0);
 }
 
 function threadEntry(
@@ -283,9 +301,34 @@ function messageTurn(message: MessageRead["message"]): HistoryTurn {
   };
 }
 
-/** Whether `event` is of a row the outline draws, and so no line of the history. */
-function ofOutlineRow(event: DispatchEvent): boolean {
+/** The comment or message an event is about, where it is one of a comment's or a message's
+ *  that the history draws for a thread agents wrote among themselves: every one but the
+ *  creation, which the thread's own turn draws. */
+function turnOf(event: DispatchEvent): string | undefined {
+  switch (event.type) {
+    case "comment.delivery":
+      return event.payload.comment_id;
+    case "message.accepted":
+    case "message.delivery":
+      return event.payload.message_id;
+    case "comment.answered":
+    case "comment.edited":
+    case "comment.reopened":
+    case "comment.resolved":
+    case "message.answered":
+      return event.payload.id;
+    default:
+      return undefined;
+  }
+}
+
+/** Whether `event` is of a row the outline draws, and so no line of the history. What happened
+ *  to a comment or a message of a thread agents wrote among themselves (`agentsOnly`) is no
+ *  row's, and an approval request's events are the history's. */
+function ofOutlineRow(event: DispatchEvent, agentsOnly: ReadonlySet<string>): boolean {
   if (OUTLINE_EVENTS[event.type] !== true) return false;
+  const turn = turnOf(event);
+  if (turn !== undefined && agentsOnly.has(turn)) return false;
   const payload: unknown = event.payload;
   return !(
     event.type.startsWith("ask.") &&

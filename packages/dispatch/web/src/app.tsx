@@ -74,7 +74,7 @@ import {
 } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
-  PHONE_VIEWPORT_QUERY,
+  MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
@@ -482,23 +482,29 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     String
   );
   const location = useLocation();
-  // The issue page's frame is its own (dispatch://INFRA-1196 R14): from the phone's width up an
+  // The issue page's frame is its own (dispatch://INFRA-1196 R14): from Tailwind's `md` up an
   // icon rail of 56 px stands where the sidebar stands on every other page, below it the `☰` in
   // the issue's own header opens the navigation, and its panel is a drawer over the page,
   // Details, rather than a column. The shell reads the address for it, as it reads the address
-  // for the margin, so a reload draws that frame from its first frame.
+  // for the margin, so a reload draws that frame from its first frame. The rail is drawn by the
+  // query that is `md` itself, in `rem`, because the room the page makes for it is `md:pl-14`:
+  // a pixel query draws the rail over the page wherever the two disagree, which is every width
+  // from 768 to 959 px at a 20 px default font.
   const issuePage = parseIssuePath(location.pathname, location.search) !== undefined;
-  const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
-  const iconRailShown = issuePage && !isPhoneViewport;
+  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
+  const iconRailShown = issuePage && railFits;
   // Whether the Details drawer is open, held for the page it was opened on: every load opens it
   // closed, and so does every move to another issue; the issue's own `/conversation`,
   // `/activity` and `/collaborators` open it (`IssuePage.tsx`), and so do a compose, a picked
   // card and a link that lands on a card beside its document (`features/margin/Margin.tsx`).
+  // Leaving the page it was opened on forgets it in the same render, so coming back to that
+  // page - by a link or by Back - finds it closed, as a load does.
   const pageIdentity =
     parseIssuePath(location.pathname)?.key ??
     parseProjectPath(location.pathname)?.project ??
     location.pathname;
   const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
+  if (detailsFor !== undefined && detailsFor !== pageIdentity) setDetailsFor(undefined);
   const detailsOpen = detailsFor === pageIdentity;
   const detailsDrawer = useMemo(
     () => ({
@@ -607,14 +613,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     onClose: () => setNavigationOpen(false),
     open: navigationSheetShown,
   });
-  // What the issue's header draws its `☰` from, below the phone's width, where the shell draws
-  // neither its bar nor the rail (R14).
+  // What the issue's header draws its `☰` from, below `md`, where the shell draws neither its
+  // bar nor the rail (R14).
   const headerNavigation = useMemo(
     () =>
-      issuePage && isPhoneViewport
+      issuePage && !railFits
         ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
         : undefined,
-    [issuePage, isPhoneViewport, navigationOpen]
+    [issuePage, navigationOpen, railFits]
   );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.

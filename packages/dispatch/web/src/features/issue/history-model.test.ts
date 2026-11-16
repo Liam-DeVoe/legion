@@ -237,5 +237,76 @@ test("each day is headed, newest first, and the read mark falls between read and
     ["2026-11-13", false],
   ]);
   expect(days[1]?.label).toBe("Yesterday");
-  expect(days[1]?.entries.map((entry) => entry.kind)).toEqual(["unread", "event"]);
+  // The line that says what is new closes the day of the oldest unread entry - today's list,
+  // which is open - and never heads an earlier day, which the list folds.
+  expect(days[0]?.entries.map((entry) => entry.kind)).toEqual(["event", "unread"]);
+  expect(days[1]?.entries.map((entry) => entry.kind)).toEqual(["event"]);
+});
+
+test("the read mark falls inside a day where that day holds read and unread entries", () => {
+  seq = 0;
+  const events = [
+    event("handoff.recorded", "2026-11-15T08:00:00Z", {}),
+    event("handoff.recorded", "2026-11-15T09:00:00Z", {}),
+  ];
+  const days = buildHistory({
+    artifacts: [],
+    comments: [],
+    events,
+    lastReadSeq: 1,
+    messages: [],
+    today: "2026-11-15",
+  });
+  expect(days[0]?.entries.map((entry) => entry.kind)).toEqual(["event", "unread", "event"]);
+});
+
+// Threads come from the whole comment list and events from the pages of the log read so far, so
+// a thread older than the oldest event read waits for its page: drawn before it, it would stand
+// in a day of its own that counts that thread alone.
+test("a thread that began before the oldest event read so far waits for its page", () => {
+  seq = 0;
+  const old = comment("old", "2026-11-10T09:00:00Z", AGENT);
+  const recent = comment("recent", "2026-11-15T09:00:00Z", AGENT);
+  const events = [event("handoff.recorded", "2026-11-14T09:00:00Z", {})];
+  const roots = (loadedFrom: string | undefined) =>
+    flat(
+      buildHistory({
+        artifacts: [],
+        comments: [old, recent],
+        events,
+        lastReadSeq: 0,
+        ...(loadedFrom === undefined ? {} : { loadedFrom }),
+        messages: [],
+        today: "2026-11-15",
+      })
+    ).flatMap((entry) => (entry.kind === "thread" ? [entry.root.id] : []));
+  expect(roots("2026-11-14T09:00:00Z")).toEqual(["recent"]);
+  // The whole log is in: nothing waits.
+  expect(roots(undefined)).toEqual(["recent", "old"]);
+});
+
+// What happened to a thread agents wrote among themselves is no row's of the outline, so it is
+// a line of the history (R15); the same events of a comment a person wrote are the outline's.
+test("a delivery and a resolution of an agents' thread are lines of the history", () => {
+  seq = 0;
+  const among = comment("among", "2026-11-15T09:00:00Z", AGENT);
+  const mine = comment("mine", "2026-11-15T09:00:00Z", PERSON);
+  const events = [
+    event("comment.created", "2026-11-15T09:00:00Z", { id: "among" }),
+    event("comment.delivery", "2026-11-15T09:01:00Z", { comment_id: "among" }),
+    event("comment.resolved", "2026-11-15T09:02:00Z", { id: "among" }),
+    event("comment.delivery", "2026-11-15T09:03:00Z", { comment_id: "mine" }),
+    event("comment.resolved", "2026-11-15T09:04:00Z", { id: "mine" }),
+  ];
+  const lines = flat(
+    buildHistory({
+      artifacts: [],
+      comments: [among, mine],
+      events,
+      lastReadSeq: 0,
+      messages: [],
+      today: "2026-11-15",
+    })
+  ).flatMap((entry) => (entry.kind === "event" ? [entry.event.type] : []));
+  expect(lines).toEqual(["comment.resolved", "comment.delivery"]);
 });

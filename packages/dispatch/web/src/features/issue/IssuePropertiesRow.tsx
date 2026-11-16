@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
-import { projectsQuery } from "../../api/queries";
+import { api } from "../../api/client";
+import { issueCoverageQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -35,6 +36,7 @@ import { PriorityEditor } from "./PriorityControl";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { UnreachableRouteMarker } from "./RouteReach";
+import { treeContext } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 import { type WaitingPress, waitingOnReader } from "./waiting";
@@ -68,13 +70,47 @@ export function IssuePropertiesRow({
   writes: IssueHeaderWrites;
 }): ReactNode {
   const navigate = useNavigate();
-  const saving = writes.updateIssue.isPending;
+  const { pathname } = useLocation();
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
-  const status = writes.pendingStatus ?? issue.status;
+  // A status picked while another write of the issue is in flight - the title saved by the blur
+  // that the press on this control caused - is held and sent once that write has settled, so the
+  // press lands on the control as it does with nothing edited (the issue's writes go one at a
+  // time, `useIssueDrafts`'s guard), rather than finding it refusing input. Only the status's own
+  // write holds the control.
+  const [heldStatus, setHeldStatus] = useState<string | undefined>(undefined);
+  const saving = writes.updateIssue.isPending;
+  const pickStatus = (next: string) => {
+    if (!writes.drafts.requestStatusSubmit(next)) setHeldStatus(next);
+  };
+  useEffect(() => {
+    if (heldStatus === undefined || saving) return;
+    setHeldStatus(undefined);
+    if (!writes.drafts.requestStatusSubmit(heldStatus)) setHeldStatus(heldStatus);
+  }, [heldStatus, saving, writes.drafts]);
+  const status = heldStatus ?? writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
-  // The decisions read the outline makes, under its key, so the count costs no request.
+  // What the count counts, read from what the outline already reads under the same keys - the
+  // decisions, the coverage's statements, the comments a Change is written as - so it costs no
+  // request of its own (`waiting.ts`).
+  const viewer = useQuery(whoAmIQuery()).data?.login;
   const decisions = useQuery(issueDecisionsQuery(issue.key, true));
-  const waiting = waitingOnReader(issue, decisions.data);
+  const coverage = useQuery(issueCoverageQuery(issue.key));
+  const comments = useQuery({
+    queryFn: () => api.listComments(issue.key),
+    queryKey: ["comments", issue.key],
+  });
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  const statements = useMemo(
+    () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
+    [coverage.data, nodeIdOf]
+  );
+  const waiting = waitingOnReader(
+    issue,
+    viewer,
+    decisions.data,
+    (reference) => statements.has(nodeIdOf(reference)),
+    comments.data
+  );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -98,12 +134,16 @@ export function IssuePropertiesRow({
   const approval = documentArtifact?.approval;
 
   // The count's press: the Decisions filter, with the outline drawn in place of any document,
-  // and the focus on the first node there that waits (`IssueBody.tsx`); an approval request
-  // alone puts the focus on the approval control on this line (R13, dispatch://INFRA-3678).
+  // and the focus on the next item there that waits, in the filter's order - the first press on
+  // the first, each press after on the one after it (the Decisions filter's body takes the press
+  // from the history entry); an approval request alone puts the focus on the approval control on
+  // this line (R13, dispatch://INFRA-3678). A press made on the filter already replaces its entry,
+  // so Back leaves the filter rather than walking back through the presses.
   const goToWaiting = () => {
     if (waiting.asks + waiting.decisions > 0) {
       const press: WaitingPress = { waitingPress: performance.now() };
-      navigate(presetPath(issue.key, "decisions"), { state: press });
+      const path = presetPath(issue.key, "decisions");
+      navigate(path, { replace: pathname === path, state: press });
       return;
     }
     const header = document.querySelector("[data-issue-header]");
@@ -122,11 +162,14 @@ export function IssuePropertiesRow({
       className={`flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-3.5 pt-1 pb-2.5 text-sm leading-5 md:gap-x-3.5 md:px-7 md:pt-0.5 md:pb-[7px] ${pageLineBorder} ${pageMutedText}`}
       data-testid="issue-state-actions"
     >
-      {/* The prototype's `.pill`: the status's glyph and word inside a rule of its colour. */}
+      {/* The prototype's `.pill`: the status's glyph and word inside a rule of its colour. The
+          rule is drawn inside the pill's box, so the select can fill that box: 24 px tall on a
+          phone, the least a touch target may be (WCAG 2.5.8), and the prototype's 20 px from
+          the phone's width up. */}
       <label
-        className={`inline-flex min-h-6 shrink-0 items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold md:min-h-0 ${statusTone(status)}`}
+        className={`inline-flex min-h-6 shrink-0 items-stretch gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] md:min-h-5 ${statusTone(status)}`}
       >
-        <span aria-hidden="true" {...pageChrome}>
+        <span aria-hidden="true" className="self-center" {...pageChrome}>
           {statusGlyph(status)}
         </span>
         {/* Sized to the status it shows, as the prototype's pill is; a browser with no
@@ -134,8 +177,8 @@ export function IssuePropertiesRow({
         <select
           aria-label={PROPERTY_LABELS.status}
           className={`min-w-0 cursor-pointer appearance-none font-inherit outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${focusVisibleRing}`}
-          disabled={isClosed || saving}
-          onChange={(event) => writes.drafts.requestStatusSubmit(event.target.value)}
+          disabled={isClosed || writes.statusSaving}
+          onChange={(event) => pickStatus(event.target.value)}
           value={status}
         >
           {selectableStatuses.map((choice) => (
@@ -145,8 +188,11 @@ export function IssuePropertiesRow({
           ))}
         </select>
       </label>
+      {/* The priority and the assignee stay enabled while another write is in flight and queue a
+          pick behind it, as their own controls say: a press straight out of the title's editor
+          lands on them. */}
       <PriorityEditor
-        disabled={isClosed || saving}
+        disabled={isClosed}
         issueKey={issue.key}
         priority={issuePriority(issue.priority)}
         variant="header"
@@ -154,7 +200,7 @@ export function IssuePropertiesRow({
       />
       <AssigneeControl
         assignee={issue.assignee}
-        disabled={isClosed || saving}
+        disabled={isClosed}
         issueKey={issue.key}
         variant="header"
       />

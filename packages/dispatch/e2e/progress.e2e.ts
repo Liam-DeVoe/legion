@@ -1,5 +1,4 @@
 import { createIssue, createProject, getIssue, listIssues, patchIssue } from "./api";
-import { openDetails } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -45,14 +44,9 @@ test("an issue shows its spec's task list and its children counted, on its page,
       });
     };
 
-    // On the issue page the children's progress is the header's, and the task count is
-    // Details' (dispatch://INFRA-1196 R13).
     await page.goto(`/issues/${root.key}`);
-    await expect(
-      page.getByTestId("issue-header").getByTestId("issue-progress-children")
-    ).toHaveText("Children 1 of 2 done");
-    await openDetails(page);
     await expect(page.getByTestId("issue-progress-tasks")).toHaveText("2/4 tasks");
+    await expect(page.getByTestId("issue-progress-children")).toHaveText("1/2 children");
     await shot("issue");
 
     await navigateInApp(page, `/issues/${plain.key}`);

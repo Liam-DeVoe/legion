@@ -5,18 +5,16 @@ import type { Artifact } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   badgePrimary,
-  borderDefault,
   calloutInfoBorder,
-  card,
-  focusVisibleRing,
   inputClasses,
   linkHoverText,
   linkText,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
+  pageHairBorder,
+  pageHeaderControl,
+  pageInkText,
+  pagePaperBg,
+  pageRowHoverBg,
   textMutedOnSurface,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { artifactVersionUrl, versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import {
@@ -54,8 +52,14 @@ import { CONTROL_LABELS, EMPTY_STATE_LINES, FILE_WORDS } from "./page-words";
  * item outlives the menu closing. The staged file and the title form New document opens are
  * beside the menu for the same reason: each takes the line under the preset row, the form with
  * the caret in its Title.
+ *
+ * Its control is one small control, like Keys (ruling 5 of
+ * dispatch://INFRA-1196/artifact/build-rulings-md): at the right end of the filter row from
+ * 761 px up, where its menu opens leftward from the control's right edge so it stays on the
+ * screen, and in the Outline sheet at 760 px and below, where it opens rightward.
  */
 export function NodeMenu({
+  align,
   artifacts,
   isClosed,
   issueKey,
@@ -63,6 +67,9 @@ export function NodeMenu({
   onToggle,
   open,
 }: {
+  /** Which edge of the control the menu hangs from: its right edge at the row's right end, its
+   *  left edge in the Outline sheet. */
+  align: "end" | "start";
   /** Every artifact of the issue: each is an item of the menu, and a title one of them already
    *  holds is refused before New document writes it. */
   artifacts: readonly Artifact[];
@@ -123,11 +130,11 @@ export function NodeMenu({
   }, [creation.open]);
   return (
     <>
-      <div className="relative shrink-0">
+      <div className="relative flex shrink-0 flex-col items-start">
         <button
           aria-expanded={open}
           aria-haspopup="menu"
-          className={NODE_MENU_BUTTON_CLASS}
+          className={pageHeaderControl}
           onClick={onToggle}
           type="button"
           {...pageChrome}
@@ -140,7 +147,7 @@ export function NodeMenu({
         {open ? (
           // biome-ignore lint/a11y/noStaticElementInteractions: a passive drop surface - Upload, inside it, is the keyboard's way to add a file.
           <div
-            className={`${MENU_CLASS} ${upload.dropTarget.isDragging ? `border-dashed ${calloutInfoBorder}` : ""}`}
+            className={`${MENU_CLASS} ${align === "end" ? "right-0" : "left-0"} ${upload.dropTarget.isDragging ? `border-dashed ${calloutInfoBorder}` : ""}`}
             onDragLeave={upload.dropTarget.onDragLeave}
             onDragOver={upload.dropTarget.onDragOver}
             onDrop={upload.dropTarget.onDrop}
@@ -334,11 +341,11 @@ function NodeMenuItem({
   );
 }
 
-/** The one shape both menus of the preset row wear: the presets' own below 1025 px, and the
- *  node menu's at every width. */
-export const MENU_CLASS = `absolute left-0 top-full z-30 mt-1 flex w-56 flex-col gap-1 rounded-lg border p-2 shadow-lg ${borderDefault} ${card}`;
+/** The one shape both menus of the filter row wear, the prototype's `#menu`: the presets' own at
+ *  1024 px and below, and the node menu's at every width. The caller says which edge it hangs
+ *  from (`left-0` or `right-0`). */
+export const MENU_CLASS = `absolute top-full z-30 mt-1 flex w-56 flex-col gap-1 rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`;
 
-export const MENU_ITEM_CLASS = `min-h-11 rounded-lg px-2 py-2 text-left text-sm font-medium ${textSecondaryOnSurface}`;
-
-/** The node menu's own control, which sits beside the preset row and outside it. */
-const NODE_MENU_BUTTON_CLASS = `inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-medium md:min-h-9 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${focusVisibleRing}`;
+/** One item of those menus, the prototype's `.mi`: 14 px in the ink, the mark grey under the
+ *  pointer. */
+export const MENU_ITEM_CLASS = `min-h-11 rounded-[7px] px-2 py-[7px] text-left text-sm font-medium md:min-h-0 ${pageInkText} ${pageRowHoverBg}`;

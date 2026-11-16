@@ -1,11 +1,12 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import type { Artifact } from "../../api/types";
 import {
   borderTransparent,
-  inputClasses,
+  focusVisibleRing,
   pageDecisionText,
   pageFailedText,
+  pageField,
   pageHairBorder,
   pageHeaderControl,
   pageInkBorder,
@@ -16,6 +17,7 @@ import {
 } from "../../theme/classes";
 import { useShortcutHelpOpener } from "../shell/shortcut-help-opener";
 import { useMediaQuery } from "../shell/useDialog";
+import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
 import { MENU_CLASS, MENU_ITEM_CLASS, NodeMenu } from "./NodeMenu";
 import { authorText, pageChrome } from "./page-structure";
@@ -31,26 +33,40 @@ import type { PresetSignal } from "./presets";
 /**
  * The filter row (dispatch://INFRA-1196 R2, R11, R20, and the prototype's view tabs): five
  * controls, Conversation - the page with no filter on - then Spec, Verification, Plan and
- * Decisions, each with its signal; beside them the version control while a filter is on, the
- * node menu, the filter by words and Keys.
+ * Decisions, each with its signal; and the node menu (R3), the filter by words (`t f`), the
+ * version control while a filter is on or a document is open (R2), and Keys.
+ *
+ * The row is one line at every width (ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md,
+ * the 1440 and 390 px pictures): the node menu, the filter by words and the version control are
+ * each one small control at the row's right end, like Keys. The words box opens when its control
+ * is pressed or `t f` is, and stays open while it holds words (`?q=`); the version control's
+ * picker, its name-a-version control and its link open from the version control. At 760 px and
+ * below those three stand in the Outline sheet (`outline`), and the row is the one control and
+ * Outline, which stay at the top of the screen while the header scrolls away (`identity-block.ts`
+ * publishes their height, found by `FILTER_ROW_ATTRIBUTE`).
  *
  * One filter is on at a time or none. The row is a toolbar of toggle buttons, each carrying
  * `aria-pressed`: pressing a filter turns it on and any other off, pressing the filter that is
- * on turns it off, and pressing Conversation turns every filter off. Each control's state is an
- * address of its own (`issue-address.ts`'s `presetPath`), so pressing one is navigation and a
- * filter survives a reload and a link. The toolbar is one tab stop, the control that is pressed;
- * the arrow keys, Home and End move between the five, and Enter and Space press.
+ * on turns it off, and pressing Conversation turns every filter off and shuts whatever the
+ * address opened in place of the outline. Each control's state is an address of its own
+ * (`issue-address.ts`'s `presetPath`), so pressing one is navigation and a filter survives a
+ * reload and a link. The toolbar is one tab stop, the control that is pressed; the arrow keys,
+ * Home and End move between the five, and Enter and Space press.
  *
- * A toggle is the whole drawn box, the prototype's `.tab`, so a press anywhere on what is drawn
- * presses it. It is named by its name part (`aria-labelledby`) - the word a voice user says,
- * which the inventory of the page this one replaced holds each control to - and its signal, a
- * count beside the name, is its description (`aria-describedby`).
+ * A toggle is the prototype's `.tab`: its name, which is the button, named by that word alone -
+ * the word a voice user says, which the inventory of the page this one replaced holds each
+ * control to - and beside it, outside the button and inside the same drawn box, its signal, a
+ * `<label>` of the button, so a press on the count presses it too and the signal is the button's
+ * description (`aria-describedby`), not a word drawn inside the button and missing from its name
+ * (WCAG 2.5.3).
  *
- * The row has two shapes and no third. Above 1024 px it is the row of five; at 1024 px and below
- * - every phone - it is one control naming the one on, with its signal, which opens a menu of
- * the five, and below 1024 px the Outline control stands beside it (R2, R14). One query and its
- * negation decide the two (`ONE_CONTROL_QUERY`), so no width answers both shapes or neither.
- * Nothing in either shape scrolls sideways: what does not fit wraps (R18).
+ * The row has two shapes and no third. From 1280 px it is the row of five, which is where R2
+ * says the filters are one row; below it - R2's 1024 px and every width between, where the five
+ * and the small controls measured up to 47 px wider than the row at 1025 px with a filter on -
+ * it is one control naming the one on, with its signal, which opens a menu of the five, each a
+ * `menuitemradio` that says whether it is the one on; below 1024 px the Outline control stands
+ * beside it (R2, R14). One query and its negation decide the two (`ONE_CONTROL_QUERY`), so no
+ * width answers both shapes or neither, and the row is one line at every width.
  */
 export function IssuePresets({
   active,
@@ -79,9 +95,11 @@ export function IssuePresets({
   onFilterChange: (next: string) => void;
   /** Called before this row leaves the address, so the page records where the reader was. */
   onLeave: () => void;
-  /** The Outline control, beside the one control below 1024 px, where the Contents pane is not
-   *  drawn (R14). */
-  outline?: ReactNode;
+  /** The Outline control, beside the one control below 1024 px where the Contents pane is not
+   *  drawn (R14), handed the controls this row moves into its sheet at 760 px and below - the
+   *  version control, the node menu and the filter by words - and undefined above that width,
+   *  where they stand at the row's right end. It answers nothing where it draws no control. */
+  outline?: (tools: ReactNode | undefined) => ReactNode;
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). */
   signals: Readonly<Record<Preset, PresetSignal>>;
   /** The version control: the filter's own while one is on, or the opened document's; none
@@ -89,9 +107,12 @@ export function IssuePresets({
   toolbar?: ReactNode;
 }): ReactNode {
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const openKeys = useShortcutHelpOpener();
   // The row of five is drawn exactly where the one control is not.
   const row = !useMediaQuery(ONE_CONTROL_QUERY);
+  // Where the header scrolls away, the small controls are the Outline sheet's.
+  const phone = useMediaQuery(HEADER_SCROLLS_QUERY);
   // The page opens at most one menu at a time, so which one is open is one value.
   const [open, setOpen] = useState<OpenMenu>(nodeMenu ? "nodes" : undefined);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -101,13 +122,20 @@ export function IssuePresets({
   const ids = useId();
   const nameId = (preset: Preset) => `${ids}-name-${preset}`;
   const signalId = (preset: Preset) => `${ids}-signal-${preset}`;
+  const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
+  const versionPanelId = `${ids}-version`;
 
   // An address that opens the node menu opens it on arrival, and leaving that address closes it
   // again, so the menu says what the address says.
   useEffect(() => setOpen(nodeMenu ? "nodes" : undefined), [nodeMenu]);
   useEffect(() => {
     if (open === undefined) return;
+    // A dialog drawn over the row - the version control's Name dialog, the Outline sheet - takes
+    // its own presses and its own Escape: the row's menu waits for it.
+    const inDialog = (target: EventTarget | null) =>
+      target instanceof Element && target.closest('[role="dialog"]') !== null;
     const closeOutside = (event: PointerEvent) => {
+      if (inDialog(event.target)) return;
       if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
         setOpen(undefined);
       }
@@ -115,7 +143,7 @@ export function IssuePresets({
     // The press is the open menu's alone: the page's own Escape - which turns a filter off, and
     // closes a document opened in place of the outline - waits for the next one.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || inDialog(event.target)) return;
       event.preventDefault();
       setOpen(undefined);
     };
@@ -132,10 +160,12 @@ export function IssuePresets({
     navigate(presetPath(issueKey, preset));
   };
   // A press on a filter turns it on, or off where it is the one on; Conversation turns every
-  // filter off, and is a press that changes nothing while none is on.
+  // filter off and shuts what the address opened in place of the outline - a document, the
+  // history, the node menu's list - and is a press that changes nothing only on the issue's own
+  // address, which is Conversation's.
   const press = (preset: Preset) => {
-    if (preset === active && preset === "conversation") return;
-    go(preset === active ? "conversation" : preset);
+    if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
+    go(preset === active && preset !== "conversation" ? "conversation" : preset);
   };
   const walk = (event: KeyboardEvent<HTMLElement>, from: Preset) => {
     const at = PRESET_ORDER.indexOf(from);
@@ -157,24 +187,21 @@ export function IssuePresets({
   // The control the toolbar's one tab stop rests on, which the arrow keys move from.
   const [stop, setStop] = useState<Preset>(active);
   useEffect(() => setStop(active), [active]);
+  // Keys lists the keys as they stand where the reader reads: the outline's own keys are offered
+  // while the focus is in the outline, so the focus goes to the outline's tab stop before the
+  // list is taken, rather than the list greying every outline key as the button's.
+  const showKeys = () => {
+    document
+      .querySelector<HTMLElement>(
+        `[role="tree"][aria-label="${CONTROL_LABELS.tree}"] [data-node-row][tabindex="0"]`
+      )
+      ?.focus({ preventScroll: true });
+    openKeys?.();
+  };
 
-  // 128 px in the row of five, so the row holds the version control, the node menu, this box
-  // and Keys on one line at 1440 px with a filter on; on the one control's second line it takes
-  // what the node menu leaves.
-  const words = (
-    <input
-      aria-label={CONTROL_LABELS.filter}
-      className={`min-h-11 min-w-0 rounded-[7px] border px-2 text-sm md:min-h-7 ${
-        row ? "mb-1 w-32" : "w-32 flex-1"
-      } ${inputClasses(false)}`}
-      data-testid="issue-filter"
-      onChange={(event) => onFilterChange(event.target.value)}
-      type="search"
-      value={filter}
-    />
-  );
-  const files = (
+  const files = (align: "end" | "start") => (
     <NodeMenu
+      align={align}
       artifacts={artifacts}
       isClosed={isClosed}
       issueKey={issueKey}
@@ -183,19 +210,71 @@ export function IssuePresets({
       open={open === "nodes"}
     />
   );
+  const keys =
+    openKeys === undefined ? null : (
+      <button className={pageHeaderControl} onClick={showKeys} type="button" {...pageChrome}>
+        {CONTROL_LABELS.keys}
+      </button>
+    );
+  // The small controls, at the row's right end from 761 px up.
+  const atTheEnd = (
+    <div className="flex shrink-0 items-center gap-2">
+      {toolbar === undefined ? null : (
+        <div className="relative flex shrink-0">
+          <button
+            aria-controls={versionPanelId}
+            aria-expanded={open === "version"}
+            className={pageHeaderControl}
+            onClick={() => setOpen((shown) => (shown === "version" ? undefined : "version"))}
+            type="button"
+            {...pageChrome}
+          >
+            {CONTROL_LABELS.version}
+            <span aria-hidden="true">▾</span>
+          </button>
+          {/* Drawn while it is shut too, so a version the reader picked, a name they typed and
+              a comparison they opened outlive the control closing. */}
+          <div
+            className={`absolute top-full right-0 z-30 mt-1 w-max max-w-[min(480px,calc(100vw-24px))] rounded-[10px] border p-2 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`}
+            hidden={open !== "version"}
+            id={versionPanelId}
+          >
+            {toolbar}
+          </div>
+        </div>
+      )}
+      {files("end")}
+      <WordsFilter filter={filter} onFilterChange={onFilterChange} />
+      {keys}
+    </div>
+  );
+  // The same three, in the Outline sheet at 760 px and below, each drawn open: the sheet is
+  // where the reader went to find them.
+  const inTheSheet = (
+    <>
+      {toolbar}
+      {files("start")}
+      <WordsFilter filter={filter} inSheet onFilterChange={onFilterChange} />
+    </>
+  );
+  const outlineControl = outline?.(phone ? inTheSheet : undefined);
+  const filterRow = { [FILTER_ROW_ATTRIBUTE]: "" };
 
   if (!row) {
     return (
-      // 2 px above the one control, so the header's band - measured to the top of this row - stays
-      // inside ruling 3's limits at 390 px, where the prototype's `#viewbar` pads 8.
-      <div className="flex min-w-0 flex-wrap items-center gap-2 pt-0.5 pb-2" ref={wrapper}>
+      // The prototype's `#viewbar`: the one control and Outline on one line, 8 px above and
+      // below, and from 761 px the small controls at its right end.
+      <div className="flex min-w-0 items-center gap-2 py-2" ref={wrapper} {...filterRow}>
         {/* Named by what it draws - "Spec 21" - since the signal is inside this control and
             nothing holds it to a name of its own (WCAG 2.5.3). */}
-        <div className="relative flex min-w-0 flex-1" data-testid="issue-presets">
+        <div
+          className="relative flex min-w-0 max-[760px]:flex-1 min-[761px]:shrink"
+          data-testid="issue-presets"
+        >
           <button
             aria-expanded={open === "presets"}
             aria-haspopup="menu"
-            className={`flex min-h-11 min-w-0 flex-1 items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-sm font-semibold ${pageHairBorder} ${pagePaperBg} ${pageInkText}`}
+            className={`flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-sm leading-5 font-semibold ${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusVisibleRing}`}
             onClick={() => setOpen((shown) => (shown === "presets" ? undefined : "presets"))}
             type="button"
           >
@@ -210,18 +289,20 @@ export function IssuePresets({
             </span>
           </button>
           {open === "presets" ? (
-            <div className={MENU_CLASS} role="menu">
+            <div className={`${MENU_CLASS} left-0`} role="menu">
               {PRESET_ORDER.map((preset) => (
+                // Named by its name and its signal, which it draws inside it; and checked
+                // where it is the one on, which its dot draws.
                 <button
-                  aria-describedby={signalId(preset)}
-                  aria-labelledby={nameId(preset)}
+                  aria-checked={preset === active}
+                  aria-labelledby={`${nameId(preset)} ${signalId(preset)}`}
                   className={`${MENU_ITEM_CLASS} flex items-baseline gap-1.5`}
                   key={preset}
                   onClick={() => {
                     setOpen(undefined);
-                    if (preset !== active) go(preset);
+                    if (preset !== active || preset === "conversation") press(preset);
                   }}
-                  role="menuitem"
+                  role="menuitemradio"
                   type="button"
                 >
                   <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
@@ -236,23 +317,23 @@ export function IssuePresets({
             </div>
           ) : null}
         </div>
-        {/* After the one control, as the 390 px picture draws it; the node menu's own menu opens
-            from where its control stands. */}
-        {outline}
-        <div className="flex min-w-0 basis-full flex-wrap items-center gap-2">
-          {files}
-          {words}
-        </div>
-        {toolbar}
+        {/* After the one control, as the 390 px picture draws it. */}
+        {outlineControl}
+        {phone ? null : (
+          <>
+            <span className="flex-1" />
+            {atTheEnd}
+          </>
+        )}
       </div>
     );
   }
 
   return (
-    <div className="flex min-w-0 flex-wrap items-end gap-x-2" ref={wrapper}>
+    <div className="flex min-w-0 items-end gap-x-2" ref={wrapper} {...filterRow}>
       <div
         aria-label={CONTROL_LABELS.presets}
-        className="flex min-w-0 flex-wrap items-end gap-0.5"
+        className="flex min-w-0 items-end gap-0.5"
         data-testid="issue-presets"
         role="toolbar"
       >
@@ -260,60 +341,115 @@ export function IssuePresets({
           const on = preset === active;
           return (
             // The prototype's `.tab`: the name and the signal on one baseline, the rule under
-            // both, ink and semibold for the one on. The button is named by its name part and
-            // described by its signal.
-            <button
-              aria-describedby={signalId(preset)}
-              aria-labelledby={nameId(preset)}
-              aria-pressed={on}
-              className={`-mb-px inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap border-b-2 px-3 pt-[7px] pb-1.5 text-sm leading-5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-page-ink ${
+            // both, ink and semibold for the one on.
+            <span
+              className={`-mb-px inline-flex shrink-0 items-baseline whitespace-nowrap border-b-2 text-sm leading-5 ${
                 on
                   ? `font-semibold ${pageInkText} ${pageInkBorder}`
                   : `${borderTransparent} font-medium ${pageMutedText}`
               }`}
               key={preset}
-              onClick={() => press(preset)}
-              onFocus={() => setStop(preset)}
-              onKeyDown={(event) => walk(event, preset)}
-              ref={(node) => {
-                toggles.current[preset] = node;
-              }}
-              tabIndex={preset === stop ? 0 : -1}
-              type="button"
             >
-              <span data-preset-name="" id={nameId(preset)} {...pageChrome}>
-                {PRESET_NAMES[preset]}
-              </span>
-              <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
-            </button>
+              <button
+                aria-describedby={signalId(preset)}
+                aria-labelledby={nameId(preset)}
+                aria-pressed={on}
+                className="pt-[7px] pb-1.5 pl-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-page-ink"
+                id={toggleId(preset)}
+                onClick={() => press(preset)}
+                onFocus={() => setStop(preset)}
+                onKeyDown={(event) => walk(event, preset)}
+                ref={(node) => {
+                  toggles.current[preset] = node;
+                }}
+                tabIndex={preset === stop ? 0 : -1}
+                type="button"
+              >
+                <span data-preset-name="" id={nameId(preset)} {...pageChrome}>
+                  {PRESET_NAMES[preset]}
+                </span>
+              </button>
+              <label
+                className="cursor-pointer pt-[7px] pr-3 pb-1.5 pl-1.5"
+                htmlFor={toggleId(preset)}
+              >
+                <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+              </label>
+            </span>
           );
         })}
       </div>
-      {toolbar === undefined ? null : (
-        <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2">{toolbar}</div>
-      )}
-      <div className="mb-1">{files}</div>
       <span className="flex-1" />
-      {words}
-      {openKeys === undefined ? null : (
-        <button
-          className={`mb-[7px] ${pageHeaderControl}`}
-          onClick={openKeys}
-          type="button"
-          {...pageChrome}
-        >
-          {CONTROL_LABELS.keys}
-        </button>
-      )}
+      <div className="mb-[7px]">{atTheEnd}</div>
     </div>
   );
 }
 
-/** Which of the row's two menus is open; the page opens at most one at a time. */
-type OpenMenu = "nodes" | "presets" | undefined;
+/**
+ * The filter by words (R2's `?q=`, `t f`): one small control while it holds no words, which
+ * opens the box with the caret in it, and the box itself while it holds words or has the caret.
+ * In the Outline sheet the box is drawn open. Leaving an empty box shuts it back into its
+ * control. The box shows its name as its placeholder, so a reader sees what it is for before
+ * typing (WCAG 3.3.2).
+ */
+function WordsFilter({
+  filter,
+  inSheet = false,
+  onFilterChange,
+}: {
+  filter: string;
+  inSheet?: boolean;
+  onFilterChange: (next: string) => void;
+}): ReactNode {
+  const [opened, setOpened] = useState(false);
+  const box = useRef<HTMLInputElement>(null);
+  // The control's press opens the box with the caret in it, once the box is drawn.
+  useEffect(() => {
+    if (opened) box.current?.focus();
+  }, [opened]);
+  if (!inSheet && !opened && filter === "") {
+    return (
+      <button
+        className={pageHeaderControl}
+        {...{ [WORDS_FILTER_ATTRIBUTE]: "" }}
+        onClick={() => setOpened(true)}
+        type="button"
+        {...pageChrome}
+      >
+        {CONTROL_LABELS.filter}
+      </button>
+    );
+  }
+  return (
+    <input
+      aria-label={CONTROL_LABELS.filter}
+      ref={box}
+      className={`min-w-0 rounded-[7px] border px-2 text-xs leading-5 outline-none ${focusVisibleRing} ${pageField} ${
+        inSheet ? "min-h-6 w-full basis-full text-sm" : "w-40 md:py-px"
+      }`}
+      data-testid="issue-filter"
+      {...{ [WORDS_FILTER_ATTRIBUTE]: "" }}
+      onBlur={(event) => {
+        if (event.currentTarget.value === "") setOpened(false);
+      }}
+      onChange={(event) => onFilterChange(event.target.value)}
+      placeholder={CONTROL_LABELS.filter}
+      type="search"
+      value={filter}
+    />
+  );
+}
 
-/** The widths the row is one control at: 1024 px and below (R2). */
-const ONE_CONTROL_QUERY = "(max-width: 1024px)";
+/** The mark the filter by words carries, its small control and its box alike, by which `t f`
+ *  finds it (`useIssueKeymap.ts`). */
+export const WORDS_FILTER_ATTRIBUTE = "data-words-filter";
+
+/** Which of the row's menus is open; the page opens at most one at a time. */
+type OpenMenu = "nodes" | "presets" | "version" | undefined;
+
+/** The widths the row is one control at: below 1280 px, from which R2 has the filters one row.
+ *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. */
+const ONE_CONTROL_QUERY = "(max-width: 1279px)";
 
 /**
  * What one control draws after its name: its count, then the noun the count is in, or what of

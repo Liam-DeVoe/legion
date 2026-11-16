@@ -8,7 +8,7 @@ import { requirementBlockId } from "./issue-layout-seed-text";
 import {
   activePreset,
   caretInNode,
-  childrenSection,
+  childRows,
   drawnRows,
   expectActivePreset,
   filterBox,
@@ -863,15 +863,25 @@ test("every chord the page bound before the redesign brings a target on screen w
     await page.keyboard.press("Escape");
     await expect(marginShell(page), "Escape does not close Details").toBeHidden();
 
-    // The children section: `t h`.
+    // The children's group of rows in the outline: `t h` puts the focus on its first row
+    // (the architect's ruling 5 on R12).
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("h");
-    expect(await onScreen(childrenSection(page)), "t h leaves the children off screen").toBe(true);
-    expect(
-      await focusInside(childrenSection(page)),
-      "t h does not put the focus in the children section"
-    ).toBe(true);
+    await expect
+      .poll(
+        () =>
+          childRows(page)
+            .first()
+            .evaluate((row) => row === document.activeElement),
+        {
+          message: "t h does not put the focus on the first row of the children's group",
+        }
+      )
+      .toBe(true);
+    expect(await onScreen(childRows(page).first()), "t h leaves the children off screen").toBe(
+      true
+    );
 
     // The node menu: `t a`, which named the Artifacts tab before this change.
     await focusThePage(page);

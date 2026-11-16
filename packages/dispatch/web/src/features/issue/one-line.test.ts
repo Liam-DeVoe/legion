@@ -35,6 +35,10 @@ test("a one-line row cuts its first line at a word to the pixels it has, never i
     wraps: false,
   });
 
+  // A whole sentence is drawn with no ellipsis after its own mark (`drawnLine`), so none is
+  // counted: the sentence fits a room its 13 characters fill, where its ellipsis would not.
+  expect(alone("One sentence. And another.", 13 * 7 + 1).line).toBe("One sentence.");
+
   // Longer than the room: the line ends at the last word whose run and ellipsis fit, so the
   // stored text carries on at a word break. 169 px less the pixel kept for rounding is 24
   // characters: "The page draws the" and its ellipsis are 19, "The page draws the whole" and

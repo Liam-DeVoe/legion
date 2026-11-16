@@ -91,14 +91,14 @@ export type NodeType = keyof typeof NODE_TYPE_NAMES;
  * check's seven are `checkState`'s (`features/issue/tree-drafts.ts`), and the page
  * must tell all seven apart, so each keeps a word of its own.
  *
- * A decision's three are how the old Decisions tab grouped them, which is what a reader used
- * to find the ones waiting on them: `waiting_review` is what waits for the reader's review,
- * `yours` is a decision a person made or an agent's one the reader kept
- * (`kind === "person" || kept !== null`, and not replaced), and `replaced` is one a later
- * decision replaced (`decisions.go`, `DecisionsPanel.tsx` at
- * 7567aeb606f309f40d4145f3d6a49c19fd452558). A decision in none of the three - an agent's that
- * nobody has reviewed and nothing replaced - stood in no section of that tab either, and draws
- * no state here.
+ * A decision's states are spec R2's, "wherever a decision is drawn": `waiting_review` is an
+ * agent's decision that waits for a person's review, `kept` one a person kept as it reads now -
+ * the row draws the name of who kept it after the word - and `replaced` one a later decision
+ * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by `tree-drafts.ts`'s
+ * `decisionState`). `change_requested` is a decision the reader sent a Change on since it last
+ * changed, which waits on its agent and no longer on the reader (`decision-review.ts`). A
+ * decision in none of them - an agent's that nobody has reviewed and nothing replaced, or a
+ * person's own section - draws no state.
  */
 export const NODE_STATE_WORDS = freeze({
   ask: {
@@ -141,9 +141,10 @@ export const NODE_STATE_WORDS = freeze({
     unreadable: "Could not read",
   },
   decision: {
+    change_requested: "Change requested",
+    kept: "Kept by",
     replaced: "Replaced",
-    waiting_review: "Waiting for your review",
-    yours: "Yours",
+    waiting_review: "Waiting for review",
   },
 } as const);
 
@@ -269,6 +270,176 @@ export const CONTENTS_MARK_WORDS = freeze({
 export type ContentsMark = keyof typeof CONTENTS_MARK_WORDS;
 
 /**
+ * The words the Spec filter's body draws of its own (dispatch://INFRA-1196 R5, R17, R22, R35,
+ * `spec-filter/SpecFilterBody.tsx`). Nothing here says anything about the page or about
+ * Dispatch. The mark at the right of a statement is how it stands at the commit the page
+ * names, in the Verification filter's own words (`VERIFICATION_WORDS.states`: Met, Not met,
+ * Unknown), so one statement reads the same in both views; a statement no check serves
+ * carries `no_check` in their place. What the Decided by column says beside statements no
+ * decision shaped is an empty line (`EMPTY_STATE_LINES.spec_no_decision_one`,
+ * `spec_no_decision_many`).
+ */
+export const SPEC_WORDS = freeze({
+  /** Opens the line under a statement that names the decision that shaped it. */
+  because: "because:",
+  /** On a decision's line, where the statement's own words changed after the decision was
+   *  made (R5). */
+  changed_since: "Changed since",
+  /** Before the options a person chose, where the ask offered them. */
+  chose: "chose",
+  /** The left column's heading: what decided the statements beside it. */
+  decided_by: "Decided by",
+  /** Before the other decisions that shaped a statement, beyond the one beside it (R5). */
+  informed_by: "informed by",
+  /** The mark of a statement no check serves, which the legend names (R10, R17). */
+  no_check: "no check",
+  /** The heading over an agent's decision. */
+  said_agent: "Because an agent decided",
+  /** The heading over the words of a person who is not the reader. */
+  said_person: "Because a person said",
+  /** The heading over the reader's own words, as the picture draws it. */
+  said_you: "Because you said",
+  /** Opens the whole of a person's answer, where the column draws its first sentence. */
+  whole_answer: "whole answer",
+  /** Opens the whole decision. */
+  whole_decision: "whole decision",
+} as const);
+
+/**
+ * The words the Decisions filter's body draws of its own (dispatch://INFRA-1196 R2, R22, R35,
+ * `decisions-filter/`). None is a sentence about the page or about Dispatch, and no sentence
+ * explains the four parts: their headings are the whole of it. How a decision stands is
+ * `NODE_STATE_WORDS.decision`, which the outline draws too.
+ */
+export const DECISIONS_WORDS = freeze({
+  /** The fourth part's heading, which is the control that unfolds it, after the count of the
+   *  decisions it holds; the words agree with the count (R2: "folded at the foot, the agents'
+   *  decisions that no statement rests on"). */
+  agents_many: "agent decisions that no statement rests on",
+  agents_one: "agent decision that no statement rests on",
+  /** Before the reader's words of a Change they sent on a decision, under that decision. */
+  change: "change asked for",
+  /** After the name of the person who declined a question, so the row reads as a question that
+   *  person declined and never as an answer (R2). */
+  declined: "declined to answer",
+  /** The link from an entry to the node that holds it, in the conversation. */
+  in_conversation: "in the conversation",
+  /** Before the statements a decision's `shaped` ties name (the picture's "informs R4 R21"). */
+  informs: "informs",
+  /** The headings of the headed parts, in the order the filter draws them (R2): the reader's
+   *  own decisions are "his own decisions", and what another person answered, declined, kept or
+   *  asked to change stands under a heading that says it is theirs. */
+  parts: {
+    open_questions: "Open questions",
+    others: "Decided by others",
+    review: "Waiting for your review",
+    yours: "Your decisions",
+  },
+} as const);
+
+/**
+ * The words the Verification filter's body draws of its own (dispatch://INFRA-1196 R17, R22,
+ * `verification-filter/`). `states` is how a statement stands at the commit the page names,
+ * which is the page's own reading of the checks that serve it and no state the model holds: a
+ * `requirement` block has no state, so these are not `NODE_STATE_WORDS.requirement` and never
+ * become one. No count, legend or heading reads proven, or met for the coverage count.
+ */
+export const VERIFICATION_WORDS = freeze({
+  /** The chip that narrows to nothing, which is the body as it opens. */
+  all: "All",
+  /** The heading over the checks that serve each statement. */
+  checks: "Checks",
+  /** Before the one commit the issue's results are read against. */
+  commit: "Commit",
+  /** The count of the statements that carry a check: "6 of 13 covered" (R17, R22). */
+  covered: "covered",
+  /** After the count of a check's other results, which the line opens in place (ruling 6). */
+  earlier_many: "earlier results",
+  earlier_one: "earlier result",
+  /** The heading over each check's latest result. */
+  latest_result: "Latest result",
+  /** Between the two numbers of the covered count. */
+  of: "of",
+  /** How a statement stands at the commit the page names (R17): every check of it passed
+   *  there, one failed there, or neither is known. */
+  states: {
+    met: "Met",
+    not_met: "Not met",
+    unknown: "Unknown",
+  },
+  /** Beside the result a check's state stands on: the newest pass that stands for a check that
+   *  passed, and the newest result that stands for every other. */
+  stands: "Stands",
+} as const);
+
+/** How a statement stands at the commit the page names (`verification-filter/statement-state.ts`). */
+export type StatementState = keyof typeof VERIFICATION_WORDS.states;
+
+/**
+ * The words the Plan filter's body draws of its own (dispatch://INFRA-1196 R26, ruling 5 of
+ * build-rulings-md, `plan-filter/`): the two ways it draws the plan, which its one control
+ * switches between, the chart's two headings, the line for tasks that need each other, and the
+ * mark of a bar whose task holds no size.
+ */
+export const PLAN_WORDS = freeze({
+  /** The chart of time: one bar per task, after every task it needs (R26). */
+  chart: "Chart",
+  /** The line that lists tasks which need each other, so no order can put one after the rest. */
+  cycle: "Steps that need each other",
+  /** Before the tasks a step needs. */
+  needs: "needs",
+  /** A bar whose task holds no size, drawn one unit long (R26). */
+  no_size: "No size",
+  /** The heading over the statements each step serves. */
+  serves: "Serves",
+  /** The heading over each step's words, and the control that draws the plan as ordered
+   *  steps. */
+  steps: "Steps",
+} as const);
+
+/**
+ * The words of the list of what references the row the reader is on, in Details
+ * (dispatch://INFRA-1196 R14, R19, `node-references/NodeReferences.tsx`). The edge and kind
+ * words are lowercase, as `NODE_TYPE_NAMES` are, because a row draws them beside the author's
+ * own words. What the list says while its read is out and when it failed is the page's answer to
+ * the reader opening it (`ANSWER_LINES.references_loading`, `references_unreadable`).
+ */
+export const NODE_REFERENCES_WORDS = freeze({
+  /** The relation each kind of tuple puts the citing node in with the row the reader is on, in
+   *  the words the old page's Referenced-by panel drew for the same edges
+   *  (`features/refs/ReferencedBy.tsx`'s `STRUCTURAL_LABELS`). */
+  edges: {
+    anchored_to: "anchored item",
+    answers: "answer",
+    attached_to: "attached document",
+    blocked_by: "blocked issue",
+    child_of: "child issue",
+    followed_by: "follower",
+    needs: "needed by",
+    owned_by: "owned item",
+    replies_to: "reply",
+    serves: "served by",
+  },
+  /** The page's word for each kind of node the graph answers with, which names a row whose
+   *  edge is a mention. `artifact` and `block` are both a document to a reader, and a session is
+   *  the conversation of one agent (R22: no schema token where a word belongs). */
+  kinds: {
+    artifact: "document",
+    ask: "question",
+    block: "document",
+    comment: "comment",
+    component: "component",
+    issue: "issue",
+    message: "message",
+    session: "agent",
+  },
+  /** The control in Details that lists what references the row the reader is on (R14, R19).
+   *  It names the row, because Details' References section holds the issue's own Referenced by
+   *  beside it and two lists cannot share one name. */
+  what_references: "What references this row",
+} as const);
+
+/**
  * How an issue stands, as the page says it: the word a child's row draws beside it (R10). The
  * keys are the server's own status tokens, in the lifecycle order `features/project/board-model.ts`
  * holds them in, and `page-words.test.ts` reads that module, so a status added there fails
@@ -305,8 +476,15 @@ export const EMPTY_STATE_LINES = freeze({
   decisions: "This issue has no decisions yet.",
   /** What the node menu says where its filter leaves none of the issue's files (R3). */
   files_filtered: "No file or document matches this filter.",
+  /** What a view says where the filter by words (`?q=`) leaves nothing of what it draws: the
+   *  issue holds such nodes, and none of them holds those words. */
+  no_match: "Nothing here holds these words.",
   plan: "This issue has no plan tasks yet.",
   spec: "This issue has no statements yet.",
+  /** What the Spec filter's Decided by column says beside a run of statements no decision
+   *  shaped (R35): one statement, and several. */
+  spec_no_decision_many: "No decision shaped these statements.",
+  spec_no_decision_one: "No decision shaped this statement.",
   spec_summary: "This spec has no summary.",
   /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
    *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
@@ -315,6 +493,9 @@ export const EMPTY_STATE_LINES = freeze({
    *  draws. */
   spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
+  /** What the Verification filter's table says where the state its chip narrows to holds no
+   *  statement. */
+  verification_none: "No statement stands in this state.",
 } as const);
 
 /**
@@ -425,6 +606,13 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
+  /** What the Spec filter says over its columns when the decisions could not be read, so the
+   *  column beside each statement cannot say what shaped it. */
+  decisions_unreadable: "Could not load the decisions.",
+  /** What the list of what references the focused row says while its read, which the reader
+   *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
+  references_loading: "Loading references…",
+  references_unreadable: "Could not load the references.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -673,8 +861,12 @@ export const CONTROL_LABELS = freeze({
   focus_branch: "Focus branch",
   /** How many checks a pull request has, before the count GitHub gives. */
   github_checks: "checks",
-  /** The head's first row: where the plan says how the issue gets done (R5). */
-  how_it_gets_done: "How it gets done",
+  /** The labels of the issue's three sentences, each before its sentence in the order the spec's
+   *  summary holds them: what the issue is, why it matters, and what is true when it is done
+   *  (R8, the architect's ruling 5, the approved pictures' "In short"). */
+  in_short_what: "What it is:",
+  in_short_why: "Why it matters:",
+  in_short_done: "Done when:",
   /** The heading over the issue's three sentences in the Contents pane (R8). */
   in_short: "In short",
   /** The one control row one keeps the actions behind: close, reopen, the pin and setting the
@@ -707,9 +899,8 @@ export const CONTROL_LABELS = freeze({
    *  is drawn under, `PROPERTY_LABELS.route` ("Messages go to"), so a voice user says the
    *  words they read (WCAG 2.5.3). */
   route: "Route",
-  /** The word the name-a-version control shows; `name_version` is its accessible name (R16). */
-  name: "Name",
-  /** Gives the open document's current text a version of its own (R16). */
+  /** Gives the open document's current text a version of its own (R16): the words the control
+   *  draws, which are its name. */
   name_version: "Name version",
   /** Makes a document of the issue from a title typed, from the node menu (R16): the words the
    *  Artifacts panel's own control carries (`CreateDocument.tsx`), the one way into one form. */
@@ -840,6 +1031,11 @@ export const CONTROL_LABELS = freeze({
    *  the issue. */
   write: "Write to the conversation",
   write_placeholder: "Write at the top of the conversation…  (Enter sends)",
+  /** What the line says while it is empty and replies to a row: where the words go, as the
+   *  answering line says of an answer. */
+  reply_placeholder: "Your reply, under the row it answers…  (Enter sends)",
+  /** What the line says while it is empty and edits the reader's own comment. */
+  edit_placeholder: "Your comment, as it should read…  (Enter saves)",
   /** Sets the line back from the row it replies to, or the question it answers, to a new comment
    *  on the issue (the prototype's `.tgt .x`). */
   write_on_issue: "Write on the issue instead",
@@ -868,8 +1064,6 @@ export const CONTROL_LABELS = freeze({
   upload_file: "Upload a file",
   /** Which version of the open document the preset draws (R16). */
   version: "Version",
-  /** The head's second row: where the checks say what the reader will be shown (R5). */
-  what_you_will_be_shown: "What you will be shown",
   /** Names the author of a node whose author the model holds (R7); the name itself is the
    *  author's own (`AgentText.author`). */
   written_by: "Written by",
@@ -968,6 +1162,21 @@ export function authorKind(actor: Actor | undefined): AuthorKind {
   return actor.kind === "user" ? "person" : "agent";
 }
 
+/**
+ * Whether `actor` is the reader writing as themselves: a person signed in as `reader`, and not
+ * an agent acting for them, whose words are the agent's (R9, R34). It is the one rule for whose
+ * words carry the ink rule and which decisions are the reader's own, read by the outline's rows
+ * and by each filter's body.
+ */
+export function isReader(actor: Actor | undefined, reader: string | undefined): boolean {
+  return (
+    reader !== undefined &&
+    actor?.kind === "user" &&
+    actor.id === reader &&
+    (actor.act?.session ?? "") === ""
+  );
+}
+
 /** What each kind of author is called, in the accessible name of its shape: "Written by a
  *  person", "Written by an agent", "Written by an author nobody recorded". */
 export const AUTHOR_KIND_WORDS = freeze({
@@ -1027,10 +1236,22 @@ export const GLYPH_TOKENS = freeze({
       unreadable: "check-unreadable",
     },
     decision: {
+      change_requested: "decision-change-requested",
+      kept: "decision-kept",
       replaced: "decision-replaced",
       waiting_review: "decision-waiting-review",
-      yours: "decision-yours",
     },
+  },
+  /** The shape of a statement no check serves, at the right of its row in the Spec filter in
+   *  the place of how it stands (R10, R17). */
+  no_check: "statement-no-check",
+  /** How a statement stands at the commit the page names, in the Verification filter and at
+   *  the right of its row in the Spec filter (R17): the page's reading and no state of the
+   *  model's, so it is a table of its own. */
+  statements: {
+    met: "statement-met",
+    not_met: "statement-not-met",
+    unknown: "statement-unknown",
   },
   types: {
     ask: "ask",
@@ -1050,11 +1271,13 @@ export const GLYPH_TOKENS = freeze({
   },
 } as const satisfies {
   readonly authors: Record<AuthorKind, string>;
+  readonly no_check: string;
   readonly states: {
     readonly ask: Record<AskState, string>;
     readonly check: Record<CheckState, string>;
     readonly decision: Record<DecisionState, string>;
   };
+  readonly statements: Record<StatementState, string>;
   readonly types: Record<NodeType, string>;
 });
 
@@ -1071,9 +1294,19 @@ function glyphNames(): Readonly<Record<string, string>> {
     const tokens: Readonly<Record<string, string>> = GLYPH_TOKENS.states[type];
     for (const state of Object.keys(words)) {
       const token = tokens[state];
-      if (token !== undefined) names[token] = `${words[state]} ${NODE_TYPE_NAMES[type]}`;
+      // A state the row follows with a name ("Kept by" and who kept it) names its shape without
+      // the word that leads to the name: "Kept decision".
+      if (token !== undefined) {
+        names[token] = `${words[state]?.replace(/ by$/u, "")} ${NODE_TYPE_NAMES[type]}`;
+      }
     }
   }
+  // How a statement stands is named by the word the legend draws beside its shape, and a
+  // statement no check serves by the gap's own short word.
+  for (const state of keysOf(GLYPH_TOKENS.statements)) {
+    names[GLYPH_TOKENS.statements[state]] = VERIFICATION_WORDS.states[state];
+  }
+  names[GLYPH_TOKENS.no_check] = GAP_WORDS.no_check;
   // An author's shape says what the name beside it is, in the words the page names an author
   // with everywhere else (`CONTROL_LABELS.written_by`) and the kind of author it is, so a reader
   // who cannot see the shape hears "Written by a person" and then the name.
@@ -1140,6 +1373,11 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_FACT_LABELS,
   AUTHOR_KIND_WORDS,
   FILE_WORDS,
+  SPEC_WORDS,
+  DECISIONS_WORDS,
+  VERIFICATION_WORDS,
+  PLAN_WORDS,
+  NODE_REFERENCES_WORDS,
 ]);
 
 /** What the page says only in answer to the reader's own act, and never on load

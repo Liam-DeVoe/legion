@@ -5,7 +5,6 @@ import {
   cursorLabel,
   documentEditor,
   placeCaret,
-  specAddress,
   typeAtEnd,
 } from "./editor";
 import { type DispatchProcess, processPinCookie } from "./harness-processes";
@@ -89,10 +88,7 @@ interface ConnectionWatch {
 /** Has `page` read its own connection dot every `samplingInterval`, and on every change to it in
  *  between, until `stop`. The page reads it, not this process: a Playwright round trip per reading
  *  is slower than the interval on a busy machine. The dot is the document's `role="status"`
- *  element whose `aria-label` starts with one of `connectionLabel`'s states
- *  (features/doc/connection.ts). It is read by `aria-label` and not by `title`, which is what
- *  names it on every surface: a page may draw no tooltip at all (`components/tooltips.tsx`), and
- *  the issue page is one that does not, so the dot there carries no `title` to read. */
+ *  element whose title starts with one of `connectionLabel`'s states (features/doc/connection.ts). */
 async function watchConnection(page: Page): Promise<{ stop(): Promise<ConnectionReadings> }> {
   const watch = await page.evaluateHandle((interval): ConnectionWatch => {
     const states = [
@@ -103,9 +99,8 @@ async function watchConnection(page: Page): Promise<{ stop(): Promise<Connection
     ];
     const started = performance.now();
     const label = () => {
-      for (const element of document.querySelectorAll<HTMLElement>('[role="status"][aria-label]')) {
-        const named = element.getAttribute("aria-label") ?? "";
-        if (states.includes(named.split(" · ")[0] ?? "")) return named;
+      for (const element of document.querySelectorAll<HTMLElement>('[role="status"][title]')) {
+        if (states.includes(element.title.split(" · ")[0] ?? "")) return element.title;
       }
       return "absent";
     };
@@ -127,7 +122,7 @@ async function watchConnection(page: Page): Promise<{ stop(): Promise<Connection
     const timer = window.setInterval(() => read(true), interval);
     const observer = new MutationObserver(() => read(false));
     observer.observe(document.body, {
-      attributeFilter: ["aria-label"],
+      attributeFilter: ["title"],
       attributes: true,
       childList: true,
       subtree: true,
@@ -156,7 +151,7 @@ test("two people on two processes see each other's typing and cursor within a se
     // Each page's connection dot is read from the moment it first connects to the end.
     const alicePage = await alice.newPage();
     const aliceSockets = countDocumentSockets(alicePage);
-    await alicePage.goto(await specAddress(issue.key));
+    await alicePage.goto(`/issues/${issue.key}/spec`);
     const aliceEditor = documentEditor(alicePage);
     await expect(aliceEditor).toContainText("Use SQLite");
     await expect(connectedDot(alicePage)).toHaveText("connected");
@@ -164,7 +159,7 @@ test("two people on two processes see each other's typing and cursor within a se
 
     const bobPage = await bob.newPage();
     const bobSockets = countDocumentSockets(bobPage);
-    await bobPage.goto(await specAddress(issue.key));
+    await bobPage.goto(`/issues/${issue.key}/spec`);
     const bobEditor = documentEditor(bobPage);
     await expect(bobEditor).toContainText("Use SQLite");
     await expect(connectedDot(bobPage)).toHaveText("connected");
