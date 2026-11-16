@@ -502,7 +502,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               # The relayed shapes routes_shapes.go names (internal/dispatch/api).
               - 'packages/envoy/internal/broker/wire/*'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/brokertoken/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
@@ -671,7 +671,7 @@ jobs:
               # going's own golden, which a test run of that package reads.
               - 'packages/envoy/going/testdata/**'
               - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/brokertoken/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
@@ -712,7 +712,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               # The relayed shapes routes_shapes.go names.
               - 'packages/envoy/internal/broker/wire/*'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/brokertoken/**'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
@@ -1845,7 +1845,7 @@ jobs:
               - 'packages/envoy/internal/brokerclient/**'
               # internal/broker/judge/model.go mints the account token it reads Dispatch with
               # through brokertoken.
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/brokertoken/**'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
