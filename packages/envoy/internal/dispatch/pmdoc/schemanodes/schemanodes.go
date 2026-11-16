@@ -93,14 +93,14 @@ type attributeAttributes struct {
 	pmdoc.BlockAttributeSchema
 }
 
-// Read builds the block schema from the store's nodes: every live supertag node that declares
-// itself a block type, with the attributes its `attribute_of` tuples name, in the order each
-// node records. The version is the highest its types carry, so a type added at a new version
-// raises the schema's own. Each attribute is declared under the name its node carries, the name
-// a document writes it under, and never under its store name: the node ask/answer_state is
-// ask's `state`, as blocks.json declares it. It names no node and no mark of the Proof schema:
-// the store holds the typed blocks alone, and pmdoc.Install takes the nodes and marks from the
-// build's own manifest.
+// Read builds the block schema from the store's nodes: every supertag node the store holds at
+// any state but gone that declares itself a block type, with the attributes its `attribute_of`
+// tuples name, in the order each node records. The version is the highest its types carry, so a
+// type added at a new version raises the schema's own. Each attribute is declared under the
+// name its node carries, the name a document writes it under, and never under its store name:
+// the node ask/answer_state is ask's `state`, as blocks.json declares it. It names no node and
+// no mark of the Proof schema: the store holds the typed blocks alone, and pmdoc.Install takes
+// the nodes and marks from the build's own manifest.
 //
 // It refuses a store holding no block type, since installing that would leave the server
 // unable to read a single typed block, and a node it cannot decode. Everything else it cannot
@@ -149,7 +149,7 @@ func read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) 
 	var types []placed
 	var value pmdoc.BlockSchema
 	for _, node := range supertags {
-		if node.State != graphstore.StateLive {
+		if node.State == graphstore.StateGone {
 			continue
 		}
 		var carried supertagAttributes
@@ -191,8 +191,8 @@ func read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) 
 	return value, nil
 }
 
-// readAttributeNodes answers every live attribute node by its address, so the tuples out of one
-// supertag are resolved without a read per attribute.
+// readAttributeNodes answers every attribute node the store holds (any state but gone) by its
+// address, so the tuples out of one supertag are resolved without a read per attribute.
 func readAttributeNodes(ctx context.Context, q graphstore.Queryer) (map[string]attributeAttributes, error) {
 	nodes, err := graphstore.NodesOfKind(ctx, q, KindAttribute)
 	if err != nil {
@@ -200,7 +200,7 @@ func readAttributeNodes(ctx context.Context, q graphstore.Queryer) (map[string]a
 	}
 	held := make(map[string]attributeAttributes, len(nodes))
 	for _, node := range nodes {
-		if node.State != graphstore.StateLive {
+		if node.State == graphstore.StateGone {
 			continue
 		}
 		var carried attributeAttributes
@@ -214,7 +214,8 @@ func readAttributeNodes(ctx context.Context, q graphstore.Queryer) (map[string]a
 
 // typeAttributes is one type's attributes, in the order the nodes record, read through the
 // `attribute_of` tuples pointing at its supertag. An attribute node the tuple names and the
-// store no longer holds live is left out, as the current set of a retracted tuple would be.
+// store holds gone, or no longer holds, is left out, as the current set of a retracted tuple
+// would be.
 func typeAttributes(ctx context.Context, q graphstore.Queryer, name string, held map[string]attributeAttributes) (pmdoc.BlockAttributes, error) {
 	tuples, err := graphstore.CurrentIn(ctx, q, KindSupertag, name, []string{TupleAttributeOf})
 	if err != nil {
@@ -229,8 +230,8 @@ func typeAttributes(ctx context.Context, q graphstore.Queryer, name string, held
 		if tuple.FromKind != KindAttribute {
 			continue
 		}
-		carried, live := held[tuple.FromID]
-		if !live {
+		carried, present := held[tuple.FromID]
+		if !present {
 			continue
 		}
 		attributes = append(attributes, placed{position: carried.Position, attribute: pmdoc.BlockAttribute{

@@ -828,18 +828,18 @@ func projectionRows(reference referencingColumn, table string) string {
 		` held where held.node_kind = $1 and held.node_address = $2`
 }
 
-// readBlockers names every live row of another node that states something about this one, each
-// of which refuses the run, so an operator erases or edits those first and the store census
-// still reads zero once the erase runs.
+// readBlockers names every row of another node the store holds (at any state but gone) that
+// states something about this one, each of which refuses the run, so an operator erases or edits
+// those first and the store census still reads zero once the erase runs.
 //
 // Two kinds of row do. A row that points at this node's projection through a nullable reference:
 // a reply whose reply_to names an erased comment is somebody else's words, and an ask handed back
 // through it is the ask's own history, so the erase neither deletes one nor rewrites the other.
-// And a projection row of another live node whose node states a tuple into this one now: a block
-// inside an erased block (its part_of and its parent_block_id), a block that cites it (its
-// mentions or pointer tuple and its block_refs row), a comment its author is (its authored_by and
-// its author). The erase deletes the tuples into the node, so such a row would go on stating a
-// tuple the store no longer holds, which is a difference `census --store` reads.
+// And a projection row of another node the store holds, not gone, whose node states a tuple into
+// this one now: a block inside an erased block (its part_of and its parent_block_id), a block that
+// cites it (its mentions or pointer tuple and its block_refs row), a comment its author is (its
+// authored_by and its author). The erase deletes the tuples into the node, so such a row would go
+// on stating a tuple the store no longer holds, which is a difference `census --store` reads.
 func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	for _, held := range projectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
@@ -870,9 +870,9 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.asserted`,
 		`t.to_kind = $1 and t.to_id = $2 and not (t.from_kind = $1 and t.from_id = $2)`)+`
 		) t
-		join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id and n.state = $3
+		join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id and n.state <> $3
 		where t.asserted and (`+strings.Join(projected, " or ")+`)
-		order by 1, 2, 3`, e.Kind, e.ID, graphstore.StateLive)
+		order by 1, 2, 3`, e.Kind, e.ID, graphstore.StateGone)
 	if err != nil {
 		return fmt.Errorf("read the nodes stating a tuple into %s:%s: %w", e.Kind, e.ID, err)
 	}

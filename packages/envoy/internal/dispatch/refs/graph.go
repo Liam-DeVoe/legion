@@ -485,16 +485,16 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 
 // loadStoreNodes resolves the kinds the node and tuple store holds itself: a person, a session,
 // a role and a role's or a session's page (graphstore). Each is read from graph_nodes, and one
-// the store has no row for is absent from the answer, as every other loader leaves out a node
-// that does not exist: a session Dispatch has recorded nothing of is no node of the graph, and
-// the edges at it are omitted until a write records it. None of the four carries a dispatch://
-// address or belongs to a node here: what a session is part of is a tuple, which the reads that
-// show one follow for themselves.
+// the store has no row for, or holds gone, is absent from the answer, as every other loader leaves
+// out a node that does not exist: a session Dispatch has recorded nothing of is no node of the
+// graph, and the edges at it are omitted until a write records it. A node at any other state is
+// present. None of the four carries a dispatch:// address or belongs to a node here: what a
+// session is part of is a tuple, which the reads that show one follow for themselves.
 func loadStoreNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select id, made_by, made_at from graph_nodes
-		where kind = $1 and id = any($2) and state = $3 and `+VisibleRow("graph_nodes", "$4"),
-		kind, ids, graphstore.StateLive, VisibilityArg(who))
+		where kind = $1 and id = any($2) and state <> $3 and `+VisibleRow("graph_nodes", "$4"),
+		kind, ids, graphstore.StateGone, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load %s nodes: %w", kind, err)
 	}

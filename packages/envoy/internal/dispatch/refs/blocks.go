@@ -47,6 +47,17 @@ const (
 // block holds.
 const TupleInDocument = "in_document"
 
+// BlockRefKinds is every tuple kind IndexBlocks writes into block_refs, so every kind of tuple out
+// of a block that a block_refs row is the projection of: a block's mention (blockPairs) and each
+// pointer kind the installed block schema declares (pointerPairs, pmdoc.LinkKinds), the two kinds
+// migration 20261109215947 names. A tuple of any other kind out of a block - its placement,
+// in_document and part_of, or one another writer states of it - is no part of that projection,
+// and the store census holds the block_refs rows to the tuples of these kinds alone
+// (graphcensus).
+func BlockRefKinds() []string {
+	return append([]string{"mentions"}, pmdoc.LinkKinds()...)
+}
+
 // IndexBlocks records version `version` (written at versionAt) of document artifactID's blocks as
 // graph nodes, and each mention written inside a block as an edge out of the innermost block
 // holding its start, in the caller's transaction, which holds the document's owner row. blocks

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -25,9 +26,10 @@ const reportedDifferences = 20
 //
 // rows is a select of (row_label, node_kind, node_address, digest): one row per projection row,
 // naming the node that row says it projects and digesting the fields the row and its node
-// share. nodes is a select of (id, digest): one row per live node of the kind, digesting the
-// same fields as the store holds them. The census holds the two against each other in both
-// directions, so a row with no node and a node with no row are each a difference.
+// share. nodes is a select of (id, digest): one row per node of the kind, digesting the same
+// fields as the store holds them, of which the census compares those the store holds present
+// (presentNodes). The census holds the two against each other in both directions, so a row with
+// no node and a node with no row are each a difference.
 //
 // A kind with no projection table takes the set of actors the projected tables name as its rows
 // (people and agents below), which is the side that exists for it; a role takes the roles the
@@ -42,11 +44,15 @@ type projection struct {
 	// so the report says what it checked rather than only what it found.
 	note string
 	rows string
-	// nodes is the live nodes of the kind. It names no state: liveNodes wraps it.
+	// nodes is the nodes of the kind. It names no state: presentNodes wraps it.
 	nodes string
 	// addressed says rows reads the roles addressedRoles names as $1, which the census reads once
 	// for the run (readAddressedRoles) rather than once in every statement that reads the rows.
 	addressed bool
+	// blockRefKinds says nodes reads as $1 the tuple kinds refs.IndexBlocks writes into
+	// block_refs (refs.BlockRefKinds), taken once for the run: the pointer kinds among them are
+	// the installed block schema's, which no constant here can name.
+	blockRefKinds bool
 	// pastBound counts the addresses this kind's row side names that are past the store's bound
 	// (graphstore.MaxAddressBytes), which the writers left unprojected on purpose: it is a full
 	// `select count(*)`, reads $1 where addressed, and is empty for a kind no address of which can
@@ -55,8 +61,8 @@ type projection struct {
 	pastBound string
 }
 
-// KindReport is one kind's census: how many rows and how many live nodes it read, and what the
-// two said about each other.
+// KindReport is one kind's census: how many rows and how many present nodes it read, and what
+// the two said about each other.
 type KindReport struct {
 	Kind, NodeKind, Table, Note string
 	Rows, Nodes                 int64
@@ -165,6 +171,13 @@ func (r *StoreReport) Refused() bool {
 // a session named past it is no node either. Each row side leaves those addresses out and counts
 // them as a class of its own (pastBound), so the census reports no difference the writers made on
 // purpose, in both directions.
+//
+// The two block kinds hold a block to what refs.IndexBlocks projects of it and to nothing else. A
+// block of a lens's finding (lensBlock) is a block node no document holds, so no table projects
+// it and neither block kind reads it. And a tuple another writer states out of a block - a
+// requirement's constrained_by, a changed_by_run, a finding's authored_by - is no link a
+// block_refs row names, so the block_ref kind reads only the kinds that writer projects into
+// block_refs (refs.BlockRefKinds) and the block kind only a block's placement.
 var projections = []projection{{
 	name:     "comment",
 	nodeKind: "comment",
@@ -199,9 +212,10 @@ var projections = []projection{{
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_blocks",
-	note: "one node per row, blocks past the address bound aside; the digest is the row's document and the block" +
-		" its parent_block_id names, or the document where it names none, against the in_document and part_of" +
-		" tuples the node states now, a block with no part_of telling itself from one the document holds directly",
+	note: "one node per row, blocks past the address bound and the blocks of a lens's finding aside; the digest is" +
+		" the row's document and the block its parent_block_id names, or the document where it names none, against" +
+		" the in_document and part_of tuples the node states now, a block with no part_of telling itself from one" +
+		" the document holds directly",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
@@ -215,7 +229,7 @@ var projections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
 		`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
+		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 }, {
@@ -223,7 +237,8 @@ var projections = []projection{{
 	nodeKind: refs.BlockNodeKind,
 	table:    "block_refs",
 	note: "a row is one link out of a block and its node is that block's, so several rows share one node:" +
-		" the node side is every live block node that states a link now beside its in_document and part_of," +
+		" the node side is every block node not gone, a lens's finding aside, that states a link now of a kind" +
+		" refs.IndexBlocks writes into block_refs (a mention, or a pointer of the installed block schema)," +
 		" whether a row names it or not, and the digest is every link the rows of that block name against" +
 		" every such link its node states now",
 	rows: `
@@ -242,15 +257,16 @@ var projections = []projection{{
 	// Every block node is read, and not only those a row names: a mention or a pointer the store
 	// states out of a block no block_refs row names is a link graph_edges answers, and a node
 	// side that began at the rows could never find it. A block whose only links are its
-	// placement states no link here and is no node of this kind; the block kind holds it.
+	// placement, or tuples no block_refs row projects, states no link here and is no node of this
+	// kind; the block kind holds it.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind,
-		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any($1::text[])`) + ` as links
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + `
 		) held
 		where held.links <> ''`,
+	blockRefKinds: true,
 	pastBound: `
 		select count(*) from block_refs r
 		where octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound,
@@ -316,6 +332,19 @@ var projections = []projection{{
 // it. It is written into the text rather than bound as a parameter because each side is spliced
 // into a statement of its own and one shared constant keeps the two sides reading the same bound.
 var addressBound = strconv.Itoa(graphstore.MaxAddressBytes)
+
+// lensBlockPrefix is how a block node's id names a lens: a block of a lens's finding is addressed
+// under its lens, dispatch://lens/<uuid>, so its id is `lens/<uuid>#<id>`.
+const lensBlockPrefix = "lens/"
+
+// lensBlock is true of the block node alias whose id names a lens: a block of a lens's finding
+// (dispatch://INFRA-1950), which no document holds, so no document_blocks row projects it and no
+// block_refs row names it. A document's block is `<ref_key>#<id>` (refs.IndexBlocks), and a
+// ref_key begins with an issue's or a project's key, which is upper case, or with `agent/`
+// (graphstore.ArtifactRefKey), so no document's block reads as one.
+func lensBlock(alias string) string {
+	return `(` + alias + `.id like '` + lensBlockPrefix + `%')`
+}
 
 // statedLinks is the links a projection row states, as one value its digest can carry: links are
 // SQL expressions over the row, each answering one link written kind>to_kind:to_id, or null where
@@ -532,11 +561,14 @@ func readAddressedRoles(ctx context.Context, tx pgx.Tx) ([]string, error) {
 
 // StoreCensus reads the node and tuple store against the tables that project it, in one
 // read-only repeatable-read transaction on a connection of its own. It writes nothing: the
-// transaction is read only, and every statement it runs is a select.
+// transaction is read only, and every statement it runs is a select. Before that transaction it
+// installs, in this process, the block schema the store's type nodes build
+// (schemanodes.InstallFromStore), which reads the store and writes nothing either.
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
-// gone; a row whose shared fields disagree with its node's; and a live node no row projects.
+// gone; a row whose shared fields disagree with its node's; and a node the store holds present
+// that no row projects, named with its state.
 //
 // Two writes can state one fact twice by design and nothing here reads wrong for it: a tuple at
 // the source_event sentinel is outside both repeat keys, and the backfill writes every fact it
@@ -562,17 +594,29 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		return nil, err
 	}
 	defer conn.Close(ctx)
+	report := &StoreReport{}
+	// The store is looked up before anything reads it, so a database the store does not exist in
+	// answers that rather than failing at the first statement that names graph_nodes.
+	if err := conn.QueryRow(ctx, `select to_regclass('graph_nodes') is null`).Scan(&report.Absent); err != nil {
+		return nil, fmt.Errorf("look up the store: %w", err)
+	}
+	// The block_refs kinds the census digests (refs.BlockRefKinds) are the pointer kinds of the
+	// block schema this process has installed, so the census installs the one the store's type
+	// nodes build, as the server reads them, and not the file this binary embeds: a type the store
+	// holds and the file does not would otherwise read every link of its pointers as a difference,
+	// as grapherase.Erase holds a document to the store's types for the same reason. The read runs
+	// a read-only transaction of its own (schemanodes.Read), so it goes on the census's connection
+	// before the snapshot opens. A database with no store has no type nodes and installs nothing.
+	if !report.Absent {
+		if err := schemanodes.InstallFromStore(ctx, conn); err != nil {
+			return nil, fmt.Errorf("install the block schema from the store: %w", err)
+		}
+	}
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("open the census snapshot: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	report := &StoreReport{}
-	// The store is looked up before any kind is read, so a database the store does not exist in
-	// answers that rather than failing at the first statement that names graph_nodes.
-	if err := tx.QueryRow(ctx, `select to_regclass('graph_nodes') is null`).Scan(&report.Absent); err != nil {
-		return nil, fmt.Errorf("look up the store: %w", err)
-	}
 	if !report.Absent {
 		if report.Kinds, err = censusOfKinds(ctx, tx, afterKind); err != nil {
 			return nil, err
@@ -605,7 +649,8 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 	var addressed []string
 	for _, held := range projections {
 		var args []any
-		if held.addressed {
+		switch {
+		case held.addressed:
 			if addressed == nil {
 				var err error
 				if addressed, err = readAddressedRoles(ctx, tx); err != nil {
@@ -613,6 +658,8 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 				}
 			}
 			args = []any{addressed}
+		case held.blockRefKinds:
+			args = []any{refs.BlockRefKinds()}
 		}
 		kind, err := censusOfKind(ctx, tx, held, args)
 		if err != nil {
@@ -628,9 +675,10 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 	return kinds, nil
 }
 
-// censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
-// each direction with the first reportedDifferences of them. args are what the kind's rows bind,
-// none but for a kind that reads the addressed roles.
+// censusOfKind reads one kind: how many rows and present nodes there are, and the differences in
+// each direction with the first reportedDifferences of them. args are what the kind's rows and
+// nodes bind: the addressed roles for a kind that reads them, the block_refs tuple kinds for the
+// kind that reads those, and none for any other.
 //
 // The four counts are four scalar subqueries of one statement rather than four round trips, so
 // a census of seven kinds costs seven reads here and not twenty-eight. Each subquery is the
@@ -645,7 +693,7 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	}
 	if err := tx.QueryRow(ctx, `select
 		(select count(*) from (`+held.rows+`) rows (row_label, node_kind, node_address, digest)),
-		(select count(*) from (`+liveNodes(held)+`) nodes (id, digest)),
+		(select count(*) from (`+presentNodes(held)+`) nodes (id, digest, state)),
 		(select count(*) from (`+rowDifferences(held)+`) rows_found),
 		(select count(*) from (`+nodeDifferences(held)+`) nodes_found),
 		(`+pastBound+`)`, args...,
@@ -668,45 +716,51 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	return kind, nil
 }
 
-// liveNodes is the kind's node side bound to the live state: a node the store holds gone is no
-// node a row may project, and the row side holds it to that separately (goneNodeCause).
-func liveNodes(held projection) string {
-	return `select id, digest from (` + held.nodes + `) node (id, digest)
-		where exists (select 1 from graph_nodes live
-		              where live.kind = '` + held.nodeKind + `' and live.id = node.id
-		                and live.state = '` + graphstore.StateLive + `')`
+// presentNodes is the kind's node side bound to the nodes the store holds present, which is every
+// node not at state gone (R12 of dispatch://INFRA-1950): a node at proposed, settled or overtaken
+// is a node a row projects as one at live is, so a move between those states is no lost node. It
+// answers each node's state beside its digest, which the report names a node with. A node the
+// store holds gone is no node a row may project, and the row side holds it to that separately.
+func presentNodes(held projection) string {
+	return `select node.id, node.digest, present.state from (` + held.nodes + `) node (id, digest)
+		join graph_nodes present on present.kind = '` + held.nodeKind + `' and present.id = node.id
+		                        and present.state <> '` + graphstore.StateGone + `'`
 }
 
 // rowDifferences reads the row side against the store: every row that names no node, names one
 // the store does not hold, names one it holds gone, or disagrees with its node's digest. The
 // gone test is its own cause rather than a missing node, because a row projecting a node the
-// store has ended is a different defect from a row projecting nothing.
+// store has ended is a different defect from a row projecting nothing, and it is the one test
+// of a node's state here: a row may project a node at any other state.
 func rowDifferences(held projection) string {
 	return `
 		select case
 			when row.node_kind is null or row.node_address is null then 'the row names no node'
 			when node.kind is null then 'the row names a node the store does not hold'
-			when node.state <> '` + graphstore.StateLive + `'
+			when node.state = '` + graphstore.StateGone + `'
 				then 'the row names a node the store holds ' || node.state
 			else 'the row and its node disagree: the row digests ' || row.digest
-			     || ' and the node ' || coalesce(live.digest, '(none)')
+			     || ' and the node ' || coalesce(present.digest, '(none)')
 		end,
 		row.row_label
 		from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
 		left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
-		left join (` + liveNodes(held) + `) live (id, digest) on live.id = row.node_address
+		left join (` + presentNodes(held) + `) present (id, digest, state) on present.id = row.node_address
 		where row.node_kind is null or row.node_address is null or node.kind is null
-		   or node.state <> '` + graphstore.StateLive + `'
-		   or row.digest is distinct from live.digest
+		   or node.state = '` + graphstore.StateGone + `'
+		   or row.digest is distinct from present.digest
 		order by 2, 1`
 }
 
-// nodeDifferences reads the store against the row side: every live node of the kind no row
-// projects.
+// nodeDifferences reads the store against the row side: every node of the kind the store holds
+// present that no row projects, named with the state it is at, so a proposed node with no row
+// reads as a proposed one and a live one as `a live node no row projects`.
 func nodeDifferences(held projection) string {
 	return `
-		select 'a live node no row projects', '` + held.nodeKind + ` ' || node.id
-		from (` + liveNodes(held) + `) node (id, digest)
+		select case when node.state ~ '^[aeiou]' then 'an ' else 'a ' end || node.state
+		       || ' node no row projects',
+		       '` + held.nodeKind + ` ' || node.id
+		from (` + presentNodes(held) + `) node (id, digest, state)
 		where not exists (
 			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
 			where row.node_kind = '` + held.nodeKind + `' and row.node_address = node.id)
