@@ -3,8 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
-import type { Actor, IssueDecisions } from "../../../api/types";
+import type { Actor, ArtifactBlock, Comment, Decision, IssueDecisions } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
 import { useDecisionsEntries } from "./decisions-entries";
@@ -20,6 +21,7 @@ import {
   KEY,
   openAsk,
   READER,
+  READER_ACTOR,
   shaped,
   specRef,
   statement,
@@ -36,22 +38,24 @@ import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
-/** The seam's parts for the issue whose tree holds `children`, with `decisions` and `asks` as
- *  the cache holds them, no comment and no block of the decisions document. */
+/** The seam's parts for the issue whose tree holds `children`, with `decisions`, `asks`,
+ *  `comments` and the decisions document's `blocks` as the cache holds them. */
 async function entriesOf(
   children: readonly TreeNode[],
   decisions: IssueDecisions,
-  asks: readonly DecisionsAsk[] = []
+  asks: readonly DecisionsAsk[] = [],
+  comments: readonly Comment[] = [],
+  blocks: readonly ArtifactBlock[] = []
 ): Promise<DecisionsParts> {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["decisions", KEY], decisions);
   client.setQueryData(["asks", KEY], asks);
-  client.setQueryData(["comments", KEY], []);
+  client.setQueryData(["comments", KEY], comments);
   // The issue names its decisions document by its role (`issueDetails`), so the seam reads that
   // document's blocks, as the tree does.
-  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
+  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], blocks);
   const issue = issueDetails();
   const root = issueTree(children);
   const view = presetView(root, "decisions", "").root;
@@ -66,6 +70,34 @@ async function entriesOf(
   const parts = hook.result.current;
   hook.unmount();
   return parts;
+}
+
+/** The decisions document's blocks as the blocks read answers them, in document order: each
+ *  decision's heading, whose block is the decision's own (`Decision.block_id`), then one block
+ *  for each paragraph of its words, each at the place it holds in the document's markdown. */
+function documentBlocks(made: readonly Decision[]): ArtifactBlock[] {
+  const blocks: ArtifactBlock[] = [];
+  let at = 0;
+  const add = (id: string, type: string, markdown: string) => {
+    blocks.push({
+      attributes: [],
+      from: at,
+      id,
+      references: { asks: 0, comments: 0 },
+      to: at + markdown.length,
+      token: id,
+      type,
+    });
+    // A blank line stands between two blocks of the markdown.
+    at += markdown.length + 2;
+  };
+  for (const one of made) {
+    add(one.block_id, "heading", `## ${one.heading}`);
+    one.text.split("\n\n").forEach((paragraph, index) => {
+      add(`${one.block_id}-${index + 1}`, "paragraph", paragraph);
+    });
+  }
+  return blocks;
 }
 
 /** The node ids of each part, in the order the part draws them. */
@@ -88,9 +120,17 @@ const D = (block: string) => decisionNode(block).id;
 // answers stand under the reader's decisions, newest first among the reader's own. Two answers
 // of one moment stand in the order their nodes first stand in the tree, read depth first: Bob's
 // is under the statement at the tree's top and the reader's is the issue's last ask, so Bob's
-// stands first, which neither the reader's entries first nor a walk level by level gives.
+// stands first, which neither the reader's entries first nor a walk level by level gives. The
+// decisions document's blocks place a Change (decision 110 (1) of dispatch://INFRA-1196): two
+// decisions that wait open with the same words, and the reader's Change was written in the
+// second one's section, so the second leaves the review list for her decisions and the first
+// still waits. The quote alone would put the Change on the first.
 test("the seam gives four parts from today's reads and makes no request", async () => {
   const tie = "2026-11-11T09:00:00Z";
+  // Two decisions that wait, each opening with the same paragraph.
+  const opening = "The rail stays 56 px wide.";
+  const reviewWords = `${opening}\n\nThe outline needs the room.`;
+  const askedWords = `${opening}\n\nA phone draws it over the body.`;
   const children = [
     statement("s1", {
       children: [answeredAsk("a-tie-bob", { at: tie, by: BOB, text: "Bob's, at that moment." })],
@@ -100,10 +140,42 @@ test("the seam gives four parts from today's reads and makes no request", async 
     answeredAsk("a-bob", { at: "2026-11-13T09:00:00Z", by: BOB, text: "Bob's." }),
     answeredAsk("a-late", { at: "2026-11-14T09:00:00Z", text: "My second." }),
     answeredAsk("a-tie-mine", { at: tie, text: "Mine, at that moment." }),
-    decisionNode("review"),
+    decisionNode("review", { text: reviewWords }),
+    decisionNode("asked", { text: askedWords }),
     decisionNode("minor"),
   ];
-  const made = [decision("review", { links: [shaped(specRef("s1"))] }), decision("minor")];
+  const made = [
+    decision("review", { links: [shaped(specRef("s1"))], text: reviewWords }),
+    decision("asked", { links: [shaped(specRef("s1"))], text: askedWords }),
+    decision("minor"),
+  ];
+  // The reader's Change on the second decision, made after both last changed: its anchor
+  // quotes the decision's first paragraph, as the page's Change does, which the first decision
+  // holds too, and names that paragraph's block.
+  const change: Comment = {
+    ...commentDeliveryFields(),
+    anchor: {
+      artifact_id: DECISIONS_DOCUMENT.id,
+      block_id: "asked-1",
+      mark_id: "mark-asked",
+      orphaned: false,
+      quote: opening,
+      version: 1,
+    },
+    ask_id: null,
+    author: READER_ACTOR,
+    body: "Draw it under the body on a phone.",
+    created_at: "2026-11-15T09:00:00Z",
+    edited_at: null,
+    id: "change-asked",
+    issue_key: KEY,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
   const asks = [
     closing("a-tie-bob", { actor: BOB, at: tie, kind: "answered" }),
     closing("a-early", { at: "2026-11-12T09:00:00Z", kind: "answered" }),
@@ -117,13 +189,35 @@ test("the seam gives four parts from today's reads and makes no request", async 
   // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
   try {
-    const ids = idsOf(await entriesOf(children, decisionsRead(made), asks));
-    expect(ids.yours).toEqual(["a-late", "a-bob", "a-early", "a-tie-bob", "a-tie-mine"]);
+    const parts = await entriesOf(
+      children,
+      decisionsRead(made),
+      asks,
+      [change],
+      documentBlocks(made)
+    );
+    const ids = idsOf(parts);
+    expect(ids.yours).toEqual([
+      D("asked"),
+      "a-late",
+      "a-bob",
+      "a-early",
+      "a-tie-bob",
+      "a-tie-mine",
+    ]);
     expect(ids.others).toEqual([]);
     expect(ids.open_questions).toEqual(["q-open"]);
     expect(ids.review).toEqual([D("review")]);
     expect(ids.agents).toEqual([D("minor")]);
     expect(ids.named).toEqual([]);
+    // The second decision carries the reader's Change, and the first, whose words hold the same
+    // quote, carries none.
+    expect(parts.yours[0]).toMatchObject({
+      change: { id: change.id },
+      kind: "decision",
+      standing: "change_requested",
+    });
+    expect(parts.review[0]).not.toHaveProperty("change");
 
     expect(getIssueDecisions).not.toHaveBeenCalled();
     expect(listIssueAsks).not.toHaveBeenCalled();

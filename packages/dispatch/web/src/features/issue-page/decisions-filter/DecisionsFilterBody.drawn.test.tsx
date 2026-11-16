@@ -7,7 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
 import type { Actor, Comment, Decision, DecisionKeep } from "../../../api/types";
-import { pageFocusedRow } from "../../../theme/classes";
+import { pageFocusedRow, pageInkText, pageOwnWordsRule } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
@@ -844,8 +844,11 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
   // Every character, the line breaks and the doubled spaces included.
   expect(row.querySelector("[data-answer-text]")?.textContent).toBe(STORED);
   expect(words(row.querySelector("[data-answer-author]"))).toBe("alice");
-  // The reader's own answer carries the ink rule their own words carry (R34).
-  expect(row.querySelector("[data-node-answer]")?.className).toContain("inset_2px_0_0");
+  // The reader's own answer carries the ink rule their own words carry (R34): each class of the
+  // page's rule, so the reading holds whatever classes the theme writes the rule with.
+  const answer = row.querySelector("[data-node-answer]");
+  const missing = pageOwnWordsRule.split(" ").filter((name) => !answer?.classList.contains(name));
+  expect(missing).toEqual([]);
 
   // With the focus on it the same holds, and what the page writes of its own on the row is the
   // kind, the state, the word naming the answer, the link and the body's one control.
@@ -1143,7 +1146,8 @@ test("an address that names a comment draws its row first and focuses it", async
   expect(row.querySelector("[data-node-tag]")).toBeNull();
   const author = row.querySelector("[data-node-margin] [data-node-author] [data-author-text]");
   expect(words(author)).toBe("alice");
-  expect(author?.className).not.toContain("font-semibold");
+  // Out of the reader's ink: no class of the page's ink is on it.
+  expect(pageInkText.split(" ").filter((name) => author?.classList.contains(name))).toEqual([]);
   expect(words(row.querySelector("[data-node-words]"))).toBe("The rail stays where it is.");
   expect(row.hasAttribute("data-node-state")).toBe(false);
   expect(row.querySelector("[data-node-margin] [data-node-state]")).toBeNull();

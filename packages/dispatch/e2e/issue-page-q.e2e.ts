@@ -19,6 +19,7 @@ import {
   nodeRow,
   PHONE,
   parentOfRow,
+  rowBody,
   rowGroups,
   rowLayouts,
   rowOf,
@@ -59,7 +60,8 @@ import { expect, test } from "./test";
  *   (the tester's F6), read again at 390 px and from an address that names the change.
  * - **c-keep**, "the Decisions view draws Keep and Change on each decision that waits, and Keep
  *   moves it": the two controls before any focus and their colours, Keep, `Shift+C`, `Shift+K`,
- *   and where a load and `t d` leave the focus (the tester's F23).
+ *   where a load and `t d` leave the focus (the tester's F23), and a press on the link of a row
+ *   that has no focus.
  * - **c-layout**, "under Decisions a row draws the outline's layout, short names and the
  *   six-line cut": G's layout and group readings on every row of the view, each statement named
  *   within 32 characters, the cut of a long answered question, and the view's width.
@@ -478,10 +480,12 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
 // and on no other row. Keep moves the decision to the reader's own as kept by her, the server
 // holds the Keep, and the focus goes on to the next decision that waits, where `Shift+C` opens
 // Change with the caret in its field. A direct load leaves the focus on the list's first row
-// (the tester's F23); `Shift+K` keeps the last decision that waits and the review part goes;
-// and `t c` then `t d` leave the focus on a row of the list, on screen.
-// SLOW(>=2s): a seeded issue whose view is loaded twice, with a Keep and a Shift+K each waited
-// on until the server's answer redraws the list, and two chords each waited on until it moves.
+// (the tester's F23), and a press on the link of a row under it that has no focus follows the
+// link; `Shift+K` keeps the last decision that waits and the review part goes; and `t c` then
+// `t d` leave the focus on a row of the list, on screen.
+// SLOW(>=2s): a seeded issue whose view is loaded three times, with a Keep and a Shift+K each
+// waited on until the server's answer redraws the list, a link followed, and two chords each
+// waited on until it moves.
 test("the Decisions view draws Keep and Change on each decision that waits, and Keep moves it @phone", async ({
   browser,
 }) => {
@@ -579,16 +583,35 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
     ).toBeFocused();
 
     // A direct load of the view leaves the focus on the list's first row (the tester's F23).
+    const focusOnFirst = async () => {
+      const first = (await decisionsRows(page))[0]?.id ?? null;
+      const focused = await focusedNodeId(page);
+      return { first, focused, onFirst: first !== null && focused === first };
+    };
     await openPreset(page, seeded.key, "decisions");
     await expect
-      .poll(
-        async () => {
-          const first = (await decisionsRows(page))[0]?.id ?? null;
-          const focused = await focusedNodeId(page);
-          return { first, focused, onFirst: first !== null && focused === first };
-        },
-        { message: "a direct load of the Decisions view leaves the focus off the list" }
-      )
+      .poll(focusOnFirst, {
+        message: "a direct load of the Decisions view leaves the focus off the list",
+      })
+      .toMatchObject({ onFirst: true });
+    // A press on the link of a row under it, which has no focus, follows the link. The focused
+    // row's body is open, so a focus taken before the press ends would close it and move the
+    // link up from under the pointer, and the click would be lost.
+    const { first } = await focusOnFirst();
+    await expect(
+      rowBody(nodeRow(page, first ?? "").first()),
+      `the focused first row draws no body ${at}`
+    ).toHaveCount(1);
+    const link = nodeRow(page, newer).first().locator("a[data-entry-link]");
+    const address = await link.evaluate((element) => (element as HTMLAnchorElement).href);
+    await link.click();
+    await expect(page, `a press on a row without the focus is lost ${at}`).toHaveURL(address);
+    // The view again, with its focus placed on its first row before a key acts on a row.
+    await openPreset(page, seeded.key, "decisions");
+    await expect
+      .poll(focusOnFirst, {
+        message: `the Decisions view loaded again leaves the focus off the list ${at}`,
+      })
       .toMatchObject({ onFirst: true });
     // `Shift+K` on the older decision keeps it, and with nothing left to review the part goes.
     await focusRow(page, older);
@@ -599,6 +622,15 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
       })
       .toBe(0);
 
+    // Decisions 80 and 127: at 390 px this waits on part P's header and its identity height.
+    if (test.info().project.name === "iphone") {
+      test.info().annotations.push({
+        description:
+          "decision 127: the t d reading at 390 px waits on part P's header, which publishes --issue-identity-height (decision 80); the round that brings P under Q takes this out",
+        type: "owed",
+      });
+      return;
+    }
     // `t c` turns the view off, and `t d` turns it on again with the focus on a row of its list,
     // on screen.
     await page.keyboard.press("t");
