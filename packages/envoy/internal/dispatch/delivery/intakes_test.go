@@ -281,8 +281,10 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 }
 
 // TestIntakesWithoutTheAppConnectNothing: with no GitHub App neither intake reads anything, so
-// StartIntakes opens no connection and its stop returns at once - within 5 s, well under the 15 s
-// an intake with work in hand may take to stop (intakeStopBudget).
+// StartIntakes opens no connection and its stop returns rather than waiting on one. The stop is a
+// stop that must return, so it waits on eventWait like every other event here; how long it takes
+// is nothing this row reads, since with no App StartIntakes answers a stop that closes a channel
+// and no intake's own stop (intakeStopBudget bounds that one, in the rows that start one).
 func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	t.Parallel()
 	stop, err := StartIntakes(t.Context(), func(string) (*bus.Client, error) {
