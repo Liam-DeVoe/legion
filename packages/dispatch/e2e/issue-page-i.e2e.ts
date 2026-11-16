@@ -1425,16 +1425,22 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
     await expect
       .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
       .toBe(true);
+    // On screen is under nothing at the foot too: the height the box at the foot publishes
+    // (`FOOT_HEIGHT_PROPERTY`) is taken off the window, as `onScreen` and row (4)'s `inView` do.
     const caretOnScreen = (): Promise<boolean> =>
-      page.evaluate(() => {
+      page.evaluate((property) => {
         const selection = window.getSelection();
         if (selection === null || selection.rangeCount === 0) return false;
+        const foot =
+          Number.parseFloat(
+            getComputedStyle(document.documentElement).getPropertyValue(property)
+          ) || 0;
         // A caret on an empty line has no rectangle of its own, so its line's box is read.
         const anchor = selection.anchorNode;
         const line = anchor instanceof Element ? anchor : anchor?.parentElement;
         const box = selection.getRangeAt(0).getClientRects()[0] ?? line?.getBoundingClientRect();
-        return box !== undefined && box.top >= 0 && box.bottom <= window.innerHeight;
-      });
+        return box !== undefined && box.top >= 0 && box.bottom <= window.innerHeight - foot;
+      }, FOOT_HEIGHT_PROPERTY);
     await expect
       .poll(caretOnScreen, {
         message: "the caret Enter put in the statement is off screen at 1440x900",
