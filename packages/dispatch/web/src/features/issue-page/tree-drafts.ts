@@ -164,7 +164,8 @@ export const ROOT_ORDER = {
  *  points at. Held as one value so the placement and the names are read the same way everywhere. */
 export interface TreeContext {
   /** A chip naming what `reference` points at, by the one batched reference read and the
-   *  issue's own documents (`treeContext`). */
+   *  issue's own documents (`treeContext`): one chip per reference, the same value on every
+   *  call. */
   readonly chipOf: (reference: string) => NodeChip;
   /** The words of the stored excerpt the batched reference read names `reference`'s target by
    *  (`ReferenceTarget.name`), with a typed block's directive left out (`blockWords`); `""` for
@@ -278,17 +279,26 @@ export function treeContext(
     }
     return blockWords(target?.name ?? "");
   };
+  // One chip per reference, made the first time it is asked for: a tree asks once for every
+  // citation of a target, and no caller changes a chip - its fields are read-only (`NodeChip`),
+  // and a caller that adds one, a `needs` label or a link's `stale`, spreads it into a chip of
+  // its own - so every place that cites the target holds the same one.
+  const chips = new Map<string, NodeChip>();
   return {
     chipOf: (reference: string): NodeChip => {
+      const held = chips.get(reference);
+      if (held !== undefined) return held;
       const target = names.get(reference);
       const gone = target?.gone ?? false;
-      return {
+      const chip: NodeChip = {
         ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
         gone,
         name: gone ? "" : nameOf(reference, target),
         ref: reference,
       };
+      chips.set(reference, chip);
+      return chip;
     },
     excerptOf: (reference: string): string => {
       const target = names.get(reference);

@@ -475,14 +475,14 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * to now, by its address: the name a chip naming it draws (`NodeChip.name`), by the same rule
  * (`namingContext`), which the page publishes for every link beside the tree to draw
  * (`reference-names.tsx`). A link and a chip naming one target so never disagree. A target whose
- * name is `""` - another issue's block the read sent no reading for - is left out, so a link
- * that finds no name reads its own (`useKnownReferenceName`).
+ * name is `""` is left out, so a link that finds no name reads its own (`useKnownReferenceName`):
+ * a target that is gone, which its chip names by `""` (`treeContext`), and another issue's block
+ * the read sent no reading for.
  */
 export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> {
   const context = namingContext(reads);
   const names = new Map<string, string>();
   for (const target of reads.targets ?? []) {
-    if (target.gone) continue;
     const name = context.chipOf(target.ref).name;
     if (name !== "") names.set(target.ref, name);
   }

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -662,5 +662,51 @@ test("A published name of a typed block is never its directive line", async () =
     } finally {
       for (const stub of stubs) stub.mockRestore();
     }
+  }
+});
+
+// dispatch://INFRA-1196 decision 98: a refetch of a document's blocks that fails keeps the blocks
+// the first read answered - TanStack holds a query's data through a failed refetch, and the tree
+// is still built from them - so a view that draws from the blocks it holds keeps drawing them
+// (`blocksHeld`), while a view that needs every read to have answered stops waiting on one that
+// failed (`blocksRead`). Before any answer the tree holds no blocks and has read none.
+test("blocks a failed refetch leaves in hand stay held while they stop counting as read", async () => {
+  const blocksOut = Promise.withResolvers<void>();
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    held: { read: "blocks", until: blocksOut.promise },
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    expect(view.result.current.blocksHeld).toBe(false);
+    expect(view.result.current.blocksRead).toBe(false);
+
+    await act(async () => {
+      blocksOut.resolve();
+      await blocksOut.promise;
+    });
+    await waitFor(() => expect(view.result.current.blocksRead).toBe(true));
+    expect(view.result.current.blocksHeld).toBe(true);
+
+    // The plan's blocks are read again, and this time the read fails.
+    (api.getArtifactBlocks as Mock<typeof api.getArtifactBlocks>).mockRejectedValue(
+      new Error("the blocks read failed")
+    );
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["artifact", plan.id, "blocks"] });
+    });
+    await waitFor(() => expect(view.result.current.blocksRead).toBe(false));
+    expect(view.result.current.blocksHeld).toBe(true);
+    // The tree is still built from the blocks the first read answered.
+    expect(nodesInOrder(view.result.current.root).some((node) => node.id === `${PLAN}#b-t1`)).toBe(
+      true
+    );
+    view.unmount();
+  } finally {
+    blocksOut.resolve();
+    for (const stub of stubs) stub.mockRestore();
   }
 });
