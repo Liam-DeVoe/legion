@@ -35,7 +35,7 @@ func expectSameCallersAsConversationRead(t *testing.T, rig *brokerTokenRig, what
 		return token
 	}
 	personScoped := liveNamedToken(caller.jkt)
-	personScoped.ProjectScope, personScoped.Project = brokertoken.ProjectScopePerson, ""
+	personScoped.ProjectScope, personScoped.Projects = brokertoken.ProjectScopePerson, nil
 	brokerTokens := map[string]string{
 		"a broker token for a person":        broker("person", personScoped),
 		"a broker token for one project":     broker("project", liveNamedToken(caller.jkt)),
