@@ -86,6 +86,10 @@ airlock_stands_start() {
   if [ -n "$AIRLOCK_STANDS_CONTAINER" ]; then
     AIRLOCK_CA_CERT_FILE="${stands_dir}${AIRLOCK_CA_CERT_FILE#/stands}"
     AIRLOCK_CA_KEY_FILE="${stands_dir}${AIRLOCK_CA_KEY_FILE#/stands}"
+    # The stands run as the container's root and write the key readable by its owner alone, so
+    # the broker on this machine, which is another user, could not read it. The container's own
+    # root is what can change that, so it is asked to.
+    docker exec "$container" chmod 0644 /stands/ca.crt /stands/ca.key >/dev/null 2>&1 || true
   fi
   if [ ! -s "$AIRLOCK_CA_CERT_FILE" ] || [ ! -s "$AIRLOCK_CA_KEY_FILE" ]; then
     echo "airlock-stack: the stands wrote no certificate authority this machine can read ($AIRLOCK_CA_CERT_FILE)" >&2
