@@ -19,8 +19,8 @@ Every path it cites is in cybermonklabs/legion.
   own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`, and
   `skill://legion-worker/references/red-at-the-head.md` for a red at the head). After any
   forward merge, build the branch and
-  record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge once changed a
-  function's arity under the branch's own callers. Before you race another tree's pull request on
+  record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge can change a
+  function's signature under the branch's own callers. Before you race another tree's pull request on
   shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and
   merge once, after it. A forward merge that leaves the branch's diff unchanged is a
   confirmation, not a new round (see *The unchanged-diff check* below). The check compares the
@@ -128,7 +128,6 @@ Legion check compares that head with the approved one.
 The fingerprint is not the whole check: a file the merge adds only moves the hash, exactly as an ordinary round of work does.
 So beside it, compare the *set* of files the pull request changes against its base, before and after the merge (`gh pr diff <n> --name-only`, or `jj diff --stat` at each of the two heads), and explain every path that appears or disappears.
 Remove a path that belongs to an already-merged pull request.
-The case that named this rule: #2588's forward merge, made after #2446 was squashed into main, re-added changelog fragments under `packages/envoy/.changes/unreleased/` whose entries main's fold had already written into `packages/envoy/CHANGELOG.md` 27.1.0, so the next fold would have written every one of them a second time.
 
 ## A wrong pushed commit
 
