@@ -92,9 +92,9 @@ export const PROPERTY_LABELS = freeze({
   route: "Messages go to",
   status: "Status",
   subscribers: "Subscribers",
-  /** How many of the task-list items of the issue's spec are checked, which the header drew
-   *  as a chip before Details held it (R13). */
-  tasks: "Tasks",
+  /** The checklist of the issue's spec, its Markdown task list: how many of its items are
+   *  checked, which the header drew as a chip before Details held it (R13). */
+  tasks: "Checklist",
   /** The issue's own title, which the identity block draws as itself; the name is what the
    *  shell's indicator calls a write of it. */
   title: "Title",

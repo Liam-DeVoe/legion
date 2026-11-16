@@ -21,16 +21,36 @@
  * accessible name from `GLYPH_NAMES`, drawn beside the word rather than in place of it: a state
  * and a type are told apart by a word and a shape, never by colour alone.
  *
- * This module is data and pure functions. It holds no React and touches no DOM, and the only
- * thing it imports is its sibling `page-structure.ts`, whose property and section names and
- * help lines `DECLARED_WORDS` is derived from as well; so a test, a browser spec and a
- * component all read the same list.
+ * This module is data and pure functions. It holds no React and touches no DOM, and it imports
+ * data and types, with four helpers:
+ *
+ * - from its sibling `page-structure.ts`, the property and section names and help lines
+ *   `DECLARED_WORDS` is derived from as well, and `freeze`, which its tables are made with;
+ * - from `@legion/contracts`, the most issues one issue may wait on, the most priorities it may
+ *   advance, and the types of how a result's commit stands, of when a check runs and of how a
+ *   delivery stands;
+ * - from `../../api/types`, the type of an actor;
+ * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
+ *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
+ * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
+ *   `isViewer`, whether an actor is the signed-in person.
+ *
+ * The last two are the module's links to files today's pages use.
+ *
+ * A test, a browser spec and a component therefore all read the same list.
  */
 
-import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS, type ResultCommitStands } from "@legion/contracts";
+import {
+  type CheckWhen,
+  type DeliveryAttemptState,
+  MAX_ISSUE_ADVANCES,
+  MAX_ISSUE_BLOCKERS,
+  type ResultCommitStands,
+} from "@legion/contracts";
 
 import type { Actor } from "../../api/types";
-import { ASK_RESOLUTION_WORDS } from "../refs/actor";
+import { issueStatuses, statusLabel, statusText } from "../project/board-model";
+import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
 import {
   freeze,
   HELP_LINES,
@@ -104,11 +124,13 @@ export const NODE_STATE_WORDS = freeze({
   ask: {
     answered: "Answered",
     open: "Open",
-    // How an ask was closed rather than answered, in the words the card and the margin draw
-    // beside the tree (`ASK_RESOLUTION_WORDS`, the one table all three read): an ask whose
-    // `state` is `resolved` stands in the state its resolution names, so a declined question
-    // reads "Declined" on its row and "Declined" on its card. `resolved` is both the block
-    // state the schema declares and the kind of a plain resolution, under the one word.
+    // How an ask was closed rather than answered, in the words of `ASK_RESOLUTION_WORDS`: that
+    // table repeats the words `askResolutionBadge` (`features/refs/actor.ts`) draws on the card,
+    // and the test `each way a question is closed has one word on its card and in the list`
+    // holds the two equal. An ask whose `state` is `resolved` stands in the state its resolution
+    // names, so a declined question reads "Declined" on its row and "Declined" on its card.
+    // `resolved` is both the block state the schema declares and the kind of a plain
+    // resolution, under the one word.
     ...ASK_RESOLUTION_WORDS,
   },
   check: {
@@ -369,7 +391,7 @@ export const VERIFICATION_WORDS = freeze({
   },
   /** Beside the result a check's state stands on: the newest pass that stands for a check that
    *  passed, and the newest result that stands for every other. */
-  stands: "Stands",
+  stands: "Counts for this check",
 } as const);
 
 /** How a statement stands at the commit the page names (`verification-filter/statement-state.ts`). */
@@ -441,27 +463,18 @@ export const NODE_REFERENCES_WORDS = freeze({
 
 /**
  * How an issue stands, as the page says it: the word a child's row draws beside it (R10). The
- * keys are the server's own status tokens, in the lifecycle order `features/project/board-model.ts`
- * holds them in, and `page-words.test.ts` reads that module, so a status added there fails
- * until it has a word here.
+ * keys are the server's own status tokens and the words the board's own labels, both read from
+ * `features/project/board-model.ts` in the lifecycle order it holds them in, so a status added
+ * there has its word here too.
  */
-export const ISSUE_STATUS_WORDS = freeze({
-  backlog: "Backlog",
-  done: "Done",
-  icebox: "Icebox",
-  in_progress: "In progress",
-  needs_review: "Needs review",
-  retro: "Retro",
-  testing: "Testing",
-  todo: "Todo",
-  triage: "Triage",
-} as const);
+export const ISSUE_STATUS_WORDS: Readonly<Record<string, string>> = freeze(
+  Object.fromEntries(issueStatuses.map((status) => [status, statusLabel(status)]))
+);
 
-/** The word for the issue status `token`. A token the module does not declare reads as itself,
- *  which is what the server sent; `page-words.test.ts` fails until a declared status has a word. */
+/** The word for the issue status `token`, the board's own (`statusText`): a token the board does
+ *  not know reads as itself, which is what the server sent. */
 export function issueStatusWord(token: string): string {
-  const words: Readonly<Record<string, string>> = ISSUE_STATUS_WORDS;
-  return words[token] ?? token;
+  return statusText(token);
 }
 
 /**
@@ -563,13 +576,14 @@ export function coverageGapKind(line: string): GapKind | undefined {
   return line.endsWith("has no check") ? "no_check" : undefined;
 }
 
-/** The noun a progress count is written with: `1/1 task`, `3/7 tasks`, `0/1 child`,
- *  `2/5 children`. The count itself is the issue's own and carries `AUTHOR_TEXT_ATTRIBUTE`. */
+/** The noun a progress count is written with: `1/1 item`, `3/7 items` of the spec's checklist
+ *  (`PROPERTY_LABELS.tasks`), `0/1 child`, `2/5 children`. The count itself is the issue's own
+ *  and carries `AUTHOR_TEXT_ATTRIBUTE`. */
 export const PROGRESS_NOUNS = freeze({
   child: "child",
   children: "children",
-  task: "task",
-  tasks: "tasks",
+  task: "item",
+  tasks: "items",
 } as const);
 
 /** How the issue stands, in a line of its own where no control's word carries it: a closed
@@ -637,7 +651,7 @@ export const CHECK_WHEN_WORDS = freeze({
   after_merge: "after the merge",
   before_merge: "before the merge",
   default_branch: "on the default branch",
-} as const);
+} as const satisfies Record<CheckWhen, string>);
 
 /** What a recorded result says about itself beside its verdict: where its commit stands against
  *  what its check compared its results with, by the server's answer for that result
@@ -665,12 +679,15 @@ export const RESULT_VERDICT_WORDS = freeze({
 } as const);
 
 /** How one delivery of a comment's mention or a message to an agent stands, in the focused
- *  row's facts, in words rather than the delivery's `failed`, `pending` and `sent` (R22). */
+ *  row's facts, in words rather than the delivery's `failed`, `pending`, `queued` and `sent`
+ *  (R22). Keyed by the states the API declares, so a state added there is a compile error here
+ *  rather than a delivery that draws no word. */
 export const DELIVERY_STATE_WORDS = freeze({
   failed: "Not delivered",
   pending: "Sending",
+  queued: "Queued",
   sent: "Delivered",
-} as const);
+} as const satisfies Record<DeliveryAttemptState, string>);
 
 /**
  * What the blocked-by editor says when Dispatch refuses the list it saved
@@ -775,13 +792,12 @@ export const CONTROL_LABELS = freeze({
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
    *  composer below, whose comment is anchored to the decision's own words. */
   change_decision: "Change",
-  /** The collapsible section of child issues at the top of every preset (R10). */
+  /** The direct children's count in the header's properties line, before the issue's own
+   *  numbers: "Children 2 of 7 done" (R13). */
   children: "Children",
-  /** The direct children done of total, labelled on the collapsed header (R10). */
-  children_done: "Children done",
   /** The two words that make a progress count read as a sentence in the header's properties
-   *  line, around the issue's own numbers: "Children 2 of 7 done", "Whole tree 5 of 30 done"
-   *  (R13, the 1440 px picture). */
+   *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
+   *  done" (R13, the 1440 px picture). */
   count_of: "of",
   count_done: "done",
   /** The priority picker's first choice, which picks nothing. */
@@ -808,8 +824,6 @@ export const CONTROL_LABELS = freeze({
   /** The Contents pane's list: each question and each of the reader's own threads, which go to
    *  their node in the outline (R14). */
   contents: "Contents",
-  /** The heading of the conversation inside the one right-hand panel (R12). */
-  conversation: "Conversation",
   /** The kinds the line at the foot of the outline writes, as its chips (R16, the prototype's
    *  `.ck`): a comment, and a question, which is an ask of the issue. */
   composer_comment: "Comment",
@@ -834,9 +848,6 @@ export const CONTROL_LABELS = freeze({
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
-  /** Closes an open question with no answer, from the line that answers it: the old
-   *  conversation's ask card's own control (R16, c-nothing-lost). */
-  decline: "Decline to answer",
   /** The panel's list of the issue's history (R15): its status moves, claims, handoffs, the
    *  Legion daemon's messages, what agents wrote outside every thread a person wrote in, and
    *  every other event that is no row of the outline, newest first. `/activity` opens it. */
@@ -906,10 +917,10 @@ export const CONTROL_LABELS = freeze({
   labels_left_one: "label",
   labels_left_many: "labels",
   /** What the shell's indicator calls a write of where this issue's messages go: "Route of
-   *  CORE-1 saved". It is the noun the editor's own Save route and the row's No route carry,
-   *  so the line names what the reader just pressed. The box itself is named by the label it
-   *  is drawn under, `PROPERTY_LABELS.route` ("Messages go to"), so a voice user says the
-   *  words they read (WCAG 2.5.3). */
+   *  CORE-1 saved". It is the noun the editor's own Save route carries, so the line names what
+   *  the reader just pressed. The box itself is named by the label it is drawn under,
+   *  `PROPERTY_LABELS.route` ("Messages go to"), so a voice user says the words they read
+   *  (WCAG 2.5.3). */
   route: "Route",
   /** Gives the open document's current text a version of its own (R16): the words the control
    *  draws, which are its name. */
@@ -917,8 +928,6 @@ export const CONTROL_LABELS = freeze({
   /** Makes a document of the issue from a title typed, from the node menu (R16): the words the
    *  Artifacts panel's own control carries (`CreateDocument.tsx`), the one way into one form. */
   new_document: "New document",
-  /** Moves to the next open question that waits on the reader (R6). */
-  next_question: "Next open question",
   /** What a row of Details says of a property the issue has no value for (R13): the row is
    *  drawn, and the one add control lists the property. */
   none: "None",
@@ -927,8 +936,6 @@ export const CONTROL_LABELS = freeze({
   not_requested: "Not requested",
   /** What the repository control says while neither the issue nor its project names one. */
   no_repository: "No repository",
-  /** What the route control says while the issue has none to show. */
-  no_route: "No route",
   /** What the claim says of a holder the agent registry no longer lists (R11, row four). */
   not_running: "not running",
   /** The node menu beside the presets, holding every document and artifact of the issue and
@@ -978,8 +985,8 @@ export const CONTROL_LABELS = freeze({
   repository_inherited: "inherited or the project's default",
   /** Writes the reader's own comment back from the line that edits it. */
   save: "Save",
-  /** Each editor's save, naming the field it writes. */
-  save_blocked_by: "Save blocked by",
+  /** Each editor's save, naming what it writes. */
+  save_blocked_by: "Save what it waits on",
   save_parent: "Save parent",
   save_route: "Save route",
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
@@ -1005,8 +1012,6 @@ export const CONTROL_LABELS = freeze({
    *  them again (the old conversation's handoff card, R19). */
   show_fields: "Show fields",
   hide_fields: "Hide fields",
-  /** The whole subtree done of total, labelled beside the direct count (R10). */
-  subtree_done: "Whole tree done",
   /** What the claim says of the moment another agent may take an unresponsive holder's issue,
    *  which is its last heartbeat plus the grace the server refuses a take until (R11, row
    *  four). The moment itself follows this word, drawn as a date and a time and never as an
@@ -1036,8 +1041,9 @@ export const CONTROL_LABELS = freeze({
   unpin_issue: "Unpin issue",
   /** Takes a pin back, in the panel's facts of the focused row and in its list of pins. */
   unpin: "Unpin",
-  /** The whole subtree's count in the header's properties line: "Whole tree 5 of 30 done". */
-  whole_tree: "Whole tree",
+  /** The count of every issue under this one, at any depth, in the header's properties line:
+   *  "All issues under it 5 of 30 done". */
+  whole_tree: "All issues under it",
   /** The line at the foot of the outline, as a reader hears it named (R16, the prototype's
    *  `#composer`), and what it says while it is empty and writes a new comment or question on
    *  the issue. */
@@ -1175,18 +1181,14 @@ export function authorKind(actor: Actor | undefined): AuthorKind {
 }
 
 /**
- * Whether `actor` is the reader writing as themselves: a person signed in as `reader`, and not
- * an agent acting for them, whose words are the agent's (R9, R34). It is the one rule for whose
- * words carry the ink rule and which decisions are the reader's own, read by the outline's rows
- * and by each filter's body.
+ * Whether `actor` is the reader writing as themselves: a person signed in as `reader`, whose
+ * login matches in any casing as the server matches it (`isViewer`), and not an agent acting for
+ * them, whose words are the agent's (R9, R34). It is the one rule for whose words carry the ink
+ * rule and which decisions are the reader's own, read by the outline's rows and by each filter's
+ * body.
  */
 export function isReader(actor: Actor | undefined, reader: string | undefined): boolean {
-  return (
-    reader !== undefined &&
-    actor?.kind === "user" &&
-    actor.id === reader &&
-    (actor.act?.session ?? "") === ""
-  );
+  return actor !== undefined && isViewer(actor, reader) && (actor.act?.session ?? "") === "";
 }
 
 /** What each kind of author is called, in the accessible name of its shape: "Written by a
@@ -1296,6 +1298,14 @@ export const GLYPH_TOKENS = freeze({
 /** Every type whose state the page draws, which is every key of `NODE_STATE_WORDS`. */
 const STATE_TYPES = freeze(keysOf(NODE_STATE_WORDS));
 
+/** A state word as it reads after its type's name and a colon, "Passed" as "passed": its first
+ *  letter in lower case where the rest of it already is, and every capital kept in a word that
+ *  holds one past its first letter, as an initialism or a name does. */
+function stateWordAfterColon(word: string): string {
+  const rest = word.slice(1);
+  return rest === rest.toLowerCase() ? `${word.slice(0, 1).toLowerCase()}${rest}` : word;
+}
+
 function glyphNames(): Readonly<Record<string, string>> {
   const names: Record<string, string> = {};
   for (const type of NODE_TYPES) {
@@ -1304,12 +1314,14 @@ function glyphNames(): Readonly<Record<string, string>> {
   for (const type of STATE_TYPES) {
     const words: Readonly<Record<string, string>> = NODE_STATE_WORDS[type];
     const tokens: Readonly<Record<string, string>> = GLYPH_TOKENS.states[type];
-    for (const state of Object.keys(words)) {
+    for (const [state, word] of Object.entries(words)) {
       const token = tokens[state];
-      // A state the row follows with a name ("Kept by" and who kept it) names its shape without
-      // the word that leads to the name: "Kept decision".
+      // A state's shape is named by its type and then its state: "Check: passed". A state the
+      // row follows with a name ("Kept by" and who kept it) names its shape without the word
+      // that leads to the name: "Decision: kept".
       if (token !== undefined) {
-        names[token] = `${words[state]?.replace(/ by$/u, "")} ${NODE_TYPE_NAMES[type]}`;
+        const stateWord = stateWordAfterColon(word.replace(/ by$/u, ""));
+        names[token] = `${sentenceCase(NODE_TYPE_NAMES[type])}: ${stateWord}`;
       }
     }
   }
@@ -1331,8 +1343,9 @@ function glyphNames(): Readonly<Record<string, string>> {
 /**
  * The accessible name of each glyph, by its token: a shape carries its own name, because a
  * reader who cannot see the shape still has to hear what it says. A type's shape is named by
- * the type; a state's shape by its state word and the type it stands on, as in "Passed check";
- * the author's shape by the page's own words for who wrote a node and what kind of author it is.
+ * the type; a state's shape by the type it stands on and then its state word, as in
+ * "Check: passed"; the author's shape by the page's own words for who wrote a node and what
+ * kind of author it is.
  */
 export const GLYPH_NAMES: Readonly<Record<string, string>> = freeze(glyphNames());
 

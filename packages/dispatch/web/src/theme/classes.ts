@@ -743,10 +743,10 @@ registerText(
 // ---------------------------------------------------------------------------------------------
 
 export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
-  "icon-rail": pair(P.ICON_RAIL, P.ICON_RAIL),
-  "icon-rail-accent": pair(P.ICON_RAIL_ACCENT, P.ICON_RAIL_ACCENT),
-  "icon-rail-active": pair(P.ICON_RAIL_ACTIVE, P.ICON_RAIL_ACTIVE),
-  "icon-rail-text": pair(P.ICON_RAIL_TEXT, P.ICON_RAIL_TEXT),
+  "icon-rail": railFixed(P.ICON_RAIL),
+  "icon-rail-accent": railFixed(P.ICON_RAIL_ACCENT),
+  "icon-rail-active": railFixed(P.ICON_RAIL_ACTIVE),
+  "icon-rail-text": railFixed(P.ICON_RAIL_TEXT),
   "page-bullet": pair(P.PAGE_BULLET, P.SLATE_500),
   "page-agent": pair(P.PAGE_AGENT, P.SLATE_400),
   "page-check": pair(P.PAGE_CHECK, P.INDIGO_400),
@@ -784,7 +784,6 @@ export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
   "page-waiting-text": pair(P.PAGE_WAITING_TEXT, P.ORANGE_300),
   "page-waiting-tint": pair(P.PAGE_WAITING_TINT, P.ORANGE_950),
   "page-words": pair(P.PAGE_WORDS, P.SLATE_200),
-  white: pair(P.WHITE, P.WHITE),
 };
 
 /** The colour pair a page token renders, by its name in `PAGE_COLORS`. */
@@ -927,9 +926,8 @@ export const pageStateText = {
  * question (`.cbox.answering`, `.tgt.ans`). Its foot fades the outline into the paper above it.
  * The line is one row of text that grows to 150 px; the kinds it writes are chips in their
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
- * caret is in the box. Send is the ink, the waiting colour's text shade while it sends an
- * answer, and the hairline grey while it refuses (`#csend`). Every word in it says what it is,
- * so the colours repeat what is written (R6).
+ * caret is in the box. Every word in it says what it is, so the colours repeat what is written
+ * (R6).
  */
 export const pageComposer = {
   answering:
@@ -951,7 +949,7 @@ export const pageComposer = {
   // On a phone the field takes the line's whole width once the box holds the caret, and the
   // kinds and Send stand under it (the prototype's `.cbox:focus-within .crow1`).
   field:
-    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-bullet max-[760px]:group-focus-within:basis-full",
+    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-quiet max-[760px]:group-focus-within:basis-full",
   foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[760px]:pt-2.5",
   line: "flex min-w-0 items-end gap-2 max-[760px]:group-focus-within:flex-wrap",
   option:
@@ -1043,6 +1041,22 @@ registerText(
   pageColor("page-ink"),
   pageColor("page-waiting-tint")
 );
+// The waiting colour's words on the paper: a state that waits on the reader in the margin
+// (`pageStateText.waiting`) and a waiting question's options in the composer
+// (`pageComposer.option`). The quiet grey on the waiting tint: the control that clears the
+// composer's target while it answers a question (`pageComposer.targetClear` inside
+// `targetAnswering`), and under the pointer an option of an open question that does not wait on
+// the reader (`pageRowOption`'s hover).
+registerText(
+  "page-waiting-text text on page-paper",
+  pageColor("page-waiting-text"),
+  pageColor("page-paper")
+);
+registerText(
+  "page-quiet text on page-waiting-tint",
+  pageColor("page-quiet"),
+  pageColor("page-waiting-tint")
+);
 // The words a row draws in its kind's colour - its tag, its state, a waiting question's
 // options - on the focused row's ground, and the marks of a Contents entry on the pane and on
 // its marked row: text, so 4.5:1 wherever it is drawn, the focused row included (WCAG 1.4.3).
@@ -1095,7 +1109,7 @@ export const iconRailActive =
   "bg-icon-rail-active text-white shadow-[inset_3px_0_0_var(--color-icon-rail-accent)]";
 export const iconRailAccentBg = "bg-icon-rail-accent";
 registerText("icon rail text", pageColor("icon-rail-text"), pageColor("icon-rail"));
-registerText("icon rail current entry", pageColor("white"), pageColor("icon-rail-active"));
+registerText("icon rail current entry", railFixed(P.WHITE), pageColor("icon-rail-active"));
 registerText("icon rail text on hover", pageColor("icon-rail-text"), pageColor("icon-rail-active"));
 registerText("icon rail accent", pageColor("icon-rail-accent"), pageColor("icon-rail"), 3);
 

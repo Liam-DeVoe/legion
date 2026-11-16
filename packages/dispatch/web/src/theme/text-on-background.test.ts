@@ -138,6 +138,19 @@ test("classifies a non-trivial number of background and text composites", () => 
   expect(textComposites.size).toBeGreaterThan(30);
 });
 
+test("reads a page token through the swatch pair PAGE_COLORS says it renders", () => {
+  // `pageInkFill` is `bg-page-ink text-page-paper`: neither token names a Tailwind shade, so
+  // only the page-token branch can resolve them.
+  expect(classes.pageInkFill).toBe("bg-page-ink text-page-paper");
+  const expected = {
+    bg: { dark: "slate-100", light: "page-ink" },
+    text: { dark: "slate-950", light: "page-paper" },
+  };
+  expect(classifyComposite(classes.pageInkFill)).toEqual(expected);
+  expect(bgComposites.get("pageInkFill")).toEqual(expected.bg);
+  expect(textComposites.get("pageInkFill")).toEqual(expected.text);
+});
+
 // ------------------------------------------------------------------------------------------
 // Step 2: the set of (foreground, background) swatch-name pairs `classes.ts` has actually
 // registered, read live from `CONTRAST_CHECKS` — not hand-copied.
