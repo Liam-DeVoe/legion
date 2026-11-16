@@ -151,12 +151,17 @@ def alternation(names) -> str:
 
 
 def build(flags: list[str], package: str, directory: Path) -> Path:
-    """The package's test binary, built under the flags into directory."""
+    """The package's test binary, built under the flags into directory. go's standard error, which
+    names each module as go downloads it and holds a failed build's error, goes to this script's as
+    go writes it: the race leg's setup-go keeps no module cache, so this build is the step that
+    downloads the modules, and a download that stalls must be named in the log while it waits.
+    go's standard output (`[no test files]`) is kept back, since this script's own is the pattern."""
     binary = directory / "package.test"
     command = ["go", "test", "-c", "-o", str(binary), *flags, package]
-    done = subprocess.run(command, capture_output=True, encoding="utf-8", check=False)
+    done = subprocess.run(command, stdout=subprocess.PIPE, encoding="utf-8", check=False)
     if done.returncode != 0:
-        raise Refused(f"`{' '.join(command)}` exited {done.returncode}:\n{done.stderr}{done.stdout}")
+        output = f", and its standard output was:\n{done.stdout.rstrip()}" if done.stdout.strip() else ""
+        raise Refused(f"`{' '.join(command)}` exited {done.returncode}; its standard error is above{output}")
     if not binary.is_file():
         raise Refused(f"`{' '.join(command)}` wrote no test binary: {package} has no test files")
     return binary
