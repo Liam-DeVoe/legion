@@ -6,6 +6,9 @@ import {
   connectionDotConnecting,
   connectionDotFailed,
   connectionDotOffline,
+  pageQuietText,
+  pageSegmentDoneBg,
+  pageWaitingBg,
   textMutedOnSurface,
 } from "../../theme/classes";
 import { type ConnectionState, connectionLabel, pendingNotice } from "./connection";
@@ -16,6 +19,17 @@ const DOT_CLASS_BY_STATE: Record<ConnectionState, string> = {
   connecting: connectionDotConnecting,
   failed: connectionDotFailed,
   offline: connectionDotOffline,
+};
+
+/** Each dot inside `NoTooltips`, in the new issue page's colours (dispatch://INFRA-3935 R6,
+ *  decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): connected is the passed
+ *  green (`pageSegmentDoneBg` is that fill), connecting the waiting orange, failed the failed
+ *  red and offline the not-run grey. The dot is decoration; its name says the state. */
+const PAGE_DOT_CLASS_BY_STATE: Record<ConnectionState, string> = {
+  connected: pageSegmentDoneBg,
+  connecting: pageWaitingBg,
+  failed: "bg-page-failed",
+  offline: "bg-page-not-run",
 };
 
 /** The document's live-connection indicator. A pending-edit notice expands it only while the
@@ -46,9 +60,16 @@ export function ConnectionDot({
       role="status"
       title={tooltips ? label : undefined}
     >
-      <span aria-hidden className={`h-2.5 w-2.5 rounded-full ${DOT_CLASS_BY_STATE[connection]}`} />
+      <span
+        aria-hidden
+        className={`h-2.5 w-2.5 rounded-full ${(tooltips ? DOT_CLASS_BY_STATE : PAGE_DOT_CLASS_BY_STATE)[connection]}`}
+      />
       {notice === undefined ? null : (
-        <span aria-hidden className={`text-xs ${textMutedOnSurface}`} {...page?.authorText}>
+        <span
+          aria-hidden
+          className={`text-xs ${tooltips ? textMutedOnSurface : pageQuietText}`}
+          {...page?.authorText}
+        >
           {notice}
         </span>
       )}
