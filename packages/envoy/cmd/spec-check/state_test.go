@@ -177,6 +177,16 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a subject whose graph_tx holds only blanks", "carry",
 			replace("subjects.json", `"branch": "listener-change"`, `"deploy": "d1", "graph_tx": " \t "`),
 			"subjects.json", "subject 4: it sets a graph_tx of no letter and no digit, which names no transaction of the graph"},
+		{"a subject whose commit holds only blanks", "carry", func(t *testing.T, dir string) {
+			replaceIn(t, filepath.Join(dir, "subjects.json"), `"commit": "c4"`, `"commit": " \t "`)
+			if err := os.Rename(filepath.Join(dir, "files", "c4"), filepath.Join(dir, "files", " \t ")); err != nil {
+				t.Fatal(err)
+			}
+		}, "subjects.json", "subject 4: it sets a commit of no letter and no digit, which names no commit"},
+		{"a subject whose branch holds only blanks", "carry", replace("subjects.json", `"branch": "listener-change"`, `"branch": " \t "`),
+			"subjects.json", "subject 4: it sets a branch of no letter and no digit, which names no branch"},
+		{"a subject whose deploy holds only blanks", "carry", replace("subjects.json", `"branch": "listener-change"`, `"deploy": " \t "`),
+			"subjects.json", "subject 4: it sets a deploy of no letter and no digit, which names no deploy"},
 		{"a subject with no time", "carry", write("subjects.json", `[{"commit":"c2","branch":"listener-restart"}]`),
 			"subjects.json", "subject 1: it sets no now"},
 		{"no subject", "carry", write("subjects.json", `[]`), "subjects.json", "it holds no subject"},
