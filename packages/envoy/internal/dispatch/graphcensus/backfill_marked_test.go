@@ -312,13 +312,15 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 			t.Fatalf("settle the block index of the document of %s: %d rows, %v", issue.key, tag.RowsAffected(), err)
 		}
 	}
+	// The backfill's mark is its own (store_owed_at), which the release before this one neither
+	// reads nor drains, and not the null version every release reads.
 	owed := func(issue string) bool {
 		t.Helper()
 		var owes bool
 		if err := database.Pool.QueryRow(ctx, `
-			select version is null from document_block_versions where artifact_id = $1::uuid
+			select store_owed_at is not null from document_block_versions where artifact_id = $1::uuid
 		`, documents[issue]).Scan(&owes); err != nil {
-			t.Fatalf("read whether the document of %s is owed a block index: %v", issue, err)
+			t.Fatalf("read whether the document of %s holds the backfill's mark: %v", issue, err)
 		}
 		return owes
 	}
