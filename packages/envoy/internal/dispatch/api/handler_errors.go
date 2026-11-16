@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -200,6 +201,18 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	var invalidCICheck *docs.ErrInvalidCICheck
 	if errors.As(err, &invalidCICheck) {
 		writeError(w, "INVALID_CI_CHECK", http.StatusBadRequest, invalidCICheck.Error())
+		return
+	}
+	// A write that states a node's state or visibility at a value that attribute does not take.
+	// The message is the refusal's own, which names the attribute, the value and the values it
+	// takes, whatever the route wrapped it in, as DOC_NEWER_CONTENT's is.
+	if errors.Is(err, graphstore.ErrInvalidAttributeValue) {
+		message := graphstore.ErrInvalidAttributeValue.Error()
+		var invalidValue *graphstore.InvalidAttributeValueError
+		if errors.As(err, &invalidValue) {
+			message = invalidValue.Error()
+		}
+		writeError(w, "INVALID_ATTRIBUTE_VALUE", http.StatusBadRequest, message)
 		return
 	}
 	var unrepresentableAsk *docs.ErrAskBlockUnrepresentable

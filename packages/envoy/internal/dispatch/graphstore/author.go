@@ -3,7 +3,6 @@ package graphstore
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -36,8 +35,9 @@ var ErrAuthorNamesNobody = errors.New(
 // VisibilityFor is the visibility a write gets for what it asked for. A write that asks for
 // nothing is project-visible, which is what every node Dispatch writes today is; a write that
 // asks to reserve a node for its author gets that only on a credential that proves one, and is
-// refused with ErrAuthorNamesNobody otherwise. A word that is neither is refused by name, so a
-// misspelling is a failed write rather than a node nobody can read.
+// refused with ErrAuthorNamesNobody otherwise. A word that is neither is refused by name with the
+// InvalidAttributeValueError every write of this store refuses it with, so a misspelling is a
+// failed write rather than a node nobody can read.
 func VisibilityFor(requested string, actor model.Actor) (string, error) {
 	switch requested {
 	case "", VisibilityProject:
@@ -48,8 +48,7 @@ func VisibilityFor(requested string, actor model.Actor) (string, error) {
 		}
 		return VisibilityAuthor, nil
 	}
-	return "", fmt.Errorf("visibility %q is no visibility this store holds, which are %q and %q",
-		requested, VisibilityProject, VisibilityAuthor)
+	return "", &InvalidAttributeValueError{Attribute: AttributeVisibility, Value: requested}
 }
 
 // authorCredential is the part of an actor two credentials are compared by, in the shape a

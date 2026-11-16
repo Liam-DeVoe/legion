@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -108,13 +109,12 @@ func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple)
 // one statement over their addresses. Writing them again would pay a second node write per node
 // for one column, and the upsert's own guard would refuse it, since nothing else about the node
 // moved.
+//
+// A held tuple that states a node's state or visibility at a value that attribute does not take
+// is refused (checkBaseValues) before the nodes move, so a refused write sends no statement: a
+// writer appends facts of its own to what WriteUncaused answered (refs.IndexBlocks does), and
+// those reach the store through here alone.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
-	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
-		return err
-	}
-	if len(write.Tuples) == 0 {
-		return nil
-	}
 	tuples := make([]Tuple, len(write.Tuples))
 	for index, held := range write.Tuples {
 		tuple := held.Tuple
@@ -123,6 +123,15 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 			tuple.LegacySourceSeq = &event
 		}
 		tuples[index] = tuple
+	}
+	if err := checkBaseValues(nil, tuples, nil); err != nil {
+		return err
+	}
+	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
+		return err
+	}
+	if len(tuples) == 0 {
+		return nil
 	}
 	return appendTuples(ctx, tx, tuples)
 }
@@ -158,6 +167,84 @@ func BaseAttributes() []string { return slices.Clone(baseAttributes[:]) }
 // without building the list.
 func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:], kind) }
 
+// ErrInvalidAttributeValue is a write that states a node's state or its visibility at a value that
+// attribute does not take (NodeStates; VisibilityProject and VisibilityAuthor). It is a sentinel
+// so a route can answer it as a refusal of the caller's rather than as a failure of the server's;
+// what a write is refused with is an InvalidAttributeValueError, which wraps it and names the
+// attribute and the value.
+var ErrInvalidAttributeValue = errors.New("a node's state or visibility is none of the values it takes")
+
+// InvalidAttributeValueError is ErrInvalidAttributeValue for one value: the base attribute a write
+// stated and the value it stated. Its words name both and every value the attribute takes, so a
+// misspelled value reads as one.
+type InvalidAttributeValueError struct {
+	// Attribute is AttributeState or AttributeVisibility.
+	Attribute string
+	// Value is the value the write stated, which the attribute does not take.
+	Value string
+}
+
+func (e *InvalidAttributeValueError) Error() string {
+	return fmt.Sprintf("the node %s %q is none of %s", e.Attribute, e.Value, strings.Join(attributeValues(e.Attribute), ", "))
+}
+
+func (e *InvalidAttributeValueError) Unwrap() error { return ErrInvalidAttributeValue }
+
+// attributeValues is every value a base attribute takes, or nil for one that takes any value: a
+// node's project is any project's key, and its parties any parties.
+func attributeValues(attribute string) []string {
+	switch attribute {
+	case AttributeState:
+		return nodeStates[:]
+	case AttributeVisibility:
+		return visibilities[:]
+	}
+	return nil
+}
+
+// CheckAttributeValue refuses a value the base attribute does not take with an
+// InvalidAttributeValueError, and answers nil for a value it takes and for any value of an
+// attribute that takes any (attributeValues). It is the one rule every write of this store holds
+// a node's state and visibility to, and a route that takes either from its caller asks it first.
+func CheckAttributeValue(attribute, value string) error {
+	values := attributeValues(attribute)
+	if values == nil || slices.Contains(values, value) {
+		return nil
+	}
+	return &InvalidAttributeValueError{Attribute: attribute, Value: value}
+}
+
+// checkBaseValues holds a write to CheckAttributeValue before the write's first statement, so a
+// refused write sends none and stores nothing: the state and the visibility of every node it
+// writes, and every value tuple and every claim it states itself, of which a state or a
+// visibility is all that can be refused. The first value refused is the answer.
+func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
+	for index := range nodes {
+		node := &nodes[index]
+		if err := CheckAttributeValue(AttributeState, node.State); err != nil {
+			return err
+		}
+		if err := CheckAttributeValue(AttributeVisibility, node.Visibility); err != nil {
+			return err
+		}
+	}
+	for index := range tuples {
+		if tuple := &tuples[index]; tuple.ToKind == KindValue {
+			if err := CheckAttributeValue(tuple.Kind, tuple.ToID); err != nil {
+				return err
+			}
+		}
+	}
+	for index := range claims {
+		if claim := &claims[index]; claim.ToKind == KindValue {
+			if err := CheckAttributeValue(claim.Kind, claim.ToID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // writeNodes is two statements, each of whose rows arrive in ascending (kind, id): a write
 // touching several nodes takes its row locks in that order, so two such writes cannot each hold
 // the row the other waits for. The first inserts every node the store does not hold and locks
@@ -185,6 +272,12 @@ func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:
 // A write naming a project for a node the row holds in another is refused with ErrProjectMoved,
 // whether or not anything else of the node moved, and the row keeps its project either way.
 //
+// A write stating a node's state or visibility at a value that attribute does not take - on a
+// node, or in a value tuple of stated, the tuples its caller appends with these - is refused with
+// an InvalidAttributeValueError (checkBaseValues) before the first statement, so it sends none
+// and stores no node and no tuple. That holds for a write with no node too: Write appends what
+// its caller stated whether or not a node came with it.
+//
 // The stored values are read from the row this write updates. The second statement reads them,
 // and under READ COMMITTED it reads a snapshot of its own, taken once the first holds every row
 // the write touches: what it compares against is the newest committed version of each row, and
@@ -200,6 +293,9 @@ func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:
 // statement compares against what the first committed. The pass that writes a block's node holds
 // its document's owner row before it reaches this.
 func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, error) {
+	if err := checkBaseValues(nodes, stated, nil); err != nil {
+		return nil, err
+	}
 	if len(nodes) == 0 {
 		return nil, nil
 	}

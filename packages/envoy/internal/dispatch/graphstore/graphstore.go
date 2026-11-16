@@ -14,6 +14,7 @@ package graphstore
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,13 +22,31 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// Visibility and state values, the two base attributes every node carries.
+// Visibility and state values, the two base attributes every node carries. A node is visible to
+// its project or to its author alone. Its state is live, which every node a write makes starts
+// in, gone, which a node no longer held is stated, or one of proposed, settled and overtaken,
+// which a write marks a node with (dispatch://INFRA-1950). Each attribute takes these values and
+// no other: a write stating any other is refused (InvalidAttributeValueError), since a node at a
+// value nobody declared is drawn by no view and counted by no census.
 const (
 	VisibilityProject = "project"
 	VisibilityAuthor  = "author"
 	StateLive         = "live"
 	StateGone         = "gone"
+	StateProposed     = "proposed"
+	StateSettled      = "settled"
+	StateOvertaken    = "overtaken"
 )
+
+// nodeStates and visibilities are the values each of the two attributes takes, held once:
+// NodeStates answers the first, and CheckAttributeValue holds a write to both.
+var (
+	nodeStates   = [...]string{StateLive, StateGone, StateProposed, StateSettled, StateOvertaken}
+	visibilities = [...]string{VisibilityProject, VisibilityAuthor}
+)
+
+// NodeStates is every value the node state takes, a fresh slice for each caller.
+func NodeStates() []string { return slices.Clone(nodeStates[:]) }
 
 // KindValue is the to_kind of an attribute tuple: its ToID holds the value itself rather than
 // an address.

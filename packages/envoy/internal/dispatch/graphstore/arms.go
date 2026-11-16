@@ -65,8 +65,13 @@ func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) 
 }
 
 // writeArms is both: states says whether the node arm states the base attributes of each node
-// it makes.
+// it makes. A node, a value tuple or a claim stating a state or a visibility at a value that
+// attribute does not take is refused before any arm is built (checkBaseValues), so the caller's
+// statement never runs it.
 func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states bool) (string, []any, error) {
+	if err := checkBaseValues(nodes, tuples, claims); err != nil {
+		return "", nil, err
+	}
 	relations, values := splitTuples(tuples)
 	if len(nodes) == 0 && len(relations) == 0 && len(values) == 0 && len(claims) == 0 {
 		return "", nil, nil
