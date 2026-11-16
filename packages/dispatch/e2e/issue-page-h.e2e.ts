@@ -249,7 +249,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
         "an element of Details carries a title"
       ).toHaveCount(0);
       const editLabels = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
-        name: "Edit labels",
+        name: labelsControlName(TWENTY_LABELS, one, CONTROL_LABELS),
       });
       await editLabels.click();
       await expect(page.getByRole("combobox", { name: "Search or create label" })).toBeVisible();
@@ -775,7 +775,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // (8) The labels: one removed and one added, then `l` from a closed Details.
     await reopen(one);
     const editLabels = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
-      name: "Edit labels",
+      name: labelsControlName(TWENTY_LABELS, one, CONTROL_LABELS),
     });
     await expect(editLabels, "Details draws no Edit labels").toBeVisible();
     await editLabels.click();
@@ -804,7 +804,9 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // The labels' control is in the DOM while Details is closed, so whether `l` pressed it is
     // read first, and only then whether Details is open on it.
     await expect(
-      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", { name: "Edit labels" }),
+      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+        name: labelsControlName(relabelled, one, CONTROL_LABELS),
+      }),
       "l did not open Details at Edit labels"
     ).toHaveAttribute("aria-expanded", "true");
     await expect(marginShell(page), "l did not open Details").toBeVisible();

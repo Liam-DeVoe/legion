@@ -201,9 +201,18 @@ export function IssueAddMenu({
       });
     }
     if ((details.components.ids ?? []).length === 0) {
+      // Listed only while the issue names no component, so the picker's trigger is found by the
+      // name it has then, from the attachment the components line draws: the words it draws
+      // and the issue's key ("Set components of CORE-1" on an issue not attached, or attached
+      // to none). A save in flight renames it, and the busy trigger is not reached.
       fields.push({
         label: PROPERTY_LABELS.components,
-        ...atControl(componentsControlName(details.key)),
+        ...atControl(
+          componentsControlName(details.key, {
+            components: details.components,
+            controlLabels: CONTROL_LABELS,
+          })
+        ),
       });
     }
     if ((details.advances ?? []).length === 0) {

@@ -16,6 +16,7 @@ import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import type {
+  ArchitectureSource,
   CommentWithTrees,
   DispatchEvent,
   DisplayTree,
@@ -25,6 +26,7 @@ import type {
   UserState,
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
+import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
@@ -53,6 +55,7 @@ import {
   issueStatusWord,
   NODE_TYPE_NAMES,
 } from "./page-words";
+import { architecture } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -1299,6 +1302,62 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
   } finally {
     view.unmount();
     listIssues.mockRestore();
+    restore();
+  }
+});
+
+/** The project's one architecture source, so the components line draws its picker
+ *  (`shared-writes.test.ts`'s `architectureSource`). */
+const architectureSource: ArchitectureSource = {
+  branch: "main",
+  components: 1,
+  created_at: "2026-09-10T00:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  enabled: true,
+  last_commit: "3be61df5be90",
+  last_error: null,
+  last_sync_at: "2026-09-17T00:00:00Z",
+  project: "CORE",
+  repo: "legion/legion",
+};
+
+// R11 and decision 114 of the parts: on an issue no component is attached to, the components
+// picker's trigger draws "Set components" and is named for it inside `NoTooltips`
+// (`componentsControlName` given the attachment the line draws), and the add menu's Components
+// finds it by that name. While the menu looked for `main`'s "Edit components of CORE-1", it
+// listed no Components on such an issue.
+test("on an issue with no component, the Add menu's Components reaches the picker", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  // The fixture's issue is not attached. A source draws the picker, and the open picker reads
+  // the project's architecture for the components it offers.
+  const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const tree = spyOn(api, "getArchitecture").mockResolvedValue(architecture);
+  const { unmount } = renderDetails();
+
+  try {
+    const picker = await screen.findByRole("button", {
+      name: componentsControlName("CORE-1", {
+        components: issue.components,
+        controlLabels: CONTROL_LABELS,
+      }),
+    });
+    expect(picker).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.components }));
+    await waitFor(() =>
+      expect(picker, "the add menu's Components did not open the picker").toHaveAttribute(
+        "aria-expanded",
+        "true"
+      )
+    );
+  } finally {
+    unmount();
+    tree.mockRestore();
+    sources.mockRestore();
     restore();
   }
 });
