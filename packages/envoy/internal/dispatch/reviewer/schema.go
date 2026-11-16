@@ -5,6 +5,8 @@ import (
 )
 
 // The JSON schemas of the replies, built for the text's kind and the rule sets a call applies.
+// Each keeps OpenAI's strict mode's rules where the call sends it strict (Model.strict): every
+// object closed, and every property required, a property a reply may leave empty allowing null.
 
 // object is a JSON schema of an object with properties, of which required must be present, and
 // no other property.
@@ -38,15 +40,20 @@ func textSchema(kind Kind) map[string]any {
 }
 
 // reviewSchema is a review's reply: its findings, each of one of the rule sets on, and the
-// rewrite, which a reply with no finding leaves out.
-func reviewSchema(kind Kind, on []RuleSet) json.RawMessage {
+// rewrite, which a reply with no finding leaves out. Strict mode requires every property, so a
+// strict schema requires the rewrite and takes null for none, which reads as left out.
+func reviewSchema(kind Kind, on []RuleSet, strict bool) json.RawMessage {
 	finding := object(map[string]any{
 		"rule_set": map[string]any{"type": "string", "enum": on},
 		"quote":    stringSchema,
 		"why":      stringSchema,
 		"fix":      stringSchema,
 	}, "rule_set", "quote", "why", "fix")
-	return mustJSON(object(map[string]any{"findings": arrayOf(finding), "rewrite": textSchema(kind)}, "findings"))
+	rewrite, required := textSchema(kind), []string{"findings"}
+	if strict {
+		rewrite, required = map[string]any{"anyOf": []any{rewrite, map[string]any{"type": "null"}}}, append(required, "rewrite")
+	}
+	return mustJSON(object(map[string]any{"findings": arrayOf(finding), "rewrite": rewrite}, required...))
 }
 
 // rewriteSchema is a rewrite's reply: the text.

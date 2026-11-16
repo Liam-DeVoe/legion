@@ -34,14 +34,13 @@ func Rewrite(ctx context.Context, m Model, rules []RuleSet, record Record, answe
 		return Rewritten{}, err
 	}
 	rewritten := Rewritten{Calls: p.calls}
-	var reply Text
-	call, err := m.call(ctx, PurposeRewrite, p.system, p.input, rewriteSchema(record.Text.Kind), &reply)
-	rewritten.Calls = append(rewritten.Calls, call)
+	reply, c, err := call[Text](ctx, m, PurposeRewrite, p.system, p.input, rewriteSchema(record.Text.Kind), nil)
+	rewritten.Calls = append(rewritten.Calls, c)
 	if err != nil {
 		return rewritten, err
 	}
 	rewritten.Text = ofKind(reply, record.Text.Kind)
-	rewritten.NotApplied = Preserve(record, rewritten.Text)
+	rewritten.NotApplied = Preserve(record, answer.Text, rewritten.Text)
 	return rewritten, nil
 }
 

@@ -128,16 +128,27 @@ An ask breaks this rule set for each part that it does not give. A part that the
 
 ### Rule set "pointers"
 
-A pointer is a place where the text points at a thing, such as an issue, a pull request, a comment, an ask, a message or a document. The text must say in plain words what that thing delivers or says. A link can stand beside these words. A link never stands in their place. A text breaks this rule set at each of these pointers:
+A pointer is a place where the text points at a thing, such as an issue, a pull request, a comment, an ask, a message or a document. The text must say in plain words what that thing delivers or says. A key or a link can stand beside these words. A key or a link never stands in their place. A text breaks this rule set at each of these pointers:
 
-- A key or a link that carries the meaning, for example "INFRA-12 moves that code", "see #340" or "as dispatch://INFRA-12/comment/c1 asks".
+- A key or a link that carries the meaning of its sentence. For example, "ACME-915 (approved: dispatch://ACME-915/ask/a1) moves that code to the new repository" does not say what ACME-915 delivers. "ACME-1323's open approval covers them" does not say what that approval is for. "When the pull requests of ACME-1324 and ACME-1325 merge" does not say what these pull requests change.
 - A pointer with neither these words nor a link, for example "see my note above", "as agreed" or "that report".
 
 To find such a pointer, take each key and each link out of its sentence. If the sentence then does not say what the thing delivers or says, a key or a link stood in the place of words.
 
-The fix says in plain words what the thing delivers or says, as the record{{if .Answer}} or the answer of the writer agent{{end}} states it, and keeps the link beside these words. For example, "the move of the export code to the new repository (INFRA-12)". Where the pointer has no link and the record gives the link of the thing, the fix adds that link beside the words. Where {{if .Answer}}the record and the answer do{{else}}the record does{{end}} not say what the thing delivers or says, keep the words of the text.
+The fix says in plain words what the thing delivers or says, as the record{{if .Answer}} or the answer of the writer agent{{end}} states it. The fix keeps the key or the link beside these words. For example, "the move of the export code to the new repository (ACME-915, approved: dispatch://ACME-915/ask/a1)". Where the pointer has no link and the record gives the link of the thing, the fix adds that link beside the words. Where {{if .Answer}}the record and the answer do{{else}}the record does{{end}} not say what the thing delivers or says, keep the words of the text.
 
-These break no rule: a pointer that says in plain words what the thing delivers or says, with its link beside these words; a quoted passage; the name of a thing that the reader uses, for example a run id or a file name; a line that this prompt says to keep exactly. An issue key or a pull request number is not such a name.
+These break no rule{{if .Review}}. Write no finding for them{{end}}:
+
+- A pointer that says in words what the thing delivers or says, with its key or its link beside these words. The words can stand in the sentence before. For example, "the conformance check (ACME-823)" or "The costs are in the results table (dispatch://ACME-7/artifact/results-md)".
+- A key or a link that gives the place of a thing that the sentence names in words. For example, "the three drafts on ACME-1234" or "the checklist (dispatch://ACME-3/artifact/checklist-md v5)".
+- A quoted passage: the words of a person or of another text that the text quotes.
+- The name of a file, a branch, a run, a path or a command, for example "isolation.py" or "the branch main". An issue key or a pull request number is not such a name.
+- A word that is not a pointer: a pronoun, for example "it" or "a real one". A thing that the text names in words, for example "the audit that gives the points". The text itself, for example "this ask".
+- A line that this prompt says to keep exactly.
+{{- if .Review}}
+
+The quote of a finding is words of the text. A key, a link or a sentence that only the record holds is not in the text. Write no finding for it.
+{{- end}}
 {{- end}}
 {{- if .On.structure}}
 

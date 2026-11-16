@@ -2,6 +2,7 @@ package reviewer
 
 import (
 	"context"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 )
@@ -19,6 +20,11 @@ type Finding struct {
 type Reviewed struct {
 	// Findings are the places where the text breaks a rule; none where the text passed.
 	Findings []Finding
+	// Dropped is the rule set of each finding of the reply whose quote is not in the text, in
+	// the reply's order. The review drops such a finding: its quote is words of the record or
+	// of nothing, so its fix has no words of the text to stand in place of. A review whose every
+	// finding is dropped found nothing.
+	Dropped []RuleSet
 	// Rewrite is the text with each finding fixed, nil where the review found nothing or the
 	// model wrote none.
 	Rewrite *Text
@@ -41,8 +47,9 @@ type reviewReply struct {
 
 // Review reviews record's text by rules (DISPATCH_REVIEWER_RULES): one model call that returns
 // the findings and a rewrite, after the structure rules and the detector where they are on. A
-// text no rule set applies to passes with no call. A model call that gives no usable answer is a
-// *ModelError, and the Reviewed then still carries the calls made.
+// text no rule set applies to passes with no call. A finding whose quote is not in the text is
+// dropped (Reviewed.Dropped). A model call that gives no usable answer is a *ModelError, and the
+// Reviewed then still carries the calls made.
 func Review(ctx context.Context, m Model, rules []RuleSet, record Record) (Reviewed, error) {
 	p, err := prepare(ctx, m, "review", rules, record, extra{})
 	if err != nil {
@@ -52,19 +59,36 @@ func Review(ctx context.Context, m Model, rules []RuleSet, record Record) (Revie
 	if len(p.on) == 0 {
 		return reviewed, nil
 	}
-	var reply reviewReply
-	call, err := m.call(ctx, PurposeReview, p.system, p.input, reviewSchema(record.Text.Kind, p.on), &reply)
-	reviewed.Calls = append(reviewed.Calls, call)
+	reply, c, err := call[reviewReply](ctx, m, PurposeReview, p.system, p.input, reviewSchema(record.Text.Kind, p.on, m.strict()), nil)
+	reviewed.Calls = append(reviewed.Calls, c)
 	if err != nil {
 		return reviewed, err
 	}
-	reviewed.Findings = reply.Findings
-	if len(reply.Findings) > 0 && reply.Rewrite != nil {
+	text := quoteForm(readerFields(record.Text))
+	for _, finding := range reply.Findings {
+		if quote := quoteForm(finding.Quote); quote == "" || !strings.Contains(text, quote) {
+			reviewed.Dropped = append(reviewed.Dropped, finding.RuleSet)
+			continue
+		}
+		reviewed.Findings = append(reviewed.Findings, finding)
+	}
+	if len(reviewed.Findings) > 0 && reply.Rewrite != nil {
 		rewrite := ofKind(*reply.Rewrite, record.Text.Kind)
 		reviewed.Rewrite = &rewrite
-		reviewed.NotApplied = Preserve(record, rewrite)
+		reviewed.NotApplied = Preserve(record, "", rewrite)
 	}
 	return reviewed, nil
+}
+
+// quoteMarks are the marks a quote is looked up without: Markdown's emphasis and code marks, and
+// curly quotes, which stand as straight ones.
+var quoteMarks = strings.NewReplacer("*", "", "`", "", "\u2019", "'", "\u2018", "'", "\u201c", "\"", "\u201d", "\"")
+
+// quoteForm is text as a finding's quote is looked up in it, as the harness's quote check reads
+// both (writing-check's claude.QuoteForm): lower-cased, without quoteMarks, and with each run of
+// white space one space.
+func quoteForm(text string) string {
+	return strings.Join(strings.Fields(quoteMarks.Replace(strings.ToLower(text))), " ")
 }
 
 // ofKind is a reply's text as a text of kind: its kind set, and only the fields the kind has.

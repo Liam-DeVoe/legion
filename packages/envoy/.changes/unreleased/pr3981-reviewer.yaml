@@ -17,7 +17,9 @@ body: |-
   has gone has none. Then `DISPATCH_REVIEWER_UNEDITED` decides what posts: `rewrite` (the default)
   posts the reviewer's rewrite, marked as rewritten, and `as_written` posts the text as written.
   A review whose model fails, or that takes longer than `DISPATCH_REVIEWER_TIMEOUT` (default
-  `120s`), posts the text as written.
+  `120s`), posts the text as written. A reply that is not the object the call asks for is asked
+  again, two more times at most, inside that same bound. On an `azure` model group each call sends
+  its schema in strict mode. A finding whose quote is not in the text is dropped.
   `DISPATCH_REVIEWER_RULES` names the rule sets the reviewer applies, from `noslop`, `phrases`,
   `reader_words`, `ask_parts`, `pointers`, `structure` and `detector`. `pointers` asks that a
   pointer at an issue, a pull request, a comment, an ask, a message or a document say in plain

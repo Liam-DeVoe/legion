@@ -34,12 +34,14 @@ type reviewerDraftInput struct {
 }
 
 // reviewerCall is one model call a review made: what it was for, the deployment its request
-// named, the model id the provider served, the tokens the provider reported (the prompt, the
+// named, the tries it made where it asked again after a malformed reply (absent for one), the
+// model id the provider served, the tokens the provider reported over its tries (the prompt, the
 // reply, and the prompt tokens written to and read from its cache), and the fault it ended on, ""
 // for none.
 type reviewerCall struct {
 	Purpose          string `json:"purpose"`
 	Deployment       string `json:"deployment"`
+	Attempts         int    `json:"attempts,omitempty"`
 	Served           string `json:"served"`
 	InputTokens      int    `json:"input_tokens"`
 	OutputTokens     int    `json:"output_tokens"`
@@ -57,15 +59,20 @@ func callsOf(calls []reviewer.Call) []reviewerCall {
 			CacheWriteTokens: call.Usage.CacheWrite, CacheReadTokens: call.Usage.CacheRead,
 			Fault: string(call.Fault),
 		}
+		if call.Attempts > 1 {
+			read[i].Attempts = call.Attempts
+		}
 	}
 	return read
 }
 
 // reviewerDraftAnswer is what the draft route answers: the reader the review read for, the
-// findings, the rewrite (null for none) and why it would not post, and each model call.
+// findings, the rule set of each finding the review dropped because its quote is not in the text
+// (absent for none), the rewrite (null for none) and why it would not post, and each model call.
 type reviewerDraftAnswer struct {
 	Reader     string             `json:"reader"`
 	Findings   []reviewFinding    `json:"findings"`
+	Dropped    []string           `json:"dropped,omitempty"`
 	Rewrite    *model.TextWording `json:"rewrite"`
 	NotApplied string             `json:"not_applied,omitempty"`
 	Calls      []reviewerCall     `json:"calls"`
@@ -136,6 +143,9 @@ func (s *server) reviewDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := reviewerDraftAnswer{
 		Reader: reader, Findings: findingsOf(reviewed.Findings), Calls: callsOf(reviewed.Calls),
+	}
+	for _, set := range reviewed.Dropped {
+		answer.Dropped = append(answer.Dropped, string(set))
 	}
 	if reviewed.Rewrite != nil {
 		rewrite := wordingOf(*reviewed.Rewrite)

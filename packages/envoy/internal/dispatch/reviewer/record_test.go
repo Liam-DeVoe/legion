@@ -192,7 +192,7 @@ func TestAskSubjectReadsAStoredAsk(t *testing.T) {
 	kept := record.Text
 	kept.Body = "Which store do we keep: one, or both?"
 	kept.Options = []model.AskOption{{Label: "One", Description: "Keep one store"}, {Label: "Two", Description: "Keep both stores"}}
-	if got := Preserve(record, kept); got != nil {
+	if got := Preserve(record, "", kept); got != nil {
 		t.Errorf("a rewrite of the stored ask that keeps its labels and their order: %v", got)
 	}
 
@@ -215,7 +215,7 @@ func TestAskSubjectReadsAStoredAsk(t *testing.T) {
 	}
 	rewrite := record.Text
 	rewrite.Options = []model.AskOption{{Label: "A", Description: "one store"}, {Label: "B", Description: "wait for the memo"}}
-	if got := Preserve(record, rewrite); got == nil || got.Rule != KeepOptionLines {
+	if got := Preserve(record, "", rewrite); got == nil || got.Rule != KeepOptionLines {
 		t.Errorf("Preserve = %+v, want the option line the document holds more of", got)
 	}
 }

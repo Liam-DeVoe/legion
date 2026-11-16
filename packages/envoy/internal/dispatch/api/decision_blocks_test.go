@@ -207,7 +207,7 @@ func TestADecisionBlockWhoseRewriteDropsItsPicturePostsAsWritten(t *testing.T) {
 				"multiple": false,
 			})},
 		},
-		modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: `{"findings":[]}`}},
+		modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: noFindings}},
 	)
 	rig := newReviewRig(t, ReviewerConfig{DecisionBlocks: ReviewHold, WriterWindow: 300 * time.Millisecond, Unedited: UneditedRewrite}, stand)
 	askID := rig.uploadDecisionBlockOf("# Rollout\n\nThe plan for the rollout.\n\n:::ask{urgency=\"med\"}\nShip the reviewer? "+picture+"\n"+

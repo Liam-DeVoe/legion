@@ -49,12 +49,13 @@ func Define(ctx context.Context, m Model, rules []RuleSet, record Record, words 
 		return Defined{}, err
 	}
 	defined := Defined{Calls: p.calls}
-	var reply defineReply
-	call, err := m.call(ctx, PurposeDefine, p.system, p.input, defineSchema, &reply)
-	if err == nil && len(reply.Definitions) == 0 {
-		err = malformed(&call, "the reply defines none of the words")
-	}
-	defined.Calls = append(defined.Calls, call)
+	reply, c, err := call(ctx, m, PurposeDefine, p.system, p.input, defineSchema, func(reply defineReply) string {
+		if len(reply.Definitions) == 0 {
+			return "the reply defines none of the words"
+		}
+		return ""
+	})
+	defined.Calls = append(defined.Calls, c)
 	if err != nil {
 		return defined, err
 	}

@@ -54,6 +54,9 @@ func newTestModelRig(t *testing.T, hooks bool) *testModelRig {
 	t.Helper()
 	stand := modeltest.New(t,
 		modeltest.Rule{Contains: "For each candidate sentence", Reply: modeltest.Reply{Text: `{"vacuous":[]}`}},
+		// The group's reviewer speaks openai-chat, whose schema is strict; the test model
+		// speaks Anthropic's protocol, whose schema is not.
+		modeltest.Rule{Contains: reviewMarker, Match: func(r modeltest.Request) bool { return r.Protocol == modeltest.Chat }, Reply: modeltest.Reply{Text: noFindings}},
 		modeltest.Rule{Contains: reviewMarker, Reply: modeltest.Reply{Text: `{"findings":[]}`}},
 		modeltest.Rule{Contains: rewriteMarker, Reply: modeltest.Reply{Text: keptRewrite(t)}},
 		modeltest.Rule{Contains: defineMarker, Reply: modeltest.Reply{Text: `{"definitions":[{"words":"store","meaning":"The table where a held text waits.","links":[]}]}`}},

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -25,6 +26,12 @@ const (
 	// for every kind. A rewrite that holds one pasted the record, or a part of it, into the text
 	// ("<issue key=", "<document name="), which the reader would read as the writer's.
 	KeepNoRecordTags Keep = "no_record_tags"
+	// KeepNoRecordRun: no run of more than 100 words in a row (recordRunWords) that a text of
+	// the record holds and neither the text nor the writer's answer holds, for every kind. A
+	// rewrite that holds one pasted the record in place of the text (a short comment written
+	// again as the spec it points to), which the reader would read as the writer's, and the
+	// text's own facts are lost under it.
+	KeepNoRecordRun Keep = "no_record_run"
 	// KeepFenceLines: each line of the text that starts with ":::", a typed block's fence, byte
 	// for byte and as often as the text holds it, for every kind. A rewrite that changes or
 	// drops one writes the block as prose, or breaks it.
@@ -59,6 +66,12 @@ const (
 // firstLineWords is the most words a first line a rewrite keeps has.
 const firstLineWords = 12
 
+// recordRunWords is the most words in a row a rewrite may hold of the record that neither the
+// text nor the writer's answer holds. On INFRA-3231's harness runs, each rewrite that pasted the
+// record held a run of several hundred words of it; each other rewrite with a run past 100
+// words lost facts of the text, and the longest run of a rewrite that lost none was 67 words.
+const recordRunWords = 100
+
 // NotApplied is a rewrite that breaks a rule of what a rewrite keeps, which is therefore not
 // applied: the rule and the reason, which the card shows as the failed rewrite's tooltip.
 type NotApplied struct {
@@ -72,18 +85,23 @@ func (n *NotApplied) Error() string {
 
 // Preserve weighs rewrite against the text of record by the rules of what a rewrite keeps, in
 // the order of Keep's constants, and answers the first rule it breaks; nil where it breaks none.
-// Every kind keeps a third of its words or more and each of its typed blocks' fences, and holds
-// no tag of the record that the text does not hold. An ask and a decision block keep their
-// options, their choice, their first line, their `Ref: ` line, their picture lines and their
-// links; a decision block also keeps the option lines its document's ask-edit route does not
-// rewrite, which Preserve weighs where the record holds the document and the block's id; a
-// comment keeps its first line. Every other kind keeps nothing more.
-func Preserve(record Record, rewrite Text) *NotApplied {
+// answer is the writer's answer the rewrite read, "" for none. Every kind keeps a third of its
+// words or more and each of its typed blocks' fences, holds no tag of the record that the text
+// does not hold, and holds no long run of the record's words that neither the text nor answer
+// holds. An ask and a decision block keep their options, their choice, their first line, their
+// `Ref: ` line, their picture lines and their links; a decision block also keeps the option
+// lines its document's ask-edit route does not rewrite, which Preserve weighs where the record
+// holds the document and the block's id; a comment keeps its first line. Every other kind keeps
+// nothing more.
+func Preserve(record Record, answer string, rewrite Text) *NotApplied {
 	original := record.Text
 	if broken := keepMostWords(original, rewrite); broken != nil {
 		return broken
 	}
 	if broken := keepNoRecordTags(original, rewrite); broken != nil {
+		return broken
+	}
+	if broken := keepNoRecordRun(record, answer, rewrite); broken != nil {
 		return broken
 	}
 	if broken := keepFenceLines(original.Body, rewrite.Body); broken != nil {
@@ -152,6 +170,141 @@ func keepNoRecordTags(original, rewrite Text) *NotApplied {
 		}
 	}
 	return nil
+}
+
+// keepNoRecordRun weighs a rewrite's fields against the record: the rewrite holds no run of more
+// than recordRunWords words, in a row and in their order, that a text of the record holds
+// (Record.parts) and that neither the text nor answer holds. Words are compared as runWords reads
+// them, so a run pasted with its marks changed is still the record's.
+func keepNoRecordRun(record Record, answer string, rewrite Text) *NotApplied {
+	n := recordRunWords + 1
+	words := runWords(readerFields(rewrite))
+	if len(words) < n {
+		return nil
+	}
+	held := newRunIndex(n)
+	for _, part := range record.parts() {
+		held.add(runWords(part))
+	}
+	if len(held.at) == 0 {
+		return nil
+	}
+	own := newRunIndex(n)
+	own.add(runWords(readerFields(record.Text)))
+	own.add(runWords(answer))
+	first, last := -1, -1
+	runHashes(words, n, func(i int, h uint64) {
+		run := words[i : i+n]
+		pasted := held.holds(run, h) && !own.holds(run, h)
+		switch {
+		case pasted && first < 0:
+			first, last = i, i
+		case pasted && last == i-1:
+			last = i
+		}
+	})
+	if first < 0 {
+		return nil
+	}
+	whose := "the text does not hold"
+	if answer != "" {
+		whose = "neither the text nor the writer's answer holds"
+	}
+	length := last - first + n
+	return &NotApplied{KeepNoRecordRun, fmt.Sprintf("the rewrite holds %d words in a row of the record that %s, from %s",
+		length, whose, strconv.Quote(strings.Join(words[first:first+runShownWords], " ")+" …"))}
+}
+
+// runShownWords is how many words of a pasted run the reason shows.
+const runShownWords = 12
+
+// parts are the texts of the record a call's user message shows besides the text itself
+// (Record.input): each text of the thread and of the writer's, the issue's title, the project's
+// name, the document unless it is the text itself, and the decisions document.
+func (r Record) parts() []string {
+	parts := []string{r.IssueTitle, r.Project, r.Decisions}
+	if d := r.Document; d != nil && !(d.Holds && r.Text.Kind == KindDocument) {
+		parts = append(parts, d.Markdown)
+	}
+	for _, entry := range slices.Concat(r.Thread, r.WriterTexts) {
+		parts = append(parts, entry.Text)
+	}
+	return parts
+}
+
+// runWords is text's words as keepNoRecordRun compares them: the runs of characters between white
+// space, each lower-cased and cut of the marks at its ends that are neither letters nor digits,
+// and none left empty.
+func runWords(text string) []string {
+	words := strings.Fields(text)
+	kept := words[:0]
+	for _, word := range words {
+		word = strings.TrimFunc(word, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+		if word != "" {
+			kept = append(kept, strings.ToLower(word))
+		}
+	}
+	return kept
+}
+
+// runIndex holds each run of n words of the texts added to it, by its hash (runHashes), with the
+// words of the run first added under that hash, so a hash that two runs share is told apart.
+type runIndex struct {
+	n  int
+	at map[uint64][]string
+}
+
+func newRunIndex(n int) *runIndex { return &runIndex{n: n, at: map[uint64][]string{}} }
+
+// add adds each run of n words of words.
+func (x *runIndex) add(words []string) {
+	runHashes(words, x.n, func(i int, h uint64) {
+		if _, ok := x.at[h]; !ok {
+			x.at[h] = words[i : i+x.n]
+		}
+	})
+}
+
+// holds is whether the index holds run, whose hash is h.
+func (x *runIndex) holds(run []string, h uint64) bool {
+	held, ok := x.at[h]
+	return ok && slices.Equal(held, run)
+}
+
+// The constants of runHashes: FNV-1a's 64-bit offset basis and prime, the prime also the base of
+// the rolling hash, being odd.
+const (
+	fnvBasis = 14695981039346656037
+	fnvPrime = 1099511628211
+)
+
+// runHashes calls each with the start and the hash of each run of n words of words, in order:
+// each word's FNV-1a hash, rolled into one hash of the run, so each run costs one step past the
+// first.
+func runHashes(words []string, n int, each func(i int, h uint64)) {
+	if len(words) < n {
+		return
+	}
+	hashes := make([]uint64, len(words))
+	for i, word := range words {
+		h := uint64(fnvBasis)
+		for j := range len(word) {
+			h = (h ^ uint64(word[j])) * fnvPrime
+		}
+		hashes[i] = h
+	}
+	var h, top uint64 = 0, 1
+	for i := range n {
+		h = h*fnvPrime + hashes[i]
+		if i > 0 {
+			top *= fnvPrime
+		}
+	}
+	each(0, h)
+	for i := n; i < len(words); i++ {
+		h = (h-hashes[i-n]*top)*fnvPrime + hashes[i]
+		each(i-n+1, h)
+	}
 }
 
 // fence starts each line of a typed block's fence: its opening (":::check{#c1}") and its close.

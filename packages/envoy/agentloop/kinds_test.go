@@ -1,6 +1,7 @@
 package agentloop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -201,6 +202,57 @@ func TestOpenAIChatSendsTheFinalSchemaAsAJSONSchemaResponseFormat(t *testing.T) 
 	}
 	if format, ok := free[0].decoded(t)["response_format"]; ok {
 		t.Errorf("the call with no Final sends response_format %v, want none", format)
+	}
+}
+
+// Request.StrictFinal sends an openai-chat Final in OpenAI's strict mode and changes no other byte
+// of the request, so a request without it sends what it always sent, strict false. On every other
+// protocol the field changes no byte of the request at all.
+func TestStrictFinalSetsOpenAIChatsStrictFlagAndNothingElse(t *testing.T) {
+	t.Parallel()
+	answered := map[Kind]func() reply{
+		OpenAIChat: func() reply { return chatStream("stop", chatUsage{Prompt: 2, Completion: 3}, finalAnswer) },
+		OpenAIResponses: func() reply {
+			return openaiStream(openaiUsage{Input: 2, Output: 3}, "", openaiMessage("msg_final", finalAnswer))
+		},
+		AnthropicMessages: func() reply {
+			return anthropicStream("end_turn", anthropicUsage{Input: 2, Output: 3}, anthropicText(finalAnswer))
+		},
+		AzureAnthropic: func() reply {
+			return anthropicStream("end_turn", anthropicUsage{Input: 2, Output: 3}, anthropicText(finalAnswer))
+		},
+	}
+	for kind, reply := range answered {
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			bodies := map[bool][]byte{}
+			for _, strict := range []bool{false, true} {
+				s := newStandIn(t, reply())
+				f := newFixture(t, s, kind, 1)
+				f.req.Final = json.RawMessage(finalSchema)
+				f.req.StrictFinal = strict
+				result, err := Run(context.Background(), f.req)
+				if err != nil || result.Fault != "" || !sameJSON(t, result.Value, []byte(finalAnswer)) {
+					t.Fatalf("strict %v: result %+v, %v, want %s and no fault", strict, result, err, finalAnswer)
+				}
+				got := s.requests()
+				if len(got) != 1 {
+					t.Fatalf("strict %v: %d model calls, want 1", strict, len(got))
+				}
+				bodies[strict] = got[0].body
+			}
+			want := bodies[false]
+			if kind == OpenAIChat {
+				loose, strict := []byte(`"strict":false`), []byte(`"strict":true`)
+				if n := bytes.Count(want, loose); n != 1 {
+					t.Fatalf("the request without StrictFinal holds %s %d times, want once:\n%s", loose, n, want)
+				}
+				want = bytes.Replace(want, loose, strict, 1)
+			}
+			if !bytes.Equal(bodies[true], want) {
+				t.Errorf("with StrictFinal the request is\n%s\nwant\n%s", bodies[true], want)
+			}
+		})
 	}
 }
 

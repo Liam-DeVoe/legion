@@ -1,6 +1,7 @@
 package reviewer
 
 import (
+	"fmt"
 	"maps"
 	"regexp"
 	"slices"
@@ -60,7 +61,7 @@ func TestEachBreakOfWhatARewriteKeepsIsNotApplied(t *testing.T) {
 			`the rewrite drops the link "https://ci.test/log/7"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := Preserve(Record{Text: ask}, test.rewrite)
+			got := Preserve(Record{Text: ask}, "", test.rewrite)
 			if got == nil || got.Rule != test.rule || got.Reason != test.reason {
 				t.Fatalf("Preserve = %+v, want not applied for %s: %s", got, test.rule, test.reason)
 			}
@@ -74,14 +75,14 @@ func TestEachBreakOfWhatARewriteKeepsIsNotApplied(t *testing.T) {
 		r.Body = strings.Replace(r.Body, "The chart shows the wait.", "The test waits 40 s for the store.", 1)
 		r.Options[1].Description = "Wait until the store answers in under 1 s"
 	})
-	if got := Preserve(Record{Text: ask}, kept); got != nil {
+	if got := Preserve(Record{Text: ask}, "", kept); got != nil {
 		t.Errorf("a rewrite that keeps every rule: %v", got)
 	}
 	// An option's id is the server's (optionWords), so Preserve weighs none: a rewrite, which
 	// writes no id, of an ask whose options carry the part ids a read shows keeps every rule.
 	read := pictureAsk()
 	read.Options[0].ID, read.Options[1].ID = "b-2", "b-3"
-	if got := Preserve(Record{Text: read}, kept); got != nil {
+	if got := Preserve(Record{Text: read}, "", kept); got != nil {
 		t.Errorf("a rewrite of an ask whose options carry ids: %v", got)
 	}
 }
@@ -106,7 +107,7 @@ func TestTheFirstLineIsKeptWhereItIsShortAndNotAlone(t *testing.T) {
 			Text{Kind: KindMessage, Body: "The test fails."}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := Preserve(Record{Text: test.original}, test.now)
+			got := Preserve(Record{Text: test.original}, "", test.now)
 			if (got == nil) != (test.want == "") || (got != nil && got.Rule != test.want) {
 				t.Errorf("Preserve = %+v, want %q", got, test.want)
 			}
@@ -131,13 +132,13 @@ func TestARewriteOfFewerThanAThirdOfTheWordsIsNotApplied(t *testing.T) {
 			"(no change)":                 "the rewrite has 2 words, fewer than a third of the text's 85",
 			strings.Join(words[:28], " "): "the rewrite has 28 words, fewer than a third of the text's 85",
 		} {
-			got := Preserve(Record{Text: original}, Text{Kind: kind, Body: stub})
+			got := Preserve(Record{Text: original}, "", Text{Kind: kind, Body: stub})
 			if got == nil || got.Rule != KeepMostWords || got.Reason != reason {
 				t.Errorf("%s: Preserve of %q = %+v, want not applied: %s", kind, stub, got, reason)
 			}
 		}
 		for _, kept := range []int{len(words) / 2, 29} {
-			if got := Preserve(Record{Text: original}, Text{Kind: kind, Body: strings.Join(words[:kept], " ")}); got != nil {
+			if got := Preserve(Record{Text: original}, "", Text{Kind: kind, Body: strings.Join(words[:kept], " ")}); got != nil {
 				t.Errorf("%s: a rewrite of %d of the text's 85 words: %v", kind, kept, got)
 			}
 		}
@@ -147,15 +148,15 @@ func TestARewriteOfFewerThanAThirdOfTheWordsIsNotApplied(t *testing.T) {
 	ask := pictureAsk()
 	stub := ask
 	stub.Body, stub.Options = "placeholder", nil
-	if got := Preserve(Record{Text: ask}, stub); got == nil || got.Rule != KeepMostWords || got.Reason != "the rewrite has 1 word, fewer than a third of the text's 20" {
+	if got := Preserve(Record{Text: ask}, "", stub); got == nil || got.Rule != KeepMostWords || got.Reason != "the rewrite has 1 word, fewer than a third of the text's 20" {
 		t.Errorf("Preserve of a stub ask = %+v", got)
 	}
 	// An issue counts its title with its spec.
 	issue := Text{Kind: KindIssue, Title: "Land the reviewer before the release", Body: "This names the problem."}
-	if got := Preserve(Record{Text: issue}, Text{Kind: KindIssue, Title: "Land the reviewer", Body: "Today."}); got != nil {
+	if got := Preserve(Record{Text: issue}, "", Text{Kind: KindIssue, Title: "Land the reviewer", Body: "Today."}); got != nil {
 		t.Errorf("an issue's rewrite of 4 of its 10 words, most in its title: %v", got)
 	}
-	if got := Preserve(Record{Text: issue}, Text{Kind: KindIssue, Body: "Land it."}); got == nil || got.Rule != KeepMostWords {
+	if got := Preserve(Record{Text: issue}, "", Text{Kind: KindIssue, Body: "Land it."}); got == nil || got.Rule != KeepMostWords {
 		t.Errorf("an issue's rewrite of 2 of its 10 words = %+v", got)
 	}
 }
@@ -173,12 +174,12 @@ func TestADecisionBlockKeepsTheOptionLinesItsDocumentHolds(t *testing.T) {
 	}
 	plain := record.Text
 	plain.Options = []model.AskOption{{Label: "Ship", Description: "Release it today"}, {Label: "Hold", Description: "see the memo"}}
-	if got := Preserve(record, plain); got != nil {
+	if got := Preserve(record, "", plain); got != nil {
 		t.Errorf("a rewrite of a plain option line: %v", got)
 	}
 	marked := record.Text
 	marked.Options = []model.AskOption{{Label: "Ship", Description: "Release it"}, {Label: "Hold", Description: "wait for the memo"}}
-	got := Preserve(record, marked)
+	got := Preserve(record, "", marked)
 	if got == nil || got.Rule != KeepOptionLines || !strings.Contains(got.Reason, `the edit rewrites the line of the option "Hold", which holds more than its plain text`) {
 		t.Fatalf("Preserve = %+v, want the option line the document keeps", got)
 	}
@@ -186,17 +187,17 @@ func TestADecisionBlockKeepsTheOptionLinesItsDocumentHolds(t *testing.T) {
 	// The block's own options keep their count, order, labels and choice first.
 	fewer := record.Text
 	fewer.Options = fewer.Options[:1]
-	if got := Preserve(record, fewer); got == nil || got.Rule != KeepOptionCount {
+	if got := Preserve(record, "", fewer); got == nil || got.Rule != KeepOptionCount {
 		t.Errorf("Preserve = %+v, want the option count", got)
 	}
 	// A record without the block's document weighs no option line; the write weighs it again.
-	if got := Preserve(Record{Text: record.Text}, marked); got != nil {
+	if got := Preserve(Record{Text: record.Text}, "", marked); got != nil {
 		t.Errorf("Preserve with no document = %v", got)
 	}
 	// A block the document does not hold is not applied either.
 	missing := record
 	missing.Document = &Document{Markdown: "# Plan\n", Holds: true, BlockID: "blk"}
-	if got := Preserve(missing, marked); got == nil || got.Rule != KeepOptionLines || !strings.HasPrefix(got.Reason, "the decision block cannot be read in its document") {
+	if got := Preserve(missing, "", marked); got == nil || got.Rule != KeepOptionLines || !strings.HasPrefix(got.Reason, "the decision block cannot be read in its document") {
 		t.Errorf("Preserve of a block its document lacks = %+v", got)
 	}
 }
@@ -217,7 +218,7 @@ func TestARewriteThatHoldsTheRecordsTagsIsNotApplied(t *testing.T) {
 			`the rewrite holds "</entry>", a tag of the record, which the text does not hold`},
 	} {
 		for _, kind := range []Kind{KindComment, KindMessage, KindIssue, KindDocument} {
-			got := Preserve(Record{Text: Text{Kind: kind, Body: body}}, Text{Kind: kind, Body: test.rewrite})
+			got := Preserve(Record{Text: Text{Kind: kind, Body: body}}, "", Text{Kind: kind, Body: test.rewrite})
 			if got == nil || got.Rule != KeepNoRecordTags || got.Reason != test.reason {
 				t.Errorf("%s, %s: Preserve = %+v, want not applied: %s", test.name, kind, got, test.reason)
 			}
@@ -226,15 +227,15 @@ func TestARewriteThatHoldsTheRecordsTagsIsNotApplied(t *testing.T) {
 	// An ask's options are weighed with its question.
 	ask := pictureAsk()
 	ask.Options[1].Description = "Wait <writer_answer>The node is the test server.</writer_answer>"
-	if got := Preserve(Record{Text: pictureAsk()}, ask); got == nil || got.Rule != KeepNoRecordTags {
+	if got := Preserve(Record{Text: pictureAsk()}, "", ask); got == nil || got.Rule != KeepNoRecordTags {
 		t.Errorf("an option that holds the writer's answer: Preserve = %+v", got)
 	}
 
 	html := Text{Kind: KindComment, Body: "The page sets <title>Runs</title> in its head, and the test reads it."}
-	if got := Preserve(Record{Text: html}, Text{Kind: KindComment, Body: "The page sets <title>Runs</title> in its head. The test reads that title."}); got != nil {
+	if got := Preserve(Record{Text: html}, "", Text{Kind: KindComment, Body: "The page sets <title>Runs</title> in its head. The test reads that title."}); got != nil {
 		t.Errorf("a rewrite that keeps the text's own <title>: %v", got)
 	}
-	if got := Preserve(Record{Text: html}, Text{Kind: KindComment, Body: html.Body + "\n<spec>\nThe spec.\n</spec>"}); got == nil || got.Rule != KeepNoRecordTags ||
+	if got := Preserve(Record{Text: html}, "", Text{Kind: KindComment, Body: html.Body + "\n<spec>\nThe spec.\n</spec>"}); got == nil || got.Rule != KeepNoRecordTags ||
 		got.Reason != `the rewrite holds "<spec>", a tag of the record, which the text does not hold` {
 		t.Errorf("a rewrite that adds <spec> to a text that holds <title>: Preserve = %+v", got)
 	}
@@ -259,6 +260,73 @@ func TestRecordTagsAreTheTagsOfTheInput(t *testing.T) {
 	}
 }
 
+// pastedSpec is a spec of runs well past recordRunWords words, as a record's document holds it.
+func pastedSpec() string {
+	var b strings.Builder
+	b.WriteString("## Problem\n\n")
+	for i := range 15 {
+		fmt.Fprintf(&b, "The cutter refuses block %d of the store, and the grade waits for run %d of the cut. ", i, i)
+	}
+	return b.String()
+}
+
+// A rewrite may not paste the record: it holds no run of more than recordRunWords words in a row
+// that a text of the record holds and the text does not, wherever in the record the run stands
+// and with its marks changed. A short phrase of the record, a run the text itself holds, a run
+// the writer's answer holds, and the document a document's text is, are no paste.
+func TestARewriteThatPastesTheRecordIsNotApplied(t *testing.T) {
+	spec := pastedSpec()
+	specWords := runWords(spec)
+	comment := Text{Kind: KindComment, Body: "Here is the one-page design: dispatch://PRJ-1/artifact/design. Nothing is cut until you answer its one question."}
+	with := func(extra string) Text {
+		return Text{Kind: KindComment, Body: comment.Body + "\n\n" + extra}
+	}
+	reason := fmt.Sprintf("the rewrite holds %d words in a row of the record that the text does not hold, from %q",
+		len(specWords), strings.Join(specWords[:runShownWords], " ")+" …")
+	for name, record := range map[string]Record{
+		"the issue's document": {Text: comment, Document: &Document{Name: "spec.md", Markdown: spec}},
+		"a text of the thread": {Text: comment, Thread: []Entry{{Kind: KindComment, Author: "person sami", Text: spec}}},
+		"the writer's texts":   {Text: comment, WriterTexts: []Entry{{Kind: KindComment, Author: authorWriter, Text: spec}}},
+		"the decisions":        {Text: comment, Decisions: spec},
+	} {
+		pasted := strings.ReplaceAll(strings.ReplaceAll(spec, "## Problem", "**Problem.**"), ". The", ".\nThe")
+		if got := Preserve(record, "", with(pasted)); got == nil || got.Rule != KeepNoRecordRun || got.Reason != reason {
+			t.Errorf("%s: Preserve of the pasted record = %+v, want not applied: %s", name, got, reason)
+		}
+	}
+	record := Record{Text: comment, Document: &Document{Name: "spec.md", Markdown: spec}}
+	for name, rewrite := range map[string]Text{
+		"a phrase of the record":                 with("The cutter refuses block 3 of the store, and the grade waits for run 3 of the cut."),
+		"recordRunWords words of the record":     with(strings.Join(specWords[:recordRunWords], " ")),
+		"a rewrite of the text's own words only": {Kind: KindComment, Body: "The one-page design is at dispatch://PRJ-1/artifact/design. I cut nothing until you answer its question."},
+	} {
+		if got := Preserve(record, "", rewrite); got != nil {
+			t.Errorf("%s: Preserve = %v, want applied", name, got)
+		}
+	}
+	if got := Preserve(record, "", with(strings.Join(specWords[:recordRunWords+1], " "))); got == nil || got.Rule != KeepNoRecordRun {
+		t.Errorf("a run one word past recordRunWords: Preserve = %+v, want not applied", got)
+	}
+	// The text quotes the record itself, so its rewrite may keep the quote.
+	quoting := Record{Text: with(spec), Document: record.Document}
+	if got := Preserve(quoting, "", Text{Kind: KindComment, Body: "The design is at dispatch://PRJ-1/artifact/design.\n\n" + spec}); got != nil {
+		t.Errorf("a rewrite that keeps the text's own quote of the record: %v", got)
+	}
+	// The writer's answer holds the run: the writer put those words in, not the model.
+	if got := Preserve(record, "The spec says: "+spec, with(spec)); got != nil {
+		t.Errorf("a rewrite that takes the run from the writer's answer: %v", got)
+	}
+	if got := Preserve(record, "The design is the spec's problem section.", with(spec)); got == nil || got.Rule != KeepNoRecordRun ||
+		!strings.Contains(got.Reason, "that neither the text nor the writer's answer holds") {
+		t.Errorf("a rewrite with an answer that holds no run of the record: Preserve = %+v", got)
+	}
+	// A document's text is the document the record holds; the call shows it once, as the text.
+	document := Record{Text: Text{Kind: KindDocument, Body: "# Design\n\nNothing is cut until you answer."}, Document: &Document{Name: "spec.md", Markdown: spec, Holds: true}}
+	if got := Preserve(document, "", Text{Kind: KindDocument, Body: "# Design\n\nNothing is cut until you answer.\n\n" + spec}); got != nil {
+		t.Errorf("a document's rewrite weighed against itself: %v", got)
+	}
+}
+
 // A rewrite keeps each line of the text that starts with ":::", a typed block's fence, byte for
 // byte and as often as the text holds it, for every kind; it may change the words in the block.
 func TestARewriteKeepsEachFenceLine(t *testing.T) {
@@ -277,7 +345,7 @@ func TestARewriteKeepsEachFenceLine(t *testing.T) {
 			`the rewrite drops or changes the line ":::"`},
 	} {
 		for _, kind := range []Kind{KindIssue, KindComment, KindMessage, KindDocument} {
-			got := Preserve(Record{Text: Text{Kind: kind, Body: text}}, Text{Kind: kind, Body: test.rewrite})
+			got := Preserve(Record{Text: Text{Kind: kind, Body: text}}, "", Text{Kind: kind, Body: test.rewrite})
 			if test.reason == "" {
 				if got != nil {
 					t.Errorf("%s, %s: Preserve = %v, want applied", test.name, kind, got)

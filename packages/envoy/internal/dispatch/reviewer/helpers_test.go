@@ -58,6 +58,10 @@ const (
 	detectorMarker = "decide if its verb phrase is vacuous"
 )
 
+// noFindings is a review's reply that found nothing as strict mode writes it on openai-chat:
+// every property of the schema, the rewrite null.
+const noFindings = `{"findings":[],"rewrite":null}`
+
 // askRecord is the record of an ask with two options, a thread, the document it stands in, the
 // issue's decisions document, the writer's texts and the words its reader asked about before. Its
 // options carry no id, as the ask's row holds them (AskSubject).

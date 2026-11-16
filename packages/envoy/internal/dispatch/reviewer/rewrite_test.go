@@ -36,7 +36,7 @@ func TestARewriteReadsTheWritersAnswerWhenOneCame(t *testing.T) {
 	if want := keptRewrite(); !reflect.DeepEqual(rewritten.Text, want) || rewritten.NotApplied != nil {
 		t.Errorf("rewrite = %+v, not applied %v; want %+v applied", rewritten.Text, rewritten.NotApplied, want)
 	}
-	if len(rewritten.Calls) != 1 || rewritten.Calls[0] != (Call{Purpose: PurposeRewrite, Deployment: "rewriter", Served: "rewriter-2026-11-01", Usage: rewritten.Calls[0].Usage}) {
+	if len(rewritten.Calls) != 1 || rewritten.Calls[0] != (Call{Purpose: PurposeRewrite, Deployment: "rewriter", Attempts: 1, Served: "rewriter-2026-11-01", Usage: rewritten.Calls[0].Usage}) {
 		t.Errorf("calls = %+v, want the rewrite's call to the rewriter, served by rewriter-2026-11-01", rewritten.Calls)
 	}
 	request := stand.Requests()[0].Text

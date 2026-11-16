@@ -115,7 +115,7 @@ func TestEachRuleSetIsInTheRequestOnlyWhenItIsOn(t *testing.T) {
 func TestTheStructureRulesAndTheDetectorAreInputs(t *testing.T) {
 	stand := modeltest.New(t,
 		modeltest.Rule{Contains: detectorMarker, Reply: modeltest.Reply{Text: `{"vacuous":[{"id":"c1","rewrite":"Say the problem."}]}`}},
-		modeltest.Rule{Contains: reviewMarker, Reply: modeltest.Reply{Text: `{"findings":[]}`}},
+		modeltest.Rule{Contains: reviewMarker, Reply: modeltest.Reply{Text: noFindings}},
 	)
 	reviewed, err := Review(t.Context(), chatModel(stand.URL, "reviewer"), []RuleSet{RuleStructure, RuleDetector}, askRecord())
 	if err != nil {
@@ -147,7 +147,7 @@ func TestTheStructureRulesAndTheDetectorAreInputs(t *testing.T) {
 // ask_parts applies to an ask and a decision block alone: a comment's review neither shows it nor
 // lets a finding name it, and a review no rule set applies to makes no call.
 func TestAskPartsAppliesToAnAskAlone(t *testing.T) {
-	stand := modeltest.New(t, modeltest.Rule{Contains: reviewMarker, Reply: modeltest.Reply{Text: `{"findings":[]}`}})
+	stand := modeltest.New(t, modeltest.Rule{Contains: reviewMarker, Reply: modeltest.Reply{Text: noFindings}})
 	comment := Record{Text: Text{Kind: KindComment, Body: "This names the problem."}}
 	if _, err := Review(t.Context(), chatModel(stand.URL, "reviewer"), []RuleSet{RuleNoslop, RuleAskParts}, comment); err != nil {
 		t.Fatal(err)
@@ -172,6 +172,46 @@ func TestAFindingOfARuleSetThatIsOffIsMalformed(t *testing.T) {
 	}
 }
 
+// A finding whose quote is not in the text is dropped and counted by its rule set: the quote is
+// looked up as the harness's quote check reads it, so case, emphasis and white space do not
+// count, and a quote of the record is not the text's. A review whose every finding is dropped
+// found nothing, and its rewrite is not kept.
+func TestAFindingWhoseQuoteIsNotInTheTextIsDropped(t *testing.T) {
+	rewrite := keptRewrite()
+	reply := func(findings ...Finding) string {
+		return asJSON(t, map[string]any{
+			"findings": findings,
+			"rewrite":  map[string]any{"body": rewrite.Body, "options": rewrite.Options, "multiple": false},
+		})
+	}
+	ofText := Finding{RuleSet: RuleNoslop, Quote: "we  **spin up**\nthe node.", Why: "A phrasal verb.", Fix: "We start the node."}
+	ofRecord := Finding{RuleSet: RulePointers, Quote: "The store keeps rows.", Why: "It says no more.", Fix: "The store keeps each row."}
+	empty := Finding{RuleSet: RulePointers, Quote: " ", Why: "It says no more.", Fix: "The store."}
+	stand := modeltest.New(t,
+		modeltest.Rule{Contains: reviewMarker, Once: true, Reply: modeltest.Reply{Text: reply(ofRecord, ofText, empty)}},
+		modeltest.Rule{Contains: reviewMarker, Once: true, Reply: modeltest.Reply{Text: reply(ofRecord)}},
+	)
+	rules := []RuleSet{RuleNoslop, RulePointers}
+	reviewed, err := Review(t.Context(), chatModel(stand.URL, "reviewer"), rules, askRecord())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reviewed.Findings, []Finding{ofText}) || !slices.Equal(reviewed.Dropped, []RuleSet{RulePointers, RulePointers}) {
+		t.Errorf("findings %+v, dropped %v; want the text's finding kept and the two others dropped", reviewed.Findings, reviewed.Dropped)
+	}
+	if reviewed.Rewrite == nil {
+		t.Error("a review with a finding kept lost its rewrite")
+	}
+
+	reviewed, err = Review(t.Context(), chatModel(stand.URL, "reviewer"), rules, askRecord())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewed.Findings) != 0 || reviewed.Rewrite != nil || !slices.Equal(reviewed.Dropped, []RuleSet{RulePointers}) {
+		t.Errorf("a review whose one finding quotes the record = %+v, want no finding, no rewrite and one dropped", reviewed)
+	}
+}
+
 // A model that fails gives a *ModelError the server posts the text as written on, with the call
 // it made.
 func TestAModelFailureIsAModelError(t *testing.T) {
@@ -182,7 +222,7 @@ func TestAModelFailureIsAModelError(t *testing.T) {
 	}{
 		{"a provider error", modeltest.Reply{Status: http.StatusInternalServerError, Text: "the deployment is down"}, agentloop.FaultProviderError},
 		{"a reply that is no JSON", modeltest.Reply{Text: "I found two problems."}, agentloop.FaultMalformed},
-		{"a reply past the time bound", modeltest.Reply{Text: `{"findings":[]}`, Delay: 5 * time.Second}, agentloop.FaultTime},
+		{"a reply past the time bound", modeltest.Reply{Text: noFindings, Delay: 5 * time.Second}, agentloop.FaultTime},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stand := modeltest.New(t, modeltest.Rule{Reply: test.reply})
@@ -253,7 +293,7 @@ func TestEachCallNamesItsDeploymentAndTheModelServed(t *testing.T) {
 // Every call waits for the caller's share of its deployment's pacer: a call the quota cannot
 // serve in the time it has is refused before it reaches the model.
 func TestACallWaitsForThePacer(t *testing.T) {
-	stand := modeltest.New(t, modeltest.Rule{Reply: modeltest.Reply{Text: `{"findings":[]}`}})
+	stand := modeltest.New(t, modeltest.Rule{Reply: modeltest.Reply{Text: noFindings}})
 	m := chatModel(stand.URL, "reviewer")
 	m.Pace = modelpace.New(modelpace.Config{Quotas: map[string]int{"reviewer": 100}}).Join(modelpace.Share{
 		Deployment: modelpace.Deployment{Kind: "azure", Host: "stand-in", Name: "reviewer"},

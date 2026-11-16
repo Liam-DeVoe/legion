@@ -3295,7 +3295,7 @@ Every default keeps each change to a text off.
   Under `pointers`, a pointer at an issue, a pull request, a comment, an ask, a message or a document must say in plain words what that thing delivers or says, with its link beside those words.
   `structure` and `detector` are the writing check's structure rules and phrase detector (Writing check, below).
 
-- `DISPATCH_REVIEWER_TIMEOUT` (default `120s`) and `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`): positive Go durations, the bound on the reviewer's model call and the time a writer session has to act on a held text.
+- `DISPATCH_REVIEWER_TIMEOUT` (default `120s`) and `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`): positive Go durations, the bound on a review, every try of its model call included, and the time a writer session has to act on a held text.
 
 - `DISPATCH_REVIEWER_UNEDITED`: `rewrite` (default: the reviewer's rewrite posts, marked as the reviewer's) or `as_written`, for a held text the writer does not act on in time.
 
@@ -3320,11 +3320,20 @@ It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is
 - A write that names a held text (a child issue, an ask, a comment or a message on a held issue, a reply to a held comment, ask or message, and any other write whose path names a held issue, ask, comment or message: a document, a result, a handoff, a claim, an update, an answer) is accepted, stored beside it, and runs right after it posts, in the order the writes came.
   A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}`.
 
+- A model call of the reviewer, of Rewrite or of Define whose reply is not the object its schema names, or one the component cannot use (a definition of no words), asks again, two more tries at most.
+  Each try waits for the pacer and is paid for.
+  Every try runs inside the call's one bound (`DISPATCH_REVIEWER_TIMEOUT` for the reviewer), and a try that cannot start inside it is not made, so a retry never holds a text longer.
+  A call's record (each of the draft route's `calls`, a Rewrite's `calls`, a definition's `calls`) gives `attempts` where it made more than one try, and its tokens over every try.
+  On a model group of kind `azure` each call sends its schema in OpenAI's strict mode (`agentloop.Request.StrictFinal`), so the endpoint holds the reply to the schema; the review's schema there requires `rewrite`, null for none.
+
+- A finding whose quote is not in the text is dropped: the review looks the quote up lower-cased, without `*`, backticks and curly quotes, and with each run of white space as one space, as the harness's quote check does.
+  A review whose every finding is dropped found nothing, and the draft route's `dropped` gives the rule set of each dropped finding.
+
 - Every decision is a row of `writing_check_events` with its reader and project: `held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`.
 
 The routes: `GET /api/v1/held/{id}` reads a held text (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`); `PATCH /api/v1/held/{id}` edits it, which the reviewer reads again; `POST /api/v1/held/{id}/post {reason}` posts it as written; only its writer session edits or posts it (`403 HELD_NOT_WRITER`).
 The `dispatch` command's `held`, `held-edit` and `held-post` call them.
-`POST /api/v1/reviewer/draft {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, its rewrite and each model call's deployment and served model, and writes nothing.
+`POST /api/v1/reviewer/draft {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, the rule set of each finding it dropped, its rewrite and each model call's deployment, tries and served model, and writes nothing.
 The leased sweep (lease `reviewer-sweep`, every 10 seconds, Background loops above) reviews again a text a stopped process left in review, and acts on a writer that did not act in time or has gone.
 
 ### Rewrite and Define
@@ -3336,9 +3345,14 @@ Every route needs the `person` scope.
 - `POST /api/v1/asks/{id}/rewrite` answers `202 {ask_id, started, rewrite}` at once and rewrites in the background.
   One rewrite of an ask runs at a time (`ask_rewrites`): a request while one runs starts none (`started: false`) and gets that run's result.
   When a session opened the ask, and Envoy reads it running or unresponsive with a host that advertises `btw`, Dispatch first sends it one side question as its own system actor (`dispatch-reviewer`): a message to that session, on its own conversation and not on the issue, whose text names the ask by its address; the run waits at most 60 seconds for the reply, which stays in that message's thread.
-  A rewrite that breaks what a rewrite keeps (`reviewer.Preserve`: most of the text's words, no tag of the record's own markup that the text lacks, each typed block's `:::` line, the options' labels, number and order, the choice, a short first line, a `Ref: ` line, a picture line, a link, a decision block's option line) is not applied, and neither is one of a question its agent changed, answered or closed meanwhile.
+  A rewrite that breaks what a rewrite keeps (`reviewer.Preserve`: most of the text's words, no tag of the record's own markup that the text lacks, no long run of the record's words, each typed block's `:::` line, the options' labels, number and order, the choice, a short first line, a `Ref: ` line, a picture line, a link, a decision block's option line) is not applied, and neither is one of a question its agent changed, answered or closed meanwhile.
   The first of those rules is `reviewer.KeepMostWords`: a rewrite with fewer than a third of the text's words, counted over its title, body and options, is not applied, since it is a stub or a summary in place of the text.
   `reviewer.KeepNoRecordTags` refuses a rewrite that holds a tag the reviewer's input wraps the record in (`<issue>`, `<document>`, `<writer_texts>` and the rest of `recordTags`) where the text does not, since the model pasted the record into the text; `reviewer.KeepFenceLines` refuses one that drops or changes a line starting with `:::`, the fence of a typed block.
+  `reviewer.KeepNoRecordRun` refuses a rewrite that holds more than 100 words in a row (`recordRunWords`) that a text of the record holds and that neither the text nor the writer's answer holds, since the model pasted the record in place of the text.
+  Its texts of the record are those the model reads: the thread, the writer's texts, the issue's title, the project's name, the document (not where it is the text itself) and the decisions document.
+  Words are compared lower-cased and without the marks at their ends, so a run pasted with other emphasis or other line breaks is the same run.
+  A longer rewrite is no paste by itself: the writer's answer can rightly add facts, and a short phrase of the record is a fact the text takes from it.
+  On INFRA-3231's harness runs, each rewrite that pasted the record held a run of several hundred words or more of it, each other rewrite with a run past 100 words lost facts of the text, and a rewrite that lost none held no run past 67 words.
   The model reads and writes each option's label and description and no id: an option's id is its part's (`refs.AskPartIDs`), which the part index keeps through an edit that rewords the option in its place, so an applied rewrite keeps each option's id.
   An applied rewrite goes through the edit route's own path (a decision block's through `rewriteDecisionBlock`, which writes a new version of its document) as a quiet `ask.edited` from Dispatch, whose `rewrite` holds who asked, why, whether the agent's answer was read (`agent_answer`) and the side question's message (`question_message`), and whose `previous` holds the original wording.
   The run emits `ask.rewriting` when it starts, then `ask.edited` or `ask.rewrite_failed` with its reason; all three are quiet, so no session gets them as a card, and the live socket carries them to an open page.

@@ -194,13 +194,15 @@ func (r *changeRun) Name() string { return r.plan.name }
 
 // TraceStep is one thing a change did to a case's text, as cases.jsonl keeps it: the change, what
 // came of it, and its detail. A review's step holds what the draft route answered: its findings,
-// and a rewrite that was not applied with the reason. Change 7a's step where the writer writes
-// again holds the writing check's findings.
+// the rule set of each finding it dropped because its quote is not in the text, and a rewrite
+// that was not applied with the reason. Change 7a's step where the writer writes again holds the
+// writing check's findings.
 type TraceStep struct {
 	Change   string         `json:"change"`
 	Outcome  string         `json:"outcome"`
 	Detail   string         `json:"detail,omitempty"`
 	Findings []TraceFinding `json:"findings,omitempty"`
+	Dropped  []string       `json:"dropped,omitempty"`
 	// Rewrite is the review's rewrite where it was not applied, as the harness holds a text
 	// (rewritten), and NotApplied the reason the draft route gave.
 	Rewrite    string `json:"rewrite,omitempty"`
@@ -385,10 +387,12 @@ func (t *textRun) write() (string, map[string]any) {
 
 // --- Changes 3 and 4: the reviewer, through the local Dispatch's draft route.
 
-// serverCall is one model call a route of the local Dispatch answers (api reviewerCall).
+// serverCall is one model call a route of the local Dispatch answers (api reviewerCall): its
+// attempts absent where it made one try.
 type serverCall struct {
 	Purpose          string `json:"purpose"`
 	Deployment       string `json:"deployment"`
+	Attempts         int    `json:"attempts,omitempty"`
 	Served           string `json:"served"`
 	InputTokens      int    `json:"input_tokens"`
 	OutputTokens     int    `json:"output_tokens"`
@@ -409,20 +413,21 @@ type wording struct {
 type draftAnswer struct {
 	Reader     string             `json:"reader"`
 	Findings   []reviewer.Finding `json:"findings"`
+	Dropped    []string           `json:"dropped,omitempty"`
 	Rewrite    *wording           `json:"rewrite"`
 	NotApplied string             `json:"not_applied,omitempty"`
 	Calls      []serverCall       `json:"calls"`
 }
 
-// priced is the server's calls as the outputs record them, each priced at its model's price; the
-// last one is given the request's time, which no route answers call by call.
+// priced is the server's calls as the outputs record them, each priced at its model's price over
+// all its tries; the last one is given the request's time, which no route answers call by call.
 func (r *changeRun) priced(calls []serverCall, seconds float64) []Call {
 	out := make([]Call, len(calls))
 	for i, c := range calls {
 		p := r.cfg.Prices.Prices[c.Deployment]
 		out[i] = Call{
 			Model: c.Deployment, Served: c.Served, Input: c.InputTokens, Output: c.OutputTokens,
-			CacheWrite: c.CacheWriteTokens, CacheRead: c.CacheReadTokens, Attempts: 1,
+			CacheWrite: c.CacheWriteTokens, CacheRead: c.CacheReadTokens, Attempts: cmp.Or(c.Attempts, 1),
 			CostUSD: (float64(c.InputTokens)*p.Input + float64(c.OutputTokens)*p.Output +
 				float64(c.CacheWriteTokens)*p.CacheWrite + float64(c.CacheReadTokens)*p.CacheRead) / 1e6,
 		}
@@ -471,7 +476,7 @@ func (r *changeRun) draft(ctx context.Context, t *textRun, change, detail string
 		if err == nil {
 			t.add(r.priced(answer.Calls, seconds)...)
 			review := &t.out.Trace[step]
-			review.Findings = reviewFindings(answer.Findings)
+			review.Findings, review.Dropped = reviewFindings(answer.Findings), answer.Dropped
 			if answer.Rewrite != nil && answer.NotApplied != "" {
 				review.Rewrite, review.NotApplied = rewritten(*answer.Rewrite, t.kind), answer.NotApplied
 			}
@@ -1010,7 +1015,7 @@ func (r *changeRun) component(ctx context.Context, t *textRun, call func(reviewe
 		t.out.WaitSeconds += seconds
 		for i, c := range calls {
 			out := Call{Model: c.Deployment, Served: c.Served, Input: c.Usage.Input, Output: c.Usage.Output,
-				CacheWrite: c.Usage.CacheWrite, CacheRead: c.Usage.CacheRead, CostUSD: c.Usage.CostUSD, Attempts: 1}
+				CacheWrite: c.Usage.CacheWrite, CacheRead: c.Usage.CacheRead, CostUSD: c.Usage.CostUSD, Attempts: cmp.Or(c.Attempts, 1)}
 			if i == len(calls)-1 {
 				out.Seconds = seconds
 			}

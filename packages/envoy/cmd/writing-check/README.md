@@ -1554,13 +1554,17 @@ through the local Dispatch with the candidate in the `Dispatch-Test-Model` heade
 given Dispatch's record of the case, its text, the message Dispatch sent it, and its session up to
 the text where the case has one (`writer/writer.md`). Each case's line of `cases.jsonl` holds the
 change's own calls, each priced at its model's price (a route's calls by the tokens it answers),
-its wait, and its `change_trace`: what each step did. Each review of changes 3 and 4, 7b's
-included, is a `review` step that holds what the draft route answered: its `findings`, each with
-its `rule_set`, `quote`, `why` and `fix` as the reviewer returns them, and a rewrite that was not
-applied (`rewrite`, as the harness holds a text) beside the reason (`not_applied`). Change 7a's
-`written_again` step holds the writing check's `findings`: the `rule_set` `structure` or
-`detector`, the check's `rule`, the sentence as the `quote`, and the check's `fix`. These fields
-are for reading why a change helped or harmed a text; no score reads them.
+with its `attempts`: the tries the call made, more than 1 where the reviewer, Rewrite or Define
+asked again after a reply that was not the object its schema names, its tokens and its price being
+those of every try. It also holds its wait, and its `change_trace`: what each step did. Each review
+of changes 3 and 4, 7b's included, is a `review` step that holds what the draft route answered: its
+`findings`, each with its `rule_set`, `quote`, `why` and `fix` as the reviewer returns them, the
+rule set of each finding the reviewer dropped because its quote is not in the text (`dropped`,
+absent where it dropped none), and a rewrite that was not applied (`rewrite`, as the harness holds
+a text) beside the reason (`not_applied`). Change 7a's `written_again` step holds the writing
+check's `findings`: the `rule_set` `structure` or `detector`, the check's `rule`, the sentence as
+the `quote`, and the check's `fix`. These fields are for reading why a change helped or harmed a
+text; no score reads them.
 
 | Change | What it does |
 | --- | --- |

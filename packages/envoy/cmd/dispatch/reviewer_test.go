@@ -40,7 +40,11 @@ func TestTheReviewerIsBuiltWheneverItsModelGroupIsSet(t *testing.T) {
 // Kimi-K3.1-Pro:off calls the same deployment with reasoning_effort none, agentloop's word for off
 // on Chat Completions. The reviewer's own group answers a draft with no header.
 func TestTheTestModelHeaderPicksAVariantByItsWholeName(t *testing.T) {
-	stand := modeltest.New(t, modeltest.Rule{Reply: modeltest.Reply{Text: `{"findings":[]}`}})
+	// A review on openai-chat sends its schema strict, which requires the rewrite, null for
+	// none; Anthropic's protocol sends the schema that leaves it out.
+	stand := modeltest.New(t,
+		modeltest.Rule{Match: func(r modeltest.Request) bool { return r.Protocol == modeltest.Chat }, Reply: modeltest.Reply{Text: `{"findings":[],"rewrite":null}`}},
+		modeltest.Rule{Reply: modeltest.Reply{Text: `{"findings":[]}`}})
 	boot := resolveWith(t, standInGroup(reviewerModel, "anthropic", map[string]string{
 		"DISPATCH_TEST_MODEL_URL":                      stand.URL,
 		"DISPATCH_TEST_MODELS":                         "Kimi-K3.1-Pro=azure,Kimi-K3.1-Pro:off=azure",

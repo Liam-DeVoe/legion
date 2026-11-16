@@ -30,6 +30,10 @@ const (
 	vacuousPhrase = "This names the problem."
 )
 
+// noFindings is a review's reply that found nothing as strict mode writes it on openai-chat, the
+// reviewer's protocol here: every property of the schema, the rewrite null.
+const noFindings = `{"findings":[],"rewrite":null}`
+
 // reviewFinding is the stand-in's finding of the vacuous phrase or of `store`.
 func standInReview(t *testing.T, quote string, rewrite map[string]any) string {
 	t.Helper()
@@ -95,7 +99,7 @@ func reviewStandIn(t *testing.T) *modeltest.Model {
 			},
 			Reply: modeltest.Reply{Text: standInReview(t, "the store", map[string]any{"body": "Rows wait in the table until the sweep."})},
 		},
-		modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: `{"findings":[]}`}},
+		modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: noFindings}},
 	)
 }
 
@@ -511,7 +515,7 @@ func optionCaseStandIn(t *testing.T, cases []optionCase) *modeltest.Model {
 			})},
 		})
 	}
-	return modeltest.New(t, append(rules, modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: `{"findings":[]}`}})...)
+	return modeltest.New(t, append(rules, modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: noFindings}})...)
 }
 
 // A held ask whose reviewer's rewrite changes an option's label, the options' order or their
