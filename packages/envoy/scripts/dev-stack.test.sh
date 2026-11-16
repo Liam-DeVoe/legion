@@ -110,17 +110,66 @@ exit 0
 EOF
 chmod +x "${fake_bin_dir}/curl"
 
-# --- Fake python3, which dev-stack.sh runs only as scripts/e2e/lib/held-port.py: `keep` writes
-# its own PID to the port file as the port it holds (two concurrent keepers have distinct PIDs, as
-# two kernel-chosen ports are distinct) and stays alive, writing that file last as the real keeper
-# does, which writes it only once it is serving; `exec` drops its own options and executes the
-# command after `--`, as the real one does once it has put the held socket on descriptor 3. No
-# socket is opened either way. ---
+# --- Fake docker: dev-stack.sh runs one container, the airlock's stands, and only under
+# --project-access. `run -d` writes the stands' JSON and their one line where the real container's
+# logs would be, and writes the authority the broker reads into the directory the run bind-mounts;
+# `logs` prints them back on the two streams the real one keeps apart; `inspect` answers an
+# address of the shape a bridge network gives; `rm -f` is the stop. Every call is recorded to
+# DEV_STACK_TEST_DOCKER_CALL_FILE, so a run that starts no container shows it made none. No
+# container runs and no port is bound. ---
+cat >"${fake_bin_dir}/docker" <<'EOF'
+#!/usr/bin/env bash
+[[ -z "${DEV_STACK_TEST_DOCKER_CALL_FILE:-}" ]] || printf 'docker %s\n' "$*" >>"$DEV_STACK_TEST_DOCKER_CALL_FILE"
+state="${DEV_STACK_TEST_DOCKER_STATE:-${TMPDIR:-/tmp}/fake-docker}"
+mkdir -p "$state"
+case "${1:-}" in
+  run)
+    name="" stands=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --name) name="$2"; shift 2 ;;
+        -v) case "$2" in *:/stands) stands="${2%%:*}" ;; esac; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -n "$name" ] || { echo "fake docker: run with no --name" >&2; exit 2; }
+    mkdir -p "$stands"
+    printf 'fake-ca-cert\n' >"$stands/ca.crt"
+    printf 'fake-ca-key\n' >"$stands/ca.key"
+    printf '{"ca_cert_file":"/stands/ca.crt","ca_key_file":"/stands/ca.key","records_url":"http://127.0.0.1:1/"}\n' >"$state/$name.out"
+    printf 'dev-airlock-stands: stands listening records=http://127.0.0.1:1/\n' >"$state/$name.err"
+    printf 'fake-container-%s\n' "$name"
+    ;;
+  logs)
+    name="${2:-}"
+    [ ! -s "$state/$name.out" ] || cat "$state/$name.out"
+    [ ! -s "$state/$name.err" ] || cat "$state/$name.err" >&2
+    ;;
+  inspect) printf '172.20.0.9\n' ;;
+  rm) ;;
+  *) echo "fake docker: unexpected command ${1:-}" >&2; exit 2 ;;
+esac
+EOF
+chmod +x "${fake_bin_dir}/docker"
+
+# --- Fake python3, which dev-stack.sh runs as two things. As scripts/e2e/lib/held-port.py:
+# `keep` writes its own PID to the port file as the port it holds (two concurrent keepers have
+# distinct PIDs, as two kernel-chosen ports are distinct) and stays alive, writing that file last
+# as the real keeper does, which writes it only once it is serving; `exec` drops its own options
+# and executes the command after `--`, as the real one does once it has put the held socket on
+# descriptor 3. And as `python3 -c`, which asks the kernel for a free port for the airlock's
+# proxy: this one prints its own PID for the same reason, and with
+# DEV_STACK_TEST_AIRLOCK_PORT set prints that instead, which is how the control below gives the
+# broker a port other than the one the run picked. No socket is opened either way. ---
 cat >"${fake_bin_dir}/python3" <<'EOF'
 #!/usr/bin/env bash
 script="${1:-}"
 case "$script" in
   */held-port.py) shift ;;
+  -c)
+    printf '%s\n' "${DEV_STACK_TEST_PICKED_PORT:-$$}"
+    exit 0
+    ;;
   *)
     echo "fake python3: unexpected script $script" >&2
     exit 2
@@ -244,7 +293,19 @@ ISSUER
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
 echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BROKER_PROJECT_ACCESS_URL:-} project-access-token=${BROKER_PROJECT_ACCESS_TOKEN_FILE:-}" >&2
+echo "fake broker: airlock-rules=${BROKER_AIRLOCK_RULES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
+# The proxy binds the address it was given, as the real one does. dev-stack.sh starts every
+# process with env -i, so nothing of this test's environment reaches the stub: the control for a
+# lost port race bakes the other address in at build time, as DEV_STACK_TEST_BROKER_FAILS does.
+if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ]; then
+  printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"%s"}\n' \
+    "${AIRLOCK_BOUND_ADDR:-$BROKER_AIRLOCK_LISTEN_ADDR}" >&2
+fi
 BROKER
+      if [[ -n "${DEV_STACK_TEST_AIRLOCK_BOUND:-}" ]]; then
+        # Written above the stub's own lines, so the proxy line it prints names this address.
+        sed -i "1a AIRLOCK_BOUND_ADDR=${DEV_STACK_TEST_AIRLOCK_BOUND}" "$target"
+      fi
       if [[ -n "${DEV_STACK_TEST_BROKER_FAILS:-}" ]]; then
         cat >>"$target" <<'REFUSES'
 echo "fake broker: refusing to start" >&2
@@ -279,7 +340,7 @@ echo "fake dispatch: oidc-issuer=${DISPATCH_OIDC_ISSUER:-} oidc-audience=${DISPA
 echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$$" >&2
 DISPATCH
       ;;
-    agent-secrets | agent-secrets-helper)
+    agent-secrets | agent-secrets-helper | dev-airlock-stands)
       cat >"$target" <<'CLIENT'
 #!/usr/bin/env bash
 exit 0
@@ -328,6 +389,10 @@ run_instance() {
     DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file" \
     DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}" \
     DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
+    DEV_STACK_TEST_DOCKER_CALL_FILE="${DEV_STACK_TEST_DOCKER_CALL_FILE:-}" \
+    DEV_STACK_TEST_DOCKER_STATE="${DEV_STACK_TEST_DOCKER_STATE:-}" \
+    DEV_STACK_TEST_PICKED_PORT="${DEV_STACK_TEST_PICKED_PORT:-}" \
+    DEV_STACK_TEST_AIRLOCK_BOUND="${DEV_STACK_TEST_AIRLOCK_BOUND:-}" \
     bash "$driver" --database-url "$admin_url" "$@" >"$log_file" 2>&1 &
   instance_pid[which]=$!
 }
@@ -592,11 +657,24 @@ assert_project_access() {
       fail "$label: the broker was not pointed at its own Dispatch's access routes with its own token"
     grep -q "oidc-issuer=http://127\.0\.0\.1:${process_port[dev-oidc-issuer]} oidc-audience=dispatch oidc-accounts=${access_account} access-accounts=${access_account}\$" "$dispatch_log" ||
       fail "$label: Dispatch does not admit the broker's account to its access routes"
+    # The airlock: the rules file naming PRIV_KEY, the authority the stands wrote into this run's
+    # own directory, the proxy URL on the port the run picked, and the stands' own address in both
+    # of the settings that let the proxy dial it.
+    grep -q "airlock-rules=${work_dir}/airlock\.json airlock-ca=${work_dir}/stands/ca\.crt airlock-proxy=http://127\.0\.0\.1:[0-9][0-9]* airlock-resolve=priv\.airlock\.test=172\.20\.0\.9 airlock-dial=priv\.airlock\.test:443\$" "$broker_log" ||
+      fail "$label: the broker was not given the airlock's rules, authority, proxy URL and the stands' own address"
+    grep -q '"name": "PRIV_KEY", "hosts": \["priv.airlock.test"\]' "${work_dir}/airlock.json" ||
+      fail "$label: the rules file does not bind PRIV_KEY to the stand-in host"
+    [[ "$(exported "$log_file" DEV_STACK_AIRLOCK_BOUND_URL)" == "https://priv.airlock.test" ]] ||
+      fail "$label: the banner does not export the airlock's bound host"
   else
     grep -q 'project-access= project-access-token=$' "$broker_log" ||
       fail "$label: a run without --project-access gave the broker a project-access client"
     grep -q 'oidc-issuer= oidc-audience= oidc-accounts= access-accounts=$' "$dispatch_log" ||
       fail "$label: a run without --project-access changed Dispatch's service-account settings"
+    grep -q 'airlock-rules= airlock-ca= airlock-proxy= airlock-resolve= airlock-dial=$' "$broker_log" ||
+      fail "$label: a run without --project-access started the airlock"
+    [[ ! -e "${work_dir}/airlock.json" ]] ||
+      fail "$label: a run without --project-access wrote an airlock rules file"
   fi
 }
 
@@ -768,7 +846,7 @@ printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DS
 prebuilt="${temporary_dir}/prebuilt"
 # One list of the stack's packages; the binary names the copy check reads come from it.
 prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./cmd/dev-airlock-stands ./internal/testnats/cmd/natsd)
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
   "${prebuilt_packages[@]}"
 go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"
@@ -799,7 +877,21 @@ wait_for_exit 1
 [[ "$exited_status" -eq 130 ]] || fail "the --project-access run exited $exited_status on INT, not 130"
 assert_everything_stopped 'the --project-access run'
 assert_databases_dropped 'the --project-access run' "$psql_calls1" "$run_suffix"
-printf 'PASS: --project-access pointed the broker at its own Dispatch with its own token, and Dispatch admits that account; a run without it sets neither\n'
+printf 'PASS: --project-access pointed the broker at its own Dispatch with its own token, started the airlock in a container of its own, and Dispatch admits that account; a run without it sets none of it\n'
+
+# (k) The port race --project-access takes: the run picks a free port for the airlock's proxy,
+# lets it go, and the broker binds it a moment later. A run that loses that race must stop rather
+# than print an address nothing serves, so here the broker reports another port and the run is
+# expected to fail, naming both.
+DEV_STACK_TEST_AIRLOCK_BOUND="127.0.0.1:65000" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
+wait_for_exit 1
+[[ "$exited_status" -ne 0 ]] || fail "a --project-access run whose proxy bound another port reported success"
+if grep -q 'dev-stack: ready\.' "$log1"; then
+  fail "a --project-access run whose proxy bound another port reported ready"
+fi
+grep -q "the broker's airlock proxy is on 127\.0\.0\.1:65000, not the 127\.0\.0\.1:[0-9]* this run picked" "$log1" ||
+  fail "the lost-port-race run does not name the port its proxy bound and the port it picked"
+printf 'PASS: a --project-access run whose airlock proxy bound another port stops, naming both ports\n'
 
 # (i) A --binaries directory that does not hold each of those executable files is refused with
 # exit 2, naming each file that is missing or not executable and no other, before anything is

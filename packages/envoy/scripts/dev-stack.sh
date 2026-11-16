@@ -214,7 +214,7 @@ POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 # binary for its package's last path element, so the build's arguments and the names --binaries
 # checks and copies all come from here. The header and the usage name them for a reader. ---
 STACK_PACKAGES=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./cmd/dev-airlock-stands ./internal/testnats/cmd/natsd)
 STACK_BINARIES=()
 for stack_package in "${STACK_PACKAGES[@]}"; do
   STACK_BINARIES+=("${stack_package##*/}")
@@ -313,6 +313,15 @@ PRIV_POD_TOKEN_FILE="$WORK_DIR/priv-pod-token"
 DISPATCH_AUDIENCE="dispatch"
 BROKER_ACCESS_ACCOUNT="system:serviceaccount:example-ns:example-broker"
 BROKER_ACCESS_TOKEN_FILE="$WORK_DIR/broker-access-token"
+# The airlock, under --project-access alone: the one secret the rules bind, the host it may go to,
+# the rules file, and the container the stands run in (one per run, named from this run's own
+# suffix so two runs never share one). The image is any with a glibc: the only thing run in it is
+# the stands binary this run built, bind-mounted in.
+PRIV_SECRET="PRIV_KEY"
+AIRLOCK_BOUND_HOST="priv.airlock.test"
+AIRLOCK_RULES_FILE="$WORK_DIR/airlock.json"
+AIRLOCK_IMAGE="${DEV_STACK_AIRLOCK_IMAGE:-docker.io/library/python:3.12-slim}"
+AIRLOCK_CONTAINER="dev-stack-stands-$(printf '%s' "${WORK_DIR##*.}" | tr '[:upper:]' '[:lower:]')"
 # The namespace the fake secrets sit under and an example KMS key in AWS's documentation account;
 # nothing here calls AWS.
 SECRETS_PREFIX="example/agent-secrets/"
@@ -427,6 +436,10 @@ cleanup() {
       wait "$pid" 2>/dev/null
     fi
   done
+  # The stands' container, when this run started one (airlock_stands_stop is the library's).
+  if [ -n "${AIRLOCK_STANDS_CONTAINER:-}" ] || [ -n "${AIRLOCK_STANDS_PID:-}" ]; then
+    airlock_stands_stop
+  fi
   # Best-effort: cleanup runs on every exit path and must never itself fail, even if the server is
   # already gone or a drop fails for some other reason.
   if [ "$BROKER_DB_CREATED" = true ]; then
@@ -536,6 +549,7 @@ nats_port_in() {
 }
 listener_addr_in() { jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$1"; }
 dispatch_addr_in() { sed -n 's/.*msg="dispatch: listening" addr=\([^ ]*\).*/\1/p' "$1" | head -n1; }
+airlock_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "airlock proxy listening") | .addr][0] // empty' "$1"; }
 kept_port_in() { grep -o '^[0-9][0-9]*$' "$1" | head -n1; }
 
 # --- Dispatch's port, held from the kernel's choice until Dispatch serves on it. The broker names
@@ -611,8 +625,36 @@ echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 # already holds for it, presenting its own account's token; without it the broker holds no such
 # client and serves no project-tagged secret, as before.
 PROJECT_ACCESS_ENV=()
+AIRLOCK_ENV=()
+AIRLOCK_PROXY_URL=""
+AIRLOCK_PROXY_PORT=""
 if [ "$PROJECT_ACCESS" = true ]; then
   PROJECT_ACCESS_ENV=(BROKER_PROJECT_ACCESS_URL="$DISPATCH_URL" BROKER_PROJECT_ACCESS_TOKEN_FILE="$BROKER_ACCESS_TOKEN_FILE")
+  # The airlock, so a proxied request of a private project's secret can be driven on this stack
+  # (scripts/project-secrets-check.sh). The stands run in a container of their own: a bound host
+  # must listen on port 443 (the proxy refuses any other port as a host header mismatch), which no
+  # unprivileged process binds on a machine whose ip_unprivileged_port_start is above it or whose
+  # 443 another listener holds. scripts/lib/airlock-stack.sh is the one copy of that, shared with
+  # dev-airlock.sh.
+  # shellcheck source=lib/airlock-stack.sh
+  . "$SCRIPT_DIR/lib/airlock-stack.sh"
+  airlock_stands_start "$BIN_DIR/dev-airlock-stands" "$WORK_DIR" "$AIRLOCK_BOUND_HOST" "$AIRLOCK_IMAGE" "$AIRLOCK_CONTAINER"
+  airlock_rules_write "$AIRLOCK_RULES_FILE" "$AIRLOCK_BOUND_HOST" "$PRIV_SECRET"
+  # The proxy's port, which the broker must be told at boot and binds itself: the kernel picks a
+  # free one here, this script lets it go, and the broker takes it a moment later. Nothing holds
+  # it in between, so another process on this machine can take it first; that race is why the
+  # broker's own proxy line is read back below and a run whose proxy is not on this port stops
+  # rather than printing an address nothing serves.
+  AIRLOCK_PROXY_PORT="$(python3 -c "
+import socket
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+print(s.getsockname()[1])
+s.close()
+")"
+  AIRLOCK_PROXY_URL="http://127.0.0.1:${AIRLOCK_PROXY_PORT}"
+  mapfile -t AIRLOCK_ENV < <(airlock_broker_env "$AIRLOCK_RULES_FILE" "$AIRLOCK_PROXY_URL")
+  AIRLOCK_ENV+=("BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:${AIRLOCK_PROXY_PORT}")
 fi
 echo "dev-stack: starting broker..." >&2
 : >"$BROKER_LOG"
@@ -643,12 +685,24 @@ env -i PATH="$PATH" \
   BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
   BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT $PRIV_SERVICE=$PRIV_ACCOUNT" \
   "${PROJECT_ACCESS_ENV[@]}" \
+  "${AIRLOCK_ENV[@]}" \
   "$BIN_DIR/broker" >"$BROKER_LOG" 2>&1 &
 BROKER_PID=$!
 await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broker_addr_in
 BROKER_URL="http://$awaited"
 until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
 echo "dev-stack: broker $BROKER_URL" >&2
+if [ "$PROJECT_ACCESS" = true ]; then
+  # The port the broker's proxy actually bound, read from its own line, against the one this
+  # script picked: a lost race stops the run here rather than leaving a caller to find that the
+  # address the banner names serves nothing.
+  await "the broker's airlock proxy" "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its proxy address' airlock_addr_in
+  if [ "$awaited" != "127.0.0.1:${AIRLOCK_PROXY_PORT}" ]; then
+    echo "dev-stack: the broker's airlock proxy is on $awaited, not the 127.0.0.1:${AIRLOCK_PROXY_PORT} this run picked: another process took that port first. Start the run again." >&2
+    exit 1
+  fi
+  echo "dev-stack: airlock proxy $AIRLOCK_PROXY_URL, bound host $AIRLOCK_S_URL" >&2
+fi
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
 # session name to the listed account and never to a pod, so what keeps two pods of one account
@@ -910,6 +964,10 @@ dev-stack: ready.
   export DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE=$PRIV_EXCHANGE_TOKEN_FILE
   export DEV_STACK_PRIV_POD_TOKEN_FILE=$PRIV_POD_TOKEN_FILE
   export DEV_STACK_PROJECT_ACCESS=$PROJECT_ACCESS
+  export DEV_STACK_PRIV_SECRET=$PRIV_SECRET
+  export DEV_STACK_AIRLOCK_PROXY_URL=$AIRLOCK_PROXY_URL
+  export DEV_STACK_AIRLOCK_BOUND_URL=${AIRLOCK_S_URL:-}
+  export DEV_STACK_AIRLOCK_CA_CERT_FILE=${AIRLOCK_CA_CERT_FILE:-}
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for
