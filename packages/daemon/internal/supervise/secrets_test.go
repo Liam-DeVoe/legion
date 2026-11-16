@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -138,6 +139,70 @@ func TestTheRegistrationDeadlineRevokesAnUnregisteredPodsEnrollment(t *testing.T
 	if e := broker.enrolled(); len(e) != 1 || e[0].PodUID != h.locator().Incarnation {
 		t.Fatalf("enrolled %+v, want the relaunched pod", e)
 	}
+}
+
+// A session is held to the first claim that recorded it before anything records or enrolls it
+// (holdSession, dispatch://INFRA-840): the broker's enrollment takes over the grants of every
+// other enrollment of the pod's account and session, so an enrollment of another claim's session
+// is that claim's secrets. A registration the hold refuses is answered with the refusal and leads
+// to no Enroll call, and records nothing; one it admits leads to exactly one. A resumed claim
+// whose recorded session the store holds for no claim (two claims recorded it before the hold)
+// enrolls nothing on its hello.
+//
+// The control: the hold after the enrollment (in register, below m.ensureEnrolled) answers the
+// same refusal, but only once the stub has recorded the enrollment of the other claim's session,
+// and the test fails naming it (the pull request records the run).
+func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
+	t.Run("a registration of another claim's session", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.store.holds[session] = "legion-legion-LEGION-209-tester"
+		h.launch()
+		h.helloWithIdentity()
+		err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+			CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(session) {
+			t.Fatalf("registering the tester's session = %v, want %v", err, claim.SessionHeldRefusal(session))
+		}
+		if enrolled := broker.enrolled(); len(enrolled) != 0 {
+			t.Fatalf("the refused registration enrolled %+v, the session of legion-legion-LEGION-209-tester", enrolled)
+		}
+		if c := h.claim(); c.Session != "" || c.SessionFile != "" || c.CapabilityHash != nil || c.State != StateShimConnected {
+			t.Fatalf("the refused registration left the claim %s recording %q, %q and capability %x", c.State, c.Session, c.SessionFile, c.CapabilityHash)
+		}
+
+		h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: "ses_fresh", SessionFile: "/state/sessions/fresh.jsonl",
+			CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		if enrolled := broker.enrolled(); len(enrolled) != 1 || enrolled[0].Session != "ses_fresh" {
+			t.Fatalf("the admitted registration enrolled %+v, want one enrollment of ses_fresh", enrolled)
+		}
+		if holder := h.store.holds["ses_fresh"]; holder != h.token {
+			t.Fatalf("ses_fresh is held for %q, want %s", holder, h.token)
+		}
+	})
+
+	t.Run("a resumed claim's session held for no claim", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.launch()
+		h.helloWithIdentity()
+		h.register()
+		h.ready()
+		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+		// Two claims recorded the session before the daemon held sessions: the migration holds it
+		// for neither, and a daemon restarted onto it reads the claim back recording it.
+		h.store.holds[session] = ""
+		h.restart()
+		h.must(RequestResume{Claim: h.token})
+		h.helloWithIdentity()
+		if enrolled := broker.enrolled(); len(enrolled) != 1 {
+			t.Fatalf("enrollments %+v, want only the first process's: the resumed one's session is held for no claim", enrolled)
+		}
+		if c := h.claim(); c.Enrollment != nil {
+			t.Fatalf("the resumed claim records enrollment %+v", c.Enrollment)
+		}
+	})
 }
 
 func TestAFailedRevocationIsRetriedThenLeftToTheLease(t *testing.T) {

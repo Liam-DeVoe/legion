@@ -1633,8 +1633,10 @@ func (s sessionStop) send(supervising context.Context, session string, goneAt ti
 // launch a crash cut short, and by then the stop has retired it, so launchUnfinished would not
 // relaunch it: its ReleaseUncertainLaunch acts only on a launch-uncertain claim. Dropping that token
 // is a second guard beside that check, so boot does not report the retired claim as an unrecorded
-// launch. The steps before the relaunches run on boot, settle on budgets of its own, and the
-// relaunches on the machines' context; the daemon's stop ends all three (run).
+// launch. Then every claim whose session is held for no claim is suspended before anything can
+// relaunch it into the registration's refusal (suspendSessionsHeldForNone). The steps before the
+// relaunches run on boot, settle on budgets of its own, and the relaunches on the machines'
+// context; the daemon's stop ends all three (run).
 func (s *supervision) start(boot context.Context, settle func() error) error {
 	unfinished, err := s.supervisor.restore(boot, s.claims)
 	if err != nil {
@@ -1646,6 +1648,9 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		}
 		controller := claim.ControllerToken(s.plan.project)
 		unfinished = slices.DeleteFunc(unfinished, func(token claim.Token) bool { return token == controller })
+	}
+	if err := s.suspendSessionsHeldForNone(boot); err != nil {
+		return err
 	}
 	pruneAllBut(runtime.SecretsDir(s.cfg.StateDir), s.claims, s.log)
 	reconciled := s.reconcileBootOrphans(boot)

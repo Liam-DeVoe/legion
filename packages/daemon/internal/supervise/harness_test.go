@@ -152,6 +152,9 @@ type memStore struct {
 	failures map[string]error
 	// onPut, when set, runs on every PutClaim before it is recorded.
 	onPut func(Claim)
+	// holds is the claim each session is held for, as the store's claim_sessions table keeps it
+	// (HoldSession).
+	holds map[string]claim.Token
 }
 
 func newMemStore() *memStore {
@@ -159,7 +162,26 @@ func newMemStore() *memStore {
 		claims:     map[claim.Token]Claim{},
 		deliveries: map[claim.Token]Delivery{},
 		failures:   map[string]error{},
+		holds:      map[string]claim.Token{},
 	}
+}
+
+// HoldSession is the store's: the first claim to record a session holds it, and the answer about
+// it never changes after.
+func (s *memStore) HoldSession(_ context.Context, token claim.Token, session string) (claim.Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["HoldSession"]; err != nil {
+		return "", err
+	}
+	if session == "" {
+		return "", errors.New("hold session: no session")
+	}
+	if holder, held := s.holds[session]; held {
+		return holder, nil
+	}
+	s.holds[session] = token
+	return token, nil
 }
 
 func (s *memStore) PutClaim(_ context.Context, c Claim) error {

@@ -270,6 +270,19 @@ var (
 	InvalidSecret = Refusal{Status: http.StatusForbidden, Message: "Invalid session secret"}
 )
 
+// SessionHeldRefusal refuses a registration of a session id another claim of this daemon
+// recorded first. Each id is held to the first claim that recorded it, whatever that claim's state
+// since (supervise's holdSession): the daemon enrolls the session a registration records with the
+// secrets broker, whose enrollment takes over the grants of every other enrollment of the same pod
+// account and session, so a role that registered a sibling's id, or an ended claim's, would take
+// that session's secrets (dispatch://INFRA-840). It names no other claim's token: the caller is
+// told only that the id is not its own, and the daemon's log names the claim that holds it. It is
+// a 409, as the same-agent rule's refusal is, and every caller of the registration exits on it.
+func SessionHeldRefusal(session string) Refusal {
+	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
+		"session %s is recorded for another claim of this daemon; a claim registers only a session it recorded itself, or one no claim has recorded", session)}
+}
+
 // staleContract renders the opening sentence a stale-caller refusal shares: got is the contract
 // the plugin declared, 0 when it declared none; want is the daemon's own (api.DaemonAPIVersion,
 // which this package cannot import, so the caller names it). remedy is the clause that tells the

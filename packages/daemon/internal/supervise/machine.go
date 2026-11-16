@@ -654,6 +654,11 @@ type Store interface {
 	// write would erase every step recorded since that machine read its claim. It answers
 	// whether the store holds the claim at all.
 	PutClaimStep(ctx context.Context, token claim.Token, step StepRecord) (bool, error)
+	// HoldSession records session as token's claim's when no claim has recorded it, and answers
+	// the claim that holds it: token itself when it recorded the session before or none had, and
+	// another claim when that one recorded it first. A hold is never released, whatever becomes of
+	// the claim holding it (holdSession).
+	HoldSession(ctx context.Context, token claim.Token, session string) (claim.Token, error)
 }
 
 // Specs builds the part of a launch the claim does not carry — the pane's environment, its
@@ -1290,6 +1295,10 @@ type Machine struct {
 	// to the shim over the claim's current connection.
 	identity       *heldIdentity
 	enrollmentSent bool
+	// sessionHold is the store's answer about the last session this machine asked it to hold
+	// (holdSession): a hold never changes once made, so the answer is kept, and asked again only
+	// for another session. Memory only: a restarted machine asks once more.
+	sessionHold *sessionHold
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool
 	// goroutines counts sends whose outcome has not been handled yet; idle wakes Wait.

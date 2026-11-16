@@ -1934,7 +1934,24 @@ type sandboxMachineCancel struct{}
 
 func (sandboxMachineCancel) Stop() bool { return true }
 
-type supervisedSandboxStore struct{ claim supervise.Claim }
+type supervisedSandboxStore struct {
+	claim supervise.Claim
+	// holds is the claim each session is held for (HoldSession).
+	holds map[string]claim.Token
+}
+
+// HoldSession holds each session for the first claim that records it, as the store's
+// claim_sessions table does.
+func (s *supervisedSandboxStore) HoldSession(_ context.Context, token claim.Token, session string) (claim.Token, error) {
+	if holder, held := s.holds[session]; held {
+		return holder, nil
+	}
+	if s.holds == nil {
+		s.holds = map[string]claim.Token{}
+	}
+	s.holds[session] = token
+	return token, nil
+}
 
 func (s *supervisedSandboxStore) AdmitClaim(_ context.Context, c supervise.Claim) (supervise.Claim, error) {
 	s.claim = c

@@ -125,6 +125,10 @@ func (s *switchStore) PutClaimStep(ctx context.Context, token claim.Token, step 
 	return s.now().PutClaimStep(ctx, token, step)
 }
 
+func (s *switchStore) HoldSession(ctx context.Context, token claim.Token, session string) (claim.Token, error) {
+	return s.now().HoldSession(ctx, token, session)
+}
+
 // detachedWrites is the real store as the rig hands it out: every call Machine.write bounds runs
 // with the claim-write deadline off it. The bound a row names is the bound of a store that
 // withholds its answer, and a healthy write to a real database is not that store. One value
