@@ -19,10 +19,14 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// Permissions are one NATS user's publish and subscribe allow lists. A subscribe entry may carry a
-// queue group after a space, as nats-server's configuration writes one.
+// Permissions are one NATS user's publish and subscribe allow lists, and the deny lists nats-server
+// applies after them: a subject an allow entry admits and a deny entry names is refused. A deny
+// list narrows a direction and never opens one: a direction whose allow list is empty is every
+// subject however many deny entries stand beside it, which OpenDirection refuses. A subscribe entry
+// may carry a queue group after a space, as nats-server's configuration writes one.
 type Permissions struct {
-	Publish, Subscribe []string
+	Publish, Subscribe         []string
+	PublishDeny, SubscribeDeny []string
 }
 
 // The subject spaces of NATS itself that nats.go sends JetStream and KV calls in. nats.go exports

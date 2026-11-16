@@ -413,6 +413,8 @@ func admit(req Request, decision Decision, refused *Refusal) (*jwt.UserClaims, *
 	user.Expires = decision.Expires.Unix()
 	user.Pub.Allow.Add(decision.Grant.Publish...)
 	user.Sub.Allow.Add(decision.Grant.Subscribe...)
+	user.Pub.Deny.Add(decision.Grant.PublishDeny...)
+	user.Sub.Deny.Add(decision.Grant.SubscribeDeny...)
 	switch {
 	case len(user.Pub.Allow) == 0:
 		return nil, refuse(kind, labelOpenDirection, openDirectionReason("publish"))
