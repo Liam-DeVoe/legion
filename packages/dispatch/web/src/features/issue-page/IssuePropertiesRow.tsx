@@ -71,21 +71,12 @@ export function IssuePropertiesRow({
   const { pathname } = useLocation();
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   // A status picked while another write of the issue is in flight - the title saved by the blur
-  // that the press on this control caused - is held and sent once that write has settled, so the
-  // press lands on the control as it does with nothing edited (the issue's writes go one at a
-  // time, `useIssueDrafts`'s guard), rather than finding it refusing input. Only the status's own
-  // write holds the control.
-  const [heldStatus, setHeldStatus] = useState<string | undefined>(undefined);
-  const saving = writes.updateIssue.isPending;
-  const pickStatus = (next: string) => {
-    if (!writes.drafts.requestStatusSubmit(next)) setHeldStatus(next);
-  };
-  useEffect(() => {
-    if (heldStatus === undefined || saving) return;
-    setHeldStatus(undefined);
-    if (!writes.drafts.requestStatusSubmit(heldStatus)) setHeldStatus(heldStatus);
-  }, [heldStatus, saving, writes.drafts]);
-  const status = heldStatus ?? writes.pendingStatus ?? issue.status;
+  // that the press on this control caused - is held by the header's writes (`pickStatus`: a
+  // keyed write in the issue's line, sent after the write in flight), so the press lands on the
+  // control as it does with nothing edited, and the header and Details read one status, the one
+  // held (decision 47 of dispatch://INFRA-1196/artifact/part-decisions-md). Only a status's own
+  // write, held or being saved, holds the control.
+  const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
   // decisions, the coverage's statements, the comments a Change is written as - so it costs no
@@ -126,17 +117,18 @@ export function IssuePropertiesRow({
   const stepHoldsPrimaryDocument = entries.some(
     (entry) => entry.document?.id === issue.primary_artifact_id
   );
-  // Approve and Request changes are here while an approval request waits on the reader, and in
-  // Details otherwise, with the steps and their reasons (R31).
-  const approvalWaits = waiting.approvals.length > 0;
   const approval = documentArtifact?.approval;
 
   // The count's press: the Decisions filter, with the outline drawn in place of any document,
   // and the focus on the next item there that waits, in the filter's order - the first press on
   // the first, each press after on the one after it (the Decisions filter's body takes the press
-  // from the history entry); an approval request alone puts the focus on the approval control on
-  // this line (R13, dispatch://INFRA-3678). A press made on the filter already replaces its entry,
-  // so Back leaves the filter rather than walking back through the presses.
+  // from the history entry); an approval request alone puts the focus on the first chip or entry
+  // on this line of a document whose request waits (R13, dispatch://INFRA-3678). Where the header
+  // draws no chip or entry of the waiting document - another document of a child, or a document
+  // no step of a gated root names - the request is counted and the press does nothing in the
+  // header, rather than put the focus on another document's chip (decision 58). A press made on
+  // the filter already replaces its entry, so Back leaves the filter rather than walking back
+  // through the presses.
   const goToWaiting = () => {
     if (waiting.asks + waiting.decisions > 0) {
       const press: WaitingPress = { waitingPress: performance.now() };
@@ -145,13 +137,9 @@ export function IssuePropertiesRow({
       return;
     }
     const header = document.querySelector("[data-issue-header]");
-    const control =
-      waiting.approvals
-        .map((id) =>
-          header?.querySelector<HTMLElement>(`[data-approval-artifact="${CSS.escape(id)}"]`)
-        )
-        .find((found) => found !== null && found !== undefined) ??
-      header?.querySelector<HTMLElement>("[data-approval-artifact]");
+    const control = [
+      ...(header?.querySelectorAll<HTMLElement>("[data-approval-artifact]") ?? []),
+    ].find((found) => waiting.approvals.includes(found.dataset.approvalArtifact ?? ""));
     control?.focus();
   };
 
@@ -175,7 +163,7 @@ export function IssuePropertiesRow({
           aria-label={PROPERTY_LABELS.status}
           className={`min-w-0 cursor-pointer appearance-none font-inherit outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${focusVisibleRing}`}
           disabled={isClosed || writes.statusSaving}
-          onChange={(event) => pickStatus(event.target.value)}
+          onChange={(event) => writes.pickStatus(event.target.value)}
           value={status}
         >
           {selectableStatuses.map((choice) => (
@@ -226,7 +214,10 @@ export function IssuePropertiesRow({
       {/* The approval control (R31): a root issue of a gated project reads its gate step by
           step, and the one chip stays beside those steps whenever no step reviews the primary
           document, so an open request on that document can always be answered here. Every
-          other issue keeps the one chip, which says "Not requested" while nobody has asked. */}
+          other issue keeps the one chip, which says "Not requested" while nobody has asked.
+          Each document whose own request waits on the reader carries its own Approve and
+          Request changes here, the chip and each entry alike, and no other does (decision 58,
+          dispatch://INFRA-3935 R10); they are Details' otherwise, with the steps' reasons. */}
       {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : approval === undefined ||
         approval.state === "draft" ? (
         <span className={approvalPillClassName("draft", "compact")} {...pageChrome}>
@@ -236,14 +227,15 @@ export function IssuePropertiesRow({
         <ApprovalChip
           artifact={documentArtifact}
           layout="contents"
-          showActions={approvalWaits}
+          showActions={waiting.approvals.includes(documentArtifact.id)}
           size="compact"
           variant="header"
         />
       )}
       {entries.length === 0 ? null : (
         <ApprovalSteps
-          actions={approvalWaits}
+          actions={waiting.approvals.length > 0}
+          actionsOn={waiting.approvals}
           entries={entries}
           primaryArtifactId={issue.primary_artifact_id}
           reasons={false}

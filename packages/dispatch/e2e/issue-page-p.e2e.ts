@@ -47,7 +47,7 @@ import {
   waitingPressInHistory,
 } from "./issue-page-p";
 import { leaveFocus } from "./keyboard-issue";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -69,6 +69,20 @@ async function waitingOnPersonOf(key: string, askId: string): Promise<string | u
 /** The page's own address of the view a press of the count opens. */
 function decisionsAddress(key: string): RegExp {
   return new RegExp(`/issues/${key}/decisions$`);
+}
+
+/** Whether `request` is a write of `key`'s own fields whose body holds `field`. */
+function writesField(request: Request, key: string, field: string): boolean {
+  if (request.method() !== "PATCH" || new URL(request.url()).pathname !== `/api/v1/issues/${key}`)
+    return false;
+  const body: unknown = request.postDataJSON();
+  return typeof body === "object" && body !== null && field in body;
+}
+
+/** The review actions of an approval inside `scope`: Approve (`Approve v2` on a stale approval)
+ *  and Request changes. The chip itself (`Approved v1`) is none of them. */
+function reviewActions(scope: Locator): Locator {
+  return scope.getByRole("button", { name: /^(Approve( v\d+)?|Request changes)$/ });
 }
 
 /** Presses `control` as the row's width does it: a click, or Enter with the focus on it. */
@@ -354,6 +368,44 @@ test("the approval entries stay in the header and read the document each step ap
     await expect(entry("spec").getByRole("button", { exact: true, name: "Approve" })).toHaveCount(
       0
     );
+    await expect(
+      issueHeader(page).getByRole("button", { exact: true, name: "Request changes" }),
+      "the header draws Request changes with no request waiting"
+    ).toHaveCount(0);
+
+    // A request of the Verification document waits on the reader: its own entry carries Approve
+    // and Request changes, and the spec's, whose request was answered, carries neither
+    // (decision 58). The count's press puts the focus on the entry of the document that waits,
+    // and its Approve answers that document's request.
+    const verification = await createIssueArtifact(root.key, {
+      content: "# Verification\n\nOne check.\n",
+      name: "verification.md",
+    });
+    await requestApproval(verification.artifact.id, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${root.key}`);
+    await expectHeaderDrawn(page);
+    for (const action of ["Approve", "Request changes"]) {
+      await expect(
+        entry("criteria").getByRole("button", { exact: true, name: action }),
+        "the Verification document's entry carries no Approve while its request waits"
+      ).toBeVisible();
+    }
+    await expect(
+      reviewActions(entry("spec")),
+      "the spec's entry carries actions though no request of it waits"
+    ).toHaveCount(0);
+    await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
+    await waitingCount(page).click();
+    await expect
+      .poll(() =>
+        page.evaluate(() => document.activeElement?.getAttribute("data-approval-artifact"))
+      )
+      .toBe(verification.artifact.id);
+    await entry("criteria").getByRole("button", { exact: true, name: "Approve" }).click();
+    await expect
+      .poll(async () => (await getArtifact(verification.artifact.id)).approval?.state)
+      .toBe("approved");
+    await expect(reviewActions(issueHeader(page))).toHaveCount(0);
 
     // A root of a project that gates nothing carries the one chip, "Not requested".
     const plain = await createIssue({ project: "PLAIN", spec: "The plan.", title: "Plain root" });
@@ -405,6 +457,26 @@ test("the approval entries stay in the header and read the document each step ap
     await expect
       .poll(async () => (await getArtifact(child.primary_artifact_id ?? "")).approval?.state)
       .toBe("approved");
+
+    // The plain root's spec approved, written again, and sent back with no request open: nothing
+    // waits on the reader, so the header draws neither action.
+    await editArtifact(plain.primary_artifact_id ?? "", {
+      ops: [{ find: "The plan.", op: "replace", with: "The plan, written again." }],
+    });
+    await reviewArtifact(plain.primary_artifact_id ?? "", {
+      reason: "Name the rollback path.",
+      state: "changes_requested",
+    });
+    await gotoIssue(page, `/issues/${plain.key}`);
+    await expectHeaderDrawn(page);
+    await expect(
+      issueHeader(page).getByRole("button", { name: "Changes requested" }),
+      "the plain root's spec does not read its changes request"
+    ).toBeVisible();
+    await expect(
+      reviewActions(issueHeader(page)),
+      "the header draws an action with no request waiting"
+    ).toHaveCount(0);
   });
 });
 
@@ -557,6 +629,40 @@ test("the count of what waits is a control that opens the Decisions address @pho
       await page.evaluate(() => document.activeElement?.closest("[data-issue-header]") !== null),
       "the focus is on an approval control outside the header"
     ).toBe(true);
+
+    // The spec approved and the Verification document's request alone waiting: the header draws
+    // the spec's chip and no chip of the Verification document, so the press puts the focus on
+    // no chip rather than on the spec's (decision 58). The press's handler moves the focus as it
+    // runs, so the focus is read once the click is done.
+    const verifying = await createIssue({
+      force: true,
+      project: HEADER_PROJECT,
+      spec: "Plan.",
+      title: "Lone Verification document",
+    });
+    const spec = verifying.primary_artifact_id ?? "";
+    await reviewArtifact(spec, { state: "approved" });
+    const verification = await createIssueArtifact(verifying.key, {
+      content: "# Verification\n\nOne check.\n",
+      name: "verification.md",
+    });
+    await requestApproval(verification.artifact.id, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${verifying.key}`);
+    await expectHeaderDrawn(page);
+    await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
+    await expect(
+      issueHeader(page).locator(`[data-approval-artifact="${spec}"]`),
+      "the header draws no chip of the approved spec"
+    ).toBeVisible();
+    await waitingCount(page).click();
+    expect(
+      [null, verification.artifact.id],
+      "the count's press focused another document's chip"
+    ).toContain(
+      await page.evaluate(
+        () => document.activeElement?.getAttribute("data-approval-artifact") ?? null
+      )
+    );
   });
 });
 
@@ -656,16 +762,67 @@ test("a press on the status straight out of the title's editor lands on the stat
       })
       .toBe("todo");
 
+    // A status picked while the title's write is still out waits behind it in the issue's line
+    // (decision 47): the select draws the pick at once, and it is written once, after the title.
+    // The issue is at `todo` already, so the pick is `testing`, which the select reads only if
+    // the pick was drawn.
+    let statusWrites = 0;
+    const countStatusWrite = (request: Request) => {
+      if (writesField(request, seeded.key, "status")) statusWrites += 1;
+    };
+    page.on("request", countStatusWrite);
+    const held = `**/api/v1/issues/${seeded.key}`;
+    const release = Promise.withResolvers<void>();
+    let holding = false;
+    await page.route(held, async (route) => {
+      if (holding || !writesField(route.request(), seeded.key, "title")) {
+        await route.fallback();
+        return;
+      }
+      holding = true;
+      await release.promise;
+      await route.continue();
+    });
+    await title.click();
+    await expect(editor).toBeFocused();
+    await editor.pressSequentially("held ");
+    await status.click();
+    await expect.poll(() => holding, { message: "the title's write was not sent" }).toBe(true);
+    await status.selectOption("testing");
+    await expect(status, "the status picked while the title saved was not drawn").toHaveValue(
+      "testing"
+    );
+    release.resolve();
+    await expect
+      .poll(async () => (await getIssue(seeded.key)).status, {
+        message: "the status picked while the title saved was not written once",
+      })
+      .toBe("testing");
+    expect(statusWrites, "the status picked while the title saved was not written once").toBe(1);
+    await expect(status, "the status's write did not settle").toBeEnabled();
+    // A second write of the pick would be sent as the first one settles, so 500 ms past that is
+    // many frames past where a late duplicate would show.
+    await page.waitForTimeout(500);
+    expect(statusWrites, "the status picked while the title saved was not written once").toBe(1);
+    page.off("request", countStatusWrite);
+    await page.unroute(held);
+
     // Escape and Enter leave the title's editor with the focus on the heading it opened from,
-    // which does not open the editor again.
+    // which does not open the editor again; Enter saves what was typed.
     for (const leave of ["Escape", "Enter"] as const) {
       await page.keyboard.press("Escape");
       await title.click();
       await expect(editor).toBeFocused();
+      if (leave === "Enter") await editor.pressSequentially("entered ");
       await page.keyboard.press(leave);
       await expect(editor, `${leave} left the title's editor open`).toHaveCount(0);
       await expect(title, `${leave} dropped the focus out of the header`).toBeFocused();
     }
+    await expect
+      .poll(async () => (await getIssue(seeded.key)).title, {
+        message: "Enter did not save the title",
+      })
+      .toContain("entered");
   });
 });
 
