@@ -121,14 +121,8 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 		}
 	}
 
-	f, err := fsys.Open("approved.json")
-	if err != nil {
-		return s, &ScenarioError{File: "approved.json", Err: err}
-	}
-	s.Approved, err = ReadApproved(f)
-	f.Close()
-	if err != nil {
-		return s, &ScenarioError{File: "approved.json", Err: err}
+	if s.Approved, err = readWith(fsys, "approved.json", ReadApproved); err != nil {
+		return s, err
 	}
 	if s.Subjects, err = readSubjects(fsys); err != nil {
 		return s, err
@@ -136,7 +130,7 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.Files, err = readScenarioFiles(fsys, s.Subjects); err != nil {
 		return s, err
 	}
-	if s.History, err = readHistory(fsys); err != nil {
+	if s.History, err = readWith(fsys, "history.json", ReadFixtureHistory); err != nil {
 		return s, err
 	}
 	if s.Ties, err = readTies(fsys); err != nil {
@@ -248,18 +242,19 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 	return trees, nil
 }
 
-// readHistory reads history.json.
-func readHistory(fsys fs.FS) (FixtureHistory, error) {
-	f, err := fsys.Open("history.json")
+// readWith reads the file name with read, and names the file in its fault.
+func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (T, error) {
+	f, err := fsys.Open(name)
 	if err != nil {
-		return FixtureHistory{}, &ScenarioError{File: "history.json", Err: err}
+		var zero T
+		return zero, &ScenarioError{File: name, Err: err}
 	}
 	defer f.Close()
-	h, err := ReadFixtureHistory(f)
+	v, err := read(f)
 	if err != nil {
-		return FixtureHistory{}, &ScenarioError{File: "history.json", Err: err}
+		return v, &ScenarioError{File: name, Err: err}
 	}
-	return h, nil
+	return v, nil
 }
 
 // readTies reads ties.json.
@@ -330,6 +325,10 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 		return nil, err
 	}
 	current, _ := approved.Current()
+	statements := make(map[string]bool, len(current.Statements))
+	for _, st := range current.Statements {
+		statements[st.ID] = true
+	}
 	ids := map[string]bool{}
 	for i, u := range units {
 		if u.ID == "" {
@@ -346,7 +345,7 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 			ids  []string
 		}{{"serves", u.Serves}, {"waits_on", u.WaitsOn}} {
 			for _, id := range field.ids {
-				if _, held := current.StatementByID(id); !held {
+				if !statements[id] {
 					return nil, scenarioFault("units.json", "unit %q: %s names %q, which is no current statement of the approved spec", u.ID, field.name, id)
 				}
 			}
