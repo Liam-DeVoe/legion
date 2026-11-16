@@ -2,8 +2,9 @@ package daemon
 
 // What the project move tests (dispatch://INFRA-3583 R9, project_move_test.go) read and drive on
 // the idle rig: the real `legion` command an operator runs, the outbox rows the daemon's boot
-// writes, the wakes its pacing holds, the claims as the operator's listing answers them, and the
-// workspace bundles the idle release would have saved.
+// writes and the rows a release holds, the wakes its pacing holds, the claims as the operator's
+// listing answers them, the workspace bundles the idle release would have saved, the pod the rig
+// holds back, the pod whose launchers stop and the Sandbox built for another disk.
 
 import (
 	"bytes"
@@ -302,4 +303,98 @@ func (w *startWatcher) seen() (map[string][]idleRigStart, error) {
 		byRole[key] = append(byRole[key], start)
 	}
 	return byRole, rows.Err()
+}
+
+// letStart ends the rig's hold of issue (idleRigSeed.heldBack): the pod of the issue that stands,
+// and each made from now on, readies its disk and starts its launchers. A test lets an issue
+// start once.
+func (r *idleWakeRig) letStart(issue idleRigIssue) {
+	r.t.Helper()
+	if issue.heldBack == nil {
+		r.t.Fatalf("the rig never held %s back", issue.key)
+	}
+	close(issue.heldBack)
+}
+
+// stopLaunchers stops every launcher of issue's pod in cluster while the pod stands, as the end
+// of the pod's one container stops them. The rig starts a pod's launchers once, as the pod comes
+// up (podReady), so none of them starts again in that pod.
+func (r *idleWakeRig) stopLaunchers(cluster *issueSandboxAPI, issue idleRigIssue) {
+	r.pods.podGone(cluster.prefix, issue.pod)
+}
+
+// builtForAnotherDisk has the Sandbox of name read as built for a disk of size, as a Sandbox made
+// before an operator changed runtime.kubernetes.issue_volume records the size it was built with:
+// its template's pod-shape annotation names size, which the pod update sweep reads as drift
+// (sandbox's podShapeDrift). Its pod is left as it is, on the daemon's own image, so the runtime's
+// image mark reads no other image. It answers whether the API held the Sandbox with a shape.
+func (a *issueSandboxAPI) builtForAnotherDisk(name, size string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	held, ok := a.objects["sandboxes"][name]
+	if !ok {
+		return false
+	}
+	object := kubeClone(held)
+	spec, _ := object["spec"].(map[string]any)
+	template, _ := spec["podTemplate"].(map[string]any)
+	meta, _ := template["metadata"].(map[string]any)
+	annotations, _ := meta["annotations"].(map[string]any)
+	var shape map[string]any
+	if recorded, _ := annotations["legion.dev/pod-shape"].(string); json.Unmarshal([]byte(recorded), &shape) != nil || shape == nil {
+		return false
+	}
+	shape["disk"] = size
+	encoded, err := json.Marshal(shape)
+	if err != nil {
+		return false
+	}
+	annotations["legion.dev/pod-shape"] = string(encoded)
+	a.putLocked("sandboxes", name, object)
+	return true
+}
+
+// idleRigOutboxRow is one row of the outbox as the move test reads it: the attempts it counts and
+// its last error.
+type idleRigOutboxRow struct {
+	attempts  int
+	lastError string
+}
+
+// outboxRowsOf is every row of kind the outbox holds for issue, in id order.
+func (r *idleWakeRig) outboxRowsOf(issue string, kind record.OutboxKind) []idleRigOutboxRow {
+	r.t.Helper()
+	listed, err := r.pool.Query(context.Background(),
+		`select attempts, last_error from outbox where issue = $1 and kind = $2 order by id`, issue, string(kind))
+	if err != nil {
+		r.t.Fatalf("read the %s rows of %s: %v", kind, issue, err)
+	}
+	defer listed.Close()
+	var rows []idleRigOutboxRow
+	for listed.Next() {
+		var row idleRigOutboxRow
+		if err := listed.Scan(&row.attempts, &row.lastError); err != nil {
+			r.t.Fatalf("read a %s row of %s: %v", kind, issue, err)
+		}
+		rows = append(rows, row)
+	}
+	if err := listed.Err(); err != nil {
+		r.t.Fatalf("read the %s rows of %s: %v", kind, issue, err)
+	}
+	return rows
+}
+
+// dueNow makes every row of kind the outbox holds for issue due now, and answers how many rows
+// that is. The outbox runs a row by its due time, so a test moves that time in place of waiting
+// while a stopped daemon stays down. The rig drives its other clocks the same way, each by a row
+// it back-dates (idleRigTick). It is called while no daemon runs, since a running outbox writes
+// the due time of a row it holds.
+func (r *idleWakeRig) dueNow(issue string, kind record.OutboxKind) int64 {
+	r.t.Helper()
+	moved, err := r.pool.Exec(context.Background(),
+		`update outbox set next_at = now() where issue = $1 and kind = $2`, issue, string(kind))
+	if err != nil {
+		r.t.Fatalf("make the %s rows of %s due: %v", kind, issue, err)
+	}
+	return moved.RowsAffected()
 }

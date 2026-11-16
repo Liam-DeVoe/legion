@@ -41,6 +41,11 @@ const moveBound = 20 * time.Second
 // moveOlderImage is the image of the pod an older daemon made: another digest of the worker image.
 const moveOlderImage = "ghcr.io/example/worker@sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
+// moveOtherDisk is the disk size the Sandbox of the operator's pod records it was built for:
+// another than the rig's runtime.kubernetes.issue_volume, so a pod update round opens over that
+// pod while it runs the daemon's own image (builtForAnotherDisk).
+const moveOtherDisk = "2Gi"
+
 // moveRefusal is what a shim older than the read answers it: it forwards the frame to Oh My Pi,
 // which knows no such command.
 const moveRefusal = "Unknown command: read-unpushed"
@@ -48,10 +53,16 @@ const moveRefusal = "Unknown command: read-unpushed"
 // moveDeliveryText is the reason of the notice that arrives for a tree's architect during the
 // first release: the delivery dispatch://INFRA-3583 R9 names, a notice the outbox holds while the
 // release holds every start and routes to the claim once the boot has started it
-// (notice_routing.go's holdsRole). A role message would not do: the outbox ends one undelivered
-// when its role has no live holder, as the moment it reports has passed (outbox.go's
-// roleMessage), and no stopped claim holds its role until its start.
+// (notice_routing.go's holdsRole).
 const moveDeliveryText = "the move test's delivery, which arrived during the release"
+
+// moveEndedReason is the reason of the phase-ended message that arrives for a stopped worker
+// during the first release. The outbox ends a role message, a phase-ended message or a hook
+// prompt undelivered when no session holds its role, and has each wait instead for a claim the
+// boot starts after a release (outbox's awaitsBootStart). The phase-ended message is the one of
+// the three that keeps a worker off a workspace that is another phase's now
+// (record.PhaseEnded), so it is the one the move reads.
+const moveEndedReason = "the head started conflicting with main while the move test's release ran"
 
 // projectMove is one project the move tests move, on the idle rig: its issues, one for each case
 // of dispatch://INFRA-3583 R9, and the `legion` the operator runs.
@@ -64,23 +75,36 @@ type projectMove struct {
 	//   - silent: an unpushed commit, whose role does not answer, and whose phase entry is raised
 	//     during the first release, so its claim stands behind its entry at the boot;
 	//   - clean: only a working-copy commit with no change, holding the tree's architect, a role
-	//     of an earlier phase (the planner) and its phase's owner level with its entry; a notice
-	//     for its architect arrives during the first release, which is the delivery;
+	//     of an earlier phase (the planner) and its phase's owner level with its entry; during
+	//     the first release a notice arrives for its architect, which is the delivery, and a
+	//     phase-ended message for its implementer;
 	//   - turn: a role in a turn at the bound;
-	//   - unstarted: a pod in which no role process runs;
-	//   - held: claims an operator suspended, with an unpushed commit on the pod's disk;
+	//   - stopped: a pod in which no role process runs, since an operator stopped its one role,
+	//     whose claim retired;
+	//   - held: a claim an operator suspended in an open update round, with an unpushed commit
+	//     on the pod's disk;
 	//   - old: a pod an older daemon made, running another image, in an open update round, whose
-	//     shim refuses the read.
-	push, answer, silent, clean, turn, unstarted, held, old idleRigIssue
+	//     shim refuses the read;
+	//   - unstarted: a pod in which no role process ever started, its claim's first launch in
+	//     flight at the first release;
+	//   - restarting: a pod whose role is starting again, its claim's launch on its session in
+	//     flight at the first release. From the boot after that release its claim and the
+	//     unstarted pod's each run as the clean pod's implementer does.
+	push, answer, silent, clean, turn, stopped, held, old, unstarted, restarting idleRigIssue
 	// recovered is the release of the operator's recovery, which the next step's restart ends.
 	recovered *moveRelease
+	// resumes answers each operator's resume the setup leaves in flight, by its issue's name, once
+	// the daemon has answered that command (resumeInFlight).
+	resumes map[string]chan idleRigCommand
 	// workLeft is when each move's work was left in its workspaces (leaveWork), by move: the work
 	// a running copy taken after it holds (cybermonklabs/legion#3831, runningCopyAt).
 	workLeft map[string]time.Time
 }
 
 // newProjectMove readies the project on the first cluster: each case's pod running, its workspace
-// holding its work, and the pod update round open over the older daemon's pod.
+// holding its work, a pod update round open over the older daemon's pod and over the operator's
+// pod, and in flight the first launch of the pod no role process starts in and the launch of the
+// role that starts again.
 func newProjectMove(t *testing.T) *projectMove {
 	t.Helper()
 	implementer := []claim.Role{claim.RoleImplementer}
@@ -89,37 +113,88 @@ func newProjectMove(t *testing.T) *projectMove {
 		// The pod update round over the older daemon's pod opens at a sweep, and a phase entry
 		// raised with no fact is converged at another; each is a minute apart in production.
 		orphanSweep: 2 * time.Second, entrySweep: 2 * time.Second,
-		configure: moveConfiguration,
+		configure: func(cfg *config.Config) {
+			moveConfiguration(cfg)
+			// A round past its bound replaces its pod at the next sweep, whatever its roles
+			// answered, and the rig's configuration leaves pod_update_grace_minutes at zero, so
+			// a round's bound has come as it opens. The rounds of the move stay open until a
+			// release ends them, as they do under that key's default.
+			cfg.PodUpdateGrace = 30 * time.Minute
+		},
 	},
 		idleRigSeed{name: "push", roles: implementer, plan: &idleRigPlan{TakeTurn: true, AnswerRelease: true, PushOnRelease: true}},
 		idleRigSeed{name: "answer", roles: implementer, plan: &idleRigPlan{TakeTurn: true, AnswerRelease: true}},
 		idleRigSeed{name: "silent", roles: implementer},
 		idleRigSeed{name: "clean", roles: []claim.Role{claim.RoleImplementer, claim.RoleArchitect, claim.RolePlanner}},
 		idleRigSeed{name: "turn", roles: implementer, plan: &idleRigPlan{StayInTurn: true}},
-		idleRigSeed{name: "unstarted", roles: implementer},
+		idleRigSeed{name: "stopped", roles: implementer},
 		idleRigSeed{name: "held", roles: implementer, plan: &idleRigPlan{TakeTurn: true, AnswerRelease: true, PushOnRelease: true}},
 		idleRigSeed{name: "old", roles: implementer, plan: &idleRigPlan{TakeTurn: true, RefuseRead: moveRefusal, AnswerRelease: true}},
+		idleRigSeed{name: "unstarted", roles: implementer, heldBack: true},
+		idleRigSeed{name: "restarting", roles: implementer},
 	)
 	m := &projectMove{rig: rig, legion: buildLegion(t),
 		push: rig.issue("push"), answer: rig.issue("answer"), silent: rig.issue("silent"), clean: rig.issue("clean"),
-		turn: rig.issue("turn"), unstarted: rig.issue("unstarted"), held: rig.issue("held"), old: rig.issue("old")}
+		turn: rig.issue("turn"), stopped: rig.issue("stopped"), held: rig.issue("held"), old: rig.issue("old"),
+		unstarted: rig.issue("unstarted"), restarting: rig.issue("restarting"), resumes: map[string]chan idleRigCommand{}}
 	rig.launchAll()
 	m.awaitController(t)
 
 	m.leaveWork(t, "first")
 	rig.work.work(t, m.held.pod, []string{"held-unpushed.txt"}, "")
-	m.operator(t, "stop", m.unstarted, m.unstarted.role)
-	m.operator(t, "suspend", m.held, m.held.role)
+	// A round opens over a pod one of its claims records a process in, so the operator's pod
+	// drifts while its role still runs, and the operator's suspension then holds a claim in its
+	// round.
 	if !rig.kube.madeByAnOlderDaemon(m.old.pod, moveOlderImage) {
 		t.Fatalf("the pod of %s is not in the first cluster to stand for an older daemon's", m.old.key)
 	}
-	idleRigEventually(t, idleRigPodWait, "the stopped claim retired, the operator's suspension stored and the update round open over the older daemon's pod", func() bool {
+	if !rig.kube.builtForAnotherDisk(m.held.pod, moveOtherDisk) {
+		t.Fatalf("the pod of %s is not in the first cluster to stand for one built for another disk", m.held.key)
+	}
+	idleRigEventually(t, idleRigPodWait, "the update rounds open over the older daemon's pod and over the operator's pod", func() bool {
 		claims := rig.claimsByToken()
-		return claims[rig.token(m.unstarted)].State == string(supervise.StateRetired) &&
-			claims[rig.token(m.held)].State == string(supervise.StateSuspended) &&
+		return claims[rig.token(m.old)].UpdateRound != "" && claims[rig.token(m.held)].UpdateRound != ""
+	})
+	m.operator(t, "stop", m.stopped, m.stopped.role)
+	m.operator(t, "suspend", m.held, m.held.role)
+	idleRigEventually(t, idleRigPodWait, "the stopped claim retired, the operator's suspension stored in its update round and the update round open over the older daemon's pod", func() bool {
+		claims := rig.claimsByToken()
+		return claims[rig.token(m.stopped)].State == string(supervise.StateRetired) &&
+			claims[rig.token(m.held)].State == string(supervise.StateSuspended) && claims[rig.token(m.held)].UpdateRound != "" &&
 			claims[rig.token(m.old)].UpdateRound != ""
 	})
+	// The role that is starting again ran, an operator suspended it, and the launchers of its pod
+	// stopped, as when the pod's one container ends and has not started again. The operator's
+	// resume of it then waits for a launcher, as the resume of the pod the rig holds back does.
+	m.operator(t, "suspend", m.restarting, m.restarting.role)
+	idleRigEventually(t, idleRigPodWait, "the operator's suspension of the role that starts again stored", func() bool {
+		c := rig.claimsByToken()[rig.token(m.restarting)]
+		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByOperator)
+	})
+	rig.stopLaunchers(rig.kube, m.restarting)
+	m.resumeInFlight(t, m.restarting)
+	m.resumeInFlight(t, m.unstarted)
 	return m
+}
+
+// resumeInFlight has the operator resume issue's one claim with `legion claims resume`, and waits
+// until issue's pod stands in the first cluster with the claim launching: its launch in flight,
+// in a pod with no launcher to start a role process through. The daemon answers a resume once its
+// launch has ended, so the command runs on a goroutine of its own and is read after the release
+// that stops the claim (checkCutShort). A launch waits the boot timeout for its launcher and is
+// then charged a failure (sandbox's awaitRoleLauncher), so these resumes are the last acts of the
+// setup, and the first release comes well inside that wait.
+func (m *projectMove) resumeInFlight(t *testing.T, issue idleRigIssue) {
+	t.Helper()
+	r := m.rig
+	token := r.token(issue)
+	args := append([]string{"claims", "resume", "--claim", string(token), "--wait", idleRigProjectReleaseWait.String()}, r.operatorFlags()...)
+	answered := make(chan idleRigCommand, 1)
+	m.resumes[issue.name] = answered
+	go func() { answered <- legionRun(m.legion, args...) }()
+	idleRigEventually(t, idleRigPodWait, "the pod of "+issue.name+" standing with its claim's launch in flight", func() bool {
+		return r.kube.pod(issue.pod) && r.claimsByToken()[token].State == string(supervise.StateLaunching)
+	})
 }
 
 // moveConfiguration is the daemon's configuration in both move tests: it launches the project's
@@ -171,7 +246,7 @@ func (m *projectMove) awaitController(t *testing.T) {
 
 // issues is every issue of the move, in seed order.
 func (m *projectMove) issues() []idleRigIssue {
-	return []idleRigIssue{m.push, m.answer, m.silent, m.clean, m.turn, m.unstarted, m.held, m.old}
+	return []idleRigIssue{m.push, m.answer, m.silent, m.clean, m.turn, m.stopped, m.held, m.old, m.unstarted, m.restarting}
 }
 
 // askCounts is how many release asks each role of the move was given so far, by issue and role.
@@ -303,7 +378,7 @@ type moveRelease struct {
 	// before is every claim as the release found it, and running each issue's running roles.
 	before  map[claim.Token]moveClaim
 	running map[string][]claim.Role
-	// stopped is the claims the release stops: every claim running at its start.
+	// stopped is the claims the release stops: every claim running or starting at its start.
 	stopped    []claim.Token
 	asksBefore map[string]int
 	asksAfter  map[string]int
@@ -335,12 +410,24 @@ func (m *projectMove) beginRelease(t *testing.T, name string) *moveRelease {
 		rd.running[issue.key] = m.runningRoles(issue)
 	}
 	for token, c := range rd.before {
-		if idleRigWorking(c.state) {
+		if idleRigWorking(c.state) || moveStarting(c.state) {
 			rd.stopped = append(rd.stopped, token)
 		}
 	}
 	slices.Sort(rd.stopped)
 	return rd
+}
+
+// moveStarting is whether a claim's state is one a role process coming up is behind: launching,
+// its shim connected, or registered and not yet ready. With the states a live role process is
+// behind (idleRigWorking) these are the states of the claims a release stops, "those whose role
+// process runs or starts at the release" (dispatch://INFRA-3583 R6).
+func moveStarting(state string) bool {
+	switch supervise.ClaimState(state) {
+	case supervise.StateLaunching, supervise.StateShimConnected, supervise.StateRegistered:
+		return true
+	}
+	return false
 }
 
 // release runs `legion project release --bound <bound> --json` to its end, running during while
@@ -532,16 +619,19 @@ func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIss
 
 	stored := r.claimsByToken()
 	if len(release.Result.Claims) != len(rd.stopped) {
-		t.Errorf("the %s release names %d stopped claims, want the %d running at its start: %+v", rd.name, len(release.Result.Claims), len(rd.stopped), release.Result.Claims)
+		t.Errorf("the %s release names %d stopped claims, want the %d running or starting at its start: %+v", rd.name, len(release.Result.Claims), len(rd.stopped), release.Result.Claims)
 	}
 	for _, line := range release.Result.Claims {
 		was, ok := rd.before[line.Token]
 		if !ok || !slices.Contains(rd.stopped, line.Token) {
-			t.Errorf("the %s release names the claim %+v, which did not run at its start", rd.name, line)
+			t.Errorf("the %s release names the claim %+v, which neither ran nor was starting at its start", rd.name, line)
 			continue
 		}
 		c := stored[line.Token]
-		if line.Session != was.session || line.Session == "" || line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !line.BootStarts {
+		// A claim that ran names its session. One whose first launch was in flight never
+		// registered, and names none.
+		if line.Session != was.session || (line.Session == "" && idleRigWorking(was.state)) ||
+			line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !line.BootStarts {
 			t.Errorf("the %s release's line of %s is %+v, want its session %q, ended project_release, which the boot starts", rd.name, line.Token, line, was.session)
 		}
 		if c.State != string(supervise.StateSuspended) || c.SuspendedBy != string(supervise.SuspendedByProjectRelease) || c.UpdateRound != "" {
@@ -668,7 +758,8 @@ func (m *projectMove) restartOn(t *testing.T, cluster *issueSandboxAPI, rd *move
 }
 
 // checkStarts holds the boot after a release to dispatch://INFRA-3583 R8: each stopped claim runs
-// again on its session in a pod of cluster, with no charge; each got one start, every start the
+// again on its session in a pod of cluster, or, for a claim stopped in its first launch, on the
+// session its first role process makes, with no charge; each got one start, every start the
 // boot wrote carries the ruleResume mark, and they went through the wake pace; no wake from
 // outside the daemon started any; the claim whose turn the release cut is sent that turn's task
 // again, no claim is sent the ask again, and no claim holds an open update round; and each new
@@ -679,8 +770,11 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 	r := m.rig
 	now := m.claimsNow()
 	for _, token := range rd.stopped {
-		if now[token].session != rd.before[token].session {
-			t.Errorf("the claim %s runs on session %q after the restart, want the %q it had", token, now[token].session, rd.before[token].session)
+		switch was := rd.before[token].session; {
+		case was == "" && now[token].session == "":
+			t.Errorf("the claim %s, which the release stopped before it had a session, runs on none after the restart", token)
+		case was != "" && now[token].session != was:
+			t.Errorf("the claim %s runs on session %q after the restart, want the %q it had", token, now[token].session, was)
 		}
 	}
 	m.checkNoCharge(t, rd.before, "the restart after the "+rd.name+" release")
@@ -760,7 +854,7 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 
 	// Each new pod's workspace holds the issue's pushed branch: the role that pushed finds its
 	// work there, working-copy change and all, and the two whose work was lost find none of it.
-	for _, issue := range []idleRigIssue{m.push, m.answer, m.silent, m.clean, m.turn, m.old} {
+	for _, issue := range []idleRigIssue{m.push, m.answer, m.silent, m.clean, m.turn, m.old, m.unstarted, m.restarting} {
 		live, ok := r.work.running(issue.pod)
 		if !ok || live.cluster != cluster.prefix {
 			t.Errorf("the pod of %s runs the workspace %+v, want one in the cluster %s", issue.name, live, cluster.prefix)
@@ -798,14 +892,27 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 }
 
 // checkLeft holds the pod the release left in cluster: it keeps its disk, and its claims
-// stay held as an operator's suspension.
+// stay held as an operator's suspension, each in no update round, the claim an operator suspended
+// before the release among them (dispatch://INFRA-3583 R6: the release leaves no round open on
+// any claim). A round left on a claim of that pod could replace the pod, and the disk the release
+// left it to keep, once the operator resumed its claims.
 func (m *projectMove) checkLeft(t *testing.T, cluster *issueSandboxAPI) {
 	t.Helper()
 	if cluster.sandbox(m.held.pod) == nil || !cluster.disk(m.held.pod) {
 		t.Errorf("the left pod %s is gone from the cluster %s or lost its disk", m.held.pod, cluster.prefix)
 	}
-	if c := m.rig.claimsByToken()[m.rig.token(m.held)]; c.State != string(supervise.StateSuspended) || c.SuspendedBy != string(supervise.SuspendedByOperator) {
+	claims := m.rig.claimsByToken()
+	if c := claims[m.rig.token(m.held)]; c.State != string(supervise.StateSuspended) || c.SuspendedBy != string(supervise.SuspendedByOperator) {
 		t.Errorf("the left pod's claim is %s by %q, want held as an operator's suspension", c.State, c.SuspendedBy)
+	}
+	for token, c := range claims {
+		if c.Issue != m.held.key {
+			continue
+		}
+		if c.UpdateRound != "" || c.UpdateHead != "" || c.State != string(supervise.StateSuspended) || c.SuspendedBy != string(supervise.SuspendedByOperator) {
+			t.Errorf("the left pod's claim %s is %s by %q in the update round %q with the head %q, want held as an operator's suspension in no round",
+				token, c.State, c.SuspendedBy, c.UpdateRound, c.UpdateHead)
+		}
 	}
 }
 
@@ -827,6 +934,17 @@ func (m *projectMove) checkLeft(t *testing.T, cluster *issueSandboxAPI) {
 // A boot that gives the claim behind its phase entry two starts fails on that claim's starts
 // (checkStarts). The fourth control, the hand deletion with no release, is the last step of this
 // test, and it expects the charge it must see.
+//
+// Three more controls fail the first release's step:
+//   - a release that leaves the claims of a pod it leaves in their update round fails on the
+//     operator's pod's claim, read before the restart (checkLeft);
+//   - an outbox that waits for a claim the release stopped only until the boot has started it,
+//     and not until its session holds its role again, fails on the phase-ended message, which
+//     it ends undelivered (checkPhaseEnded);
+//   - a machine that holds the release's suspension of a claim whose launch that suspension cut
+//     short, where it suspends the claim at once, fails on the pod no role process started in
+//     and on the pod whose role starts again, each of which the release then leaves
+//     (checkCutShort).
 func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 	began := time.Now()
 	m := newProjectMove(t)
@@ -840,18 +958,41 @@ func TestAProjectMovesToAnotherClusterAndBack(t *testing.T) {
 		{"the dry run names what a release would do and does nothing", m.dryRun},
 		{"the first release in the first cluster and the restart on the second cluster's configuration move the project", func(t *testing.T) {
 			rd := m.release(t, "first", func(rd *moveRelease) {
-				// The delivery arrives during the release, once the clean pod is gone: a notice for
-				// its tree's architect, as the workflow writes one of a child's status. The claim
-				// that stands behind its entry at the boot has that entry raised, and the outbox
-				// holds the start it is owed.
+				// The deliveries arrive during the release, once the clean pod is gone: a notice for
+				// its tree's architect, as the workflow writes one of a child's status, and a
+				// phase-ended message for its implementer, as the workflow writes one when a head
+				// that starts conflicting with its base ends a role's phase. The claim that stands
+				// behind its entry at the boot has that entry raised, and the outbox holds the
+				// start it is owed.
 				m.deliverNotice(t)
+				m.deliverPhaseEnded(t)
 				rd.entryTask = m.raiseEntry(t, m.silent)
 			})
 			m.checkMove(t, rd, []idleRigIssue{m.held}, true)
+			m.checkCutShort(t, rd, m.unstarted, false)
+			m.checkCutShort(t, rd, m.restarting, true)
+			// The left pod's claims are read under the daemon that left the pod as well as after
+			// the restart: a daemon aimed at another cluster finds no pod of a round and ends it.
+			m.checkLeft(t, first)
 			m.awaitHeldStart(t, rd)
+			m.awaitHeldMessage(t)
+			// An operator's restart comes minutes after the release, by when each row the release
+			// held is due again (releaseHoldSpacing). This one comes within seconds, so the
+			// phase-ended message is made due while the daemon is down, and runs as the boot's
+			// outbox starts, before its claim has come back.
+			r.stopDaemon()
+			if due := r.dueNow(m.clean.key, record.OutboxKindPhaseEnded); due != 1 {
+				t.Fatalf("the outbox holds %d phase-ended rows for %s as the daemon stopped, want the one the release held", due, m.clean.key)
+			}
+			// The pod no role process started in is gone, so the rig holds its role back no
+			// longer: the boot's start of its claim runs its first role process.
+			r.letStart(m.unstarted)
 			wakes := m.restartOn(t, second, rd)
 			m.checkStarts(t, second, rd, wakes)
+			m.checkStartedAgain(t, second, rd, m.unstarted)
+			m.checkStartedAgain(t, second, rd, m.restarting)
 			m.checkDelivery(t, rd)
+			m.checkPhaseEnded(t, rd)
 			m.checkLeft(t, first)
 			if names := first.sandboxNames(); !slices.Equal(names, []string{m.held.pod}) {
 				t.Errorf("the first cluster holds %v after the move, want only the left pod %s", names, m.held.pod)
@@ -917,6 +1058,24 @@ func (m *projectMove) awaitHeldStart(t *testing.T, rd *moveRelease) {
 	})
 }
 
+// awaitHeldMessage waits until the outbox has read the phase-ended message's row under the
+// release and put it back unrun: the row stands with the release's hold as its last error and no
+// attempt counted (outbox.holdForRelease). The outbox finds a row the test wrote at its next
+// sweep, which comes within outboxLease, so the row is waited for rather than read at the
+// release's end.
+func (m *projectMove) awaitHeldMessage(t *testing.T) {
+	t.Helper()
+	r := m.rig
+	var rows []idleRigOutboxRow
+	idleRigEventually(t, idleRigRecordWait, "the outbox holding the phase-ended message for the release", func() bool {
+		rows = r.outboxRowsOf(m.clean.key, record.OutboxKindPhaseEnded)
+		return len(rows) != 1 || strings.Contains(rows[0].lastError, api.ProjectReleaseHeldSentence)
+	})
+	if len(rows) != 1 || rows[0].attempts != 0 {
+		t.Fatalf("the outbox holds the phase-ended rows %+v for %s under the release, want the one row, held with no attempt counted", rows, m.clean.key)
+	}
+}
+
 // deliverNotice writes the notice for the clean tree's architect into the outbox, the row the
 // workflow writes when it tells an architect of a child's status (workflow's child-status notices).
 func (m *projectMove) deliverNotice(t *testing.T) {
@@ -932,15 +1091,35 @@ func (m *projectMove) deliverNotice(t *testing.T) {
 	}
 }
 
+// deliverPhaseEnded writes into the outbox the phase-ended message for the clean pod's
+// implementer, a claim the release has stopped by then: the row the workflow writes when a head
+// that starts conflicting with its base sends an issue back from retro into implementing, which
+// tells the implementer that its retro phase ended and that its implementing task follows
+// (workflow's phaseEnded).
+func (m *projectMove) deliverPhaseEnded(t *testing.T) {
+	t.Helper()
+	r := m.rig
+	ctx := context.Background()
+	row, err := record.NewOutboxRow(m.clean.key, record.PhaseEnded{Role: m.clean.role, From: phase.Retro, To: phase.Implementing,
+		Reason: moveEndedReason, TaskFollows: true}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, row) }); err != nil {
+		t.Fatalf("write the phase-ended message for %s's %s: %v", m.clean.key, m.clean.role, err)
+	}
+}
+
 // checkDelivery holds the delivery that arrived during the release to dispatch://INFRA-3583 R8: it
 // reached its claim after the boot's start, on the process that start ran, once.
 func (m *projectMove) checkDelivery(t *testing.T, rd *moveRelease) {
 	t.Helper()
 	r := m.rig
 	role := string(claim.RoleArchitect)
-	// The release held the notice's row on the outbox's backoff, whose wait climbs to 64 seconds
-	// (retryBackoff), so the first attempt after the boot comes up to that long after the claims
-	// run again.
+	// The release put the notice's row back unrun every releaseHoldSpacing (outbox.holdForRelease),
+	// so its first run after the boot comes up to that long after the daemon stopped, and while
+	// its architect is still coming back the row waits on its backoff, whose steps climb to 64
+	// seconds (retryBackoff).
 	idleRigEventually(t, idleRigRecordWait+2*time.Minute, "the delivery reaching "+m.clean.name+"'s architect", func() bool {
 		return idleRigCount(r.agents.messages(m.clean.key, role), moveDeliveryText) > 0
 	})
@@ -956,12 +1135,99 @@ func (m *projectMove) checkDelivery(t *testing.T, rd *moveRelease) {
 	}
 }
 
+// checkPhaseEnded holds the phase-ended message that arrived during the release to
+// dispatch://INFRA-3583 R8: its row left the outbox delivered, and the message reached its claim
+// after the boot's start, on the process that start ran, once. The outbox ends such a row
+// undelivered when it runs while no session holds the role, which is how the claim stands from
+// the boot until the process its start runs holds the role, so the row has to wait that out.
+func (m *projectMove) checkPhaseEnded(t *testing.T, rd *moveRelease) {
+	t.Helper()
+	r := m.rig
+	role := string(m.clean.role)
+	// The row waits on its backoff while its claim comes back, whose steps climb to 64 seconds
+	// (retryBackoff), so its last run comes up to that long after the claims run again.
+	idleRigEventually(t, idleRigRecordWait+time.Minute, "the phase-ended message's row leaving the outbox", func() bool {
+		return len(r.outboxRowsOf(m.clean.key, record.OutboxKindPhaseEnded)) == 0
+	})
+	if ended := r.logged("outbox phase-ended message finished undelivered: no live session holds the role", map[string]string{"issue": m.clean.key}); ended != 0 {
+		t.Errorf("the daemon ended the phase-ended message for %s's %s undelivered %d times, want it delivered once its claim held its role again",
+			m.clean.name, role, ended)
+		return
+	}
+	// The row leaves the outbox once the listener has answered the publish, and the role process
+	// records the message as its session's consumer relays it, so that record is waited for.
+	idleRigEventually(t, idleRigRecordWait, "the phase-ended message reaching "+m.clean.name+"'s "+role, func() bool {
+		return idleRigCount(r.agents.messages(m.clean.key, role), moveEndedReason) > 0
+	})
+	seen := r.agents.role(m.clean.key, role)
+	if got := idleRigCount(seen.Messages, moveEndedReason); got != 1 {
+		t.Errorf("the phase-ended message reached %s's %s %d times, want once", m.clean.name, role, got)
+	}
+	for _, message := range seen.Messages {
+		if strings.Contains(message.Text, moveEndedReason) && (message.At.Before(rd.restarted) || message.At.Before(seen.RegisteredAt)) {
+			t.Errorf("the phase-ended message reached %s's %s at %s, before the restart at %s or before its process registered at %s",
+				m.clean.name, role, message.At, rd.restarted, seen.RegisteredAt)
+		}
+	}
+}
+
+// checkCutShort holds the first release to dispatch://INFRA-3583 R6 for a pod in which no role
+// process ran because a launch of its claim was in flight: the pod no role process ever started
+// in, whose claim never ran, and the pod whose role was starting again, whose claim ran before
+// (ran). The release stopped that claim for the boot to start, naming the session it had, which
+// is none for a claim that never ran, and deleted the pod with no read and nobody asked, no role
+// process of it having registered since. The operator's resume, whose launch that stop cut
+// short, has been answered.
+func (m *projectMove) checkCutShort(t *testing.T, rd *moveRelease, issue idleRigIssue, ran bool) {
+	t.Helper()
+	r := m.rig
+	token := r.token(issue)
+	was := rd.before[token]
+	if was.state != string(supervise.StateLaunching) || (was.session != "") != ran || (was.registered > 0) != ran {
+		t.Errorf("the claim of %s stood %+v at the %s release, want a launch in flight of a claim that ran before=%v", issue.name, was, rd.name, ran)
+	}
+	if line := releaseLine(t, rd.release, issue.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil || line.Refusal != "" || len(line.Asked) != 0 {
+		t.Errorf("the line of the pod of %s is %s, want deleted_unread with no read and nobody asked", issue.name, lineJSON(line))
+	}
+	if line := releaseClaimLine(t, rd.release, token); line.Session != was.session || line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !line.BootStarts {
+		t.Errorf("the %s release's line of the claim of %s, whose launch it cut short, is %+v, want the session %q, ended project_release, which the boot starts",
+			rd.name, issue.name, line, was.session)
+	}
+	if seen := r.agents.role(issue.key, string(issue.role)); seen.Registered != was.registered {
+		t.Errorf("the role process of %s registered %d times by the end of the %s release, want the %d before it", issue.name, seen.Registered, rd.name, was.registered)
+	}
+	select {
+	case answer := <-m.resumes[issue.name]:
+		t.Logf("the operator's resume of %s, whose launch the %s release cut short, exited %d; stdout %q; stderr %q", token, rd.name, answer.code, answer.stdout, answer.stderr)
+	case <-time.After(idleRigRecordWait):
+		t.Errorf("the operator's resume of %s was not answered within %s of the %s release, which stopped its claim", token, idleRigRecordWait, rd.name)
+	}
+}
+
+// checkStartedAgain holds the boot to dispatch://INFRA-3583 R8 for a claim whose launch the
+// release cut short: it runs in a pod of cluster on one role process more than it had run, which
+// registered after the restart. For the claim that never ran that process is its first.
+func (m *projectMove) checkStartedAgain(t *testing.T, cluster *issueSandboxAPI, rd *moveRelease, issue idleRigIssue) {
+	t.Helper()
+	r := m.rig
+	token := r.token(issue)
+	c := m.claimsNow()[token]
+	seen := r.agents.role(issue.key, string(issue.role))
+	if want := rd.before[token].registered + 1; !idleRigWorking(c.state) || !strings.HasPrefix(c.pod, cluster.prefix) ||
+		seen.Registered != want || seen.RegisteredAt.Before(rd.restarted) {
+		t.Errorf("the claim of %s, whose launch the %s release cut short, stands %+v, its role process registered %d times, last at %s; want it running in the cluster %s on registration %d, made after the restart at %s",
+			issue.name, rd.name, c, seen.Registered, seen.RegisteredAt, cluster.prefix, want, rd.restarted)
+	}
+}
+
 // dryRun is the dry run's step: before any release, `legion project release --dry-run` names the
 // roles a release would ask in each pod whose workspace holds unpushed work, whose shim refuses
 // the read, or that has a role in a turn, with each count or the refusal; it names the clean pod
-// as one a release deletes with nothing unpushed, the pod no role runs in as one it deletes
-// unread, the operator's pod as left, and the older daemon's pod as running another image. It asks
-// nothing, stops nothing and records nothing.
+// as one a release deletes with nothing unpushed, the pod no role runs in, the pod no role
+// process started in and the pod whose role starts again as ones it deletes unread, the claims
+// of the last two among the claims a release would stop, the operator's pod as left, and the
+// older daemon's pod as running another image. It asks nothing, stops nothing and records
+// nothing.
 func (m *projectMove) dryRun(t *testing.T) {
 	r := m.rig
 	before := m.claimsNow()
@@ -999,8 +1265,16 @@ func (m *projectMove) dryRun(t *testing.T) {
 		line.WorkingCopyChanged == nil || *line.WorkingCopyChanged || len(line.Asked) != 0 {
 		t.Errorf("the dry run's line of the clean pod is %+v, want deleted_clean with nothing unpushed and nobody asked", line)
 	}
-	if line := releaseLine(t, dry, m.unstarted.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil {
+	if line := releaseLine(t, dry, m.stopped.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil {
 		t.Errorf("the dry run's line of the pod no role runs in is %+v, want deleted_unread with no read", line)
+	}
+	for _, issue := range []idleRigIssue{m.unstarted, m.restarting} {
+		if line := releaseLine(t, dry, issue.pod); line.Outcome != api.ReleaseDeletedUnread || line.Commits != nil || len(line.Asked) != 0 {
+			t.Errorf("the dry run's line of the pod of %s is %+v, want deleted_unread with no read and nobody asked", issue.name, line)
+		}
+		if token := r.token(issue); !slices.ContainsFunc(dry.Result.Claims, func(c api.ReleasedClaim) bool { return c.Token == token }) {
+			t.Errorf("the dry run names the claims %+v, want among them %s, whose launch is in flight", dry.Result.Claims, token)
+		}
 	}
 	if line := releaseLine(t, dry, m.held.pod); line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "operator") {
 		t.Errorf("the dry run's line of the operator's pod is %+v, want left for the operator's suspension", line)
@@ -1073,7 +1347,7 @@ func (m *projectMove) restartDuringRelease(t *testing.T) {
 		release, _ := r.readRelease()
 		return release.ID > previous.ID
 	})
-	for _, issue := range []idleRigIssue{m.clean, m.push, m.answer, m.held, m.old} {
+	for _, issue := range []idleRigIssue{m.clean, m.push, m.answer, m.held, m.old, m.unstarted, m.restarting} {
 		m.awaitLine(t, issue.pod, api.ReleaseDeleted)
 	}
 	// The release has stopped the claims of the pods it deleted, each stored suspended by it, and

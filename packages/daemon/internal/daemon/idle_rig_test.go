@@ -142,6 +142,10 @@ type idleRigIssue struct {
 	pod   string
 	role  claim.Role
 	roles []claim.Role
+	// heldBack is open while the rig starts no launcher in the issue's pod (idleRigSeed.heldBack)
+	// and closed once the test lets them start (letStart); nil for an issue the rig never holds
+	// back.
+	heldBack chan struct{}
 }
 
 // idleRigOptions is what a test asks of the rig beyond what the idle release's tests run on, each
@@ -177,14 +181,20 @@ type idleRigOptions struct {
 }
 
 // idleRigSeed is one issue the rig seeds: what the test calls it, every role it has a claim of
-// with the one that owns its phase first, whether it has a pull request open, and the plan each
+// with the one that owns its phase first, whether it has a pull request open, the plan each
 // of its role processes follows, set before the daemon's boot starts any of them (nil leaves the
-// rig's own).
+// rig's own), and whether the rig holds its roles back.
 type idleRigSeed struct {
 	name  string
 	roles []claim.Role
 	pull  bool
 	plan  *idleRigPlan
+	// heldBack keeps every role of the issue from starting until the test lets it (letStart). Its
+	// claims are seeded suspended by an operator, so no boot starts one and launchAll passes the
+	// issue over, and a pod made for it meanwhile starts no launcher, as a pod whose init
+	// containers have not finished starts none. A claim of it the test resumes meanwhile stands
+	// launching in a pod no role process ever started in.
+	heldBack bool
 }
 
 // newIdleWakeRig readies every part and boots the daemon, with one issue per name given. Each
@@ -416,12 +426,16 @@ func (r *idleWakeRig) issue(name string) idleRigIssue {
 	return idleRigIssue{}
 }
 
-// launchAll launches every seeded issue's pod, in order. It is apart from the rig's construction
-// so a test can tell a role process what to do — the topics it takes with envoy_subscribe, whether
-// it takes a turn — before the process starts.
+// launchAll launches every seeded issue's pod, in order, passing over an issue the rig holds back
+// (idleRigSeed.heldBack). It is apart from the rig's construction so a test can tell a role
+// process what to do — the topics it takes with envoy_subscribe, whether it takes a turn — before
+// the process starts.
 func (r *idleWakeRig) launchAll() {
 	r.t.Helper()
 	for _, issue := range r.issues {
+		if issue.heldBack != nil {
+			continue
+		}
 		r.launch(issue)
 	}
 }
@@ -478,7 +492,9 @@ const idleRigControllerPod = "controller"
 // podReady starts the pod's launchers, for the roles the rig gave the issue a claim of — or the
 // controller's, for the project controller's pod — once the pod's workspace is provisioned where
 // the rig makes workspaces, and records where each launcher writes its generations so the role
-// process can be handed its boot token.
+// process can be handed its boot token. The pod of an issue the rig holds back
+// (idleRigSeed.heldBack) readies nothing and starts no launcher until the test lets it start
+// (letStart), or at all when the pod goes first.
 func (r *idleWakeRig) podReady(cluster *issueSandboxAPI, pod, uid string, roles map[string]string) {
 	key := pod
 	var issue *idleRigIssue
@@ -506,6 +522,20 @@ func (r *idleWakeRig) podReady(cluster *issueSandboxAPI, pod, uid string, roles 
 		disk, issueKey := cluster.diskID(pod), issue.key
 		prepare = func(ctx context.Context) error { return r.work.provision(ctx, cluster.prefix, disk, pod, issueKey) }
 	}
+	if issue != nil && issue.heldBack != nil {
+		ready, heldBack := prepare, issue.heldBack
+		prepare = func(ctx context.Context) error {
+			select {
+			case <-heldBack:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if ready == nil {
+				return nil
+			}
+			return ready(ctx)
+		}
+	}
 	r.pods.podReady(cluster.prefix, pod, uid, wanted, prepare, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
 }
 
@@ -521,7 +551,9 @@ func (r *idleWakeRig) podGone(cluster *issueSandboxAPI, pod string) {
 // check_wake_test.go's rig seeds a claim the daemon will resume. The issue is its own tree root,
 // in the workflow at `implementing`, so the idle rule reads a live tree and the backstop has a
 // phase worker to arm for (workflow.BackstopRole); the daemon's boot starts its implementer, the
-// phase's owner, and a role of any other kind waits for the operator's resume (launch).
+// phase's owner, and a role of any other kind waits for the operator's resume (launch). The
+// claims of an issue the rig holds back (idleRigSeed.heldBack) are suspended by an operator, which
+// no boot starts.
 func (r *idleWakeRig) seed(seed idleRigSeed, key string, index int) idleRigIssue {
 	r.t.Helper()
 	r.board.show(key, "in_progress")
@@ -555,6 +587,10 @@ func (r *idleWakeRig) seed(seed idleRigSeed, key string, index int) idleRigIssue
 	if _, err := st.OpenTreeLifecycle(ctx, r.project, key, treelifecycle.AuthorityWorkflow); err != nil {
 		r.t.Fatalf("open the lifecycle of %s: %v", key, err)
 	}
+	suspendedBy := supervise.SuspendedByDaemon
+	if seed.heldBack {
+		suspendedBy = supervise.SuspendedByOperator
+	}
 	var pod string
 	for _, role := range seed.roles {
 		token, err := claim.NewToken(r.project, key, role)
@@ -563,7 +599,7 @@ func (r *idleWakeRig) seed(seed idleRigSeed, key string, index int) idleRigIssue
 		}
 		if _, err := st.AdmitClaim(ctx, supervise.Claim{
 			Token: token, Project: r.project, Tree: key, Issue: key, Role: role, Generation: 1,
-			State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
+			State: supervise.StateSuspended, SuspendedBy: suspendedBy,
 		}); err != nil {
 			r.t.Fatalf("record the suspended %s of %s: %v", role, key, err)
 		}
@@ -573,7 +609,11 @@ func (r *idleWakeRig) seed(seed idleRigSeed, key string, index int) idleRigIssue
 		}
 		pod = sandbox.SandboxName(token)
 	}
-	return idleRigIssue{name: seed.name, key: key, pod: pod, role: seed.roles[0], roles: slices.Clone(seed.roles)}
+	issue := idleRigIssue{name: seed.name, key: key, pod: pod, role: seed.roles[0], roles: slices.Clone(seed.roles)}
+	if seed.heldBack {
+		issue.heldBack = make(chan struct{})
+	}
+	return issue
 }
 
 // idleRigPullNumber is the pull request number of an issue, derived from its key so each issue has
