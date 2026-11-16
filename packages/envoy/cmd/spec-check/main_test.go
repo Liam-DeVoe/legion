@@ -286,6 +286,14 @@ func TestTheBuiltBinary(t *testing.T) {
 		t.Parallel()
 		expect(t, runBinary(t, binary, "", "checks", "--dir", valid, "--job", "other"), result{stdout: "[]\n"})
 	})
+	t.Run("checks reads a directory that does not exist as the empty tree", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "missing")
+		expect(t, runBinary(t, binary, "", "checks", "--dir", dir, "--job", "go-checks"), result{
+			stdout: "[]\n",
+			stderr: "spec-check: " + dir + ": does not exist, so it is read as the empty tree\n",
+		})
+	})
 	t.Run("checks exits 2 when the tree has a problem", func(t *testing.T) {
 		t.Parallel()
 		dir := fixture(t, "trees", "program-check-without-job")

@@ -3166,10 +3166,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
   `--retired` names a file of the ids the approved spec removed, one id a line;
   without it, a line on stderr says that no id was checked against them.
-  `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`;
-  it reads a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory, so the first change that adds a spec file lists each statement as `added`.
+  `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`.
   `spec-check checks --dir <dir> --job <job>` prints the program checks that name the job as one line of JSON, `[]` for none.
   Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read and for arguments it does not take.
+  Those two read a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory:
+  the first change that adds a spec file lists each statement as `added`, and a checkout with no spec file has no program check.
   Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
   `runnerlog.Say` writes every line but the usage and the JSON, with the fixed text `spec-check: `, escaped as the `cmd/architecture-check` item says, and `checks` writes the `[` of each `##[` in its JSON as `\u005b`.
   It opens no database and reaches no network.
