@@ -6306,8 +6306,11 @@ each issue's pod (every role of it alike) and the image probe's.
   The record is the `claim_sessions` table, one row per project, kind and name.
   The migration that made it filled it from every claim's session and the session it last abandoned; an earlier abandoned session is not held.
   At every boot the daemon holds again each name a claim records that no row holds, which a daemon rolled back to a release before the hold leaves: such a daemon runs on the table without writing it.
-  A name two claims recorded is held for neither, and a name a rolled-back daemon let a claim take from another stays the first claim's: at each boot the daemon logs each at Error with its claims and the statement that settles it, and suspends each claim recording a name it does not hold with the operator's suspend.
-  An operator records the rightful holder (`update claim_sessions set claim = '<token>' where project = '<project>' and kind = '<kind>' and name = '<name>'`) and resumes that claim with `legion claims resume`.
+  A name two claims recorded is held for neither, and a name a rolled-back daemon let a claim take from another stays the first claim's: at each boot the daemon logs each at Error with its claims, and suspends with the operator's suspend each claim whose current session records a name it does not hold.
+  A name only an abandoned session records suspends nothing, since nothing resumes or enrolls an abandoned session; the boot logs it at Warn.
+  An operator gives each suspended claim that is not the rightful holder a new session (`legion claims forget-session`, then `legion claims resume`), and for a name held for no claim records the rightful holder with the statement the line gives (`update claim_sessions set claim = '<token>' where project = '<project>' and kind = '<kind>' and name = '<name>'`) and resumes that claim with `legion claims resume`.
+  A name held for another claim stays that claim's; the line gives no statement for it.
+  A session id, and a session file's name, are at most 255 bytes: a registration of a longer one is refused `400`, and the boot holds no name past that bound.
   A project whose daemon moves to a new database starts with an empty table, so no session recorded in the old one is held; the broker's carry window, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default), bounds what an old session's grants can still reach.
   Another project's daemon is not held to this project's names; the broker holds a pod's grants to the pair of its account and the daemon that enrolled it, so a pod of another project's daemon enrolled under the same session id takes nothing.
 

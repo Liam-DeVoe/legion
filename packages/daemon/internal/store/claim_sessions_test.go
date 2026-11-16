@@ -3,6 +3,8 @@ package store
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -27,6 +29,16 @@ const claimSessionsVersion = 20261116144907
 // sessionHold is the hold of a session id.
 func sessionHold(id string) supervise.Hold {
 	return supervise.Hold{Kind: supervise.HoldSessionID, Name: id}
+}
+
+// incompressible is n bytes PostgreSQL's pglz cannot shorten, so a value of it is stored, and
+// indexed, at its full length: the base64 of a chain of SHA-256 digests.
+func incompressible(n int) string {
+	var raw []byte
+	for sum := sha256.Sum256([]byte("claim_sessions")); len(raw)*4/3 < n+4; sum = sha256.Sum256(sum[:]) {
+		raw = append(raw, sum[:]...)
+	}
+	return base64.StdEncoding.EncodeToString(raw)[:n]
 }
 
 // holdOne holds the one name h for token, and answers the claim that holds it.
@@ -185,7 +197,7 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 			{"legion-LEGION-308-implementer", "legion", recorded{"ses_308", "/sessions/w/a_b_c.jsonl"}, recorded{"", "/trailing/dir/"}},
 			{"legion-LEGION-309-implementer", "legion", recorded{"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "/c/projects/-w-/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.jsonl"}, recorded{}},
 			{"other-OTHER-301-implementer", "other", recorded{"ses_own", "/state/sessions/--w--/2026-11-16T00-00-00-000Z_ses_own.jsonl"}, recorded{}},
-			{"legion-LEGION-310-implementer", "legion", recorded{strings.Repeat("s", 3200), "/sessions/w/" + strings.Repeat("f", 300) + ".jsonl"}, recorded{}},
+			{"legion-LEGION-310-implementer", "legion", recorded{incompressible(3200), "/sessions/w/" + strings.Repeat("f", 300) + ".jsonl"}, recorded{}},
 			{"legion-LEGION-311-implementer", "legion", recorded{strings.Repeat("s", claim.MaxSessionNameBytes), "/sessions/w/" + strings.Repeat("f", claim.MaxSessionNameBytes-len(".jsonl")) + ".jsonl"}, recorded{}},
 		}
 		type key struct {
@@ -459,6 +471,16 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 	steadyTook, steadySent := time.Since(started), tracer.sent.Load()
 	t.Logf("%d claims, %d names, a millisecond a statement: the first hold %d statements in %v; a steady boot step %d statements in %v",
 		productionClaims, names, firstSent, firstTook, steadySent, steadyTook)
+	// The same steady step on the pool with no added delay: on a loopback it is the step's own cost,
+	// and against a database reached through a proxy that adds latency, the cost at that latency.
+	started = time.Now()
+	if _, err := store.HoldRecordedSessions(ctx, "legion"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SessionConflicts(ctx, "legion"); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("a steady boot step on the database as LEGION_TEST_PG_DSN reaches it, with no added delay: %v", time.Since(started))
 
 	if firstSent > statementBound || steadySent > statementBound {
 		t.Errorf("the boot step sent %d statements at the first hold and %d at a steady boot; want at most %d each, whatever the project's size",
