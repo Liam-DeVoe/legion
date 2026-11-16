@@ -1294,7 +1294,7 @@ hold_supervise_table_tests()
 # ---------------------------------------------------------------- the envoy race lane
 # The three jobs that run packages/envoy's concurrent packages under the race detector, declared
 # once: each job's step name, its -timeout, and the packages the step names, in the order it names
-# them. Everything the lane decides is built from this list - the three steps' own texts, the
+# them. Everything the lane decides is built from this list - the steps' own texts, the
 # envoy-go unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists
 # of the plain step that runs what a race build cannot (RACE_IMPOSSIBLE_SCRIPT below) - and
 # check-ci-filters.sh fails when ci.yaml's text for any of them differs from the text built here,
@@ -1340,6 +1340,22 @@ def race_step(job):
     pkgs = race_pkgs(job)
     text = f"go test -count=1 -race -timeout {job.timeout} " + " ".join(pkgs)
     return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
+
+
+# envoy-go-race-api is a matrix whose legs each run one shard of the package (dispatch://INFRA-3904;
+# the job's comment in its workflow file gives the numbers): .github/scripts/go-test-shards.py
+# builds the race test binary, splits its tests across the legs by name, proves every test is in
+# exactly one leg and prints this leg's -run, which the step assigns on a line of its own. That
+# substitution, the two matrix expressions and the quoted -run are outside the simple form, so
+# the step is pinned whole, its text built from the lane's own entry. A -run moves no closure:
+# the whole package compiles whichever tests it selects, and the script's `go test -c` is that
+# same race build of that same package, so the step's one Run is the plain race go test.
+GO_TEST_SHARDS = ".github/scripts/go-test-shards.py"
+RACE_API = RACE_JOBS["envoy-go-race-api"]
+RACE_API_SCRIPT = (
+    f"pattern=$(../../{GO_TEST_SHARDS} pattern ${{{{ strategy.job-index }}}} ${{{{ strategy.job-total }}}} "
+    f"-race {' '.join(race_pkgs(RACE_API))})\n"
+    f'go test -count=1 -race -timeout {RACE_API.timeout} -run "$pattern" {" ".join(race_pkgs(RACE_API))}')
 
 
 # The architecture-note rules and the command that runs them, which envoy-go-checks tests in a
@@ -2021,6 +2037,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its last case reads this file's own go test line, the wrapper one"),
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its last case reads this file's own go test line, the GODEBUG one"),
+        (".github/workflows/ci-job-envoy-go-race-api.yaml",
+         "its matrix case reads this file's job and step as legs, each assigning its -run from the shard script"),
     ]),
     harness("go_test_shards_test", "Test the go test shard split", f"{SCRIPTS}/go-test-shards.test.sh", [
         (f"{SCRIPTS}/go-test-shards.py", "the script under test"),
@@ -2750,16 +2768,23 @@ GATES = [
     ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
-    # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one
-    # whose step is not race_step's text: it runs the package under .github/scripts/race_memory.py
-    # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
-    # the package, which is what keeps it out of the unit step.
+    # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs and
+    # envoy-go-race-api are the two whose step is not race_step's text: docs runs the package
+    # under .github/scripts/race_memory.py (dispatch://INFRA-1085), and api runs one shard of it
+    # per leg of a matrix (RACE_API_SCRIPT says why), so each gate pins its whole step while the
+    # lane table still names the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
-    gate("envoy_go_race_api", "envoy-go-race-api",
-         runs=[race_step(RACE_JOBS["envoy-go-race-api"]), ceiling_run("envoy-go-race-api")],
-         reads=ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+    gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
+        pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
+            (ENVOY, race_pkgs(RACE_API),
+             f"go test -race -count=1 -timeout {RACE_API.timeout} {' '.join(race_pkgs(RACE_API))}, and "
+             f"{GO_TEST_SHARDS}'s go test -c -race of the same package", {"race": True}),
+        ]),
+    ], reads=reads(
+        (GO_TEST_SHARDS, f"{at('envoy-go-race-api', RACE_API.step)} takes its -run from it"),
+    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [

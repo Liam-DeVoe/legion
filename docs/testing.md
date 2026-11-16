@@ -216,10 +216,15 @@ go test -timeout 20m ./internal/dispatch/api
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
-gives it 30 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
-tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself
+(`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps). The job is a
+matrix: each leg runs one shard of the package's tests under its own `-timeout 30m`, because the
+whole package took up to 1,527 s of one 30-minute deadline on CI's runners. A test's shard is
+`crc32(name) mod` the leg count, which `.github/scripts/go-test-shards.py` computes from the race
+test binary's own list, and the script fails the leg, naming the test, when the legs' `-run`
+patterns leave a test out or run one twice. A test you add needs no edit there. `envoy-go`
+leaves the package out of its unit step, and `text-checks` runs its fifteen source-guard tests by
+name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60 minutes.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default

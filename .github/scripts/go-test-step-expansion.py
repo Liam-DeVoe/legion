@@ -86,9 +86,15 @@ How it reads a step:
   * a `go vet`, `go build`, `go list` or `go install` line runs no test and is skipped; a line it
     cannot read stops the run, since silently skipping a `go test` would hide both a duplicate
     and a function that step is the only one to compile;
-  * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` is run,
-    in the step's own directory, and its output used; a step looping over packages
-    (`for pkg in ./core ./seed ./gcp`) is one `go test` per package, each with its own call;
+  * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` or
+    `.github/scripts/go-test-shards.py` is run, in the step's own directory, and its output used;
+    a step looping over packages (`for pkg in ./core ./seed ./gcp`) is one `go test` per package,
+    each with its own call;
+  * a step of a job with a `strategy.matrix` of one key is read once per leg, as GitHub runs it:
+    `${{ matrix.<key> }}`, `${{ strategy.job-index }}` and `${{ strategy.job-total }}` are that
+    leg's values in the step's name and script, and each leg is a step of its own, so a test two
+    legs run is a pair two steps run (envoy-go-race-api's legs each run one shard of
+    internal/dispatch/api through go-test-shards.py). A matrix of any other shape is refused;
   * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
     the step runs and left in what it compiles, since the binary holds a skipped test and never
     runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
@@ -253,6 +259,11 @@ FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
+GO_TEST_SHARDS = ".github/scripts/go-test-shards.py"
+# The scripts a step may assign a `-run` from, each run here as the step runs it.
+RUN_LISTERS = (TAGGED_TESTS, GO_TEST_SHARDS)
+# An expression GitHub evaluates before the shell sees the script: ${{ matrix.shard }}.
+EXPRESSION = re.compile(r"\$\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
@@ -370,11 +381,40 @@ def documents() -> dict:
     return found
 
 
+def legs(label: str, body: dict) -> list[tuple[str, dict[str, str]]]:
+    """Each leg of a job's matrix as GitHub runs it: a suffix naming the leg, and the value of each
+    expression of `matrix` and `strategy` the leg sees. A job with no matrix is one leg with no
+    suffix and no values. Only a matrix of one key holding a list is read, since its legs are that
+    list in order and its job-index is the position in it; `include`, `exclude`, a second key or a
+    computed list (`fromJSON`) is refused rather than guessed at."""
+    matrix = ((body or {}).get("strategy") or {}).get("matrix")
+    if matrix is None:
+        return [("", {})]
+    if (not isinstance(matrix, dict) or len(matrix) != 1 or set(matrix) & {"include", "exclude"}
+            or not isinstance(next(iter(matrix.values())), list)):
+        raise Refused(f"{label}: its matrix is not one key holding a list, which is the one shape this "
+                      f"script reads into legs")
+    key, values = next(iter(matrix.items()))
+    if not values:
+        raise Refused(f"{label}: its matrix's {key} holds no value, so the job runs no leg")
+    total = len(values)
+    return [(f" (leg {index + 1} of {total}, {key} {value})",
+             {f"matrix.{key}": str(value), "strategy.job-index": str(index), "strategy.job-total": str(total)})
+            for index, value in enumerate(values)]
+
+
+def substitute(text: str, values: dict[str, str]) -> str:
+    """The text with each `${{ name }}` that `values` holds replaced by its value, as GitHub
+    evaluates it before the shell sees the script; any other expression is left as it stands."""
+    return EXPRESSION.sub(lambda match: values.get(match.group(1), match.group(0)), text)
+
+
 def steps_of(found: dict) -> list[Step]:
     """Every step of those documents whose run: holds a `go test` and whose directory is one of
-    the three modules. The directory and the comment-free lines are read with
-    check-ci-filters.sh's own helpers (ci_filter_coverage.step_workdir, script_lines), so this
-    tool and the gate agree on what a step runs and where."""
+    the three modules, once per leg of its job's matrix (legs() says how). The directory and the
+    comment-free lines are read with check-ci-filters.sh's own helpers
+    (ci_filter_coverage.step_workdir, script_lines), so this tool and the gate agree on what a step
+    runs and where."""
     steps = []
     for path, document in found.items():
         for job, body in (document.get("jobs") or {}).items():
@@ -388,7 +428,9 @@ def steps_of(found: dict) -> list[Step]:
                 if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
                     continue
                 name = step.get("name") or f"step {index + 1}"
-                steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
+                for suffix, values in legs(f"{path}'s {job} / {name}", body):
+                    steps.append(Step(workflow=path, job=job, name=substitute(name, values) + suffix,
+                                      workdir=workdir, script=substitute(script, values)))
     return steps
 
 
@@ -420,9 +462,9 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
         assignment = ASSIGNMENT.match(line)
         if assignment:
             name, inner = assignment.group(1), expand(assignment.group(2), variables)
-            if TAGGED_TESTS not in inner:
+            if not any(lister in inner for lister in RUN_LISTERS):
                 raise Refused(f"{step.label}: this script runs only a $(…) call of "
-                              f"{TAGGED_TESTS}, not `{inner}`")
+                              f"{' or '.join(RUN_LISTERS)}, not `{inner}`")
             variables[name] = shell(inner, step.directory, f"{step.label}: {inner}").strip()
             continue
 

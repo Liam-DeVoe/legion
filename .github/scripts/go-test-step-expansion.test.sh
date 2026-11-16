@@ -130,4 +130,49 @@ else:
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
 
+# envoy-go-race-api is a matrix whose legs each run one shard of internal/dispatch/api, and the
+# leg's index and the leg count reach its script as `${{ strategy.job-index }}` and
+# `${{ strategy.job-total }}`. Read as one step, the script holds two expressions no shell can run
+# and the assignment calls a script the reader refused; so each leg is read as a step of its own,
+# with GitHub's values in its text, and a test two legs run is a pair two steps run.
+echo "case: a matrix of one key is read once per leg, with that leg's values"
+legs=$(py 'body = {"strategy": {"fail-fast": False, "matrix": {"shard": [1, 2, 3]}}}
+for suffix, values in ex.legs("(a job)", body):
+    print(suffix.strip(), ex.substitute(sys.argv[1], values))' \
+  'run ${{ strategy.job-index }} of ${{strategy.job-total}} as shard ${{ matrix.shard }}, at ${{ runner.temp }}')
+check "three legs, each its index, the count and its value; another expression is left as written" "$(is "$legs" \
+  '(leg 1 of 3, shard 1) run 0 of 3 as shard 1, at ${{ runner.temp }}
+(leg 2 of 3, shard 2) run 1 of 3 as shard 2, at ${{ runner.temp }}
+(leg 3 of 3, shard 3) run 2 of 3 as shard 3, at ${{ runner.temp }}')"
+check "a job with no matrix is one leg, its text unchanged" \
+  "$(is "$(py 'print([(s, ex.substitute("x ${{ matrix.shard }}", v)) for s, v in ex.legs("(a job)", {})])')" \
+    "[('', 'x \${{ matrix.shard }}')]")"
+for shape in '{"shard": [1, 2], "os": ["a"]}' '{"include": [{"shard": 1}]}' '{"shard": "${{ fromJSON(x) }}"}' '{"shard": []}'; do
+  refused=$(py 'import json
+try:
+    ex.legs("(a job)", {"strategy": {"matrix": json.loads(sys.argv[1])}})
+except ex.Refused:
+    print("refused")
+else:
+    print("read")' "$shape")
+  check "the matrix $shape is refused, not guessed at" "$(is "$refused" "refused")"
+done
+
+echo "case: envoy-go-race-api's step is read once per leg, each assigning its -run from the shard script"
+api=$(py 'import yaml
+path = ".github/workflows/ci-job-envoy-go-race-api.yaml"
+found = {path: yaml.safe_load((ex.ROOT / path).read_text())}
+steps = ex.steps_of(found)
+print(len(steps))
+for step in steps:
+    first = step.script.strip().splitlines()[0]
+    assignment = ex.ASSIGNMENT.match(first)
+    print(step.name, "|", bool(assignment) and any(lister in assignment.group(2) for lister in ex.RUN_LISTERS),
+          "|", "${{" in step.script)')
+check "one step per leg of the matrix" "$(is "$(head -n 1 <<<"$api")" "$(py 'import yaml
+document = yaml.safe_load((ex.ROOT / ".github/workflows/ci-job-envoy-go-race-api.yaml").read_text())
+print(len(document["jobs"]["envoy-go-race-api"]["strategy"]["matrix"]["shard"]))')")"
+check "each leg's -run comes from a script the reader runs, and no expression is left in its text" \
+  "$(is "$(tail -n +2 <<<"$api" | cut -d '|' -f 2- | sort -u)" " True | False")"
+
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"
