@@ -4401,6 +4401,9 @@ jobs:
               # check they share.
               - 'packages/dispatch/e2e/reading-*.e2e.ts'
               - 'packages/dispatch/e2e/reading-rows.ts'
+              # Main's parse-count walk, which holds every page those rows draw to no parse of a
+              # stored text on the page's own thread.
+              - 'packages/dispatch/e2e/parse-count.e2e.ts'
               - 'packages/dispatch/e2e/reference-surfaces.ts'
               - 'packages/dispatch/e2e/search.ts'
               - 'packages/dispatch/e2e/writing-boxes.ts'

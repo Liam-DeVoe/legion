@@ -602,19 +602,21 @@ jobs:
               lane_files=""
               ;;
             references)
-              # The eleven spec files dispatch://INFRA-1702's Verification document names, and
-              # the nine of the reading list's walk (e2e/reading-rows.ts), and the one place they
-              # are written: ci.yaml's dispatch-references job runs them on
-              # a pull request that changes what they test, so that document's checks read CI
-              # at the head rather than a run of an hour and a half by hand. Every Chromium row
-              # of them, `@pr` or not, so no grep. Each is a Playwright file filter, a regular
-              # expression matched against a spec's absolute path, and each matches the one
-              # file of that name under e2e/ and no other. A file added to this list joins
-              # ci.yaml's `dispatch_references` filter, which names these files and what they
-              # test: .github/scripts/check-ci-filters.sh (rule 20) fails naming an entry here
-              # that filter does not match, read from this step's directory. A reading spec this
-              # list does not name runs on no pull request, so the walk's gate reads this arm the
-              # same way and fails naming it (packages/dispatch/e2e/__tests__/reading-walk.test.ts).
+              # The eleven spec files dispatch://INFRA-1702's Verification document names, the
+              # nine of the reading list's walk (e2e/reading-rows.ts), and main's parse-count walk,
+              # which holds every page those rows draw to no parse of a stored text on the page's
+              # own thread, and the one place they are written: ci.yaml's dispatch-references job
+              # runs them on a pull request that changes what they test, so that document's checks
+              # read CI at the head rather than a run of an hour and a half by hand. Every
+              # Chromium row of them, `@pr` or not, so no grep. Each is a Playwright file
+              # filter, a regular expression matched against a spec's absolute path, and each
+              # matches the one file of that name under e2e/ and no other. A file added to this
+              # list joins ci.yaml's `dispatch_references` filter, which names these files and
+              # what they test: .github/scripts/check-ci-filters.sh (rule 20) fails naming an
+              # entry here that filter does not match, read from this step's directory. A
+              # reading spec this list does not name runs on no pull request, so the walk's gate
+              # reads this arm the same way and fails naming it
+              # (packages/dispatch/e2e/__tests__/reading-walk.test.ts).
               projects="--project=chromium"
               lane_grep=""
               lane_files="e2e/bare-references.e2e.ts e2e/btw.e2e.ts e2e/mention-composer.e2e.ts
@@ -623,7 +625,8 @@ jobs:
               e2e/writing-surfaces.e2e.ts e2e/search.e2e.ts
               e2e/reading-agents.e2e.ts e2e/reading-answers.e2e.ts e2e/reading-broadcasts.e2e.ts
               e2e/reading-conversation.e2e.ts e2e/reading-documents.e2e.ts e2e/reading-inbox-asks.e2e.ts
-              e2e/reading-inbox-threads.e2e.ts e2e/reading-pages.e2e.ts e2e/reading-references.e2e.ts"
+              e2e/reading-inbox-threads.e2e.ts e2e/reading-pages.e2e.ts e2e/reading-references.e2e.ts
+              e2e/parse-count.e2e.ts"
               ;;
             *)
               echo "::error::lane must be pull-request, full or references, not '${{ inputs.lane }}'"
