@@ -3817,6 +3817,12 @@ Each item below names a path with its method and identity, then its purpose.
   List the documents this process holds a room of now: `{"rooms": [artifact id, ...]}`.
   Not mounted otherwise.
 
+- `/api/v1/artifacts/{id}/_test/ask-attributes` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  The attributes each ask block of the document holds in this process's live tree, the tree a browser edits, which no rendering filters:
+  `{"blocks": {block id: {attribute: value, ...}}}`, every attribute but the block's id.
+  Not mounted otherwise.
+
 - `/api/v1/artifacts/{id}/_test/outside-schema` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
   Write the crafted malformed tree e2e uses; not mounted otherwise.

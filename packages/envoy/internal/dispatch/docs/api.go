@@ -37,7 +37,9 @@ type API interface {
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
 	SetBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error
+	KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error
 	SetAskBlockText(ctx context.Context, artifactID, blockID string, edit AskBlockEdit, actor model.Actor) (AskBlockText, error)
+	TextWithAnswers(ctx context.Context, artifactID string, withBlocks bool) (string, string, []model.ArtifactBlock, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
 	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error)

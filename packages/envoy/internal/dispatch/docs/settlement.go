@@ -646,7 +646,7 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 // version's authors.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
-	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown, st.issueClosed)
+	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.issueClosed)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
@@ -977,8 +977,13 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 	// The copies among the document's ask blocks, once the version's blocks are nodes, in the name
-	// the version itself carries (versionActor), the event their claims are caused by.
-	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.versionActor(), time.Now().UTC(), copiesCause); err != nil {
+	// the version itself carries (versionActor), the event their claims are caused by; and, in
+	// the same name and under the same event, the readability of the asks whose blocks it read.
+	at := time.Now().UTC()
+	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.versionActor(), at, copiesCause); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := st.reconciliation.stateInvalidReasons(ctx, tx, st.credit.versionActor(), at, copiesCause); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the

@@ -330,8 +330,8 @@ func (r *renderRecord) rendered() []string {
 // the render answered - the empty string for a render that failed, which is a rendering made all
 // the same. Every rendering of a whole document goes through one of its callers, so what a read
 // or a write costs in renderings is what it records. A rendering of a tree derived from a
-// document - the copy without ask blocks an approval carry compares (renderWithoutAskBlocks), a
-// single block (renderBlock) - is not one of them.
+// document - the versions an approval carry compares with their ask attributes taken off
+// (carryVerdict), a single block (renderBlock) - is not one of them.
 func countDocumentRender(markdown string) {
 	if record := documentRenders.Load(); record != nil {
 		record.record(markdown)

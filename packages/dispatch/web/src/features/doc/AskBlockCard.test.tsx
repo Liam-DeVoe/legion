@@ -10,7 +10,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
 import type { Ask, AskRead, Comment } from "../../api/types";
 import { AskBlockCard } from "./AskBlockCard";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, type ServedAsk, servedAskOf } from "./typed-block-drawing";
 
 const schema = new Schema({
   nodes: {
@@ -168,6 +168,7 @@ function renderCard({
   owner,
   readOnly = false,
   rowResolution = false,
+  served,
   thread = threadRead(indexed),
 }: {
   ask?: Ask;
@@ -179,6 +180,8 @@ function renderCard({
   readOnly?: boolean;
   /** Render as a closed issue's current document does. */
   rowResolution?: boolean;
+  /** The server's read of the ask the block shows (`servedAskOf`). */
+  served?: ServedAsk;
   /** What `GET /asks/{id}` answers for the block's ask. */
   thread?: AskRead;
 }) {
@@ -204,6 +207,7 @@ function renderCard({
           owner={owner}
           readOnly={readOnly}
           rowResolution={rowResolution}
+          served={served}
         />
       </QueryClientProvider>
     </MemoryRouter>
@@ -427,6 +431,48 @@ test("a block with an ask of its own names no source, whatever its attributes ho
   });
   try {
     expect(card.header.queryByText(/Copied from/)).not.toBeInTheDocument();
+  } finally {
+    card.unmount();
+  }
+});
+
+test("a copy reads its source's state and answer from the server's read of the source ask, not from its own attributes", () => {
+  // The copy's block holds none of the answer: it is on the source ask alone, which the issue's
+  // asks list carries under the same block id on another document.
+  const source: Ask = {
+    ...answeredAsk,
+    block_artifact: { id: "artifact-plan", primary: false, slug: "plan" },
+    id: "ask-source",
+  };
+  const served = servedAskOf([source], "artifact-copy", "b-1");
+  expect(served).toEqual({ ask: source, copiedFrom: "dispatch://CORE-1/artifact/plan" });
+  const card = renderCard({ indexed: false, node: askNode({ state: "open" }), served });
+  try {
+    expect(card.header.getByText(/Copied from/).textContent).toBe(
+      "Copied from CORE-1 plan, answered there"
+    );
+    expect(card.section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(
+      "Ship it after the fix lands."
+    );
+    expect(getAsk).not.toHaveBeenCalled();
+  } finally {
+    card.unmount();
+  }
+});
+
+test("a read-only block reads who answered, when and what from the server, whatever its attributes hold", () => {
+  const card = renderCard({
+    node: askNode({ state: "open" }),
+    readOnly: true,
+    served: servedAskOf([answeredAsk], "artifact-1", "b-1"),
+  });
+  try {
+    expect(card.header.getByText("Answered by bob")).toBeInTheDocument();
+    // The server's selection ticks Ship and leaves Hold, which the block's attributes never held.
+    expect(card.recordRows().map(([selected]) => selected)).toEqual(["true", "false"]);
+    expect(card.section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(
+      "Ship it after the fix lands."
+    );
   } finally {
     card.unmount();
   }
