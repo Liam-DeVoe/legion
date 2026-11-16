@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // referenceTargetsMax is how many references one batched read may name. Its value is
@@ -19,7 +20,8 @@ import (
 // the client batches by too, and whose comment gives the measurement it is set above: the 247
 // distinct references that dispatch://INFRA-1196 and its four largest documents name. So the
 // count of references splits no such load into a second request, and a set at the cap costs one
-// statement per node kind (refs.TargetNames), not one per reference.
+// statement per node kind (refs.TargetNames), not one per reference, and one statement per kind
+// of item whose ids it writes short (refs.ResolvePrefixes).
 //
 // The other bound on a batch is the request line itself, which this server sets no limit of its
 // own on. A proxy in front of the server can set one; 16 KB is one known such limit, an AWS load
@@ -47,6 +49,14 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // anything is parsed. A reference that reads but names nothing is answered, gone: a chip whose
 // target was deleted still has to draw.
 //
+// A reference whose item id or block id is written short is read as GET /api/v1/references reads
+// its ?to= (wholeReferences): as the one item that carries the prefix among the items of the
+// owner that the reference names. A prefix that nothing carries leaves the reference as written,
+// which then names nothing and is answered gone. A prefix that two items or more carry refuses
+// the whole read with the 409 ID_AMBIGUOUS that the per-reference route answers for it, listing
+// the items (writeIDPrefixError). That refusal comes once every reference is parsed, so a set
+// that also holds a reference the grammar cannot read is refused for that reference.
+//
 // A caller that sent `Dispatch-Trees: 1` is given each block's whole text as its text_tree
 // (blockTrees). The trees are resolved before the ETag is made, because the ETag hashes them: a
 // block's name stops at its stored excerpt, so a change past it moves the tree and not the name.
@@ -57,7 +67,7 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	targets, err := s.referenceTargets(r, trees)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeIDPrefixError(w, err)
 		return
 	}
 	trees.resolve()
@@ -68,16 +78,17 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.ReferenceTargets{Targets: targets})
 }
 
-// referenceTargets reads every ?ref= of the request and resolves them in one query per node kind.
-// The kind of each answer is the kind the reference itself names, which is the kind its node
-// resolves to (refs.TargetOf stores a block of an ask, a comment or a message under its item's
-// block kind, and those resolve to nodes of kind block), so a gone target is answered under its
-// kind too.
+// referenceTargets reads every ?ref= of the request, writes each id that a reference writes
+// short as its whole id in one batch (wholeReferences), and then resolves the references in one
+// query per node kind. The kind of each answer is the kind the reference itself names, which is
+// the kind its node resolves to (refs.TargetOf stores a block of an ask, a comment or a message
+// under its item's block kind, and those resolve to nodes of kind block), so a gone target is
+// answered under its kind too.
 //
 // A reference is read past the whitespace around it, and echoed as the request wrote it, that
-// whitespace included: the answer is read by index or by reference, and a caller matching the
-// members against the strings it sent finds none of them under a reference this read had
-// rewritten.
+// whitespace and an id written short included: the answer is read by index or by reference, and
+// a caller matching the members against the strings it sent finds none of them under a
+// reference this read had rewritten.
 //
 // trees is the request's own reader, nil for a caller that asked for no tree, which then reads
 // no block's text at all.
@@ -89,17 +100,24 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 	if len(raw) > referenceTargetsMax {
 		return nil, countExceededError("CAP_EXCEEDED", "ref", len(raw), referenceTargetsMax)
 	}
-	answers := make([]model.ReferenceTarget, len(raw))
-	named := make([]refs.Target, len(raw))
+	parsed := make([]text.Ref, len(raw))
 	for index, value := range raw {
 		ref, err := parseRequestRef(strings.TrimSpace(value), s.deps.ServerURL)
 		if err != nil {
 			return nil, err
 		}
+		parsed[index] = ref
+	}
+	if err := s.wholeReferences(r.Context(), parsed); err != nil {
+		return nil, err
+	}
+	answers := make([]model.ReferenceTarget, len(raw))
+	named := make([]refs.Target, len(raw))
+	for index, ref := range parsed {
 		// Every kind parseRequestRef admits has a target; only an external URL has none, and
 		// that is no reference.
 		target, _ := refs.TargetOf(ref)
-		answers[index] = model.ReferenceTarget{Ref: value, Kind: ref.Kind, Gone: true}
+		answers[index] = model.ReferenceTarget{Ref: raw[index], Kind: ref.Kind, Gone: true}
 		named[index] = target
 	}
 	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, named)
@@ -115,6 +133,51 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		return nil, err
 	}
 	return answers, nil
+}
+
+// wholeReferences writes, in place, the whole id into each of references whose item id or block
+// id is written short, by the rules that GET /api/v1/references reads one ?to= by
+// (wholeReference). The owner that the prefix is resolved within is read from the reference
+// (refs.PrefixScope), and only an id that text.IsIDPrefix accepts is resolved. The one item that
+// carries the prefix gives the reference its whole id. A prefix that nothing carries leaves the
+// reference as written, and a prefix that two items or more carry is the error
+// *refs.ErrPrefixAmbiguous, of the first such reference in the set.
+//
+// Every short id of the set is resolved in one batch (refs.ResolvePrefixes), which reads each
+// distinct id once, in one statement per kind of item, so a set with no short id costs no
+// statement.
+func (s *server) wholeReferences(ctx context.Context, references []text.Ref) error {
+	short := make([]refs.ShortID, len(references))
+	var asked []refs.ShortID
+	for index, ref := range references {
+		block := ref.Kind == "block" && ref.Item == ""
+		kind, scope, written, ok := refs.PrefixScope(text.Prefix{Ref: ref, Block: block})
+		if ok && text.IsIDPrefix(written) {
+			short[index] = refs.ShortID{Kind: kind, Scope: scope, Prefix: written}
+			asked = append(asked, short[index])
+		}
+	}
+	if len(asked) == 0 {
+		return nil
+	}
+	whole, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, asked)
+	if err != nil {
+		return err
+	}
+	for index, id := range short {
+		// A reference that writes no short id holds the zero ShortID, which the answer never
+		// holds, since no prefix is empty.
+		candidate, found := whole[id]
+		if !found {
+			continue
+		}
+		if ref := &references[index]; ref.Kind == "block" && ref.Item == "" {
+			ref.Block = candidate.ID
+		} else {
+			ref.ID = candidate.ID
+		}
+	}
+	return nil
 }
 
 // blockTrees registers, for each member that names a block something answers to, that block's

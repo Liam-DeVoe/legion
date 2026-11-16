@@ -202,7 +202,9 @@ func referenceTargetsOf(references ...string) string {
 //
 // The texts cost one statement however many blocks of a document the set names: a set of 20
 // blocks of one document makes as many statements as a set of 2, and one of them reads the
-// blocks' texts out of document_block_texts.
+// blocks' texts out of document_block_texts. The same blocks named by ids written short cost one
+// statement more, which resolves every prefix among the document's blocks, so a set of 20 of them
+// again makes as many statements as a set of 2.
 func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -399,6 +401,19 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 			t.Errorf("a set of %d blocks of one document read their texts from document_block_texts in %d statements, want 1:\n%s",
 				size, texts, strings.Join(roundTripLines(counted), "\n"))
 		}
+	}
+	short := make([]string, len(notes))
+	for index, note := range notes {
+		short[index] = notesRef + "#b-" + text.EncodeBlockID(ids[note][:8])
+	}
+	shortCounts := map[int][]string{2: statementsOf(short[:2]), 20: statementsOf(short)}
+	if len(shortCounts[2]) != len(shortCounts[20]) {
+		t.Errorf("a set of 2 short block references of one document made %d statements and a set of 20 made %d, want as many:\n%s\n\n%s",
+			len(shortCounts[2]), len(shortCounts[20]), strings.Join(roundTripLines(shortCounts[2]), "\n"), strings.Join(roundTripLines(shortCounts[20]), "\n"))
+	}
+	if len(shortCounts[20]) != len(counts[20])+1 {
+		t.Errorf("a set of 20 short block references made %d statements and the same set written whole made %d, want one more, the one that resolves the prefixes:\n%s",
+			len(shortCounts[20]), len(counts[20]), strings.Join(roundTripLines(shortCounts[20]), "\n"))
 	}
 
 	edited := editIssueDocument(t, handler, issue.Key, plan.Artifact.Slug, []map[string]any{

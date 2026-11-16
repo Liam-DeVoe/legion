@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -39,6 +41,14 @@ func referenceTargets(t *testing.T, handler http.Handler, references []string) (
 // target is gone — the deleted block answered, not refused, since a chip whose target is gone
 // still has to draw — and each echoes its reference as the request wrote it, so a caller that
 // matches the answer against the strings it sent finds every one of them.
+//
+// A second request names items and blocks by ids written short, which are read as GET
+// /api/v1/references reads them: a comment, a block, an ask, a message and a block pinned to a
+// version are each answered with the kind and the name of the one item of its owner that
+// carries the prefix, and each echoes the short reference as the request wrote it. The
+// comment's prefix under an issue that holds no comment names nothing, and is answered gone. A
+// document is named by its slug and never by its id, so a prefix of its id names no document
+// and is answered gone too.
 func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -51,7 +61,7 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	if ids["First paragraph."] == "" || ids["Second paragraph."] == "" {
 		t.Fatalf("the spec's blocks are %v, want both paragraphs", ids)
 	}
-	editSpec(t, handler, issue.Key, []map[string]any{{"op": "delete", "find": "Second paragraph."}})
+	edited := editSpec(t, handler, issue.Key, []map[string]any{{"op": "delete", "find": "Second paragraph."}})
 
 	padded := "  dispatch://" + other.Key + "  "
 	targets, _ := referenceTargets(t, handler, []string{held, gone, "dispatch://" + other.Key, padded})
@@ -69,6 +79,34 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	}
 	if want := (model.ReferenceTarget{Ref: padded, Kind: "issue", Name: other.Title}); !reflect.DeepEqual(targets[3], want) {
 		t.Errorf("the padded reference answered %#v, want it resolved and echoed as it was written: %#v", targets[3], want)
+	}
+
+	comment := createReferenceAPIComment(t, handler, other.Key, "A comment named short.")
+	ask := createIssueAsk(t, handler, other.Key, "An ask named short?")
+	message := createIssueMessage(t, handler, other.Key, map[string]any{"body": "A message named short."}, "alice")
+	notes := uploadDocument(t, handler, "/api/v1/issues/"+other.Key, "notes.md", "A note.\n")
+	shortBlock := specRef + "#b-" + text.EncodeBlockID(ids["First paragraph."][:8])
+	wanted := []model.ReferenceTarget{
+		{Ref: "dispatch://" + other.Key + "/comment/" + comment.ID[:8], Kind: "comment", Name: "A comment named short."},
+		{Ref: shortBlock, Kind: "block", Name: "First paragraph."},
+		{Ref: "dispatch://" + issue.Key + "/comment/" + comment.ID[:8], Kind: "comment", Gone: true},
+		{Ref: "dispatch://" + other.Key + "/ask/" + ask[:8], Kind: "ask", Name: "An ask named short?"},
+		{Ref: "dispatch://" + other.Key + "/message/" + message.ID[:8], Kind: "message", Name: "A message named short."},
+		{Ref: shortBlock + "@v" + strconv.Itoa(edited.Number), Kind: "block", Name: "First paragraph."},
+		{Ref: "dispatch://" + other.Key + "/artifact/" + notes.Artifact.ID[:8], Kind: "artifact", Gone: true},
+	}
+	references := make([]string, len(wanted))
+	for index, want := range wanted {
+		references[index] = want.Ref
+	}
+	short, _ := referenceTargets(t, handler, references)
+	if len(short) != len(wanted) {
+		t.Fatalf("the read of short ids answered %#v, want one member per reference", short)
+	}
+	for index, want := range wanted {
+		if !reflect.DeepEqual(short[index], want) {
+			t.Errorf("%s answered %#v, want %#v", want.Ref, short[index], want)
+		}
 	}
 }
 
@@ -116,7 +154,9 @@ func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 // A set at the cap is read, one past it is refused naming the cap, and a reference the grammar
 // cannot read - an external URL, or a reference to a person, which it reads none of - is refused
 // naming it. The cap is counted before anything is parsed, so a set past it costs no
-// reference's parse.
+// reference's parse. A block id written short that two blocks of the document carry refuses the
+// whole set with the 409 ID_AMBIGUOUS that GET /api/v1/references answers for it, listing both
+// blocks.
 func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -162,5 +202,22 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 	if none.Code != http.StatusBadRequest || !strings.Contains(none.Body.String(), `"code":"INVALID_REFERENCE"`) {
 		t.Fatalf("a read naming no reference answered status=%d body=%s, want 400 INVALID_REFERENCE",
 			none.Code, none.Body.String())
+	}
+
+	shared := createSpecIssue(t, handler, "CORE", ":::requirement{#deadbeef-one}\nThe first requirement.\n:::\n\n"+
+		":::requirement{#deadbeef-two}\nThe second requirement.\n:::\n")
+	ambiguous := referenceTargetsRequest(t, handler, []string{reference, "dispatch://" + shared.Key + "/spec#b-deadbeef"}, "")
+	if ambiguous.Code != http.StatusConflict {
+		t.Fatalf("a block prefix two blocks carry answered status=%d body=%s, want 409", ambiguous.Code, ambiguous.Body.String())
+	}
+	refusal := decodeBody[ambiguousIDAnswer](t, ambiguous)
+	if refusal.Code != contracts.IDAmbiguous || len(refusal.Candidates) != 2 {
+		t.Fatalf("the refusal is %+v, want %s naming both blocks", refusal, contracts.IDAmbiguous)
+	}
+	for nth, candidate := range refusal.Candidates {
+		want := []string{"deadbeef-one", "deadbeef-two"}[nth]
+		if candidate.Kind != "block" || candidate.ID != want || candidate.IssueKey != shared.Key {
+			t.Errorf("candidate %d = %+v, want the block %s of %s", nth, candidate, want, shared.Key)
+		}
 	}
 }
