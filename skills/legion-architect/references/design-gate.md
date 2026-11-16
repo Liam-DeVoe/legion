@@ -443,6 +443,12 @@ below says. Ask for it too when one of that section's cases holds, even where th
 above are true. `register_gate` reads each condition again. It refuses a call that fails one and
 records nothing, and its code and message name what Dispatch shows.
 
+A view's Design decides how the root builds each of the ancestor's requirements. This holds also
+where it changes a Design line of a version of the root that a person approved before the root
+became a view: such a line is no requirement, and it does not go up to the ancestor. The message
+the daemon posts on the root when its step opens on the basis names that approval, so the person
+can still ask for the root's own approval.
+
 ### How to write the view
 
 - The spec says what the root builds and how, in its Summary, Problem and Design. No document of
