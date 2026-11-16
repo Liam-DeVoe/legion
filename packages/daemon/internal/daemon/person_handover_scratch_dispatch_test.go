@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -25,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -266,7 +265,7 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 		map[string]string{"key": cfg.Project, "name": "A person's handover"}, nil)
 	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
 		map[string]any{"project": cfg.Project, "default": true}, nil)
-	raw, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
+	raw, err := testdb.NewPool(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}

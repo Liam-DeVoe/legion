@@ -14,8 +14,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -23,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testpool"
 )
 
 // webhookRedeliveryLease is the name the running sweep takes its lease under, written here as the
@@ -47,7 +46,7 @@ func redeliverTestLeases(t *testing.T) duty.Leases {
 		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the redelivery sweep's lease tests")
 	}
 	ctx := context.Background()
-	connections, err := pgxpool.New(ctx, url)
+	connections, err := testpool.NewPool(ctx, url)
 	if err != nil {
 		t.Fatalf("open the lease pool: %v", err)
 	}

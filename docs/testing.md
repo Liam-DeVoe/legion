@@ -328,6 +328,26 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
+## A pool a Go test builds
+
+A Postgres pool a test builds has the same size on every machine. pgxpool's default,
+`max(4, runtime.NumCPU())`, is 4 on CI's 4-vCPU runners and 288 on a 288-CPU dev machine, so a test
+that runs work concurrently on an unsized pool opens as many connections as the machine has CPUs:
+on that machine `TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget` ran 100
+appliers on one `testpg.ClonePool`, passed the server's `max_connections` of 100 and failed with
+SQLSTATE 53300, while CI passed.
+
+Each module names the size once: `testdb.PoolConns` in `packages/daemon/internal/testpg/testdb`
+and `testpool.PoolConns` in `packages/envoy/internal/testpool`, both 4, which is what every unsized
+pool already had on CI and pgx's own floor. Neither imports anything of its module, so every test
+package can take it, and `testpool` is a package of its own because envoy's `internal/testpg`
+imports testcontainers. A test writes `testdb.NewPool(ctx, dsn)` or `testpool.NewPool(ctx, dsn)`
+where it would write `pgxpool.New`, and sets `config.MaxConns` to the constant on a config from
+`pgxpool.ParseConfig`; a test that needs another size sets `MaxConns` itself. A pool copied from
+another pool's `Config()` keeps that pool's size: `testpg.ClonePool` and the broker's
+`storetest.URL` and `storetest.Open` are sized at the constant, and Dispatch's `store.Open` sizes
+its own pool.
+
 ## A Go test that opens a NATS client
 
 The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`

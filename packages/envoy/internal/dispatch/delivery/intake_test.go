@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpool"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -42,7 +43,7 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres-backed delivery tests")
 	}
 	ctx := t.Context()
-	pgxPool, err := pgxpool.New(ctx, url)
+	pgxPool, err := testpool.NewPool(ctx, url)
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)
 	}

@@ -20,10 +20,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpool"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
@@ -56,7 +58,8 @@ func randomName(t testing.TB) string {
 
 // URL creates a fresh schema on the DatabaseURLEnv server, migrates it, drops it when t ends, and
 // returns a connection string whose connections use that schema. params are extra connection
-// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset.
+// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset. The
+// store it migrates through is sized as Open's is (sized).
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
 	raw := serverURL(t)
@@ -83,7 +86,7 @@ func URL(t testing.TB, params ...string) string {
 	parsed.RawQuery = query.Encode()
 	dsn := parsed.String()
 
-	st, err := store.Open(ctx, dsn)
+	st, err := store.Open(ctx, dsn, sized(t, dsn))
 	if err != nil {
 		t.Fatalf("open test schema: %v", err)
 	}
@@ -94,15 +97,37 @@ func URL(t testing.TB, params ...string) string {
 	return dsn
 }
 
-// Open is store.Open on a fresh URL(t, params...), closed when t ends.
+// Open is store.Open on a fresh URL(t, params...), closed when t ends. Its pool holds
+// testpool.PoolConns connections unless params name pool_max_conns (sized).
 func Open(t testing.TB, params ...string) *store.Store {
 	t.Helper()
-	st, err := store.Open(context.Background(), URL(t, params...))
+	dsn := URL(t, params...)
+	st, err := store.Open(context.Background(), dsn, sized(t, dsn))
 	if err != nil {
 		t.Fatalf("open test store: %v", err)
 	}
 	t.Cleanup(st.Close)
 	return st
+}
+
+// poolMaxConns is pgx's connection-string parameter for a pool's MaxConns.
+const poolMaxConns = "pool_max_conns"
+
+// sized is the store.Option every store this package opens on dsn takes. Its pool holds
+// testpool.PoolConns connections rather than pgxpool's default, max(4, runtime.NumCPU()), which
+// follows the machine the test runs on, because store.Open sets no size of its own. A dsn that
+// names pool_max_conns keeps the size it names: a test that starves the pool asks for one through
+// URL's params (brokertest.WithPoolMaxConns).
+func sized(t testing.TB, dsn string) store.Option {
+	t.Helper()
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse the test schema's connection string: %v", err)
+	}
+	if parsed.Query().Has(poolMaxConns) {
+		return func(*pgxpool.Config) {}
+	}
+	return func(config *pgxpool.Config) { config.MaxConns = testpool.PoolConns }
 }
 
 // PerPodLoginSchema applies by hand the one statement the release after this one migrates:

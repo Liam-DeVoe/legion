@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testpool"
 )
 
 // --- the tests' Dispatch and id map ----------------------------------------------------------
@@ -808,7 +809,7 @@ func loopTestDB(t *testing.T) *pgxpool.Pool {
 func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
 	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, loopTestPG(t))
+	admin, err := testpool.NewPool(ctx, loopTestPG(t))
 	if err != nil {
 		t.Fatalf("open the test server: %v", err)
 	}
@@ -827,13 +828,13 @@ func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	}
 	u.Path = "/" + name
 	dsn := u.String()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		dropper, err := pgxpool.New(context.Background(), loopTestPG(t))
+		dropper, err := testpool.NewPool(context.Background(), loopTestPG(t))
 		if err != nil {
 			t.Errorf("open the test server to drop %s: %v", name, err)
 			return

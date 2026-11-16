@@ -51,7 +51,7 @@ func emptyStore(t *testing.T) *Store {
 	}
 	adminURL := *base
 	adminURL.Path = "/postgres"
-	admin, err := pgxpool.New(ctx, adminURL.String())
+	admin, err := testdb.NewPool(ctx, adminURL.String())
 	if err != nil {
 		t.Fatalf("connect to the admin database: %v", err)
 	}

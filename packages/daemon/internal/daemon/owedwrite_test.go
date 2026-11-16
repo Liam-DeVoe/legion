@@ -32,7 +32,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -41,6 +40,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -234,8 +234,8 @@ func refusing(behind supervise.Store, token claim.Token, err error) *claimWriteF
 // which is the whole point — what ends it is Timeouts.ClaimWrite, through the context the machine
 // derives for the write.
 //
-// pgxpool.New dials nothing, so the pool is built at once and the first statement is where the
-// wait begins.
+// testdb.NewPool, like pgxpool.New, dials nothing, so the pool is built at once and the first
+// statement is where the wait begins.
 func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWriteFault {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -243,7 +243,7 @@ func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWrit
 		t.Fatalf("listen for the database that never answers: %v", err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	pool, err := pgxpool.New(context.Background(), fmt.Sprintf("postgres://legion@%s/legion?sslmode=disable", listener.Addr().String()))
+	pool, err := testdb.NewPool(context.Background(), fmt.Sprintf("postgres://legion@%s/legion?sslmode=disable", listener.Addr().String()))
 	if err != nil {
 		t.Fatalf("open a pool on the database that never answers: %v", err)
 	}
