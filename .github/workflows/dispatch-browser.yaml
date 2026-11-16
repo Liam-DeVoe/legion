@@ -1491,19 +1491,35 @@ jobs:
   # is the backstop that never fires first, so it is re-derived above from the maximum those
   # runs measured. A download this job does not control may not decide a required check.
   #
-  # Budget: that 554 s re-derived above, 600 s, as this job's first term, plus the arithmetic of
-  # its slowest retried step, which is the setup-bun step below at 2562 s - the shard job's step
-  # of that name derives the figure - above the workspace install's 5 x 180 + 150 = 1050 s. The
-  # image pull is no term of it: it is a ghcr.io pull of a package this repository publishes,
-  # which retries nowhere in this tree, for the reason its own step says and
+  # Round 37 of dispatch://INFRA-1545 took the stack's setup out of the browser step. Merge-group
+  # run 43901029821's job 133419437957 had that step cut at its 4 minutes with 21 of its 22 tests
+  # passed: e2e/visual-run.sh had spent 80 s to the stack's first listener, its Postgres
+  # `docker run` pulling the image among them, 46 s more to the Dispatch server's listening line,
+  # its build and its module downloads among them, and 67 s more to the dev issuer's, which is
+  # the real broker's build, all inside the step's own budget. Those are steps of their own now,
+  # before it: the pull of the stack's Postgres copy, and one build of the four commands to the
+  # paths e2e/run-server.sh and e2e/run-broker.sh write, whose own builds inside the browser step
+  # then find each binary current - beside the module download and the connection count, which
+  # were outside it already. The script is unchanged. Each new step's key is derived beside it,
+  # and the browser step's is derived again there from the tests' own time.
+  #
+  # Budget: this job's first term is the measured half of the rule over its steps as they stand
+  # now: the browser step's 120 s, the Postgres pull's 120 s and the build's 600 s, each that
+  # step's own key, plus the same 314 s of every step without one, 1154 s -> 20 min, so 1200 s;
+  # plus the arithmetic of its slowest retried step, which is the setup-bun step below at
+  # 2562 s - the shard job's step of that name derives the figure - above the workspace
+  # install's and the module download's 5 x 180 + 150 = 1050 s each. The two image pulls are no
+  # term of it: each is a ghcr.io pull of a package this repository publishes, which retries
+  # nowhere in this tree, for the reason the Playwright pull's own step says and
   # .github/scripts/check-download-retry.sh's exception (a) writes down.
-  # 600 + 2562 = 3162 s -> 53 min, which stands above the largest step budget of this job, so
-  # no job budget fires before a step's own. It was 540 + 2562 = 3102 s -> 52 until main's #3516
+  # 1200 + 2562 = 3762 s -> 63 min, which stands above the largest step budget of this job, so
+  # no job budget fires before a step's own. It was 600 + 2562 = 3162 s, 53 minutes, until round
+  # 37 gave the setup steps their own keys; 540 + 2562 = 3102 s, 52 minutes, until main's #3516
   # raised the first term from 9 minutes to 10.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 53
+    timeout-minutes: 63
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1524,13 +1540,11 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
-      # The browser suite's step of this name, at the same bound: run-server.sh builds the
-      # Dispatch server for this job (packages/dispatch/e2e/run-server.sh:370, since the job
-      # sets no DISPATCH_E2E_SERVER_BIN), and that build fetches this module's dependencies
-      # itself on a cache miss. Rule 11 of .github/scripts/check-download-retry.sh cannot see
-      # it, because the build is in a script this job calls, which is the called-script limit
-      # that rule's reach paragraph names. The job's 52 minutes stand: 1050 s is under this
-      # job's largest step budget, setup-bun's 2562 s, which the ceiling is derived from.
+      # The browser suite's step of this name, at the same bound: the build step below compiles
+      # the Dispatch server and the real broker's three commands for this job, and a go build
+      # fetches this module's dependencies itself on a cache miss, where a go command reaches
+      # proxy.golang.org with no retry of its own. The job's key stands on setup-bun's 2562 s,
+      # which is larger than this step's 1050 s, so this step adds no term to it.
       - name: Download the Go modules this job builds
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
@@ -1572,6 +1586,19 @@ jobs:
         # pay for it inside the browser step's own budget. A failed pull is a fault of this
         # repository's own package, so it fails here and says so.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+      # The stack's own Postgres, the copy the browser step below names as DISPATCH_E2E_PG_IMAGE,
+      # pulled here for the reason the Playwright copy is pulled above: e2e/harness-postgres.ts
+      # starts the stack's server with a `docker run` of that digest, which pulls an image the
+      # runner does not hold inside the browser step's own budget. The digest is written in both
+      # steps and must be the same in both; where they part, the pull here buys nothing and the
+      # browser step pulls again. A failed pull is a fault of this repository's own package, so
+      # it fails here and says so (.github/scripts/check-download-retry.sh's exception (a)).
+      - name: Pull the visual stack's Postgres copy
+        # Measured inside the browser step, where the `docker run` made this pull: 7-10 s to the
+        # stack's first listener over the 14 passing runs the browser step's key below reads,
+        # and 80 s in job 133419437957, whose step was cut. 80 x 1.15 = 92 s -> 2 min.
+        timeout-minutes: 2
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       # The stack's connection limit, read outside the browser step's budget, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS).
       - name: Read the connections the visual stack's Postgres must allow
@@ -1581,8 +1608,41 @@ jobs:
           [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
+      # The four commands the stack runs, built outside the browser step's budget with the
+      # commands e2e/run-server.sh and e2e/run-broker.sh run and to the paths they write:
+      # ./dispatch-e2e for the server, and out/dispatch-e2e-broker/ for the broker, its dev
+      # issuer and requestseed, which e2e/real-broker.ts runs from that path alone. Those
+      # scripts still run their own `go build` inside the browser step, and Go writes nothing
+      # there, since each binary's build ID already matches what it would build. Nothing the
+      # script is handed changes: no DISPATCH_E2E_SERVER_BIN and no DISPATCH_E2E_BROKER_BIN_DIR,
+      # so the stack runs the binaries those scripts would have built, under the same names.
+      # .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, so
+      # this one carries the lane.
+      - name: Build the visual stack's Dispatch server and broker
+        # Measured inside the browser step, from the stack's first listener to the dev issuer's
+        # listening line: 72-120 s over the 14 passing runs the browser step's key below reads,
+        # on a restored go-envoy-test cache. The key carries a cold build instead, as the
+        # binaries job's first term carries one for these same four commands: a run on main
+        # restores no other key, and a miss there builds them all cold, which two or three
+        # minutes would cancel. That first term is 600 s -> 10 min.
+        timeout-minutes: 10
+        run: |
+          mkdir -p out/dispatch-e2e-broker
+          go build -o ./dispatch-e2e ./cmd/dispatch
+          go build -o out/dispatch-e2e-broker/ ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+        working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
-        timeout-minutes: 4
+        # The tests' own time, which is what this step holds once the steps above have pulled
+        # its images and built its binaries. Playwright's `22 passed (<s>)` line over 14 passing
+        # runs of this job on 2026-11-16 - merge groups 43894543037, 43891441459, 43891003711,
+        # 43890498473, 43878030884, 43878026790, 43867990046 and 43857961137, pull requests
+        # 43907894300, 43906396458, 43906342739 and 43905806451, and workflow_dispatch runs
+        # 43905122072 and 43905060337 - read 42.4-57.4 s, the maximum in job 133444910330. What
+        # the step still runs beside the tests, the stack's start, the seed and the container's,
+        # read at most 16.6 s in those runs outside the two builds, the pull among it, so the
+        # key holds with it counted too: (57.4 + 16.6) x 1.15 = 85 s. The rule reads the tests:
+        # 57.4 x 1.15 = 66 s -> 2 min, the rule's own floor.
+        timeout-minutes: 2
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of the stack
           # e2e/visual-run.sh starts among it. TMPDIR and that stack's Postgres image are
