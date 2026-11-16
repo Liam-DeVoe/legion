@@ -48,7 +48,7 @@ name: Dispatch browser suite
 #
 # What the job set below costs, measured rather than estimated. The full lane, green at this
 # shape: 2,061 s (run 43045412941), 1,974 s (43074443876) and 1,997 s (43079610268), each over
-# eight jobs, at 15 to 17 minutes of wall time. The same lane on the default branch costs 2,821
+# eight jobs, at 14m42s to 16m29s of wall time. The same lane on the default branch costs 2,821
 # to 2,875 s over twelve jobs (runs 43005917604, 43042217777 and 43040538810), so the shape
 # below is about 29 per cent of a run's machine time cheaper. The pull-request lane: 694 s over
 # five jobs (run 43002633713) at 7 minutes 28 seconds, where it cost 1,195 s over seven
@@ -57,7 +57,8 @@ name: Dispatch browser suite
 # That cost is now held to a budget by the run itself, at the merge job's step "Reading five,
 # the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,656 s and
 # those of a pull-request lane 856 s, which are the committed ceiling of 2,700 s and 900 s less
-# that job's own worst case of 44 s. The three readings above, each taken as the budget takes
+# that job's own worst case of 44 s over pull request #3513's runs of 2026-11-15 up to 17:44Z
+# (job 132733634671). The three readings above, each taken as the budget takes
 # it, which is the lane less its own merge job, are 2,025 s (43045412941, whose merge job took
 # 36 s), 1,946 s (43074443876, 28 s) and 1,964 s (43079610268, 33 s), and all three are inside
 # that budget.
@@ -66,7 +67,7 @@ name: Dispatch browser suite
 # another run, so a figure written here cannot be a ratio against the day's default branch,
 # which is what R4 and R5 of dispatch://INFRA-1109/spec are. It was 2,040 s while those three
 # were the newest readings, 2,400 s once the machines got slower and this suite did not, and
-# 2,700 s once one slow afternoon showed what an absolute figure near the measurement costs:
+# 2,700 s once one slow pair of runs showed what an absolute figure near the measurement costs:
 # on 2026-11-15 two runs of one tree cost 2,252 and 2,450 s (43664675139, 43667557013) with
 # real-stack row medians of 2,746 and 3,126 ms, while the day's thirteen green merge-queue runs
 # of the default branch up to 15:03Z cost 2,975 to 3,347 s, with a median of 3,126 s. Those two
@@ -169,8 +170,8 @@ jobs:
     # budget, so
     # the rule in this file's head gave this job the measured maximum of every step,
     # 84 + 81 = 165 s, rounded up: three minutes. At this shape the build step took 154 s in job
-    # 132738250756 (run 43689921885), and the step maxima of the green binaries jobs of this
-    # branch's runs of 2026-11-15 that concluded by 20:50Z summed to 239 s, which the rule rounds
+    # 132738250756 (run 43689921885), and the step maxima of the green binaries jobs of pull
+    # request #3513's runs of 2026-11-15 that concluded by 20:50Z summed to 239 s, which the rule rounds
     # up to four minutes. The figure below is larger than that
     # on purpose and is not that arithmetic. Every run of that sample restored the Go cache; a
     # run that misses it builds four commands cold, which the planner measured at 3m37s for
@@ -225,7 +226,7 @@ jobs:
       # `bun run build:web-b` writes web/dist-b, the second rollout bundle the multiprocess
       # job's two-builds rows read. DISPATCH_BUILD=e2e-b, which that script carries, is what
       # gives it a build id of its own: web/vite.config.ts:102-109 defaults the id to
-      # GITHUB_SHA, and e2e/two-builds.multiprocess.e2e.ts:79-91 fails when the two entries
+      # GITHUB_SHA, and e2e/two-builds.multiprocess.e2e.ts:80-92 fails when the two entries
       # match. It is built on the full lane alone, the only lane that runs the multiprocess job,
       # so a pull-request run pays nothing for it.
       #
@@ -618,7 +619,7 @@ jobs:
         timeout-minutes: 17
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
-          # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:143) among it, which is what
+          # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:255) among it, which is what
           # the upload steps below read. TMPDIR is exported on the command line, not in this
           # step's `env:`, for the reason the job's head gives.
           export TMPDIR="$RUNNER_TEMP"
@@ -667,10 +668,11 @@ jobs:
           # pull request is answered by: every stubbed row carries the tag, and so do the
           # real-stack rows of the journeys that must be seen on a pull request. Playwright
           # applies a command-line grep **on top of** a project's own, never in place of it -
-          # measured at pull request #3513's base, 475d7609, where `iphone` listed 109 rows and 4 of
-          # them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, and again at this
+          # measured at pull request #2902's base, 475d7609, where `iphone` listed 109 rows and 4 of
+          # them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, at that pull request's
           # head, 23f2d137, where `iphone` listed 119 and the same 4, and `webkit` 40 and the
-          # same 7 - so the two tagged projects keep their own axis and the command's grep
+          # same 7, and again at pull request #3513's 58a10646, where `iphone` lists 123 and the
+          # same 4, and `webkit` 46 and the same 7 - so the two tagged projects keep their own axis and the command's grep
           # selects the rows that carry both tags.
           # Every row without the tag runs on the full lane, which `ci.yaml` runs for every
           # merge group and the nightly runs daily, so `main` is gated exactly as it was and what
@@ -1013,7 +1015,7 @@ jobs:
         timeout-minutes: 4
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
-          # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:143) among it, which is what
+          # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:255) among it, which is what
           # the upload steps below read. TMPDIR is exported on the command line, not in this
           # step's `env:`, for the reason the job's head gives.
           export TMPDIR="$RUNNER_TEMP"
@@ -1262,7 +1264,7 @@ jobs:
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       # Both dashboards this job serves, built once by the binaries job: web/dist is A's and
       # web/dist-b is B's, the second rollout bundle with the build id e2e/two-builds.
-      # multiprocess.e2e.ts:79-91 holds apart from A's. This job runs on the full lane alone,
+      # multiprocess.e2e.ts:80-92 holds apart from A's. This job runs on the full lane alone,
       # which is the lane that bundle is built on.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1518,8 +1520,9 @@ jobs:
 
   # The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
   # set compared against a committed baseline, in light and in dark, at a desktop width and two
-  # of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
-  # number of PNGs under packages/dispatch/e2e/__screenshots__.
+  # of them again at a phone width. Twenty pages in two schemes and two pages in two, so
+  # forty-four comparisons, which is the number of PNGs under
+  # packages/dispatch/e2e/__screenshots__ (40 under visual/ and 4 under visual-phone/).
   #
   # The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
   # or a layout regression is refused at the merge rather than found the next morning, and the
@@ -2194,7 +2197,7 @@ jobs:
       # It is a reading that fails, as reading one does and readings two to four do not: above
       # the lane's budget the step exits 1 and the job is red. The budgets, 2,656 s on the full lane and 856 s on the
       # pull-request lane, are the committed ceiling of 2,700 s and 900 s less this job's own
-      # worst case of 44 s,
+      # worst case of 44 s over pull request #3513's runs of 2026-11-15 up to 17:44Z,
       # which a job reading inside its own run cannot see of itself: its `completed_at` is null
       # while it runs. The script's `machine-time` branch carries that subtraction, the runs the
       # measured 44 s of it came from, and why a jobs file it cannot read refuses rather than
@@ -2211,11 +2214,12 @@ jobs:
       # are found: the download of the legs' blob reports on a download it could not complete,
       # which the step after it names as a failed read and passes; the attempt selection
       # (.github/scripts/dispatch-browser-latest-blobs.sh) on an artifact whose name is no leg's
-      # blob report; the merge step on no blob to merge or no JSON report written; reading one on
+      # blob report or a call without its two directories; the merge step on no blob to merge or no JSON report written; reading one on
       # jobs it could not read (.github/scripts/dispatch-browser-run-reads.sh's `jobs` mode), no
       # leg to hold the report against, a missing blob, or a merged report that dropped rows the
       # legs ran; reading five on a jobs file that is missing, is not a list of jobs or holds no
-      # job that concluded with a duration, and on a lane over its machine-time budget, because a
+      # job that concluded with a duration, on a lane that is neither full nor pull-request, and
+      # on a lane over its machine-time budget, because a
       # budget nothing fails on refuses nothing; and the ci-ok report after this step, on a
       # merge-group run, on an input or a ci.yaml setting it cannot read, or a ci-ok check run it
       # could not post (.github/scripts/ci-ok-report.sh and post-check-run.sh).

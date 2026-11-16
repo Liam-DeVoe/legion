@@ -62,7 +62,7 @@ jobs:
   # GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
   # "Supported keywords for jobs that call a reusable workflow"), so what dispatch-browser.yaml's
   # jobs need is declared here. `contents: read` is the `actions/checkout` step every one of its
-  # five jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
+  # seven jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
   # merge job's "Reading one, the rows" step, which reads this run's own attempt's jobs by running
   # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
   # same file). No `checks: write`, which the ci-ok report would need: this call passes no
@@ -97,8 +97,8 @@ jobs:
   # Both crons start both jobs, since a schedule starts a workflow and not a job, so the 13:41
   # run also runs the full lane. That is a second full lane a day on a repository whose nightly
   # is one, which is the price of keeping this job dispatchable before its own merge; it is
-  # the same eight machines for the same quarter of an hour or a little more, which this
-  # branch's full-lane runs of 2026-11-15 read as 16 to 19 minutes of wall time, and
+  # the same eight machines for the same quarter of an hour or a little more, which pull
+  # request #3513's full-lane runs of 2026-11-15 read as 16 to 19 minutes of wall time, and
   # `concurrency` keeps it from overlapping the 02:17 run.
   #
   # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
