@@ -63,10 +63,26 @@ export async function phase<T>(
 }
 
 /** Opens `path` and waits for the new page's root, so a row's first failure is an assertion of
- *  its own and not a navigation that never settled (decision 26 of the parts). */
+ *  its own and not a navigation that never settled (decision 26 of the parts). The root is drawn
+ *  in its first frame, while it still says "Loading issue…", so this waits on until the read has
+ *  answered: for the loaded issue's column, or the refused address's heading. A check of absence
+ *  made next reads the page, not its loading state. */
 export async function gotoIssue(page: Page, path: string): Promise<void> {
   await page.goto(path);
   await expect(issuePage(page), `${path} drew no [data-issue-page]`).toHaveCount(1);
+  await issueRead(page, path);
+}
+
+/** Waits until the page's read of its issue has answered, as `gotoIssue` does after `goto`: for
+ *  a reload or a move back, which reach the page without it. */
+export async function issueRead(page: Page, path = page.url()): Promise<void> {
+  await expect(
+    page
+      .getByTestId("issue-column")
+      .or(issuePage(page).getByRole("heading", { level: 1 }))
+      .first(),
+    `${path} is still loading its issue`
+  ).toBeVisible();
 }
 
 export function issuePage(page: Page): Locator {

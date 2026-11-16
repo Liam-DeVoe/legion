@@ -1,7 +1,13 @@
 import { ISSUE_TAB_LABELS } from "../web/src/features/issue/issue-tab-list";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "../web/src/features/issue-page/page-words";
-import { createIssue, createIssueArtifact, createProject, createProjectDocument } from "./api";
+import {
+  createAsk,
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  createProjectDocument,
+} from "./api";
 import {
   closeDetails,
   contentsPane,
@@ -10,6 +16,7 @@ import {
   gotoIssue,
   iconRail,
   issuePage,
+  issueRead,
   marginResizeHandle,
   marginShell,
   openDetails,
@@ -25,7 +32,7 @@ import {
   presetToolbar,
 } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, type Route, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -57,7 +64,12 @@ const SEEDED_COUNTS: Readonly<Record<Preset, number>> = {
   verification: 1,
 };
 
-/** One issue with a spec of two statements and a Verification document of one check. */
+/** An agent, whose question waits on the reader. */
+const AGENT = { actor: { id: "e2e-frame-agent", kind: "session" as const }, as: "agent" as const };
+
+/** One issue with a spec of two statements and a Verification document of one check, and beside
+ *  it a second issue whose question waits on alice, FRM's default assignee, so the rail's Inbox
+ *  has a count to draw. */
 async function seedFrame(): Promise<{ key: string }> {
   await createProject({ key: "FRM", name: "Frame" });
   const issue = await createIssue({ project: "FRM", spec: SPEC, title: "The new page's frame" });
@@ -68,11 +80,16 @@ The frame keeps the page's width.
 `,
     name: "verification.md",
   });
+  const waiting = await createIssue({ project: "FRM", title: "A question for the reader" });
+  await createAsk(waiting.key, { question: "Is the frame ready?" }, AGENT);
   return { key: issue.key };
 }
 
 /** The widths R10 of the part holds the frame to. */
 const WIDTHS = [320, 390, 768, 1024, 1280, 1440] as const;
+
+/** R10's widths with 390 px first, the width the view row's negative control names. */
+const PHONE_FIRST = [390, ...WIDTHS.filter((width) => width !== 390)] as const;
 
 /** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
 function viewportAt(width: number): { height: number; width: number } {
@@ -111,6 +128,20 @@ async function boxOf(
   return box;
 }
 
+/** Fails the row where `locator`'s own box scrolls sideways: its content wider than its box. A
+ *  box whose overflow scrolls is checked itself, which `assertWhole` does not do for an empty
+ *  box or for a box under its first leaf. */
+async function assertNoSidewaysScroll(locator: Locator, what: string): Promise<void> {
+  const { client, scroll } = await locator.evaluate((element) => ({
+    client: element.clientWidth,
+    scroll: element.scrollWidth,
+  }));
+  expect(
+    scroll,
+    `${what} scrolls sideways: ${scroll} px of content in ${client} px`
+  ).toBeLessThanOrEqual(client);
+}
+
 // c-frame (1): the frame's half of the checkpoint's "one panel of properties holds no
 // conversation list @phone".
 test("the frame draws an icon rail, Details over the page and the Contents pane @phone", async ({
@@ -127,10 +158,17 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     expect(rail.x, "the rail is not at the left edge").toBe(0);
     expect(rail.width, "the rail is not 56 px wide").toBe(56);
     expect(rail.height, "the rail is not the window's height").toBe(900);
+    // The Inbox link names its count: the seed's question for alice.
+    await expect
+      .poll(
+        async () =>
+          (await iconRail(page).getByRole("link").nth(1).getAttribute("aria-label")) ?? "",
+        { message: "the rail's second link is not the Inbox with its count" }
+      )
+      .toMatch(/^Inbox [1-9]\d*$/);
     const links = await iconRail(page)
       .getByRole("link")
       .evaluateAll((all) => all.map((link) => link.getAttribute("aria-label") ?? ""));
-    expect(links[1], "the rail's second link is not the Inbox").toMatch(/^Inbox( \d+)?$/);
     expect(
       [links[0], ...links.slice(2)],
       "the rail's links are not Dispatch, Inbox, Agents, Priorities, Delivery, Pipeline, the project and Settings"
@@ -150,6 +188,14 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await expect(navigation, "the rail's foot opens no navigation").toBeVisible();
     await page.keyboard.press("Escape");
     await expect(navigation).toBeHidden();
+    // `Shift+S`, which folds today's sidebar, does nothing in the frame: no sidebar, the rail.
+    await focusNothing(page);
+    await page.keyboard.press("Shift+S");
+    await expect(
+      page.getByRole("complementary", { exact: true, name: "Navigation" }),
+      "Shift+S drew the sidebar in the frame"
+    ).toHaveCount(0);
+    await expect(iconRail(page), "Shift+S took the rail away").toHaveCount(1);
 
     // The page's column: the window less the rail.
     const column = await boxOf(issuePage(page), "the page");
@@ -198,21 +244,38 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     const resized = (await boxOf(marginShell(page), "Details")).width;
     expect(resized, "dragging the handle did not widen Details").toBeGreaterThan(384 + 50);
     await page.reload();
-    await expect(issuePage(page)).toHaveCount(1);
+    await issueRead(page);
     await expect(marginShell(page), "a load opened Details").toBeHidden();
     await openDetails(page);
     expect((await boxOf(marginShell(page), "Details")).width, "the width was not kept").toBeCloseTo(
       resized,
       0
     );
+    // The handle moves by the arrow keys too: ArrowLeft widens Details, ArrowRight narrows it.
+    await marginResizeHandle(page).focus();
+    await page.keyboard.press("ArrowLeft");
+    await expect
+      .poll(async () => (await boxOf(marginShell(page), "Details")).width, {
+        message: "ArrowLeft on the handle did not widen Details",
+      })
+      .toBeGreaterThan(resized + 1);
+    await page.keyboard.press("ArrowRight");
+    await expect
+      .poll(async () => (await boxOf(marginShell(page), "Details")).width, {
+        message: "ArrowRight on the handle did not narrow Details",
+      })
+      .toBeCloseTo(resized, 0);
 
     // Leaving the issue and coming back finds it closed.
     await iconRail(page)
       .getByRole("link", { name: /^Inbox/ })
       .click();
-    await expect(page).toHaveURL(/\/$/);
+    // The Inbox selects its one entry, so its address may carry `?item=`.
+    await expect(page).toHaveURL(/^https?:\/\/[^/]+\/(\?[^/]*)?$/);
     await page.goBack();
-    await expect(issuePage(page)).toHaveCount(1);
+    // Where the Inbox pushed its selection as an entry of its own, the issue is one more back.
+    if (!page.url().includes(`/issues/${key}`)) await page.goBack();
+    await issueRead(page);
     await expect(marginShell(page), "coming back to the issue found Details open").toBeHidden();
 
     // The pane: 260 px against the rail with no view on; under a view, no pane and the stage
@@ -221,21 +284,72 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     expect(pane.x, "the pane is not against the rail").toBe(56);
     expect(pane.width, "the pane is not 260 px wide").toBe(260);
     expect(await stageWidth(page), "the stage beside the pane is not 1068 px").toBe(1068);
+    // It is sticky under the identity's height and as tall as the window less that height.
+    const paneFit = await contentsPane(page).evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        height: element.getBoundingClientRect().height,
+        position: style.position,
+        room: window.innerHeight - Number.parseFloat(style.top),
+      };
+    });
+    expect(paneFit.position, "the pane is not sticky").toBe("sticky");
+    expect(
+      Math.round(paneFit.height),
+      "the pane is not the window's height less the identity's"
+    ).toBe(Math.round(paneFit.room));
+    // At 1240 px and below it is 240 px wide.
+    await page.setViewportSize(viewportAt(1240));
+    await expect
+      .poll(async () => (await boxOf(contentsPane(page), "the Contents pane")).width, {
+        message: "the pane is not 240 px wide at 1240 px",
+      })
+      .toBe(240);
+    await page.setViewportSize(viewportAt(1440));
     await gotoIssue(page, presetPath(key, "spec"));
     await expect(contentsPane(page), "a view draws the pane").toHaveCount(0);
     expect(await stageWidth(page), "the stage under a view is not 1328 px").toBe(1328);
 
-    // The rail follows `md`: drawn at 768 px, not at 767 px.
+    // The rail follows `md`: drawn at 768 px, not at 767 px, where the compact bar's "Open
+    // navigation" is not drawn either: the one at 768 px is the rail's own.
     await page.setViewportSize(viewportAt(768));
     await expect(iconRail(page), "no rail at 768 px").toHaveCount(1);
+    await expect(page.getByRole("button", { exact: true, name: "Open navigation" })).toHaveCount(1);
     await page.setViewportSize(viewportAt(767));
     await expect(iconRail(page), "a rail at 767 px").toHaveCount(0);
+    // `md` is in `rem`, as the page's room for the rail (`md:pl-14`) is: at a 20 px default font
+    // it is 960 px, so there is no rail at 900 px and the page is no wider than the window.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Page.setFontSizes", { fontSizes: { standard: 20 } });
+    try {
+      await page.setViewportSize(viewportAt(900));
+      await gotoIssue(page, presetPath(key, "spec"));
+      await expect(iconRail(page), "a rail at 900 px under a 20 px default font").toHaveCount(0);
+      await assertPageFits(page);
+      await page.setViewportSize(viewportAt(1000));
+      await expect(iconRail(page), "no rail at 1000 px under a 20 px default font").toHaveCount(1);
+    } finally {
+      await cdp.send("Page.setFontSizes", { fontSizes: { standard: 16 } });
+      await cdp.detach();
+    }
+    // Below 1280 px the frame lifts the page's scroll padding for the compact bar it does not
+    // draw.
+    await page.setViewportSize(viewportAt(1279));
+    await gotoIssue(page, `/issues/${key}`);
+    expect(
+      await page.evaluate(() => getComputedStyle(document.documentElement).scrollPaddingBottom),
+      "the frame keeps today's scroll padding at 1279 px"
+    ).toBe("0px");
 
     // At 390 px: no rail; Details a dialog the window's width that holds the focus, over the
     // shade; the Outline control opens the Contents sheet 56 px from the top.
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${key}`);
     await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
+    await expect(
+      page.getByRole("button", { exact: true, name: "Open navigation" }),
+      "the frame draws today's compact bar at 390 px"
+    ).toHaveCount(0);
     await focusNothing(page);
     await page.keyboard.press("Shift+M");
     const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
@@ -247,8 +361,23 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     expect(await shade.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(
       "rgba(28, 25, 23, 0.25)"
     );
+    // The focus stays inside it: a Tab past its last control comes back into it.
+    for (let press = 0; press < 12; press += 1) {
+      await page.keyboard.press("Tab");
+      expect(
+        await phoneDetails.evaluate((element) => element.contains(document.activeElement)),
+        "a Tab took the focus out of the phone's Details"
+      ).toBe(true);
+    }
     await page.keyboard.press("Escape");
     await expect(phoneDetails).toBeHidden();
+    // `Shift+M` opens it and closes it on the phone too.
+    await focusNothing(page);
+    await page.keyboard.press("Shift+M");
+    await expect(phoneDetails).toBeVisible();
+    await expect(detailsClose(page)).toBeFocused();
+    await page.keyboard.press("Shift+M");
+    await expect(phoneDetails, "Shift+M did not close the phone's Details").toBeHidden();
     await outlineControl(page).click();
     const sheet = page.getByRole("dialog", { exact: true, name: "Contents" });
     await expect(sheet).toBeVisible();
@@ -261,8 +390,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.keyboard.press("Escape");
     await expect(sheet).toBeHidden();
 
-    // At each of R10's widths, Details closed and open, nothing is wider than the window and
-    // nothing of the frame scrolls sideways.
+    // At each of R10's widths, Details closed and open, nothing is wider than the window, the
+    // rail and the view row are whole, and no scrolling box of the frame scrolls sideways.
     for (const width of WIDTHS) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${key}`);
@@ -270,16 +399,30 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         if (open) await openDetails(page);
         await assertPageFits(page);
         await assertWhole(filterRow(page));
-        if ((await iconRail(page).count()) > 0) await assertWhole(iconRail(page));
-        if ((await contentsPane(page).count()) > 0) await assertWhole(contentsPane(page));
+        await assertNoSidewaysScroll(filterRow(page), `the view row at ${width} px`);
+        if ((await iconRail(page).count()) > 0) {
+          await assertWhole(iconRail(page));
+          await assertNoSidewaysScroll(iconRail(page), `the rail at ${width} px`);
+        }
+        if ((await contentsPane(page).count()) > 0) {
+          await assertNoSidewaysScroll(contentsPane(page), `the pane at ${width} px`);
+        }
         if (open) {
-          await assertWhole(marginShell(page));
+          await assertNoSidewaysScroll(marginShell(page), `Details at ${width} px`);
+          await assertNoSidewaysScroll(
+            marginShell(page).getByTestId("margin-sheet"),
+            `Details' scrolling box at ${width} px`
+          );
           await closeDetails(page);
         }
       }
       if ((await outlineControl(page).count()) > 0) {
         await outlineControl(page).click();
-        await assertWhole(outlineSheet(page));
+        await assertNoSidewaysScroll(outlineSheet(page), `the Outline sheet at ${width} px`);
+        await assertNoSidewaysScroll(
+          outlineSheet(page).locator(":scope > div").last(),
+          `the Outline sheet's scrolling box at ${width} px`
+        );
         await page.keyboard.press("Escape");
         await expect(outlineSheet(page)).toHaveCount(0);
       }
@@ -293,9 +436,10 @@ function addressOf(key: string, view: Preset): RegExp {
 }
 
 /** The view row's height and each control in it, with its box and the words it draws. */
-async function rowControls(
-  page: Page
-): Promise<{ height: number; controls: { height: number; text: string; width: number }[] }> {
+async function rowControls(page: Page): Promise<{
+  height: number;
+  controls: { height: number; text: string; top: number; width: number }[];
+}> {
   const row = await boxOf(filterRow(page), "the view row");
   const controls = await filterRow(page)
     .locator("button, a, input, select")
@@ -418,14 +562,31 @@ test("the five controls are toggles with an address each, one line at every widt
       );
       await expect(presetToggle(page, view)).toHaveAttribute("aria-pressed", "true");
     }
+    // A chord on the view that is on turns it off: `t s` twice comes back to Conversation.
+    await focusNothing(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("s");
+    await expect(page).toHaveURL(addressOf(key, "spec"));
+    await focusNothing(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("s");
+    await expect(page, "t s on Spec did not turn it off").toHaveURL(addressOf(key, "conversation"));
+    await expect(presetToggle(page, "conversation")).toHaveAttribute("aria-pressed", "true");
 
-    // Below 1280 px the one control opens a menu of five, the one on checked; below 1024 px the
-    // Outline control stands beside it.
+    // Below 1280 px the one control, named by the view that is on and its signal, opens a menu
+    // of five, the one on checked; below 1024 px the Outline control stands beside it.
     for (const width of [1279, 390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, presetPath(key, "spec"));
+      await expect(
+        presetChooser(page),
+        `the one control does not name Spec and its count at ${width} px`
+      ).toHaveAccessibleName(new RegExp(`^${PRESET_NAMES.spec} ${SEEDED_COUNTS.spec}\\b`));
       await presetChooser(page).click();
       await expect(openMenu(page)).toHaveCount(1);
+      await expect(openMenu(page).getByRole("menuitemradio"), "the menu is not five").toHaveCount(
+        5
+      );
       for (const preset of PRESET_ORDER) {
         await expect(presetMenuItem(page, preset)).toHaveAttribute(
           "aria-checked",
@@ -434,16 +595,40 @@ test("the five controls are toggles with an address each, one line at every widt
       }
       await page.keyboard.press("Escape");
       await expect(openMenu(page)).toHaveCount(0);
+      await expect(presetChooser(page), "Escape left the focus off the one control").toBeFocused();
+      // The item of the view that is on keeps it on, and gives the focus back to the control.
+      await presetChooser(page).click();
+      await presetMenuItem(page, "spec").click();
+      await expect(openMenu(page)).toHaveCount(0);
+      await expect(page, "the checked item turned Spec off").toHaveURL(addressOf(key, "spec"));
+      await expect(presetChooser(page), "a chosen item left the focus nowhere").toBeFocused();
+      // Conversation, chosen from an address of the issue that is no view's, goes to the issue's.
+      await gotoIssue(page, `/issues/${key}/collaborators`);
+      await presetChooser(page).click();
+      await presetMenuItem(page, "conversation").click();
+      await expect(page).toHaveURL(addressOf(key, "conversation"));
     }
+    // With the menu open under the Outline sheet, Escape closes the sheet and leaves the menu.
+    await gotoIssue(page, `/issues/${key}`);
+    await presetChooser(page).click();
+    await expect(openMenu(page)).toHaveCount(1);
+    await outlineControl(page).click();
+    await expect(outlineSheet(page)).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(outlineSheet(page), "Escape in the sheet did not close it").toHaveCount(0);
+    await expect(openMenu(page), "Escape in the sheet closed the menu under it").toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(openMenu(page)).toHaveCount(0);
     for (const width of [1023, 390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${key}`);
       await expect(outlineControl(page), `no Outline control at ${width} px`).toHaveCount(1);
     }
 
-    // At each of R10's widths the row is one line, at most 35 px tall from 1280 px and 51 px
-    // below, no control in it under 24 px, and each control's words inside its name.
-    for (const width of WIDTHS) {
+    // At each of R10's widths, 390 px first, the row is one line, at most 35 px tall from
+    // 1280 px and 51 px below, no control in it under 24 px, and each control's words inside
+    // its name.
+    for (const width of PHONE_FIRST) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${key}`);
       await assertPageFits(page);
@@ -454,6 +639,15 @@ test("the five controls are toggles with an address each, one line at every widt
         })
         .toBeLessThanOrEqual(limit);
       const { controls } = await rowControls(page);
+      const [first] = controls;
+      for (const control of controls) {
+        expect(
+          first !== undefined &&
+            control.top < first.top + first.height &&
+            control.top + control.height > first.top,
+          `"${control.text}" is not on the row's one line at ${width} px`
+        ).toBe(true);
+      }
       for (const control of controls) {
         expect(
           control.height,
@@ -568,9 +762,10 @@ test("a reader with the preference off keeps today's shell on the issue page", a
  * The new page fills a slot in the shell's margin and draws its own frame (dispatch://INFRA-1196
  * R12, R14), and the margin is mounted once for every route. These three rows say the frame
  * changed no other page for a reader who turned the new page on: each draws its margin as it did,
- * no rail, and none of the new page's panel.
+ * no rail, and no Details. Details carries `data-details` (`margin-slot.tsx`'s
+ * `DETAILS_ATTRIBUTE`) open or closed, wherever the shell hands the margin a drawer.
  */
-const ISSUE_PANEL = '[data-testid="issue-margin"]';
+const ISSUE_PANEL = "[data-details]";
 
 test("a project document page draws its margin, and none of the issue page's panel", async ({
   browser,
@@ -637,29 +832,41 @@ test("an Agents page keeps its margin-less layout", async ({ browser }) => {
 // @phone" (`e2e/phone.e2e.ts`), with the new page on: the frame's skeleton names nothing.
 test("the issue page's skeleton fits a phone and names no tab @phone", async ({ browser }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
-    await page.setViewportSize({ height: 844, width: 390 });
-    // The new page's own chunk, held until the skeleton has been read: it is the only thing
-    // between the address and the page, so holding it is what makes the skeleton readable at
-    // all. The navigation is not awaited while it is held, and is let go at the end.
-    const held = Promise.withResolvers<void>();
-    await page.route("**/assets/IssuePage-*.js", async (route) => {
-      await held.promise;
-      await route.continue();
-    });
-    const arrival = page.goto(`/issues/${key}`).catch(() => undefined);
-    const skeleton = page.locator('[aria-busy="true"]');
-    await expect(skeleton.locator('[role="toolbar"]')).toBeVisible();
-    expect((await skeleton.innerText()).trim(), "the frame's skeleton names a tab").toBe("");
-    await expect(skeleton.locator('[role="toolbar"] > *')).toHaveCount(5);
-    const layout = await page.evaluate(() => ({
-      client: document.documentElement.clientWidth,
-      scroll: document.documentElement.scrollWidth,
-    }));
-    expect(
-      layout.scroll,
-      `the skeleton made the page ${layout.scroll}px wide in a ${layout.client}px viewport`
-    ).toBeLessThanOrEqual(layout.client);
-    held.resolve();
-    await arrival;
+    // At each of R10's widths, 390 px first. The new page's own chunk is held until the
+    // skeleton has been read: it is the only thing between the address and the page, so holding
+    // it is what makes the skeleton readable at all. The navigation is not awaited while it is
+    // held, and is let go once the width is read.
+    for (const width of PHONE_FIRST) {
+      await page.setViewportSize(viewportAt(width));
+      const held = Promise.withResolvers<void>();
+      const hold = async (route: Route) => {
+        await held.promise;
+        await route.continue();
+      };
+      await page.route("**/assets/IssuePage-*.js", hold);
+      const arrival = page.goto(`/issues/${key}`).catch(() => undefined);
+      // The page's skeleton, in `<main>`: the app's own loading state outside it, which names
+      // Dispatch while the session is read, is no skeleton of the page's.
+      const skeleton = page.getByTestId("main-content").locator('[aria-busy="true"]');
+      // The words first: today's skeleton names its tabs and draws no toolbar, so a frame that
+      // drew it fails here, on the assertion this row is for.
+      await expect(skeleton).toBeVisible();
+      expect(
+        (await skeleton.innerText()).trim(),
+        `the frame's skeleton names a tab at ${width} px`
+      ).toBe("");
+      await expect(skeleton.locator('[role="toolbar"] > *')).toHaveCount(5);
+      const layout = await page.evaluate(() => ({
+        client: document.documentElement.clientWidth,
+        scroll: document.documentElement.scrollWidth,
+      }));
+      expect(
+        layout.scroll,
+        `the skeleton made the page ${layout.scroll}px wide in a ${layout.client}px viewport`
+      ).toBeLessThanOrEqual(layout.client);
+      held.resolve();
+      await arrival;
+      await page.unroute("**/assets/IssuePage-*.js", hold);
+    }
   });
 });
