@@ -2,11 +2,18 @@ import { type ReactNode, useState } from "react";
 
 import type { Subscriber } from "../../api/types";
 import { usePageWords, useTooltips } from "../../components/tooltips";
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { pageLabelChip, pageMutedText, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
 import { Timestamp } from "../refs/Timestamp";
 import { UnsubscribeDialog } from "./UnsubscribeDialog";
+
+/** A session's chip and its remove control inside `NoTooltips`, in the new issue page's colours
+ *  (dispatch://INFRA-3935 R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md),
+ *  on `SessionChip`'s shapes: the page's label chip, and muted words that turn the failed red
+ *  under the pointer, as `main`'s turn the danger red. */
+const PAGE_SESSION_CHIP = `flex items-center gap-2 rounded-full px-3 py-1 text-sm ${pageLabelChip}`;
+const PAGE_SESSION_REMOVE = `font-medium ${pageMutedText} hover:text-page-failed disabled:cursor-not-allowed disabled:opacity-50`;
 
 export interface SubscribedAgentsProps {
   onUnsubscribe: (sessionId: string) => void;
@@ -50,10 +57,17 @@ export function SubscribedAgents({
 
   return (
     <section aria-label="Subscribed agents" className="mt-2">
-      <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Subscribed agents</h2>
+      <h2
+        className={`text-sm font-semibold ${page === null ? textSecondaryOnSurface : pageMutedText}`}
+      >
+        Subscribed agents
+      </h2>
       <ul className="mt-2 flex flex-wrap gap-2">
         {subscribers.map((subscriber) => (
-          <li className={sessionChipClassName} key={subscriber.session_id}>
+          <li
+            className={page === null ? sessionChipClassName : PAGE_SESSION_CHIP}
+            key={subscriber.session_id}
+          >
             <span title={tooltips ? subscriber.session_id : undefined}>
               <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
             </span>
@@ -66,7 +80,7 @@ export function SubscribedAgents({
               </span>
             )}
             <button
-              className={sessionRemoveButtonClassName}
+              className={page === null ? sessionRemoveButtonClassName : PAGE_SESSION_REMOVE}
               disabled={!subscriber.removable}
               onClick={() => setConfirming(subscriber)}
               title={

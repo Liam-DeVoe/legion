@@ -2,23 +2,32 @@ import type { Artifact, Comment, Decision, DisplayTree, IssueDecisions } from ".
 import { compareTimestamps } from "../../lib/timestamps";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
+import type { DocumentBlocks } from "./issue-tree";
 
 /**
  * Which of an issue's decisions wait for the reader's review, and which a reader asked to
  * change (dispatch://INFRA-1196 R7, R13, R35).
  *
- * This module is pure and imports nothing of the tree, so the tree (`tree-drafts.ts`), the
- * Decisions filter (`decisions-filter/decisions-parts.ts`) and the header's count of what waits
- * on the reader (`waiting.ts`) read one rule each and cannot disagree.
+ * This module is pure and imports no code of the tree, only the type of a document's blocks, so
+ * the tree (`tree-drafts.ts`), the Decisions filter (`decisions-filter/decisions-parts.ts`) and
+ * the header's count of what waits on the reader (`waiting.ts`) read one rule each and cannot
+ * disagree.
  *
  * A Change is a comment of the issue anchored to the decision's own words in the decisions
  * document (`DecisionActions.tsx`), which is the write the old Decisions tab made; the decisions
- * read holds no state for it. So the page reads it from the comments it already reads: the
- * newest comment a person anchored to a decision's words since that decision last changed is
- * the change they asked for. The decision then waits on its agent, not on the reader: it says
- * it was changed, it leaves the review list and every count of what waits on the reader, and the
- * change is drawn under it. Once the agent edits the decision, the change is older than its
- * words and the decision waits for review again.
+ * read holds no state for it. So the page reads it from the comments it already reads: every
+ * comment a person anchored in a decision's section of the decisions document, on that
+ * decision's words, since that decision last changed is a change they asked for, and is drawn
+ * under it (`decisionChangeComments`); the newest is the change the decision waits on
+ * (`decisionChanges`). The decision then waits on its agent, not on the reader: it says it was
+ * changed, and it leaves the review list and every count of what waits on the reader. Once the
+ * agent edits the decision, every change is older than its words and the decision waits for
+ * review again.
+ *
+ * A decision's section is its own block (`Decision.block_id`, its heading) and every block after
+ * it up to the next decision's, in the decisions document's blocks (`DocumentBlocks`). The block
+ * an anchor was written in (`Anchor.block_id`) names the section, and so the decision: the quote
+ * alone cannot, since two decisions can hold the same words.
  */
 
 /** The fields of a comment this module reads. */
@@ -27,14 +36,14 @@ export type ChangeComment = Pick<Comment, "anchor" | "author" | "body" | "create
 /** The fields of a decision this module reads. */
 type ChangedDecision = Pick<
   Decision,
-  "changed_at" | "kept" | "ref" | "replaced" | "text" | "text_tree"
+  "block_id" | "changed_at" | "kept" | "ref" | "replaced" | "text" | "text_tree"
 >;
 
 /**
  * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
  * person's review - neither kept as it reads now nor replaced, which is the server's
- * `waiting_review` (dispatch://INFRA-1150 R2) - that a `shaped` tie names a statement of this
- * issue for, and that the reader has not asked to change since it last changed (`changed`).
+ * `waiting_review` (dispatch://INFRA-1150 R2) - that a link ties to a statement of this issue,
+ * and that the reader has not asked to change since it last changed (`changed`).
  * `isStatement` answers whether an address names a statement.
  *
  * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
@@ -69,20 +78,28 @@ export function decisionsDocumentId(
 }
 
 /**
- * The change a person asked of each decision, by the decision's own address (`Decision.ref`):
- * the newest comment a person anchored to the decision's words in the decisions document, made
- * after the decision last changed and after it was last kept. A decision that was replaced
- * takes no change: nothing waits on it any longer. Comments are matched by their anchor's
- * quote, which is the decision's text as the server matches quotes (`pmdoc.FindQuote`), so a
- * quote of a decision's words names that decision and no other, and by the document their
- * anchor names, which is the issue's document at the read's address (`decisionsDocumentId`).
+ * Each change a person asked of a decision, by the comment's id, to the decision's own address
+ * (`Decision.ref`): every comment a person wrote, anchored in the decisions document (the issue's
+ * document at the read's address, `decisionsDocumentId`) on the words of the decision whose
+ * section holds the anchor's block (`sectionsOf`), made after the decision last changed and
+ * after it was last kept. A decision that was replaced takes no change: nothing waits on it any
+ * longer. A quote is matched against the decision's words as the server matches quotes
+ * (`pmdoc.FindQuote`), on its text and not its markdown.
+ *
+ * The section is read from `documents`, the blocks of the issue's documents the page has read.
+ * Only where the anchor stores no block, or the decisions document's blocks are not read or do not
+ * hold the anchor's block yet, does the quote alone decide: the change is the first decision's
+ * whose words hold it. A block above the first decision belongs to no decision, and a comment
+ * anchored there is no change. Every comment it holds is drawn under its decision; one older than
+ * the decision's words is no change and is not held.
  */
-export function decisionChanges(
+export function decisionChangeComments(
   decisions: Pick<IssueDecisions, "decisions" | "document"> | undefined,
   comments: readonly ChangeComment[] | undefined,
-  artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined
-): ReadonlyMap<string, ChangeComment> {
-  const changes = new Map<string, ChangeComment>();
+  artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined,
+  documents: readonly DocumentBlocks[] | undefined
+): ReadonlyMap<string, string> {
+  const changes = new Map<string, string>();
   const rows = (decisions?.decisions ?? []).filter((row) => !row.replaced);
   const document = decisionsDocumentId(artifacts, decisions);
   if (rows.length === 0 || document === undefined) return changes;
@@ -91,8 +108,12 @@ export function decisionChanges(
   const words = new Map(
     rows.map((row) => [
       row.ref,
-      flat(row.text_tree === undefined ? row.text : wordsOf(row.text_tree as DisplayTree)),
+      flat(row.text_tree === undefined ? row.text : wordsOf(row.text_tree)),
     ])
+  );
+  const sections = sectionsOf(
+    decisions?.decisions ?? [],
+    documents?.find((one) => one.artifactId === document)?.blocks
   );
   for (const comment of comments ?? []) {
     const anchor = comment.anchor;
@@ -101,11 +122,62 @@ export function decisionChanges(
     }
     const quote = flat(anchor.quote);
     if (quote === "") continue;
-    const row = rows.find((one) => words.get(one.ref)?.includes(quote) === true);
-    if (row === undefined || !after(comment.created_at, row)) continue;
-    const held = changes.get(row.ref);
+    const holds = (row: ChangedDecision): boolean => words.get(row.ref)?.includes(quote) === true;
+    const section = anchor.block_id ? sections.get(anchor.block_id) : undefined;
+    const row =
+      section === undefined
+        ? rows.find(holds)
+        : rows.find((one) => one.ref === section && holds(one));
+    if (row !== undefined && after(comment.created_at, row)) changes.set(comment.id, row.ref);
+  }
+  return changes;
+}
+
+/**
+ * The decision each block of the decisions document sits in, by the block's id, to the
+ * decision's own address: the decision whose own block (`Decision.block_id`, its heading) is the
+ * last decision block at or before it in document order, a replaced decision's included, and
+ * `null` for a block above the first decision. Empty where the blocks are not read.
+ */
+function sectionsOf(
+  decisions: readonly ChangedDecision[],
+  blocks: DocumentBlocks["blocks"] | undefined
+): ReadonlyMap<string, string | null> {
+  const headings = new Map(decisions.map((row) => [row.block_id, row.ref]));
+  const sections = new Map<string, string | null>();
+  let section: string | null = null;
+  for (const block of blocks ?? []) {
+    section = headings.get(block.id) ?? section;
+    sections.set(block.id, section);
+  }
+  return sections;
+}
+
+/**
+ * The change each decision waits on, by the decision's own address (`Decision.ref`): the newest
+ * of the changes a person asked of it (`decisionChangeComments`, which `placed` holds where the
+ * caller has read it already). `documents` are the blocks of the issue's documents the page has
+ * read, `undefined` where it has read none. A decision with none is not held.
+ */
+export function decisionChanges(
+  decisions: Pick<IssueDecisions, "decisions" | "document"> | undefined,
+  comments: readonly ChangeComment[] | undefined,
+  artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined,
+  documents: readonly DocumentBlocks[] | undefined,
+  placed: ReadonlyMap<string, string> = decisionChangeComments(
+    decisions,
+    comments,
+    artifacts,
+    documents
+  )
+): ReadonlyMap<string, ChangeComment> {
+  const changes = new Map<string, ChangeComment>();
+  for (const comment of comments ?? []) {
+    const ref = placed.get(comment.id);
+    if (ref === undefined) continue;
+    const held = changes.get(ref);
     if (held === undefined || compareTimestamps(comment.created_at, held.created_at) > 0) {
-      changes.set(row.ref, comment);
+      changes.set(ref, comment);
     }
   }
   return changes;

@@ -59,7 +59,7 @@ function keepFocusOnRow(control: HTMLElement): void {
 /**
  * Each decision's Change the reader has open, by the decision's own address (`Decision.ref`),
  * with the words typed in it so far: `""` for a form opened with nothing typed yet, and no entry
- * for a Change that is closed or whose words were sent. A row's body closes once the focus
+ * for a Change that is closed, or whose words are out or landed. A row's body closes once the focus
  * leaves the rows, and Keep and Change go with it; held here, above the rows, the open form and
  * its words come back as the reader left them when the body opens again, rather than being
  * dropped with no word said.
@@ -273,6 +273,13 @@ function ChangeComposer({
       void queryClient.invalidateQueries({ exact: true, queryKey: ["comments", issueKey] });
       onDone();
     },
+    // A send Dispatch refused, or one the reader stopped, gives the words back to the draft: the
+    // form keeps them while it is drawn, and a body that closed before the refusal, or closes
+    // after it, opens again with the Change and its words. The mutation runs this after the form
+    // has gone too, as it runs `onSuccess`.
+    onError: (_error, input) => {
+      drafts?.set(decision.ref, input.body);
+    },
   });
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
@@ -291,9 +298,9 @@ function ChangeComposer({
         event.preventDefault();
         if (body.trim() === "") return;
         // Send is disabled while the comment is out, and the form goes once it lands. The draft
-        // goes as the send starts: a body that closes while the comment is out comes back with
-        // Change closed, and the shell's pending-writes indicator holds the send, so a second
-        // press cannot write the change twice.
+        // goes while the send is out: a body that closes then comes back with Change closed, and
+        // the shell's pending-writes indicator holds the send, so a second press cannot write the
+        // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
         send.mutate({ body, quote });

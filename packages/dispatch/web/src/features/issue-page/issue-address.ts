@@ -1,6 +1,6 @@
-import { decodeBlockId, itemFromSearch } from "@legion/contracts";
+import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
 
-import type { Comment, MessageRead } from "../../api/types";
+import type { Ask, Comment, MessageRead } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
@@ -118,6 +118,20 @@ function routeTarget(route: IssueRoute, specSlug: string | undefined): AddressTa
   return undefined;
 }
 
+/** The item the document an address opens lands on (`IssueAddress.documentItem`): none where
+ *  the address opens no document (`addressed`), the ask or comment `?ask=` or `?comment=` names
+ *  (`item`) where it also pins a `version`, and otherwise the one `?mark=` names (`marked`). */
+function documentItemOf(
+  addressed: string | undefined,
+  item: DispatchHrefItem | null | undefined,
+  version: number | undefined,
+  marked: string
+): IssueAddress["documentItem"] {
+  if (addressed === undefined) return undefined;
+  if (item !== null && item !== undefined && version !== undefined) return item;
+  return marked === "" ? undefined : { id: marked, kind: "mark" };
+}
+
 /**
  * What the address `route` + `search` + `hash` opens. `specSlug` is the slug of the issue's
  * spec, which a block a `/spec` address names is looked up in; undefined until the issue's
@@ -161,14 +175,7 @@ export function issueAddress(
   const version = pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined);
   const addressed = routeDocument(route, specSlug);
   const marked = query.get("mark") ?? "";
-  const documentItem =
-    addressed === undefined
-      ? undefined
-      : item !== null && item !== undefined && version !== undefined
-        ? item
-        : marked === ""
-          ? undefined
-          : { id: marked, kind: "mark" as const };
+  const documentItem = documentItemOf(addressed, item, version, marked);
   const outlineItem = documentItem === undefined && item !== null && item !== undefined;
   const namesSpecBlock = route.kind === "spec" && named?.kind === "block";
   return {
@@ -194,15 +201,19 @@ export function issueAddress(
 /**
  * The id `target` names where it is a comment or a message an agent wrote outside every thread
  * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
- * for every other target, and while the reads that tell are not in (`agents-only.ts`).
+ * for every other target, and while the reads that tell are not in (`agents-only.ts`). `asks`
+ * is the asks read, which tells a reply under a question the outline draws from one under an
+ * approval request, which it does not; a caller that has not read the asks passes `undefined`,
+ * and a reply under any ask is then the outline's.
  */
 export function agentsOnlyItem(
   target: AddressTarget | undefined,
   comments: readonly Pick<Comment, "ask_id" | "author" | "id" | "reply_to">[] | undefined,
-  messages: readonly MessageRead[] | undefined
+  messages: readonly MessageRead[] | undefined,
+  asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): string | undefined {
   if (target?.kind !== "item") return undefined;
-  return agentsOnlyIds(comments, messages).has(target.id) ? target.id : undefined;
+  return agentsOnlyIds(comments, messages, asks).has(target.id) ? target.id : undefined;
 }
 
 /** The chain from `root` down to the first node `wanted` answers for, the root first, or

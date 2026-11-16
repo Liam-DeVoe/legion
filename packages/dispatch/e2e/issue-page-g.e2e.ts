@@ -43,8 +43,8 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 /**
  * Part G of dispatch://INFRA-1196, "A node's row" (dispatch://INFRA-3947): one node of an issue
  * drawn as one row of the approved design, in the new page's body, which draws the
- * conversation's rows with every branch unfolded (`ConversationRows.tsx`) until part I's outline
- * replaces it. Each row is one `check` block of dispatch://INFRA-3947/artifact/verification-md,
+ * conversation's rows with every branch unfolded until part I's outline replaces them. Each row
+ * is one `check` block of dispatch://INFRA-3947/artifact/verification-md,
  * named by its `-g` string, and reads the page through `e2e/issue-page-g.ts`; every row unfolds
  * each folded branch before it reads, so it holds on part I's outline too.
  *
@@ -114,8 +114,27 @@ test("a node draws its kind at the right of its row and every node starts at one
       await expectLoadSettled(settling);
       const where = `the conversation at ${size.width} px`;
       if (size.width === PHONE.width) {
-        // The load takes no focus, so it scrolls nothing (R8).
-        expect(await page.evaluate(() => window.scrollY), `${where} scrolled at load`).toBe(0);
+        // Part I's load puts the focus on the first question that waits on the reader, in the
+        // outline's order, and holds its row on screen (its R8): the seed holds two such.
+        const waiting = [seeded.waitingLong, seeded.openQuestion];
+        const first = (await drawnRows(page)).find((row) => waiting.includes(row.id ?? ""));
+        expect(first, `${where} draws no question that waits on the reader`).toBeDefined();
+        const question = first?.id ?? "";
+        await expect(
+          nodeRow(page, question).first(),
+          `${where} does not focus that question at load`
+        ).toBeFocused();
+        // A waiting question's words are drawn whole and the focused row draws its body, so the
+        // row of the seed's 160 words is taller than the screen, which holds it from its top.
+        await expect
+          .poll(
+            async () => {
+              const top = rowOf(await drawnRows(page), question)?.box?.y ?? -1;
+              return top >= 0 && top < size.height;
+            },
+            { message: `${where} holds the top of that question's row off screen` }
+          )
+          .toBe(true);
       }
       await expectSeedDrawn(page, seeded);
       await expect

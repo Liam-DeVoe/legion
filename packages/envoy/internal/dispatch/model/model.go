@@ -3192,19 +3192,25 @@ type GraphReferences struct {
 // reference as the request named it, Kind, the kind of node it names (a GraphNode kind), Name,
 // the words a reader is shown for the target in place of its text (refs.TargetNames), and Gone,
 // whether nothing answers to that reference now. A gone target carries no name: its node was
-// deleted, so there is nothing left to name it by. TextTree is a block's whole text as the tree a
-// reader is shown, every link and dispatch:// reference kept and nothing cut, where Name stops at
-// the block's stored excerpt: a typed block's is of its own content, what stands between its
-// opening line and its closing one. A typed block whose stored text does not read back as that
-// block alone (one in a quote) answers the tree of its whole stored text, its opening line
-// included. Only a member whose Kind is block carries one, and only for a caller that sent
-// `Dispatch-Trees: 1`.
+// deleted, so there is nothing left to name it by. Ambiguous says why a member is gone when its
+// reference writes a short id that two or more items carry: the read answers that member gone
+// and answers every other member, where GET /api/v1/references refuses such an id with a 409.
+// TextTree is a block's whole text as the tree a reader is shown, every link and dispatch://
+// reference kept and nothing cut, where Name stops at the block's stored excerpt: a typed
+// block's is of its own content, what stands between its opening line and its closing one. A
+// typed block whose stored text does not read back as that block alone (one in a quote) answers
+// the tree of its whole stored text, its opening line included. Only a member whose Kind is
+// block carries one, and only for a caller that sent `Dispatch-Trees: 1`.
 type ReferenceTarget struct {
-	Ref      string      `json:"ref"`
-	Kind     string      `json:"kind"`
-	Name     string      `json:"name"`
-	Gone     bool        `json:"gone"`
-	TextTree DisplayTree `json:"text_tree,omitempty"`
+	Ref  string `json:"ref"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Gone bool   `json:"gone"`
+	// Ambiguous is true for a reference whose short id two or more items carry in the scope
+	// that the reference names. Such a member is gone, with the name "", and every other
+	// member of the read is answered. The key is left out otherwise.
+	Ambiguous bool        `json:"ambiguous,omitempty"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
 }
 
 // ReferenceTargets is GET /api/v1/reference-targets: one member per ?ref= the request named, in
