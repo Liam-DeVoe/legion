@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { EVENT_HEAD_RETRY_CEILING_MS } from "../web/src/api/query-client";
-import { baseUrl, createIssue, createProject, sessionCookieName } from "./api";
+import { baseUrl, createComment, createIssue, createProject, sessionCookieName } from "./api";
 import { holdFirstRequest } from "./editor";
 import { failBuildScript, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
 import { expect, test } from "./test";
@@ -338,6 +338,44 @@ test("a tab that reloaded three times in the last five minutes does not reload f
     await sleep(250);
     expect(counts).toEqual({ documents: 1, entryRequests: 1 });
     expect(await tabReloads(page)).toEqual(spent);
+  } finally {
+    await context.close();
+  }
+});
+
+// The headless Markdown engine is warmed at boot by a prefetch, and a prefetch's failure reloads
+// nothing while no render waits on it. So a page that draws no body - the board here - can lose
+// that download and stay up; the first body drawn afterwards must still render, by asking for
+// the engine again or by the reload a render's failure takes. At the merge base d5e2a5fe this row
+// passes by a reload; at acc4638d the engine keeps the first rejection, asks for nothing again,
+// and the comment stays literal Markdown for the life of the tab.
+test("a Markdown engine that failed to download before any body was drawn still renders the first body drawn after it", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A comment with emphasis" });
+  await createComment(issue.key, { body: "A **bolded** word in a comment." }, { login: "bob" });
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  let engineAsks = 0;
+  await page.route(/\/assets\/lib-headless-[^/]+\.js$/, async (route) => {
+    engineAsks += 1;
+    if (engineAsks === 1) {
+      await route.abort();
+    } else {
+      await route.continue();
+    }
+  });
+
+  try {
+    await page.goto("/projects/CORE/issues");
+    await expect(page.getByText("A comment with emphasis").first()).toBeVisible();
+    // The boot warm has asked for the engine and lost it before the body is drawn.
+    await expect.poll(() => engineAsks).toBeGreaterThan(0);
+    await page.getByText("A comment with emphasis").first().click();
+    await page.getByRole("tab", { name: "Conversation" }).click();
+    await expect(page.locator("strong", { hasText: "bolded" })).toBeVisible();
+    await expect(page.getByText("**bolded**")).toHaveCount(0);
   } finally {
     await context.close();
   }
