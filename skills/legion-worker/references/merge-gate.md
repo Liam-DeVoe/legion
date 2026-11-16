@@ -170,8 +170,10 @@ as the fingerprint decides (*The reviewer*, below, and
   below), and that read is no new round.
 
 A reviewer's phase ends with its completion, not with its review. Every round records a handoff
-and takes this order: read CI as above; write the handoff and record it with
-`dispatch handoff-write`; submit the review of the head, by its SHA; then complete. A red at the
+and takes this order: read CI as above, and where the reviewer re-runs a red at the head, record
+the failure before it presses the re-run (`skill://legion-worker/references/red-at-the-head.md`);
+write the handoff and record it with `dispatch handoff-write`; submit the review of the head, by
+its SHA; then complete. A red at the
 code is a `REQUEST_CHANGES` naming the check, never an approval. A request for changes does not
 wait, since it stands whatever CI says and the issue leaves reviewing with it. The approval waits
 on nothing either: it ends the round whatever CI says at the head it names, since the round reads
