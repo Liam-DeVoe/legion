@@ -20,7 +20,7 @@ const workflowsDir = ".github/workflows"
 var ciDirs = []string{workflowsDir, ".github/actions", ".github/scripts", "scripts"}
 
 // runGuard is "spec-check guard --root <dir>": it reads every regular file under the CI
-// directories of the repository at dir, and answers 0 when no line of them holds the command that
+// directories of the repository at dir, and answers 0 when no line of them names the command that
 // compares the files with the approved spec (ciFilesThatCompare), 1 when one does or when it read
 // no workflow, and 2 for a directory or a file it cannot read or arguments it does not take.
 func runGuard(args []string, stdout, stderr io.Writer) int {
@@ -80,7 +80,7 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 
 	hits := ciFilesThatCompare(files)
 	for _, hit := range hits {
-		say(stderr, "%s: this line holds the command that compares the files with the approved spec, and no CI job runs that command (R2). If no shell runs this line, reword it.", filepath.Join(root, hit))
+		say(stderr, "%s: this line names the command that compares the files with the approved spec, and no CI job runs that command (R2). If the line only mentions the command, for example in a comment, a quoted text, a pattern or a name, reword it.", filepath.Join(root, hit))
 	}
 	switch {
 	case workflows == 0:
@@ -89,13 +89,13 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 		say(stderr, "%s: read no workflow", root)
 		return 1
 	case len(hits) > 0:
-		verb := "hold"
+		verb := "name"
 		if len(hits) == 1 {
-			verb = "holds"
+			verb = "names"
 		}
 		say(stdout, "%s: %s of CI files %s the command that compares the files", root, count(len(hits), "line"), verb)
 		return 1
 	}
-	say(stdout, "%s: no line of %s holds the command that compares the files", root, count(len(files), "CI file"))
+	say(stdout, "%s: no line of %s names the command that compares the files", root, count(len(files), "CI file"))
 	return 0
 }
