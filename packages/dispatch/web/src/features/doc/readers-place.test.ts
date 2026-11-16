@@ -435,6 +435,54 @@ test("a box kept above a reader whose own scroll is still moving leaves that scr
   }
 });
 
+/** The reader presses a key, which every listener the module holds for it hears. */
+function key(): void {
+  for (const listener of windowListeners.get("keydown") ?? []) listener(new Event("keydown"));
+}
+
+// A key that scrolls nothing - a letter typed into an answer box, Shift, a copy - starts no
+// movement of the reader's for a correction to end, so the page under them is still this
+// module's to keep, in the task the growth is seen in as on a quiet page. Driven in a browser
+// with its own scroll anchoring off, on `e2e/large-documents-first-screen.e2e.ts`'s "a panel
+// arriving while the reader is in a long document moves what they are looking at by no pixels"
+// with Shift pressed as the panel landed: the reader's words moved the panel's 88 px in three
+// runs of six, and by under half a pixel in six of six once a key no longer opened the window.
+test("a growth above a reader who pressed a key that scrolled nothing is answered", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_250);
+  const release = keepTheReadersPlace(page.drawn);
+  try {
+    key();
+    page.grow(3, 332);
+    page.resized();
+
+    expect(page.scrollY()).toBe(1_582);
+  } finally {
+    release();
+  }
+});
+
+test("a box kept above a reader who pressed a key that scrolled nothing is answered", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_250);
+  let height = 120;
+  // The space the page holds for its chrome, out of sight above the top of the reader's screen.
+  const held = document.createElement("div");
+  held.getBoundingClientRect = () => ({ bottom: -100 + height, height, top: -100 }) as DOMRect;
+  document.body.append(held);
+  const release = keepWhatStandsUnder(held);
+  try {
+    key();
+    height = 180;
+    page.resized();
+
+    expect(page.scrollY()).toBe(1_310);
+  } finally {
+    release();
+    held.remove();
+  }
+});
+
 test("the page is left alone once the document has gone", () => {
   const page = pageOf(40, 0);
   page.scrollTo(1_250);
