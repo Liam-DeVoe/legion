@@ -7,4 +7,5 @@ body: |-
   `Issue.blocked_by` lists them, and the optional `claim`, in `Issue`'s own shape.
   `RequirementCoverage`, `CheckBlock` and `ReferenceTarget` carry the optional `text_tree`: a
   block's whole text, links and references kept, which a server answers to a caller that sent
-  `Dispatch-Trees: 1`.
+  `Dispatch-Trees: 1`. `REFERENCE_TARGETS_MAX` (256) is the most references one
+  `GET /api/v1/reference-targets` may name, generated into Go as `contracts.ReferenceTargetsMax`.

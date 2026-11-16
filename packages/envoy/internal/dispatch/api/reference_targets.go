@@ -8,32 +8,27 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// referenceTargetsMax is how many references one batched read may name. It is set above the
-// heaviest set a page was seen to name, rather than at a round guess, so that the count of
-// references does not split one page's first load into more requests.
-// Measured on 2026-11-05 against this repository's own Dispatch, on dispatch://INFRA-1196, its
-// heaviest issue: its spec, plan and verification documents write 177 edges, 174 of them neither
-// part_of nor attached_to, naming 72 distinct targets; the renders of that issue and of its four
-// largest documents name 247 distinct references in all. Today's issue page sends one
-// GET /api/v1/references per chip, 14 on its heaviest tab. 256 is above all of those, so the
+// referenceTargetsMax is how many references one batched read may name. Its value is
+// contracts.ReferenceTargetsMax, the literal REFERENCE_TARGETS_MAX in packages/contracts, which
+// the client batches by too, and whose comment gives the measurement it is set above: the 247
+// distinct references that dispatch://INFRA-1196 and its four largest documents name. So the
 // count of references splits no such load into a second request, and a set at the cap costs one
-// statement per node kind (refs.TargetNames), not one per reference. REFERENCE_TARGETS_MAX in
-// packages/dispatch/web/src/api/client.ts holds the same 256, and a change of one must change
-// the other.
+// statement per node kind (refs.TargetNames), not one per reference.
 //
 // The other bound on a batch is the request line itself, which this server sets no limit of its
 // own on. A proxy in front of the server can set one; 16 KB is one known such limit, an AWS load
 // balancer's. The client keeps each request's query string within a budget of its own,
-// REFERENCE_TARGETS_MAX_QUERY_CHARS in the same file, 12,000 characters, which is set under that
-// one known limit and not measured against the deployed Dispatch. Those 247 references encode to
-// about 17 KB of query string, so that budget splits such a load into two requests where the cap
-// splits none.
-const referenceTargetsMax = 256
+// REFERENCE_TARGETS_MAX_QUERY_CHARS in packages/dispatch/web/src/api/client.ts, 12,000
+// characters, which is set under that one known limit and not measured against the deployed
+// Dispatch. Those 247 references encode to about 17 KB of query string, so that budget splits
+// such a load into two requests where the cap splits none.
+const referenceTargetsMax = contracts.ReferenceTargetsMax
 
 // getReferenceTargets resolves many dispatch:// references in one read. For each ?ref= it answers
 // what that reference points at: its kind, the words a reader is shown for its target in place of

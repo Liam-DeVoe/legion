@@ -12,6 +12,7 @@ import {
   type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
@@ -153,10 +154,11 @@ export type ReferenceSourceKind = NonNullable<
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
 
-/** How many references one `getReferenceTargets` may name, which is the server's own cap
- *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`): past
+/** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
+ *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`). Past
  *  it the read is refused `400 CAP_EXCEEDED`, so a caller holding more reads them in batches. */
-export const REFERENCE_TARGETS_MAX = 256;
+export { REFERENCE_TARGETS_MAX };
 
 /** How many characters of query string one `getReferenceTargets` may write. The server bounds a
  *  batch by the count alone and says so (`referenceTargetsMax` in
