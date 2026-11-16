@@ -2685,11 +2685,13 @@ jobs:
               - '.github/go-release-targets.json'
               # The steps "Check this repository's architecture notes with the composite action"
               # and "Check this repository's spec files with the composite action" run the two
-              # actions from this checkout: each one's action.yml and the check.sh beside it.
+              # actions from this checkout: each one's action.yml and the check.sh beside it, and
+              # the build script that both check.sh run.
               - '.github/actions/architecture-check/action.yml'
               - '.github/actions/architecture-check/check.sh'
               - '.github/actions/spec-check/action.yml'
               - '.github/actions/spec-check/check.sh'
+              - '.github/scripts/build-envoy-command.sh'
               # Those two steps judge the files at the actions' default paths,
               # .dispatch/architecture and .dispatch/spec. The pattern names .dispatch whole:
               # main holds no spec file yet, and check-ci-filters.sh refuses a pattern that
