@@ -1030,6 +1030,16 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	embedWindowsAs(t, database, embedder, "document_block", short.ID, angledVector(0.5, 3))
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 4))
 	processAllPending(t, database, embedder)
+	// The plan each arm runs is read from the table's statistics, and autovacuum writes those
+	// when it chooses. An analyze that lands after the windows are written and before their
+	// vectors are reads every window as holding none, and the planner then takes every arm
+	// through embeddings_cosine, whose HNSW walk over the long document's hundred identical
+	// vectors can miss the short document's one window, or the comment's. The test analyzes the
+	// table itself once every vector is in, so the plan is the one these rows call for (an exact
+	// scan and sort of a table this small) whenever autovacuum ran.
+	if _, err := database.Pool.Exec(context.Background(), "analyze embeddings"); err != nil {
+		t.Fatalf("analyze embeddings: %v", err)
+	}
 
 	requireNoKeywordHit(t, "q=wibbleflorp")
 	response := searchResponse(t, handler, "q=wibbleflorp")
