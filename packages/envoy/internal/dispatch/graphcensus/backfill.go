@@ -674,7 +674,8 @@ func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]bl
 
 // commentRow is one comments row the backfill reads: its id, its author as the row stored it,
 // when it was written, the addresses of the artifact it is anchored to and the artifact that
-// owns it, and the event that stored it.
+// owns it, the event that stored it, and the project of the issue or the document it belongs to,
+// or the session of the conversation that owns that document (graphstore.ScopeOf's rule).
 type commentRow struct {
 	id        string
 	author    model.Actor
@@ -682,6 +683,8 @@ type commentRow struct {
 	anchor    string
 	owner     string
 	event     int64
+	project   string
+	parties   []string
 }
 
 // backfillComments writes a node and the facts its row is the projection of for every comment
@@ -737,8 +740,10 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 			  and e.type = 'comment.created'
 			  and e.payload->>'id' = c.id::text
 			order by e.id limit 1
-		       ), $3)
+		       ), $3),
+		       coalesce(issue.project_key, owner.project_key, ''), coalesce(owner.session_id, '')
 		from comments c
+		left join issues issue on issue.key = c.issue_key
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
 		left join artifacts owner on owner.id = c.artifact_id
 		where c.node_kind is null and c.id > $1::uuid
@@ -755,11 +760,15 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 	for rows.Next() {
 		var row commentRow
 		var author []byte
-		if err := rows.Scan(&row.id, &author, &row.createdAt, &row.anchor, &row.owner, &row.event); err != nil {
+		var session string
+		if err := rows.Scan(&row.id, &author, &row.createdAt, &row.anchor, &row.owner, &row.event, &row.project, &session); err != nil {
 			return nil, fmt.Errorf("read a comment naming no node: %w", err)
 		}
 		if err := json.Unmarshal(author, &row.author); err != nil {
 			return nil, fmt.Errorf("read the author of comment %s: %w", row.id, err)
+		}
+		if row.project == "" && session != "" {
+			row.parties = []string{graphstore.PartySession(session)}
 		}
 		batch = append(batch, row)
 	}
@@ -803,7 +812,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		// out of the store, so readCommentRows never reads it and this batch never writes one:
 		// a far end past the bound does not reach here (api's commentStored, outbox's rule).
 		var node graphstore.Node
-		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner)
+		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner, row.project, row.parties)
 		nodes = append(nodes, node)
 		// One write writes a node once, so an author several comments of the batch name is made
 		// by the first of them, and so is the owner a proved session names; each comment still

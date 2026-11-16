@@ -1230,8 +1230,14 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// What the reply is in the node and tuple store. It carries no anchor - a callback reply
-	// names none - and belongs to whatever the comment it answers belongs to.
-	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, nil, comment.ArtifactID)
+	// names none - and belongs to whatever the comment it answers belongs to, in that one's
+	// project.
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, comment.IssueKey, comment.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	stored, err := commentStored(r.Context(), tx, rowID, actor, createdAt, nil, comment.ArtifactID, project, parties)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

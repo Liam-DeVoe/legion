@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -1124,11 +1125,18 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
+	// The reply's node goes in before its row, in the parent's issue's project or between its
+	// thread's parties; what that write states waits for the message.answered event below.
+	replyID := uuid.NewString()
+	replyNode, err := writeMessageNode(ctx, tx, replyID, parent.IssueKey, &parent.ID, actor, parent.Target)
+	if err != nil {
+		return model.Message{}, model.Event{}, err
+	}
 	reply, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block)
+		values ($1, $2, $3, $4, $5, $6, $7)
 		returning `+messageColumns+`
-	`, parent.IssueKey, author, body, parent.Target, parent.ID, block.nodeID()))
+	`, replyID, parent.IssueKey, author, body, parent.Target, parent.ID, block.nodeID()))
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
@@ -1160,6 +1168,9 @@ func (s *server) insertSessionReply(
 		if err := refs.Stamp(ctx, tx, "message", reply.ID, event.ID); err != nil {
 			return model.Message{}, model.Event{}, err
 		}
+	}
+	if err := graphstore.Caused(ctx, tx, replyNode, event.ID); err != nil {
+		return model.Message{}, model.Event{}, err
 	}
 	return reply, event, nil
 }

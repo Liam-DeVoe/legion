@@ -42,7 +42,7 @@ func TestANodeStatesItsProjectOnce(t *testing.T) {
 	t.Run("a node made with no project takes it from the first write that names one", func(t *testing.T) {
 		// What the comment writer stored before nodes named their project: a comment node with
 		// no project.
-		bare, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, "", "")
+		bare, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, "", "", "", nil)
 		writeNode(t, ctx, database, bare)
 		requireProjectRow(t, ctx, database, bare.Kind, bare.ID, "", nil)
 		requireNeverStated(t, ctx, database, bare.Kind, bare.ID, AttributeProject)
@@ -97,7 +97,7 @@ func TestANodeStatesItsProjectOnce(t *testing.T) {
 	})
 
 	t.Run("the publisher's arms state the project of a node they make", func(t *testing.T) {
-		node := AskNode("33333333-3333-4333-8333-333333333333", "CORE", who, at)
+		node := AskNode("33333333-3333-4333-8333-333333333333", "CORE", nil, who, at)
 		tx, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin: %v", err)

@@ -226,6 +226,19 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
+	// The ask's node goes in before its row, in the project of the issue or the document it is
+	// asked on; what that write states waits for the ask.opened event below (graphstore.Caused).
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	askNode, err := graphstore.WriteUncaused(r.Context(), tx,
+		[]graphstore.Node{graphstore.AskNode(rowID, project, parties, actor, time.Now().UTC())}, nil)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	var ask model.Ask
 	if err := tx.QueryRow(r.Context(), `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind)
@@ -309,6 +322,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	if err := graphstore.Caused(r.Context(), tx, followed.Uncaused, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, askNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

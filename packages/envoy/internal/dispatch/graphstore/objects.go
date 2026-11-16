@@ -1,6 +1,8 @@
 package graphstore
 
 import (
+	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -56,9 +58,9 @@ func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time
 }
 
 // AskNode is an ask's node, addressed by the ask's id, in the project of the issue or the document
-// it is asked on.
-func AskNode(id, project string, who model.Actor, at time.Time) Node {
-	return objectNode(KindAsk, id, SupertagAsk, project, nil, who, at)
+// it is asked on, or between the parties of the conversation whose file it is asked on (ScopeOf).
+func AskNode(id, project string, parties []string, who model.Actor, at time.Time) Node {
+	return objectNode(KindAsk, id, SupertagAsk, project, parties, who, at)
 }
 
 // MessageNode is a message's node, addressed by the message's id. A message on an issue is in that
@@ -104,4 +106,44 @@ func PartiesValue(parties []string) string {
 	sorted := slices.Clone(parties)
 	slices.Sort(sorted)
 	return strings.Join(slices.Compact(sorted), " ")
+}
+
+// ScopeOf is the project, or for a thing no project owns the parties, of an ask or a comment that
+// belongs to an issue or a document: the issue's project where it names an issue, else the
+// document's project, else, for a file an agent's conversation owns, that conversation's session
+// (ArtifactNode). It reads one row of issues or artifacts in the caller's transaction. Neither
+// named, or neither found, answers nothing, which a writer then states nothing of.
+func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (project string, parties []string, err error) {
+	var projectKey, session *string
+	if err := q.QueryRow(ctx, `
+		select coalesce((select project_key from issues where key = $1), a.project_key), a.session_id
+		from (select 1) as one
+		left join artifacts a on a.id = $2::uuid
+	`, issueKey, artifactID).Scan(&projectKey, &session); err != nil {
+		return "", nil, fmt.Errorf("read the project of what an item belongs to: %w", err)
+	}
+	switch {
+	case projectKey != nil:
+		return *projectKey, nil, nil
+	case session != nil:
+		return "", []string{PartySession(*session)}, nil
+	}
+	return "", nil, nil
+}
+
+// ThreadParties is the parties a message on no issue is between, read off its thread's root: who
+// wrote the root (AuthorOf: a person by their login, or a session) and where the root was sent,
+// its target route as the messages row stores it (`session:<id>`), which names a node of this
+// store as a party does. A direct message, a broadcast copy and every reply in such a thread take
+// the parties of the root they join, so a thread is one set of parties whoever wrote each message
+// of it.
+func ThreadParties(rootAuthor model.Actor, rootTarget *string) []string {
+	var parties []string
+	if kind, id, ok := AuthorOf(rootAuthor); ok {
+		parties = append(parties, kind+":"+id)
+	}
+	if rootTarget != nil && *rootTarget != "" {
+		parties = append(parties, *rootTarget)
+	}
+	return parties
 }

@@ -778,6 +778,17 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, model.Event{}, err
 	}
+	// The request's node goes in before its row, in the project of the issue or the document it
+	// is asked on; what that write states waits for the ask.opened event below.
+	project, parties, err := graphstore.ScopeOf(ctx, tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
+		return nil, model.Event{}, err
+	}
+	askNode, err := graphstore.WriteUncaused(ctx, tx,
+		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, time.Now().UTC())}, nil)
+	if err != nil {
+		return nil, model.Event{}, err
+	}
 	if err := tx.QueryRow(ctx, `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval)
 		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7)
@@ -805,6 +816,9 @@ func (s *server) openApprovalAsk(
 		return nil, model.Event{}, err
 	}
 	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+		return nil, model.Event{}, err
+	}
+	if err := graphstore.Caused(ctx, tx, askNode, event.ID); err != nil {
 		return nil, model.Event{}, err
 	}
 	// The requester follows the request it opened, once the ask.opened that records it is

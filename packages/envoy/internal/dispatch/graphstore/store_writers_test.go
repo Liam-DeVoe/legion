@@ -78,11 +78,29 @@ var storeWriteCallSites = []string{
 	"api/comment_delivery.go#completeCommentDelivery",
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
+	// The node of every issue, document, ask and message a request creates, in the project or
+	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
+	// caused by the event the create appends after it. createIssue, storeArtifact and
+	// createAskFor are listed above for their block index and follow; these are the others. Their
+	// order - the owner row their path already takes, the node before the row, the event before
+	// the tuples - is the order of the write they share (WriteUncaused, then Caused), which
+	// TestEveryStoreWriteTakesOneLockOrder proves on this package's own writers, and the node
+	// before its row is held at each site by api's TestEveryCreateStoresItsNode and the node-first
+	// trigger of object_nodes_issue_test.go and object_nodes_items_test.go.
+	"api/broadcasts.go#writeBroadcast",
+	"api/message_delivery.go#insertSessionReply",
+	"api/messages.go#createStoredMessage",
+	"api/messages.go#writeMessageNode",
+	"api/reviews.go#openApprovalAsk",
+	"docs/ask_blocks.go#createAskBlock",
 	// The seed's comments, with their author's person node and each comment's authored_by
-	// tuple, which its one batch write states as a seeded database's own writer, and the session
-	// nodes of the followers its ask batch copies.
+	// tuple, which its one batch write states as a seeded database's own writer, the session
+	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
+	// each written in the batch that copies their rows, in its project, before any row of it.
+	"cmd/dispatch-seed/write_core.go#writeIssues",
 	"cmd/dispatch-seed/write_items.go#writeComments",
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes",
+	"cmd/dispatch-seed/write_items.go#writeItemNodes",
 	// The backfill command's five batches: the blocks, the block references and the comments
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one

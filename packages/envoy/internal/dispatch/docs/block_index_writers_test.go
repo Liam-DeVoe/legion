@@ -460,18 +460,30 @@ var indexPasses = map[string]string{
 	"api/ask_followers.go#changeAskFollower": "the follow request and the event it appended after the follow",
 	"api/asks.go#createAskFor":               "the ask the create request opens and the event it appended after the follow",
 	"docs/ask_blocks.go#causeFollows":        "the follows a settlement made and the ask.opened events it appended after them",
+	// The node of every ask and message a request or a settlement creates, before its row, in the
+	// project or between the parties it belongs to, and caused by the event the create appends.
+	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
+	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
+	"api/messages.go#writeMessageNode":           "the message the request stores, its issue, and the root of the thread it answers",
+	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
+	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
+	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
-	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated and the event the upload appended",
+	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated, the uploaded document and the event the upload appended",
 	"api/artifacts.go#commitArtifactVersionEvent":   "the facts the version's index pass stated and the event that recorded the version",
-	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated and the issue's own event",
-	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated",
+	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
+	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
 	"docs/settlement.go#commitVersion":              "the facts the settled version's index pass stated and the event that recorded it",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
+	// The seed's issues, asks and messages: each one's node, in its project, drawn from the plan
+	// before the batch writes its rows.
+	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeItemNodes": "the seed's own plan",
 	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
 	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",
