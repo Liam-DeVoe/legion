@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -147,8 +147,15 @@ func (r *StoreReport) Refused() bool {
 	return r.Sizing != nil && r.Sizing.Refused()
 }
 
-// The kinds the census holds the store to. The first three are the kinds a table projects, each
-// with that table; the four after them are the people and the agents, which no table projects.
+// projections are the kinds the census holds the store to, in the order it reads and reports
+// them. The first three are the kinds a table projects, each with that table: the comment, then
+// the block and the block reference (blockProjections); the four after them are the people and
+// the agents, which no table projects (actorProjections). The comment kind is read first:
+// TestTheStoreCensusReadsOneSnapshot commits a write after it and before the block kind.
+//
+// Each topic of the store keeps its kinds in a list in a file of its own, census_<topic>.go, and
+// projections is those lists one after another, so a kind of one topic is registered in that
+// topic's file alone. A topic whose list is empty projects no kind of its own.
 //
 // Each of the first three holds a row to the tuples that answer it as well as to its node row.
 // A row that names its node is answered from the tuples by graph_edges, refs.Edges and
@@ -165,7 +172,41 @@ func (r *StoreReport) Refused() bool {
 // a session named past it is no node either. Each row side leaves those addresses out and counts
 // them as a class of its own (pastBound), so the census reports no difference the writers made on
 // purpose, in both directions.
-var projections = []projection{{
+var projections = slices.Concat(
+	commentProjections, blockProjections, actorProjections,
+	issueProjections, componentProjections, resultProjections, versionProjections, refProjections,
+	approvalProjections, searchProjections, citationProjections, queryRoleProjections,
+)
+
+// backfillPasses are the backfill's passes (Backfill), in the order it runs them, each topic's
+// taken from its list in census_<topic>.go as projections takes its kinds. The order is what the
+// passes rest on. The blocks run before the links out of them (blockBackfills). The sessions run
+// after the comments, so that the session pass writes only the sessions the comment pass could
+// not give a node (backfillSessions). The project passes run after every pass that writes a
+// comment's or a block's node, so that such a node takes its project from the pass that wrote it
+// and the fill finds nothing of it to do (projectBackfills). Every other topic's passes run after
+// those, once every issue, document, ask and message holds its node.
+var backfillPasses = slices.Concat(
+	blockBackfills, commentBackfills, actorBackfills, projectBackfills,
+	issueBackfills, componentBackfills, resultBackfills, versionBackfills, refBackfills,
+	approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills,
+)
+
+// commentBackfills are the backfill's pass over the comments (backfillComments).
+var commentBackfills = []backfillPass{oneKind(backfillComments)}
+
+// actorBackfills are the backfill's passes over the roles and their pages and over the sessions,
+// which no projection row names (backfillRoles, backfillSessions).
+var actorBackfills = []backfillPass{oneKind(backfillRoles), oneKind(backfillSessions)}
+
+// projectBackfills are the passes of the project of every node (dispatch://INFRA-3862): the node
+// of each issue, document, ask and message written before its kind's writer wrote one, and the
+// project of each comment and block node written before a node named its project
+// (backfillObjectNodes, backfillScopes).
+var projectBackfills = []backfillPass{backfillObjectNodes, backfillScopes}
+
+// commentProjections are the census's kind of the comments, which the comments table projects.
+var commentProjections = []projection{{
 	name:     "comment",
 	nodeKind: "comment",
 	table:    "comments",
@@ -195,66 +236,12 @@ var projections = []projection{{
 		   or octet_length(coalesce(owner.ref_key, '')) > ` + addressBound + `
 		   or (c.author->>'kind' = '` + graphstore.KindSession + `'
 		       and octet_length(coalesce(c.author->>'id', '')) > ` + addressBound + `)`,
-}, {
-	name:     "block",
-	nodeKind: refs.BlockNodeKind,
-	table:    "document_blocks",
-	note: "one node per row, blocks past the address bound aside; the digest is the row's document and the block" +
-		" its parent_block_id names, or the document where it names none, against the in_document and part_of" +
-		" tuples the node states now, a block with no part_of telling itself from one the document holds directly",
-	rows: `
-		select 'block ' || d.node_id, d.node_kind, d.node_address,
-		       md5(d.node_id || '|' || ` + statedLinks(
-		`'`+refs.TupleInDocument+`>artifact:' || a.ref_key`,
-		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is null then 'artifact:' || a.ref_key
-		      else '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id end`,
-	) + `)
-		from document_blocks d
-		join artifacts a on a.id = d.artifact_id
-		where octet_length(d.node_id) <= ` + addressBound,
-	nodes: `
-		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
-		`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
-}, {
-	name:     "block_ref",
-	nodeKind: refs.BlockNodeKind,
-	table:    "block_refs",
-	note: "a row is one link out of a block and its node is that block's, so several rows share one node:" +
-		" the node side is every live block node that states a link now beside its in_document and part_of," +
-		" whether a row names it or not, and the digest is every link the rows of that block name against" +
-		" every such link its node states now",
-	rows: `
-		select 'block_ref ' || r.from_node || ' ' || r.kind || ' -> ' || r.to_kind || ' ' || r.to_id,
-		       r.node_kind, r.node_address, md5(r.from_node || '|' || named.links)
-		from block_refs r
-		join (
-			select b.from_node,
-			       string_agg(b.kind || '>' || b.to_kind || ':' || b.to_id, ','
-			                  order by b.kind || '>' || b.to_kind || ':' || b.to_id) as links
-			from block_refs b
-			where octet_length(b.from_node) <= ` + addressBound + ` and octet_length(b.to_id) <= ` + addressBound + `
-			group by b.from_node
-		) named on named.from_node = r.from_node
-		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound,
-	// Every block node is read, and not only those a row names: a mention or a pointer the store
-	// states out of a block no block_refs row names is a link graph_edges answers, and a node
-	// side that began at the rows could never find it. A block whose only links are its
-	// placement states no link here and is no node of this kind; the block kind holds it.
-	nodes: `
-		select held.id, md5(held.id || '|' || held.links)
-		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind,
-		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'
-		) held
-		where held.links <> ''`,
-	pastBound: `
-		select count(*) from block_refs r
-		where octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound,
-}, {
+}}
+
+// actorProjections are the census's kinds of the people, the sessions, the roles and the roles'
+// pages, which no table projects: each row side is the actors the projected tables and the event
+// log name.
+var actorProjections = []projection{{
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
 	table:    "comments.author",

@@ -50,6 +50,22 @@ type BackfillReport struct {
 	Kinds []KindBackfill
 }
 
+// backfillPass is one pass of the backfill: it writes what the rows of one kind or more owe the
+// store and reports what it did for each kind. A pass that fails reports what it did before the
+// failure, if it read that far, beside its error.
+type backfillPass func(context.Context, *store.Store) ([]KindBackfill, error)
+
+// oneKind is the backfillPass of a pass over one kind, which reports no kind when it fails.
+func oneKind(write func(context.Context, *store.Store) (KindBackfill, error)) backfillPass {
+	return func(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
+		done, err := write(ctx, database)
+		if err != nil {
+			return nil, err
+		}
+		return []KindBackfill{done}, nil
+	}
+}
+
 // Backfill writes the nodes and tuples of the comments, document blocks and block references
 // written before the node and tuple store existed: every row of the three projected tables
 // that names no node (migration 20261109022248 added the columns and filled none of them). It
@@ -104,24 +120,8 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 	// repeat keys skip the sentinel, and nothing reads wrong for it: a current read takes the
 	// newest asserting tuple and the census counts nodes and projection rows rather than tuples.
 	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
-	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){
-		backfillBlocks, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
-	} {
-		done, err := write(ctx, database)
-		if err != nil {
-			return report, err
-		}
-		report.Kinds = append(report.Kinds, done)
-		writeKindBackfill(out, done)
-	}
-	// The project of every node (dispatch://INFRA-3862): the node of each issue, document, ask
-	// and message written before its kind's writer wrote one, and the project of each comment
-	// and block node written before a node named its project. Both run after the passes above,
-	// so a comment or a block those passes wrote a node for takes its project from them, and the
-	// fill finds nothing of it to do.
-	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
-		backfillObjectNodes, backfillScopes,
-	} {
+	// The passes run in the order backfillPasses gives them, which says what that order rests on.
+	for _, write := range backfillPasses {
 		done, err := write(ctx, database)
 		report.Kinds = append(report.Kinds, done...)
 		for _, kind := range done {
