@@ -447,25 +447,16 @@ func (r *roleRig) claimUnder(role, holder string, entry session.SessionEntry) er
 	return nil
 }
 
-// handedNow is the forward a scan that has returned handed the holder, waited for with the
-// shared bound (testwait.Eventually). The forward's send returns on the stream's acknowledgement
-// (roleForward.forward, a request whose reply is the stream's PubAck), and the holder's own
-// subscription is handed the same message on its own connection, which can arrive just after
-// that acknowledgement on a busy machine. No listener runs in the tests that read it, so nothing
-// but the scan's own forward can reach the holder, and the wait proves no more than that the
-// scan sent it.
+// handedNow is the forward a scan that has returned handed the holder, received from the holder's
+// own subscription (recv.arrived) through the shared wait (testwait.Receive). The forward's send
+// returns on the stream's acknowledgement (roleForward.forward, a request whose reply is the
+// stream's PubAck), and the holder's own subscription is handed the same message on its own
+// connection, which can arrive just after that acknowledgement on a busy machine. No listener runs
+// in the tests that read it, so nothing but the scan's own forward can reach the holder, and the
+// wait proves no more than that the scan sent it.
 func handedNow(t *testing.T, recv *receiver, what string) contracts.Envelope {
 	t.Helper()
-	var forward contracts.Envelope
-	testwait.Eventually(t, what+": the holder takes the forward the scan sent", func() bool {
-		select {
-		case forward = <-recv.arrived:
-			return true
-		default:
-			return false
-		}
-	})
-	return forward
+	return testwait.Receive(t, what+": the holder takes the forward the scan sent", recv.arrived)
 }
 
 // A role claimed while the keep was in flight is handed the kept copy by the keep itself, in the
