@@ -27,7 +27,7 @@
  * the column, in 3 runs of 3; with `l` alone the heading stood 0.1 px from it.
  *
  * That is this hold's own rule, and not the one the page's keepers and its landing correction
- * read (`movesTheReader`, `features/doc/readers-place.ts`), under which a letter typed into a
+ * read (`movesTheReader`, `features/doc/readers-scroll.ts`), under which a letter typed into a
  * field moves nobody. Here a typed letter is the reader working in the column, and the hold has
  * to let go for it: with the note field opened by Enter and a letter typed into it, the field
  * stood 505.7 px down the column and stayed there, where a hold still standing put the section's

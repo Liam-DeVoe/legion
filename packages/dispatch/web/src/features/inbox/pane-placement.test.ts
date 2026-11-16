@@ -150,7 +150,7 @@ test("a modifier pressed alone in the column leaves it held", () => {
 });
 
 // Every other key is the reader working in the column, a letter typed into a field of it
-// included. That is this hold's own rule and not `movesTheReader`'s (`readers-place.ts`), under
+// included. That is this hold's own rule and not `movesTheReader`'s (`readers-scroll.ts`), under
 // which a typed letter moves nobody: with the note field opened by Enter and a letter typed
 // into it, the field stood 505.7 px down the column and stayed, where a hold still standing put
 // the section's heading back at the top and the field 191 px further down.

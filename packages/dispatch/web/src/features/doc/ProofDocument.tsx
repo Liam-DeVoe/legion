@@ -1144,13 +1144,15 @@ export function ProofDocument({
   // focus - the chord does nothing. `inEditable` because the editor is where it is pressed. A
   // document is its own scope, since the issue page and a project's document page both render
   // one. A pane pushes no scope and registers no binding: the scope stack belongs to the page the
-  // reader is on, and a pane's editor takes no edits, so it would never offer Comment.
+  // reader is on, and a pane's editor takes no edits, so it would never offer Comment. It opens
+  // the comment composer with the focus in it, which moves the reader.
   useKeymapScope(page ? "document" : null);
   useKeymap(
     "document",
     page
       ? [
           {
+            effect: "moves the reader",
             id: "comment-on-selection",
             inEditable: true,
             keys: "$mod+Alt+m",

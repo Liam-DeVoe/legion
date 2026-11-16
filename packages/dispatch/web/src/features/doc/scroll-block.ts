@@ -36,8 +36,8 @@ let disposeRerun: (() => void) | undefined;
  * when the row it shows changes. A **Skip to the answer** in the head leaves a re-run that reads
  * the reader on the window and lives as long as a document's build does (`LIMIT_MS`), and a row
  * changed by no action of the reader's - the server withdrawing the question, the selection
- * handed on - fires none of the four events that watch reads, so it would otherwise be left to
- * write the next item's column. */
+ * handed on - is no input of the reader's, so it may leave that watch armed to write the next
+ * item's column. */
 export function cancelBlockScroll(): void {
   disposeRerun?.();
   disposeRerun = undefined;
@@ -51,9 +51,14 @@ export function cancelBlockScroll(): void {
  * the live document's focus re-runs through): a document's diagrams draw after the editor opened,
  * in Dispatch's Mermaid worker, and each one above the block pushes it down by the diagram's
  * height. The re-run reads the block afresh, so a node view redrawn in between is found again,
- * and it is dropped if the block has gone or the reader has pressed, scrolled, touched or typed.
- * This column names no drawn root of its own: its scroll container keeps its size whatever its
- * content does, so the diagrams are what it waits on.
+ * and it is dropped if the block has gone, if the focus moves, or if the reader has done
+ * something that moves them, by the table of the reader's inputs (`movesTheReader`,
+ * `readers-scroll.ts`): a wheel, a finger that moves, a press that has begun to scroll, a key
+ * that scrolls or moves the focus. A letter typed into a field, a modifier, a copy, or a press
+ * or a finger that has gone down and not moved leaves it running. This column names no drawn
+ * root of its own: its scroll container keeps its size whatever its content does, so the
+ * diagrams are what it waits on, and a scroll of the column that no press made is not among
+ * its stops.
  *
  * This is not `focusBlock` on the editor handle: that centres the block and pulses it, which is
  * what the document page wants of a link. A reading pane beside a list wants the block the reader

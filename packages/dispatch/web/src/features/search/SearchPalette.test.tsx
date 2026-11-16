@@ -710,7 +710,13 @@ const CLOSE_ROW = "search-option-action-global-close";
 // `Close issue` stands for any row whose label holds a search word somewhere past its start.
 function registerClose(ran: string[]): () => void {
   return appKeymap.register("global", [
-    { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
+    {
+      effect: "moves nothing",
+      id: "close",
+      keys: [],
+      label: "Close issue",
+      run: () => ran.push("close"),
+    },
   ]);
 }
 
@@ -887,9 +893,27 @@ test("while the search is out the arrows walk only the actions the query starts,
   const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
-    { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
-    { id: "report", keys: [], label: "Issue the report", run: () => ran.push("report") },
-    { id: "triage", keys: [], label: "Issue triage", run: () => ran.push("triage") },
+    {
+      effect: "moves nothing",
+      id: "close",
+      keys: [],
+      label: "Close issue",
+      run: () => ran.push("close"),
+    },
+    {
+      effect: "moves nothing",
+      id: "report",
+      keys: [],
+      label: "Issue the report",
+      run: () => ran.push("report"),
+    },
+    {
+      effect: "moves nothing",
+      id: "triage",
+      keys: [],
+      label: "Issue triage",
+      run: () => ran.push("triage"),
+    },
   ]);
   const hit = issueHit("LEGION-3");
   const answer = Promise.withResolvers<SearchResponse>();
@@ -961,8 +985,20 @@ test("a background refetch keeps the actions the query starts and the hits walka
   const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
-    { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
-    { id: "report", keys: [], label: "Issue the report", run: () => ran.push("report") },
+    {
+      effect: "moves nothing",
+      id: "close",
+      keys: [],
+      label: "Close issue",
+      run: () => ran.push("close"),
+    },
+    {
+      effect: "moves nothing",
+      id: "report",
+      keys: [],
+      label: "Issue the report",
+      run: () => ran.push("report"),
+    },
   ]);
   const hit = issueHit("LEGION-3");
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));

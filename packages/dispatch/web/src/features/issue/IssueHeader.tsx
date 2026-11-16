@@ -266,8 +266,10 @@ export function IssueHeader({
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
+  // Each is a write of the issue and moves nobody: the palette that offers it took the focus.
   useKeymap("issue", [
     {
+      effect: "moves nothing",
       id: "close",
       keys: [],
       label: "Close issue",
@@ -277,6 +279,7 @@ export function IssueHeader({
       when: () => !isClosed && !updateIssue.isPending,
     },
     {
+      effect: "moves nothing",
       id: "reopen",
       keys: [],
       label: "Reopen issue",
@@ -284,6 +287,7 @@ export function IssueHeader({
       when: () => isClosed && !updateIssue.isPending,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
+      effect: "moves nothing" as const,
       id: `set-p${level}`,
       keys: [],
       label: `Set priority P${level}`,

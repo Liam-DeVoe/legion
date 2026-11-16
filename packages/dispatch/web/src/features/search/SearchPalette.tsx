@@ -433,6 +433,8 @@ function PaletteDialog({
   // close, so pressing it twice still opens and closes.
   useKeymap(DIALOG_SCOPE, [
     {
+      // The focus goes back to whatever opened the bar.
+      effect: "moves the reader",
       id: "search-close",
       inEditable: true,
       keys: "$mod+k",

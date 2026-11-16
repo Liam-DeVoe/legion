@@ -22,6 +22,12 @@
  * `packages/dispatch/AGENTS.md` ("Panels that arrive after the reader") says which is which.
  */
 
+import {
+  knowThePagesOwnScroll,
+  theReaderIsScrolling,
+  watchTheReadersScroll,
+} from "./readers-scroll";
+
 /** Where a reader is in a document drawn as a run of top-level blocks: the first block the top
  *  of the scrollport is in or above, and how far that block's own top sits from it. `undefined`
  *  where there is nothing to keep: no draw, or a reader still at the document's first block and
@@ -140,6 +146,13 @@ export function thePageLeftItThere(scroller: HTMLElement | null): boolean {
   const left = scroller === null ? thePageLeftTheWindowAt : thePageLeftBoxesAt.get(scroller);
   return left !== undefined && left === whereTheReaderIs(scroller);
 }
+
+// The table of the reader's inputs reads a scroll while a press is held as the press's first
+// movement, and this record is what says which scrolls the page made itself: a box's scroll is
+// told at the box, the page's own at the document.
+knowThePagesOwnScroll((scroll) =>
+  thePageLeftItThere(scroll.target instanceof HTMLElement ? scroll.target : null)
+);
 
 /** Records that the page's own place-keeping has just left `scroller` - the page itself where
  *  null - standing where it stands now. The one place either record is written: every call
@@ -353,10 +366,13 @@ export function placeInView(
 /** Puts the reader back where `place` left them, in a document `drawn` draws the same blocks of
  *  in the same order. A block the new draw does not have - a document edited between the two -
  *  leaves the page where it is, which is the browser's own scroll anchoring rather than a jump
- *  to the wrong words. */
+ *  to the wrong words. So does a block with no box, as `placeInView` leaves one: a document in a
+ *  tab the reader has switched away from is drawn with no box at all, and measured as its
+ *  all-zero rectangle the put-back moved the tab they switched to by the place's own offset
+ *  (1,000 to 1,040 in the review's harness). */
 export function putTheReaderBack(drawn: HTMLElement, place: ReadersBlock | undefined): void {
   const block = place === undefined ? undefined : drawn.children[place.index];
-  if (block === undefined || place === undefined) {
+  if (block === undefined || place === undefined || block.getClientRects().length === 0) {
     return;
   }
   const edge = scrollportTop(whatScrolls(drawn));
@@ -401,179 +417,6 @@ function theirPlace(drawn: HTMLElement): TheirPlace | undefined {
   return block === undefined ? undefined : { block, edge: "top", top: where.top };
 }
 
-/** What a reader does to scroll a page themselves: turn a wheel or stroke a trackpad, touch the
- *  screen and drag it, press a key that moves them (`movesTheReader`). A press of the pointer is
- *  not one: it scrolls nothing. */
-const READER_SCROLLS = ["keydown", "touchmove", "touchstart", "wheel"] as const;
-
-/** The keys whose own default action scrolls the box the reader is in: Space, the arrows, Home
- *  and End, pressed anywhere but into a field (`intoAField`). */
-const KEYS_THAT_SCROLL: Record<string, true> = {
-  " ": true,
-  ArrowDown: true,
-  ArrowLeft: true,
-  ArrowRight: true,
-  ArrowUp: true,
-  End: true,
-  Home: true,
-};
-
-/** The keys that move the reader wherever they are pressed: a page key scrolls a screenful in a
- *  field as it does on the page, and Tab takes the focus to the next thing that holds one, and
- *  the page to wherever that stands. */
-const KEYS_THAT_MOVE_ANYWHERE: Record<string, true> = { PageDown: true, PageUp: true, Tab: true };
-
-/** Whether a key was pressed into a field, which takes Space, an arrow, Home and End for itself:
- *  a space typed, a caret moved, an option stepped. The editor is one, and so are an answer box
- *  and a margin comment. */
-function intoAField(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLElement &&
-    (target.isContentEditable ||
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLSelectElement ||
-      target instanceof HTMLTextAreaElement)
-  );
-}
-
-/**
- * Whether what the reader has just done moves them. It is the one reading of a `keydown` for
- * every watch that takes a key for the reader moving: the keepers' stand-down below
- * (`READER_SCROLLS`), and the re-run that puts a reader back on a link's target, or on their own
- * place once the editor is swapped in (`READER_ACTIONS`, `refocus-when-settled.ts`). Whatever
- * else those lists name - a wheel, a touch, a press - is the reader moving, and reads true.
- *
- * A key moves them only where its own default action scrolls or takes the focus somewhere else:
- * Space, an arrow, Home or End pressed on the page, and a page key or Tab pressed anywhere.
- * Measured on this pod on a probe page, eighteen presses on the page in each engine. In
- * Playwright's WebKit 27.2 PageDown and Space ran 576 px, an arrow 80 px, End 26,419 px and Home
- * 4,000 px, each a scroll the engine animates over 5 to 13 frames; and one pixel written by a
- * script two frames in ended each where it stood: PageDown after 92 to 110 px, Space after 56 to
- * 79, the arrow after 31 to 54, End after 1,890 to 7,183 and Home after 552 to 1,315. That is a
- * wheel's scroll under another name, so it gets a wheel's stand-down. Chromium 156 animates the
- * same keys over 8 to 10 frames and carries the write along instead, ending one pixel further:
- * the stand-down is for the engine that needs it, and costs the other nothing.
- *
- * Every other key moves nothing and reads false: a modifier, a copy, a letter. So do Space, an
- * arrow, Home and End typed into a field: from an editable box each moved the page by 0 px in
- * both engines, where PageDown moved it a screenful in one frame. A watch that took every key
- * for the reader moving gave the page up to nobody. With Shift pressed as a panel landed above a
- * reader, the keepers stood down and their words moved the panel's 88 px in 3 runs of 6
- * (`e2e/large-documents-first-screen.e2e.ts`, scroll anchoring off); pressed while the editor
- * was built over the draw, it ended the put-back and left them 924.6 px from their place in 5
- * runs of 8 (`e2e/large-documents-build.e2e.ts`).
- *
- * A `keydown` that is no keyboard's - one a script dispatched, with no key to name - moves
- * nothing either.
- */
-export function movesTheReader(event: Event): boolean {
-  if (event.type !== "keydown") {
-    return true;
-  }
-  if (!(event instanceof KeyboardEvent)) {
-    return false;
-  }
-  return (
-    KEYS_THAT_MOVE_ANYWHERE[event.key] === true ||
-    (KEYS_THAT_SCROLL[event.key] === true && !intoAField(event.target))
-  );
-}
-
-/**
- * How many frames in a row with no scroll anywhere on the page end the reader's own scroll. An
- * engine that animates the scroll a wheel asks for - WebKit does, over five to twelve frames -
- * reports a scroll in the frame the wheel arrives in and in every frame after it until the
- * movement ends. Measured on this pod in Playwright's WebKit, 24 wheels of 300 and 2,000 px with
- * the main thread idle or busy for 12 or 40 ms of each frame: the first scroll came in the
- * wheel's own frame every time, and none of the 221 frames from a wheel's first scroll to its
- * last went without one. A key's scroll reads the same (`movesTheReader`): of those 18 presses
- * in WebKit the first scroll came in the key's own frame 16 times and in the next one twice,
- * and none of the 173 frames from a key's first scroll to its last went without one. One still
- * frame is the movement over; the second is room for a frame an engine skips.
- */
-const STILL_FRAMES = 2;
-
-/** The reader's own scroll while it may still be moving the page: from the wheel, touch or
- *  scrolling key that began it until the page has gone `STILL_FRAMES` frames without a scroll.
- *  `undefined` while the reader is not scrolling. */
-let readersScroll: { frame: number; moved: boolean; still: number } | undefined;
-
-/** How many keepers are on the page. The listeners that watch for the reader's own scroll stand
- *  while one of them does. */
-let keepersOnThePage = 0;
-
-/** The reader has done something that scrolls: their scroll is moving from this frame on. A key
- *  that moves nothing is not that (`movesTheReader`), and leaves the keepers at work. */
-function theReaderScrolls(event: Event): void {
-  if (!movesTheReader(event)) {
-    return;
-  }
-  if (readersScroll !== undefined) {
-    readersScroll.moved = true;
-    return;
-  }
-  readersScroll = {
-    frame: window.requestAnimationFrame(aFrameOfTheirScroll),
-    moved: true,
-    still: 0,
-  };
-}
-
-/** A box on the page scrolled, which during the reader's own scroll is that scroll moving on. */
-function somethingScrolled(): void {
-  if (readersScroll !== undefined) {
-    readersScroll.moved = true;
-  }
-}
-
-/** A frame of the reader's own scroll: the scroll is over once `STILL_FRAMES` of them in a row
- *  have passed with no scroll. */
-function aFrameOfTheirScroll(): void {
-  const scroll = readersScroll;
-  if (scroll === undefined) {
-    return;
-  }
-  scroll.still = scroll.moved ? 0 : scroll.still + 1;
-  scroll.moved = false;
-  if (scroll.still >= STILL_FRAMES) {
-    readersScroll = undefined;
-    return;
-  }
-  scroll.frame = window.requestAnimationFrame(aFrameOfTheirScroll);
-}
-
-/** Watches for the reader's own scroll for as long as the keeper that calls it stands, and
- *  returns the dispose. `capture`, because a column's scroll does not bubble; `passive`, because
- *  this moves nothing and must not hold up the scroll it watches. */
-function watchTheReadersScroll(): () => void {
-  keepersOnThePage += 1;
-  if (keepersOnThePage === 1) {
-    for (const type of READER_SCROLLS) {
-      window.addEventListener(type, theReaderScrolls, { capture: true, passive: true });
-    }
-    window.addEventListener("scroll", somethingScrolled, { capture: true, passive: true });
-  }
-  let watching = true;
-  return () => {
-    if (!watching) {
-      return;
-    }
-    watching = false;
-    keepersOnThePage -= 1;
-    if (keepersOnThePage > 0) {
-      return;
-    }
-    for (const type of READER_SCROLLS) {
-      window.removeEventListener(type, theReaderScrolls, true);
-    }
-    window.removeEventListener("scroll", somethingScrolled, true);
-    if (readersScroll !== undefined) {
-      window.cancelAnimationFrame(readersScroll.frame);
-    }
-    readersScroll = undefined;
-  };
-}
-
 /**
  * Keeps the block the reader is on at the same line of their screen for as long as the document
  * `drawn` is on the page, whatever grows or shrinks above it. Returns the dispose.
@@ -597,19 +440,23 @@ function watchTheReadersScroll(): () => void {
  * that frame corrects nothing. So two corrections never add up to twice the movement, and a
  * reader who scrolls is never pulled back to where they were.
  *
- * Nor does it write while the reader's own scroll is still moving: from the wheel, the touch or
- * the key that began it - a key that scrolls, and no other (`movesTheReader`) - until the page
- * has held still for `STILL_FRAMES` frames. An engine that animates that scroll stops it at the
- * first scroll a script makes, so a correction made inside it ends the reader's movement
+ * Nor does it write while the reader's own scroll is still moving: from the input that began it
+ * - an input that moves the reader, and no other (`movesTheReader`, `readers-scroll.ts`) - until
+ * the page has held still for `STILL_FRAMES` frames. An engine that animates that scroll stops it
+ * at the first scroll a script makes, so a correction made inside it ends the reader's movement
  * wherever it stands: wheeled 2,000 px up a document whose blocks above the reader the browser
  * had skipped at `contain-intrinsic-size`'s estimate, WebKit moved 42 to 76 px and stopped
  * there, the rest of the wheel dropped for this module's correction of 1.6 px for one of those
  * blocks drawn at its own height (`e2e/deep-links.e2e.ts`, "a press in the document while a
  * comment link is still landing does not end the hold"). A growth that lands meanwhile is the
  * browser's own scroll anchoring's to answer where it has any, and the reader is moving past it
- * where it has none; once their scroll has stopped, the next growth is answered from wherever
- * it left them. A reader who presses a key that moves nothing has no scroll to end, so a growth
- * above them is answered in the task it is seen in, as on a quiet page.
+ * where it has none; once their scroll has stopped, the place is taken afresh from wherever it
+ * left them. An input that scrolled nothing after all - a wheel at the end of the page, a zoom,
+ * Tab to a control already on screen, PageDown at the end - moved nobody, so when its window
+ * closes with no scroll seen, what grew meanwhile is answered against the place held before it,
+ * rather than dropped. A reader who presses a key that moves nothing, or whose press of a mouse,
+ * a pen or a finger has not moved, has no scroll to end, so a growth above them is answered in
+ * the task it is seen in, as on a quiet page.
  *
  * A reader still at the document's first block and above its top is not kept, as `readersBlock`
  * says: they are at the top of a page, where what arrives is theirs to see land. Nor is one
@@ -627,15 +474,15 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
   const check = () => {
     const offset = scrollOffset(drawn);
     const kept = place;
-    // No place to keep, somebody else's scroll, or the reader's own scroll still moving, which
-    // a correction would end (above): the place is taken afresh and nothing is written.
-    if (
-      kept === undefined ||
-      !drawn.contains(kept.block) ||
-      offset !== left ||
-      readersScroll !== undefined
-    ) {
+    // No place to keep, or somebody else's scroll: the place is taken afresh and nothing is
+    // written.
+    if (kept === undefined || !drawn.contains(kept.block) || offset !== left) {
       take();
+      return;
+    }
+    // The reader's own scroll may still be moving, which a correction would end (above):
+    // nothing is written, and the place held before it stands until its window closes.
+    if (theReaderIsScrolling()) {
       return;
     }
     const moved = whereItStands(drawn, kept) - kept.top;
@@ -703,7 +550,15 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
   // `capture`, because a column's scroll does not bubble; `passive`, because this reads the
   // offset and moves nothing.
   window.addEventListener("scroll", scrolled, { capture: true, passive: true });
-  const releaseTheirScroll = watchTheReadersScroll();
+  // Once the reader's own scroll is over: where it scrolled, the place is theirs from where it
+  // left them; where it scrolled nothing, whatever grew meanwhile is answered now.
+  const releaseTheirScroll = watchTheReadersScroll((itScrolled) => {
+    if (itScrolled) {
+      take();
+    } else {
+      check();
+    }
+  });
   return () => {
     mutations.disconnect();
     sizes.disconnect();
@@ -725,22 +580,35 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
 const boxesKept = new Map<HTMLElement, number>();
 let keptTheScrollAt: number | undefined;
 
+/** Takes every kept box's height as it stands now and the scroll where it stands, answering
+ *  nothing that grew before: where the reader is now is where they are. */
+function takeWhereTheyStand(): void {
+  const [first] = boxesKept.keys();
+  if (first === undefined) {
+    return;
+  }
+  for (const box of boxesKept.keys()) {
+    boxesKept.set(box, box.getBoundingClientRect().height);
+  }
+  keptTheScrollAt = scrollOffset(first);
+}
+
 /** Answers every kept box's growth at once, and nothing another keeper has already answered. */
 function keepWhatStandsUnderThem(): void {
   const [first] = boxesKept.keys();
   if (first === undefined) {
     return;
   }
-  const offset = scrollOffset(first);
-  if (offset !== keptTheScrollAt || readersScroll !== undefined) {
+  if (scrollOffset(first) !== keptTheScrollAt) {
     // The reader scrolled, or the document's own keeper answered this growth first: where
-    // they are now is where they are, and nothing is answered for twice. Nor is anything
-    // answered while the reader's own scroll is still moving, which a correction would end
-    // (`keepTheReadersPlace`).
-    for (const box of boxesKept.keys()) {
-      boxesKept.set(box, box.getBoundingClientRect().height);
-    }
-    keptTheScrollAt = offset;
+    // they are now is where they are, and nothing is answered for twice.
+    takeWhereTheyStand();
+    return;
+  }
+  if (theReaderIsScrolling()) {
+    // Nor is anything answered while the reader's own scroll is still moving, which a
+    // correction would end (`keepTheReadersPlace`): the heights held before it stand until its
+    // window closes (`afterTheirScroll`).
     return;
   }
   // The top of the scrollport every kept box is read against, which is the column's own top in
@@ -763,6 +631,17 @@ function keepWhatStandsUnderThem(): void {
     moveTheScroll(first, grew);
   }
   keptTheScrollAt = scrollOffset(first);
+}
+
+/** The reader's own scroll is over. Where it scrolled, the reader is where it left them and
+ *  nothing that grew during it is answered; where it scrolled nothing, it moved nobody, and
+ *  what grew meanwhile is answered now against the heights held before it. */
+function afterTheirScroll(itScrolled: boolean): void {
+  if (itScrolled) {
+    takeWhereTheyStand();
+  } else {
+    keepWhatStandsUnderThem();
+  }
 }
 
 /**
@@ -804,7 +683,7 @@ export function keepWhatStandsUnder(box: HTMLElement): () => void {
     keptTheScrollAt = scrollOffset(box);
   };
   window.addEventListener("scroll", scrolled, { capture: true, passive: true });
-  const releaseTheirScroll = watchTheReadersScroll();
+  const releaseTheirScroll = watchTheReadersScroll(afterTheirScroll);
   return () => {
     mutations.disconnect();
     sizes.disconnect();

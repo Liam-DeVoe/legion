@@ -645,11 +645,16 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
+  // Each binding says what it does to the reader (`effect`, `features/shell/keymap.ts`): every
+  // one that opens a dialog, the bar or the drawer, or goes to another page, moves them; the two
+  // toggles only redraw the page around what they are reading, which the page's keepers hold
+  // them through, and move nothing.
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
       // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
       // the key reaches the bar from inside a document's editor too.
+      effect: "moves the reader",
       id: "search",
       inEditable: true,
       keys: "$mod+k",
@@ -660,6 +665,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // The same bar. No row: chosen from the bar it would only reopen the bar. Not
       // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
       // shadows it with its own filter box.
+      effect: "moves the reader",
       id: "search-only",
       keys: "/",
       label: "Search",
@@ -667,16 +673,42 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       run: () => setBarOpen(true),
     },
     {
+      effect: "moves the reader",
       id: "help",
       keys: "?",
       label: "Keyboard shortcuts",
       run: () => setHelpSnapshot(appKeymap.describe()),
     },
-    { id: "create", keys: "c", label: "Create issue", run: () => setCreateOpen(true) },
-    { id: "go-inbox", keys: "g i", label: "Go to Inbox", run: () => navigate("/") },
-    { id: "go-agents", keys: "g a", label: "Go to Agents", run: () => navigate("/agents") },
-    { id: "go-settings", keys: "g s", label: "Go to Settings", run: () => navigate("/settings") },
     {
+      effect: "moves the reader",
+      id: "create",
+      keys: "c",
+      label: "Create issue",
+      run: () => setCreateOpen(true),
+    },
+    {
+      effect: "moves the reader",
+      id: "go-inbox",
+      keys: "g i",
+      label: "Go to Inbox",
+      run: () => navigate("/"),
+    },
+    {
+      effect: "moves the reader",
+      id: "go-agents",
+      keys: "g a",
+      label: "Go to Agents",
+      run: () => navigate("/agents"),
+    },
+    {
+      effect: "moves the reader",
+      id: "go-settings",
+      keys: "g s",
+      label: "Go to Settings",
+      run: () => navigate("/settings"),
+    },
+    {
+      effect: "moves the reader",
       id: "go-documents",
       keys: "g d",
       label: "Go to Documents",
@@ -690,6 +722,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     {
       // The same bar again, where a reader after a project types its name: its projects are
       // rows of the one list. No row, for `/`'s reason.
+      effect: "moves the reader",
       id: "go-project",
       keys: "g p",
       label: "Go to project…",
@@ -697,6 +730,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       run: () => setBarOpen(true),
     },
     {
+      effect: "moves the reader",
       id: "inbox-drawer",
       keys: "i",
       label: "Open the inbox",
@@ -717,6 +751,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       when: () => !routeIsInbox(location.pathname),
     },
     {
+      effect: "moves nothing",
       id: "toggle-sidebar",
       keys: "Shift+S",
       label: "Toggle sidebar",
@@ -725,6 +760,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       when: () => !isCompactViewport,
     },
     {
+      effect: "moves nothing",
       id: "toggle-margin",
       keys: "Shift+M",
       label: "Toggle margin",

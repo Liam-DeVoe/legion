@@ -1,18 +1,6 @@
 import { mermaidDrawsSettled, mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
-import {
-  movesTheReader,
-  scrollportTop,
-  thePageLeftItThere,
-  whatScrolls,
-  whereTheReaderIs,
-} from "./readers-place";
-
-/** What a reader does to move on from where a link put them: press, scroll, touch, or press a
- *  key that moves them. Which keys those are is read where the page's keepers read it
- *  (`movesTheReader`, `readers-place.ts`), so the two watches cannot come to disagree about a
- *  key: a modifier, a copy and a letter typed into a field move nobody, and a reader who presses
- *  one is still where the link, or the put-back after the editor's swap, left them. */
-const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as const;
+import { scrollportTop, thePageLeftItThere, whatScrolls, whereTheReaderIs } from "./readers-place";
+import { followThePress, movesTheReader, THE_READERS_EVENTS } from "./readers-scroll";
 
 /** How long a correction is made at all. A drawing that never settles - a card that re-measures
  *  itself forever - must not leave the listeners armed for the life of the page. It is the length
@@ -102,17 +90,27 @@ const STILL_PX = 1;
  * passes none and waits on the diagrams alone.
  *
  * It runs only while nobody but the page itself has moved the page since this was called, so a
- * reader who moved on is never pulled back. Four things end it, and the first three are all
- * "the reader has the page now": a press, a wheel, a touch or a key that moves them
- * (`READER_ACTIONS`); a scroll of the box carrying the document that neither this watch's own
- * corrections nor the page's own place-keeping left there, which is how a scrollbar drag, a
- * find-in-page jump, an assistive tool and a scroll made over the automation protocol end it
- * though they fire none of those four events; and a selection change inside the document, a
- * reader working in the page rather than waiting for a link to land. The fourth is the limit.
- * A key that moves nothing is not among them: this watch is also what puts a reader back on
- * their own place once the editor is swapped in over the draw (`ProofDocument`), and one that
- * ended on any key left a reader who had pressed Shift during the build 924.6 px from where
- * they were, in 5 runs of 8 (`e2e/large-documents-build.e2e.ts`).
+ * reader who moved on is never pulled back. Five things end it, and the first four are all "the
+ * reader has the page now": an input that moves them, by the table of the reader's inputs the
+ * page's keepers read too (`THE_READERS_INPUTS`, `readers-scroll.ts`) - a wheel, a finger that
+ * moves, a press that has begun to scroll, a key whose own action scrolls or moves the focus, a
+ * shortcut of the page's that moves them, such as one that focuses a header control or switches
+ * a tab; a scroll of the box carrying the document that neither this watch's own corrections
+ * nor the page's own place-keeping left there, which is how a scrollbar drag, a find-in-page
+ * jump, an assistive tool and a scroll made over the automation protocol end it though they are
+ * none of those inputs; a selection change inside the document, a reader working in the page
+ * rather than waiting for a link to land; and the focus moving anywhere the document is not - a
+ * click on a control outside it, a tap into a field outside it, a dialog that took the focus.
+ * The fifth is the limit. An input that moves nothing is not among them, and nor is a press
+ * that has moved neither the place nor the focus - a click on empty space, a tap that lands on
+ * nothing: this watch is also what puts a reader back on their own place once the editor is
+ * swapped in over the draw (`ProofDocument`), and one that ended on any key left a reader who
+ * had pressed Shift during the build 924.6 px from where they were, in 5 runs of 8
+ * (`e2e/large-documents-build.e2e.ts`). A shortcut that moved them and did not end it is the
+ * other way wrong: the page's own `s` focuses the issue's Status, which scrolls the page to it,
+ * and that scroll, made while a correction was still due, was let through as the correction's
+ * own, so the next growth put the reader back on the target with the control they asked for off
+ * the screen.
  *
  * What is not the reader is the page holding the reader still while it draws, in either of the
  * two ways it does that. The page's own place-keeping - `keepTheReadersPlace` and
@@ -175,14 +173,22 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
     window.clearTimeout(limit);
     window.clearTimeout(correcting);
     sizes?.disconnect();
-    for (const type of READER_ACTIONS) window.removeEventListener(type, acted, true);
+    for (const type of THE_READERS_EVENTS) window.removeEventListener(type, acted, true);
+    window.removeEventListener("focusin", focused, true);
     window.removeEventListener("scroll", scrolled, true);
     document.removeEventListener("selectionchange", selected);
+    releaseThePress();
   };
-  /** The reader did one of `READER_ACTIONS`, which ends this unless it was a key that moves
-   *  nothing. */
+  /** The reader did something: where it moves them, by the table of their inputs, this ends. */
   const acted = (event: Event) => {
     if (movesTheReader(event)) stop();
+  };
+  /** The focus moved: into the document is the caret, which `selected` reads; anywhere else is
+   *  the reader taking it there - a press on a control, a tap into a field - and ends this. A
+   *  caller with no drawn root has no document of its own, and any focus that moves is that. */
+  const focused = (event: Event) => {
+    if (root !== undefined && event.target instanceof Node && root.contains(event.target)) return;
+    stop();
   };
   /** A scroll this watch owns has just been made - its own correction, or the page's own
    *  place-keeping - and `at` is where that left the box, where it is already read. Where it
@@ -261,9 +267,17 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
       corrected();
     });
   };
-  for (const type of READER_ACTIONS) {
+  // `capture`, so an input is read before the page answers it: the registry's own listener
+  // takes a shortcut's key and moves its chord on, and the table reads the key as the registry
+  // stands before that (`effectOf`, `features/shell/keymap.ts`).
+  for (const type of THE_READERS_EVENTS) {
     window.addEventListener(type, acted, { capture: true, passive: true });
   }
+  // `focusin`, which bubbles from wherever the focus went, on the capture phase like the rest.
+  window.addEventListener("focusin", focused, { capture: true, passive: true });
+  // Whether a press is held, which the table reads a scroll by: a scroll while one is held is
+  // the press's first movement.
+  const releaseThePress = followThePress();
   if (root !== undefined) {
     // `capture`, because a column's scroll does not bubble; `passive`, because this reads the
     // offset and moves nothing. `selectionchange` on the document, because it is every change

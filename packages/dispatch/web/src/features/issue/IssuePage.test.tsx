@@ -37,6 +37,7 @@ import { thePageLeftItThere } from "../doc/readers-place";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { IssuePage } from "./IssuePage";
 import { issueClosedCalloutClassName } from "./issue-header-classes";
 
@@ -1164,6 +1165,62 @@ test("IssuePage opens the Activity tab with the t v chord", async () => {
 
     await screen.findByRole("tab", { name: "Activity", selected: true });
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// Every key the page binds says, where it binds it, what it does to the reader, and the page's
+// watches over the reader's place read the key by that and nothing else (`effectOf`, read by
+// `features/doc/readers-scroll.ts`): a key that focuses a header control scrolls the page to the
+// header, and a tab chord switches the tab, so both move the reader and end the put-back after
+// the editor's swap; the digits and the pin write the issue and move nobody, so the put-back
+// goes on through them.
+test("IssuePage's own keys move the reader where they focus a control or switch a tab, and the writing keys move nobody", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/spec");
+  const effectOf = (key: string, held: KeyboardEventInit = {}, into: Element = document.body) => {
+    const event = new KeyboardEvent("keydown", { ...held, key });
+    Object.defineProperty(event, "target", { value: into });
+    return appKeymap.effectOf(event);
+  };
+
+  try {
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    const status = await screen.findByRole("combobox", { name: "Status" });
+
+    expect({
+      "0": effectOf("0"),
+      "3": effectOf("3"),
+      e: effectOf("e"),
+      l: effectOf("l"),
+      p: effectOf("p"),
+      s: effectOf("s"),
+      "Shift+P": effectOf("P", { shiftKey: true }),
+      t: effectOf("t"),
+    }).toEqual({
+      "0": "moves nothing",
+      "3": "moves nothing",
+      e: "moves the reader",
+      l: "moves the reader",
+      p: "moves the reader",
+      s: "moves the reader",
+      "Shift+P": "moves nothing",
+      t: "moves nothing",
+    });
+
+    // Escape out of a focused header control blurs it, which takes the focus back to the page.
+    status.focus();
+    expect(effectOf("Escape", {}, status)).toBe("moves the reader");
+    status.blur();
+
+    // The chord's second key, read as the registry stands with its first one pressed.
+    await user.keyboard("t");
+    expect(effectOf("c")).toBe("moves the reader");
+    await user.keyboard("c");
+    await screen.findByRole("tab", { name: "Conversation", selected: true });
   } finally {
     view.unmount();
     restore();

@@ -1,12 +1,13 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 
+import { appKeymap } from "../shell/keymap";
 // This watch's own windows are read on the real clock: the correction it makes is made in an
 // animation frame, and the window in which the movement that correction started is still its own
 // is a `setTimeout` it arms itself, with nothing of either exposed for a row to drive
 // (`CORRECTION_SCROLL_MS`, `refocus-when-settled.ts`). So the rows below wait those windows out
 // rather than moving a fake clock across them.
-import { moveTheScroll, placeInView, putTheBoxAt } from "./readers-place";
+import { moveTheScroll, placeInView, putTheBoxAt, putTheReaderBack } from "./readers-place";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { scrollElementToTop } from "./scroll-block";
 
@@ -471,6 +472,58 @@ function press(key: string, held: KeyboardEventInit = {}, into: Element = docume
   into.dispatchEvent(new KeyboardEvent("keydown", { ...held, bubbles: true, key }));
 }
 
+/** That key pressed into `control`, standing on the page for as long as the press takes. */
+function pressInto(key: string, control: HTMLElement): void {
+  document.body.append(control);
+  try {
+    press(key, {}, control);
+  } finally {
+    control.remove();
+  }
+}
+
+/** The reader presses that key on the page, which hears it as the browser hands it on: the
+ *  watches on the capture phase first, then the registry's own listener, which takes a
+ *  shortcut's key, runs its binding and moves a chord on (`KeymapProvider`). */
+function pressOnThePage(key: string): void {
+  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+  document.body.dispatchEvent(event);
+  appKeymap.handleKeyDown(event);
+}
+
+/** The reader's pointer or finger going down on the page, of the kind `pointerType` names. */
+function pointerdown(pointerType: "mouse" | "touch"): void {
+  const event = new Event("pointerdown", { bubbles: true });
+  Object.defineProperty(event, "pointerType", { value: pointerType });
+  document.body.dispatchEvent(event);
+}
+
+/** An `<input>` of `type`: a decision block's options are checkboxes and radios. */
+function anInput(type: string): HTMLInputElement {
+  const input = document.createElement("input");
+  input.type = type;
+  return input;
+}
+
+// The page's own shortcuts, as the issue page registers them (`IssuePage.tsx`): `s` focuses the
+// issue's Status, `1` writes the priority, and `t c` switches to the Conversation tab. The table
+// of the reader's inputs reads them from the application's registry, where they are bound.
+let unregister: (() => void) | undefined;
+beforeAll(() => {
+  unregister = appKeymap.register("global", [
+    { effect: "moves the reader", id: "status", keys: "s", label: "Focus the status", run() {} },
+    { effect: "moves nothing", id: "set-priority", keys: "1", label: "Set priority", run() {} },
+    {
+      effect: "moves the reader",
+      id: "tab-conversation",
+      keys: "t c",
+      label: "Conversation tab",
+      run() {},
+    },
+  ]);
+});
+afterAll(() => unregister?.());
+
 /**
  * Whether the watch still puts the reader back after `act` in `situation`: whether a growth of
  * the drawn document after it is answered by the put-back running again. `act` is given the
@@ -527,18 +580,148 @@ function reference(situation: Situation, act: "a wheel" | "nothing"): Promise<bo
   return read;
 }
 
-/** One press of each class of key a reader makes, and whether it moves them (`movesTheReader`,
- *  `readers-place.ts`, which the page's keepers read too). The first three move nothing, and are
- *  held against a watch that takes every key for the reader moving on; the last two do, and are
- *  held against one that takes none. */
-const KEYS: readonly { moves: boolean; name: string; press(editor: HTMLElement): void }[] = [
-  { moves: false, name: "a modifier", press: () => press("Shift", { shiftKey: true }) },
+/** One input of each entry of the table of the reader's inputs (`THE_READERS_INPUTS`,
+ *  `readers-scroll.ts`, which the page's keepers read too), named by the entry it is, and
+ *  whether it moves the reader - stated here rather than read from the table, so an entry
+ *  reverted to the other effect turns its rows red. A press or a finger that has gone down and
+ *  not moved is unknown until it moves, and leaves the put-back as an input that moves nothing
+ *  does. A focus moved out of the document is the watch's own stop rather than an entry of the
+ *  table, and is read the same way. */
+const INPUTS: readonly {
+  entry: string;
+  moves: boolean;
+  name: string;
+  press(editor: HTMLElement): void;
+}[] = [
   {
+    entry: "a press of a mouse, a pen or a finger",
+    moves: false,
+    name: "a finger's pointerdown",
+    press: () => pointerdown("touch"),
+  },
+  {
+    entry: "a press of a mouse, a pen or a finger",
+    moves: false,
+    name: "a click that moves neither the place nor the focus",
+    press: () => pointerdown("mouse"),
+  },
+  {
+    entry: "a scroll while a press is held",
+    moves: true,
+    name: "a press that has begun to scroll",
+    press: () => {
+      pointerdown("mouse");
+      window.dispatchEvent(new Event("scroll"));
+    },
+  },
+  {
+    entry: "the focus moving out of the document",
+    moves: true,
+    name: "a focus moved to a control outside the document",
+    press: () => {
+      const control = document.createElement("button");
+      document.body.append(control);
+      control.focus();
+      control.remove();
+    },
+  },
+  {
+    entry: "a finger going down",
+    moves: false,
+    name: "a touchstart",
+    press: () => window.dispatchEvent(new Event("touchstart")),
+  },
+  {
+    entry: "a finger moving",
+    moves: true,
+    name: "a finger that moves",
+    press: () => {
+      window.dispatchEvent(new Event("touchstart"));
+      window.dispatchEvent(new Event("touchmove"));
+    },
+  },
+  {
+    entry: "a keydown no keyboard made",
+    moves: false,
+    name: "a keydown a script dispatched",
+    press: () => window.dispatchEvent(new Event("keydown")),
+  },
+  {
+    entry: "a key the page binds to move the reader",
+    moves: true,
+    name: "a shortcut that focuses a header control",
+    press: () => pressOnThePage("s"),
+  },
+  {
+    entry: "a key the page binds to move the reader",
+    moves: true,
+    name: "a tab chord",
+    press: () => {
+      pressOnThePage("t");
+      pressOnThePage("c");
+    },
+  },
+  {
+    entry: "a key the page binds to move nothing",
+    moves: false,
+    name: "a shortcut that writes the priority",
+    press: () => pressOnThePage("1"),
+  },
+  { entry: "Tab", moves: true, name: "Tab", press: () => press("Tab") },
+  {
+    entry: "PageUp or PageDown",
+    moves: true,
+    name: "a scroll key",
+    press: () => press("PageDown"),
+  },
+  {
+    entry: "Enter on a link",
+    moves: true,
+    name: "Enter on a link",
+    press: () => {
+      const link = document.createElement("a");
+      link.href = "#b-block";
+      pressInto("Enter", link);
+    },
+  },
+  {
+    entry: "Space, an arrow, Home or End in a field",
+    moves: false,
+    name: "Space typed into the editor",
+    press: (editor) => press(" ", {}, editor),
+  },
+  {
+    entry: "Space on a button, a checkbox or a radio",
+    moves: false,
+    name: "Space on a checkbox",
+    press: () => pressInto(" ", anInput("checkbox")),
+  },
+  {
+    entry: "Space, an arrow, Home or End anywhere else",
+    moves: true,
+    name: "an arrow from a checkbox",
+    press: () => pressInto("ArrowUp", anInput("checkbox")),
+  },
+  {
+    entry: "Space, an arrow, Home or End anywhere else",
+    moves: true,
+    name: "Home from a radio",
+    press: () => pressInto("Home", anInput("radio")),
+  },
+  {
+    entry: "every other key",
+    moves: false,
+    name: "a modifier",
+    press: () => press("Shift", { shiftKey: true }),
+  },
+  {
+    entry: "every other key",
     moves: false,
     name: "a letter typed into the editor",
     press: (editor) => press("e", {}, editor),
   },
   {
+    entry: "every other key",
     moves: false,
     name: "a copy",
     press: () => {
@@ -546,20 +729,18 @@ const KEYS: readonly { moves: boolean; name: string; press(editor: HTMLElement):
       press("c", { ctrlKey: true });
     },
   },
-  { moves: true, name: "a scroll key", press: () => press("PageDown") },
-  { moves: true, name: "Tab", press: () => press("Tab") },
 ];
 
-// A reader who presses a key that moves nothing is still where the page put them, so the
-// put-back goes on; one who presses a key that scrolls or moves the focus has the page. Pressed
-// through the editor's build with every key ending the watch, Shift left a reader 924.6 px from
-// their place in 5 runs of 8 (`e2e/large-documents-build.e2e.ts`, "the editor opens the document
-// where its reader had got to").
+// A reader whose input moves nothing is still where the page put them, so the put-back goes on;
+// one whose input scrolls or moves the focus has the page. Pressed through the editor's build
+// with every key ending the watch, Shift left a reader 924.6 px from their place in 5 runs of 8
+// (`e2e/large-documents-build.e2e.ts`, "the editor opens the document where its reader had got
+// to").
 //
-// Each row reads its key against what this same watch does after nothing and after a wheel,
+// Each row reads its input against what this same watch does after nothing and after a wheel,
 // rather than against a count of re-runs: what a landing does once the reader has or has not
 // moved on is the watch's own rule, held by the rows above, and a change to it is not a change
-// to which keys move a reader. The first row of each situation holds those two readings apart,
+// to which inputs move a reader. The first row of each situation holds those two readings apart,
 // because a watch that did the same after both would leave the rows under it reading nothing:
 // should the landing's own rule ever change that way, that row is red and says so.
 for (const situation of ["the editor's build", "a panel's arrival"] as const) {
@@ -569,14 +750,195 @@ for (const situation of ["the editor's build", "a panel's arrival"] as const) {
     expect(await reference(situation, "a wheel")).not.toBe(untouched);
   });
 
-  for (const key of KEYS) {
-    const outcome = key.moves
+  for (const input of INPUTS) {
+    const outcome = input.moves
       ? "is the reader moving on, as a wheel is"
-      : "leaves the put-back as no key at all leaves it";
-    test(`${key.name} pressed during ${situation} ${outcome}`, async () => {
-      const read = await stillPutsThemBack(situation, key.press);
+      : "leaves the put-back as no act at all leaves it";
+    test(`${input.entry}: ${input.name} during ${situation} ${outcome}`, async () => {
+      const read = await stillPutsThemBack(situation, input.press);
 
-      expect(read).toBe(await reference(situation, key.moves ? "a wheel" : "nothing"));
+      expect(read).toBe(await reference(situation, input.moves ? "a wheel" : "nothing"));
     });
   }
 }
+
+/** A document drawn as the editor draws one after the swap: twenty blocks a hundred pixels
+ *  tall, standing where the page is scrolled to. `grow` grows the block at `index`, which moves
+ *  every block under it, and `hide` takes the whole document's box away, as a tab the reader has
+ *  switched from does; each tells the drawn root's observers, as the browser does after layout. */
+function aDocument(): {
+  element: HTMLElement;
+  grow(index: number, by: number): void;
+  hide(hidden: boolean): void;
+} {
+  const grown = new Map<number, number>();
+  let hidden = false;
+  const topOf = (index: number) => {
+    let top = 0;
+    for (let above = 0; above < index; above += 1) top += 100 + (grown.get(above) ?? 0);
+    return top - window.scrollY;
+  };
+  const element = document.createElement("div");
+  const tell = () => {
+    for (const observer of observers) observer([], undefined as unknown as ResizeObserver);
+  };
+  element.getBoundingClientRect = () =>
+    (hidden
+      ? { height: 0, top: 0 }
+      : { height: topOf(20) + window.scrollY, top: topOf(0) }) as DOMRect;
+  for (let index = 0; index < 20; index += 1) {
+    const block = document.createElement("section");
+    block.getBoundingClientRect = () =>
+      (hidden ? { bottom: 0, height: 0, top: 0 } : { top: topOf(index) }) as DOMRect;
+    block.getClientRects = () =>
+      (hidden ? [] : [block.getBoundingClientRect()]) as unknown as DOMRectList;
+    element.append(block);
+  }
+  document.body.append(element);
+  return {
+    element,
+    grow(index, by) {
+      grown.set(index, (grown.get(index) ?? 0) + by);
+      tell();
+    },
+    hide(next) {
+      hidden = next;
+      tell();
+    },
+  };
+}
+
+/** Where the reader stood when the editor was swapped in: block 10's top 50 px above the top of
+ *  their screen, which is the page scrolled to 1,050. */
+const THEIR_PLACE = { index: 10, top: -50 };
+
+// The page's own `s` focuses the issue's Status, and a plain `focus()` scrolls the page to the
+// header. That scroll comes while the watch's own correction is still due, which lets it through
+// as that correction's movement, so only the key itself can end the watch: read as the letter it
+// is, the next growth put the reader back on the link's target with the control they asked for
+// off the screen (the review's scratch row: `s` then a growth ran the landing once, PageDown ran
+// it 0 times).
+test("a shortcut that focuses a header control ends a link's landing, though its scroll comes inside a correction", async () => {
+  const page = pageScroll();
+  await page.to(1_050);
+  const drawn = drawnRoot();
+  document.body.append(drawn.element);
+  let landed = 0;
+  const stop = refocusWhenSettled(() => (landed += 1), drawn.element);
+  // `p`, which focuses the issue's priority as `s` focuses its Status.
+  const header = appKeymap.register("global", [
+    {
+      effect: "moves the reader",
+      id: "priority-in-the-header",
+      keys: "p",
+      label: "Focus the priority",
+      run: () => void page.to(0),
+    },
+  ]);
+  try {
+    pressOnThePage("p");
+    await Bun.sleep(0);
+    drawn.grow(300);
+    await Bun.sleep(AFTER_THE_QUIET);
+
+    expect(landed).toBe(0);
+  } finally {
+    header();
+    stop();
+    drawn.element.remove();
+  }
+});
+
+test("a shortcut that focuses a header control during the editor's put-back leaves the reader at the control", async () => {
+  const page = pageScroll();
+  await page.to(1_050);
+  const shown = aDocument();
+  const stop = refocusWhenSettled(
+    () => putTheReaderBack(shown.element, THEIR_PLACE),
+    shown.element
+  );
+  const header = appKeymap.register("global", [
+    {
+      effect: "moves the reader",
+      id: "priority-in-the-header",
+      keys: "p",
+      label: "Focus the priority",
+      run: () => void page.to(0),
+    },
+  ]);
+  try {
+    pressOnThePage("p");
+    await Bun.sleep(0);
+    // A block above the reader's old place paints at its own height as the build goes on.
+    shown.grow(3, 200);
+    await Bun.sleep(AFTER_THE_QUIET);
+
+    expect(window.scrollY).toBe(0);
+  } finally {
+    header();
+    stop();
+    shown.element.remove();
+  }
+});
+
+// A tab chord switches the tab with `button.click()`, which sends no press, so the put-back
+// armed after the swap was not ended: the Spec, hidden, reads as no box, and the put-back that
+// was still watching it ran on the tab the reader had switched to, and again when they came back.
+test("a tab chord during the editor's put-back ends it, and coming back to the tab is not put back", async () => {
+  const page = pageScroll();
+  await page.to(1_050);
+  const shown = aDocument();
+  let putBack = 0;
+  const stop = refocusWhenSettled(() => {
+    putBack += 1;
+    putTheReaderBack(shown.element, THEIR_PLACE);
+  }, shown.element);
+  // `t v`, the Activity tab's chord.
+  const tabs = appKeymap.register("global", [
+    {
+      effect: "moves the reader",
+      id: "tab-activity",
+      keys: "t v",
+      label: "Activity tab",
+      run: () => shown.hide(true),
+    },
+  ]);
+  try {
+    pressOnThePage("t");
+    pressOnThePage("v");
+    await Bun.sleep(AFTER_THE_QUIET);
+    // Back to the Spec, which the build has meanwhile grown above the reader's old place.
+    shown.hide(false);
+    shown.grow(3, 200);
+    await Bun.sleep(AFTER_THE_QUIET);
+
+    expect({ putBack, scrollY: window.scrollY }).toEqual({ putBack: 0, scrollY: 1_050 });
+  } finally {
+    tabs();
+    stop();
+    shown.element.remove();
+  }
+});
+
+// However the tab was switched - its own button, the palette's row, a script - a document drawn
+// with no box is no place to put a reader back on: measured as its all-zero rectangle, the
+// put-back scrolled the tab the reader had switched to (1,000 to 1,040 in the review's harness).
+test("a put-back still watching a document hidden behind another tab moves nothing", async () => {
+  const page = pageScroll();
+  await page.to(1_050);
+  const shown = aDocument();
+  const stop = refocusWhenSettled(
+    () => putTheReaderBack(shown.element, THEIR_PLACE),
+    shown.element
+  );
+  try {
+    // The tab's own button, clicked by something that is no input of the reader's.
+    shown.hide(true);
+    await Bun.sleep(AFTER_THE_QUIET);
+
+    expect(window.scrollY).toBe(1_050);
+  } finally {
+    stop();
+    shown.element.remove();
+  }
+});

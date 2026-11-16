@@ -126,6 +126,8 @@ export function useDialog<T extends HTMLElement>({
     open
       ? [
           {
+            // The focus goes back to whatever opened the dialog.
+            effect: "moves the reader",
             id: "dialog.close",
             inEditable: true,
             keys: "Escape",

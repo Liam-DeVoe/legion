@@ -1,11 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
 
 import {
+  COLUMN_HEIGHT,
+  COLUMN_TOP,
+  columnOf,
+  pageOf,
+  restoreTheBrowser,
+  thePagePort,
+} from "../../__tests__/readers-place-harness";
+import {
   keepTheReadersPlace,
   keepWhatStandsUnder,
-  movesTheReader,
   placeInView,
   putTheBoxAt,
+  putTheReaderBack,
   readersBlock,
   scrollportHeight,
   scrollportTop,
@@ -14,260 +22,10 @@ import {
   whereTheReaderIs,
 } from "./readers-place";
 
-/** The page's own placing port, which a browser reads as `document.documentElement.clientHeight`
- *  - the window less a horizontal scrollbar - and happy-dom lays out as 0. The rows that are not
- *  about that scrollbar read the window's own height, as a page with no horizontal scrollbar
- *  does. */
-let pagePort = window.innerHeight;
-Object.defineProperty(document.documentElement, "clientHeight", {
-  configurable: true,
-  get: () => pagePort,
-});
-
-// happy-dom lays nothing out and has no ResizeObserver, so the geometry is this harness: a run
-// of blocks `BLOCK_HEIGHT` tall whose first block starts `documentTop` under the top of the
-// scrollport, a page that scrolls by `window.scrollY`, a `ResizeObserver` the rows fire, and
-// animation frames that pass when a row says so.
-const BLOCK_HEIGHT = 100;
-
-interface Page {
-  readonly drawn: HTMLElement;
-  /** Grows the document by `pixels` above block `index`, as a panel landing there does. */
-  grow(index: number, pixels: number): void;
-  /** What the reader does: the page scrolls and tells whoever is listening. */
-  scrollTo(top: number): void;
-  /** Fires every live `ResizeObserver`, as the browser does after it has laid the page out. */
-  resized(): void;
-  /** The reader turns the wheel: the page hears of it before the scroll it starts. */
-  wheel(): void;
-  /** An animation frame passes: every callback asked for before it runs. */
-  frame(): void;
-  readonly scrollY: () => number;
-}
-
-const observers = new Set<() => void>();
-let restoreObserver: (() => void) | undefined;
-let scrollListeners: ((event: Event) => void)[] = [];
-/** Every other listener the module registers on the window, by event type. */
-let windowListeners = new Map<string, ((event: Event) => void)[]>();
-/** The animation frame callbacks asked for and not yet run. */
-let frames = new Map<number, FrameRequestCallback>();
-/** What a row put on the page, taken off it again when the row ends: the drawn document on a
- *  document page, the column carrying it in a reading pane. */
-let mounted: HTMLElement | undefined;
-
-function pageOf(blocks: number, documentTop: number): Page {
-  let scrollY = 0;
-  // How much taller than `BLOCK_HEIGHT` each block is, which is what a panel landing in it adds.
-  const grown = new Map<number, number>();
-  const topOf = (index: number) => {
-    let top = documentTop;
-    for (let above = 0; above < index; above += 1) {
-      top += BLOCK_HEIGHT + (grown.get(above) ?? 0);
-    }
-    return top - scrollY;
-  };
-  const drawn = document.createElement("div");
-  for (let index = 0; index < blocks; index += 1) {
-    const block = document.createElement("section");
-    block.getBoundingClientRect = () =>
-      ({
-        bottom: topOf(index) + BLOCK_HEIGHT + (grown.get(index) ?? 0),
-        top: topOf(index),
-      }) as DOMRect;
-    drawn.append(block);
-  }
-  document.body.append(drawn);
-  // How tall the page stands, which is what tells a scroll made to answer for a growth from
-  // one the reader made (`pageHeight`).
-  Object.defineProperty(document.documentElement, "scrollHeight", {
-    configurable: true,
-    get: () => topOf(blocks) + scrollY,
-  });
-  const page: Page = {
-    drawn,
-    frame,
-    grow(index, pixels) {
-      grown.set(index, (grown.get(index) ?? 0) + pixels);
-    },
-    resized() {
-      for (const fire of [...observers]) fire();
-    },
-    scrollTo(top) {
-      scrollY = top;
-      for (const listener of scrollListeners) listener(new Event("scroll"));
-    },
-    scrollY: () => scrollY,
-    wheel,
-  };
-  installTheBrowser(page);
-  mounted = page.drawn;
-  return page;
-}
-
-/** Where the Inbox's reading column stands on the page, and how tall it is: the column is a box
- *  of its own, so the first line of the document a reader can see is its top edge and not the
- *  window's. */
-const COLUMN_TOP = 200;
-const COLUMN_HEIGHT = 600;
-
-interface Column extends Page {
-  /** How far down the column the reader is, which is what the column scrolls by. */
-  readonly scrollTop: () => number;
-}
-
-/** The same run of blocks drawn in that column. happy-dom lays nothing out, computes no
- *  overflow and scrolls nothing, so what `whatScrolls` reads to find the box - its overflow and
- *  its content standing taller than it does - is stated here, as are the rectangles. */
-function columnOf(blocks: number, documentTop: number): Column {
-  let scrolled = 0;
-  const grown = new Map<number, number>();
-  const topOf = (index: number) => {
-    let top = COLUMN_TOP + documentTop;
-    for (let above = 0; above < index; above += 1) {
-      top += BLOCK_HEIGHT + (grown.get(above) ?? 0);
-    }
-    return top - scrolled;
-  };
-  const column = document.createElement("div");
-  column.style.overflowY = "auto";
-  column.getBoundingClientRect = () =>
-    ({ bottom: COLUMN_TOP + COLUMN_HEIGHT, height: COLUMN_HEIGHT, top: COLUMN_TOP }) as DOMRect;
-  Object.defineProperty(column, "clientHeight", { configurable: true, get: () => COLUMN_HEIGHT });
-  Object.defineProperty(column, "scrollHeight", {
-    configurable: true,
-    get: () => topOf(blocks) + scrolled - COLUMN_TOP,
-  });
-  const drawn = document.createElement("div");
-  for (let index = 0; index < blocks; index += 1) {
-    const block = document.createElement("section");
-    block.getBoundingClientRect = () =>
-      ({
-        bottom: topOf(index) + BLOCK_HEIGHT + (grown.get(index) ?? 0),
-        top: topOf(index),
-      }) as DOMRect;
-    drawn.append(block);
-  }
-  column.append(drawn);
-  document.body.append(column);
-  const page: Column = {
-    drawn,
-    frame,
-    grow(index, pixels) {
-      grown.set(index, (grown.get(index) ?? 0) + pixels);
-    },
-    resized() {
-      for (const fire of [...observers]) fire();
-    },
-    scrollTo(top) {
-      scrolled = top;
-      for (const listener of scrollListeners) listener(new Event("scroll"));
-    },
-    scrollTop: () => scrolled,
-    scrollY: () => 0,
-    wheel,
-  };
-  // The column's own scroll, which is what the keeper writes (`moveTheBox`): the browser tells
-  // the listeners after the write, and this harness tells them as the page's own does.
-  Object.defineProperty(column, "scrollTop", {
-    configurable: true,
-    get: () => scrolled,
-    set: (next: number) => page.scrollTo(next),
-  });
-  installTheBrowser(page);
-  mounted = column;
-  return page;
-}
-
-/** The reader turns the wheel, which every listener the module holds for it hears. */
-function wheel(): void {
-  for (const listener of windowListeners.get("wheel") ?? []) listener(new Event("wheel"));
-}
-
-/** An animation frame passes: what was asked for before it runs, and what that asks for waits
- *  for the next one. */
-function frame(): void {
-  const due = [...frames.values()];
-  frames = new Map();
-  for (const callback of due) callback(performance.now());
-}
-
-/** The browser's own pieces this module reaches for: `ResizeObserver`, the page's scroll
- *  offset, `window.scrollBy`, the listeners it registers and the animation frames it asks for. */
-function installTheBrowser(page: Page): void {
-  const original = globalThis.ResizeObserver;
-  const scrollBy = window.scrollBy;
-  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  const addListener = window.addEventListener;
-  const removeListener = window.removeEventListener;
-  const requestFrame = window.requestAnimationFrame;
-  const cancelFrame = window.cancelAnimationFrame;
-  scrollListeners = [];
-  windowListeners = new Map();
-  frames = new Map();
-  class ObserverStub {
-    private readonly fire: () => void;
-    constructor(callback: ResizeObserverCallback) {
-      this.fire = () => callback([], this as unknown as ResizeObserver);
-      observers.add(this.fire);
-    }
-    disconnect(): void {
-      observers.delete(this.fire);
-    }
-    observe(): void {}
-    unobserve(): void {}
-  }
-  globalThis.ResizeObserver = ObserverStub as unknown as typeof ResizeObserver;
-  Object.defineProperty(window, "scrollY", { configurable: true, get: page.scrollY });
-  window.scrollBy = ((_x: number, y: number) => page.scrollTo(page.scrollY() + y)) as never;
-  window.addEventListener = ((type: string, listener: (event: Event) => void) => {
-    if (type === "scroll") {
-      scrollListeners.push(listener);
-      return;
-    }
-    windowListeners.set(type, [...(windowListeners.get(type) ?? []), listener]);
-  }) as never;
-  window.removeEventListener = ((type: string, listener: (event: Event) => void) => {
-    if (type === "scroll") {
-      scrollListeners = scrollListeners.filter((kept) => kept !== listener);
-      return;
-    }
-    windowListeners.set(
-      type,
-      (windowListeners.get(type) ?? []).filter((kept) => kept !== listener)
-    );
-  }) as never;
-  let lastFrame = 0;
-  window.requestAnimationFrame = (callback: FrameRequestCallback) => {
-    lastFrame += 1;
-    frames.set(lastFrame, callback);
-    return lastFrame;
-  };
-  window.cancelAnimationFrame = (handle: number) => {
-    frames.delete(handle);
-  };
-  restoreObserver = () => {
-    globalThis.ResizeObserver = original;
-    window.scrollBy = scrollBy;
-    window.addEventListener = addListener;
-    window.removeEventListener = removeListener;
-    window.requestAnimationFrame = requestFrame;
-    window.cancelAnimationFrame = cancelFrame;
-    if (scrollY !== undefined) Object.defineProperty(window, "scrollY", scrollY);
-    (mounted ?? page.drawn).remove();
-    mounted = undefined;
-  };
-}
-
-afterEach(() => {
-  restoreObserver?.();
-  restoreObserver = undefined;
-  observers.clear();
-  scrollListeners = [];
-  windowListeners = new Map();
-  frames = new Map();
-  pagePort = window.innerHeight;
-});
+// The reader's own scroll, the table of their inputs and the window the keepers stand down in
+// are `readers-scroll.ts`'s, and so are their rows (`readers-scroll.test.ts`); the page and the
+// browser both files' rows stand in are the harness's.
+afterEach(restoreTheBrowser);
 
 test("the reader's block is the first one the top of the scrollport is in or above", () => {
   const page = pageOf(40, 0);
@@ -363,343 +121,29 @@ test("a panel landing before the page got to a frame is still answered for", () 
   }
 });
 
-// An engine that animates the scroll a wheel asks for - WebKit does - stops it at the first
-// scroll a script makes, so a correction made while it is still moving ends the reader's scroll
-// wherever it stands: wheeled 2,000 px up, WebKit stopped 42 px in for a correction of 1.6 px
-// (`e2e/deep-links.e2e.ts`, "a press in the document while a comment link is still landing does
-// not end the hold").
-test("a growth above a reader whose own scroll is still moving leaves that scroll alone", () => {
+// The put-back after the editor's swap measures the block the reader was on and moves the page
+// by how far it stands from where they had it. A document in a tab the reader has switched away
+// from - a tab chord, the tab's own button, the palette - is drawn with no box at all, and
+// measured as its all-zero rectangle it moved the tab they switched to by the place's own
+// offset: 1,000 to 1,040 in the review's harness. So it stops where `placeInView` stops.
+test("the reader is put back on a drawn document, and a document drawn with no box moves nothing", () => {
   const page = pageOf(40, 0);
-  page.scrollTo(1_250);
-  const release = keepTheReadersPlace(page.drawn);
-  try {
-    page.wheel();
-    // The first frame of the scroll the engine animates for that wheel, and a block above the
-    // reader drawn at its own height in the same frame.
-    page.scrollTo(1_200);
-    page.frame();
-    page.grow(3, 2);
-    page.resized();
+  page.scrollTo(1_000);
+  // Where the reader had block 10 before the swap: its top 40 px above the top of the screen.
+  const place = { index: 10, top: -40 };
 
-    expect(page.scrollY()).toBe(1_200);
-  } finally {
-    release();
+  putTheReaderBack(page.drawn, place);
+  expect(page.scrollY()).toBe(1_040);
+
+  page.scrollTo(1_000);
+  for (const block of page.drawn.children) {
+    (block as HTMLElement).getClientRects = () => [] as unknown as DOMRectList;
+    (block as HTMLElement).getBoundingClientRect = () =>
+      ({ bottom: 0, height: 0, top: 0 }) as DOMRect;
   }
-});
+  putTheReaderBack(page.drawn, place);
 
-test("once the reader's own scroll has held still for two frames, a growth above them is answered", () => {
-  const page = pageOf(40, 0);
-  page.scrollTo(1_250);
-  const release = keepTheReadersPlace(page.drawn);
-  try {
-    page.wheel();
-    page.scrollTo(1_200);
-    page.frame();
-    page.scrollTo(1_000);
-    page.frame();
-    // One frame with no scroll in it is not yet the end of the movement.
-    page.frame();
-    page.grow(3, 2);
-    page.resized();
-    expect(page.scrollY()).toBe(1_000);
-
-    page.frame();
-    page.grow(3, 30);
-    page.resized();
-
-    expect(page.scrollY()).toBe(1_030);
-  } finally {
-    release();
-  }
-});
-
-test("a box kept above a reader whose own scroll is still moving leaves that scroll alone", () => {
-  const page = pageOf(40, 0);
-  page.scrollTo(1_250);
-  let height = 120;
-  // The space the page holds for its chrome, out of sight above the top of the reader's screen.
-  const held = document.createElement("div");
-  held.getBoundingClientRect = () => ({ bottom: -100 + height, height, top: -100 }) as DOMRect;
-  document.body.append(held);
-  const release = keepWhatStandsUnder(held);
-  try {
-    page.wheel();
-    page.scrollTo(1_200);
-    page.frame();
-    height = 180;
-    page.resized();
-
-    expect(page.scrollY()).toBe(1_200);
-  } finally {
-    release();
-    held.remove();
-  }
-});
-
-/** The reader presses a key, which every listener the module holds for it hears. */
-function key(): void {
-  for (const listener of windowListeners.get("keydown") ?? []) listener(new Event("keydown"));
-}
-
-// A key that scrolls nothing - a letter typed into an answer box, Shift, a copy - starts no
-// movement of the reader's for a correction to end, so the page under them is still this
-// module's to keep, in the task the growth is seen in as on a quiet page. Driven in a browser
-// with its own scroll anchoring off, on `e2e/large-documents-first-screen.e2e.ts`'s "a panel
-// arriving while the reader is in a long document moves what they are looking at by no pixels"
-// with Shift pressed as the panel landed: the reader's words moved the panel's 88 px in three
-// runs of six, and by under half a pixel in six of six once a key no longer opened the window.
-test("a growth above a reader who pressed a key that scrolled nothing is answered", () => {
-  const page = pageOf(40, 0);
-  page.scrollTo(1_250);
-  const release = keepTheReadersPlace(page.drawn);
-  try {
-    key();
-    page.grow(3, 332);
-    page.resized();
-
-    expect(page.scrollY()).toBe(1_582);
-  } finally {
-    release();
-  }
-});
-
-test("a box kept above a reader who pressed a key that scrolled nothing is answered", () => {
-  const page = pageOf(40, 0);
-  page.scrollTo(1_250);
-  let height = 120;
-  // The space the page holds for its chrome, out of sight above the top of the reader's screen.
-  const held = document.createElement("div");
-  held.getBoundingClientRect = () => ({ bottom: -100 + height, height, top: -100 }) as DOMRect;
-  document.body.append(held);
-  const release = keepWhatStandsUnder(held);
-  try {
-    key();
-    height = 180;
-    page.resized();
-
-    expect(page.scrollY()).toBe(1_310);
-  } finally {
-    release();
-    held.remove();
-  }
-});
-
-/** A key going down as a browser reports it: the key named, the modifiers held with it, and the
- *  box it was pressed into - the page itself where nothing has the focus. This harness holds the
- *  module's listeners and calls them itself, so the target a browser gives the event is stated. */
-function keydown(key: string, held: KeyboardEventInit = {}, into: Element = document.body): Event {
-  const event = new KeyboardEvent("keydown", { ...held, key });
-  Object.defineProperty(event, "target", { value: into });
-  return event;
-}
-
-/** The reader presses that key, which every listener the module holds for a key hears. */
-function press(key: string, held?: KeyboardEventInit, into?: Element): void {
-  const event = keydown(key, held, into);
-  for (const listener of windowListeners.get("keydown") ?? []) listener(event);
-}
-
-/** A box that takes what is typed into it, as the editor does. */
-function anEditor(): HTMLElement {
-  const editor = document.createElement("div");
-  editor.contentEditable = "true";
-  return editor;
-}
-
-/** One press of each class of key a reader makes, and whether it moves them (`movesTheReader`).
- *  The first three move nothing, and are held against a module that takes every key for the
- *  reader's scroll; the last two do, and are held against one that takes none. */
-const KEYS: readonly { moves: boolean; name: string; press(): void }[] = [
-  { moves: false, name: "a modifier", press: () => press("Shift", { shiftKey: true }) },
-  {
-    moves: false,
-    name: "a letter typed into the editor",
-    press: () => press("e", {}, anEditor()),
-  },
-  {
-    moves: false,
-    name: "a copy",
-    press: () => {
-      press("Control", { ctrlKey: true });
-      press("c", { ctrlKey: true });
-    },
-  },
-  { moves: true, name: "a scroll key", press: () => press("PageDown") },
-  { moves: true, name: "Tab", press: () => press("Tab") },
-];
-
-for (const key of KEYS) {
-  const outcome = key.moves ? "waits for the movement that key begins" : "is answered";
-
-  // A panel's arrival: the document's own keeper, and a panel landing above the reader.
-  test(`a panel landing above a reader who pressed ${key.name} ${outcome}`, () => {
-    const page = pageOf(40, 0);
-    page.scrollTo(1_250);
-    const release = keepTheReadersPlace(page.drawn);
-    try {
-      key.press();
-      page.grow(3, 332);
-      page.resized();
-
-      expect(page.scrollY()).toBe(key.moves ? 1_250 : 1_582);
-    } finally {
-      release();
-    }
-  });
-
-  // The editor's build: the keeper of the box the page holds for its chrome until the editor's
-  // first batch (`AfterTheFirstBatch.tsx`), and the chrome landing in it taller than the box.
-  test(`the chrome landing in the editor's build above a reader who pressed ${key.name} ${outcome}`, () => {
-    const page = pageOf(40, 0);
-    page.scrollTo(1_250);
-    let height = 120;
-    const held = document.createElement("div");
-    held.getBoundingClientRect = () => ({ bottom: -100 + height, height, top: -100 }) as DOMRect;
-    document.body.append(held);
-    const release = keepWhatStandsUnder(held);
-    try {
-      key.press();
-      height = 180;
-      page.resized();
-
-      expect(page.scrollY()).toBe(key.moves ? 1_250 : 1_310);
-    } finally {
-      release();
-      held.remove();
-    }
-  });
-}
-
-// A key that scrolls is a wheel to the engine that animates it. In Playwright's WebKit 27.2 a
-// PageDown ran 576 px over 13 frames alone and stopped after 92 to 110 px with one pixel written
-// by a script two frames in, and its first scroll came in the key's own frame or the one after
-// it: so the frame after the key may pass with no scroll in it and the keeper still stands down.
-test("a growth above a reader whose key-driven scroll is still moving leaves that scroll alone", () => {
-  const page = pageOf(40, 0);
-  page.scrollTo(1_250);
-  const release = keepTheReadersPlace(page.drawn);
-  try {
-    press("PageDown");
-    page.frame();
-    // The first frame of the scroll the engine animates for that key, a frame after the key,
-    // and a block above the reader drawn at its own height in it.
-    page.scrollTo(1_342);
-    page.frame();
-    page.grow(3, 2);
-    page.resized();
-    expect(page.scrollY()).toBe(1_342);
-
-    // Two frames with no scroll in them end it, as they end a wheel's.
-    page.frame();
-    page.frame();
-    page.grow(3, 30);
-    page.resized();
-
-    expect(page.scrollY()).toBe(1_372);
-  } finally {
-    release();
-  }
-});
-
-/** What `movesTheReader` reads each of `keys` as, pressed with `held` into `into`. */
-function whichMove(
-  keys: readonly string[],
-  into?: Element,
-  held?: KeyboardEventInit
-): Record<string, boolean> {
-  return Object.fromEntries(keys.map((key) => [key, movesTheReader(keydown(key, held, into))]));
-}
-
-// The one reading of a key that both watches make (`READER_SCROLLS` here, `READER_ACTIONS` in
-// `refocus-when-settled.ts`): a key moves the reader where its own default action scrolls or
-// takes the focus somewhere else. Measured in Playwright's WebKit 27.2 and Chromium 156, three
-// presses each on a probe page: Space, an arrow, Home and End scrolled the page from the page
-// and moved it by 0 px from an editable box, PageDown moved it from both, and Shift and a letter
-// moved it from neither.
-test("a key pressed on the page moves the reader where its own action scrolls or moves the focus", () => {
-  expect(
-    whichMove([
-      " ",
-      "ArrowDown",
-      "ArrowLeft",
-      "ArrowRight",
-      "ArrowUp",
-      "End",
-      "Home",
-      "PageDown",
-      "PageUp",
-      "Tab",
-    ])
-  ).toEqual({
-    " ": true,
-    ArrowDown: true,
-    ArrowLeft: true,
-    ArrowRight: true,
-    ArrowUp: true,
-    End: true,
-    Home: true,
-    PageDown: true,
-    PageUp: true,
-    Tab: true,
-  });
-  expect(whichMove(["Alt", "Control", "Enter", "Escape", "Meta", "Shift", "e"])).toEqual({
-    Alt: false,
-    Control: false,
-    Enter: false,
-    Escape: false,
-    Meta: false,
-    Shift: false,
-    e: false,
-  });
-  // A copy, a paste and a select-all are a letter with a modifier held.
-  expect(whichMove(["a", "c", "v"], document.body, { ctrlKey: true })).toEqual({
-    a: false,
-    c: false,
-    v: false,
-  });
-  expect(whichMove(["a", "c", "v"], document.body, { metaKey: true })).toEqual({
-    a: false,
-    c: false,
-    v: false,
-  });
-});
-
-test("a key typed into a field moves the reader only where it leaves the field or pages it", () => {
-  const fields: Record<string, HTMLElement> = {
-    "a comment box": document.createElement("textarea"),
-    "a select": document.createElement("select"),
-    "an answer box": document.createElement("input"),
-    "the editor": anEditor(),
-  };
-  for (const [name, field] of Object.entries(fields)) {
-    expect({
-      [name]: whichMove(
-        [" ", "ArrowDown", "ArrowUp", "End", "Home", "PageDown", "PageUp", "Tab", "e"],
-        field
-      ),
-    }).toEqual({
-      [name]: {
-        " ": false,
-        ArrowDown: false,
-        ArrowUp: false,
-        End: false,
-        Home: false,
-        PageDown: true,
-        PageUp: true,
-        Tab: true,
-        e: false,
-      },
-    });
-  }
-});
-
-test("a wheel, a touch and a press move the reader, and a keydown that names no key does not", () => {
-  expect(
-    ["pointerdown", "touchmove", "touchstart", "wheel"].map((type) =>
-      movesTheReader(new Event(type))
-    )
-  ).toEqual([true, true, true, true]);
-  expect(movesTheReader(new Event("keydown"))).toBe(false);
+  expect(page.scrollY()).toBe(1_000);
 });
 
 test("the page is left alone once the document has gone", () => {
@@ -783,7 +227,7 @@ test("on a document page the same readings are the page's own, and unchanged", (
 // less a horizontal scrollbar, which `window.innerHeight` counts and the page cannot draw into.
 test("the port a bordered column shows starts under its border, and the page's above its scrollbar", () => {
   const { box } = borderedListOf(500, 40);
-  pagePort = window.innerHeight - 15;
+  thePagePort.height = window.innerHeight - 15;
 
   try {
     expect({
@@ -1171,7 +615,7 @@ test("a card the page itself scrolls is placed by moving the page, which says it
     // itself and what the document element shows is the port.
     placeInView(card, { block: "nearest" });
 
-    expect(page.scrollY()).toBe(1_050 - pagePort);
+    expect(page.scrollY()).toBe(1_050 - thePagePort.height);
     expect(thePageLeftItThere(null)).toBe(true);
   } finally {
     card.remove();
@@ -1183,7 +627,7 @@ test("the page's port is what its document element shows, not the window a scrol
   // A page with a horizontal scrollbar: the bar stands inside the window and under the
   // document element, so `window.innerHeight` counts it and `documentElement.clientHeight`,
   // which is what the browser places against, does not.
-  pagePort = window.innerHeight - 15;
+  thePagePort.height = window.innerHeight - 15;
   const card = document.createElement("div");
   card.getBoundingClientRect = () =>
     ({ bottom: 1_050 - page.scrollY(), height: 50, top: 1_000 - page.scrollY() }) as DOMRect;

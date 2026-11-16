@@ -490,11 +490,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // its label names - the same handler a click reaches, offered while that control is. The
   // digits go through `useIssuePriority` on the route's key, the query key this page reads, so
   // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the
-  // palette-only issue actions into this same scope; it never pushes one of its own.
+  // palette-only issue actions into this same scope; it never pushes one of its own. Each says
+  // what it does to the reader (`effect`): a key that focuses a header control scrolls the page
+  // to it and a tab chord switches the tab, so both move the reader and the page lets go of
+  // their place for them, where the digits and the pin write without moving anybody.
   const priorityWrite = useIssuePriority(route.key);
   useKeymapScope("issue");
   useKeymap("issue", [
     {
+      effect: "moves the reader",
       id: "status",
       keys: "s",
       label: "Focus the status",
@@ -502,6 +506,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => reachable(() => usableControl(STATUS_SELECT)),
     },
     {
+      effect: "moves the reader",
       id: "priority",
       keys: "p",
       label: "Focus the priority",
@@ -509,6 +514,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => reachable(() => usableControl(PRIORITY_SELECT)),
     },
     {
+      effect: "moves nothing",
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
@@ -527,6 +533,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => reachable(() => usableControl(PRIORITY_SELECT)) && outsideInputsAndAskCards(),
     },
     {
+      effect: "moves the reader",
       id: "labels",
       keys: "l",
       label: "Edit labels",
@@ -536,6 +543,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     {
       // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
       // `onFocus` does not open the editor, so the key is offered exactly while it edits.
+      effect: "moves the reader",
       id: "title",
       keys: "e",
       label: "Edit the title",
@@ -543,6 +551,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => reachable(() => usableControl(TITLE_HEADING)),
     },
     {
+      effect: "moves nothing",
       id: "pin",
       keys: "Shift+P",
       label: "Pin or unpin the issue",
@@ -553,7 +562,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       // `s` and `p` put focus in a native select, where every single-key binding is suspended
       // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
       // rather than start the tab chord. Escape is the way back out, as it is on the Inbox
-      // rows, the board's cards and the architecture rows.
+      // rows, the board's cards and the architecture rows. The blur takes the focus off the
+      // control and back to the page, which moves the reader.
+      effect: "moves the reader",
       id: "back",
       inEditable: true,
       keys: "Escape",
@@ -565,6 +576,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       },
     },
     ...tabChords.map(({ keys, label, tab }) => ({
+      effect: "moves the reader" as const,
       id: `tab-${tab}`,
       keys,
       label,

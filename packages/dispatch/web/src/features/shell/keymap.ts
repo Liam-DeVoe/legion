@@ -24,6 +24,10 @@ export type KeymapScope =
   | "document"
   | "agents";
 
+/** What running a binding does to the reader: moves their place or their focus - a focus, a
+ *  tab, a dialog or palette that takes the focus, another page - or moves neither. */
+export type ShortcutEffect = "moves the reader" | "moves nothing";
+
 export interface KeyBinding {
   /** Stable identifier, unique within the registering component. */
   id: string;
@@ -34,6 +38,17 @@ export interface KeyBinding {
   keys: string | readonly string[];
   label: string;
   run: (event: KeyboardEvent) => void;
+  /**
+   * What `run` does to the reader, which every binding declares where it binds its key: the
+   * page's watches over the reader's place read a key the registry acts on by this and nothing
+   * else (`effectOf`, read by the table of the reader's inputs in
+   * `features/doc/readers-scroll.ts`). A binding that moves the focus, opens a dialog or a
+   * palette that takes it, switches a tab or goes to another page moves the reader, and the
+   * page lets go of their place for it; one that changes nothing their place or focus hangs on -
+   * a write, a toggle, a copy - moves nothing, and the page goes on keeping their place through
+   * it. Required, so a binding cannot be added without saying which.
+   */
+  effect: ShortcutEffect;
   /** Whether the binding applies right now; `false` neither fires nor shadows lower scopes. */
   when?: () => boolean;
   /** Fires while a control that takes typed text has focus: a `TEXTAREA`, a `SELECT`, a
@@ -222,7 +237,11 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
   week: true,
 };
 
-function isEditableTarget(target: EventTarget | null): boolean {
+/** Whether `target` is a control that takes typed text: a contentEditable element, a
+ *  `TEXTAREA`, a `SELECT`, or a text-entry `INPUT`. The registry suspends every binding not
+ *  marked `inEditable` there, and the table of the reader's inputs reads it as the field that
+ *  takes Space, the arrows, Home and End for itself (`features/doc/readers-scroll.ts`). */
+export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
@@ -265,6 +284,11 @@ export interface Keymap {
    *  mounted twice registers its bindings twice (an issue's hidden Spec beside another of its
    *  documents), and they are one row, enabled when either instance's `when()` holds. */
   describe(): KeyBindingDescription[];
+  /** What the binding a key press would run does to the reader (`KeyBinding.effect`), `moves
+   *  nothing` for the first key of a chord the registry would hold, and `undefined` for a key it
+   *  would leave to the browser. It runs nothing and moves no chord on, so a watch listening on
+   *  the capture phase can read the press before the registry's own listener answers it. */
+  effectOf(event: KeyboardEvent): ShortcutEffect | undefined;
   handleKeyDown(event: KeyboardEvent): void;
   /** The keys typed so far of an unfinished chord (`"g"`), or `""`. */
   pending(): string;
@@ -371,6 +395,34 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
     return { exact: undefined, partial: false };
   };
 
+  /** The presses `event` completes and what the registry would do with them, or `undefined` for
+   *  a press it leaves alone: one already handled, one an input method is composing, a modifier
+   *  on its own. It changes nothing, so `effectOf` reads a press exactly as `handleKeyDown`
+   *  then answers it. */
+  const readThePress = (
+    event: KeyboardEvent
+  ): { presses: KeyPress[]; resolution: Resolution } | undefined => {
+    if (event.defaultPrevented || event.isComposing || MODIFIER_KEYS[event.key] === true) {
+      return undefined;
+    }
+    const editable = isEditableTarget(event.target);
+    const press: KeyPress = {
+      altKey: event.altKey,
+      code: event.code,
+      ctrlKey: event.ctrlKey,
+      key: event.key,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+    };
+    const presses = [...pending, press];
+    const resolution = resolve(presses, editable);
+    if (resolution.exact === undefined && !resolution.partial && pending.length > 0) {
+      // A key that does not continue the chord is read afresh on its own.
+      return { presses: [press], resolution: resolve([press], editable) };
+    }
+    return { presses, resolution };
+  };
+
   return {
     actions() {
       // Everything beneath the innermost dialog: the palette is itself a dialog, so this is the
@@ -443,26 +495,19 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       }
       return [...described.values()];
     },
+    effectOf(event) {
+      const resolution = readThePress(event)?.resolution;
+      if (resolution?.exact !== undefined) {
+        return resolution.exact.binding.effect;
+      }
+      return resolution?.partial === true ? "moves nothing" : undefined;
+    },
     handleKeyDown(event) {
-      if (event.defaultPrevented || event.isComposing || MODIFIER_KEYS[event.key] === true) {
+      const read = readThePress(event);
+      if (read === undefined) {
         return;
       }
-      const editable = isEditableTarget(event.target);
-      const press: KeyPress = {
-        altKey: event.altKey,
-        code: event.code,
-        ctrlKey: event.ctrlKey,
-        key: event.key,
-        metaKey: event.metaKey,
-        shiftKey: event.shiftKey,
-      };
-      let presses = [...pending, press];
-      let resolution = resolve(presses, editable);
-      if (resolution.exact === undefined && !resolution.partial && pending.length > 0) {
-        // A key that does not continue the chord is read afresh on its own.
-        presses = [press];
-        resolution = resolve(presses, editable);
-      }
+      const { presses, resolution } = read;
       if (resolution.exact !== undefined) {
         event.preventDefault();
         clearPending();

@@ -33,11 +33,13 @@ export const trailingNewlineInputPlugin = $prose(
               !view.someProp("handleTextInput", (handle) => handle(view, from, to, text, insert))
             ) {
               // ProseMirror's own transaction flag: applying this insert scrolls the caret's
-              // ancestors to keep it in sight, on the text the reader has just typed. The
+              // ancestors to keep it in sight, on the text the reader has just typed - the
+              // editor following the reader's own caret, not the page holding their place. The
               // selection it collapses in the document ends every landing correction watching
-              // that box, and so does this scroll, which the correction did not make
-              // (`selected()` and `scrolled()`, `features/doc/refocus-when-settled.ts` in
-              // Dispatch).
+              // that box, a task later (`selected()`, `features/doc/refocus-when-settled.ts` in
+              // Dispatch). This scroll ends one itself only where no correction is under way:
+              // inside one, `scrolled()` takes it as that correction's own movement and lets it
+              // through until the selection change.
               view.dispatch(insert().scrollIntoView());
             }
             event.preventDefault();
