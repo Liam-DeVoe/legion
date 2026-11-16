@@ -1273,7 +1273,7 @@ type Machine struct {
 	// One is enough, and one is all a machine can hold: refreshPlugin decides nothing for a
 	// claim that already holds a wake, and a post that arrives carrying a credit over a machine
 	// that already holds one gives the new one straight back to the gate rather than losing it
-	// behind this one flag (refreshPlugin). It is memory only, as the wake it is taken for is: a
+	// behind this one flag (takeRefreshCredit). It is memory only, as the wake it is taken for is: a
 	// restart leaves the gate empty and the first pass fills it from the claims it reads
 	// (RefreshGate, refreshStalePlugins).
 	refreshCredit bool
@@ -1391,6 +1391,14 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	m.mu.Lock()
 	defer m.unlock()
 	m.decide(ev)
+	// An admitted post's credit is this machine's from the moment its decision begins, whatever
+	// the decision then does with the event — the relaunch it raises, or a refusal by the claim's
+	// state, the fence or a failed settle before any of that — so the release every decision ends
+	// in gives it back unless a refresh wake of this claim's waits for it (takeRefreshCredit,
+	// endRefreshLane, dispatch://INFRA-3149).
+	if stale, ok := ev.(StalePlugin); ok && stale.Admitted {
+		m.takeRefreshCredit()
+	}
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
 	}
