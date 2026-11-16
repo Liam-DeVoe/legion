@@ -350,6 +350,11 @@ const parallelProjects = [
   // `table-controls`'s page-own focus row. Measured in WebKit as well as Firefox: neither fires
   // a `focusout` for it. And a table scrolled while one of its rows holds the focus, whose row
   // the virtual list takes away out of sight: `table-controls`'s scrolling-table row.
+  // How the engine names a download from the `filename*` and `filename` of its
+  // `Content-Disposition`, and whether it asks the server again for a download address it holds,
+  // where an older version's name changes once a newer one exists: `download-names`'s six rows.
+  // WebKit writes each space of the name it read from `filename*` as `_`, which the row of a name
+  // with spaces reads.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -422,6 +427,9 @@ const parallelProjects = [
   // A focused control taken away, itself or with a parent, for which this engine fires no
   // `focusout`, so the page's focus rescue sees it only by watching the page: `table-controls`'s
   // page-own focus row, and its scrolling-table row, whose focused row a scroll takes away.
+  // How the engine names a download from the `filename*` and `filename` of its
+  // `Content-Disposition`, and whether it asks the server again for a download address it holds,
+  // where an older version's name changes once a newer one exists: `download-names`'s six rows.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
