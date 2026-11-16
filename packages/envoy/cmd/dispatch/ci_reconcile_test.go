@@ -87,11 +87,15 @@ func TestTheCIReconcilePassRecordsItsRowWhileTheProcessServes(t *testing.T) {
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		NATSURL: natsURL,
 		Env: map[string]string{
-			"DISPATCH_APP_CLIENT_ID":              "Iv1.cireconcile",
-			"DISPATCH_APP_PEM_B64":                pemText,
-			"DISPATCH_GITHUB_API_BASE":            github.URL,
-			"DISPATCH_REVIEWER_APP_ID":            ciReconcileReviewerApp,
-			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
+			"DISPATCH_APP_CLIENT_ID":   "Iv1.cireconcile",
+			"DISPATCH_APP_PEM_B64":     pemText,
+			"DISPATCH_GITHUB_API_BASE": github.URL,
+			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
+			// A pass is bounded at its interval (Reconciler.PassTimeout). At one second, a
+			// whole-package run on two loaded CPUs cut every pass at its bound, so no pass ever
+			// logged its records and the row failed; three seconds still fits ten passes in the
+			// thirty-second waits below.
+			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "3s",
 		},
 	})
 	process.waitHealthy(t)
@@ -101,7 +105,7 @@ func TestTheCIReconcilePassRecordsItsRowWhileTheProcessServes(t *testing.T) {
 
 	// The first pass of a process can run before the registration it waits on returns, and such
 	// a pass records nothing by design (beginPass), so the row is waited for rather than read
-	// once: the interval is a second and the deadline is many of them.
+	// once: the interval is three seconds and the deadline is ten of them.
 	var instance, outcome string
 	deadline := time.Now().Add(30 * time.Second)
 	for {
