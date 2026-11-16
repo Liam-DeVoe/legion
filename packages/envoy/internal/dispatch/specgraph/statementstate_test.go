@@ -3,6 +3,7 @@ package specgraph
 import (
 	"runtime/debug"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -236,10 +237,10 @@ func TestStatementState(t *testing.T) {
 			held(L1, "unknown", "supporter_not_built", statementLeafSupporter.ID, "met"),
 			held(T, "unknown", "supporter_not_built", statementLeafSupporter.ID, "met"),
 		}},
-		// Validate refuses the loop at Q, so Q reads refused (the derivation gives no clean state for
-		// a tree that the rules refuse); the derivation of T still reads Q through the loop as unknown,
-		// and ends.
-		{name: "a loop of supporters: Q reads refused (loop), and T reads not met by its own check", change: func(s *checkCase) {
+		// Validate refuses the loop of Q and T, and the loop refuses each of its statements. Q reads
+		// refused (the derivation gives no clean state for a tree that the rules refuse). T is
+		// refused too, and its own check is false: a refusal never hides a failure, so T reads not met.
+		{name: "a loop of supporters: Q reads refused (loop), and T, refused too, reads not met by its own check", change: func(s *checkCase) {
 			loop := checkStateTop
 			loop.Serves = []string{Q}
 			s.replace(loop)
@@ -248,6 +249,22 @@ func TestStatementState(t *testing.T) {
 			s.addNodes(fast, statementFastCheck)
 			s.runOutcome(CT, OutcomeFail)
 		}, want: []StatementState{held(Q, "unknown", "refused", "loop", "unknown"), held(T, "not_met", "check_false", CT, "not_met")}},
+		// Each statement of a loop that the tree rules refuse is refused, whichever id the loop rule
+		// names first, so a wait on each holds (R29), and no answer depends on the order of the ids.
+		{name: "a loop of T and L1 under it (T serves L1): Validate names L1, and each of the two reads refused; subject the head of main", change: func(s *checkCase) {
+			loop := checkStateTop
+			loop.Serves = []string{L1}
+			s.replace(loop)
+			s.Subject.Branch = "main"
+		}, want: []StatementState{held(T, "unknown", "refused", "loop", "unknown"), held(L1, "unknown", "refused", "loop", "unknown")},
+			waits: map[string]bool{T: false, L1: false}},
+		{name: "a loop of T and P (T serves P): Validate names T, and P, whose id sorts last, reads refused too; subject the head of main", change: func(s *checkCase) {
+			loop := checkStateTop
+			loop.Serves = []string{P}
+			s.replace(loop)
+			s.Subject.Branch = "main"
+		}, want: []StatementState{held(T, "unknown", "refused", "loop", "unknown"), held(P, "unknown", "refused", "loop", "unknown")},
+			waits: map[string]bool{T: false, P: false}},
 		// R6: "Each leaf statement has one or more checks." R7: "silence is not a pass." A leaf that
 		// the approved spec gives no check reads unknown when the files hold its text, and so does
 		// each statement above it that it would otherwise leave met. Its own state for a wait is
@@ -430,6 +447,16 @@ func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 		{"a component with no purpose in a file of its own", func(s *checkCase) {
 			s.files["components.md"] = []specNode{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
 		}},
+		{"a loop of a statement and the statement under it", func(s *checkCase) {
+			loop := checkStateTop
+			loop.Serves = []string{checkStateLeaf.ID}
+			s.replace(loop)
+		}},
+		{"a loop of supporters whose other member's id sorts after the one the rule names", func(s *checkCase) {
+			loop := checkStateTop
+			loop.Serves = []string{statementSupporter.ID}
+			s.replace(loop)
+		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -442,7 +469,8 @@ func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 			}
 			state := Derive(s.input())
 			for _, p := range problems {
-				for _, id := range namedBy(files, p) {
+				named := namedBy(files, p)
+				for _, id := range withParents(files, named) {
 					for _, c := range state.Checks {
 						if c.ID == id && c.State == "true" {
 							t.Errorf("%s: check %s reads %+v", p.Rule, id, c)
@@ -454,21 +482,35 @@ func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 						}
 					}
 				}
+				for _, st := range state.Statements {
+					if slices.Contains(named, st.ID) && st.Own == "met" {
+						t.Errorf("%s: statement %s reads %+v, so a wait on it ends", p.Rule, st.ID, st)
+					}
+				}
 			}
 		})
 	}
 }
 
 // namedBy is each check and statement of files that the problem p names: the node it names, and,
-// for a check, the statement it serves; for a problem that names no check and no statement, each
-// check and statement of files, whatever file holds it; then each statement above one of them.
+// for a check, the statement it serves; for a loop, each statement of the cycle that its detail
+// writes ("loop: a -[parent]-> b -[serves]-> a"); for a problem that names no check and no
+// statement, each check and statement of files, whatever file holds it.
 func namedBy(files Tree, p Problem) []string {
 	var named []string
-	if c, held := files.CheckByID(p.Node); held {
+	switch c, held := files.CheckByID(p.Node); {
+	case held:
 		named = append(named, c.ID, c.Serves)
-	} else if _, held := files.StatementByID(p.Node); held {
-		named = append(named, p.Node)
-	} else {
+	case p.Rule == "loop":
+		for _, word := range strings.Fields(strings.TrimPrefix(p.Detail, "loop: ")) {
+			if !strings.HasPrefix(word, "-[") && !slices.Contains(named, word) {
+				named = append(named, word)
+			}
+		}
+	default:
+		if _, held := files.StatementByID(p.Node); held {
+			return []string{p.Node}
+		}
 		for _, st := range files.Statements {
 			named = append(named, st.ID)
 		}
@@ -476,6 +518,12 @@ func namedBy(files Tree, p Problem) []string {
 			named = append(named, c.ID)
 		}
 	}
+	return named
+}
+
+// withParents is ids and each statement of files above one of them.
+func withParents(files Tree, ids []string) []string {
+	named := slices.Clone(ids)
 	for i := 0; i < len(named); i++ {
 		if st, held := files.StatementByID(named[i]); held && st.Parent != "" && !slices.Contains(named, st.Parent) {
 			named = append(named, st.Parent)

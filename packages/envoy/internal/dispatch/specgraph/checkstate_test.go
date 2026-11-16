@@ -194,6 +194,12 @@ func TestCheckState(t *testing.T) {
 			c.productionProgram("docs/x.md", "c1")
 			c.Results[3].TestAuthors = nil
 		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "fault_by_test_author"}},
+		// An author of only white space names nobody, by the test that Validate reads a missing text
+		// with (hasWord).
+		{name: "v-state 15, no author of the test: the one test author is only white space", change: func(c *checkCase) { c.Results[1].TestAuthors = []string{" "} },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
+		{name: "v-state 15, no author: the author of the fault is only white space", change: func(c *checkCase) { c.Results[1].FaultAuthor = " " },
+			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
 		{name: "v-state 16: the emptied test passes on the fault", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/restart_test.go")
 			c.Subject.Commit = "c2"
