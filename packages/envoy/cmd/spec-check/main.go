@@ -140,8 +140,8 @@ func parse(flags *flag.FlagSet, args []string, stderr io.Writer, required ...str
 	return 2, false
 }
 
-// absolute is path made absolute, as every path the command prints is, and whether it could be;
-// when not, it has written the line that names the path.
+// absolute returns path as an absolute path, as the command prints every path, and whether it
+// could; when it could not, it has written the line that names the path.
 func absolute(stderr io.Writer, path string) (string, bool) {
 	abs, err := filepath.Abs(path)
 	if err != nil {

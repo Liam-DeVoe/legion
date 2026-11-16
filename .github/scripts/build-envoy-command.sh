@@ -20,7 +20,7 @@ if [ "$#" -ne 4 ]; then
   echo 'usage: build-envoy-command.sh <package> <binary> <module cache> <build cache>' >&2
   exit 2
 fi
-# absolute is path read against the directory the script runs in.
+# absolute prints its argument as an absolute path, read against the directory the script runs in.
 absolute() {
   case $1 in
     /*) printf '%s\n' "$1" ;;

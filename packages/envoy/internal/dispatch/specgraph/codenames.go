@@ -38,13 +38,13 @@ var productNames = []string{"GitHub", "PostgreSQL", "OpenAI", "JavaScript", "Typ
 
 // CodeNames is each name of code that text holds, in the order found: first each span in
 // backticks, backticks included, then each word of the rest with a file ending, a slash between two
-// letters, an ending "()", or an underscore between two letters or digits, or that has the form of
-// a name in lower camel case (lowerCamel) or of a package and its symbol (packageSymbol), and
-// else each name in the word that has the form of a Go test's name (goTestName). The quotes and
-// brackets of every script around a word, punctuation after it and a possessive "'s" are not part
-// of it, and a product name that productNames lists, such as Node.js, is no code. Any other word
-// of one of these shapes is, a plain word or a product name such as I/O, Three.js or TestFlight
-// included.
+// ASCII letters, an ending "()", or an underscore between two ASCII letters or digits, or that has
+// the form of a name in lower camel case (lowerCamel) or of a package and its symbol
+// (packageSymbol), and else each name in the word that has the form of a Go test's name
+// (goTestName). The quotes and brackets of every script around a word, punctuation after it and a
+// possessive "'s" are not part of it, and a product name that productNames lists, such as Node.js,
+// is no code. Any other word of one of these shapes is, a plain word or a product name such as
+// I/O, Three.js or TestFlight included.
 func CodeNames(text string) []string {
 	found := backtickSpan.FindAllString(text, -1)
 	for _, token := range strings.Fields(backtickSpan.ReplaceAllString(text, " ")) {
