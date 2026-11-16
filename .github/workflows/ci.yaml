@@ -1570,6 +1570,12 @@ jobs:
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
               - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
               - '.github/workflows/ci-job-envoy-go-race-api.yaml'
+              # Its rune cases build the script's rewrite probe with the toolchain go selects in
+              # packages/envoy: the go the test job's setup-go installs (packages/daemon/go.mod),
+              # as packages/envoy/go.mod and go.work's go lines select it.
+              - 'packages/daemon/go.mod'
+              - 'packages/envoy/go.mod'
+              - 'go.work'
             # Its cases build miniature modules with the go the job sets up and run the script
             # over them; no case reads a package of this repository.
             go_test_shards_test: &go_test_shards_test

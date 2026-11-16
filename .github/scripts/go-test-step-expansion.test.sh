@@ -5,7 +5,9 @@
 # Only the line reader. What the script makes of a command - the packages a `go test -list` names,
 # the pairs two steps share, the exceptions - needs all three Go modules' test binaries built,
 # which is minutes of compile and why no CI job runs that script (its own header says so). This
-# harness needs no Go at all: every case is one line of text.
+# harness compiles no package of this repository: every case is one line of text, and only the
+# cases on characters go test -run rewrites run go, to build the script's small rewrite probe with
+# the toolchain packages/envoy selects, as the script does.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
 # it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
@@ -183,9 +185,11 @@ check "  naming each" "$(contains "$out" "skips 'TestGamma', 'Test\\\\u200bAlpha
 
 # -list matches each top-level name against the whole pattern; go test -run (and -skip) first
 # splits it at every / and every | outside brackets and parentheses, then rewrites each part (a
-# space becomes _). A step pattern the two read differently would have this script, which learns
-# what a step runs from -list, wrong about it, so such a pattern is refused by name.
-echo "case: a -run or -skip that -list and -run can read differently is refused"
+# space becomes _, a rune Go does not print becomes its escape). A step pattern the two read
+# differently would have this script, which learns what a step runs from -list, wrong about it, so
+# such a pattern is refused by name: a split at the parse, a rewritten rune once the listing is
+# known.
+echo "case: a -run or -skip that -list and -run split differently is refused at the parse"
 parsed() { # parsed <line>: "read" or "refused: <why>" for one go test line
   py 'step = ex.Step(workflow="(a test case)", job="(a job)", name="(a step)", workdir="packages/envoy", script="")
 try:
@@ -198,22 +202,60 @@ else:
 out=$(parsed "go test -run '^A\$|^B\$/x' ./pkg")
 check "a / is refused" "$(contains "$out" "runs by '^A\\\$|^B\\\$/x', and it holds a \`/\`")"
 out=$(parsed "go test -run '^TestBeta\$|^\\QTestAlpha|\\Qjunk\\E\$' ./pkg")
+# shellcheck disable=SC2016 # literal backticks of the message, no expansion wanted
 check "a top-level | around a \\Q quote is refused" "$(contains "$out" 'and it holds a `|` outside brackets and parentheses')"
-out=$(parsed $'go test -run \'^(Test\xc2\xa0Alpha)$\' ./pkg')
-check "a no-break space is refused, named by its code point" "$(contains "$out" 'and it holds U+00A0, which go test -run rewrites')"
-out=$(parsed $'go test -skip \'^(Test\xc2\xa0Alpha)$\' ./pkg')
-check "  and in a -skip too" "$(contains "$out" 'skips by .*U+00A0')"
-out=$(parsed "go test -run 'Test Alpha' ./pkg")
-check "a plain space is refused" "$(contains "$out" 'U+0020')"
-for line in "go test -run FuzzAirlock ./internal/broker/airlock/" \
-  "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/" \
-  "go test -count=1 -run '^(TestAlpha|TestBeta)\$' ./pkg" \
-  "go test -count=1 -skip '^(TestAlpha|TestBeta)\$' ./pkg" \
-  "go test -run '^Test[|]\$' ./pkg" \
-  "go test -run '^TestA\\|B\$' ./pkg" \
-  "go test -run 'TestÉclair' ./pkg"; do
+for line in "go test -run '^Test[|]\$' ./pkg" "go test -run '^TestA\\|B\$' ./pkg"; do
   check "read: $line" "$(is "$(parsed "$line")" read)"
 done
+
+# Which runes the rewrite changes is Go's to say, not Python's. U+1C89 is a letter of Unicode 16.0,
+# which Go 1.27 prints and Python 3.12's tables call unprintable; U+200B, a zero-width space, is a
+# format character Go does not print; U+00A0, U+3000 and the space are spaces to the rewrite. A -run
+# of names the binaries listed is read on that membership; any other is asked of the probe, built
+# with the toolchain packages/envoy selects. The listing is stood in for: the command lists the
+# names below, the five-name set the review's generated pattern held among them.
+echo "case: a -run holding a rune go test -run rewrites is refused, as Go decides it"
+listed_run() { # listed_run <run> [<skip>]: what list_tests answers for a command with that -run
+  py 'step = ex.Step(workflow="(a test case)", job="(a job)", name="(a step)", workdir="packages/envoy", script="")
+command = ex.GoTest(step=step, text="go test -run PATTERN ./pkg", packages=["./pkg"], run=sys.argv[1], skip=sys.argv[2])
+names = ["TestAlpha", "Test_Alpha", "TestBeta", "FuzzAirlock", "TestÉclair", "Test日本",
+         "Test\u1c89", "TestOne", "TestTwo", "TestThree", "TestFour"]
+ex.listing = lambda command, pattern: {"example.com/pkg": names}
+try:
+    ex.list_tests(command)
+except ex.Refused as refusal:
+    print("refused:", refusal)
+else:
+    print("read")' "$1" "${2:-}"
+}
+out=$(listed_run $'^(Test\xc2\xa0Alpha)$')
+check "a no-break space is refused, named by its code point" "$(contains "$out" 'and it holds U+00A0, which go test -run rewrites')"
+out=$(listed_run 'Test Alpha')
+check "a plain space is refused" "$(contains "$out" 'and it holds U+0020, which go test -run rewrites')"
+out=$(listed_run $'Test\xe2\x80\x8bAlpha')
+check "a rune Go does not print (U+200B) is refused" "$(contains "$out" 'and it holds U+200B, which go test -run rewrites')"
+out=$(listed_run $'^(Test\xe3\x80\x80Alpha)$')
+check "an ideographic space (U+3000) is refused" "$(contains "$out" 'and it holds U+3000, which go test -run rewrites')"
+# A -skip is refused at the parse unless it is ^(Name|...)$ of names with no space, and once listed
+# each name must be one a package lists, so its runes need no probe.
+out=$(parsed $'go test -skip \'^(Test\xc2\xa0Alpha)$\' ./pkg')
+check "a no-break space in a -skip is refused" "$(contains "$out" 'reads only the anchored alternation of whole test names')"
+for run in 'FuzzAirlock' '^(TestAlpha|TestBeta)$' 'TestÉclair' $'^(Test\xe1\xb2\x89)$' \
+  $'^(TestFour|TestOne|TestThree|TestTwo|Test\xe1\xb2\x89)$' $'Test\xe1\xb2\x89' $'^Test\xe1\xb2\x89$'; do
+  check "read: -run $run" "$(is "$(listed_run "$run")" read)"
+done
+check "read: a -skip of listed names, one of them U+1C89" "$(is "$(listed_run 'TestAlpha' $'^(Test\xe1\xb2\x89|Test\xe6\x97\xa5\xe6\x9c\xac)$')" read)"
+
+# The probe's isSpace is a copy of testing/match.go's; held here to the match.go of the toolchain
+# packages/envoy selects, so a Go release that changes the list fails this case rather than
+# leaving the copy stale. Compared with comments and blank lines dropped, line by line.
+echo "case: the rewrite probe's isSpace is the pinned toolchain's own"
+goroot=$(cd "$script_dir/../../packages/envoy" && go env GOROOT)
+body_of() { sed -n '/^func isSpace(r rune) bool {$/,/^}$/p' | sed -e 's/[[:space:]]*\/\/.*$//' -e 's/^[[:space:]]*//' | grep -v '^$'; }
+theirs=$(body_of <"$goroot/src/testing/match.go")
+ours=$(py 'print(ex.REWRITE_PROBE)' | body_of)
+check "match.go has the function" "$(is "$([ -n "$theirs" ] && echo found)" found)"
+check "the probe's copy is the same, line for line" "$(is "$ours" "$theirs")"
 
 # envoy-go-race-api is a matrix whose legs each run one shard of internal/dispatch/api, and the
 # leg's index and the leg count reach its script as `${{ strategy.job-index }}` and

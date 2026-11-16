@@ -98,12 +98,14 @@ How it reads a step:
   * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
     the step runs and left in what it compiles, since the binary holds a skipped test and never
     runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
-  * a `-run` or `-skip` that `-list` and `go test` can read differently is refused by name: one
-    holding a `/`, a `|` outside brackets and parentheses, or a character testing's matcher
-    rewrites (a space, or a rune Go does not print), since `go test` splits and rewrites the
-    pattern before it matches and `-list` does neither (list_run_disagreement says why). A plain
-    pattern such as airlock-lean's `-run FuzzAirlock`, and every `^(Name|Name|…)$` the lister
-    scripts print, reads alike under both;
+  * a `-run` or `-skip` that `-list` and `go test` can read differently is refused by name, since
+    `go test` splits and rewrites the pattern before it matches and `-list` does neither: one
+    holding a `/` or a `|` outside brackets and parentheses (split_disagreement), and a -run holding
+    a character testing's matcher rewrites (a space, or a rune Go does not print). Which runes those
+    are is Go's to say, never Python's: a -run that is `^(Name|Name|…)$` of names the binaries
+    listed needs no test, since a listed name is an identifier Go printed, and any other -run, such
+    as airlock-lean's `FuzzAirlock`, is asked of a small probe built with the step's own toolchain
+    (rewritten_runes). Every name a -skip names must be a listed one;
   * what a step compiles is a second `go test -list` over the same packages under the same build
     flags and the pattern `.*`, run where the step carries a `-run`, because `-list` answers the
     pattern it is given and a `-run` listing names only the functions the step runs. The second
@@ -127,10 +129,12 @@ pair is run twice undeclared and none is unrun, 1 when one is, 2 when it cannot 
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -547,23 +551,98 @@ def skip_names(pattern: str) -> list[str] | None:
     return names if all(SKIP_NAME.match(name) for name in names) else None
 
 
-# The characters testing's matcher rewrites in a -run or -skip part before it matches (match.go's
-# rewrite: each space isSpace names becomes `_`, and each rune strconv.IsPrint calls unprintable
-# becomes its escape). `-test.list` matches the raw pattern and rewrites nothing.
-GO_SPACES = frozenset("\t\n\v\f\r \x85\xa0\u1680\u2028\u2029\u202f\u205f\u3000"
-                      + "".join(chr(c) for c in range(0x2000, 0x200B)))
+# A program that applies testing's rewrite rule to every rune of its standard input, one pattern
+# per line, and prints each rune the rule changes as U+XXXX: match.go's rewrite turns a rune its
+# isSpace names into `_` and a rune strconv.IsPrint calls unprintable into its escape. isSpace is
+# match.go's own list, copied here byte for byte (go-test-step-expansion.test.sh holds the copy to
+# the pinned toolchain's match.go); strconv.IsPrint is that toolchain's own table. Python decides
+# none of it: its Unicode tables are older than Go's (Python 3.12 has 15.0, Go 1.27 17.0), so its
+# isprintable() called U+1C89, a letter Go prints, unprintable.
+REWRITE_PROBE = """\
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strconv"
+)
+
+func isSpace(r rune) bool {
+	if r < 0x2000 {
+		switch r {
+		// Note: not the same as Unicode Z class.
+		case '\\t', '\\n', '\\v', '\\f', '\\r', ' ', 0x85, 0xA0, 0x1680:
+			return true
+		}
+	} else {
+		if r <= 0x200a {
+			return true
+		}
+		switch r {
+		case 0x2028, 0x2029, 0x202f, 0x205f, 0x3000:
+			return true
+		}
+	}
+	return false
+}
+
+func main() {
+	in := bufio.NewScanner(os.Stdin)
+	in.Buffer(make([]byte, 1<<20), 1<<24)
+	for in.Scan() {
+		for _, r := range in.Text() {
+			if isSpace(r) || !strconv.IsPrint(r) {
+				fmt.Printf("%U\\n", r)
+			}
+		}
+	}
+}
+"""
+# What the probe answered, per toolchain GOROOT and per rune, so each rune is asked once a run.
+_PROBED: dict[tuple[str, str], bool] = {}
 
 
-def list_run_disagreement(pattern: str) -> str | None:
-    """Why `go test -list` and `go test -run` (or -skip) can select different tests by `pattern`,
-    or None when they cannot. This script learns what a step runs from -list, so a pattern they can
-    read differently is refused rather than read. -list matches each top-level name against the
-    whole pattern; -run first splits it (match.go's splitRegexp, mirrored below) at every `/` and
-    every `|` outside brackets and parentheses, then rewrites each part. So a pattern is safe when
-    it holds no `/`, no `|` at the top level and no character the rewrite changes. Printability is
-    Python's isprintable(): its tables are older than Go's, so a letter newer than them reads as
-    unprintable and is refused - a refusal of a pattern -list and -run would have read alike, never
-    a miss, since the general categories Go calls printable are the ones Python does."""
+def go_root(directory: Path) -> str:
+    """The GOROOT of the toolchain go selects in `directory`, which is the toolchain a step's own
+    go test runs there (a module's go or toolchain line may select another than the one on PATH)."""
+    return go(["go", "env", "GOROOT"], directory, f"go env GOROOT in {directory}").strip()
+
+
+def rewritten_runes(pattern: str, directory: Path) -> list[str]:
+    """The characters of `pattern` that testing's matcher rewrites before it matches, decided by
+    Go's rule. An ASCII character is decided here, since the rule needs no table for it: of ASCII,
+    isSpace names \\t \\n \\v \\f \\r and the space, and strconv.IsPrint calls 0x20-0x7E printable.
+    Every other rune is asked of REWRITE_PROBE, built and run once per run with the toolchain go
+    selects in `directory`, GOTOOLCHAIN=local so that it does not select another."""
+    def ascii_rewritten(c: str) -> bool:
+        return c in "\t\n\v\f\r " or not 0x20 <= ord(c) <= 0x7E
+    root = None
+    unasked = sorted({c for c in pattern if ord(c) > 0x7F})
+    if unasked:
+        root = go_root(directory)
+        unasked = [c for c in unasked if (root, c) not in _PROBED]
+    if unasked:
+        with tempfile.TemporaryDirectory(prefix="go-test-step-expansion.") as scratch:
+            Path(scratch, "probe.go").write_text(REWRITE_PROBE)
+            done = subprocess.run([str(Path(root, "bin", "go")), "run", "probe.go"], cwd=scratch,
+                                  input="".join(unasked) + "\n", capture_output=True, encoding="utf-8",
+                                  env={**os.environ, "GOTOOLCHAIN": "local", "GOWORK": "off", "GOFLAGS": ""},
+                                  check=False)
+        if done.returncode != 0:
+            raise Refused(f"the rewrite probe exited {done.returncode} under {root}\n{indent(done.stderr)}")
+        answered = {chr(int(line.removeprefix("U+"), 16)) for line in done.stdout.split()}
+        for c in unasked:
+            _PROBED[(root, c)] = c in answered
+    return sorted({c for c in pattern if (ascii_rewritten(c) if ord(c) <= 0x7F else _PROBED[(root, c)])})
+
+
+def split_disagreement(pattern: str) -> str | None:
+    """Why `go test -list` and `go test -run` (or -skip) can split `pattern` differently, or None
+    when they cannot. -list matches each top-level name against the whole pattern; -run first
+    splits it (match.go's splitRegexp, mirrored below) at every `/` and every `|` outside brackets
+    and parentheses. So a pattern holding neither is matched whole by both. What the run then
+    rewrites in it is listed_or_rewritten()'s to decide, once the listing is known."""
     if "/" in pattern:
         return "it holds a `/`, at which go test -run splits a pattern and -list does not"
     brackets = parentheses = 0
@@ -584,16 +663,25 @@ def list_run_disagreement(pattern: str) -> str | None:
             return ("it holds a `|` outside brackets and parentheses, at which go test -run splits a pattern "
                     "and -list does not")
         index += 1
-    rewritten = sorted({c for c in pattern if c in GO_SPACES or not c.isprintable()})
-    if rewritten:
-        return (f"it holds {', '.join(f'U+{ord(c):04X}' for c in rewritten)}, which go test -run rewrites "
-                f"before it matches and -list does not")
     return None
+
+
+def listed_or_rewritten(pattern: str, known: set[str], directory: Path) -> list[str]:
+    """The characters of `pattern` go test -run would rewrite and -list would not, or none.
+    A pattern that is `^(Name|Name|…)$` of names the binaries listed needs no character test: a
+    listed name is a Go identifier, which Go printed and the rewrite leaves as it is, so its
+    membership is the proof (the same rule go-test-shards.py holds its patterns to). Any other
+    pattern - a step's own -run such as `FuzzAirlock` - is asked of Go (rewritten_runes)."""
+    alternation = SKIP_ALTERNATION.fullmatch(pattern)
+    if alternation and all(name in known for name in alternation.group(1).split("|")):
+        return []
+    return rewritten_runes(pattern, directory)
 
 
 def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
     """The packages, -tags, -race, -run and -skip of one `go test` command. A -run or -skip that
-    -list and -run can read differently is refused (list_run_disagreement says when)."""
+    -list and -run split differently is refused (split_disagreement says when); what the run
+    rewrites is decided once the listing is known (list_tests)."""
     command = GoTest(step=step, text=text, packages=list(packages))
     words = shlex.split(text)
     position = words.index("test") + 1
@@ -608,7 +696,7 @@ def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
                 value = words[position]
                 position += 1
             if flag in ("-run", "-skip"):
-                reason = list_run_disagreement(value)
+                reason = split_disagreement(value)
                 if reason:
                     raise Refused(f"{step.label}: `{text}` {flag[1:]}s by {value!a}, and {reason}, so "
                                   f"this script, which learns what a step runs from -list, cannot read it")
@@ -693,6 +781,9 @@ def list_tests(command: GoTest) -> tuple[dict[str, list[str]], dict[str, list[st
     matches (a no-break space becomes `_`), so a name no binary lists could skip a test of another
     name while this script subtracted nothing, and a listed name is a Go identifier the rewrite
     leaves alone.
+
+    The -run itself is held to the same: what go test rewrites in it before it matches, -list does
+    not, so a -run holding such a character is refused (listed_or_rewritten says how it is told).
     """
     compiled = listing(command, ".*")
     skipped = set(skip_names(command.skip) or ())  # the parse refused every other shape
@@ -703,6 +794,13 @@ def list_tests(command: GoTest) -> tuple[dict[str, list[str]], dict[str, list[st
                       f"{', '.join(ascii(name) for name in unlisted)}, which no package of it lists: "
                       f"go test rewrites a -skip it does not know as a name, so what it skips is "
                       f"not what this script can subtract")
+    if command.run:
+        rewritten = listed_or_rewritten(command.run, known, command.step.directory)
+        if rewritten:
+            raise Refused(f"{command.step.label}: `{command.text}` runs by {command.run!a}, and it holds "
+                          f"{', '.join(f'U+{ord(c):04X}' for c in rewritten)}, which go test -run rewrites "
+                          f"before it matches and -list does not, so this script, which learns what a "
+                          f"step runs from -list, cannot read it")
     run = compiled if not command.run else listing(command, command.run)
     return ({package: [name for name in names if name not in skipped]
              for package, names in run.items()}, compiled)

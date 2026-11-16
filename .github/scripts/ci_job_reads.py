@@ -2048,6 +2048,9 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its last case reads this file's own go test line, the GODEBUG one"),
         (".github/workflows/ci-job-envoy-go-race-api.yaml",
          "its matrix case reads this file's job and step as legs, each assigning its -run from the shard script"),
+        ("packages/daemon/go.mod", "the test job's setup-go reads it (ci-job-test.yaml:549-553) and installs the go its rune cases build the rewrite probe with"),
+        ("packages/envoy/go.mod", "its rune cases build the rewrite probe with the toolchain go selects in packages/envoy, which this go line decides"),
+        ("go.work", "the workspace's go line takes part in that toolchain selection in packages/envoy"),
     ]),
     harness("go_test_shards_test", "Test the go test shard split", f"{SCRIPTS}/go-test-shards.test.sh", [
         (f"{SCRIPTS}/go-test-shards.py", "the script under test"),
