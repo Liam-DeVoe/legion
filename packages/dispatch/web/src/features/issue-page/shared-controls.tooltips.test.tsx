@@ -40,6 +40,7 @@ import {
   secondaryButtonCompact,
   textMutedOnSurface,
 } from "../../theme/classes";
+import { ComponentPicker } from "../architecture/ComponentPicker";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
@@ -1046,8 +1047,8 @@ const MOUNTS: readonly Mount[] = [
       />
     ),
     // With a label the control draws "+", and its name is `main`'s on both surfaces, key given
-    // or not (dispatch://INFRA-3935 R1); only an issue with no label is named by the words it
-    // draws (`labelsEmptyAndSaving`).
+    // or not (dispatch://INFRA-3935 R1); only an issue with no label, and inside `NoTooltips` a
+    // control that saves, is named by the words it draws (`labelsEmptyAndSaving`).
     settle: pressing("Edit labels"),
   },
   {
@@ -1400,8 +1401,32 @@ const componentsWithPicker: Mount = {
       </>
     );
   },
+  // The picker's name is `main`'s outside `NoTooltips` and begins with the words its trigger
+  // draws inside (`componentsControlName`; dispatch://INFRA-3935 R8, decision 114 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md), and either ends with the issue's key.
   settle: async (view) => {
-    await within(view.container).findByRole("button", { name: "Edit components of CORE-2" });
+    await within(view.container).findByRole("button", { name: /\bcomponents of CORE-2$/u });
+  },
+};
+
+/** The components picker while the set its popover closed with is saving, as the components line
+ *  draws it with its write out: in place of the host's words the trigger says that it saves. */
+const componentPickerSaving: Mount = {
+  name: "ComponentPicker, saving",
+  node: () => {
+    const components = architecture.components;
+    if (components === null) throw new Error("the fixture has no components to offer");
+    return (
+      <ComponentPicker
+        components={components}
+        onSave={() => undefined}
+        saving
+        selected={[]}
+        triggerAriaLabel="Saving components of CORE-1"
+      >
+        Set components
+      </ComponentPicker>
+    );
   },
 };
 
@@ -1432,6 +1457,7 @@ const EVERY_MOUNT: readonly Mount[] = [
   priorityLineLoading,
   repoNothingResolved,
   componentsWithPicker,
+  componentPickerSaving,
   labelsEmptyAndSaving,
   subscribersAtHeartbeat,
 ];
@@ -1627,6 +1653,7 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   ],
   [repoNothingResolved, []],
   [componentsWithPicker, []],
+  [componentPickerSaving, []],
   [
     mountNamed("RouteReach, each marker"),
     [
@@ -2889,6 +2916,15 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       [CONTROL_LABELS.components_set, "page-chrome"],
     ]);
   });
+  // While it saves, the picker says B's "Saving components…" with the page's mark in place of its
+  // host's words, and the components line's name begins with them (`componentsControlName`;
+  // dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md).
+  await readDrawn(componentPickerSaving, "inside", (view) => {
+    expectMarks(view.container, [[ANSWER_LINES.saving_components, "page-chrome"]]);
+    expect(within(view.container).getByRole("button").textContent).toBe(
+      ANSWER_LINES.saving_components
+    );
+  });
 
   await readDrawn(mountNamed("IssueLabels, its chips and its picker open"), "inside", (view) => {
     expectMarks(within(view.container).getByTestId("issue-labels"), [
@@ -2904,15 +2940,16 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       ["api", "author-text"],
     ]);
     // The control of an issue with no label is named by the words it draws, then the issue's
-    // key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one with a label, here saving, keeps `main`'s
-    // name (R1), as the control the mount above opens does.
+    // key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one that saves by the words it draws then, their
+    // ellipsis dropped, and here no key is given (R8, decision 114 of
+    // dispatch://INFRA-1196/artifact/part-decisions-md).
     expect(
       within(view.container)
         .getAllByRole("button", { name: /labels?\b/iu })
         .map((control) => [control.getAttribute("aria-label"), control.textContent])
     ).toEqual([
       [`${CONTROL_LABELS.add_label} to CORE-1`, CONTROL_LABELS.add_label],
-      ["Edit labels", ANSWER_LINES.saving_labels],
+      ["Saving labels", ANSWER_LINES.saving_labels],
     ]);
   });
 
@@ -3132,18 +3169,21 @@ test("inside NoTooltips every colour is one of B's page colours", async () => {
 // dispatch://INFRA-3935 R6 and R9: the components line's picker takes its trigger's class from
 // `ComponentPicker`, which hands it to `MultiSelect`. Inside `NoTooltips` that trigger, "+" or
 // "Set components", draws in B's page colours and keeps none of `secondaryButtonCompact`'s;
-// outside, its class is `main`'s `secondaryButtonCompact`.
+// outside, its class is `main`'s `secondaryButtonCompact`. Inside, the trigger that draws "Set
+// components" is named by those words (R8, decision 114 of
+// dispatch://INFRA-1196/artifact/part-decisions-md); outside, each keeps `main`'s name.
 test("inside NoTooltips the components picker's trigger draws in B's page colours", async () => {
-  const triggers = (view: RenderResult) =>
-    ["Edit components of CORE-1", "Edit components of CORE-2"].map((name) =>
-      within(view.container).getByRole("button", { name })
-    );
+  const triggers = (view: RenderResult, surface: Surface) =>
+    [
+      "Edit components of CORE-1",
+      surface === "inside" ? "Set components of CORE-2" : "Edit components of CORE-2",
+    ].map((name) => within(view.container).getByRole("button", { name }));
   const mainsColours = tokens(secondaryButtonCompact).filter(
     (token) => colourOf(splitToken(token).utility) !== undefined
   );
 
   await readDrawn(componentsWithPicker, "inside", (view) => {
-    const drawn = triggers(view);
+    const drawn = triggers(view, "inside");
     expect(drawn.map((trigger) => trigger.textContent)).toEqual([
       "+",
       CONTROL_LABELS.components_set,
@@ -3157,7 +3197,7 @@ test("inside NoTooltips the components picker's trigger draws in B's page colour
   });
 
   await readDrawn(componentsWithPicker, "outside", (view) => {
-    expect(triggers(view).map((trigger) => trigger.getAttribute("class"))).toEqual([
+    expect(triggers(view, "outside").map((trigger) => trigger.getAttribute("class"))).toEqual([
       secondaryButtonCompact,
       secondaryButtonCompact,
     ]);

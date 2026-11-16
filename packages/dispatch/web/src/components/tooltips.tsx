@@ -13,7 +13,11 @@ type Words<Key extends string> = { readonly [key in Key]: string };
  */
 export interface PageWords {
   readonly ANSWER_LINES: Words<
-    "loading_priorities" | "priorities_not_saved" | "priorities_unreadable" | "saving_labels"
+    | "loading_priorities"
+    | "priorities_not_saved"
+    | "priorities_unreadable"
+    | "saving_components"
+    | "saving_labels"
   >;
   readonly AUTHOR_KIND_WORDS: Words<"agent">;
   readonly CONTROL_LABELS: Words<
@@ -58,6 +62,15 @@ export interface PageWords {
   readonly pageChrome: Readonly<Record<string, string>>;
   /** The mark of an element whose text a person or an agent wrote (`data-author-text`). */
   readonly authorText: Readonly<Record<string, string>>;
+}
+
+/** A word of the page's list as a control's accessible name says it: a name is said rather than
+ *  read, so the ellipsis that shows a write under way ("Saving labels…") is no word of it, and
+ *  one `…`, or three dots, at the end goes ("Saving labels"). The shared controls name a busy
+ *  control by the words it draws this way (`labelsControlName`, `componentsControlName`;
+ *  dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+export function withoutEllipsis(words: string): string {
+  return words.replace(/\s*(?:…|\.{3})$/u, "");
 }
 
 /**

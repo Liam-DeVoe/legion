@@ -642,6 +642,7 @@ export const ANSWER_LINES = freeze({
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
+  saving_components: "Saving components…",
   saving_field: "Saving…",
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",

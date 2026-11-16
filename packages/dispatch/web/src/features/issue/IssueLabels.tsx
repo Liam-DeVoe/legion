@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useMemo, useState } from "react";
 
 import { projectIssuesQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
-import { type PageWords, usePageWords } from "../../components/tooltips";
+import { type PageWords, usePageWords, withoutEllipsis } from "../../components/tooltips";
 import {
   pageLabelChip,
   pageLineBorder,
@@ -60,7 +60,7 @@ function saveLabels(draft: readonly string[], labels: readonly string[]): string
 }
 
 /** `main`'s name for the labels control: the name it answers to in every state outside
- *  `NoTooltips`, and inside while the issue has a label or a save is in flight (R1). */
+ *  `NoTooltips`, and inside while the issue has a label and no save is in flight (R1). */
 const editLabelsName = "Edit labels";
 
 /** The name the labels control answers to inside `NoTooltips`, which the new issue page's add
@@ -68,15 +68,23 @@ const editLabelsName = "Edit labels";
  *  is the words the control draws, then the issue's key ("Add a label to CORE-1", as the
  *  priority's is "Add a priority to CORE-1"), so a voice user saying what they read presses it
  *  (WCAG 2.5.3); with no key it is those words alone. With a label it is `main`'s "Edit labels".
- *  The words are the page's list's (`CONTROL_LABELS`), passed in rather than imported: the page
- *  names the control outside React from the list it imports, and this file imports nothing of
- *  that list (`components/tooltips.tsx`). While a save is in flight the control keeps `main`'s
- *  name whatever this returns. */
+ *  While a save is in flight, which the caller says by passing the page's `ANSWER_LINES` as
+ *  `saving`, the control draws their `saving_labels` ("Saving labels…") whatever it holds, so the
+ *  name is those words with their trailing ellipsis dropped, then "of" and the issue's key
+ *  ("Saving labels of CORE-1"), or those words alone with no key (dispatch://INFRA-3935 R8,
+ *  decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md). The words are the page's
+ *  list's, passed in rather than imported: the page names the control outside React from the
+ *  list it imports, and this file imports nothing of that list (`components/tooltips.tsx`). */
 export function labelsControlName(
   labels: readonly string[],
   issueKey: string | undefined,
-  controlLabels: PageWords["CONTROL_LABELS"]
+  controlLabels: PageWords["CONTROL_LABELS"],
+  saving?: Pick<PageWords["ANSWER_LINES"], "saving_labels">
 ): string {
+  if (saving !== undefined) {
+    const words = withoutEllipsis(saving.saving_labels);
+    return issueKey === undefined ? words : `${words} of ${issueKey}`;
+  }
   if (labels.length > 0) return editLabelsName;
   return issueKey === undefined
     ? controlLabels.add_label
@@ -88,8 +96,8 @@ export interface IssueLabelsProps {
    *  new issue page's Details draws the prototype's `.lchip`). Given, the labels wrap. */
   readonly chipClassName?: string;
   readonly disabled: boolean;
-  /** The issue's key, which ends the name of the control of an issue with no label inside
-   *  `NoTooltips` (`labelsControlName`). Outside `NoTooltips` it changes nothing. */
+  /** The issue's key, which ends the control's name inside `NoTooltips` while the issue has no
+   *  label or a save is in flight (`labelsControlName`). Outside `NoTooltips` it changes nothing. */
   readonly issueKey?: string;
   readonly labels: readonly string[];
   readonly onSave: (labels: string[]) => Promise<unknown>;
@@ -132,16 +140,21 @@ export function IssueLabels({
     [draft, issues.data, labels]
   );
   const displayLabels = open ? draft : labels;
-  // Inside `NoTooltips` the control of an issue with no label draws "Add a label" (below), so its
-  // name begins with those words, as the priority's "Add a priority to CORE-1" does: a voice user
-  // says what they read (WCAG 2.5.3 Label in Name; dispatch://INFRA-3935 R2, decision 91 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md). `labelsControlName` builds that name, and
-  // the page finds the control by it. While it saves, and everywhere outside, it is `main`'s
-  // name (R1).
+  // Inside `NoTooltips` the control's name begins with the words it draws: "Add a label" with no
+  // label (below), as the priority's "Add a priority to CORE-1" does, and "Saving labels…" while it
+  // saves, so a voice user says what they read (WCAG 2.5.3 Label in Name; dispatch://INFRA-3935
+  // R2 and R8, decisions 91 and 114 of dispatch://INFRA-1196/artifact/part-decisions-md).
+  // `labelsControlName` builds that name, and the page finds the control by it. Everywhere
+  // outside it is `main`'s name (R1).
   const triggerName =
-    page === null || saving
+    page === null
       ? editLabelsName
-      : labelsControlName(displayLabels, issueKey, page.CONTROL_LABELS);
+      : labelsControlName(
+          displayLabels,
+          issueKey,
+          page.CONTROL_LABELS,
+          saving ? page.ANSWER_LINES : undefined
+        );
 
   const setOpenState = useCallback(
     (next: boolean) => {

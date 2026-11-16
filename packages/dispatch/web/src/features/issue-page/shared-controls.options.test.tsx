@@ -51,7 +51,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { PROPERTY_LABELS } from "./page-structure";
-import { AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
 import {
   architecture,
   CLAIMED_AT,
@@ -1151,6 +1151,58 @@ test("inside NoTooltips the empty labels control says Add a label", () => {
             expect({ ...which, control: control.outerHTML.includes("Labels") }).toEqual({
               ...which,
               control: false,
+            });
+          }
+        } finally {
+          undraw(view);
+        }
+      }
+    }
+  }
+});
+
+// dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// while its labels save, the control inside `NoTooltips` draws the page's "Saving labels…"
+// whatever it holds, and it stays focusable, marked busy. Its accessible name then begins with
+// those words, their ellipsis dropped, and ends with the issue's key ("Saving labels of CORE-1"),
+// or is those words alone with no key given, so a voice user says what they read (WCAG 2.5.3
+// Label in Name). Outside it draws `main`'s "Saving labels…" and keeps `main`'s name, "Edit
+// labels", in every state (R1).
+test("inside NoTooltips the saving labels control is named by its visible words", () => {
+  expect(ANSWER_LINES.saving_labels).toBe("Saving labels…");
+  for (const labels of [[], ["api"]]) {
+    for (const surface of ["inside", "outside"] as const) {
+      for (const issueKey of ["CORE-1", undefined]) {
+        const view = draw(
+          <IssueLabels
+            disabled={false}
+            issueKey={issueKey}
+            labels={labels}
+            onSave={async () => undefined}
+            project="CORE"
+            saving
+          />,
+          surface
+        );
+        try {
+          const name =
+            surface === "outside"
+              ? "Edit labels"
+              : issueKey === undefined
+                ? "Saving labels"
+                : `Saving labels of ${issueKey}`;
+          const control = within(view.container).getByRole("button", { name });
+          const which = { issueKey, labels, surface };
+          expect({
+            ...which,
+            busy: control.getAttribute("aria-disabled"),
+            word: control.textContent,
+          }).toEqual({ ...which, busy: "true", word: "Saving labels…" });
+          if (surface === "inside") {
+            const said = (control.textContent ?? "").replace(/…$/u, "");
+            expect({ ...which, nameBeginsWithWords: name.startsWith(said) }).toEqual({
+              ...which,
+              nameBeginsWithWords: true,
             });
           }
         } finally {
