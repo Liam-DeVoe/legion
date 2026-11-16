@@ -891,6 +891,10 @@ jobs:
               # select-e2e-proofs.test.sh runs the selector over this list and over scripts/e2e/.
               - '.github/e2e-scripts.json'
               - 'scripts/third-party-notices.test.ts'
+              # scripts/third-party-notices.test.ts:98-110 lists the Dispatch web app's typeface:
+              # it resolves the font file's path, lists that directory and reads the package.json
+              # and LICENSE.txt in it.
+              - 'packages/dispatch/web/src/fonts/inter/**'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
               - 'scripts/priorities-seed.ts'
