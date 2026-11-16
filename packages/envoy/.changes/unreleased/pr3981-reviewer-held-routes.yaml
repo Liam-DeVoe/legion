@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  A text the reviewer holds has three routes. `GET /api/v1/held/{id}` reads it: its state, its
+  wording, the findings, the reviewer's rewrite and the deadline. Any agent's token reads it, and a
+  person at a browser gets `403 HELD_FORBIDDEN`.
+  `PATCH /api/v1/held/{id}` changes the wording, and the reviewer reads it again.
+  `POST /api/v1/held/{id}/post {reason}` posts it as written and records the reason.
+  Only the session that wrote the text may change or post it (`403 HELD_NOT_WRITER`), and only
+  while it is in review or waits on its writer (`409 HELD_TEXT_DECIDED`).
+  A session that reads a held ask, comment, message or issue by its usual route gets
+  `409 HELD_TEXT`, with the held id.
+  A write that names a held text, such as a reply to it, a child issue or a claim, is accepted and
+  stored. It runs right after the held text posts, in the order the writes came. A create of a kind
+  the reviewer holds answers `201` in its usual shape; any other such write answers
+  `202 {id, held}`.

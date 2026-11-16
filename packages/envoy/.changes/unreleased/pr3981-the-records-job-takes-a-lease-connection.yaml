@@ -1,8 +1,0 @@
-kind: Changed
-body: |-
-  The records job of the words people ask about (`wordrecords`, lease `word-records`) reserves a
-  connection of the lease pool of its own, as every leased loop does, whether or not
-  `DISPATCH_WORD_RECORDS` and its model group turn it on. The lease pool (`store.LeasePoolSize`)
-  grows from 21 to 22 connections, so `store.ConnectionsPerProcess` goes from 112 to 113, and
-  `infra/gcp`'s `dispatchConnectionsPerPod` is 113 to match. Two server processes at their
-  ceiling hold 226.

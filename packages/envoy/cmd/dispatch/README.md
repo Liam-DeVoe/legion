@@ -1129,7 +1129,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 228, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -3207,9 +3207,12 @@ It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is
   Before the hold, the write runs its own path in a transaction that is rolled back, so a write that path refuses is refused at once, as with the reviewer off.
   The review runs in the background: a clean review posts the text (`passed`); findings go to the writer session as a turn of its own, a `message.created` frame from Dispatch whose message id is the held text's id, with no message row and no event, and the writer has `DISPATCH_REVIEWER_WRITER_WINDOW` to edit or post it; a writer session that has gone, or that does not act in time, gets the setting's choice (`DISPATCH_REVIEWER_UNEDITED`: `rewrite_posted` or `posted_as_written`); a model that fails or runs past `DISPATCH_REVIEWER_TIMEOUT` posts the text as written (`posted_unreviewed`).
   The post runs the kind's own create path with the stored request, the recorded actor and the reserved id, so it writes the rows and the event the same write writes with the reviewer off, with the post time as their creation time.
+
 - `after` posts the text at once and reviews it after the post (`reviewed_after`); its findings go to the writer the same way, and nothing more happens when the writer does not act.
+
 - A write that names a held text (a child issue, an ask, a comment or a message on a held issue, a reply to a held comment, ask or message, and any other write whose path names a held issue, ask, comment or message: a document, a result, a handoff, a claim, an update, an answer) is accepted, stored beside it, and runs right after it posts, in the order the writes came.
   A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}`.
+
 - Every decision is a row of `writing_check_events` with its reader and project: `held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`.
 
 The routes: `GET /api/v1/held/{id}` reads a held text (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`); `PATCH /api/v1/held/{id}` edits it, which the reviewer reads again; `POST /api/v1/held/{id}/post {reason}` posts it as written; only its writer session edits or posts it (`403 HELD_NOT_WRITER`).
@@ -3234,11 +3237,13 @@ Every route needs the `person` scope.
   The run emits `ask.rewriting` when it starts, then `ask.edited` or `ask.rewrite_failed` with its reason; all three are quiet, so no session gets them as a card, and the live socket carries them to an open page.
   Each request is a `writing_check_events` row, `rewrite_requested`, with the person as its reader.
   A run a stopped process left reads as failed after 6 minutes, and the next request starts a new one.
+
 - `POST /api/v1/definitions {ask_id? | document?, words}` answers `201` at once with the definition read from Dispatch's record: `{id, person, ask_id, artifact_id, version, words, inputs, definitions, failure?, agent, calls, created_at}`.
   Words in an ask, a decision block's included, also send the session that asked it one side question when Envoy reads it live and its host advertises `btw`: a frame from Dispatch whose message id is the definition's id, with no message row and no event.
   Its answer comes to `POST /api/v1/messages/{id}/reply` under that id within 60 seconds and is kept with the definition alone (`agent.state` none, waiting, answered or unanswered); a later answer is `409 DEFINITION_ANSWER_LATE`, and another session's `403 REPLY_FORBIDDEN`.
   Words in a document of an issue or a project get the record's definition alone.
   A definition changes nothing in the record and appends no event; each one is the person's question about those words in the word records (`store.RecordDefineUse`, source `define`).
+
 - `GET /api/v1/definitions/{id}` reads one of the caller's own definitions, and `GET /api/v1/me/definitions` lists them, the newest first, at most 200; another person's is `404 DEFINITION_NOT_FOUND`.
 
 Every read of an ask, a comment, a message and an issue (`GET /api/v1/issues/{key}`) carries `rewrite {state, by, at, original, reason?}` where a rewrite touched it: `rewriting`, `rewritten` or `failed`, `by` `person` or `reviewer`, and `original` the wording before it in the kind's fields.
@@ -3261,8 +3266,11 @@ The agent checks its text against them and runs the command again; that call sen
 A command a person typed (`DISPATCH_PERSON_TYPED=1`) is never refused.
 The setting is read on the server, so one change applies to every session:
 
-- `GET /api/v1/settings/writing-rules` answers `{refusal, extra}`, the refusal `on` or `off` and the rule sets of `DISPATCH_WRITING_RULES_EXTRA`. The command keeps the answer in the session's state file for 10 minutes, and a server without the route refuses nothing.
-- `POST /api/v1/writing-rules` takes `{route, body}` of a write the command has not sent, `route` being `"<method> <path>"`, and answers `{reader, text}`: the person who reads that write, decided as the writing check decides it (`writing_check_reader.go`), and the rules text. `reader_words` adds the words that person asked about before (The word records, below), and `ask_parts` adds the five parts of an ask to an ask's rules.
+- `GET /api/v1/settings/writing-rules` answers `{refusal, extra}`, the refusal `on` or `off` and the rule sets of `DISPATCH_WRITING_RULES_EXTRA`.
+  The command keeps the answer in the session's state file for 10 minutes, and a server without the route refuses nothing.
+
+- `POST /api/v1/writing-rules` takes `{route, body}` of a write the command has not sent, `route` being `"<method> <path>"`, and answers `{reader, text}`: the person who reads that write, decided as the writing check decides it (`writing_check_reader.go`), and the rules text.
+  `reader_words` adds the words that person asked about before (The word records, below), and `ask_parts` adds the five parts of an ask to an ask's rules.
 
 The server embeds the skill from `internal/dispatch/writingcheck/plainwords/skill/`, a copy that `go generate ./internal/dispatch/writingcheck/plainwords` makes; `TestTheCopyIsTheSkill` fails while the copy and `skills/plain-words` differ.
 
@@ -3273,11 +3281,14 @@ It runs while `DISPATCH_WORD_RECORDS` is `on` and its model group (`DISPATCH_WOR
 
 - It reads the event log after its cursor (`word_records_cursor`), up to the safe horizon (`events.Horizon`), so it reads only what has committed, after the write's own transaction: no write waits on it or on its model.
   Its first pass starts at the first event created at or after `DISPATCH_WORD_RECORDS_FROM`, which is the backfill; nothing written before that time is read.
+
 - A text is a person's when a user writes it with no session acting for them, as the dataset command reads it (`cmd/writing-check`, "classify"): a comment, a message (every copy of a broadcast is one text), a question ask, an answer with words, a note that declines, retracts or resolves an ask, and a review's reason.
   A text a person typed in a session (`Dispatch-Person-Typed: 1`, whose event's payload holds `person_typed: true`) is the person's the actor names, or the person the session's credential names (a personal token's owner); where it names nobody, such as a pod's shared token, the person is unknown and the counts give it apart.
+
 - Each text is one `word_questions` row, pending until the job's model gives it a verdict of the selection prompt (`internal/dispatch/wordrecords/select.md`, the dataset's own prompt) with the agent text it answers: up the text's replies to the first agent text, else the agent's last message in a direct conversation, else the agent's last text on the issue.
   A row whose verdict is `asks_word_meaning`, `cannot_understand` or `jargon_complaint` is a word question and holds the words.
   A call that fails leaves the row `failed` and it is read again after 30 seconds, doubled after each failure up to an hour, until a verdict comes.
+
 - A Define use is a word question of its own (`store.RecordDefineUse`).
 
 `GET /api/v1/readers/{login}/words` answers `{reader, words}`: each word the reader asked about once, `{word, times, last}`, the most recently asked first; `?before=` (RFC 3339) keeps the records written before it.
@@ -3411,6 +3422,7 @@ A daily sweep deletes the rows older than 90 days (Background loops, above).
 `GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, rows}`:
 
 - `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route.
+
 - `rows`: each day, project and person with a count.
   From `word_questions` (The word records, above): `word_questions`, `texts` (every text of the person the job read), `texts_unread` (still waiting for its model) and `define_uses`.
   From the event log: `asks_answered`, the asks the person answered, and `asks_replied_before_answer`, those of them a person commented on in the ask's thread before the answer.
@@ -3997,7 +4009,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   The written rules for a write the caller has not sent, `{route, body}`: `route` is `"<method> <path>"` of a route whose text a person may read, and `body` the JSON that write would send.
   Answers `{reader, text}`: `reader` the login of the person who reads the write, as the writing check decides it, `""` for none, and `text` the rules (The written rules' refusal, above).
-  It writes nothing. A route that is no such write, a missing body, or a body that is not the JSON of a write to that route is `400 INVALID_BODY`.
+  It writes nothing.
+  A route that is no such write, a missing body, or a body that is not the JSON of a write to that route is `400 INVALID_BODY`.
   Its body may hold 1 KiB more than a JSON route's 1 MiB, so every write it can name fits inside it; past that it is `413 REQUEST_TOO_LARGE`.
 
 - `/api/v1/held/{id}` (GET, PATCH; cookie, trusted header, or bearer) and `/api/v1/held/{id}/post` (POST; cookie, trusted header, or bearer)

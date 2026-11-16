@@ -287,6 +287,55 @@ Sign in, then open **Settings**:
 - **Agent tokens**: make a token for each agent you run.
   [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the rest.
 
+## Agents' texts
+
+Dispatch reads the prose of every agent write that a person reads, before it stores it, and
+records what its three structure rules find. This writing check refuses no write, and no setting
+turns it on or off. Everything else it can do with the text agents write to people is off until
+you turn it on:
+
+- **The reviewer** reads an agent's text to a person and sends its findings and a rewrite to the
+  writer. It can hold the text from every person until the writer acts (`hold`), or review it
+  after it posts (`after`).
+- **Rewrite and Define** let a person have an open question rewritten for them, and have selected
+  words defined. They are on whenever their model group is set.
+- **The records job** counts each text in which a person asks what an agent's word means, says
+  they cannot understand a text, or complains about its words.
+- **The written rules** make the `dispatch` command show an agent the rules for its reader once,
+  before its first write of an ask, an issue, a comment or a message.
+
+| Setting | Values | Default |
+| --- | --- | --- |
+| `DISPATCH_REVIEWER_ASKS`, `DISPATCH_REVIEWER_ISSUES`, `DISPATCH_REVIEWER_COMMENTS`, `DISPATCH_REVIEWER_MESSAGES`, `DISPATCH_REVIEWER_DECISION_BLOCKS` | `off`, `after` or `hold` | `off` |
+| `DISPATCH_REVIEWER_DOCUMENTS` | `off` or `after` | `off` |
+| `DISPATCH_REVIEWER_WRITER_WINDOW`: how long a writer has to act on a held text | a Go duration | `5m` |
+| `DISPATCH_REVIEWER_UNEDITED`: what posts when the writer does not act in time | `rewrite` or `as_written` | `rewrite` |
+| `DISPATCH_REVIEWER_TIMEOUT`: past it, a held text posts as written | a Go duration | `120s` |
+| `DISPATCH_REVIEWER_RULES` | a comma list of `noslop`, `phrases`, `reader_words`, `ask_parts`, `structure` and `detector` | `noslop,phrases,reader_words,ask_parts` |
+| `DISPATCH_WORD_RECORDS`: the records job, while its model group is set | `on` or `off` | `on` |
+| `DISPATCH_WORD_RECORDS_FROM`: the first event the records job reads | an RFC 3339 time | `2026-10-16T00:00:00Z` |
+| `DISPATCH_WRITING_RULES_REFUSAL` | `on` or `off` | `off` |
+| `DISPATCH_WRITING_RULES_EXTRA`: what the written rules add | a comma list of `reader_words` and `ask_parts` | none |
+
+Each part that calls a model has a model group of its own: `DISPATCH_REVIEWER_MODEL_*`,
+`DISPATCH_REWRITE_DEFINE_MODEL_*` and `DISPATCH_WORD_RECORDS_MODEL_*`. Each group takes `_KIND`
+(`azure` or `anthropic`), `_ENDPOINT`, `_DEPLOYMENT` and `_TOKENS_PER_MINUTE`, and `_API_VERSION`
+and `_SCOPE` for `azure` or `_KEY_FILE` for `anthropic`. An `azure` group signs in with the same
+keyless Azure settings as the embedder. No group is set by default. A group set in part, and a
+reviewer setting other than `off` with no reviewer's group, stop Dispatch from starting, naming
+the setting.
+
+Every caller of one deployment shares one quota, which `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` sets as
+`name=tokens_per_minute,…`. Each call holds its whole reply bound before it is sent: 32,768
+tokens for the reviewer and for Rewrite and Define, and 1,024 for the records job. Dispatch does
+not start when a group's `_TOKENS_PER_MINUTE`, or its deployment's quota, is under that bound, so
+set more: a group makes at most about ceiling / (bound + prompt) calls a minute.
+
+`GET /api/v1/writing-check/counts` counts, for each day, project and person, what the check and
+the reviewer decided, the questions people asked about words, and their Rewrite and Define uses.
+The full list of settings is in [Configuration](/legion/dispatch/reference/configuration/), and the
+server's guide (`packages/envoy/cmd/dispatch/README.md`, "Agents' texts") says what each part does.
+
 ## Health check
 
 `GET /healthz` needs no credential. It answers `200` while the server can serve requests, which is

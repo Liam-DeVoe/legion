@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `DISPATCH_GENERATED_TEXT_HEADER` (`Dispatch-Generated-Text`) and `DISPATCH_PERSON_TYPED_HEADER`
+  (`Dispatch-Person-Typed`) name two request headers. A plugin puts the first on a reply that holds
+  text it generated, not text the agent wrote. The `dispatch` command puts the second on each write
+  of a command a person typed. `bun run gen:go` writes both into the Go package as
+  `contracts.GeneratedTextHeader` and `contracts.PersonTypedHeader`.

@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `shellCommandLine(body)` sets a person's `!command` line in a code fence, longer than any run of
+  backticks the line holds, which is how a `!command` report now opens. `isShellCommandReport`
+  reads a report that opens with the fenced line, and still reads one that opens with the bare
+  line, as an older plugin writes it.

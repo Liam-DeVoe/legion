@@ -1,4 +1,7 @@
 kind: Added
 body: |-
   `agentloop`: each `Step` carries the model id the provider says served the call (`Step.Model`),
-  and a `Request.Temperature` is sent when it is set.
+  and a `Request.Temperature` is sent when it is set. `Request.HistoryMarkOnly` keeps only the
+  cache mark at the end of the history, with a five-minute life, on the Anthropic kinds: the newest
+  message gets no mark, so a call pays no cache write for the part of its prompt that only it
+  sends.

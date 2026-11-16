@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `cmd/writing-check` is a new development command that measures Dispatch's writing check and the
+  work on agents' texts. No image and no release ships it; run it from `packages/envoy` with
+  `go run ./cmd/writing-check`.
+  Its first subcommands measure the structure rules and the phrase detector against agent writes
+  read from Dispatch's event log. `writing-check dataset` builds the dataset of texts a person could
+  not read, and of texts they read with no trouble, from a snapshot of the event log.
+  `writing-check harness` scores the reviewer, Rewrite and Define and the other changes on that
+  dataset against a local Dispatch, with a fresh reader and a Claude grader, and reports each
+  score's interval, wait and cost. The harness refuses to write its output inside a repository.

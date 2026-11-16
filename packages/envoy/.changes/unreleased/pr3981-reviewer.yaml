@@ -1,0 +1,28 @@
+kind: Added
+body: |-
+  Dispatch can now review an agent's text to a person, before or after the person sees it. The
+  reviewer reads an ask, a new issue's title and spec, a comment, a message, and an agent's reply to
+  a delivery. It reads no text a person wrote, none the Legion daemon wrote, and none that only an
+  agent reads.
+  One setting for each kind chooses what happens: `DISPATCH_REVIEWER_ASKS`,
+  `DISPATCH_REVIEWER_ISSUES`, `DISPATCH_REVIEWER_COMMENTS` and `DISPATCH_REVIEWER_MESSAGES`, each
+  `off` (the default), `after` or `hold`.
+  With `hold`, no person sees the text until the review ends. The write answers at once, in its
+  usual shape, under an id kept for the text, with an added `held` object. A review that finds
+  nothing posts the text. Otherwise the findings and the reviewer's rewrite go to the writer
+  session as a turn of their own, and the writer edits the text or posts it as written.
+  With `after`, the text posts at once, and the findings of the review after it go to the writer.
+  Nothing more happens if the writer does not act.
+  A writer has `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`) to act, and a writer session that
+  has gone has none. Then `DISPATCH_REVIEWER_UNEDITED` decides what posts: `rewrite` (the default)
+  posts the reviewer's rewrite, marked as rewritten, and `as_written` posts the text as written.
+  A review whose model fails, or that takes longer than `DISPATCH_REVIEWER_TIMEOUT` (default
+  `120s`), posts the text as written.
+  `DISPATCH_REVIEWER_RULES` names the rule sets the reviewer applies, from `noslop`, `phrases`,
+  `reader_words`, `ask_parts`, `structure` and `detector`. The default is
+  `noslop,phrases,reader_words,ask_parts`.
+  A value other than `off` needs the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`): without
+  it the server refuses to start.
+  A sweep under the lease `reviewer-sweep`, every 10 seconds, reviews again a text a stopped
+  process left and posts each text whose writer did not act in time. Each decision is a row of
+  `writing_check_events`.
