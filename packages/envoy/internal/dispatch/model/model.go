@@ -3182,10 +3182,14 @@ type GraphReferences struct {
 // and answers every other member, where GET /api/v1/references refuses such an id with a 409.
 // TextTree is a block's whole text as the tree a reader is shown, every link and dispatch://
 // reference kept and nothing cut, where Name stops at the block's stored excerpt: a typed
-// block's is of its own content, what stands between its opening line and its closing one. A
-// typed block whose stored text does not read back as that block alone (one in a quote) answers
-// the tree of its whole stored text, its opening line included. Only a member whose Kind is
-// block carries one, and only for a caller that sent `Dispatch-Trees: 1`.
+// block's is of its own content, what stands between its opening line and its closing one, read
+// by the block's kind. A document's block has the closing fence's indentation taken out of each
+// line, which a block in a list item or a footnote definition carries; a block of a comment, a
+// message or an ask keeps its lines as written, as its own text's parse reads them. A typed
+// block in a quote answers the tree of its whole stored text, its opening line included, and so
+// does a block of a comment, a message or an ask whose closing fence stands four spaces or a tab
+// in, since that fence closes nothing in its text. Only a member whose Kind is block carries one,
+// and only for a caller that sent `Dispatch-Trees: 1`.
 type ReferenceTarget struct {
 	Ref  string `json:"ref"`
 	Kind string `json:"kind"`
