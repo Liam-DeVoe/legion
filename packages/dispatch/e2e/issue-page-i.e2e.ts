@@ -896,9 +896,11 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 // What waits on another issue, and is not read here: a criterion under the words that raised
 // it, a requirement under its criterion, and the left arrow walking up from a requirement to
 // them (dispatch://INFRA-1253); a lens under its node and a finding under its lens
-// (INFRA-1950); a reading under its decision (INFRA-1150); and a comment anchored to a node
-// under that node, an edge the model does not store (INFRA-1149, INFRA-1253), so the anchored
-// comment sits under the issue as any node with no stored parent does.
+// (INFRA-1950); a reading under its decision (INFRA-1150); and a comment anchored to a node other
+// than a statement under that node, an edge the model does not store (INFRA-1149, INFRA-1253), so
+// it sits under the issue as any node with no stored parent does. A comment anchored inside a
+// statement is read under that statement, which the page finds by the anchor's block (part L,
+// dispatch://INFRA-3949 R11).
 // SLOW(>=2s): three seeds, each loaded cold with its branches unfolded press by press, and the
 // first seed's parents read off the page one whole read at a time.
 test("each node sits under the parent the model stores", async ({ browser }) => {
@@ -1056,6 +1058,11 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
         seeded.comments.threads[index % seeded.comments.threads.length]
       );
     });
+    // The comment anchored to the second requirement sits under that requirement (part L's R11).
+    expect(
+      parentOf(seeded.comments.anchored),
+      "the comment anchored to a statement is not drawn under it"
+    ).toBe(blockNodeId(specSlug, seeded.comments.anchoredBlock));
 
     // Every typed block the model gives no parent sits under the issue - the open question's
     // block and every requirement - and no row sits under a document. The summary callout is

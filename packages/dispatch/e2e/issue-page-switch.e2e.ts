@@ -97,7 +97,8 @@ function newPageHeading(page: Page): Locator {
 
 /** The new page as the parts so far draw it: the key and the title as the page's one `h1`, no
  *  tab, the view row that part D fills, the outline's one line for an issue that holds nothing,
- *  and nothing else. */
+ *  and nothing else but what part L draws at the foot - the box to write in and the read mark -
+ *  which its own rows read (`e2e/issue-page-l.e2e.ts`). */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -107,24 +108,31 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // The part that fills a slot changes these two: part D fills the view row
   // (`[data-filter-row]`), part I's outline draws its one line for an issue that holds nothing at
   // the issue's own address, and each other slot drawn so far adds no text or control: a view's
-  // address (`/spec`) draws nothing in the body until part J fills it.
+  // address (`/spec`) draws nothing in the body until part J fills it. Part L's box at the foot
+  // (`[data-testid="issue-composer"]`) and the read mark at the outline's end
+  // (`[data-outline-end]`) are left out of both counts.
   const row = newPage.locator("[data-filter-row]");
   await expect(row).toHaveCount(1);
   const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
   const body = atIssue ? ` ${EMPTY_STATE_LINES.conversation}` : "";
+  const partL = '[data-testid="issue-composer"], [data-outline-end]';
   await expect
     .poll(
       () =>
-        newPage.evaluate((root) => {
-          const rowText = root.querySelector<HTMLElement>("[data-filter-row]")?.innerText ?? "";
-          return (root as HTMLElement).innerText.replace(rowText, " ").replace(/\s+/g, " ").trim();
-        }),
+        newPage.evaluate((root, left) => {
+          let text = (root as HTMLElement).innerText;
+          for (const part of root.querySelectorAll<HTMLElement>(`[data-filter-row], ${left}`)) {
+            text = text.replace(part.innerText, " ");
+          }
+          return text.replace(/\s+/g, " ").trim();
+        }, partL),
       { message: "the new page draws text outside its header and its view row" }
     )
     .toBe(`${issue.key} ${issue.title}${body}`);
   const controls = "button, a, input, select, textarea";
   expect(
-    await newPage.locator(controls).count(),
+    (await newPage.locator(controls).count()) -
+      (await newPage.locator(`:is(${partL}) :is(${controls})`).count()),
     "the new page draws a control outside its view row"
   ).toBe(await row.locator(controls).count());
 }
