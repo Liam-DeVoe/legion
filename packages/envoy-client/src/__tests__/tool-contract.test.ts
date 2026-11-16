@@ -180,11 +180,11 @@ describe("envoyToolSpecs", () => {
   });
 
   // The agent reads this before it calls: a session outside a Legion pod is denied the Legion app's
-  // token, and a reply sent through another Slack tool goes out as a person
+  // token, and a reply sent through another Slack tool after any refusal goes out as a person
   // (dispatch://INFRA-810/ask/3cb6e199-a3c1-413d-93b6-6fb6a5122a17).
   test("slack_post says only a Legion pod posts, and a refusal is never sent as a person", () => {
     expect(envoyToolSpecs.find((spec) => spec.name === "slack_post")?.description).toContain(
-      "Only a Legion pod's session can post; a refusal elsewhere is final, and the reply is not to be sent through another Slack tool, which posts as a person."
+      "Only a Legion pod's session can post, and a refusal elsewhere is final. After any refusal, the reply is not to be sent through another Slack tool, which posts as a person."
     );
   });
 });

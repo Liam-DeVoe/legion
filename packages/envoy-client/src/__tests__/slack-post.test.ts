@@ -200,6 +200,7 @@ describe("postSlackReply", () => {
       "slack_post's poster exited 1 without an answer: the reply may have been posted"
     );
     expect(said).not.toContain("nothing was posted");
+    expect(said).not.toContain("do not send this reply with another Slack tool");
     expect(said).not.toContain("agent-secrets: LEGION_SLACK_BOT_TOKEN");
     expect(said).not.toContain("the poster's private stderr");
     expect(slack.calls).toEqual([]);
@@ -304,10 +305,12 @@ describe("postSlackReply", () => {
       test(name, async () => {
         const slack = fakeSlack({ ok: true, ts: "1.2" });
         const { env, args } = brokerEnvironment("granted", slack.url);
-        await expect(
-          postSlackReply({ ...reply, text }, { env: { ...env, ...extra } })
-        ).rejects.toThrow(
+        const failure = postSlackReply({ ...reply, text }, { env: { ...env, ...extra } });
+        await expect(failure).rejects.toThrow(
           "nobody in Slack can open; link Dispatch's dashboard instead (dispatch prints it when DISPATCH_PUBLIC_URL is set); nothing was posted"
+        );
+        await expect(failure).rejects.toThrow(
+          "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds"
         );
         expect(slack.calls).toEqual([]);
         expect(() => readFileSync(args)).toThrow();
@@ -366,12 +369,14 @@ describe("postSlackReply", () => {
     }
   });
 
-  test("Slack's refusal comes back verbatim", async () => {
+  // Slack's refusal posted nothing, so an agent reaches for another Slack tool just as it does
+  // after the broker's: the same sentence ends it.
+  test("Slack's refusal comes back verbatim, says nothing was posted and forbids a repost", async () => {
     const slack = fakeSlack({ ok: false, error: "not_in_channel" });
     const { env } = brokerEnvironment("granted", slack.url);
 
     await expect(postSlackReply(reply, { env })).rejects.toThrow(
-      "Slack refused chat.postMessage: not_in_channel"
+      "Slack refused chat.postMessage: not_in_channel; nothing was posted; do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds"
     );
     expect(slack.calls).toHaveLength(1);
   });
@@ -383,16 +388,22 @@ describe("postSlackReply", () => {
     closed.stop(true);
     const { env } = brokerEnvironment("granted", url);
 
-    await expect(postSlackReply(reply, { env })).rejects.toThrow(
+    const failure = postSlackReply(reply, { env });
+    await expect(failure).rejects.toThrow(
       "the reply may have been posted, and posting it again may put it in the thread twice"
     );
+    await expect(failure).rejects.not.toThrow("do not send this reply with another Slack tool");
   });
 
   test("a Slack API override that is not https or a loopback host is refused before the broker is asked", async () => {
     const { env, args } = brokerEnvironment("granted", "http://slack.example/api");
 
-    await expect(postSlackReply(reply, { env })).rejects.toThrow(
+    const failure = postSlackReply(reply, { env });
+    await expect(failure).rejects.toThrow(
       "SLACK_POST_API_URL must be an https URL, or http on a loopback host"
+    );
+    await expect(failure).rejects.toThrow(
+      "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds"
     );
     expect(() => readFileSync(args)).toThrow();
   });
@@ -424,7 +435,7 @@ describe("postSlackReply", () => {
       [
         "as Slack's error code",
         (authorization) => Response.json({ ok: false, error: authorization }),
-        "Slack refused chat.postMessage with an error code slack_post does not pass on",
+        "Slack refused chat.postMessage with an error code slack_post does not pass on; nothing was posted; do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds",
       ],
       [
         "as the posted ts",
@@ -457,11 +468,13 @@ describe("postSlackReply", () => {
   // default is a limit on that work rather than on a hang. Measured in a 2-CPU pod: 1.34 s idle;
   // under 16 busy loops (8 x nproc), 4.02 s at most in a whole-suite run and 2.84 s with this file
   // alone. It fires only if a post never answers.
-  test("a Slack error code it knows comes back as Slack spelled it", async () => {
+  test("a Slack error code it knows comes back as Slack spelled it, and forbids a repost", async () => {
     for (const code of ["channel_not_found", "is_archived", "ratelimited", "invalid_auth"]) {
       const slack = fakeSlack({ ok: false, error: code });
       const { env } = brokerEnvironment("granted", slack.url);
-      expect(await outcome(env)).toBe(`Slack refused chat.postMessage: ${code}`);
+      expect(await outcome(env)).toBe(
+        `Slack refused chat.postMessage: ${code}; nothing was posted; do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds`
+      );
     }
   }, 30_000);
 });

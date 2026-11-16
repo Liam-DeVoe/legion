@@ -182,10 +182,12 @@ interface PosterLine {
 const MAY_HAVE_POSTED =
   "the reply may have been posted, and posting it again may put it in the thread twice";
 
-/** Ends each broker refusal that posts nothing. The tool itself never falls back, but three agent
+/** Ends each error that says nothing was posted: the broker's refusals, Slack's, and the reply or
+ * setting refused before anything was asked. The tool itself never falls back, but three agent
  * sessions the broker refused this token each sent the same reply within 20 s through another
  * Slack tool, which posted it as the person whose Slack login that tool held
- * (dispatch://INFRA-810/ask/3cb6e199-a3c1-413d-93b6-6fb6a5122a17). */
+ * (dispatch://INFRA-810/ask/3cb6e199-a3c1-413d-93b6-6fb6a5122a17). An error that says the reply
+ * may have been posted does not carry it: MAY_HAVE_POSTED already says not to post it again. */
 const NO_PERSON_REPOST =
   "do not send this reply with another Slack tool: it would post as the person whose Slack login that tool holds";
 
@@ -307,7 +309,8 @@ function insideCluster(host: string, dispatchHost: string | undefined, fromUrl: 
  * thread. A reply linking an address inside the cluster (linkInsideCluster) is refused before
  * anything is asked, since nobody in Slack can open it. A broker that has not granted
  * LEGION_SLACK_BOT_TOKEN (pending approval, denied, or any other refusal) posts nothing, and the
- * error names the state, quotes the client and ends with NO_PERSON_REPOST.
+ * error names the state and quotes the client. Every error that says nothing was posted ends with
+ * NO_PERSON_REPOST.
  */
 export async function postSlackReply(
   reply: SlackReply,
@@ -317,13 +320,13 @@ export async function postSlackReply(
   const internal = linkInsideCluster(reply.text, env);
   if (internal !== undefined) {
     throw new Error(
-      `the reply links ${internal}, an address inside the cluster nobody in Slack can open; link Dispatch's dashboard instead (dispatch prints it when DISPATCH_PUBLIC_URL is set); nothing was posted`
+      `the reply links ${internal}, an address inside the cluster nobody in Slack can open; link Dispatch's dashboard instead (dispatch prints it when DISPATCH_PUBLIC_URL is set); nothing was posted; ${NO_PERSON_REPOST}`
     );
   }
   const override = env[SLACK_POST_API_URL_VARIABLE];
   if (override !== undefined && override !== "" && !allowedAPIURL(override)) {
     throw new Error(
-      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host (got ${override}); nothing was posted`
+      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host (got ${override}); nothing was posted; ${NO_PERSON_REPOST}`
     );
   }
   const { PATH: searchPath = "" } = env;
@@ -395,13 +398,17 @@ export async function postSlackReply(
       `slack_post's poster exited ${code} without an answer${detail}: ${MAY_HAVE_POSTED}`
     );
   }
+  // Slack answered ok: false, so the reply is not in the thread.
   if (line.refused === null) {
     throw new Error(
-      "Slack refused chat.postMessage with an error code slack_post does not pass on"
+      `Slack refused chat.postMessage with an error code slack_post does not pass on; nothing was posted; ${NO_PERSON_REPOST}`
     );
   }
-  if (line.refused !== undefined)
-    throw new Error(`Slack refused chat.postMessage: ${line.refused}`);
+  if (line.refused !== undefined) {
+    throw new Error(
+      `Slack refused chat.postMessage: ${line.refused}; nothing was posted; ${NO_PERSON_REPOST}`
+    );
+  }
   if (line.unanswered !== undefined) {
     throw new Error(`Slack did not answer chat.postMessage: ${MAY_HAVE_POSTED}`);
   }
