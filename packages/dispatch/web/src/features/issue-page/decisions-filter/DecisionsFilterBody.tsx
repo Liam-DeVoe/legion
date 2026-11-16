@@ -21,16 +21,15 @@ import {
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
 import { useSetFocusedNode } from "../focused-node";
-import type { OutlineRequest } from "../IssueTree";
+import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
-import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
-import { DETAILS_ATTRIBUTE } from "../margin-slot";
+import { nodeWords, type TreeNode } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
-import { conversationItem, useOutlineWriter } from "../outline-writer";
+import { useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
-import { CONTROL_LABELS, DECISIONS_WORDS, NODE_TYPE_NAMES, PRESET_NAMES } from "../page-words";
+import { CONTROL_LABELS, DECISIONS_WORDS, PRESET_NAMES } from "../page-words";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
@@ -38,6 +37,7 @@ import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   conversationPath,
+  DECISIONS_PART_ORDER,
   type DecisionsEntry,
   type DecisionsPart,
   type NamedEntry,
@@ -208,42 +208,28 @@ export function DecisionsFilterBody({
   const takeFocus = useCallback(
     (entry: DecisionsEntry | NamedEntry) => {
       const node = entry.node;
-      // How the node stands, as the panel's facts of the focused node say it: the row's own
-      // reading of it, so the two never differ.
-      const state = entryStanding(entry, agentText.author)?.words;
       setFocused(node.id);
       setStop(node.id);
       if (ownReview.current !== node.id) ownReview.current = undefined;
       // A move to a row is the reader going on from what a key reported.
       setReport((held) => (held?.row === node.id ? held : undefined));
-      const item = conversationItem(node);
-      setFocusedNode({
-        ...(node.author === undefined ? {} : { author: node.author }),
-        id: node.id,
-        ...(item === undefined ? {} : { item }),
-        ...(node.reference === undefined ? {} : { reference: node.reference }),
-        ...(state === undefined ? {} : { state }),
-        // A node with no words of its own is named by its kind, never by an id (R7).
-        title: node.text === "" ? NODE_TYPE_NAMES[node.type] : firstLineOf(nodeWords(node)).line,
-        type: node.type,
-      });
+      // The panel's facts of the focused node are the outline's, but for how the node stands,
+      // which they say as the row reads it, so the two never differ: an entry the row reads no
+      // standing for says none, whatever state its node holds.
+      const { state: _nodeState, ...facts } = focusedNodeOf(node);
+      const state = entryStanding(entry, agentText.author)?.words;
+      setFocusedNode(state === undefined ? facts : { ...facts, state });
     },
     [agentText, setFocusedNode]
   );
   // The focus leaving the list closes what it opened and takes away what a key reported, and
   // the panel goes back to the issue's own facts, unless it went to Details, where a reader
-  // reads the node's (`IssueTree.tsx`).
-  const releaseFocus = useCallback(
-    (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
-      const to = event.relatedTarget;
-      if (to instanceof Node && event.currentTarget.contains(to)) return;
-      setFocused(undefined);
-      setReport(undefined);
-      if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
-      setFocusedNode(undefined);
-    },
-    [setFocusedNode]
-  );
+  // reads the node's (`useReleaseFocus`). No row of the list is edited in place.
+  const leave = useCallback(() => {
+    setFocused(undefined);
+    setReport(undefined);
+  }, []);
+  const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
   // The foot's control is inside the list, so the focus going to it from a row, by Tab or a
   // press, never leaves the list and `releaseFocus` does not act. The focus is off every row
   // all the same, so the row closes what its focus opened, the key's report goes, and the
@@ -365,39 +351,53 @@ export function DecisionsFilterBody({
     footPlaced.current = false;
   };
 
-  // A decision the reader kept or asked to change leaves the review list for their own
-  // decisions, and its row with it, which drops the focus to the page. The reader is working
-  // down the list, so the focus goes to the decision that stood after it, else the one before
-  // it (the prototype's `keepDecision`), else to the decision where it now stands. A decision
-  // that leaves the list by no act of the reader here - a read that says another person kept
-  // it or that it was replaced, or a Change sent from another page - keeps the focus where it
-  // now stands: the reader asked to go nowhere, and the focus stays on the entry they were on
-  // (R6), the foot unfolded for it where it is one of the foot's own. A reader who has moved
-  // somewhere else on the page keeps their place.
-  const reviewing = useMemo(() => parts.review.map((entry) => entry.node.id), [parts.review]);
-  const reviewed = useRef(reviewing);
+  // An entry the reader is on can move to another part of the list, and its row is drawn
+  // again there, which drops the focus to the page: a decision they kept or asked to change
+  // leaves the review list for their own decisions, a question another person answered goes
+  // under Your decisions, a decision of the foot that a read ties to a statement comes up to
+  // the review list. A reader who kept or asked to change a decision on its row here is working
+  // down the review list, so the focus goes to the decision that stood after it, else the one
+  // before it (the prototype's `keepDecision`), else to the decision where it now stands. An
+  // entry that moves by no act of the reader here - a read that says another person kept a
+  // decision or answered a question, that a decision was replaced or ties to a statement, or a
+  // Change sent from another page - keeps the focus where it now stands: the reader asked to go
+  // nowhere, and the focus stays on the entry they were on (R6), the foot unfolded for it where
+  // it is one of the foot's own. A reader who has moved somewhere else on the page keeps their
+  // place. Each entry's part is read over the whole list, the foot's whether it is unfolded or
+  // not, in the order the page draws it.
+  const standing = useMemo(() => {
+    const stands = new Map<string, DecisionsPart>();
+    for (const part of DECISIONS_PART_ORDER) {
+      for (const entry of parts[part]) stands.set(entry.node.id, part);
+    }
+    return stands;
+  }, [parts]);
+  const stood = useRef(standing);
   useLayoutEffect(() => {
-    const before = reviewed.current;
-    reviewed.current = reviewing;
-    if (focused === undefined || reviewing.includes(focused)) return;
-    const at = before.indexOf(focused);
-    if (at === -1) return;
+    const before = stood.current;
+    stood.current = standing;
+    if (focused === undefined) return;
+    const was = before.get(focused);
+    if (was === undefined || was === standing.get(focused)) return;
     const active = document.activeElement;
     if (active !== null && active !== document.body && active.isConnected) return;
-    if (ownReview.current !== focused) {
+    if (was !== "review" || ownReview.current !== focused) {
       goTo(focused);
       return;
     }
     ownReview.current = undefined;
+    // The review list as it was drawn, which the map holds in the page's order.
+    const reviewed = [...before].flatMap(([id, part]) => (part === "review" ? [id] : []));
+    const at = reviewed.indexOf(focused);
     const next =
-      before.slice(at + 1).find((id) => reviewing.includes(id)) ??
-      before
+      reviewed.slice(at + 1).find((id) => standing.get(id) === "review") ??
+      reviewed
         .slice(0, at)
         .reverse()
-        .find((id) => reviewing.includes(id)) ??
+        .find((id) => standing.get(id) === "review") ??
       focused;
     rowOf(body.current, next)?.focus();
-  }, [focused, goTo, reviewing]);
+  }, [focused, goTo, standing]);
 
   useTreeKeymap({
     container: body,
