@@ -4648,7 +4648,6 @@ Each item below names an endpoint and its method, then its contract, and an item
   No delivery rides on that topic: a role lane is not stream-captured, so it never enters a session's consumer filter (`sessionConsumerFilter`), and a role message reaches its holder's agent subject with the holder read off the claim (`resolveCoreRoleHolder`).
   What the record's role topics are read for is the session's own deregistration, which releases the claims they name (`store.Registry.Remove`, `releaseAllRoleClaims`), so a lane topic taken out from under the live holder would leave its standing claim with nothing in the record naming it.
   A deregistration, which names no topic and deletes the whole record, and a release whose every named topic was kept both answer the empty list, and `removed` is never written as `null`.
-  A topic named in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
   It carries `client_instance_id`, the process handing the interests back, and that is what decides the role claims it frees: the claims naming that same process and no others (`store.RoleReleaseAuthority`).
   A release that names no process frees no claim that names one, and neither does any other process's instance — an absent instance is no match against a claim that names a process — while every topic it named that is not such a claim's lane is removed either way.
   A claim that names no process at all, one an earlier build wrote before its holder's first registration adopts it, is the carve-out: it keeps the rule it was written under and this session's own release frees it, whichever process asks, so no claim standing at the deploy waits out the role claim reaper.
@@ -4663,6 +4662,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   The row it rewrites also drops any stored topic reaching a private stream subject other than the session's own agent subject, as `/v1/interests/subscribe` says.
   A session whose entry records consumer delivery has its consumer's filter set to the topics left before the call answers (`sessionDelivery.refollow`);
   a failure there is logged, and the plugin drops a frame no followed topic matches.
+
+- An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
 
 - A hand-back is the one release that marks a claim it could not free (`store.RoleClaim.HandedBack`, `store.markRoleClaimHandedBack`):
   a release that states no process, does not force, and names a role's own lane topic, which is the shape a client built before a release named its process sends.
