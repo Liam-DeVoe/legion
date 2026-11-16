@@ -64,12 +64,12 @@ type authorCredential struct {
 	Service *string `json:"service"`
 }
 
-// ActingCredential is the one value an author-private read binds beside its own arguments: the
-// acting credential as AuthorIsSQL compares it. A credential that proves no author binds nil,
-// which is SQL null, which that comparison answers false for - so a reader the store cannot
-// name reads no author-private node at all, rather than every node written on the shared
-// bearer.
-func ActingCredential(actor model.Actor) any {
+// ActingCredential is the acting credential as AuthorIsSQL compares it: the author member of the
+// one argument every visibility predicate binds (refs.VisibilityArg). A credential that proves no
+// author is nil, which that argument carries as a JSON null, which that comparison answers false
+// for - so a reader the store cannot name reads no author-private node at all, rather than every
+// node written on the shared bearer.
+func ActingCredential(actor model.Actor) json.RawMessage {
 	if !ProvesAuthor(actor) {
 		return nil
 	}
@@ -84,14 +84,16 @@ func ActingCredential(actor model.Actor) any {
 }
 
 // AuthorIsSQL is the SQL half of the one rule: true when the author a node's `made_by` column
-// records is somebody and is the credential bound at param (ActingCredential). It states in SQL
-// exactly what ProvesAuthor states of a credential and model.Actor.SameCredential states of two,
-// so a read and a route cannot answer differently.
+// records is somebody and is the acting credential, the `author` member of the visibility
+// argument bound at param (ActingCredential, refs.VisibilityArg). It states in SQL exactly what
+// ProvesAuthor states of a credential and model.Actor.SameCredential states of two, so a read and
+// a route cannot answer differently.
 //
 // The whole test is wrapped in coalesce so it is false rather than unknown for an acting
-// credential that binds null: a reader that proves no author reads no author-private node.
+// credential the argument holds as null: a reader that proves no author reads no author-private
+// node.
 func AuthorIsSQL(column, param string) string {
-	return `coalesce((` + authorIsSomebodySQL(column) + `) and ` + authorNameSQL(column) + ` = ` + param + `::jsonb, false)`
+	return `coalesce((` + authorIsSomebodySQL(column) + `) and ` + authorNameSQL(column) + ` = (` + param + `::jsonb->'author'), false)`
 }
 
 // authorIsSomebodySQL is ProvesAuthor over a stored author: the id a record holds, the person a

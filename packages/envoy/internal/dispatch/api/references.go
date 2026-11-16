@@ -75,12 +75,15 @@ const referencesSinceWait = time.Second
 // prefix names a row only within some set, and the set the reference itself names is the one
 // its writer meant and the only one that can be answered without guessing.
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
-	actor, human, err := s.optionalActor(r)
+	_, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	who := actor.Recorded()
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -241,12 +244,15 @@ var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
 // (refs.ScopeOf, canonicalUUID), which is the one place it is canonicalized, so this route
 // hands on what it was given and `urn:uuid:<uuid>` answers as the canonical id answers.
 func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
-	actor, human, err := s.optionalActor(r)
+	_, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	who := actor.Recorded()
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if !slices.Contains(questionSourceKinds, kind) {
 		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_KIND",
@@ -580,7 +586,7 @@ func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, q
 // artifact.versions holding only its latest version, under its own ETag; absent, empty or all is
 // the full answer. A repeated versions is refused rather than read by its first value.
 func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -642,7 +648,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

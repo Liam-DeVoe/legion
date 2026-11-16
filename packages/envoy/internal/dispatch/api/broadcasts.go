@@ -300,7 +300,7 @@ type broadcastRecovery struct {
 // own exclusions, under the send's own 201 - answered at once, as the send was, while
 // sendOwedBroadcastRecipients puts every recipient it still owes on its way behind the answer.
 func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point broadcastRecovery, _ []byte) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

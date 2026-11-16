@@ -12,7 +12,7 @@ func (s *server) documentOwnerForHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -73,7 +73,7 @@ func (s *server) createArtifactComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listArtifactEvents(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

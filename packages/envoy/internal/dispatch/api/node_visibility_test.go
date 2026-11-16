@@ -479,8 +479,11 @@ func requireOneAuthorRule(t *testing.T) {
 	if !bearer.SameCredential(model.Actor{}) {
 		t.Error("two holders of the shared bearer are two credentials, and the refusal below has no reason")
 	}
-	if refs.VisibilityArg(bearer) != nil {
+	if graphstore.ActingCredential(bearer) != nil {
 		t.Error("a credential that proves no author binds a name an author-private read could match")
+	}
+	if !strings.Contains(string(refs.VisibilityArg(bearer).([]byte)), `"author":null`) {
+		t.Errorf("the visibility argument of a credential that proves no author = %s, want its author null", refs.VisibilityArg(bearer))
 	}
 	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, bearer)
 	if !errors.Is(err, graphstore.ErrAuthorNamesNobody) {

@@ -34,7 +34,7 @@ func (s *server) getMessageBlocks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) writeItemBlocks(w http.ResponseWriter, r *http.Request, kind refs.ItemKind) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

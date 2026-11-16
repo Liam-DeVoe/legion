@@ -77,7 +77,7 @@ type decisionSection struct {
 }
 
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
