@@ -640,6 +640,87 @@ test("Details' Status reads the status another caller of the writes is saving", 
   }
 });
 
+/** A second caller that saves a title and picks a status while that title is out, as the header
+ *  does when the reader picks a status before the title they saved has landed. */
+function RetitleThenStart({ issue: details }: { issue: IssueDetails }): ReactNode {
+  const writes = useIssueHeaderWrites(details, stateForIssue(undefined, details.key));
+  return (
+    <>
+      <button
+        onClick={() => {
+          writes.drafts.writeTitle("Review the spec again");
+          writes.drafts.requestTitleSubmit();
+        }}
+        type="button"
+      >
+        Retitle it from the header
+      </button>
+      <button onClick={() => writes.pickStatus("in_progress")} type="button">
+        Start it from the header
+      </button>
+    </>
+  );
+}
+
+// The reviewer's finding at the checkpoint (IssueMargin.tsx:216): a status picked while the
+// picking caller's other write was out was held in that caller's own state, so Details went on
+// drawing the old status until the pick was sent. The page holds such a pick for every caller,
+// and sends it once the write before it settles (`useIssueHeaderWrites.ts`'s `pickStatus`).
+test("Details' Status reads a status picked behind another write", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const retitling = deferred<Issue>();
+  patchIssue
+    .mockImplementationOnce(() => retitling.promise)
+    .mockImplementationOnce(async () =>
+      narrowIssue({ ...issue, status: "in_progress", title: "Review the spec again" })
+    );
+  const { queryClient, unmount } = renderDetails((details) => <RetitleThenStart issue={details} />);
+
+  try {
+    await screen.findByText(PROPERTY_LABELS.status, { selector: "[data-page-chrome]" });
+    expect(detailsRow(PROPERTY_LABELS.status)).toHaveTextContent(issueStatusWord("todo"));
+    await user.click(screen.getByRole("button", { name: "Retitle it from the header" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith(
+        "CORE-1",
+        { title: "Review the spec again" },
+        keyedAttempt
+      )
+    );
+
+    await user.click(screen.getByRole("button", { name: "Start it from the header" }));
+    await waitFor(() =>
+      expect(
+        detailsRow(PROPERTY_LABELS.status),
+        "Details' Status kept the saved status while a pick held behind the header's title stood"
+      ).toHaveTextContent(issueStatusWord("in_progress"))
+    );
+    expect(
+      patchIssue,
+      "the pick went out while the title write before it was out"
+    ).toHaveBeenCalledTimes(1);
+
+    retitling.resolve(narrowIssue({ ...issue, title: "Review the spec again" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(
+      patchIssue.mock.calls.map(([, input]) => input),
+      "the held status did not go out after the title write it was held behind"
+    ).toEqual([{ title: "Review the spec again" }, { status: "in_progress" }]);
+
+    // Once no write is out, the row reads the status the server answered with.
+    await waitFor(() => {
+      expect(queryClient.isMutating()).toBe(0);
+      expect(queryClient.getQueryData(issueQuery("CORE-1").queryKey)?.status).toBe("in_progress");
+    });
+    expect(detailsRow(PROPERTY_LABELS.status)).toHaveTextContent(issueStatusWord("in_progress"));
+    expect(patchIssue, "the held status was sent more than once").toHaveBeenCalledTimes(2);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 /** The margin's own content, drawn through the fill the details slot put in its slot, as the
  *  shell's Details drawer draws it (`MarginSheet.tsx`'s `SheetBody`). */
 function MarginBody(): ReactNode {
