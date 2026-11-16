@@ -77,7 +77,11 @@ interface ReadCheck {
   readonly block_id: string;
   readonly ref: string;
   readonly compared_with?: readonly Record<string, unknown>[];
-  readonly pass_stands?: { readonly answer: string; readonly roles?: readonly string[] };
+  readonly pass_stands?: {
+    readonly answer: string;
+    readonly roles?: readonly string[];
+    readonly subjects?: readonly Record<string, unknown>[];
+  };
   readonly ci?: { readonly case: string };
   readonly results?: readonly ReadResult[];
 }
@@ -210,7 +214,12 @@ describe.skipIf(!dispatchStackEnabled)(
       expect({ code: ran.code, stderr: ran.stderr }, ran.stdout).toEqual({ code: 0, stderr: "" });
       const c1 = checkOf(await readChecks(), CI_CHECK);
       expect(c1.compared_with).toEqual([{ kind: "branch_head", branch: branch(), commit: at }]);
-      expect(c1.pass_stands).toEqual({ answer: "yes", roles: ["ci"] });
+      // The branch head is the issue's one subject, and a pass stands there.
+      expect(c1.pass_stands).toEqual({
+        answer: "yes",
+        roles: ["ci"],
+        subjects: [{ basis: { kind: "branch_head", branch: branch(), commit: at }, answer: "yes" }],
+      });
       // Dispatch holds no pull request of the issue: the check run is read at no head.
       expect(c1.ci?.case).toBe("no_head");
 
@@ -254,7 +263,7 @@ describe.skipIf(!dispatchStackEnabled)(
       expect({ code: first.code, stderr: first.stderr }).toEqual({ code: 0, stderr: "" });
       expect(lines(first.stdout), first.stdout).toBe(1);
       expect(first.stdout).toContain(
-        `- ${CI_CHECK} (before_merge): no result: Dispatch holds no open or merged pull request head of ${running().issue}.`
+        `- ${CI_CHECK} (before_merge): its CI job's results below, and CI run go-checks derives none: Dispatch holds no open or merged pull request head of ${running().issue}.`
       );
       expect(first.stdout).not.toContain("Pull request line:");
 

@@ -93,7 +93,23 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
     : `The check's words did not move after this result (${versions})`;
 }
 
-/** R5 for one check: whether a pass of it stands, and from which roles. */
+/** What one subject of a check holds where no pass stands there. */
+function subjectReasonText(reason: string | undefined): string {
+  if (reason === "fail") return "a fail";
+  if (reason === "pass_and_fail") return "a pass and a fail of its CI job";
+  return "no result";
+}
+
+/** Each subject of a check where no pass stands, with what it holds, or "" where there is none. */
+function openSubjectsText(pass: CheckPassStands): string {
+  return (pass.subjects ?? [])
+    .filter((subject) => subject.answer !== "yes")
+    .map((subject) => `${basisText(subject.basis)} holds ${subjectReasonText(subject.reason)}`)
+    .join("; ");
+}
+
+/** R5 for one check: whether a pass of it stands, and from which roles; where none does, each
+ *  head a pass must stand at that holds none, and what it holds instead. */
 function passStandsText(pass: CheckPassStands | undefined): string {
   if (pass === undefined)
     return "Whether a pass stands is not known: this Dispatch server does not say";
@@ -103,8 +119,13 @@ function passStandsText(pass: CheckPassStands | undefined): string {
       ? "A pass stands: yes"
       : `A pass stands: yes, from ${roles.join(", ")}`;
   }
-  if (pass.answer === "no") return "A pass stands: no";
-  return "A pass stands: not known";
+  const open = openSubjectsText(pass);
+  if (pass.answer === "no")
+    return open === "" ? "A pass stands: no" : `A pass stands: no, as ${open}`;
+  if (open !== "") return `A pass stands: not known, as ${open}`;
+  return pass.reason === "pass_and_fail"
+    ? "A pass stands: not known, as its CI job recorded a pass and a fail at one commit"
+    : "A pass stands: not known";
 }
 
 /** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
@@ -164,8 +185,14 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
   const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
   const pullRequestLine = ci.case === "no_head" ? [] : [`  Pull request line: ${ci.line}`];
   if (derived === undefined) {
+    // A pass the CI job recorded may stand where the run derives nothing, so the head line says
+    // so rather than "no result" above a line that says a pass stands.
+    const head =
+      recorded.length === 0
+        ? "no result"
+        : `its CI job's results below, and CI run ${ci.run} derives none`;
     return [
-      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${check.text}`,
+      `- ${check.block_id} (${check.when}): ${head}: ${ci.detail} ${check.text}`,
       passStandsLine,
       ...pullRequestLine,
       ...recorded,

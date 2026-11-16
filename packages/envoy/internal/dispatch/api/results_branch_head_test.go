@@ -134,9 +134,10 @@ func TestAJobsPassOnADeletedBranchStandsAtAPullRequestHead(t *testing.T) {
 
 // TestABranchHeadGitHubCannotReadIsUnknown: GitHub answers 502 for the branch's head, or 403, which
 // it also sends for a rate limit, so Dispatch cannot say whether the job's commit is that head.
-// The job's pass is unknown, and no pass of c1 is a no. With a pull request open at another
-// commit, a tester's pass of k1 at the job's commit is unknown too: its commit may be the head
-// Dispatch could not read.
+// The job's pass is unknown, and no pass of c1 is a no. Once a pull request is open at another
+// commit, its head is the one subject of the issue's checks and no branch head is read: the job's
+// pass of c1 and a tester's pass of k1 at the job's commit stand at another commit, and neither
+// check reads a pass.
 func TestABranchHeadGitHubCannotReadIsUnknown(t *testing.T) {
 	for _, status := range []int{http.StatusBadGateway, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -158,10 +159,8 @@ func TestABranchHeadGitHubCannotReadIsUnknown(t *testing.T) {
 				{"c1", pass.ID, "the job's pass beside a pull request at another commit"},
 				{"k1", tester.ID, "the tester's pass at the job's commit"},
 			} {
-				if stands := standsAt(t, read, result.check, result.id, result.what, model.CommitUnknown, false); stands.Reason != model.ReasonReadFailed {
-					t.Fatalf("%s is unknown for %q, want %q", result.what, stands.Reason, model.ReasonReadFailed)
-				}
-				passStandsFrom(t, checkOf(t, read, result.check), result.what, model.PassStandsUnknown)
+				standsAt(t, read, result.check, result.id, result.what, model.CommitOtherCommit, false)
+				passStandsFrom(t, checkOf(t, read, result.check), result.what, model.PassStandsNo)
 			}
 		})
 	}

@@ -35,7 +35,7 @@ prints, with `on branch <branch>` after `by ci`:
 When the run gives no result, the command prints the case in place of a verdict:
 
 ```
-- <id> (before_merge): no result: <detail> <text>
+- <id> (before_merge): <no result | its CI job's results below, and CI run <name> derives none>: <detail> <text>
   A pass stands: <no | not known>.
   Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
   - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
@@ -59,9 +59,9 @@ is still going (below). Each read is made at the head, so a push needs no write 
 
 Read `dispatch results --issue <issue>` first. Then run and record only the checks that carry no
 `ci_check`, and the proofs on a real surface that CI cannot make. A check with `ci_check` needs no
-pass from the implementer. It is an entry in `failures` only when no pass of it stands at that head
-(its `A pass stands:` line), and its derived result is a fail, or its run concluded `skipped`,
-`neutral` or `cancelled`.
+pass from the implementer. It is an entry in `failures` when no pass of it stands at that head
+(its `A pass stands:` line): a result from CI there is a fail, its CI job recorded a pass and a
+fail at that commit (`not known`), or its run concluded `skipped`, `neutral` or `cancelled`.
 
 ## The `Checks` line
 

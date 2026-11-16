@@ -1310,10 +1310,35 @@ type BasisLearnedAt struct {
 // of it stands at what it compared its results with, against the check's words now, and from
 // which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
 // moved does not stand, and a retracted result counts for nothing.
+//
+// A `before_merge` check compared with heads has subjects, the heads a pass must stand at: each
+// open pull request's head, or where the issue has none, each merged one's final head and the
+// head of each of its branches a CI job's result names. A pass stands only when one stands at
+// each subject, and Subjects says the state of each. Reason is PassStandsReasonPassAndFail where
+// the answer is unknown because the check's CI job recorded a pass and a fail at one commit (R7).
 type CheckPassStands struct {
-	Answer string   `json:"answer" enum:"yes,no,unknown"`
-	Roles  []string `json:"roles,omitempty"`
+	Answer   string              `json:"answer" enum:"yes,no,unknown"`
+	Roles    []string            `json:"roles,omitempty"`
+	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail"`
+	Subjects []PassStandsSubject `json:"subjects,omitempty"`
 }
+
+// PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
+// PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
+// fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
+// PassStandsReasonPassAndFail where the check's CI job recorded a pass and a fail at that commit.
+type PassStandsSubject struct {
+	Basis  CheckBasis `json:"basis"`
+	Answer string     `json:"answer" enum:"yes,no,unknown"`
+	Reason string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail"`
+}
+
+// The reasons a pass_stands answer and its subjects give.
+const (
+	PassStandsReasonPassAndFail = "pass_and_fail"
+	PassSubjectReasonFail       = "fail"
+	PassSubjectReasonNoResult   = "no_result"
+)
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason

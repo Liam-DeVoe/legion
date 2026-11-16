@@ -459,8 +459,10 @@ func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha strin
 // carried it. The reader shows the later of the two and names which it is
 // (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt).
 type AttributedHead struct {
-	Number    int
-	HeadSHA   string
+	Number  int
+	HeadSHA string
+	// Open is whether the pull request is open; a merged one's head is its final head.
+	Open      bool
 	CheckedAt *time.Time
 	EventAt   *time.Time
 }
@@ -478,7 +480,7 @@ type AttributedHead struct {
 // the rows one issue's key holds are the handful of pull requests attributed to that issue.
 func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
 	rows, err := pool.Query(ctx, `
-		select number, head_sha, checked_at, event_at from pull_request_heads
+		select number, head_sha, state = 'open', checked_at, event_at from pull_request_heads
 		where issue_key = $1 and state in ('open', 'merged')
 		order by greatest(checked_at, event_at) desc nulls last, number desc
 	`, issueKey)
@@ -489,7 +491,7 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 	var heads []AttributedHead
 	for rows.Next() {
 		var head AttributedHead
-		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.CheckedAt, &head.EventAt); err != nil {
+		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.Open, &head.CheckedAt, &head.EventAt); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 		}
 		heads = append(heads, head)

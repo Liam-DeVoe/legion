@@ -8454,7 +8454,7 @@ describe("executeDispatchTool", () => {
       [
         "Checks of DSP-42:",
         "",
-        "- k5 (before_merge): no result: Dispatch holds no open or merged pull request head of DSP-42. The contracts job passes at the head.",
+        "- k5 (before_merge): its CI job's results below, and CI run contracts derives none: Dispatch holds no open or merged pull request head of DSP-42. The contracts job passes at the head.",
         "  A pass stands: yes, from ci.",
         "  - pass by ci on branch legion/DSP-42 at 3333333333333333333333333333333333333333. That commit is at the head of branch legion/DSP-42. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result job-1.",
         "    Reading: ok",
@@ -8498,6 +8498,59 @@ describe("executeDispatchTool", () => {
 
     const read = await readCICheck(served, { json: true });
     expect(JSON.parse(read.text)).toEqual(served);
+  });
+
+  // Where no pass of a check stands, the line names each head a pass must stand at that holds
+  // none, and what it holds: the merge gate reads this line for the head it reviews.
+  test("dispatch_results names each head where no pass of a CI check stands, and why", async () => {
+    const head = "4444444444444444444444444444444444444444";
+    const served = ciCheckRead(
+      {
+        run: "contracts",
+        state: "fail",
+        case: "failure",
+        detail: `CI run contracts concluded failure at ${head}, the head of owner/repo#70.`,
+        line: `- Check k5 (before_merge): fail at ${head}, from CI run contracts. The contracts job passes at the head.`,
+      },
+      []
+    );
+    const withStands = (pass_stands: Record<string, unknown>) => ({
+      ...served,
+      checks: [{ ...served.checks[0], pass_stands }],
+    });
+
+    const failed = await readCICheck(
+      withStands({
+        answer: "no",
+        subjects: [
+          {
+            basis: { kind: "pull_request", commit: head, pull_request: 70 },
+            answer: "no",
+            reason: "fail",
+          },
+        ],
+      })
+    );
+    expect(failed.text).toContain(
+      `  A pass stands: no, as the head of pull request #70 at ${head} holds a fail.`
+    );
+
+    const conflicted = await readCICheck(
+      withStands({
+        answer: "unknown",
+        reason: "pass_and_fail",
+        subjects: [
+          {
+            basis: { kind: "branch_head", branch: "legion/DSP-42", commit: head },
+            answer: "unknown",
+            reason: "pass_and_fail",
+          },
+        ],
+      })
+    );
+    expect(conflicted.text).toContain(
+      `  A pass stands: not known, as the head of branch legion/DSP-42 at ${head} holds a pass and a fail of its CI job.`
+    );
   });
 
   test("dispatch_result --retract records the retraction and prints what it holds", async () => {
