@@ -184,6 +184,14 @@ func (s *memStore) HoldSession(_ context.Context, _ string, token claim.Token, s
 	return token, nil
 }
 
+// setHold records holder as session's, as an operator settling a held-for-none id or a migration
+// does, under the store's lock so it may run while a machine does.
+func (s *memStore) setHold(session string, holder claim.Token) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holds[session] = holder
+}
+
 func (s *memStore) PutClaim(_ context.Context, c Claim) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

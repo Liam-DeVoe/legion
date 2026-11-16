@@ -2489,6 +2489,12 @@ func (m *Machine) backOff(ctx context.Context) error {
 // runtime.ErrSessionStore and the caller waits for the store (startWaitsForStore). Any other
 // refusal of a Resume is a launch failure the caller charges, and the claim keeps its session: a
 // fresh agent on a claim that had one is what the same-agent refusal exists to catch.
+//
+// A resume runs under every session its record names, so each is held to the claim before
+// anything starts (holdRecorded, dispatch://INFRA-840): a Claude Code launch continues the session
+// its transcript's name gives (claudelaunch.ResumeSession), which a claim recorded before the
+// hold could name for another claim's session. One another claim holds is refused here, as a
+// launch failure the caller charges, and nothing starts under it.
 func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, error) {
 	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
@@ -2496,6 +2502,9 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, err
 	}
 	if m.claim.SessionFile == "" {
 		return m.deps.Runtime.Spawn(ctx, spec)
+	}
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		return runtime.Locator{}, err
 	}
 	spec.ResumeSessionFile = m.claim.SessionFile
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)

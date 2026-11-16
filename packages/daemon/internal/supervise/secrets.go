@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -117,6 +118,23 @@ func (m *Machine) holdSession(ctx context.Context, session string) error {
 	if holder != m.claim.Token {
 		m.log.Warn("supervise: refused a session another claim recorded first", "session", session, "claim", m.claim.Token, "holder", holder)
 		return fmt.Errorf("%s as session %s: %w", m.claim.Token, session, claim.SessionHeldRefusal(session))
+	}
+	return nil
+}
+
+// holdRecorded holds every session id a claim's record names to the claim (holdSession): its
+// session, and the Claude Code session its transcript's name gives (claudelaunch.Transcript),
+// which is the session a Claude Code launch resumes (claudelaunch.ResumeSession) whatever the
+// recorded session says. claude-envoy registers a session and that session's own transcript, so
+// the two are one id and one hold; a record whose transcript names another claim's session is
+// refused as that session would be, so no claim registers, or relaunches into, another claim's
+// Claude session. An Oh My Pi session file names no Claude session, and holds nothing more.
+func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
+	if err := m.holdSession(ctx, session); err != nil {
+		return err
+	}
+	if resumed, ok := claudelaunch.Transcript(sessionFile); ok && resumed != session {
+		return m.holdSession(ctx, resumed)
 	}
 	return nil
 }

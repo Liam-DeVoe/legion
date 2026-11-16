@@ -141,17 +141,18 @@ func TestTheRegistrationDeadlineRevokesAnUnregisteredPodsEnrollment(t *testing.T
 	}
 }
 
-// A session is held to the first claim that recorded it before anything records or enrolls it
-// (holdSession, dispatch://INFRA-840): the broker's enrollment takes over the grants of every
-// other enrollment of the pod's account and session, so an enrollment of another claim's session
-// is that claim's secrets. A registration the hold refuses is answered with the refusal and leads
-// to no Enroll call, and records nothing; one it admits leads to exactly one. A resumed claim
-// whose recorded session the store holds for no claim (two claims recorded it before the hold)
-// enrolls nothing on its hello.
+// A session is held to the first claim that recorded it before anything records, launches or
+// enrolls it (holdSession, dispatch://INFRA-840): the broker's enrollment takes over the grants of
+// every other enrollment of the pod's account and session, so an enrollment of another claim's
+// session is that claim's secrets. A registration the hold refuses is answered with the refusal
+// and leads to no Enroll call, and records nothing; one it admits leads to exactly one. A claim a
+// daemon before the hold recorded on a session the store now holds for no claim (two claims
+// recorded it) is never relaunched under it, and, re-adopted live, enrolls nothing on its hello.
 //
-// The control: the hold after the enrollment (in register, below m.ensureEnrolled) answers the
-// same refusal, but only once the stub has recorded the enrollment of the other claim's session,
-// and the test fails naming it (the pull request records the run).
+// The controls (the pull request records each run): the hold after the enrollment (in register,
+// below m.ensureEnrolled) answers the same refusal, but only once the stub has recorded the
+// enrollment of the other claim's session; no hold in ensureEnrolled enrolls the re-adopted
+// claim; no hold in start resumes the relaunched one.
 func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 	t.Run("a registration of another claim's session", func(t *testing.T) {
 		h := newHarness(t)
@@ -182,7 +183,26 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		}
 	})
 
-	t.Run("a resumed claim's session held for no claim", func(t *testing.T) {
+	t.Run("a re-adopted claim's session held for no claim", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		// A claim a daemon before the hold launched and recorded: ready on its session, its shim
+		// connected without the pod's identity, so nothing was enrolled yet.
+		h.reach(StateReady)
+		// Two claims recorded the session before the daemon held sessions: the migration holds it
+		// for neither, and a daemon restarted onto it re-adopts the claim recording it.
+		h.store.setHold(session, "")
+		h.restart()
+		h.helloWithIdentity()
+		if enrolled := broker.enrolled(); len(enrolled) != 0 {
+			t.Fatalf("enrollments %+v, want none: the re-adopted claim's session is held for no claim", enrolled)
+		}
+		if c := h.claim(); c.Enrollment != nil {
+			t.Fatalf("the re-adopted claim records enrollment %+v", c.Enrollment)
+		}
+	})
+
+	t.Run("a relaunch of a claim whose session is held for no claim", func(t *testing.T) {
 		h := newHarness(t)
 		broker := h.withSecrets()
 		h.launch()
@@ -190,17 +210,23 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		h.register()
 		h.ready()
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		// Two claims recorded the session before the daemon held sessions: the migration holds it
-		// for neither, and a daemon restarted onto it reads the claim back recording it.
-		h.store.holds[session] = ""
+		h.store.setHold(session, "")
+		h.deps.Limits.LaunchFailures = 1
 		h.restart()
-		h.must(RequestResume{Claim: h.token})
-		h.helloWithIdentity()
-		if enrolled := broker.enrolled(); len(enrolled) != 1 {
-			t.Fatalf("enrollments %+v, want only the first process's: the resumed one's session is held for no claim", enrolled)
+		resumes := len(h.calls("Resume"))
+		err := h.handle(RequestResume{Claim: h.token})
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(session) {
+			t.Fatalf("resuming a claim whose session is held for no claim = %v, want %v", err, claim.SessionHeldRefusal(session))
 		}
-		if c := h.claim(); c.Enrollment != nil {
-			t.Fatalf("the resumed claim records enrollment %+v", c.Enrollment)
+		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+			t.Fatalf("the runtime was asked to resume the session held for no claim: %+v", calls)
+		}
+		if enrolled := broker.enrolled(); len(enrolled) != 1 {
+			t.Fatalf("enrollments %+v, want only the first process's", enrolled)
+		}
+		if c := h.claim(); c.State != StateFailed {
+			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under %s", c.State, session)
 		}
 	})
 
@@ -219,12 +245,76 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		if err := h.handle(registration); !errors.As(err, &refusal) {
 			t.Fatalf("registering a session held for no claim = %v, want the refusal", err)
 		}
-		h.store.mu.Lock()
-		h.store.holds[session] = h.token
-		h.store.mu.Unlock()
+		h.store.setHold(session, h.token)
 		h.must(registration)
 		if enrolled := broker.enrolled(); len(enrolled) != 1 || enrolled[0].Session != session {
 			t.Fatalf("the settled registration enrolled %+v, want one enrollment of %s", enrolled, session)
+		}
+	})
+}
+
+// A Claude Code launch runs under the session its recorded transcript's name gives: a fresh
+// launch's own uuid, which its claude-envoy registers with that session's own transcript, and a
+// relaunch's `--resume <id>` read from the recorded transcript (claudelaunch.ResumeSession). So the
+// session a transcript names is held to the claim as its session is (holdRecorded,
+// dispatch://INFRA-840): a registration whose transcript names another claim's Claude session is
+// refused, recording and enrolling nothing, and a claim recorded before the hold whose transcript
+// names one is never relaunched into it.
+//
+// The controls (the pull request records both runs): register holding the registered session
+// alone admits the registration and records the other claim's transcript; start resuming without
+// holdRecorded calls the runtime's Resume on that transcript.
+func TestAClaudeLaunchIsHeldToItsClaim(t *testing.T) {
+	const holder = claim.Token("legion-legion-LEGION-209-tester")
+	const stolen = "11111111-2222-4333-8444-555555555555"
+	transcript := "/legion/state/implementer/claude/projects/-legion-workspaces-acme-widgets-legion-209/" + stolen + ".jsonl"
+
+	t.Run("a registration whose transcript names another claim's Claude session", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.store.holds[stolen] = holder
+		h.launch()
+		h.helloWithIdentity()
+		err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: "22222222-3333-4444-8555-666666666666",
+			SessionFile: transcript, CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(stolen) {
+			t.Fatalf("registering a transcript of %s's Claude session = %v, want %v", holder, err, claim.SessionHeldRefusal(stolen))
+		}
+		if c := h.claim(); c.Session != "" || c.SessionFile != "" || c.CapabilityHash != nil {
+			t.Fatalf("the refused registration left the claim recording %q, %q and capability %x", c.Session, c.SessionFile, c.CapabilityHash)
+		}
+		if enrolled := broker.enrolled(); len(enrolled) != 0 {
+			t.Fatalf("the refused registration enrolled %+v", enrolled)
+		}
+	})
+
+	t.Run("a relaunch resuming another claim's Claude session", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+		// A claim a daemon before the hold recorded: its own session, and a transcript naming the
+		// tester's Claude session, which a resume would continue.
+		stored := h.store.load(h.token)
+		stored.SessionFile = transcript
+		if err := h.store.PutClaim(h.ctx, stored); err != nil {
+			t.Fatal(err)
+		}
+		h.store.setHold(stolen, holder)
+		h.deps.Limits.LaunchFailures = 1
+		h.restart()
+		resumes := len(h.calls("Resume"))
+
+		err := h.handle(RequestResume{Claim: h.token})
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(stolen) {
+			t.Fatalf("resuming a transcript of %s's Claude session = %v, want %v", holder, err, claim.SessionHeldRefusal(stolen))
+		}
+		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+			t.Fatalf("the runtime was asked to resume %s's Claude session: %+v", holder, calls)
+		}
+		if c := h.claim(); c.State != StateFailed {
+			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under %s", c.State, stolen)
 		}
 	})
 }

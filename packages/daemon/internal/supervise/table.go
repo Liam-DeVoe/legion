@@ -2302,7 +2302,7 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // just registered is not the one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	if err := m.holdSession(ctx, r.Session); err != nil {
+	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
 		return err
 	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
@@ -2334,7 +2334,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 // (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	if err := m.holdSession(ctx, r.Session); err != nil {
+	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
 		return err
 	}
 	m.claim.SessionFile = r.SessionFile
