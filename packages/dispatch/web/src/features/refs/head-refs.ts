@@ -1,4 +1,4 @@
-import { codeRanges } from "./code-ranges";
+import { type CodeRange, codeRanges } from "./code-ranges";
 import { type InlineLink, inlineLinks } from "./party-references";
 import { referenceSpans } from "./reference-spans";
 import { buildDispatchReference, referenceRouteFromHref } from "./routes";
@@ -18,6 +18,14 @@ interface Extent {
 
 /** The whitespace a cut that moved back drops from the end of its head, line breaks included. */
 const TRAILING_SPACE = /[ \t\r\n]+$/u;
+
+/** What a closed code span's content drops from its end before the backticks that close it: a
+ *  backtick, which would join them into a longer run that closes nothing, and whitespace, which
+ *  would leave them on a line of their own. */
+const CLOSING_TRIM = /[` \t\r\n]+$/u;
+
+/** A run of backticks, which opens or closes a code span of its width. */
+const BACKTICK_RUN = /`+/gu;
 
 /** The most characters past the bound a cut reads to keep a reference whole: the server's
  *  `longestWholeReferenceRunes` (`packages/envoy/internal/dispatch/text/runes.go`), so the two
@@ -53,12 +61,24 @@ const LONGEST_WHOLE_REFERENCE = 1024;
  * that reference, so the ellipsis joins nothing and the walk stops - a line of short addresses
  * separated by spaces is cut after its last whole address and a space, not back past every one
  * of them. A cut never empties the head: where moving back would leave nothing before the
- * ellipsis - a text that opens with a reference or a code span longer than the bound - the cut by
- * length stands, since a head of nothing tells a reader less than half a reference does.
+ * ellipsis - a text that opens with a reference, a link or a code span longer than the bound - the
+ * cut by length stands, since a head of nothing tells a reader less than half a reference does,
+ * and it closes what it leaves open (`closeCut`). Inside an inline link or picture around a
+ * reference, the head is the link's opening, its words cut by this same rule to leave room for
+ * the rest of the link, and that rest as the text writes it, from the `]` its words end at to its
+ * `)`, so the head reads that link. Inside a code span, the head is as much of the span's content
+ * as fits with the span's opening backticks written after it, which close it, so what the span
+ * holds reads as code; where no character of the content fits, the head is the opening backticks
+ * alone. Where the rest of a link does not fit the bound, or the closed link would not read as
+ * that link, the cut by length stands as it is. A bare reference has nothing to close, so the cut
+ * by length can leave half of one: an excerpt's head of an address whose slug runs past the bound
+ * names an artifact of a shorter slug.
  *
  * It reads the text's first `limit` and `LONGEST_WHOLE_REFERENCE` characters, no more, as the
- * server does: a reference or a code span that runs to the edge of that window, where the text
- * runs on past it, may run further, so it is none the cut keeps whole, and is cut by length.
+ * server does: a reference or a link that runs to the edge of that window, where the text runs on
+ * past it, may run further, so it is none the cut keeps whole, and is cut by length. A code span
+ * that runs to that edge, or that the window opens and does not close in the paragraph it ends in,
+ * may close past it, so it counts as crossing the cut (`windowSpans`).
  */
 export function headRefs(
   text: string,
@@ -83,28 +103,44 @@ export function headRefs(
     at += character.length;
   }
   if (!over) return text;
-  const head = headEnd(text.slice(0, windowEnd), windowEnd < text.length, cut, ellipsis, origin);
-  return `${text.slice(0, head)}${ellipsis}`;
+  return `${headOf(text.slice(0, windowEnd), windowEnd < text.length, cut, 0, ellipsis, origin)}${ellipsis}`;
 }
 
-/** Where the head of `windowed`, the text's first characters, cut at `cut` ends (`headRefs`): `cut`
- *  moved back past every reference and code span that crosses it, and every reference the head
- *  reads otherwise than the text does, less the whitespace before it but the one a reference ends
- *  at; or `cut` itself where that would leave nothing. A reference or a span that runs to the
- *  window's edge where the window stops short of the text (`truncated`) may run further, so it is
- *  none the cut keeps whole. Each move is back, so it ends. */
-function headEnd(
+/** The head of `windowed`, the text's first characters, cut at `cut` (`headRefs`), without its
+ *  ellipsis: `windowed` up to where the walk back ends (`headEnd`), or, where that leaves nothing
+ *  past `floor`, the cut by length with what it leaves open closed (`closeCut`). `floor` is 0 for
+ *  a whole head, and the first character of a link's words where those words are cut to leave
+ *  room for the rest of the link. */
+function headOf(
   windowed: string,
   truncated: boolean,
+  cut: number,
+  floor: number,
+  ellipsis: string,
+  origin: string
+): string {
+  const written = referenceExtents(windowed, origin).filter(
+    (reference) => !truncated || reference.end < windowed.length
+  );
+  const spans = windowSpans(windowed, truncated);
+  const end = headEnd(windowed, written, spans, cut, ellipsis, origin);
+  return end > floor
+    ? windowed.slice(0, end)
+    : closeCut(windowed, written, spans, cut, floor, origin);
+}
+
+/** Where the head of `windowed` cut at `cut` ends (`headRefs`): `cut` moved back past every
+ *  reference `written` and every code span of `spans` that crosses it, and every reference the
+ *  head reads otherwise than the text does, less the whitespace before it but the one a reference
+ *  ends at. Each move is back, so it ends; at 0 it leaves nothing. */
+function headEnd(
+  windowed: string,
+  written: readonly Extent[],
+  spans: readonly CodeRange[],
   cut: number,
   ellipsis: string,
   origin: string
 ): number {
-  const whole = (range: { end: number }) => !truncated || range.end < windowed.length;
-  const written = referenceExtents(windowed, origin).filter(whole);
-  const spans = windowed.includes("`")
-    ? codeRanges(windowed).filter((range) => !range.block && whole(range))
-    : [];
   let at = cut;
   while (at > 0) {
     let back = at;
@@ -128,7 +164,125 @@ function headEnd(
     // one of them.
     if (at < back && written.some((reference) => reference.end === at)) at += 1;
   }
-  return at === 0 ? cut : at;
+  return at;
+}
+
+/** The cut by length of `windowed` at `cut`, which a head falls back to where moving the cut back
+ *  leaves nothing past `floor` (`headRefs`), with what it leaves open closed so the head reads what
+ *  it holds as the text does: the inline link or picture around a reference the cut is in
+ *  (`closeLink`), or else the code span it is in (`closeSpan`). Where it is in neither, or in a
+ *  link it cannot close and in no span, it is `windowed` up to `cut`. */
+function closeCut(
+  windowed: string,
+  written: readonly Extent[],
+  spans: readonly CodeRange[],
+  cut: number,
+  floor: number,
+  origin: string
+): string {
+  const link = closeLink(windowed, written, cut, floor, origin);
+  if (link !== undefined) return link;
+  const span = spans.find((one) => floor <= one.start && one.start < cut && cut < one.end);
+  return span === undefined ? windowed.slice(0, cut) : closeSpan(windowed, span, cut);
+}
+
+/** The head of `windowed` cut at `cut` inside the inline link or picture around a reference
+ *  `written` there, closed: `windowed` up to the link's words, those words cut by `headRefs`' own
+ *  rule with the link's `[` as the floor no cut moves back past, so it splits no reference or code
+ *  span in them, and the rest of the link as the text writes it, from the `]` its words end at
+ *  through its `)`, all of it within the characters of `windowed` up to `cut`. Nothing where no
+ *  such link holds the cut, where the rest of the link leaves no room for a word, or where the
+ *  head would not read as that link - a bracket the cut words leave open, or a backslash they end
+ *  in, reads otherwise. */
+function closeLink(
+  windowed: string,
+  written: readonly Extent[],
+  cut: number,
+  floor: number,
+  origin: string
+): string | undefined {
+  const link = [...inlineLinks(windowed)]
+    .sort((one, other) => linkStart(one) - linkStart(other))
+    .find((one) => floor <= linkStart(one) && linkStart(one) < cut && cut < one.close);
+  if (link === undefined) return undefined;
+  const start = linkStart(link);
+  if (!written.some((reference) => reference.start === start && reference.end === link.close)) {
+    return undefined;
+  }
+  const words = link.open + 1;
+  const rest = windowed.slice(link.wordsEnd, link.close);
+  const room =
+    Array.from(windowed.slice(0, cut)).length -
+    Array.from(windowed.slice(0, words)).length -
+    Array.from(rest).length;
+  if (room <= 0) return undefined;
+  let wordsCut = words;
+  for (let left = room; left > 0; left -= 1) {
+    wordsCut += (windowed.codePointAt(wordsCut) ?? 0) > 0xffff ? 2 : 1;
+  }
+  const head = `${headOf(windowed.slice(0, link.wordsEnd), false, wordsCut, words, "", origin)}${rest}`;
+  return inlineLinks(head).some((one) => linkStart(one) === start && one.close === head.length)
+    ? head
+    : undefined;
+}
+
+/** The head of `windowed` cut at `cut` inside `span`, closed: the span's content up to its opening
+ *  backticks' width in characters before `cut`, less the backticks and whitespace it ends in, then
+ *  a run of that width. The run follows a character of the content on the content's own line, so
+ *  it joins no backtick run of the content and opens no fence, and closes the span where the head
+ *  ends it. Where no character of the content fits with that run, the head is the span's opening
+ *  backticks alone, so what the span holds reads nowhere: cut by length, even a `#q` of `#q12`
+ *  would read as a live reference. */
+function closeSpan(windowed: string, span: CodeRange, cut: number): string {
+  let content = span.start;
+  while (windowed[content] === "`") content += 1;
+  const opener = windowed.slice(span.start, content);
+  let end = cut;
+  for (let left = opener.length; left > 0 && end > 0; left -= 1) {
+    // A character UTF-16 writes as two ends in a low surrogate, and is one character to step over.
+    const unit = windowed.charCodeAt(end - 1);
+    end -= end > 1 && unit >= 0xdc00 && unit <= 0xdfff ? 2 : 1;
+  }
+  const held = end > content ? windowed.slice(content, end).replace(CLOSING_TRIM, "") : "";
+  return held === ""
+    ? windowed.slice(0, Math.min(cut, content))
+    : `${windowed.slice(0, content + held.length)}${opener}`;
+}
+
+/** Every code span `windowed` writes, its blocks left out: a cut inside a span the head does not
+ *  close leaves its opening backticks as text, and what the span held - an address in it included
+ *  - read as prose, where a cut inside a fenced block leaves the rest of the head in the block as
+ *  the text has it. A window with no backtick has no span, and is not walked for one.
+ *
+ *  A window that stops short of the text (`truncated`) is read with a line after it that closes a
+ *  span of any width it could open (`closingLine`): the first span the window leaves open in the
+ *  paragraph it ends in may close past the window, so the line closes it and it runs past the
+ *  window's end, as a span whose closing run ends at that end does, whose run the text may carry
+ *  on. Either crosses every cut after its start. A span the window opens in an earlier paragraph
+ *  is closed by none, and one the window opens after such a span is inside it, so the line closes
+ *  neither. */
+function windowSpans(windowed: string, truncated: boolean): CodeRange[] {
+  if (!windowed.includes("`")) return [];
+  const read = truncated ? `${windowed}${closingLine(windowed)}` : windowed;
+  return codeRanges(read).filter((range) => !range.block && range.start < windowed.length);
+}
+
+/** A line to read after `windowed` that continues the paragraph it ends in, if one is open there,
+ *  and closes the first span it leaves open: an `x`, so the line opens no block of its own and
+ *  reads as that paragraph's text, then a run of each width a span of `windowed` could open with,
+ *  widest last and each after a space, so no two join. A span opens with a run of backticks or,
+ *  after a backslash that takes the first of them, the rest of that run. */
+function closingLine(windowed: string): string {
+  const widths = new Set<number>();
+  for (const run of windowed.matchAll(BACKTICK_RUN)) {
+    widths.add(run[0].length);
+    widths.add(run[0].length - 1);
+  }
+  const runs = [...widths]
+    .filter((width) => width > 0)
+    .sort((one, other) => one - other)
+    .map((width) => ` ${"`".repeat(width)}`);
+  return `${windowed.endsWith("\n") ? "" : "\n"}x${runs.join("")}`;
 }
 
 /** Whether `extents` holds `reference`: a reference at the same place naming the same thing. */

@@ -280,12 +280,111 @@
     "note": "A code span the cut opens and does not close counts as crossing the cut, so the cut moves back to before its opening backtick. Cut after `is`, the head would hold the span's opening backtick and no closing one, so that backtick would read as text and the address after it as a live reference."
   },
   {
-    "name": "a text opening with a code span past the bound keeps its rune cut",
+    "name": "a text opening with a code span past the bound closes it",
     "text": "`dispatch://CORE-1 is code` and more",
     "limit": 10,
     "ellipsis": "…",
-    "head": "`dispatch…",
-    "note": "Moving back to the span's backtick would leave nothing before the ellipsis, so the cut by length stands, as it does for a text that opens with a reference longer than the bound."
+    "head": "`dispatc`…",
+    "note": "Moving back to the span's backtick would leave nothing before the ellipsis, so the cut by length stands, and the span's backtick is written after it to close the span: cut by length alone, the head would hold the opening backtick and no closing one, so the address after it would read as a live reference."
+  },
+  {
+    "name": "a text opening with a code span that holds an address past the bound closes it",
+    "text": "`dispatch://CORE-1 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` and more",
+    "limit": 30,
+    "ellipsis": "…",
+    "head": "`dispatch://CORE-1 xxxxxxxxx`…",
+    "note": "The closing backtick takes the place of a character of the span's content, so the head stays within the bound."
+  },
+  {
+    "name": "a code span crossing the cut that closes past the window moves the cut back to its backtick",
+    "text": "See `dispatch://CORE-1 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` and more",
+    "limit": 30,
+    "ellipsis": "…",
+    "head": "See…",
+    "note": "The closing backtick stands past the window both copies read, the bound and 1,024 characters past it, so the window opens the span and does not close it in the paragraph it ends in. Such a span may close past the window, so it counts as crossing the cut. A copy that read the backtick as text would cut by length and read the address as a live reference."
+  },
+  {
+    "name": "a text opening with a code span that closes past the window closes it",
+    "text": "`dispatch://CORE-1 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` and more",
+    "limit": 30,
+    "ellipsis": "…",
+    "head": "`dispatch://CORE-1 xxxxxxxxx`…"
+  },
+  {
+    "name": "a backtick the window leaves open in an earlier paragraph is text",
+    "text": "One `tick\n\nmore words xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx and the end",
+    "limit": 20,
+    "ellipsis": "…",
+    "head": "One `tick\n\nmore wor…",
+    "note": "The window stops short of the text, but the blank line ends the paragraph the backtick opens in, so no backtick past the window can close it: it is text, and crosses no cut. A copy that took every backtick the window leaves open as a span closing past the window would move the cut back to `One`."
+  },
+  {
+    "name": "a text opening with a double-backtick span past the bound closes it with two",
+    "text": "``dispatch://CORE-1 holds ` a backtick and runs on past the bound`` and more",
+    "limit": 30,
+    "ellipsis": "…",
+    "head": "``dispatch://CORE-1 holds``…",
+    "note": "The span opens with two backticks, so two close it. The content the room leaves ends in the single backtick it holds and a space, which are dropped: a backtick there would join the closing two into a run of three, which closes nothing, and the head would read the address live."
+  },
+  {
+    "name": "a code span opening the text whose content has no room beside its closing backticks keeps only its opening ones",
+    "text": "  ``#q12 is code`` and more",
+    "limit": 6,
+    "ellipsis": "",
+    "head": "  ``",
+    "note": "Two backticks close the span, and the bound leaves room for two characters past its opening ones, so no character of its content fits with them. The head is the opening backticks alone: cut by length, it would end `#q`, which reads as a live question reference where the text holds `#q12` in code."
+  },
+  {
+    "name": "a code span opening the text and ending before the bound is left as it is",
+    "text": "`dispatch://CORE-1` and more words after it",
+    "limit": 31,
+    "ellipsis": "…",
+    "head": "`dispatch://CORE-1` and more w…"
+  },
+  {
+    "name": "a mention opening the text cut in its address is closed",
+    "text": "[@Planner](dispatch://agent/s1234) now",
+    "limit": 29,
+    "ellipsis": "",
+    "head": "[@Pl](dispatch://agent/s1234)",
+    "note": "Moving back to the link's [ would leave nothing, so the head keeps the link: as many of its words as leave room for the rest of it, then the rest as the text writes it. Cut by length, the head would end `(dispatch://agent/s`, an address of the session s."
+  },
+  {
+    "name": "a link opening the text cut in its words is closed",
+    "text": "[the spec for the long plan that goes on](dispatch://CORE-1/spec) and more",
+    "limit": 39,
+    "ellipsis": "…",
+    "head": "[the spec for](dispatch://CORE-1/spec)…"
+  },
+  {
+    "name": "a link opening the text is closed after words cut where no key in them crosses the cut",
+    "text": "[see CORE-1234 and more words](dispatch://CORE-1234) now",
+    "limit": 33,
+    "ellipsis": "…",
+    "head": "[see](dispatch://CORE-1234)…",
+    "note": "The room the rest of the link leaves ends inside CORE-1234, so the words' own cut moves back to the key's start, as the head's does."
+  },
+  {
+    "name": "a picture opening the text is closed as a picture",
+    "text": "![the chart of the long quarter](dispatch://CORE-1/artifact/chart) now",
+    "limit": 50,
+    "ellipsis": "…",
+    "head": "![the chart of](dispatch://CORE-1/artifact/chart)…"
+  },
+  {
+    "name": "a link opening the text whose rest leaves no room for a word keeps its rune cut",
+    "text": "[@Planner](dispatch://agent/s1234) now",
+    "limit": 20,
+    "ellipsis": "…",
+    "head": "[@Planner](dispatch…"
+  },
+  {
+    "name": "a link opening the text whose cut words would leave a bracket open keeps its rune cut",
+    "text": "[@Alice [x] and more](dispatch://agent/s1) now",
+    "limit": 33,
+    "ellipsis": "…",
+    "head": "[@Alice [x] and more](dispatch:/…",
+    "note": "The room the rest of the link leaves ends after `[x`, and `[@Alice [x](dispatch://agent/s1)` reads as a link of the words x, its first [ as text, so the head would not read as the text's link. The cut by length stands."
   },
   {
     "name": "a cut that moves to the start of a line after a blank one",
@@ -473,5 +572,21 @@
     "ellipsis": "…",
     "head": "see \\\\…",
     "note": "\\\\ is an escaped backslash, so the ! after it escapes nothing and opens a picture: the cut moves back to the !. A copy that read any backslash before the ! as escaping it would read a link from the [ and keep the ! in the head."
+  },
+  {
+    "name": "an address longer than the smallest bound a caller passes keeps its rune cut",
+    "text": "dispatch://CORE-1/artifact/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx is long",
+    "limit": 120,
+    "ellipsis": "…",
+    "head": "dispatch://CORE-1/artifact/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+    "note": "120 is the bound of the dashboard's picker rows (REF_PICKER_TEXT_MAX), the smallest any caller passes. An address can be longer: text.MaxTargetBytes, 2,048 bytes, bounds its target. A bare address has nothing to close, so the cut by length stands, and the ellipsis joins the slug, which then names nothing."
+  },
+  {
+    "name": "an excerpt opening with an address longer than its bound keeps its rune cut",
+    "text": "dispatch://CORE-1/artifact/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx is long",
+    "limit": 240,
+    "ellipsis": "",
+    "head": "dispatch://CORE-1/artifact/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "note": "An excerpt has no ellipsis, so the head reads as an address of an artifact whose slug is the first 213 characters of the text's slug. A bare address has nothing to close, and a head of nothing tells a reader less, so this is the limit the rule states."
   }
 ]

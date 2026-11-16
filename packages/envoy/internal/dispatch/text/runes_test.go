@@ -31,7 +31,7 @@ var linkTails = strings.Repeat("](dispatch://CORE-1)", (1<<20)/len("](dispatch:/
 // row alike: a reference or a code span that crosses the cut moves the cut back to its start, and
 // so does a reference the head would read that the text does not write, while a text with no
 // reference at the cut, a URL of anywhere else, and a reference no cut can keep whole are cut as
-// HeadRunes cuts them.
+// HeadRunes cuts them, with the link or the code span that cut lands in closed after it.
 func TestHeadRefsMatchesTheSharedHeadTable(t *testing.T) {
 	raw, err := os.ReadFile("testdata/head-refs.json")
 	if err != nil {
@@ -53,15 +53,23 @@ func TestHeadRefsMatchesTheSharedHeadTable(t *testing.T) {
 }
 
 // TestHeadRefsReadsAWindowOfTheText holds HeadRefs to the window it reads with texts the shared
-// table does not hold: a line of 1 MiB, which would make the table's file megabytes long, and an
-// address longer than the window. The dashboard's copy reads the same window, and the table's
-// own window row, a link whose `)` stands past the window, holds both copies to it.
+// table does not hold: a line of 1 MiB, which would make the table's file megabytes long, an
+// address longer than the window, and a code span whose closing backtick is the window's last
+// character, which needs the window's length counted out. The dashboard's copy reads the same
+// window, holds the last of these too (`head-refs.test.ts`), and the table's own window rows, a
+// link whose `)` stands past the window and code spans closing past it, hold both copies to it.
 func TestHeadRefsReadsAWindowOfTheText(t *testing.T) {
 	longAddress := "dispatch://CORE-1/artifact/" + strings.Repeat("x", 200)
 	unit := "](dispatch://CORE-1)"
 	for _, row := range []headRefsRow{
 		{Name: "an address longer than the window is cut by runes", Text: "Read " + longAddress + strings.Repeat("x", 1000) + " now",
 			Limit: 160, Ellipsis: "…", Head: ("Read " + longAddress + strings.Repeat("x", 1000))[:159] + "…"},
+		// The window is the bound and 1,024 runes past it, so its last rune is the backtick after
+		// the 1,028 x's. The window reads a span that closes there, but the text's run of two
+		// backticks there may close nothing, so the span may run past the window: it counts as
+		// crossing the cut, which moves back to its backtick rather than leaving it open.
+		{Name: "a code span whose closing backtick ends the window counts as crossing the cut",
+			Text: "See `" + strings.Repeat("x", 1028) + "`` and more", Limit: 10, Ellipsis: "…", Head: "See…"},
 		// The `](` before the ellipsis is text, and stays: the line holds no `[`, so it opens no
 		// link and the cut splits none. A link that crosses the cut moves it back to the link's
 		// `[`, so a head can end in a `](` only where the text writes no link there.

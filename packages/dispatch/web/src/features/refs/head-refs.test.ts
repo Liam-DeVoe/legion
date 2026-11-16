@@ -78,6 +78,15 @@ test("a text that opens with a reference longer than the bound keeps the cut by 
   expect(headRefs("dispatch://CORE-1/spec#b-abc and more", 10, "…")).toBe("dispatch:…");
 });
 
+// The window is the bound and 1,024 characters past it, as the server's
+// (`TestHeadRefsReadsAWindowOfTheText`), so its last character is the backtick after the 1,028
+// x's. The window reads a span that closes there, but the text's run of two backticks there may
+// close nothing, so the span may run past the window: it counts as crossing the cut, which moves
+// back to its backtick rather than leaving it open.
+test("a code span whose closing backtick ends the window counts as crossing the cut", () => {
+  expect(headRefs(`See \`${"x".repeat(1028)}\`\` and more`, 10, "…")).toBe("See…");
+});
+
 test("the bound counts characters, so no cut splits one", () => {
   expect(headRefs("😀😀😀😀 words", 4, "…")).toBe("😀😀😀…");
 });

@@ -78,9 +78,26 @@ const longestWholeReferenceRunes = 1024
 // text has after that reference, so the ellipsis joins nothing and the walk stops - a line of
 // short addresses separated by spaces is cut after its last whole address and a space, not back
 // past every one of them. A cut never empties the head: where moving back would leave nothing
-// before the ellipsis - a text that opens with a reference or a code span longer than the bound -
-// the rune cut stands, since a head of nothing tells a reader less than half a reference does. A
-// cut that moves nothing is HeadRunes' own.
+// before the ellipsis - a text that opens with a reference, a link or a code span longer than the
+// bound - the cut by length stands, since a head of nothing tells a reader less than half a
+// reference does, and it closes what it leaves open (closeCut). Inside an inline link or picture
+// around a reference, the head is the link's opening, its words cut by this same rule to leave
+// room for the rest of the link, and that rest as the text writes it, from the `]` its words end
+// at to its `)`: the head reads that link, where the cut by length would leave its `[` as text and
+// half its address as another reference. Inside a code span, the head is as much of the span's
+// content as fits with the span's opening backticks written after it, which close it: what the
+// span holds reads as code, as the text has it, where the cut by length would leave the opening
+// backticks as text and an address in the span live; where no character of the content fits, the
+// head is the opening backticks alone. Where the rest of a link does not fit the bound, or the
+// closed link would not read as that link, the cut by length stands as it is. A bare reference
+// has nothing to close, so the cut by length can leave half of one: an excerpt's head of an
+// address whose slug runs past the bound names an artifact of a shorter slug. A cut that moves
+// nothing is HeadRunes' own.
+//
+// A reference or a link that runs to the window's edge, where the window stops short of value,
+// may run further, so it is none the cut keeps whole and is cut by length. A code span that runs
+// to that edge, or that the window opens and does not close in the paragraph it ends in, may close
+// past it, so it counts as crossing the cut (windowSpans).
 //
 // The dashboard's headRefs (`packages/dispatch/web/src/features/refs/head-refs.ts`) cuts the
 // same way, and `testdata/head-refs.json` is the table both copies are held to.
@@ -104,23 +121,32 @@ func HeadRefs(value string, limit int, ellipsis, serverURL string) string {
 	if !over {
 		return value
 	}
-	return value[:headEnd(value[:window], window < len(value), cut, ellipsis, serverURL)] + ellipsis
+	return headOf(value[:window], window < len(value), cut, 0, ellipsis, serverURL) + ellipsis
 }
 
-// headEnd is where the head of window, value's first runes, cut at cut ends (HeadRefs). A
-// reference or a code span that runs to the window's edge where the window stops short of value
-// may run further, so it is none the cut keeps whole.
-func headEnd(window string, truncated bool, cut int, ellipsis, serverURL string) int {
+// headOf is the head of window, value's first runes, cut at cut (HeadRefs), without its ellipsis:
+// window up to where the walk back ends (headEnd), or, where that leaves nothing past floor, the
+// cut by length with what it leaves open closed (closeCut). Floor is 0 for a whole head, and the
+// first byte of a link's words where those words are cut to leave room for the rest of the link.
+func headOf(window string, truncated bool, cut, floor int, ellipsis, serverURL string) string {
 	written := cutReferences(window, serverURL)
-	spans := codeSpans(window)
 	if truncated {
 		written = slices.DeleteFunc(written, func(reference cutReference) bool {
 			return reference.end >= len(window)
 		})
-		spans = slices.DeleteFunc(spans, func(span codeRange) bool {
-			return span.end >= len(window)
-		})
 	}
+	spans := windowSpans(window, truncated)
+	if end := headEnd(window, written, spans, cut, ellipsis, serverURL); end > floor {
+		return window[:end]
+	}
+	return closeCut(window, written, spans, cut, floor, serverURL)
+}
+
+// headEnd is where the head of window cut at cut ends (HeadRefs): cut moved back past every
+// reference written and every code span in spans that crosses it, and past every reference the
+// head with the ellipsis after it reads otherwise than the text does, less the whitespace before
+// it but the one a reference ends at. Each move is back, so it ends; at 0 it leaves nothing.
+func headEnd(window string, written []cutReference, spans []codeRange, cut int, ellipsis, serverURL string) int {
 	head := cut
 	for head > 0 {
 		back := head
@@ -159,22 +185,146 @@ func headEnd(window string, truncated bool, cut int, ellipsis, serverURL string)
 			head++
 		}
 	}
-	if head == 0 {
-		return cut
-	}
 	return head
 }
 
-// codeSpans is every code span body writes (codeRanges), its blocks left out: a cut inside a
-// span the head does not close leaves its opening backticks as text, and what the span held -
-// an address in it included - read as prose, where a cut inside a fenced block leaves the rest
-// of the head in the block as the text has it. A body with no backtick has no span, and is not
-// walked for one.
-func codeSpans(body string) []codeRange {
-	if !strings.Contains(body, "`") {
+// closeCut is the cut by length of window at cut, which a head falls back to where moving the cut
+// back leaves nothing past floor (HeadRefs), with what it leaves open closed so the head reads
+// what it holds as the text does: the inline link or picture around a reference the cut is in
+// (closeLink), or else the code span it is in (closeSpan). Where it is in neither, or in a link it
+// cannot close and in no span, it is window[:cut].
+func closeCut(window string, written []cutReference, spans []codeRange, cut, floor int, serverURL string) string {
+	if head, closed := closeLink(window, written, cut, floor, serverURL); closed {
+		return head
+	}
+	for _, span := range spans {
+		if floor <= span.start && span.start < cut && cut < span.end {
+			return closeSpan(window, span, cut)
+		}
+	}
+	return window[:cut]
+}
+
+// closeLink is the head of window cut at cut inside the inline link or picture around a reference
+// written there, closed: the window up to the link's words, those words cut by HeadRefs' own rule
+// with the link's `[` as the floor no cut moves back past, so it splits no reference or code span
+// in them, and the rest of the link as the text writes it, from the `]` its words end at through
+// its `)`, all of it within the runes of window[:cut]. It closes nothing where no such link holds
+// the cut, where the rest of the link leaves no room for a word, or where the head would not read
+// as that link - a bracket the cut words leave open, or a backslash they end in, reads otherwise.
+func closeLink(window string, written []cutReference, cut, floor int, serverURL string) (string, bool) {
+	for _, link := range linkRanges(window) {
+		if link.open < floor || link.open >= cut || cut >= link.close {
+			continue
+		}
+		if !slices.ContainsFunc(written, func(reference cutReference) bool {
+			return reference.start == link.open && reference.end == link.close
+		}) {
+			return "", false
+		}
+		words := link.open + 1
+		if window[link.open] == '!' {
+			words++
+		}
+		rest := window[link.words:link.close]
+		room := utf8.RuneCountInString(window[:cut]) - utf8.RuneCountInString(window[:words]) -
+			utf8.RuneCountInString(rest)
+		if room <= 0 {
+			return "", false
+		}
+		wordsCut := words
+		for range room {
+			_, size := utf8.DecodeRuneInString(window[wordsCut:])
+			wordsCut += size
+		}
+		head := headOf(window[:link.words], false, wordsCut, words, "", serverURL) + rest
+		if !slices.ContainsFunc(linkRanges(head), func(read linkRange) bool {
+			return read.open == link.open && read.close == len(head)
+		}) {
+			return "", false
+		}
+		return head, true
+	}
+	return "", false
+}
+
+// closeSpan is the head of window cut at cut inside span, closed: the span's content up to its
+// opening backticks' width in runes before cut, less the backticks and whitespace it ends in, then
+// a run of that width. The run follows a character of the content on the content's own line, so it
+// joins no backtick run of the content and opens no fence, and closes the span where the head ends
+// it. Where no character of the content fits with that run, the head is the span's opening
+// backticks alone, so what the span holds reads nowhere: cut by length, even a `#q` of `#q12`
+// would read as a live reference.
+func closeSpan(window string, span codeRange, cut int) string {
+	content := backtickRunEnd(window, span.start, len(window))
+	opener := window[span.start:content]
+	end := cut
+	for range len(opener) {
+		_, size := utf8.DecodeLastRuneInString(window[:end])
+		end -= size
+	}
+	if end > content {
+		if held := strings.TrimRight(window[content:end], "` \t\r\n"); held != "" {
+			return window[:content+len(held)] + opener
+		}
+	}
+	return window[:min(cut, content)]
+}
+
+// windowSpans is every code span window writes, its blocks left out: a cut inside a span the head
+// does not close leaves its opening backticks as text, and what the span held - an address in it
+// included - read as prose, where a cut inside a fenced block leaves the rest of the head in the
+// block as the text has it. A window with no backtick has no span, and is not walked for one.
+//
+// A window that stops short of the text (truncated) is read with a line after it that closes a
+// span of any width it could open (closingLine): the first span the window leaves open in the
+// paragraph it ends in may close past the window, so the line closes it and it runs past the
+// window's end, as a span whose closing run ends at that end does, whose run the text may carry on.
+// Either crosses every cut after its start. A span the window opens in an earlier paragraph is
+// closed by none, and one the window opens after such a span is inside it, so the line closes
+// neither.
+func windowSpans(window string, truncated bool) []codeRange {
+	if !strings.Contains(window, "`") {
 		return nil
 	}
-	return slices.DeleteFunc(codeRanges(body), func(code codeRange) bool { return code.block })
+	read := window
+	if truncated {
+		read += closingLine(window)
+	}
+	return slices.DeleteFunc(codeRanges(read), func(code codeRange) bool {
+		return code.block || code.start >= len(window)
+	})
+}
+
+// closingLine is a line to read after window that continues the paragraph window ends in, if one
+// is open there, and closes the first span it leaves open: an `x`, so the line opens no block of
+// its own and reads as that paragraph's text, then a run of each width a span of window could open
+// with, widest last and each after a space, so no two join. A span opens with a run of backticks
+// or, after a backslash that takes the first of them, the rest of that run.
+func closingLine(window string) string {
+	var widths []int
+	for at := strings.IndexByte(window, '`'); at >= 0; {
+		end := backtickRunEnd(window, at, len(window))
+		widths = append(widths, end-at, end-at-1)
+		next := strings.IndexByte(window[end:], '`')
+		if next < 0 {
+			break
+		}
+		at = end + next
+	}
+	slices.Sort(widths)
+	var line strings.Builder
+	if !strings.HasSuffix(window, "\n") {
+		line.WriteByte('\n')
+	}
+	line.WriteByte('x')
+	for _, width := range slices.Compact(widths) {
+		if width > 0 {
+			line.WriteByte(' ')
+			line.WriteString(strings.Repeat("`", width))
+		}
+	}
+	return line.String()
 }
 
 // cutReference is one reference a text writes, as a cut reads it: the bytes [start, end) a reader
@@ -241,11 +391,11 @@ func cutReferences(body, serverURL string) []cutReference {
 	return found
 }
 
-// linkRange is one inline link or picture a text writes: its `[`, or the `!` before it, one past
-// its `)`, and its address as the link reads it.
+// linkRange is one inline link or picture a text writes: its `[`, or the `!` before it, the `]`
+// its words end at, one past its `)`, and its address as the link reads it.
 type linkRange struct {
-	open, close int
-	destination string
+	open, words, close int
+	destination        string
 }
 
 // linkRanges is every inline link and picture body writes, in the order they open, as goldmark
@@ -289,14 +439,16 @@ func rangedInlineParsers() []util.PrioritizedValue {
 }
 
 // rangedLinkParser is goldmark's link parser, noting the range of each link or picture it reads
-// in the parse's context (linkRangesKey): it opens where the node says, and closes at the `)` the
-// parser has just read past - or the `]`, for a link to a reference definition, which has no
-// address of its own written there.
+// in the parse's context (linkRangesKey): it opens where the node says, its words end at the `]`
+// the parser reads it from, and it closes at the `)` the parser has just read past - or the `]`,
+// for a link to a reference definition, which has no address of its own written there.
 type rangedLinkParser struct {
 	parser.InlineParser
 }
 
 func (p rangedLinkParser) Parse(parent ast.Node, block markdowntext.Reader, pc parser.Context) ast.Node {
+	// The parser reads a link from the `]` its words end at, which is where the reader stands.
+	_, at := block.Position()
 	node := p.InlineParser.Parse(parent, block, pc)
 	var destination []byte
 	closer := byte(')')
@@ -320,7 +472,9 @@ func (p rangedLinkParser) Parse(parent ast.Node, block markdowntext.Reader, pc p
 	}
 	_, after := block.Position()
 	closed := bytes.LastIndexByte(block.Source()[:after.Start], closer) + 1
-	*ranges = append(*ranges, linkRange{open: node.Pos(), close: closed, destination: string(destination)})
+	*ranges = append(*ranges, linkRange{
+		open: node.Pos(), words: at.Start, close: closed, destination: string(destination),
+	})
 	return node
 }
 
