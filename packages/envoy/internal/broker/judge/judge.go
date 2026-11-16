@@ -118,13 +118,16 @@ type Requests interface {
 	// is not one to leave to two reads that may disagree.
 	JudgePolicy(ctx context.Context, enrollmentID, name string) (now policy.Decision, withheld, admin bool, err error)
 
-	// JudgeProject answers whether name's dispatch-project tag (policy.TagProject) names a
-	// project the judge must leave to a person: a private project, or a key Dispatch holds no
-	// project for. A secret with no tag answers false with no call to Dispatch at all, so a
-	// deployment that tags nothing asks Dispatch nothing new. The judge never decides a private
-	// project's secret: its own token names no person, so it may see no private project, and
-	// whether a person may is the approval page's to check (requests.Machine.MaySee).
-	JudgeProject(ctx context.Context, name string) (private bool, err error)
+	// JudgeProject answers whether the request of enrollmentID for name is a private project's,
+	// which the judge must leave to a person: the secret's dispatch-project tag (policy.TagProject)
+	// names a private project or a key Dispatch holds no project for, or the credential that asked
+	// names one (a session's list, or the project a pod's operator entry maps it to). A request
+	// whose secret carries no tag and whose credential names no project answers false with no call
+	// to Dispatch at all, so a deployment that tags and names nothing asks Dispatch nothing new.
+	// The judge never decides a private project's request: its own token names no person, so it
+	// may see no private project, and whether a person may is the approval page's to check
+	// (requests.Machine.MaySee).
+	JudgeProject(ctx context.Context, enrollmentID, name string) (private bool, err error)
 
 	// JudgeRequestState answers the state a decision would meet now for the record a run
 	// is judging: "pending" for a request still waiting on its person, "expired" for one
@@ -312,7 +315,7 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		return checks, data
 	}
 
-	private, err := r.opts.Requests.JudgeProject(ctx, name)
+	private, err := r.opts.Requests.JudgeProject(ctx, p.EnrollmentID, name)
 	switch {
 	case err != nil:
 		if !add(checkProject, false, fmt.Sprintf("the project of %s could not be read: %v", name, err)) {

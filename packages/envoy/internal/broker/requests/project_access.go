@@ -286,16 +286,45 @@ func (m *Machine) SecretProjects(ctx context.Context, names []string) ([]SecretP
 	return out, nil
 }
 
-// JudgeProject answers whether the model judge must leave name to a person for its project's
-// sake: its dispatch-project tag names a private project, or a key Dispatch holds no project for.
-// A name with no tag answers false and asks Dispatch nothing, so a deployment that tags nothing
-// asks it nothing new (judge.Requests).
-func (m *Machine) JudgeProject(ctx context.Context, name string) (bool, error) {
+// JudgeProject answers whether the model judge must leave the request of enrollmentID for name to
+// a person for a project's sake. It must when the secret's dispatch-project tag names a private
+// project or a key Dispatch holds no project for, and when the credential that asked names a
+// private project or one Dispatch does not hold (namedProjects): a private project's pod asking
+// for an untagged secret is that project's request, whose reason is that project's text, and the
+// judge's own token names no person, so it may see no private project. A credential naming a
+// project the broker cannot check (no project-access client) is left to a person too. A request
+// whose secret carries no tag and whose credential names no project answers false and asks
+// Dispatch nothing, so a deployment that tags nothing and names nothing asks it nothing new
+// (judge.Requests).
+func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name string) (bool, error) {
 	projects, err := m.SecretProjects(ctx, []string{name})
 	if err != nil {
 		return false, err
 	}
-	return len(projects) > 0 && projects[0].Private, nil
+	if len(projects) > 0 && projects[0].Private {
+		return true, nil
+	}
+	enr, err := m.enrollment(ctx, enrollmentID)
+	if err != nil {
+		return false, err
+	}
+	named := m.namedProjects(enr)
+	if len(named) == 0 {
+		return false, nil
+	}
+	if m.Projects == nil {
+		return true, nil
+	}
+	answers, err := m.Projects.States(ctx, named)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
+	}
+	for _, project := range named {
+		if answer, held := answers[project]; !held || answer.Private() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // MaySee reports whether login may see rec: every private project among its tagged secrets
@@ -340,8 +369,21 @@ func (m *Machine) maySee(ctx context.Context, login string, projects []string, r
 	return true, nil
 }
 
+// namedProjects is the projects e's credential names: a person's session's enrollment list, the
+// project a pod's operator entry maps its account to, or the one a machine's fleet maps to
+// (credentialProjects). It is the one source every reader uses — the release (projectFacts), the
+// decision (mayDecide), the record a person reads (ReadRecord) and both approver lists — so the
+// path that releases a secret and the path that shows a request cannot disagree on whose it is:
+// a pod's enrollment row names no project of its own, and reading that column alone showed a
+// private project's pod requests to everyone.
+func (m *Machine) namedProjects(e enrollmentRow) []string {
+	_, named := m.credentialProjects(e)
+	return named
+}
+
 // mayDecide is the approve path's MaySee, read before its transaction: the record's tagged
-// secrets under set, the projects of the enrollment that asked, and its reason.
+// secrets under set, the projects the credential that asked names (namedProjects), and its
+// reason.
 func (m *Machine) mayDecide(ctx context.Context, login string, facts projectFacts, sessionProjects []string, reason string) (bool, error) {
 	var projects []string
 	for project, state := range facts.states {

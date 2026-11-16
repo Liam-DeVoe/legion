@@ -1279,7 +1279,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		return Decision{}, false, err
 	}
 	if !who.isJudge() {
-		may, err := m.mayDecide(ctx, who.login, facts, pre.enr.Projects, pre.reason)
+		may, err := m.mayDecide(ctx, who.login, facts, m.namedProjects(pre.enr), pre.reason)
 		if err != nil {
 			return Decision{}, false, err
 		}
