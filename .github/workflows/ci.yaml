@@ -3849,6 +3849,7 @@ jobs:
               - '!packages/envoy/cmd/dev-oidc-issuer/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/**/*_test.go'
               - '!packages/envoy/cmd/dispatch-seed/**/*_test.go'
+              - '!packages/envoy/cmd/going-bakeoff/**/*_test.go'
               - '!packages/envoy/cmd/natstail/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'

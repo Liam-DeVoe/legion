@@ -4,7 +4,7 @@ package going
 // model's right count spreads over the repeats, and the paired test of two models over the same
 // cases and the same repeats, which says how far a difference in their right choices can be
 // trusted beyond the noise of the calls themselves. The test is evidence beside R7's choice and
-// names no model: Choose ranks by the right choices alone.
+// names no model: Choose ranks by the right choices, with a display fit breaking a level count.
 
 import (
 	"math"

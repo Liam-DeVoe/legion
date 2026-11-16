@@ -12,21 +12,28 @@
 // right choices, their spread, the cases a model chose right in some repeats and wrong in others,
 // and the paired test of each two models over the same cases and repeats (going.ComparePaired).
 //
-// R7's rule names the chosen model (going.Choose): of the models that meet R7's floors with an
-// action fit that holds, the one with the most right choices pooled over every repeat. Where the
-// most right choices are level, a display fit breaks the tie, and nothing else does. Where that
-// leaves models level, the rule names none: the run writes its record with no model chosen, says
-// so and exits non-zero, and the architect names one of the level models with --tie-break and
-// says why with --tie-reason, which the record keeps. A tie-break on a run the rule decides is
-// refused, and so is one with no reason. The paired test is printed and recorded beside the
-// choice as evidence of how far the lead in right choices can be trusted; it names no model.
+// R7's rule names the chosen model (going.Choose). Every model that meets R7's three floors is a
+// candidate, and the candidates are ranked by their right choices pooled over every repeat;
+// where the most right choices are level, a display fit breaks the tie, and nothing else does.
+// The candidate ranked first is named where it has an action fit. An action fit is no floor:
+// where a candidate ranked first has none, the rule names no model, not the next one with a fit,
+// since R5's repair, correcting the catalogue's descriptions until a value fits, is owed first;
+// the run writes its record with no model chosen, says so and exits non-zero, and no tie-break
+// is taken. Where several candidates rank first, each with an action fit, the run is a full tie
+// and the rule names none: the run writes its record with no model chosen, says so and exits
+// non-zero, and the architect names one of the level models with --tie-break and says why with
+// --tie-reason, which the record keeps. A tie-break on any other run is refused, and so is one
+// with no reason. The paired test is printed and recorded beside the choice as evidence of how
+// far the lead in right choices can be trusted; it names no model.
 //
 //	going-bakeoff --models jev-latest,jev-preview --endpoint https://api.typesafe.ai --key-file <file> [--repeats <n>] [--tie-break <model> --tie-reason <why>]
 //	going-bakeoff --from-record going/decision_models.json [--tie-break <model> --tie-reason <why>]
 //
-// --from-record measures nothing: it puts R7's rule to a record a run wrote, prints the run's
-// table with what the rule names, and writes the record to --out, which is how an architect's
-// tie-break reaches the run that tied.
+// --from-record measures nothing: it puts R7's rule to a record a run wrote, its entries
+// measured on the same cases the same number of times, prints the run's table with what the
+// rule names, and writes the record to --out, which is how an architect's tie-break reaches the
+// run that tied. A tie-break the record already holds is put to the rule again with its own
+// model and reason: kept where it still holds, and refused, writing nothing, where it does not.
 //
 // Run it from inside the envoy module: the case file and the record default to their committed
 // paths under the module's root. It never prints the key. With no key it says so, writes no fit
@@ -266,8 +273,10 @@ func run() error {
 	return nil
 }
 
-// readRecords is the record a run wrote, each entry holding one count of right choices for each
-// of the run's repeats.
+// readRecords is the record a run wrote, its entries measured on the same cases, as many naming
+// their action and as many not, the same number of times, each entry holding one count of right
+// choices for each repeat. Right choices out of other cases or other repeats compare nothing, so
+// a record whose entries differ in any of those is refused.
 func readRecords(path string) ([]going.Record, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -280,31 +289,45 @@ func readRecords(path string) ([]going.Record, error) {
 	if len(records) == 0 {
 		return nil, fmt.Errorf("the record %s holds no measured model", path)
 	}
-	for _, r := range records {
-		if r.Repeats < 1 || r.Repeats != records[0].Repeats || len(r.RepeatRights) != r.Repeats {
-			return nil, fmt.Errorf("the record %s holds %s with %d repeats and %d repeat counts, against %d repeats for %s", path, r.Model, r.Repeats, len(r.RepeatRights), records[0].Repeats, records[0].Model)
+	first := &records[0]
+	for i := range records {
+		r := &records[i]
+		switch {
+		case r.Repeats < 1 || r.Repeats != first.Repeats || len(r.RepeatRights) != r.Repeats:
+			return nil, fmt.Errorf("the record %s holds %s with %d repeats and %d repeat counts, against %d repeats for %s", path, r.Model, r.Repeats, len(r.RepeatRights), first.Repeats, first.Model)
+		case r.Cases != first.Cases || r.NamedCases != first.NamedCases || r.OtherCases != first.OtherCases:
+			return nil, fmt.Errorf("the record %s holds %s measured on %d cases, %d naming their action and %d not, against %d, %d and %d for %s, so its entries are not one run's",
+				path, r.Model, r.Cases, r.NamedCases, r.OtherCases, first.Cases, first.NamedCases, first.OtherCases, first.Model)
 		}
 	}
 	return records, nil
 }
 
 // conclude puts R7's rule to the run's records, with the architect's tie-break where one is
-// given, prints the run's table and what the rule names to w, and writes the record to out. It
-// writes nothing where a tie-break is refused or no model meets the floors, and where the run is
-// a full tie that no tie-break breaks it writes the record with no model chosen; each of those is
-// an error, so the tool exits non-zero.
+// given, or else with the tie-break the records already hold, put to the rule again with its own
+// model and reason. It prints the run's table and what the rule names to w, and writes the
+// record to out. It writes nothing where a tie-break is refused or no model meets the floors,
+// and where the rule names no model, a model ranked first having no action fit or the run being
+// a full tie no tie-break breaks, it writes the record with no model chosen; each of those is an
+// error, so the tool exits non-zero.
 func conclude(w io.Writer, records []going.Record, source, tieBreak, tieReason, out string) error {
 	choice := going.Choose(records)
 	var refused error
 	if tieBreak != "" {
-		choice, refused = choice.Break(tieBreak, tieReason)
+		if choice, refused = choice.Break(tieBreak, tieReason); refused != nil {
+			refused = fmt.Errorf("--tie-break %s is refused: %w", tieBreak, refused)
+		}
+	} else if kept := personChoice(records); kept != nil {
+		if choice, refused = choice.Break(kept.Model, kept.ChosenReason); refused != nil {
+			refused = fmt.Errorf("the record's tie-break, %s, is refused: %w", kept.Model, refused)
+		}
 	}
 	fmt.Fprint(w, render(records, choice, source))
 	switch {
 	case refused != nil:
-		return fmt.Errorf("--tie-break %s is refused: %w; no record is written", tieBreak, refused)
+		return fmt.Errorf("%w; no record is written", refused)
 	case len(choice.Level) == 0:
-		return errors.New("no model meets R7's floors with an action fit that holds, so no record is written")
+		return fmt.Errorf("%s, so no record is written", choice.Why)
 	}
 	for i := range records {
 		r := &records[i]
@@ -321,9 +344,22 @@ func conclude(w io.Writer, records []going.Record, source, tieBreak, tieReason, 
 	if err := os.WriteFile(out, raw, 0o644); err != nil {
 		return err
 	}
-	if choice.Model == "" {
-		return fmt.Errorf("wrote %s with no model chosen: %s are level on right choices and on the display fit, so R7's rule names none, and the architect names one: going-bakeoff --from-record %s --tie-break <model> --tie-reason <why>",
-			out, modelList(choice.Level), out)
+	switch {
+	case choice.Model != "":
+		return nil
+	case len(choice.Unfit) > 0:
+		return fmt.Errorf("wrote %s with no model chosen: %s", out, choice.Why)
+	default:
+		return fmt.Errorf("wrote %s with no model chosen: %s: going-bakeoff --from-record %s --tie-break <model> --tie-reason <why>", out, choice.Why, out)
+	}
+}
+
+// personChoice is the entry the records mark chosen by a person, nil where none is.
+func personChoice(records []going.Record) *going.Record {
+	for i := range records {
+		if records[i].Chosen && records[i].ChosenBy == going.ChosenByPerson {
+			return &records[i]
+		}
 	}
 	return nil
 }
@@ -676,9 +712,16 @@ func render(records []going.Record, choice going.Choice, source string) string {
 }
 
 // says is what R7's rule names on the run, or the architect where the rule names none, with the
-// numbers that decided it, and beside a named model its paired tests against the other models
-// that meet the floors.
+// numbers that decided it, or why no model is named; and beside a named model its paired tests
+// against the other models that meet the floors.
 func says(records []going.Record, choice going.Choice) string {
+	if choice.Model == "" {
+		s := fmt.Sprintf("**Choice:** none: %s.", choice.Why)
+		if len(choice.Level) > 1 && len(choice.Unfit) == 0 {
+			s += " Name it with `--tie-break <model> --tie-reason <why>`."
+		}
+		return s + "\n"
+	}
 	var candidates []*going.Record
 	most := 0
 	for i := range records {
@@ -686,9 +729,6 @@ func says(records []going.Record, choice going.Choice) string {
 			candidates = append(candidates, &records[i])
 			most = max(most, records[i].Right())
 		}
-	}
-	if len(candidates) == 0 {
-		return "**Choice:** none. No model meets R7's floors with an action threshold that holds.\n"
 	}
 	answers := candidates[0].Cases * candidates[0].Repeats
 	var b strings.Builder
@@ -705,9 +745,9 @@ func says(records []going.Record, choice going.Choice) string {
 		case len(others) > 0:
 			fmt.Fprintf(&b, ", against %s.", strings.Join(others, ", "))
 		case len(records) == 1:
-			b.WriteString(". It is the one model measured, and it meets R7's floors with an action threshold that holds.")
+			b.WriteString(". It is the one model measured; it meets R7's floors, and its action threshold holds.")
 		default:
-			b.WriteString(". It is the one model that meets R7's floors with an action threshold that holds.")
+			b.WriteString(". It is the one model that meets R7's floors, and its action threshold holds.")
 		}
 	case going.ChosenByDisplayFit:
 		var level []string
@@ -719,18 +759,7 @@ func says(records []going.Record, choice going.Choice) string {
 		fmt.Fprintf(&b, "**Choice:** `%s`, by R7's tiebreak: %s are level at %d of %d right choices pooled over every repeat, and `%s` alone of them has a display fit.",
 			choice.Model, modelList(level), most, answers, choice.Model)
 	default:
-		fits := "none of them has a display fit"
-		for _, c := range candidates {
-			if c.Model == choice.Level[0] && c.DisplayFit() {
-				fits = "each has a display fit"
-			}
-		}
-		tie := fmt.Sprintf("%s are level at %d of %d right choices pooled over every repeat and %s, so R7's rule names none", modelList(choice.Level), most, answers, fits)
-		if choice.By == going.ChosenByPerson {
-			fmt.Fprintf(&b, "**Choice:** `%s`, named by the architect: %s. The reason recorded: %s", choice.Model, tie, choice.Reason)
-		} else {
-			fmt.Fprintf(&b, "**Choice:** none. %s; the architect names one with `--tie-break <model> --tie-reason <why>`.", tie)
-		}
+		fmt.Fprintf(&b, "**Choice:** `%s`, named by the architect: %s. The reason recorded: %s", choice.Model, choice.Why, choice.Reason)
 	}
 	b.WriteString("\n")
 	var chosen *going.Record
