@@ -1,0 +1,202 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+)
+
+// The two projects and the three people of verification v16's seed (dispatch://INFRA-3862,
+// live-verification.md): PUB is public and PRIV private; alice is a full member no access list
+// names, bob a restricted member PRIV's list names, and carol a full member PRIV's list names.
+// carol made both projects, so she owns both. bob and carol are emails because an access list
+// names a person by email (access.PersonPrincipal); alice is the test server's own "alice".
+const (
+	seedPublic  = "PUB"
+	seedPrivate = "PRIV"
+	seedAlice   = "alice"
+	seedBob     = "bob@outside.example"
+	seedCarol   = "carol@example.com"
+)
+
+// privateCaller is one caller of verification v16, by the name a failure prints.
+type privateCaller string
+
+// The seven callers of verification v16: three people at a browser, three personal tokens and the
+// deployment's shared agent token.
+const (
+	callerAlice          privateCaller = "alice"
+	callerBob            privateCaller = "bob"
+	callerCarol          privateCaller = "carol"
+	callerCarolPrivToken privateCaller = "carol's token that lists PRIV"
+	callerAlicePrivToken privateCaller = "alice's token that lists PRIV"
+	callerCarolToken     privateCaller = "carol's token that lists no project"
+	callerSharedToken    privateCaller = "the shared token"
+)
+
+// privateCallers is every caller of the seed, in the order verification v16 names them.
+var privateCallers = []privateCaller{
+	callerAlice, callerBob, callerCarol, callerCarolPrivToken, callerAlicePrivToken, callerCarolToken, callerSharedToken,
+}
+
+// privateSeed is verification v16's seed on a running test server, written through the server's
+// own routes wherever a route can write it: each project and its issue are created, and each
+// access list is filled, as a person at the dashboard would. A test adds the objects it reads
+// through the routes too, as one of the callers (request), so what it reads is what the server
+// wrote rather than a copy of it.
+//
+// Two facts no route of this build writes are written beside the routes, each through the code
+// its route will call: PRIV is made private by access.SetVisibility, because the visibility route
+// refuses private (409 PRIVATE_PROJECTS_OFF) until a deployment allows it, and each token's list
+// is written to agent_tokens.projects, because the token routes take no list yet. A token's list
+// reaches its credential only where the server reads that column (personalTokenActor).
+type privateSeed struct {
+	handler  http.Handler
+	database *store.Store
+	deps     Deps
+	server   *server
+	// issue is the one issue of each project, by project key, which carol created.
+	issue map[string]string
+	// tokens are the plaintext personal tokens, by the caller each one is.
+	tokens map[privateCaller]string
+}
+
+// seedPrivateProject stands up a test server holding verification v16's seed.
+func seedPrivateProject(t *testing.T) privateSeed {
+	t.Helper()
+	return seedPrivateProjectWith(t, testServerOptions{})
+}
+
+// seedPrivateProjectWith is seedPrivateProject on a test server built from options.
+func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
+	t.Helper()
+	handler, database, deps, served := newRegisteredTestServer(t, options)
+	seed := privateSeed{
+		handler: handler, database: database, deps: deps, server: served,
+		issue: map[string]string{}, tokens: map[privateCaller]string{},
+	}
+	seedPeople(t, database, seedBob, seedCarol)
+	markRestricted(t, database, seedBob)
+	for _, project := range []string{seedPublic, seedPrivate} {
+		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": project, "name": "Project " + project,
+		}, http.StatusCreated)
+		created := seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues", map[string]string{
+			"project": project, "title": "The issue of " + project,
+		}, http.StatusCreated)
+		seed.issue[project] = decodeBody[struct {
+			Key string `json:"key"`
+		}](t, created).Key
+	}
+	for _, person := range []string{seedBob, seedCarol} {
+		seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+person, nil, http.StatusOK)
+	}
+	for _, token := range []struct {
+		caller   privateCaller
+		login    string
+		projects []string
+	}{
+		{callerCarolPrivToken, seedCarol, []string{seedPrivate}},
+		{callerAlicePrivToken, seedAlice, []string{seedPrivate}},
+		{callerCarolToken, seedCarol, []string{}},
+	} {
+		minted := decodeBody[agentTokenResponse](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens",
+			map[string]string{"name": string(token.caller)}, token.login))
+		if minted.Token == "" {
+			t.Fatalf("mint %s: no token in the answer", token.caller)
+		}
+		if _, err := database.Pool.Exec(context.Background(), `update agent_tokens set projects = $2 where id = $1::uuid`,
+			minted.ID, token.projects); err != nil {
+			t.Fatalf("write the list of %s: %v", token.caller, err)
+		}
+		seed.tokens[token.caller] = minted.Token
+	}
+	seed.makePrivate(t, seedPrivate)
+	return seed
+}
+
+// makePrivate makes project key private as its owner carol, through the write the visibility
+// route makes.
+func (s privateSeed) makePrivate(t *testing.T, key string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin making %s private: %v", key, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, _, err := access.SetVisibility(ctx, tx, s.deps.Events, key, model.ProjectPrivate, model.Actor{Kind: "user", ID: seedCarol}); err != nil {
+		t.Fatalf("make %s private: %v", key, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit making %s private: %v", key, err)
+	}
+}
+
+// login is the person at the browser a caller is, and empty for a caller that presents a token.
+func (caller privateCaller) login() string {
+	switch caller {
+	case callerAlice:
+		return seedAlice
+	case callerBob:
+		return seedBob
+	case callerCarol:
+		return seedCarol
+	}
+	return ""
+}
+
+// request makes one request to the seeded server as caller: a person at a browser by the test
+// identity's header, a personal token or the shared token by its bearer. body is encoded as JSON;
+// nil sends none.
+func (s privateSeed) request(t *testing.T, caller privateCaller, method, target string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var payload []byte
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encode the body %s sends to %s %s: %v", caller, method, target, err)
+		}
+		payload = encoded
+	}
+	request := httptest.NewRequest(method, target, bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	if login := caller.login(); login != "" {
+		request.Header.Set("X-Dispatch-User", login)
+	} else {
+		request.Header.Set("Authorization", "Bearer "+s.bearer(t, caller))
+	}
+	response := httptest.NewRecorder()
+	s.handler.ServeHTTP(response, request)
+	return response
+}
+
+// mustRequest is request, failing the test unless the answer is status.
+func (s privateSeed) mustRequest(t *testing.T, caller privateCaller, method, target string, body any, status int) *httptest.ResponseRecorder {
+	t.Helper()
+	response := s.request(t, caller, method, target, body)
+	if response.Code != status {
+		t.Fatalf("%s: %s %s = %d %s, want %d", caller, method, target, response.Code, response.Body.String(), status)
+	}
+	return response
+}
+
+// bearer is the token a token caller presents.
+func (s privateSeed) bearer(t *testing.T, caller privateCaller) string {
+	t.Helper()
+	if caller == callerSharedToken {
+		return "agent-token"
+	}
+	token, ok := s.tokens[caller]
+	if !ok {
+		t.Fatalf("the seed holds no token for %s", caller)
+	}
+	return token
+}

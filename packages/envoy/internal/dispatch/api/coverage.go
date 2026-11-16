@@ -37,7 +37,7 @@ const (
 // What each requirement of the issue's spec lacks. An issue with no spec, or a spec that marks
 // no requirements, answers no requirements and the single gap line.
 func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

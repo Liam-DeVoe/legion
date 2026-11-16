@@ -1083,7 +1083,7 @@ meaning_comment as (
 }
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

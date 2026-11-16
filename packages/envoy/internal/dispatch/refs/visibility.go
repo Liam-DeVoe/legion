@@ -2,6 +2,7 @@ package refs
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"slices"
 	"strings"
@@ -183,11 +184,43 @@ func VisibilityKinds() []string {
 	return slices.Sorted(maps.Keys(nodeRegistry))
 }
 
-// VisibilityArg is the one argument every rendered predicate binds: the acting credential, as
-// graphstore's one author rule compares it. A read binds it once and names its placeholder in
-// each predicate it renders.
+// VisibilityArg is the one argument every rendered predicate binds, as jsonb: the acting
+// credential as graphstore's one author rule compares it (`author`), and what the reader's viewer
+// sees, in the shape the access package's clauses read ("person", "session", "open", "all",
+// "sees", "private"). A read binds it once and names its placeholder in each predicate it renders.
+//
+// A reader with no viewer is the closed viewer: it sees no project and no party, is not open, and
+// reads as though some project were private, so a read that reached the store without the
+// request's viewer answers nothing rather than everything.
 func VisibilityArg(who model.Actor) any {
-	return graphstore.ActingCredential(who)
+	argument := visibilityArgument{Author: graphstore.ActingCredential(who), Sees: []string{}, Private: true}
+	if viewer := who.Viewer; viewer != nil {
+		argument.Person, argument.Session = viewer.Person, viewer.Session
+		argument.Open, argument.All, argument.Private = viewer.Open, viewer.All, viewer.AnyPrivate
+		if viewer.Sees != nil {
+			argument.Sees = viewer.Sees
+		}
+	}
+	encoded, err := json.Marshal(argument)
+	if err != nil {
+		// Strings, booleans and a raw author graphstore encoded: json.Marshal has nothing here to
+		// fail on.
+		panic("refs: encode the visibility argument: " + err.Error())
+	}
+	return encoded
+}
+
+// visibilityArgument is VisibilityArg's jsonb. person and session are absent for a viewer that
+// names none, so a clause's `->>'person'` reads null, which equals nothing, rather than the empty
+// name.
+type visibilityArgument struct {
+	Author  json.RawMessage `json:"author"`
+	Person  string          `json:"person,omitempty"`
+	Session string          `json:"session,omitempty"`
+	Sees    []string        `json:"sees"`
+	Open    bool            `json:"open"`
+	All     bool            `json:"all"`
+	Private bool            `json:"private"`
 }
 
 // VisibleKind is the predicate of one node kind: the SQL that is true of a node of that kind

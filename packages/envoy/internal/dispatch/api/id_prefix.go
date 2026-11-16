@@ -120,12 +120,17 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		}
 		// The caller is resolved once a request: every layer below and the handler read this.
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
-		// Who asks: the acting person decides which items a prefix may name at all, since an
-		// item reserved for another author is no candidate (refs.ResolvePrefix), and whether
-		// a direct message's first line is listed among the candidates: a person reads any,
-		// and a bearer the conversations the session it names in ?session= is in, the claim
-		// the message routes already read.
-		who := actor.Recorded()
+		// Who asks: the reader decides which items a prefix may name at all, since an item
+		// reserved for another author, or of a project the reader does not see, is no candidate
+		// (refs.ResolvePrefix), and whether a direct message's first line is listed among the
+		// candidates: a person reads any, and a bearer the conversations the session it names in
+		// ?session= is in, the claim the message routes already read. The reader is resolved once
+		// a request, too: the handler's readerOf reads this one.
+		who, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		r = r.WithContext(withReader(r.Context(), who))
 		viewer := refs.Viewer{Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session"))}
 		if id != "" {
 			scope := refs.Scope{}
