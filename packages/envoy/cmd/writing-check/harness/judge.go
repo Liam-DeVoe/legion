@@ -44,6 +44,10 @@ type promptData struct {
 	WriterAnswer, HasOwnWords bool
 	// Phrases is the table of the phrases skills/plain-words tells agents to stop.
 	Phrases string
+	// LostKinds says the lost prompt names two kinds of lost fact: a state or a time that the new
+	// text changes, and a name, an account, a path, a number or a date that it no longer gives.
+	// Lost's request under --added-grader inputs-first and inputs-first-verify sets it.
+	LostKinds bool
 }
 
 // render is the template name filled from data.
@@ -548,9 +552,10 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 		return r, err
 	}
 	r.parts = in.parts(g.Inputs.context(in.Judgement))
+	inputsFirst := inputsFirstLayout(g.addedGrader(in.Judgement))
 	r.data = promptData{
 		HasQuestion: r.parts.Question, HasRecord: r.parts.Record, HasSession: r.parts.Session, WriterAnswer: r.parts.WriterAnswer,
-		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases,
+		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases, LostKinds: inputsFirst && in.Judgement == JLost,
 	}
 	if r.parts.Session {
 		r.session = in.Session
@@ -559,7 +564,7 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 	r.req.Schema = spec.schema()
 	// Under inputs-first-verify, added's first call is inputs-first's, of the same digest: a run
 	// takes an inputs-first grade of the same inputs as that call (gradeVerified).
-	if inputsFirstLayout(g.addedGrader(in.Judgement)) {
+	if inputsFirst {
 		r.req.User, r.after = in.inputsFirst(r.parts)
 		r.extra = []string{"added_grader " + AddedInputsFirst, r.after}
 	} else {

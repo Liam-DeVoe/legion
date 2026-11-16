@@ -20,7 +20,8 @@ const (
 	AddedOld = "old"
 	// AddedInputsFirst sends lost's and added's user message with the inputs first: the
 	// question, the record, the writer's answer and the session part, then the original text
-	// and, last, the new text. The system prompt and the reply schema are the old ones.
+	// and, last, the new text. The reply schema and added's system prompt are the old ones.
+	// Lost's system prompt has one more line, which names two kinds of lost fact (LostKinds).
 	AddedInputsFirst = "inputs-first"
 	// AddedVerify makes the old request, then, for a grade that lists a fact, one more call
 	// (grade-added-verify.md) that asks of each listed fact whether an input holds it.

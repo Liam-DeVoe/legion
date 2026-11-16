@@ -1699,9 +1699,12 @@ the flag (commit afdb071c), on a fixture written for the test, in the full and t
 modes. Under each other variant, the test holds to them each judgement that the variant does not
 change.
 
-- `inputs-first` changes the requests of `lost` and `added` alone. Their system prompt and reply
-  schema do not change. Their user message holds the same parts in this order: the question, the
-  record, the writer's answer, the session part, the original text, and last the new text.
+- `inputs-first` changes the requests of `lost` and `added` alone. Their reply schema and the
+  system prompt of `added` do not change. The system prompt of `lost` has one more line in its
+  list of how to find a lost fact: a state or a time that the new text changes is a lost fact, and
+  so is a name, an account, a path, a number or a date that the new text no longer gives. Their
+  user message holds the same parts in this order: the question, the record, the writer's answer,
+  the session part, the original text, and last the new text.
 - `verify` sends the old `added` request. Where the grade lists one or more facts, it makes one
   more call, the check (`prompts/grade-added-verify.md`). The check reads the inputs that the
   added call read: the question as context, the original text, the record, the writer's answer
@@ -1733,9 +1736,10 @@ an `old` added grade of the same inputs is the first call. Under `inputs-first-v
 call's `input_sha256`, and its `verify.first_reused` is true. The figures count it as
 `reused_added_first_calls`. `run.json` records the variant as `added_grader`.
 
-The tests hold the `input_sha256` of the `inputs-first` and the `verify` grades to those that
-commit 2e1d5c44 gave, where the two variants were first measured, on the same fixture. So a run
-takes the grades of a run of that commit.
+The tests hold the `input_sha256` of the `inputs-first` added grade and of the `verify` grade to
+those that commit 2e1d5c44 gave, where the two variants were first measured, on the same fixture.
+So a run takes those grades of a run of that commit. It does not take the `inputs-first` lost
+grade of that commit, whose request had no line on the two kinds of lost fact.
 
 `grade-added-verify.md` is in `prompts/`, so it changes `prompts_sha256`: a directory of a run made
 before it does not continue.

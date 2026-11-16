@@ -98,14 +98,22 @@ func gradeTurns(t *testing.T, stand *modeltest.Model, g *Grader, in GradeInput, 
 	return grade, turns
 }
 
-// The input_sha256 of the variants' grades on gradeFixture at commit 2e1d5c44, where inputs-first
-// and verify were first measured: the same under the full and the final modes, which give lost and
-// added the full inputs. A run of later code takes the grades of a run of that commit.
+// The input_sha256 of the variants' grades on gradeFixture: the same under the full and the final
+// modes, which give lost and added the full inputs. inputs-first's added grade and verify's are
+// those of commit 2e1d5c44, where inputs-first and verify were first measured: a run of later code
+// takes the grades of a run of that commit. inputs-first's lost grade is that of the request with
+// the line lostKinds. inputsFirstLostBeforeSHA256 is the one of commit 2e1d5c44, whose request had
+// no such line: a run of later code does not take that grade.
 const (
-	inputsFirstLostSHA256  = "21286d07e0454ea6b5695c33a1335471e6983dccb0186dce8c5af11b77397c36"
-	inputsFirstAddedSHA256 = "d8f6a9570e6f364a2eb5735304687dae89d97d5dd9ff6c36232b64cdbf7143ef"
-	verifyAddedSHA256      = "2e924e870f9c119978b14836dd69078fce1a4e51cde4dc438efbf47667bf46d8"
+	inputsFirstLostSHA256       = "54dbd3de559751c3832c26019a146990349f1bfa9bc636195613fd24fe01c53f"
+	inputsFirstLostBeforeSHA256 = "21286d07e0454ea6b5695c33a1335471e6983dccb0186dce8c5af11b77397c36"
+	inputsFirstAddedSHA256      = "d8f6a9570e6f364a2eb5735304687dae89d97d5dd9ff6c36232b64cdbf7143ef"
+	verifyAddedSHA256           = "2e924e870f9c119978b14836dd69078fce1a4e51cde4dc438efbf47667bf46d8"
 )
+
+// lostKinds is the line that inputs-first and inputs-first-verify add to lost's system prompt, in
+// its list of how to find a lost fact (grade-lost.md): it names two kinds of lost fact.
+const lostKinds = "- A state or a time that the new text changes is a lost fact (for example, a thing that the original text calls done, merged or decided, and that the new text calls planned, under way, open or proposed), and so is a name, an account, a path, a number or a date that the new text no longer gives."
 
 // Under the old added grader, the default, every judgement sends what it sent before the flag:
 // its system prompt and user message byte for byte, and its grade's input_sha256. So does every
@@ -142,14 +150,16 @@ func TestEveryJudgementTheVariantDoesNotChangeSendsItsRequestOfBefore(t *testing
 	}
 }
 
-// inputs-first sends lost and added their own system prompt and reply schema, and the user
-// message's parts in another order: the question, the record, the writer's answer and the
-// session part, then the original text and, last, the new text. The message is the old one's
-// bytes in that order. The grade's input_sha256 differs from the old one's, even where the bytes
-// are the same (lost under trimmed inputs reads the two texts alone), so --grades-from never
-// takes a grade of one variant for the other. inputs-first-verify sends lost and added the same
-// requests: its lost grade is inputs-first's, of the same input_sha256; its added grade, whose
-// first call lists no fact here, has its own, and names inputs-first's as its first call's.
+// inputs-first sends added its old system prompt, lost its old system prompt with the one more
+// line lostKinds in its list of how to find a lost fact, and both their old reply schema. Their
+// user message holds the parts in another order: the question, the record, the writer's answer
+// and the session part, then the original text and, last, the new text. The message is the old
+// one's bytes in that order. The grade's input_sha256 differs from the old one's, even where the
+// user message's bytes are the same (lost under trimmed inputs reads the two texts alone), so
+// --grades-from never takes a grade of one variant for the other. Nor does it take the lost grade
+// of commit 2e1d5c44, whose request had no line lostKinds. inputs-first-verify sends lost and added
+// the same requests: its lost grade is inputs-first's, of the same input_sha256; its added grade,
+// whose first call lists no fact here, has its own, and names inputs-first's as its first call's.
 func TestInputsFirstMovesOnlyTheTextsOfLostAndAdded(t *testing.T) {
 	stand := modeltest.New(t, allJudgementRules(t)...)
 	session := changeSessions(t)["question/comment:c2@20"]
@@ -172,13 +182,26 @@ func TestInputsFirstMovesOnlyTheTextsOfLostAndAdded(t *testing.T) {
 			}
 			switch {
 			case want == AddedInputsFirst && grade.InputSHA256 != pinned:
-				t.Errorf("%s, %s %s: the input_sha256 %s is not inputs-first's of commit 2e1d5c44, %s", variant, row.mode, row.j, grade.InputSHA256, pinned)
+				t.Errorf("%s, %s %s: the input_sha256 %s is not the pinned %s", variant, row.mode, row.j, grade.InputSHA256, pinned)
 			case want == AddedInputsFirstVerify && (grade.InputSHA256 == pinned || grade.Verify == nil || grade.Verify.FirstSHA256 != pinned || grade.Verify.Call != nil):
 				t.Errorf("%s, %s %s: the grade is %+v, want inputs-first's call as its first, an input_sha256 of its own, and no check", variant, row.mode, row.j, grade)
 			}
 			w := turns[0]
-			if sha256Text(w.system(t)) != row.calls[0].system || !sameJSON(t, w.OutputConfig.Format.Schema, judgementSpecs[row.j].schema()) || w.marks != 0 {
-				t.Errorf("%s, %s %s: the system prompt or the schema is not the old one:\n%s", variant, row.mode, row.j, w.system(t))
+			system := w.system(t)
+			if row.j == JLost {
+				if !strings.Contains(system, "the new text does not state it.\n"+lostKinds+"\n- A fact that the new text states in other words") {
+					t.Errorf("%s, %s lost: the system prompt does not hold the line lostKinds in its list of how to find a lost fact:\n%s", variant, row.mode, system)
+				}
+				system = strings.Replace(system, "\n"+lostKinds, "", 1)
+			}
+			if sha256Text(system) != row.calls[0].system || !sameJSON(t, w.OutputConfig.Format.Schema, judgementSpecs[row.j].schema()) || w.marks != 0 {
+				t.Errorf("%s, %s %s: the system prompt, lost's line lostKinds aside, or the schema is not the old one:\n%s", variant, row.mode, row.j, w.system(t))
+			}
+			if row.j == JLost {
+				before := Grade{InputSHA256: inputsFirstLostBeforeSHA256, AddedGrader: AddedInputsFirst}
+				if again, turns := gradeTurns(t, stand, standGrader(t, stand, row.mode, variant), gradeFixture(row.j, session), &before); len(turns) != 1 || again.Reused {
+					t.Errorf("%s, %s lost: with the lost grade of commit 2e1d5c44, %d calls, reused %t; want one call", variant, row.mode, len(turns), again.Reused)
+				}
 			}
 			user, oldUser := w.user(t), oldTurns[0].user(t)
 			start := strings.TrimRight(tag("question", goldenQuestion)+goldenRecord+tag("writer_answer", writerAnswer), "\n") + "\n\n<" + claude.SessionTag + ">\n"

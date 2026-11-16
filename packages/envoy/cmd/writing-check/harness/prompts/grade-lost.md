@@ -16,6 +16,9 @@ Find each fact of the original text that the new text lost.
 {{template "fact" .}}
 
 - A fact is lost when the original text states it and the new text does not state it.
+{{- if .LostKinds}}
+- A state or a time that the new text changes is a lost fact (for example, a thing that the original text calls done, merged or decided, and that the new text calls planned, under way, open or proposed), and so is a name, an account, a path, a number or a date that the new text no longer gives.
+{{- end}}
 - A fact that the new text states in other words is not lost.
 - A fact that the new text states in a link, a reference or a list is not lost.
 - Do not list a phrase of the original text that states no fact.
