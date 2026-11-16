@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { ApiError, api } from "../../api/client";
 import type { ExternalLink } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
-import { usePageWords } from "../../components/tooltips";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import { safeExternalHref } from "../../lib/external-href";
 import {
   badgeLow,
@@ -116,6 +116,7 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
  * checks its label chips.
  */
 export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
+  const tooltips = useTooltips();
   const page = usePageWords();
   const href = safeExternalHref(link.url);
   const match =
@@ -217,19 +218,16 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       : isPullRequest && reference.merged
         ? "merged"
         : reference.state;
+  const linkTitle = unavailable
+    ? "GitHub details are unavailable for this repository."
+    : reference === undefined
+      ? link.url
+      : `${repository}${number}: ${reference.title}`;
   return (
     <a
       className={`inline-flex max-w-full ${page === null ? `items-center gap-2 text-sm underline ${linkText} ${linkHoverText}` : `flex-wrap items-center gap-2 text-sm underline ${pageInkText}`}`}
       href={href}
-      title={
-        page !== null
-          ? undefined
-          : unavailable
-            ? "GitHub details are unavailable for this repository."
-            : reference === undefined
-              ? link.url
-              : `${repository}${number}: ${reference.title}`
-      }
+      title={tooltips ? linkTitle : undefined}
     >
       {page === null ? (
         <>

@@ -128,6 +128,10 @@ function RouteForm({
       onClose();
     }
   };
+  const cancel = () => {
+    drafts.discardRoute();
+    onClose();
+  };
   return (
     <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
       <label
@@ -151,8 +155,7 @@ function RouteForm({
             // one already `defaultPrevented` (`keymap.ts`); unmarked, one Escape would close the
             // box and the whole sheet with it.
             event.preventDefault();
-            drafts.discardRoute();
-            onClose();
+            cancel();
           }
         }}
         placeholder="role:legion-controller-core"
@@ -160,10 +163,7 @@ function RouteForm({
         value={drafts.route}
       />
       <FormActions
-        cancel={() => {
-          drafts.discardRoute();
-          onClose();
-        }}
+        cancel={cancel}
         saveLabel={CONTROL_LABELS.save_route}
         saving={isClosed || !drafts.routeIsValid || saving}
       />
@@ -204,6 +204,10 @@ function ParentForm({
       onClose();
     }
   };
+  const cancel = () => {
+    drafts.discardParent();
+    onClose();
+  };
   return (
     <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
       <label
@@ -224,8 +228,7 @@ function ParentForm({
             // Escape closes the box alone, as in the route box above: marked, the press passes
             // the dialog binding that would close the Details sheet around it.
             event.preventDefault();
-            drafts.discardParent();
-            onClose();
+            cancel();
           }
         }}
         placeholder={`${issue.project}-12`}
@@ -233,10 +236,7 @@ function ParentForm({
         value={drafts.parent}
       />
       <FormActions
-        cancel={() => {
-          drafts.discardParent();
-          onClose();
-        }}
+        cancel={cancel}
         saveLabel={CONTROL_LABELS.save_parent}
         saving={isClosed || saving}
       />

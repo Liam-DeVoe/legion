@@ -159,6 +159,11 @@ export function IssuePriorityLine({
   // artifact).
   const quiet = page === null ? textMutedOnSurface : pageQuietText;
   const failed = page === null ? dangerText : pageFailedText;
+  // A failed save shows the server's reason, else the page's own line; each carries the mark of
+  // whose words it is (dispatch://INFRA-3935 R6).
+  const notSaved =
+    page?.ANSWER_LINES.priorities_not_saved ?? "Could not save what this issue advances.";
+  const saveFailure = apiErrorMessage(write.error, notSaved);
   // A priority the issue already advances is no choice: the line names it, whether the relation
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
@@ -319,12 +324,9 @@ export function IssuePriorityLine({
         <span
           className={`${inDetails ? "" : "shrink-0 "}text-xs ${failed}`}
           role="alert"
-          {...page?.authorText}
+          {...(saveFailure === notSaved ? page?.pageChrome : page?.authorText)}
         >
-          {apiErrorMessage(
-            write.error,
-            page?.ANSWER_LINES.priorities_not_saved ?? "Could not save what this issue advances."
-          )}
+          {saveFailure}
         </span>
       )}
     </div>
