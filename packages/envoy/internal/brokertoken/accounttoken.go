@@ -17,7 +17,7 @@ import (
 const AccountTokenCacheTTL = 30 * time.Second
 
 // Account is the caller's own platform identity, read fresh at call time: the bearer a call
-// presents to a callee that verifies the caller's own projected token, for the audience that
+// presents to a callee that verifies the caller's own platform token, for the audience that
 // callee verifies, and resolves the calling service from it. It is an interface because callers
 // hold two kinds of identity: a caller in a pod holds a projected Kubernetes ServiceAccount token
 // in a file (AccountToken), and one on a Compute Engine VM holds no Kubernetes token at all and
@@ -66,8 +66,11 @@ type AccountTokenError struct {
 	Err error
 }
 
+// Error names the caller's own token file and no package, since it reaches the text of whatever
+// call it stopped (a Dispatch delivery to its listener among them), whose reader is sent to the
+// caller's deployment, not to the secrets broker this package is named for.
 func (e *AccountTokenError) Error() string {
-	return fmt.Sprintf("brokertoken: read the ServiceAccount token %s: %v", e.Path, e.Err)
+	return fmt.Sprintf("read the caller's own ServiceAccount token %s: %v", e.Path, e.Err)
 }
 
 func (e *AccountTokenError) Unwrap() error { return e.Err }

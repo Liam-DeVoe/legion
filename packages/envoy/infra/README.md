@@ -929,10 +929,12 @@ A credential the auth service refuses shows differently in the two pods, so watc
 `natsAudience` rolls out. `envoy-dispatch` serves without the bus and keeps retrying in the
 background, so its pods go ready and its `/healthz` answers 200 with `"nats":false`.
 `envoy-listener` connects in the foreground and exits when that connect fails
-(`packages/envoy/cmd/listener/main.go`), so its pods crash-loop and never go ready; at one listener
-replica its Deployment is `Recreate`, so no listener serves and every delivery fails until the
-credential is admitted. No startup probe reads NATS, so an app pod that restarts during a NATS
-outage serves again as soon as it starts.
+(`packages/envoy/cmd/listener/main.go`), so its pods crash-loop; each pod reads as ready for the
+seconds that connect takes, since `/healthz` answers 200 `{"status":"starting"}` until the
+listener is up, and is gone again when it exits. At one listener replica its Deployment is
+`Recreate`, so no listener serves and every delivery fails until the credential is admitted. No
+startup probe reads NATS, so an app pod that restarts during a NATS outage serves again as soon
+as it starts.
 
 `listenerAudience` (plain), unset by default, moves the app's calls to its listener onto the
 app's own identity, so no caller of the listener holds a shared bearer. The app pod gets a
