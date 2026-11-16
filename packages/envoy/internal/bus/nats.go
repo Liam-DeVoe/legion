@@ -52,7 +52,7 @@ type connectOpts struct {
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
-// (connectWithContext): the NATS user credential names (nkeyCredential, nil for none), and the
+// (connectWithContext): the NATS credential names (credential, nil for none), and the
 // pings of WithSilentCutDetection when the client asked for them.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	if !o.silentCutDetection {
@@ -369,7 +369,7 @@ type Client struct {
 
 // Dial opens a tuned core NATS connection using envoy's standard options (5s connect timeout,
 // infinite reconnect every second, retry-loop for the initial 10 attempts), as the NATS user
-// environment names (nkeyCredential), through the SOCKS5 proxy it names (socks5Proxy). A caller
+// environment names (credential), through the SOCKS5 proxy it names (socks5Proxy). A caller
 // that needs core pub/sub on a connection of its own uses it: nats.go re-subscribes core
 // subscriptions on reconnect by itself, so it needs none of Client's recovery, and it touches no
 // stream. It refuses a NATS server that is not this machine's on the same terms as Connect,
@@ -387,7 +387,7 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
-	credential, err := nkeyCredential(environment)
+	credential, err := credential(environment)
 	if err != nil {
 		return nil, err
 	}
@@ -416,8 +416,9 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 // publishes each topic on the transport the deployed stream calls for (UsesCoreTransport).
 //
 // Every client, from Connect or ConnectOwningStream, connects as the NATS user the environment
-// names: NATS_NKEY_SEED_FILE or NATS_NKEY_SEED (nkeyCredential). An unusable seed is an error
-// before any dial; neither variable set connects without a credential. It connects through the
+// names: an nkey seed (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED) or a service's platform token
+// (NATS_SERVICE_TOKEN_FILE or NATS_SERVICE_GOOGLE_AUDIENCE; credential). An unusable one is an error
+// before any dial; none set connects without a credential. It connects through the
 // SOCKS5 proxy the environment names (ENVOY_NATS_SOCKS5_PROXY, socks5Proxy), or directly when it
 // names none. Every connection the client dials later, to recover, is the same user's, through
 // the same proxy.
@@ -458,7 +459,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
 	}
-	credential, err := nkeyCredential(opts.environment)
+	credential, err := credential(opts.environment)
 	if err != nil {
 		return nil, err
 	}

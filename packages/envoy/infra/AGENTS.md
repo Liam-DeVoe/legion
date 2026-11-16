@@ -262,8 +262,9 @@ versions. Never add the module to the root `go.work`.
   `packages/envoy/internal/bus` and `internal/contracts` export, and the daemon's real-NATS proof
   reads the same `natsgrant.Daemon`, so it and the hub cannot diverge. The plugin and the command
   compile only `natsgrant`, `internal/bus` and what `internal/bus` imports (`internal/contracts`,
-  `internal/id`) from Envoy (`go list -deps ./cmd/...`), so a change to Envoy's stores cuts no
-  plugin release. A subject Envoy's code sends that has no exported name gets one in `bus`, and
+  `internal/id`, and `natscred` with the token client under it, `internal/brokerclient`, for a
+  service's NATS credential) from Envoy (`go list -deps ./cmd/...`), so a change to Envoy's stores
+  cuts no plugin release. A subject Envoy's code sends that has no exported name gets one in `bus`, and
   the code that sends it moves onto that name, so the client and its grant share one spelling.
   `core/permissions_test.go` writes each set out by hand, as a check independent of those names. A
   change to a set changes every hub's rendered authorization, and so replaces every hub's VM and

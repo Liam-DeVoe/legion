@@ -76,9 +76,12 @@ Each item below names a task and where its code is, then notes on it.
 
   connect, subscribe and publish; reconnect, recovery and the reconnect hooks
 
-- **NATS credential**: `internal/bus/nkey.go`, `internal/bus/socks5.go`
+- **NATS credential**: `internal/bus/credential.go`, `natscred/`, `internal/bus/socks5.go`
 
-  every bus connection's nkey user: `NATS_NKEY_SEED_FILE` (wins) or `NATS_NKEY_SEED`; unusable refuses, neither set connects without one.
+  every bus connection's credential, one of: an nkey user, `NATS_NKEY_SEED_FILE` (wins) or `NATS_NKEY_SEED`; or, for a hub whose connections the auth service admits (`internal/broker/natscallout`), a service's platform token, `NATS_SERVICE_TOKEN_FILE` (a projected Kubernetes ServiceAccount token, read afresh at each connect) or `NATS_SERVICE_GOOGLE_AUDIENCE` (this VM's Google identity token for that audience).
+  A service variable beside any other credential variable refuses the start naming both; an unusable one refuses; none set connects without a credential.
+  A service's connection presents user `service` and the token (`natscred.Service`), and its keeper reconnects it with a later token `natscred.ServiceRenewBefore` (10 minutes) before the one it presented lapses, since the auth service's user expires with the token.
+  A session's Go credential is `natscred.Session`: its broker access token, and a proof of its key over the server's nonce signed once per CONNECT (`brokerclient.ConnectionProof`); `cmd/natsprobe` tries one subject with either.
   `Connect` and `ConnectOwningStream` read these, `ENVOY_ALLOW_REMOTE_NATS` and `ENVOY_NATS_SOCKS5_PROXY` (a SOCKS5 proxy's `host:port` every connection goes through, reconnects and recovery included, each server's host name handed to it unresolved;
   a value that is not `host:port`, or that holds an nkey seed, refuses without printing it, and a set proxy is remote reach, refused without `ENVOY_ALLOW_REMOTE_NATS=1`) from the process environment, or from the lookup `bus.WithEnvironment` hands them;
   `Dial` from the lookup its caller passes.
