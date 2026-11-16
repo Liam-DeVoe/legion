@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A write while the listener's NATS connection reconnects no longer fails with
+  `nats: outbound buffer limit exceeded`. A bucket call bounded by its caller's deadline waits for
+  the connection, reads the deadline again before it sends, and sends nothing once the deadline
+  has ended; every other send made while the connection reconnects fails as
+  `bus: NATS is reconnecting`, and a route answers it 503 with that reason.
+time: 2026-11-16T18:39:53Z
+custom:
+    Issue: pr4194

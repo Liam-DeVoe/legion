@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A listener whose `ENVOY_MACHINE_ID` holds a dot, as a fully qualified host name does, starts and
+  delivers. The listener's durable and queue group escape each character NATS refuses in a
+  consumer name as `%` and two hex digits, and keep every machine id NATS takes today unchanged,
+  so no deployed durable is renamed. A machine id that holds `%` is refused at start, naming
+  `ENVOY_MACHINE_ID`. envoy-infra's machine id check uses the same rule and now accepts a dotted
+  id.
+time: 2026-11-16T18:39:55Z
+custom:
+    Issue: pr4194

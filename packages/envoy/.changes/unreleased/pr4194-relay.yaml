@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The reply token of each relay frame is 128 random bits instead of the listener's shared
+  counter, so a session cannot name another session's frame from the tokens it sees. A stored
+  message whose relay frame NATS refuses as larger than its max payload no longer blocks the
+  session's later messages: the listener acknowledges it, logs one warning naming the event and
+  the session, and goes on to the next message.
+time: 2026-11-16T18:39:49Z
+custom:
+    Issue: pr4194

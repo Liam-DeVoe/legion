@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A message on an agent subject (`notifications.agent.<session>`) is the session's own consumer's
+  alone. The listener no longer defers it, tries it again or gives it up, and it logs no
+  `listener agent delivery deferred`, `given up` or `failed` line and sends no `no_holder` or
+  `delivery_failed` notice for it. For a session with no record, or a record past the gone
+  horizon, the listener that holds the session's interest row (each listener when none does)
+  waits once for `ENVOY_UNPLACEABLE_RETRY_WINDOW` (60 s by default), then publishes one wake
+  report that the stream must store before it acknowledges the message, and logs
+  `listener agent wake reported`. A report the stream did not store is tried again after the same
+  wait, and at the stream's 20th delivery the listener logs `listener agent wake not stored` and
+  acknowledges. A read of the session record that did not answer sends the message back for the
+  wait, logs `listener agent record unread` once, and reports the wake at the last delivery. The
+  metric label `unplaceable_no_record` is now `wake_reported`.
+time: 2026-11-16T18:39:47Z
+custom:
+    Issue: pr4194
