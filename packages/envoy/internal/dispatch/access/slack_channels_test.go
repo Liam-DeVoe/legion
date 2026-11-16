@@ -32,6 +32,7 @@ func TestTheSlackChannelsColumnRefusesABadList(t *testing.T) {
 		{"seventeen ids", seventeen},
 		{"a lowercase id", []string{"c012345678"}},
 		{"an id of another shape", []string{"#general"}},
+		{"an id longer than Slack's", []string{"C" + strings.Repeat("A", 21)}},
 	} {
 		_, err := database.Pool.Exec(ctx, `update projects set slack_channels = $2 where key = $1`, "PUB", refused.channels)
 		if !isCheckViolation(err) {
@@ -97,6 +98,7 @@ func TestSetSlackChannelsStoresASortedList(t *testing.T) {
 		names    string
 	}{
 		{"an id of another shape", []string{"C012345678", "#general"}, "#general"},
+		{"an id longer than Slack's", []string{"C" + strings.Repeat("A", 21)}, "C" + strings.Repeat("A", 21)},
 		{"seventeen ids", seventeen, "17"},
 	} {
 		err := inTx(t, database, func(tx pgx.Tx) error {

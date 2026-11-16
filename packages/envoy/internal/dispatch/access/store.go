@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -49,11 +50,20 @@ var groupName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 func ValidGroupName(name string) bool { return groupName.MatchString(name) }
 
 // PersonPrincipal is the stored form of a person an access list or a group names: the trimmed,
-// lowercase email. It refuses a value that is no email.
+// lowercase email. It refuses a value that is no email, and one holding a control character or a
+// bidi control, which would show one address and store another, as a project name refuses them.
 func PersonPrincipal(email string) (string, error) {
 	login := model.CanonicalLogin(email)
 	if at := strings.IndexByte(login, '@'); at <= 0 || at == len(login)-1 || strings.ContainsAny(login, " \t\r\n,") || len(login) > 320 {
 		return "", fmt.Errorf("%w: %q is no email", ErrPrincipalInput, strings.TrimSpace(email))
+	}
+	for _, r := range login {
+		switch {
+		case unicode.IsControl(r):
+			return "", fmt.Errorf("%w: %q holds a control character", ErrPrincipalInput, login)
+		case unicode.Is(unicode.Bidi_Control, r):
+			return "", fmt.Errorf("%w: %q holds a bidi control", ErrPrincipalInput, login)
+		}
 	}
 	return login, nil
 }
@@ -167,8 +177,9 @@ func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visib
 // MaxSlackChannels is how many Slack channels a project names.
 const MaxSlackChannels = 16
 
-// slackChannel is the form of a Slack channel id, which the column's own check repeats.
-var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,}$`)
+// slackChannel is the form of a Slack channel id, at most 21 characters, which the column's own
+// check repeats.
+var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 
 // SetSlackChannels replaces the Slack channel ids project key's credentials may post to, sorted
 // and with each id named once. The secrets broker releases the Legion Slack bot token to a

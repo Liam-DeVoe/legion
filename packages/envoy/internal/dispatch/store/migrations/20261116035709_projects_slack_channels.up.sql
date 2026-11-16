@@ -6,7 +6,7 @@
 -- The list is the project's own, so it is a column of `projects`, written by its owner alone
 -- (PATCH /api/v1/projects/{key}/access, `slack_channels`).
 --
--- The check holds every id to Slack's own form, `^[CG][A-Z0-9]{8,}$`, and the list to 16. An array
+-- The check holds every id to Slack's own form, `^[CG][A-Z0-9]{8,20}$`, and the list to 16. An array
 -- check cannot test each element on its own, so it tests the joined text: the elements are joined
 -- with a comma, which no id holds, and the pattern then matches exactly a comma-separated list of
 -- ids, or the empty string for the empty list. A null element makes `array_to_string` drop it, so
@@ -24,4 +24,4 @@
 alter table projects
   add column slack_channels text[] not null default '{}'
   check (cardinality(slack_channels) <= 16
-         and array_to_string(slack_channels, ',') ~ '^([CG][A-Z0-9]{8,}(,[CG][A-Z0-9]{8,})*)?$');
+         and array_to_string(slack_channels, ',') ~ '^([CG][A-Z0-9]{8,20}(,[CG][A-Z0-9]{8,20})*)?$');

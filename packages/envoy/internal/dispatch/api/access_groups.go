@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -123,7 +124,7 @@ func (s *server) groupWrite(w http.ResponseWriter, r *http.Request, name string,
 	}
 	name = strings.TrimSpace(name)
 	if !access.ValidGroupName(name) {
-		s.writeAccessError(w, access.ErrPrincipalInput)
+		s.writeAccessError(w, fmt.Errorf("%w: %q is no group name: a group is named by lowercase letters, digits, dots, underscores and dashes, starting with a letter or digit, at most 63", access.ErrPrincipalInput, name))
 		return
 	}
 	tx, err := s.begin(r.Context())

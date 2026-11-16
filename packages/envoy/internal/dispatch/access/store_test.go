@@ -179,6 +179,14 @@ func TestAccessWritesRefuseWhatTheRuleCannotHold(t *testing.T) {
 			_, _, err := AddPrincipal(ctx, tx, broker, "PUB", PrincipalPerson, "not an email", by)
 			return err
 		}, ErrPrincipalInput, "not an email"},
+		{"an email holding a bidi override", func(tx pgx.Tx) error {
+			_, _, err := AddPrincipal(ctx, tx, broker, "PUB", PrincipalPerson, "alice\u202e@example.com", by)
+			return err
+		}, ErrPrincipalInput, "bidi"},
+		{"an email holding a control character", func(tx pgx.Tx) error {
+			_, _, err := AddPrincipal(ctx, tx, broker, "PUB", PrincipalPerson, "alice\x07@example.com", by)
+			return err
+		}, ErrPrincipalInput, "control"},
 		{"a group member who is restricted", func(tx pgx.Tx) error {
 			_, _, err := PutGroup(ctx, tx, broker, "mixed", olga, []string{dave, bob}, by)
 			return err
