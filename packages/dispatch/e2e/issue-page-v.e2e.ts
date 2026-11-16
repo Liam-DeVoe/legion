@@ -30,6 +30,7 @@ import {
   DESKTOP,
   expectIssuePageDrawn,
   focusThePage,
+  longWords,
   nodeRows,
   PHONE,
   rowBody,
@@ -62,7 +63,7 @@ import {
   verificationFrame,
   verificationIssueRow,
 } from "./issue-page-v";
-import { expect, test } from "./test";
+import { expect, type Page, type Route, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
@@ -931,5 +932,238 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       verificationIssueRow(page),
       "the view's own address leaves the focus elsewhere than on the issue's row"
     ).toBeFocused();
+  });
+});
+
+/** What the view draws of each statement `ids` names - the checks drawn under it, and how many
+ *  lines it draws that say no check serves it or that checks serve it elsewhere - or null where
+ *  it draws no card for it; and every check it draws as one that serves no statement. */
+interface ServedReading {
+  readonly loose: readonly string[];
+  readonly statements: Readonly<
+    Record<string, { checks: string[]; elsewhere: number; gaps: number } | null>
+  >;
+}
+
+function readServed(page: Page, ids: readonly string[]): Promise<ServedReading> {
+  return page.evaluate((statementIds) => {
+    const issue = "[data-issue-page]";
+    const statements: Record<string, { checks: string[]; elsewhere: number; gaps: number } | null> =
+      {};
+    for (const id of statementIds) {
+      const card = document.querySelector(
+        `${issue} [data-verification-card][data-node-id="${id}"]`
+      );
+      statements[id] =
+        card === null
+          ? null
+          : {
+              checks: [...card.querySelectorAll("[data-verification-check]")].map(
+                (check) => check.getAttribute("data-node-id") ?? ""
+              ),
+              elsewhere: card.querySelectorAll("[data-verification-elsewhere]").length,
+              gaps: card.querySelectorAll("[data-gap-kind]").length,
+            };
+    }
+    const loose = [
+      ...document.querySelectorAll(`${issue} [data-verification-check][data-verification-loose]`),
+    ].map((check) => check.getAttribute("data-node-id") ?? "");
+    return { loose, statements };
+  }, ids);
+}
+
+/** Each thing `held` draws that `truth`, the view once every read has answered, does not: a
+ *  check drawn as one that serves no statement, and a statement drawn with other checks, or with
+ *  a line saying none serves it or that its checks stand elsewhere. A statement not drawn at all
+ *  says nothing, so it contradicts nothing. */
+function contradictions(truth: ServedReading, held: ServedReading): string[] {
+  const found = held.loose
+    .filter((id) => !truth.loose.includes(id))
+    .map((id) => `${id} is drawn as a check that serves no statement`);
+  for (const [id, drawn] of Object.entries(held.statements)) {
+    if (drawn === null) continue;
+    const settled = truth.statements[id];
+    if (JSON.stringify(drawn) !== JSON.stringify(settled)) {
+      found.push(
+        `${id} draws ${JSON.stringify(drawn)} where it settles on ${JSON.stringify(settled)}`
+      );
+    }
+  }
+  return found;
+}
+
+// The reviewer's High finding on pull request #4221 (review 5923997554, at
+// `slots/view-verification.tsx:34`), pinned by INFRA-3936's tester. A check learns the statements
+// it serves from the blocks read of the Verification document, which `useIssueTree` reads, and
+// the view drew its rows once the coverage and results reads had answered, whether or not that
+// read had. So while it was out, and for good once it failed, the view drew every check of the
+// issue as one that serves no statement, and each statement as served by none of them (part V's
+// R1, R3 and R9). While that read is held, and once it is refused, the view draws nothing its
+// reads do not say once they have all answered; once it answers, each statement draws its check.
+// SLOW(>=2s): a whole seeded issue loaded three times, two of them read for 1.5 s each while the
+// blocks read is held or refused.
+test("the Verification view says nothing of a check's statements before the Verification document's blocks are read", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const [{ slug: specSlug }, { slug: verificationSlug }] = await Promise.all([
+      getArtifact(seeded.specArtifactId),
+      getArtifact(seeded.verificationArtifactId),
+    ]);
+    // Check i serves statement i, for 1 to 6 (`seedWholeIssue`).
+    const served = seeded.checks.all.map((check, at) => ({
+      check: blockNodeId(verificationSlug, check),
+      statement: blockNodeId(specSlug, requirementBlockId(at + 1)),
+    }));
+    const ids = served.map((one) => one.statement);
+    const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
+    const answered = (path: string) =>
+      page.waitForResponse((response) => new URL(response.url()).pathname === path);
+    const readsAnswered = () =>
+      Promise.all([
+        answered(`/api/v1/issues/${seeded.key}/coverage`),
+        answered(`/api/v1/issues/${seeded.key}/results`),
+      ]);
+    // Every contradiction of the settled view the page draws over `ms`, read every 100 ms.
+    const contradictedOver = async (truth: ServedReading, ms: number): Promise<string[]> => {
+      const end = Date.now() + ms;
+      const seen = new Set<string>();
+      while (Date.now() < end) {
+        for (const one of contradictions(truth, await readServed(page, ids))) seen.add(one);
+        await page.waitForTimeout(100);
+      }
+      return [...seen];
+    };
+
+    // The view once every read has answered: each of the six statements draws the one check
+    // that serves it, and no check is drawn apart from a statement.
+    await openPreset(page, seeded.key, "verification");
+    await expect
+      .poll(
+        async () => {
+          const now = await readServed(page, ids);
+          return served.every((one) => now.statements[one.statement]?.checks.join() === one.check);
+        },
+        { message: "the settled view draws a statement without the check that serves it" }
+      )
+      .toBe(true);
+    const truth = await readServed(page, ids);
+    expect(truth.loose, "the settled view draws a check that serves no statement").toEqual([]);
+
+    // The blocks read held: the coverage and results reads answer, the blocks read does not.
+    const held = Promise.withResolvers<void>();
+    const hold = async (route: Route) => {
+      await held.promise;
+      await route.continue();
+    };
+    await page.route(blocksRoute, hold);
+    const heldReads = readsAnswered();
+    await openPreset(page, seeded.key, "verification");
+    await heldReads;
+    expect(
+      await contradictedOver(truth, 1500),
+      "the view draws what its reads do not say while the Verification document's blocks read is out"
+    ).toEqual([]);
+    held.resolve();
+    await expect
+      .poll(() => readServed(page, ids), {
+        message: "the view does not settle once the held blocks read answers",
+      })
+      .toEqual(truth);
+    await page.unroute(blocksRoute, hold);
+
+    // The blocks read refused, as many times as the page asks it (two retries after the first).
+    let refusals = 0;
+    const refusedThrice = Promise.withResolvers<void>();
+    const refuse = async (route: Route) => {
+      refusals += 1;
+      await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
+      if (refusals >= 3) refusedThrice.resolve();
+    };
+    await page.route(blocksRoute, refuse);
+    const refusedReads = readsAnswered();
+    await openPreset(page, seeded.key, "verification");
+    await Promise.all([refusedReads, refusedThrice.promise]);
+    expect(
+      await contradictedOver(truth, 1500),
+      "the view draws what its reads do not say once the Verification document's blocks read failed"
+    ).toEqual([]);
+    await page.unroute(blocksRoute, refuse);
+  });
+});
+
+// Found by INFRA-3936's tester on a running build of a8bad6de: on INFRA-1196's view, Tab from the
+// first check's line of earlier results took 18 presses through the second statement's links
+// before it reached that statement's "more · 1,152 words", and the cut hid every one of them, so
+// the focus was drawn nowhere on screen. A statement cut at six lines keeps the controls of its
+// hidden words out of the tab order, and Tab in reading order reaches its "more" next (part V's
+// R5 and R8); once "more" opens the words, a link in them takes the focus where it is drawn.
+// SLOW(>=2s): an issue with one statement of 200 words seeded and its view loaded and walked by
+// Tab.
+test("the Verification view gives no tab stop to a link its cut statement hides", async ({
+  browser,
+}) => {
+  const seed = async () => {
+    await createProject({ key: PROJECT, name: "Issue layout" });
+    return await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: `:::requirement{#r-cut}\n${longWords("stated", 200)} Read [the runbook](${RUNBOOK}) last.\n:::\n`,
+      title: "A cut statement hides its last link",
+    });
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await openPreset(page, seeded.key, "verification");
+    const card = verificationCardBoxes(page).first();
+    const words = card.locator("[data-node-words]").first();
+    const more = card.locator("[data-node-more]");
+    const link = words.locator(`a[href="${RUNBOOK}"]`);
+    await expect(more, "the statement of 200 words is not cut").toHaveText(/^more · /u);
+    // Whether the focused element is inside the statement's words and outside the box the cut
+    // draws them in.
+    const focusHidden = () =>
+      words.evaluate((element) => {
+        const focused = document.activeElement;
+        if (focused === null || !element.contains(focused)) return null;
+        const box = element.getBoundingClientRect();
+        const rect = focused.getBoundingClientRect();
+        const drawn = rect.bottom > box.top && rect.top < box.bottom;
+        return drawn ? null : (focused.textContent ?? "").trim();
+      });
+    expect(
+      await link.evaluate((element) => {
+        const box = element.closest("[data-node-words]")?.getBoundingClientRect();
+        return box !== undefined && element.getBoundingClientRect().top >= box.bottom;
+      }),
+      "the cut does not hide the statement's last link"
+    ).toBe(true);
+
+    // From the issue's row, where the view's own address leaves the focus, Tab to "more".
+    await expect(verificationIssueRow(page)).toBeFocused();
+    const hidden: string[] = [];
+    let reached = false;
+    for (let pressed = 0; pressed < 20 && !reached; pressed += 1) {
+      await page.keyboard.press("Tab");
+      const held = await focusHidden();
+      if (held !== null) hidden.push(held);
+      reached = await more.evaluate((element) => element === document.activeElement);
+    }
+    expect(hidden, "Tab puts the focus on a link the cut statement hides").toEqual([]);
+    expect(reached, "Tab does not reach the cut statement's more in 20 presses").toBe(true);
+
+    // Opened, the words draw the link, and the focus reaches it where it is drawn.
+    await page.keyboard.press("Enter");
+    await expect(more, "Enter on more does not open the statement").toHaveText(
+      CONTROL_LABELS.read_less
+    );
+    await page.keyboard.press("Shift+Tab");
+    await expect(
+      link,
+      "Shift+Tab from less does not reach the opened statement's link"
+    ).toBeFocused();
+    expect(await focusHidden(), "the opened statement's link is focused outside its words").toBe(
+      null
+    );
   });
 });
