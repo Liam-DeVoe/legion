@@ -142,6 +142,10 @@ const (
 	// whether the project is private. It is refused rather than served by owner and tier alone,
 	// which would release a private project's secret to every session.
 	ReasonProjectUnchecked = "project-unchecked"
+	// ReasonProjectChannelsMalformed: the project-channels tag is not ProjectChannelsSlack, its
+	// one value. A value the broker cannot read names no limit it could apply, so the secret goes
+	// to nobody rather than out unlimited to a private project's credential.
+	ReasonProjectChannelsMalformed = "project-channels-malformed"
 	// ReasonValueMalformed: a kind secret's stored value is one secrets.ParseValue refuses under
 	// its kind and shape, or one that is not text (secrets.ErrValueNotText), so no release could
 	// mint from it. It is no tag's: a load sets it from the value Current reads and decodes once
@@ -428,6 +432,14 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 		if !l.ProjectChecks {
 			return Secret{}, ReasonProjectUnchecked, nil
 		}
+	}
+	// The same place, for the same reason: no rule of TagRules reads it, and a value the broker
+	// cannot read names no limit it could apply.
+	if raw, tagged := ls.Tags[TagProjectChannels]; tagged {
+		if raw != ProjectChannelsSlack {
+			return Secret{}, ReasonProjectChannelsMalformed, nil
+		}
+		s.ProjectChannels = raw
 	}
 	if !ls.HasCurrentValue {
 		return Secret{}, ReasonNoCurrentValue, nil

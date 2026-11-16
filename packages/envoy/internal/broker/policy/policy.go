@@ -125,6 +125,17 @@ const (
 	// refuse as malformed. Only a broker that can ask Dispatch whether a project is private
 	// serves a tagged secret (Loader.ProjectChecks, ReasonProjectUnchecked).
 	TagProject = "dispatch-project"
+	// TagProjectChannels marks a secret whose use a private project's owner limits to the places
+	// they named. Its one value is ProjectChannelsSlack: the Legion Slack bot token, which a
+	// credential of a private project may spend only on a post to a channel that project's owner
+	// named in Dispatch (airlockproxy's slackPostAllowed). The limit holds for a credential that
+	// names a private project, whatever project the secret itself belongs to, so the tag is read
+	// beside TagProject and never instead of it. A secret with no tag is unchanged.
+	TagProjectChannels = "project-channels"
+	// ProjectChannelsSlack is TagProjectChannels' one value. Any other is
+	// ReasonProjectChannelsMalformed: a value the broker cannot read names no limit it could
+	// apply, and such a secret goes to nobody rather than out unlimited.
+	ProjectChannelsSlack = "slack"
 	// kindSourcePrefix opens the Source of a kind secret (KindSource). The kind and store source
 	// are frozen into a request, so changing or clearing the kind ends every live grant.
 	kindSourcePrefix = "mint:"
@@ -784,6 +795,11 @@ type Secret struct {
 	// A string, not a pointer, for the same reason as MaxGrant. It is in Version, so tagging a
 	// secret, or moving it to another project, ends the grants the policy decided before.
 	Project string
+	// ProjectChannels is the secret's project-channels tag (TagProjectChannels), ProjectChannelsSlack
+	// or "" for a secret carrying none: a private project's credential may spend such a secret only
+	// where that project's owner allows, which the airlock's proxy is what enforces, so Evaluate
+	// refuses one that has no airlock entry (ReasonProjectChannelsNeedAirlock).
+	ProjectChannels string
 	// Admin is true when the secret carries admin: "true" (TagAdmin): its grant is an
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
 	// (TagRules).
@@ -1007,6 +1023,11 @@ type Requester struct {
 	// resolved them: a session's enrollment's list, or the project an operator's entry maps a
 	// pod to. Evaluate reads it for a secret tagged with a private project alone.
 	Projects []string
+	// Named is the projects the credential names, before the visibility filter Projects is the
+	// result of. ListsPrivate reads it, so a credential that named a private project stays
+	// limited once its person can no longer see that project, which is exactly the moment its
+	// limit must not fall away. Evaluate's dispatch-project rule reads Projects and never this.
+	Named []string
 	// ProjectStates is the state of each project a tagged name being evaluated carries, resolved
 	// by the caller from Dispatch before any transaction begins. It is plain data, not a lookup,
 	// so Evaluate stays pure and is safe to call while a lock is held. A secret tagged with a
@@ -1057,6 +1078,26 @@ const ReasonProjectNotNamed = "project-not-named"
 // (CallerReason), so a refusal never says whether a project exists.
 const ReasonProjectMissing = "project-missing"
 
+// ReasonProjectChannelsNeedAirlock is the Reason of a Deny for a project-channels secret
+// (TagProjectChannels) with no airlock entry, asked for by a credential that names a private
+// project (Requester.ListsPrivate). Outside the airlock the release hands the session the real
+// token, which it could then spend anywhere; behind it the proxy holds each post to the channels
+// the project's owner named. A credential that names no private project is unchanged.
+const ReasonProjectChannelsNeedAirlock = "project-channels-need-airlock"
+
+// ListsPrivate reports whether any project the credential names is private: the one predicate
+// the project-channels limit is read from, by Evaluate and by the release alike. It reads Named,
+// the projects as named, so losing sight of a project never lifts the limit that project put on
+// the credential.
+func (r Requester) ListsPrivate() bool {
+	for _, project := range r.Named {
+		if r.ProjectStates[project] == ProjectPrivate {
+			return true
+		}
+	}
+	return false
+}
+
 // ErrNoProjectState is Evaluate's answer for a secret tagged with a project the requester holds
 // no state for (Requester.ProjectStates): the caller did not resolve it, and Evaluate does no
 // I/O to resolve it itself.
@@ -1103,6 +1144,13 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 		default:
 			return Decision{}, fmt.Errorf("%w: %s is tagged %s", ErrNoProjectState, name, secret.Project)
 		}
+	}
+	// After the project rule: a secret whose use a private project's owner limits goes to such a
+	// credential only behind the airlock, where the proxy holds each post to the channels that
+	// owner named. Outside it the release hands over the real token, which the session could then
+	// spend anywhere.
+	if secret.ProjectChannels != "" && secret.AirlockDigest == "" && r.ListsPrivate() {
+		return Decision{Outcome: Deny, Reason: ReasonProjectChannelsNeedAirlock, Source: secret.Source}, nil
 	}
 	withheld := slices.Contains(r.Withheld, name)
 	d := Decision{Source: secret.Source}

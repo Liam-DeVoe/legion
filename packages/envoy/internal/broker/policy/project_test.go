@@ -59,8 +59,11 @@ var states = map[string]policy.ProjectState{
 }
 
 // credential is a requester whose credential names projects, with the states its caller resolved.
+// Named and Projects are the same here: every project these rows name is one its person may see,
+// which is the ordinary case. The two differ only once a person loses a project, which
+// TestListsPrivateReadsTheCredentialsOwnProjects is about.
 func credential(operator, service string, projects ...string) policy.Requester {
-	return policy.Requester{Operator: operator, Service: service, Projects: projects, ProjectStates: states}
+	return policy.Requester{Operator: operator, Service: service, Named: projects, Projects: projects, ProjectStates: states}
 }
 
 // TestAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt is R11 in the policy: a secret tagged
