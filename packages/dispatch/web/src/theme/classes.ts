@@ -866,7 +866,7 @@ export const pageDecisionText = "text-page-decision";
  *  in the margin; the faint guide each level hangs from (`.tn > .kids`); and the focused row,
  *  on the pane's grey inside a hairline, with the muted rule at its leading edge
  *  (`.card.focused`). The prototype's `#F5F5F4` is the pane's `#FAFAF9` here, because its
- *  quiet grey margin reads 4.42:1 on the darker one and 4.59:1 on this, AA's 4.5:1 for 12 px. */
+ *  quiet grey margin reads 4.40:1 on the darker one and 4.59:1 on this, AA's 4.5:1 for 12 px. */
 export const pageWordsText = "text-page-words";
 export const pageGuideLineBg = "bg-page-line";
 export const pageFocusedRow =
