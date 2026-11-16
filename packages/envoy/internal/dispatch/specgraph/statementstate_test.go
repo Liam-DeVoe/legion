@@ -201,6 +201,24 @@ func TestStatementState(t *testing.T) {
 			s.remove(C2)
 			s.drop(L2)
 		}, want: []StatementState{missing(L2), held(T, "not_built", "not_built", L2, "met")}},
+		// R5: "A statement that other statements support still has checks of its own." Validate
+		// pairs this rule with R6's (supported-without-check beside leaf-without-check), and so does
+		// the derivation: T, which P supports, with statements under it and no own check, reads
+		// unknown, no_check, as a leaf with no check does, and so does each statement above it; its
+		// own state is unknown, so a wait on it holds. "note 4" is the tree that the rules take: no
+		// supporter, and the wait ends.
+		{name: "R5: T, which P supports, has statements under it and no own check; subject the head of main, where a wait on T holds", change: func(s *checkCase) {
+			s.remove(CT)
+			s.Subject.Branch = "main"
+		}, want: []StatementState{held(T, "unknown", "no_check", T, "unknown"), met(L1), met(L2), met(P)},
+			waits: map[string]bool{T: false, L1: true}},
+		{name: "R5: Q above T reads unknown, no_check, with the detail T", change: func(s *checkCase) {
+			under := checkStateTop
+			under.Parent = Q
+			s.replace(under)
+			s.addNodes(statementFast, statementFastCheck)
+			s.remove(CT)
+		}, want: []StatementState{held(Q, "unknown", "no_check", T, "met"), held(T, "unknown", "no_check", T, "unknown"), met(L1)}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -220,6 +238,57 @@ func TestStatementState(t *testing.T) {
 				if got := state.WaitEnds(id); got != ends {
 					t.Errorf("WaitEnds(%s) = %v, want %v", id, got, ends)
 				}
+			}
+		})
+	}
+}
+
+// R6: "Each leaf statement has one or more checks." R5: "A statement that other statements support
+// still has checks of its own." The rules of the tree and the derivation ask for a check of one set
+// of statements: Validate refuses a statement with leaf-without-check or supported-without-check
+// exactly when Derive reads it unknown, no_check, with itself as the detail. Each row is the base of
+// TestStatementState with checks taken out.
+func TestTheTreeAndTheDerivationAskForACheckOfOneSetOfStatements(t *testing.T) {
+	t.Parallel()
+	T, L1, L2, P := checkStateTop.ID, checkStateLeaf.ID, statementLeafTwo.ID, statementSupporter.ID
+	for _, row := range []struct {
+		name   string
+		change func(s *checkCase)
+		want   []string // the statements of which the two ask a check, sorted
+	}{
+		{"the base", func(*checkCase) {}, nil},
+		{"leaves with no check", func(s *checkCase) { s.remove(checkStateCheck.ID, statementLeafTwoCheck.ID) }, []string{L2, L1}},
+		{"a supporter with no check, a leaf", func(s *checkCase) { s.remove(statementSupporterCheck.ID) }, []string{P}},
+		{"a supported statement with statements under it and no check", func(s *checkCase) { s.remove(statementTopCheck.ID) }, []string{T}},
+		{"a statement with statements under it, no supporter and no check", func(s *checkCase) {
+			alone := statementSupporter
+			alone.Serves = nil
+			s.replace(alone)
+			s.remove(statementTopCheck.ID)
+		}, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStatementCase(t)
+			row.change(s)
+			var refused, derived []string
+			for _, p := range Validate(s.parse(), Options{}) {
+				if p.Rule == "leaf-without-check" || p.Rule == "supported-without-check" {
+					refused = append(refused, p.Node)
+				}
+			}
+			for _, st := range Derive(s.input()).Statements {
+				if st.Reason == "no_check" && st.Detail == st.ID {
+					derived = append(derived, st.ID)
+				}
+			}
+			slices.Sort(refused)
+			slices.Sort(derived)
+			if !slices.Equal(refused, row.want) {
+				t.Errorf("Validate asks a check of %q, want %q", refused, row.want)
+			}
+			if !slices.Equal(derived, row.want) {
+				t.Errorf("Derive reads no_check of %q, want %q", derived, row.want)
 			}
 		})
 	}

@@ -27,10 +27,12 @@ type State struct {
 //     at that commit do not hold the approved text of the statement, or of a statement under it").
 //  2. A check that counts is false, or a supporter is not met: not_met, check_false or
 //     supporter_not_met (R10: "Not met: one of them is false").
-//  3. A check that counts is unknown, S or a statement under it is a leaf that the approved spec
-//     gives no check, or a supporter is unknown or not built: unknown, check_unknown, no_check,
-//     supporter_unknown or supporter_not_built (R10: "Unknown: every other case"; R6: "Each leaf
-//     statement has one or more checks"; R7: "silence is not a pass").
+//  3. A check that counts is unknown, S or a statement under it has no check where the tree rules
+//     ask for one (a leaf, or a statement that other statements serve), or a supporter is unknown
+//     or not built: unknown, check_unknown, no_check, supporter_unknown or supporter_not_built
+//     (R10: "Unknown: every other case"; R6: "Each leaf statement has one or more checks"; R5: "A
+//     statement that other statements support still has checks of its own"; R7: "silence is not
+//     a pass").
 //  4. Else met, checks_true, also when no check counts (R10: "Met: all of them are true"), and
 //     PartlyChecked when the approved spec marks S (R10: "The page then says partly checked beside
 //     met"). R37 needs that reading of no check: a statement whose only checks read production is
@@ -40,11 +42,11 @@ type State struct {
 // Own is the state of S over its own checks that read the subject, which a wait on S reads (R29:
 // "its own checks read true there. The statements under it do not count for that wait"; R10:
 // "Only the checks that read the subject count"): not_built when the files do not hold S's current
-// text; unknown when S is a leaf that the approved spec gives no check, so a wait on it holds (R6,
-// and R10: "Met means that its checks pass"); else not_met when one of them is false, unknown when
-// one is unknown, and met when all are true, also when S has statements under it and no own check,
-// or none of its checks reads the subject. So at the head of main a wait on S never waits for a
-// check of production.
+// text; unknown when S has no check where the tree rules ask for one, so a wait on it holds (R6,
+// R5, and R10: "Met means that its checks pass"); else not_met when one of them is false, unknown
+// when one is unknown, and met when all are true, also when S has statements under it, no
+// supporter and no own check, or none of its checks reads the subject. So at the head of main a
+// wait on S never waits for a check of production.
 func Derive(in Input) State {
 	checks := newCheckJudge(in)
 	s := State{Subject: in.Subject, Checks: checks.states()}
