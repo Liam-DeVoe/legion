@@ -12,10 +12,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
+// workflowsDir is the directory of a repository, from its root, that holds its workflows.
+const workflowsDir = ".github/workflows"
+
 // ciDirs are the directories of a repository, from its root, that hold the steps of its workflows
-// and the actions and scripts that those steps run: what guard reads. The first holds the
-// workflows.
-var ciDirs = []string{".github/workflows", ".github/actions", ".github/scripts", "scripts"}
+// and the actions and scripts that those steps run: what guard reads.
+var ciDirs = []string{workflowsDir, ".github/actions", ".github/scripts", "scripts"}
 
 // runGuard is "spec-check guard --root <dir>": it reads every regular file under the CI
 // directories of the repository at dir, and answers 0 when no line of them runs the comparison of
@@ -45,7 +47,7 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 
 	files := map[string][]byte{}
 	workflows := 0
-	for i, dir := range ciDirs {
+	for _, dir := range ciDirs {
 		top := filepath.Join(root, filepath.FromSlash(dir))
 		err := filepath.WalkDir(top, func(path string, d fs.DirEntry, err error) error {
 			switch {
@@ -65,7 +67,7 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 				return fmt.Errorf("%s: cannot be read: %w", path, err)
 			}
 			files[filepath.ToSlash(key)] = content
-			if i == 0 {
+			if dir == workflowsDir {
 				workflows++
 			}
 			return nil
