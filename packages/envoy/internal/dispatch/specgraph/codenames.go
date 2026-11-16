@@ -98,9 +98,9 @@ var slug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // ("s3", "r12"). A word such as "oauth2" or "ipv6" does not.
 var positionWord = regexp.MustCompile(`^(?:[0-9]+|[a-z][0-9]+)$`)
 
-// IsID reports whether s is a valid id of a node: lower-case words of letters and digits joined by
-// single hyphens, with no word that states a position, since an id never changes and a position
-// does.
+// IsID reports whether s is a valid id of a node: words of lower-case ASCII letters and digits
+// joined by single hyphens, with no word that states a position, since an id never changes and a
+// position does.
 func IsID(s string) bool {
 	if !slug.MatchString(s) {
 		return false

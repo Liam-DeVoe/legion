@@ -34,8 +34,9 @@ const (
 //     is: two parallel tests of one name, in package p and in p_test, and a test that prints a run
 //     line of its own name with the marker.
 //
-// What a test prints with no marker decides no outcome, go test's kill line and its end lines
-// included. A test's pass stays when a goroutine that outlives the test fails the package later.
+// In the two forms of report that ReadGoTestJSON reads, what a test prints with no marker decides
+// no outcome, go test's kill line and its end lines included. A test's pass stays when a goroutine
+// that outlives the test fails the package later.
 //
 // Output is the output events that go test's converter gave the run, its subtests' and the
 // testing package's own lines included, which can hold a parallel sibling's line or go test's kill
@@ -111,12 +112,10 @@ func endLine(out, name string) endKinds {
 }
 
 // nameRuns is what the reader holds of one top-level name of one package: the run that the name's
-// events belong to, how many of its runs have not ended, and the runs since none was open, which
-// overlap when there are two or more.
+// events belong to, and how many of its runs have not ended.
 type nameRuns struct {
 	latest *run
 	open   int
-	group  []*run
 }
 
 // write adds out to what the run's test wrote.
@@ -153,23 +152,33 @@ func (r *run) output() string {
 }
 
 // ReadGoTestJSON reads the report that go test -json writes, or that go tool test2json writes for a
-// test binary, and gives one entry for each run of a top-level test, in the order the tests
-// started. A name that runs twice in one package, as under -count=2 or as a test defined in both
-// package p and package p_test, gives two entries; the events of that name after its second start
-// belong to the second. The outcome is the run's one end event of its own, never a subtest's, and
-// that end counts only after go test's own end line of its kind for the test (TestOutcome).
+// test binary run with -test.v=test2json, and gives one entry for each run of a top-level test, in
+// the order the tests started. A name that runs twice in one package, as under -count=2 or as a
+// test defined in both package p and package p_test, gives two entries; the events of that name
+// after its second start belong to the second. The outcome is the run's one end event of its own,
+// never a subtest's, and that end counts only after go test's own end line of its kind for the test
+// (TestOutcome).
+//
+// The reader reads exactly those two forms of report: only in them does the marker separate go
+// test's own lines from what a test prints. A report of another form, as of a test binary run with
+// -test.v=true or the text of go test -v through go tool test2json, lets a test write an end line
+// with no marker, and the reader cannot see which form made a report. In CI, the job's own go test
+// -json command makes the report that the reporter reads.
 //
 // The report is the test binary's own account, and the reader trusts its order: a report that
-// someone changed or put in another order can give a run the wrong outcome. A line that a test
-// prints with no marker is output, whatever it says. But the reader cannot tell a line that the
-// binary prints with the marker, or before its first test, from the testing package's own, so the
-// binary can still print a whole run, of a test that does not exist or of one that does, and a test
-// that prints a run line of its own name with the marker gives two entries, each could_not_run.
-// And a test that prints, with the marker, go test's end line of its own name and then does not
-// end by itself can still give itself an outcome: in a report of go test -json, the kind of that
-// line, pass, fail or skip, when go test then kills it or its process ends with a status that is
-// not 0; in a report of go tool test2json, fail for a fail line when its process then ends with an
-// error, and pass for a pass line when it then calls os.Exit(0).
+// someone changed or put in another order can give a run the wrong outcome. In those two forms, a
+// line that a test prints with no marker is output, whatever it says. But the reader cannot tell a
+// line that the binary prints with the marker, or before its first test, from the testing
+// package's own, so the binary can still print a whole run, of a test that does not exist or of one
+// that does, and a test that prints a run line of its own name with the marker gives two entries,
+// each could_not_run.
+// And a test that prints, with the marker, go test's end line of its own name, or of another test
+// of its package that is running, can still give that test an outcome when that test then does not
+// end by itself. For its own name: in a report of go test -json, the kind of that line, pass, fail
+// or skip, when go test then kills it or its process ends with a status that is not 0; in a report
+// of go tool test2json, fail for a fail line when its process then ends with an error, and pass for
+// a pass line when it then calls os.Exit(0). For another test: a parallel test that prints the pass
+// line of a running test that go test then kills gives that test pass, in both forms.
 //
 // A value that is no JSON object, a null and an object with no Action are refused, and so is a
 // report that holds a run of a test and no frame, as a converter of a Go before 1.27 writes, which
@@ -207,14 +216,11 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 			}
 			this := &run{outcome: TestOutcome{Package: e.Package, Test: top}}
 			if name.open > 0 {
-				for _, other := range name.group {
-					other.overlap = true
-				}
+				// A run of the name is open, so the two runs overlap. Each earlier run of this group was
+				// marked when the group's second run started, so only the latest and this one need it.
+				name.latest.overlap = true
 				this.overlap = true
-			} else {
-				name.group = name.group[:0]
 			}
-			name.group = append(name.group, this)
 			name.open++
 			name.latest = this
 			runs = append(runs, this)

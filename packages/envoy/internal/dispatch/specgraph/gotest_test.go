@@ -29,7 +29,9 @@ import (
 // what its tests do, and testdata/gotest/make-reports.sh makes it again: the packages kill* under
 // -timeout 1s, count2 under -count=2 in place of -count=1. Each report t2j-<name>.jsonl is of the
 // same package, from `go tool test2json -t -p <package>` run over its test binary with
-// -test.v=test2json, the kill packages with -test.timeout=1s; that script makes it too.
+// -test.v=test2json, the kill packages with -test.timeout=1s; that script makes it too. Each
+// report piped-<name>.jsonl is of the same package, the text of `go test -v -timeout 1s` through
+// `go tool test2json -t -p <package>`, a form that holds no marker; that script makes it too.
 //
 // sametime.jsonl is a report that the security audit of this change made with Go 1.27.3 in its
 // own scratch module, example.com/finalaudit: two parallel tests named TestSame, of package
@@ -159,9 +161,10 @@ func TestAnEndCountsOnlyAfterTheTestsOwnEndLine(t *testing.T) {
 // report's name with it, so the report cannot say whose end an end event is. Each run of such a
 // group could not run, whatever ends follow: two parallel tests named TestSame in a package and
 // its _test package, where both end (samename), or where one passes and the other is killed, in
-// both forms of report (killsame, and the audit's own report sametime); and a test that prints a
-// marked run line of its own name (markedrun). Two tests of one name that do not run at once each
-// read their own end (p-and-p-test).
+// both forms of report (killsame, and the audit's own report sametime); a test that prints a
+// marked run line of its own name (markedrun); and three runs of one name, where the first of them
+// ends last (samethree). Two tests of one name that do not run at once each read their own end
+// (p-and-p-test).
 func TestOverlappingRunsOfOneNameCouldNotRun(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{
@@ -171,6 +174,7 @@ func TestOverlappingRunsOfOneNameCouldNotRun(t *testing.T) {
 		{"t2j-killsame.jsonl", []string{acme + "killsame TestSame could_not_run", acme + "killsame TestSame could_not_run"}},
 		{"sametime.jsonl", []string{"example.com/finalaudit/sametime TestSame could_not_run", "example.com/finalaudit/sametime TestSame could_not_run"}},
 		{"markedrun.jsonl", []string{acme + "markedrun TestPrintsAMarkedRunOfItself could_not_run", acme + "markedrun TestPrintsAMarkedRunOfItself could_not_run"}},
+		{"samethree.jsonl", []string{acme + "samethree TestSame could_not_run", acme + "samethree TestSame could_not_run", acme + "samethree TestSame could_not_run"}},
 		{"p-and-p-test.jsonl", []string{"example.com/acme/gotest/b TestB pass", "example.com/acme/gotest/b TestB fail"}},
 	})
 }
@@ -180,6 +184,26 @@ func TestOverlappingRunsOfOneNameCouldNotRun(t *testing.T) {
 func TestAPassStaysWhenThePackageFailsAfterIt(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{{"latepanic.jsonl", []string{acme + "latepanic TestCompleted pass"}}})
+}
+
+// Stated limits: each row pins the outcome that the reader gives today for a report where a test
+// gives an outcome to a test, so that a change of the reader shows here. ReadGoTestJSON's doc says
+// each limit:
+//   - "a test that prints, with the marker, go test's end line of its own name, or of another test
+//     of its package that is running, ... can still give that test an outcome": TestPrinter prints
+//     the marked pass line of TestSleeps while TestSleeps runs, and go test then kills TestSleeps,
+//     which reads pass in both forms (killsiblingpass);
+//   - "a report of another form ... lets a test write an end line with no marker": in the text of
+//     go test -v through go tool test2json, a test prints its own pass line with no marker and is
+//     then killed, and it reads pass (piped-killprinted). Under go test -json the same test could
+//     not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome).
+func TestStatedLimitsOfTheReader(t *testing.T) {
+	t.Parallel()
+	readReports(t, []reportRow{
+		{"killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps pass", acme + "killsiblingpass TestPrinter pass"}},
+		{"t2j-killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps pass", acme + "killsiblingpass TestPrinter could_not_run"}},
+		{"piped-killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps pass"}},
+	})
 }
 
 // The reader looks for a test's end line in each output event as it reads it, before it cuts the
