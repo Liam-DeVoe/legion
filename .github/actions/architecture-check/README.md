@@ -144,6 +144,7 @@ A caller that needs `GOPROXY`, `GOPRIVATE` or `GONOSUMDB` sets them as environme
 The build also sets `GOWORK=off`, because the root `go.work` of this repository is above the action.
 It sets `GOTOOLCHAIN=local` and an empty `GOFLAGS`, and it unsets `GOOS` and `GOARCH`.
 So a Go flag or a target platform of the caller's job does not change the build.
+The script `.github/scripts/build-envoy-command.sh` of this repository makes this build, and the build of the [spec-file check](../spec-check/README.md#the-go-toolchain) too, so the two actions build with the same settings.
 
 ## The cache
 

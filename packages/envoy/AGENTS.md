@@ -3136,6 +3136,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - The composite action `.github/actions/architecture-check` is how another repository runs `cmd/architecture-check` (`README.md` there is that caller's guide):
   it builds the command from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, runs it over its `path` input (default `.dispatch/architecture`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number to the caller as its `count` output, on exit 0 and on exit 1.
+  Its `check.sh build` runs `.github/scripts/build-envoy-command.sh`, the one build of the commands of both composite actions, which holds the settings that keep the caller's job out of the build: `GOWORK=off`, `GOTOOLCHAIN=local`, an empty `GOFLAGS` with `GOENV=off`, `GOOS` and `GOARCH` unset, and the action's own module and build caches.
   Right after its setup-go it removes the `go` problem matcher that setup-go adds (`::remove-matcher owner=go::`), since that matcher reads every later line of the job and would make an error annotation, with the author's text, of a check line holding `.go: `, such as one naming a file `cmd.go: forged annotation`;
   the runner keeps one matcher per owner, so in a caller's job that set up Go earlier the action's setup-go replaces that job's `go` matcher and the removal deletes it for every later step, and the README sends a caller to a job of its own or to a place before the job's own setup-go, which adds the matcher again.
   Any other matcher an earlier step of the job added reads the check's lines too, one more reason for a job of its own.
@@ -3165,6 +3166,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
   a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one and an interface being a component with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
+  a spec file above the 1 MiB bound gives one line instead, `spec-check: file too large: <dir>/<file> is <n> bytes (limit 1048576)`, and the counts are 0, since no file is parsed;
   with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
   `--retired` names a file of the ids the approved spec removed, one id a line;
   without it, a line on stderr says that no id was checked against them.
