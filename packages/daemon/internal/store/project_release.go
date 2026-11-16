@@ -14,9 +14,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
+// ProjectReleaseEnder is who ended a project release (project_releases.ended_by).
+type ProjectReleaseEnder string
+
 // ProjectReleaseEndedByBoot is the one value of project_releases.ended_by: a boot of the daemon on
 // this database ended the release (EndProjectReleasesAtBoot). Nothing else ends one.
-const ProjectReleaseEndedByBoot = "boot"
+const ProjectReleaseEndedByBoot ProjectReleaseEnder = "boot"
 
 // errProjectReleaseRunning is an idle release, or the release of a pod no claim owns, refused
 // because the project has a project release no boot has ended (ReleaseIdleIssue): that release
@@ -49,7 +52,7 @@ type ProjectRelease struct {
 	BoundAt    time.Time
 	FinishedAt time.Time
 	EndedAt    time.Time
-	EndedBy    string
+	EndedBy    ProjectReleaseEnder
 	Result     json.RawMessage
 }
 

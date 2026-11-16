@@ -1049,6 +1049,50 @@ const legionReleasedAsk = z.object({
   bound: z.boolean().optional(),
 });
 
+/** `api.ReleaseOutcomes` — every outcome of a project release's Sandbox line, in the order the
+ * daemon declares them. The Go side is the source: its `TestProjectReleaseWordsGolden` writes
+ * this list, with the two below, to `fixtures/daemon-api/project-release-words.json`, and
+ * `legion-api.test.ts` holds each list equal to the file, so a word added on either side alone
+ * fails a test. Each enum is strict: a word its list does not name refuses the whole state body
+ * at every plugin that reads the state's `projectRelease`. */
+export const LEGION_RELEASE_OUTCOMES = [
+  "waiting",
+  "deleted_clean",
+  "deleted_unread",
+  "deleted_lost",
+  "deleted_read_refused",
+  "deleted",
+  "left",
+] as const;
+
+/** `store.ProjectReleaseEnder` — who ended a project release: `boot`, the daemon's next boot,
+ * and nothing else (`store.ProjectReleaseEndedByBoot`). */
+export const LEGION_PROJECT_RELEASE_ENDERS = ["boot"] as const;
+
+/** `api.ReleasedClaimEnds` — every word for how a claim of a project release's stop set ended:
+ * each claim state but `suspended` (`LEGION_CLAIM_STATES`), since a suspended claim is named by
+ * its suspension's source, each source (`legionSuspendedBy`), and `unrecorded` for a claim the
+ * store holds no record of. */
+export const LEGION_RELEASED_CLAIM_ENDS = [
+  "queued",
+  "launch_uncertain",
+  "launching",
+  "shim_connected",
+  "registered",
+  "ready",
+  "working",
+  "idle",
+  "failed",
+  "retired",
+  "unknown",
+  "operator",
+  "daemon",
+  "exit",
+  "released",
+  "project_release",
+  "unrecorded",
+] as const;
+
 /** `api.ReleasedSandbox` — one Sandbox of the project as a project release ended it, or on a dry
  * run as a release would end it now: an issue pod `deleted_clean`, `deleted_unread` (no role
  * process to read it at any read), `deleted_lost` (with the unpushed `commits` and whether the
@@ -1062,15 +1106,7 @@ const legionReleasedSandbox = z.object({
   name: nonEmptyString,
   kind: z.enum(["issue", "controller", "cache", "probe", "unknown"]),
   issue: issueKey.optional(),
-  outcome: z.enum([
-    "waiting",
-    "deleted_clean",
-    "deleted_unread",
-    "deleted_lost",
-    "deleted_read_refused",
-    "deleted",
-    "left",
-  ]),
+  outcome: z.enum(LEGION_RELEASE_OUTCOMES),
   reason: nonEmptyString.optional(),
   commits: z.number().int().nonnegative().optional(),
   workingCopyChanged: z.boolean().optional(),
@@ -1091,7 +1127,7 @@ const legionReleasedClaim = z.object({
   issue: issueKey.optional(),
   role: z.enum([...LEGION_ROLES, "controller"]),
   session: nonEmptyString.optional(),
-  ended: nonEmptyString.optional(),
+  ended: z.enum(LEGION_RELEASED_CLAIM_ENDS).optional(),
   bootStarts: z.boolean(),
   detail: nonEmptyString.optional(),
 });
@@ -1118,7 +1154,7 @@ export const LegionProjectReleaseResponse = z.object({
   bound: nonEmptyString,
   finishedAt: timestamp.optional(),
   endedAt: timestamp.optional(),
-  endedBy: z.literal("boot").optional(),
+  endedBy: z.enum(LEGION_PROJECT_RELEASE_ENDERS).optional(),
   result: z.object({
     sandboxes: z.array(legionReleasedSandbox),
     claims: z.array(legionReleasedClaim),

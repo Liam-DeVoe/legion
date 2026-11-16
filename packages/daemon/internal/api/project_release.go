@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // ProjectReleaseRoute is the operator's route of the project release (dispatch://INFRA-3583 R6):
@@ -61,18 +62,18 @@ type ProjectReleaseRequest struct {
 // ProjectReleaseResponse is one project release as the routes and the state show it: its record's
 // id (none on a dry run), when it started and when it deletes every pod still waiting (BoundAt),
 // that bound as a Go duration, when it finished its acts and when a boot ended it, each absent
-// until it happens, who ended it ("boot", store.ProjectReleaseEndedByBoot), and its result as the
-// release last recorded it. A dry run is finished when it is answered and is never recorded.
+// until it happens, who ended it (store.ProjectReleaseEndedByBoot), and its result as the release
+// last recorded it. A dry run is finished when it is answered and is never recorded.
 type ProjectReleaseResponse struct {
-	ID         int64                `json:"id,omitempty"`
-	DryRun     bool                 `json:"dryRun,omitempty"`
-	StartedAt  time.Time            `json:"startedAt"`
-	BoundAt    time.Time            `json:"boundAt"`
-	Bound      string               `json:"bound"`
-	FinishedAt *time.Time           `json:"finishedAt,omitempty"`
-	EndedAt    *time.Time           `json:"endedAt,omitempty"`
-	EndedBy    string               `json:"endedBy,omitempty"`
-	Result     ProjectReleaseResult `json:"result"`
+	ID         int64                     `json:"id,omitempty"`
+	DryRun     bool                      `json:"dryRun,omitempty"`
+	StartedAt  time.Time                 `json:"startedAt"`
+	BoundAt    time.Time                 `json:"boundAt"`
+	Bound      string                    `json:"bound"`
+	FinishedAt *time.Time                `json:"finishedAt,omitempty"`
+	EndedAt    *time.Time                `json:"endedAt,omitempty"`
+	EndedBy    store.ProjectReleaseEnder `json:"endedBy,omitempty"`
+	Result     ProjectReleaseResult      `json:"result"`
 }
 
 // ProjectReleaseResult is what the release did, or on a dry run what it would do now: one line per
@@ -86,30 +87,42 @@ type ProjectReleaseResult struct {
 	Failure   string            `json:"failure,omitempty"`
 }
 
-// The outcomes of a Sandbox's line (ReleasedSandbox.Outcome). An issue pod ends as one of the
-// four deleted_* outcomes or as left, and every other Sandbox as deleted or left; a line not yet
-// ended is waiting.
+// ReleaseOutcome is how the release ended a Sandbox's line (ReleasedSandbox.Outcome).
+type ReleaseOutcome string
+
+// The outcomes of a Sandbox's line. An issue pod ends as one of the four deleted_* outcomes
+// (deleted_clean, deleted_unread, deleted_lost or deleted_read_refused) or as left, and every
+// other Sandbox as deleted or left; a line not yet ended is waiting.
 const (
 	// ReleaseWaiting: the release has not ended this Sandbox yet.
-	ReleaseWaiting = "waiting"
+	ReleaseWaiting ReleaseOutcome = "waiting"
 	// ReleaseDeletedClean: deleted, its last read finding nothing unpushed.
-	ReleaseDeletedClean = "deleted_clean"
+	ReleaseDeletedClean ReleaseOutcome = "deleted_clean"
 	// ReleaseDeletedUnread: deleted with no read, since no role process ran in it at any read.
-	ReleaseDeletedUnread = "deleted_unread"
+	ReleaseDeletedUnread ReleaseOutcome = "deleted_unread"
 	// ReleaseDeletedLost: deleted with the work its last read found unpushed.
-	ReleaseDeletedLost = "deleted_lost"
+	ReleaseDeletedLost ReleaseOutcome = "deleted_lost"
 	// ReleaseDeletedReadRefused: deleted with its workspace unread at the end: its shim refused
 	// the last read, or no role process ran at the last read while an earlier read reached one.
 	// The line then keeps that earlier read's count or refusal, and its reason says so.
-	ReleaseDeletedReadRefused = "deleted_read_refused"
+	ReleaseDeletedReadRefused ReleaseOutcome = "deleted_read_refused"
 	// ReleaseDeleted: a controller's, a cache's or a probe's Sandbox deleted.
-	ReleaseDeleted = "deleted"
+	ReleaseDeleted ReleaseOutcome = "deleted"
 	// ReleaseLeft: the Sandbox stays, with its disk, for the reason the line gives.
-	ReleaseLeft = "left"
+	ReleaseLeft ReleaseOutcome = "left"
 )
 
+// ReleaseOutcomes is every outcome, in the order declared above: the roster of the set, which
+// nothing in Go can read off the constants themselves. TestProjectReleaseWordsGolden writes it to
+// `packages/contracts/fixtures/daemon-api/project-release-words.json`, and
+// `packages/contracts/src/legion-api.test.ts` holds that file equal to `LEGION_RELEASE_OUTCOMES`,
+// the strict enum a plugin reads `outcome` through. An outcome added above and left out of this
+// list fails no test, so add every new outcome here as well.
+var ReleaseOutcomes = []ReleaseOutcome{ReleaseWaiting, ReleaseDeletedClean, ReleaseDeletedUnread, ReleaseDeletedLost,
+	ReleaseDeletedReadRefused, ReleaseDeleted, ReleaseLeft}
+
 // releaseDeletedOutcomes is every outcome of a Sandbox the release deleted (ReleasedSandbox.Deleted).
-var releaseDeletedOutcomes = []string{ReleaseDeletedClean, ReleaseDeletedUnread, ReleaseDeletedLost, ReleaseDeletedReadRefused, ReleaseDeleted}
+var releaseDeletedOutcomes = []ReleaseOutcome{ReleaseDeletedClean, ReleaseDeletedUnread, ReleaseDeletedLost, ReleaseDeletedReadRefused, ReleaseDeleted}
 
 // ReleasedSandbox is one Sandbox's line of a release: its name, its kind (issue, controller, cache,
 // probe or unknown), its issue for an issue pod, and its outcome. A line of work lost carries the
@@ -125,7 +138,7 @@ type ReleasedSandbox struct {
 	Name               string                     `json:"name"`
 	Kind               runtime.ProjectSandboxKind `json:"kind"`
 	Issue              string                     `json:"issue,omitempty"`
-	Outcome            string                     `json:"outcome"`
+	Outcome            ReleaseOutcome             `json:"outcome"`
 	Reason             string                     `json:"reason,omitempty"`
 	Commits            *int                       `json:"commits,omitempty"`
 	WorkingCopyChanged *bool                      `json:"workingCopyChanged,omitempty"`
@@ -147,9 +160,34 @@ type ReleasedAsk struct {
 	Bound      bool       `json:"bound,omitempty"`
 }
 
+// ReleasedClaimEnd is how a claim of the stop set ended as its own record holds it at the
+// release's end (ReleasedClaim.Ended): the source of its suspension (supervise.SuspendSource)
+// when it is suspended, its state (supervise.ClaimState) otherwise, so never `suspended`, or
+// ReleasedClaimUnrecorded.
+type ReleasedClaimEnd string
+
 // ReleasedClaimUnrecorded is how a claim of the stop set ended when the store holds no record of
-// it at the release's end (ReleasedClaim.Ended): the next boot starts no claim it holds no record of.
-const ReleasedClaimUnrecorded = "unrecorded"
+// it at the release's end: the next boot starts no claim it holds no record of.
+const ReleasedClaimUnrecorded ReleasedClaimEnd = "unrecorded"
+
+// ReleasedClaimEnds is every ReleasedClaimEnd, in order: each claim state but suspended, as
+// supervise declares them, each suspension source, as supervise declares them, and
+// ReleasedClaimUnrecorded. TestProjectReleaseWordsGolden writes it to
+// `packages/contracts/fixtures/daemon-api/project-release-words.json`, and
+// `packages/contracts/src/legion-api.test.ts` holds that file equal to
+// `LEGION_RELEASED_CLAIM_ENDS`, the strict enum a plugin reads `ended` through. A state or a
+// source added to supervise and left out of this list fails no test, so add it here as well.
+var ReleasedClaimEnds = []ReleasedClaimEnd{
+	ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
+	ReleasedClaimEnd(supervise.StateLaunching), ReleasedClaimEnd(supervise.StateShimConnected),
+	ReleasedClaimEnd(supervise.StateRegistered), ReleasedClaimEnd(supervise.StateReady),
+	ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
+	ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
+	ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
+	ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
+	ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
+	ReleasedClaimUnrecorded,
+}
 
 // ReleasedClaim is one claim of the release's stop set: its token, issue, role and session, and how
 // it ended as its own record holds it at the end — `project_release` for a claim the daemon's next
@@ -159,13 +197,13 @@ const ReleasedClaimUnrecorded = "unrecorded"
 // the claims at its end. Detail is why a claim the release stopped, or held for an operator, was
 // not stored suspended in time, or that its record could not be read at the end.
 type ReleasedClaim struct {
-	Token      claim.Token `json:"token"`
-	Issue      string      `json:"issue,omitempty"`
-	Role       claim.Role  `json:"role"`
-	Session    string      `json:"session,omitempty"`
-	Ended      string      `json:"ended,omitempty"`
-	BootStarts bool        `json:"bootStarts"`
-	Detail     string      `json:"detail,omitempty"`
+	Token      claim.Token      `json:"token"`
+	Issue      string           `json:"issue,omitempty"`
+	Role       claim.Role       `json:"role"`
+	Session    string           `json:"session,omitempty"`
+	Ended      ReleasedClaimEnd `json:"ended,omitempty"`
+	BootStarts bool             `json:"bootStarts"`
+	Detail     string           `json:"detail,omitempty"`
 }
 
 // ProjectReleaseResponseOf is a release's record as the routes and the state show it. The result

@@ -1932,7 +1932,10 @@ package api
 // line per Sandbox of the project (`name`, `kind`, `issue`, `outcome`, `reason`, `commits`,
 // `workingCopyChanged`, `refusal`, `otherImage`, `asked` with each asked role's `role`,
 // `answeredAt` and `bound`) and one per claim the release stopped (`token`, `issue`, `role`,
-// `session`, `ended`, `bootStarts`, `detail`), and `failure`. `GET /legion/v1/state` gains
+// `session`, `ended`, `bootStarts`, `detail`), and `failure`. `outcome`, `endedBy` and `ended`
+// are closed sets of words (api.ReleaseOutcomes, store.ProjectReleaseEndedByBoot and
+// api.ReleasedClaimEnds), each a `z.enum` in `packages/contracts/src/legion-api.ts`, which refuses
+// a word it does not name, so a word added later bumps this number. `GET /legion/v1/state` gains
 // `projectRelease`, that same body for the project's newest release, absent while none was
 // recorded; a caller from a pod whose claims record a contract below 150 is served the state
 // without it (api's stateNarrowings, withoutProjectRelease), as a caller below 133 is served it

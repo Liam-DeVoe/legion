@@ -174,7 +174,7 @@ func printProjectRelease(c *operatorCall, release api.ProjectReleaseResponse, an
 	}
 	if release.FinishedAt == nil {
 		fmt.Fprintf(c.stderr, "%s: release %d was ended by a %s before it finished; read the Sandboxes left in the cluster before the project moves\n",
-			c.name, release.ID, orNone(release.EndedBy))
+			c.name, release.ID, orNone(string(release.EndedBy)))
 		code = 1
 	}
 	var left []string
@@ -199,7 +199,7 @@ func printProjectRelease(c *operatorCall, release api.ProjectReleaseResponse, an
 // it answered or that the bound passed. On a dry run the outcome is the one a release would give
 // now, and the asked roles are the ones it would ask.
 func releasedSandboxLine(line api.ReleasedSandbox, dryRun bool) string {
-	words := []string{"sandbox", line.Name, string(line.Kind), orNone(line.Issue), line.Outcome}
+	words := []string{"sandbox", line.Name, string(line.Kind), orNone(line.Issue), string(line.Outcome)}
 	var details []string
 	if line.Commits != nil {
 		changed := "no change"
@@ -256,7 +256,7 @@ func releasedSandboxLine(line api.ReleasedSandbox, dryRun bool) string {
 // releasedClaimLine is one stopped claim's line: `claim <token> <issue> <role> <session>`, how it
 // ended, and whether the daemon's next boot starts it.
 func releasedClaimLine(line api.ReleasedClaim, dryRun bool) string {
-	words := []string{"claim", string(line.Token), orNone(line.Issue), string(line.Role), orNone(line.Session), orNone(line.Ended)}
+	words := []string{"claim", string(line.Token), orNone(line.Issue), string(line.Role), orNone(line.Session), orNone(string(line.Ended))}
 	switch {
 	case line.BootStarts && dryRun:
 		words = append(words, "(the next boot would start it)")

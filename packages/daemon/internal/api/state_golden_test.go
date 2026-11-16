@@ -1028,6 +1028,40 @@ func TestProjectReleaseResponseGolden(t *testing.T) {
 	golden(t, "project-release.json", goldenProjectRelease())
 }
 
+// projectReleaseWords is project-release-words.json: every word of the project release's three
+// finite fields, ReleasedSandbox.Outcome, ProjectReleaseResponse.EndedBy and ReleasedClaim.Ended.
+type projectReleaseWords struct {
+	Outcomes []ReleaseOutcome            `json:"outcomes"`
+	EndedBy  []store.ProjectReleaseEnder `json:"endedBy"`
+	Ended    []ReleasedClaimEnd          `json:"ended"`
+}
+
+// The project release's three finite fields are strict enums in
+// `packages/contracts/src/legion-api.ts` (`LEGION_RELEASE_OUTCOMES`,
+// `LEGION_PROJECT_RELEASE_ENDERS` and `LEGION_RELEASED_CLAIM_ENDS`), and a word the daemon writes
+// that its enum does not name refuses the whole state body at every plugin that reads it. So the
+// Go roster of each is written where the contracts suite reads it, as the failure causes are
+// (TestFailureCausesGolden), and `legion-api.test.ts` holds each enum equal to its list, word for
+// word and in order. The words are written out here beside it, so a constant renamed on the Go
+// side fails here by its own name rather than rewriting the fixture.
+func TestProjectReleaseWordsGolden(t *testing.T) {
+	words := projectReleaseWords{
+		Outcomes: ReleaseOutcomes,
+		EndedBy:  []store.ProjectReleaseEnder{store.ProjectReleaseEndedByBoot},
+		Ended:    ReleasedClaimEnds,
+	}
+	want := projectReleaseWords{
+		Outcomes: []ReleaseOutcome{"waiting", "deleted_clean", "deleted_unread", "deleted_lost", "deleted_read_refused", "deleted", "left"},
+		EndedBy:  []store.ProjectReleaseEnder{"boot"},
+		Ended: []ReleasedClaimEnd{"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready", "working", "idle",
+			"failed", "retired", "unknown", "operator", "daemon", "exit", "released", "project_release", "unrecorded"},
+	}
+	if !reflect.DeepEqual(words, want) {
+		t.Fatalf("the project release's words = %q, want the wire words %q", words, want)
+	}
+	golden(t, "project-release-words.json", words)
+}
+
 // newest is the latest of times, which is how the quiet time takes a tree's movement from the
 // several facts that can move it (record.QuietTrees).
 func newest(times ...time.Time) time.Time {

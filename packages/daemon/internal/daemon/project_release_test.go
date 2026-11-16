@@ -162,7 +162,7 @@ func TestProjectReleaseDeletesThePodOfAStoppedClaimThatFailedOrRetired(t *testin
 			if !slices.Equal(deleted, []string{"LEGION-208"}) {
 				t.Fatalf("the release deleted the pods of %v, want LEGION-208's", deleted)
 			}
-			if len(result.Claims) != 1 || result.Claims[0].Ended != string(ended) || result.Claims[0].BootStarts || result.Claims[0].Detail != "" {
+			if len(result.Claims) != 1 || result.Claims[0].Ended != api.ReleasedClaimEnd(ended) || result.Claims[0].BootStarts || result.Claims[0].Detail != "" {
 				t.Fatalf("the claim's line is %+v, want it ended %s, which the next boot does not start", result.Claims, ended)
 			}
 		})

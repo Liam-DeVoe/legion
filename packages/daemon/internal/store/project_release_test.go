@@ -306,7 +306,7 @@ func TestAProjectReleasesRecordGrowsFinishesAndEndsAtTheBoot(t *testing.T) {
 	if err != nil || read.ID != release.ID || !read.EndedAt.Equal(bootAt) || read.EndedBy != ProjectReleaseEndedByBoot || !sameJSON(t, read.Result, last) {
 		t.Fatalf("the release after the boot = %+v, %v; want it ended by the boot at %s with its result kept", read, err, bootAt)
 	}
-	var earlierEnded string
+	var earlierEnded ProjectReleaseEnder
 	if err := st.Pool().QueryRow(ctx, `select coalesce(ended_by, '') from project_releases where id = $1`, earlier.ID).Scan(&earlierEnded); err != nil || earlierEnded != ProjectReleaseEndedByBoot {
 		t.Fatalf("the earlier release, which never finished, reads ended by %q (%v), want the boot", earlierEnded, err)
 	}

@@ -7,6 +7,9 @@ import {
   LEGION_FAILURE_CAUSES,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
+  LEGION_PROJECT_RELEASE_ENDERS,
+  LEGION_RELEASE_OUTCOMES,
+  LEGION_RELEASED_CLAIM_ENDS,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
   LegionCapabilityReport,
@@ -122,6 +125,16 @@ const schemas: Record<string, z.ZodType> = {
   // cause set is the daemon's, word for word" below. A word the enum does not name fails the
   // parse of this fixture, which is what the gate above reports.
   "failure-causes.json": z.strictObject({ causes: z.array(z.enum(LEGION_FAILURE_CAUSES)) }),
+  // Nor this one: every word of the project release's three finite fields
+  // (`api.ReleaseOutcomes`, `store.ProjectReleaseEndedByBoot`, `api.ReleasedClaimEnds`), written by
+  // `internal/api`'s TestProjectReleaseWordsGolden so that the Go rosters and the three enums are
+  // held to each other by the case "the project release's words are the daemon's, word for word"
+  // below. A word an enum does not name fails the parse of this fixture.
+  "project-release-words.json": z.strictObject({
+    outcomes: z.array(z.enum(LEGION_RELEASE_OUTCOMES)),
+    endedBy: z.array(z.enum(LEGION_PROJECT_RELEASE_ENDERS)),
+    ended: z.array(z.enum(LEGION_RELEASED_CLAIM_ENDS)),
+  }),
   // Nor this one: the code of a completion refused for its phase entry and the words that
   // refusal tells the worker to act on (`staleEntryCode` and `staleEntryInstruction` in
   // `internal/api/handoff.go`), written by `internal/api`'s TestStaleEntryInstructionGolden so
@@ -1059,6 +1072,19 @@ test("a failed claim carries its cause", () => {
 test("the cause set is the daemon's, word for word", () => {
   const written = fixture("failure-causes.json") as { causes: string[] };
   expect(written.causes).toEqual([...LEGION_FAILURE_CAUSES]);
+});
+
+// The project release's `outcome`, `endedBy` and a stopped claim's `ended` are strict enums as
+// well, and the state carries the release, so a Go word with no word here refuses the whole state
+// body at every plugin that reads it. Go writes each roster into one fixture
+// (`internal/api`'s TestProjectReleaseWordsGolden) and this holds each enum to its list, word for
+// word and in the daemon's own order.
+test("the project release's words are the daemon's, word for word", () => {
+  expect(fixture("project-release-words.json")).toEqual({
+    outcomes: [...LEGION_RELEASE_OUTCOMES],
+    endedBy: [...LEGION_PROJECT_RELEASE_ENDERS],
+    ended: [...LEGION_RELEASED_CLAIM_ENDS],
+  });
 });
 
 // The rest of contract 75: every field of the claim record and of the issue record is served or

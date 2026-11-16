@@ -392,11 +392,11 @@ func (m *projectMove) runRelease(bound time.Duration) <-chan moveCommand {
 }
 
 // awaitLine waits until the running release's line of the Sandbox name reads outcome, or any
-// deleted outcome when outcome is "deleted".
-func (m *projectMove) awaitLine(t *testing.T, name, outcome string) {
+// deleted outcome when outcome is api.ReleaseDeleted.
+func (m *projectMove) awaitLine(t *testing.T, name string, outcome api.ReleaseOutcome) {
 	t.Helper()
 	r := m.rig
-	idleRigEventually(t, idleRigProjectReleaseWait, "the running release's line of "+name+" reading "+outcome, func() bool {
+	idleRigEventually(t, idleRigProjectReleaseWait, "the running release's line of "+name+" reading "+string(outcome), func() bool {
 		status, body := r.api.request(http.MethodGet, api.ProjectReleaseRoute, nil, true)
 		if status != http.StatusOK {
 			return false
@@ -407,7 +407,7 @@ func (m *projectMove) awaitLine(t *testing.T, name, outcome string) {
 		}
 		for _, line := range running.Result.Sandboxes {
 			if line.Name == name {
-				return line.Outcome == outcome || outcome == "deleted" && strings.HasPrefix(line.Outcome, "deleted")
+				return line.Outcome == outcome || outcome == api.ReleaseDeleted && strings.HasPrefix(string(line.Outcome), "deleted")
 			}
 		}
 		return false
@@ -448,7 +448,7 @@ func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIss
 			}
 		}
 	}
-	work := func(issue idleRigIssue, outcome string, commits int, changed bool) api.ReleasedSandbox {
+	work := func(issue idleRigIssue, outcome api.ReleaseOutcome, commits int, changed bool) api.ReleasedSandbox {
 		t.Helper()
 		line := releaseLine(t, release, issue.pod)
 		if line.Outcome != outcome || line.Commits == nil || *line.Commits != commits ||
@@ -541,7 +541,7 @@ func (m *projectMove) checkMove(t *testing.T, rd *moveRelease, left []idleRigIss
 			continue
 		}
 		c := stored[line.Token]
-		if line.Session != was.session || line.Session == "" || line.Ended != string(supervise.SuspendedByProjectRelease) || !line.BootStarts {
+		if line.Session != was.session || line.Session == "" || line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !line.BootStarts {
 			t.Errorf("the %s release's line of %s is %+v, want its session %q, ended project_release, which the boot starts", rd.name, line.Token, line, was.session)
 		}
 		if c.State != string(supervise.StateSuspended) || c.SuspendedBy != string(supervise.SuspendedByProjectRelease) || c.UpdateRound != "" {
@@ -1074,7 +1074,7 @@ func (m *projectMove) restartDuringRelease(t *testing.T) {
 		return release.ID > previous.ID
 	})
 	for _, issue := range []idleRigIssue{m.clean, m.push, m.answer, m.held, m.old} {
-		m.awaitLine(t, issue.pod, "deleted")
+		m.awaitLine(t, issue.pod, api.ReleaseDeleted)
 	}
 	// The release has stopped the claims of the pods it deleted, each stored suspended by it, and
 	// not yet the rest: the two pods that wait and the controller's, which goes after every issue

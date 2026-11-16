@@ -210,7 +210,7 @@ func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 		for i, issue := range []idleRigIssue{clean, unpushed} {
 			line, stored := release.Result.Claims[i], rig.api.claim(rig.token(issue))
 			if line.Token != rig.token(issue) || line.Issue != issue.key || line.Role != issue.role || line.Session == "" ||
-				line.Session != stored.Session || line.Ended != string(supervise.SuspendedByProjectRelease) || !line.BootStarts {
+				line.Session != stored.Session || line.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !line.BootStarts {
 				t.Errorf("the claim line %+v, want %s's implementer on session %q, ended project_release, which the boot starts", line, issue.key, stored.Session)
 			}
 			if stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByProjectRelease) || stored.UpdateRound != "" {
@@ -284,7 +284,7 @@ func TestProjectReleaseShowsInTheStateWithItsResult(t *testing.T) {
 			t.Fatalf("the release after the restart reads %+v, want release %d ended by a boot", ended, release.ID)
 		}
 		served, ok := rig.stateRelease().(map[string]any)
-		if !ok || served["endedBy"] != store.ProjectReleaseEndedByBoot {
+		if !ok || served["endedBy"] != string(store.ProjectReleaseEndedByBoot) {
 			t.Fatalf("the state after the restart carries %v, want the release ended by a boot", served)
 		}
 	})
@@ -368,7 +368,7 @@ func TestProjectReleaseWaitsForTheControllersTurnToTheBound(t *testing.T) {
 	if release.FinishedAt.After(release.BoundAt) {
 		t.Errorf("the release finished at %s, after the bound %s: the controller's turn was cut, not waited for", release.FinishedAt, release.BoundAt)
 	}
-	if ended := releaseClaimLine(t, release, controller); ended.Ended != string(supervise.SuspendedByProjectRelease) || !ended.BootStarts {
+	if ended := releaseClaimLine(t, release, controller); ended.Ended != api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease) || !ended.BootStarts {
 		t.Errorf("the controller's claim line is %+v, want it ended project_release, which the next boot starts", ended)
 	}
 	if stored := rig.claimsByToken()[controller]; stored.State != string(supervise.StateSuspended) ||
@@ -420,7 +420,7 @@ func TestProjectReleaseLeavesAPodWhoseStopTheStoreDidNotTake(t *testing.T) {
 	if stored := rig.api.claim(token); stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByOperator) {
 		t.Errorf("the claim is stored %s by %q, want suspended by an operator", stored.State, stored.SuspendedBy)
 	}
-	if ended := releaseClaimLine(t, release, token); ended.Ended != string(supervise.SuspendedByOperator) || ended.BootStarts {
+	if ended := releaseClaimLine(t, release, token); ended.Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || ended.BootStarts {
 		t.Errorf("the claim line is %+v, want it ended operator, which the next boot does not start", ended)
 	}
 }

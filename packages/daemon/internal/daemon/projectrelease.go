@@ -867,7 +867,7 @@ func writeDeleted(line *api.ReleasedSandbox, last releaseRead) {
 // deletedOutcome is the outcome of a pod deleted after read, its one read or its last:
 // deleted_unread where no role process was there to read it, which writeDeleted gives only to a
 // pod no read ever reached.
-func deletedOutcome(read releaseRead) string {
+func deletedOutcome(read releaseRead) api.ReleaseOutcome {
 	switch {
 	case !read.read:
 		return api.ReleaseDeletedUnread
@@ -1249,9 +1249,9 @@ func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pend
 			line.Ended, line.BootStarts = api.ReleasedClaimUnrecorded, false
 			continue
 		}
-		line.Ended = string(c.State)
+		line.Ended = api.ReleasedClaimEnd(c.State)
 		if c.State == supervise.StateSuspended {
-			line.Ended = string(c.SuspendedBy)
+			line.Ended = api.ReleasedClaimEnd(c.SuspendedBy)
 		}
 		line.BootStarts = c.ProjectReleased()
 	}
@@ -1338,9 +1338,9 @@ func (r *projectReleaser) dryRun(ctx context.Context, bound time.Duration) (api.
 	}
 	for i := range run.result.Claims {
 		line := &run.result.Claims[i]
-		line.Ended, line.BootStarts = string(supervise.SuspendedByProjectRelease), true
+		line.Ended, line.BootStarts = api.ReleasedClaimEnd(supervise.SuspendedByProjectRelease), true
 		if left[line.Issue] {
-			line.Ended, line.BootStarts = string(supervise.SuspendedByOperator), false
+			line.Ended, line.BootStarts = api.ReleasedClaimEnd(supervise.SuspendedByOperator), false
 		}
 	}
 	finished := r.now().UTC()
