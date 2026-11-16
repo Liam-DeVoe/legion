@@ -52,7 +52,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	// must name one filter for it (natsgrant.GitHubFilter), or the server refuses the create.
 	// acme/one and acme/two are two repositories whose filters differ, for the refusals of one's
 	// consumer on the other's filter. acme/mixedcase is how Dispatch spells a repository GitHub
-	// spells Acme/MixedCase: the daemon names its consumer from GitHub's spelling, and
+	// spells Acme/MixedCase: t-c-10's daemon is to name its consumer from GitHub's spelling, and
 	// GitHubConsumerName lower-cases it, so the name is the one the grant holds.
 	pubScope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets", "acme/gadgets.js", "acme/one", "acme/two", "acme/mixedcase"}, Identity: livePUBIdentity}
 	privScope := natsgrant.Scope{Projects: []string{"PRIV"}, Repositories: []string{"acme/secret"}, Identity: livePRIVIdentity}
