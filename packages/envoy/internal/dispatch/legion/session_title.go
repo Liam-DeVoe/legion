@@ -3,9 +3,10 @@ package legion
 import "strings"
 
 // session_title.go holds the one reading of a Legion session's title. Both halves of the rule
-// that places an issue in a tree ask it — the project-wide read of the issues that carry phase
-// work (PhaseWorkKeys, which the Legion board and the metrics both stand on) and the metrics'
-// own window reads — so it lives here, beside the walk, rather than in either reader.
+// that places an issue in a tree ask it — the read of the issues that carry phase work
+// (phase_work.go: the metrics read it over the whole log, PhaseWorkKeys, and the Legion board for
+// the issues its tree walk can climb onto, PhaseWorkOf) and the metrics' own window reads — so it
+// lives here, beside the walk, rather than in either reader.
 
 // roles are Legion's six worker types, in the order the workflow runs them. The daemon's
 // claim.Roles is the same list in the daemon's own module (packages/daemon/internal/claim/
@@ -69,11 +70,10 @@ func (t SessionTitle) Works(issue string) bool {
 
 // WorkerTitle is the parsed title of a session that works an issue, and whether title is one: a
 // phase worker or a root architect, never the project's controller, whose subject is a project
-// and no issue. It is the one statement of that rule, and every reader of it asks it: the
-// project-wide read, which records every such session's newest title (PhaseWorkKeys); the board's
-// index of which sessions can move that read's answer (api/legion_phase_work.go's observe); the
-// metrics' own window read (metrics.readRoleEvents); and the issue half below. So no two of them
-// can disagree about which sessions count.
+// and no issue. It is the one statement of that rule, and every reader of it asks it: the issue
+// half below (RoleSessionWorks), which both reads of the issues that carry phase work ask
+// (PhaseWorkKeys for the metrics, PhaseWorkOf for the board), and the metrics' own window read
+// (metrics.readRoleEvents). So no two of them can disagree about which sessions count.
 func WorkerTitle(title string) (SessionTitle, bool) {
 	parsed, ok := ParseSessionTitle(title)
 	if !ok || parsed.Controller {
@@ -83,8 +83,9 @@ func WorkerTitle(title string) (SessionTitle, bool) {
 }
 
 // RoleSessionWorks is whether a session titled title is a Legion role working issue. It is the
-// title half of what makes an issue carry Legion phase work, which the project-wide read asks
-// for every (issue, session) pair it finds (PhaseWorkKeys).
+// title half of what makes an issue carry Legion phase work, which the read of that fact asks for
+// every (issue, session) pair it finds: over the whole log for the metrics (PhaseWorkKeys), and
+// over the issues its tree walk can climb onto for the board (PhaseWorkOf).
 func RoleSessionWorks(title, issue string) bool {
 	parsed, ok := WorkerTitle(title)
 	return ok && parsed.Works(issue)

@@ -1002,3 +1002,136 @@ func TestTheMetricsClimbThroughPhaseWorkOutsideTheirWindow(t *testing.T) {
 		}
 	}
 }
+
+// TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename: the issues that carry Legion phase work
+// are one rule over one read of the same rows (legion.PhaseWorkKeys for the metrics,
+// legion.PhaseWorkOf for the board), which takes each session's newest title the one way Dispatch
+// resolves a title (delivery.ResolveSessionTitles). A session renamed after it wrote is where a
+// rule built from each event's own title answers differently: it kept the issue the session wrote
+// on under the title it wrote under, while the newest title no longer names it at all. The board
+// reads the phase work of that issue alone, and the rename is an event written on another issue,
+// so its read must still take the session's title from everything the session wrote, and put the
+// issue below in the same tree as the metrics do.
+func TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	hourAgo := now.Add(-time.Hour)
+	for _, issue := range []struct {
+		number   int
+		title    string
+		rank     string
+		parent   string
+		reported bool
+	}{
+		{860, "The top, which the daemon reports", "a", "", true},
+		{861, "The tracking issue the renamed session wrote on", "b", "INFRA-860", false},
+		{862, "The bottom, which the daemon reports", "c", "INFRA-861", true},
+		{863, "Its closed child, which brings the chain into the window", "d", "INFRA-862", false},
+	} {
+		key := seedLegionIssue(t, database, "INFRA", issue.number, issue.title, issue.rank, nil, issue.parent)
+		if issue.reported {
+			seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, hourAgo)
+		}
+	}
+	closeLegionIssue(t, database, "INFRA-863", hourAgo)
+	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
+
+	// One session, two events: it wrote on the tracking issue under that issue's own title, and
+	// was renamed to the issue it went on to work. Its newest title is the only title Dispatch
+	// resolves, so no issue carries phase work by the first event any more.
+	seedLegionRoleEvent(t, database, "INFRA-861", "s-860", "implementer", "INFRA-861", hourAgo)
+	seedLegionRoleEvent(t, database, "INFRA-862", "s-860", "implementer", "INFRA-862", now.Add(-30*time.Minute))
+
+	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	if err != nil {
+		t.Fatalf("read the metrics population: %v", err)
+	}
+	if root := population.TreeRoot("INFRA-862"); root != "INFRA-862" {
+		t.Errorf("the metrics put INFRA-862 in tree %q, want INFRA-862: no session titled for INFRA-861 wrote on it", root)
+	}
+	if tree := legionCard(t, legionBoardOf(t, handler, "INFRA"), "INFRA-862").Tree; tree != "INFRA-862" {
+		t.Errorf("the board puts INFRA-862 in tree %q, want INFRA-862, as the metrics do", tree)
+	}
+}
+
+// TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork: the phase-work rule reads an event that
+// carried no title of its own under the session's newest title all the same (legion/phase_work.go),
+// so such an event can be the first that gives its issue phase work: a write with no title takes
+// no name away, and the Dispatch CLI sends one whenever the session's title is unset
+// (envoy-client's dispatch-cli.ts). The board reads the phase work of the issue the event is
+// written on alone, and the session's title is on an event of another issue, so its read must
+// take that title from everything the session wrote.
+func TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	top := seedLegionIssue(t, database, "INFRA", 990, "The top, which the daemon reports", "a", nil, "")
+	middle := seedLegionIssue(t, database, "INFRA", 991, "The tracking issue in neither half of the rule", "b", nil, top)
+	bottom := seedLegionIssue(t, database, "INFRA", 992, "The bottom, which the daemon reports", "c", nil, middle)
+	for _, key := range []string{top, bottom} {
+		seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
+	}
+	seedLegionRead(t, database, "INFRA", now.Add(-time.Hour), "")
+
+	// The session's title names the middle issue, on an event it wrote on the bottom one: the
+	// middle carries no phase work yet.
+	seedLegionRoleEvent(t, database, bottom, "s-990", "implementer", middle, now.Add(-45*time.Minute))
+	if tree := legionCard(t, legionBoardOf(t, handler, "INFRA"), bottom).Tree; tree != bottom {
+		t.Fatalf("the board puts %s in tree %q, want itself: the issue above it carries no phase work yet", bottom, tree)
+	}
+
+	// The same session writes on the middle issue carrying no title: the rule reads it under the
+	// session's newest title, so the middle carries phase work from here and the bottom's tree
+	// climbs past it.
+	seedSessionEvent(t, database, middle, "s-990", "", now.Add(-30*time.Minute))
+	if tree := legionCard(t, legionBoardOf(t, handler, "INFRA"), bottom).Tree; tree != top {
+		t.Errorf("after the title-less event the board puts %s in tree %q, want %s: the event gave %s phase work", bottom, tree, top, middle)
+	}
+}
+
+// TestAFailedLegionReadLeavesTheDeliveryFeedRunning: the board's reads, its phase-work read among
+// them (legionBoardPopulation.readPhaseWork), are the Legion view's own, and a read that fails is
+// that view's failure alone: the live hub retries the view (recompute), and the event feed every
+// Delivery view of the hub reads (seedEvents) never waits on a Legion read. Here the phase-work
+// read cannot succeed — the test's own database has its handoffs table renamed away — while a
+// Legion board and a timeline are open on one hub. The board's read fails, and the timeline's feed
+// must still carry every event the test writes.
+//
+// So the hub's generation makes no Legion read beside its feed's cursor: a read made there that
+// failed would cancel the feed and try again, and while it failed no Delivery view of any
+// deployment, with a Legion setting or without one, would hear an event.
+func TestAFailedLegionReadLeavesTheDeliveryFeedRunning(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	// A chain whose walk climbs onto an issue the daemon reports nothing of, so the board's read
+	// reads that issue's phase work.
+	top := seedLegionIssue(t, rig.database, "INFRA", 870, "The top, which the daemon reports", "a", nil, "")
+	middle := seedLegionIssue(t, rig.database, "INFRA", 871, "The tracking issue the daemon reports nothing of", "b", nil, top)
+	bottom := seedLegionIssue(t, rig.database, "INFRA", 872, "The bottom, which the daemon reports", "c", nil, middle)
+	for _, key := range []string{top, bottom} {
+		seedLegionObservation(t, rig.database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
+	}
+	seedLegionRead(t, rig.database, "INFRA", now.Add(-time.Minute), "")
+	legionExec(t, rig.database, `alter table handoffs rename to handoffs_unreadable`)
+	if _, err := rig.hub.server.readLegionBoard(t.Context(), "INFRA"); err == nil {
+		t.Fatal("the board's read succeeded with no handoffs table, so nothing here fails a Legion read")
+	}
+
+	board, timeline := newFakeLiveConn(), newFakeLiveConn()
+	rig.hub.Subscribe(board, subscribeFrame("board", legionView("INFRA")))
+	rig.hub.Subscribe(timeline, subscribeFrame("timeline", presetView(deliveryLiveTimeline, 7, "")))
+	t.Cleanup(func() {
+		rig.hub.Close(board)
+		rig.hub.Close(timeline)
+	})
+
+	seedSessionEvent(t, rig.database, bottom, "s-870", "A person's own session", now)
+	head := eventHead(t, rig.database)
+	notifyChannel(t, rig.database, EventsChannel, "")
+	rig.waitForEventCursor(t, head, "an event written while every Legion read fails")
+}

@@ -196,8 +196,9 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 }
 
 // legionBoardPopulation is every read one board answer makes: the project's Legion setting, the
-// newest read of its daemon, the newest value of every field the sampler recorded, and the
-// project's own issues in Dispatch's rank order.
+// newest read of its daemon, the newest value of every field the sampler recorded, the project's
+// own issues in Dispatch's rank order, and the phase work of the issues its tree walk can climb
+// onto that the daemon reports nothing of.
 type legionBoardPopulation struct {
 	project string
 	// read is the newest legion_reads row, nil for a project whose daemon was never read.
@@ -215,9 +216,10 @@ type legionBoardPopulation struct {
 	// walk climbs: an issue the daemon reports nothing of can still be the Legion issue above one
 	// it does (treeRoot).
 	parents map[string]string
-	// phaseWork is the server's set of the issues that carry Legion phase work, the other half of
-	// what makes an issue Legion's for the walk (legion_phase_work.go); nil is an empty set.
-	phaseWork *legionPhaseWork
+	// phaseWork is which of the issues the tree walk can climb onto that the daemon reports
+	// nothing of carry Legion phase work, the other half of what makes an issue Legion's for the
+	// walk (readPhaseWork); nil where the walk climbs onto none.
+	phaseWork map[string]struct{}
 	// ranked is the project's issue keys in Dispatch's rank order, which is the Queue column's
 	// order when no read has recorded a waiting line.
 	ranked []string
@@ -261,12 +263,6 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 	}
 	population := &legionBoardPopulation{
 		project: project, issues: map[string]*legionBoardIssue{}, parents: map[string]string{},
-		phaseWork: &s.legionPhaseWork,
-	}
-	// The walk reads the issues that carry Legion phase work beside the daemon's own reports, and
-	// the set is read once rather than per board (legion_phase_work.go).
-	if err := s.legionPhaseWork.ensure(ctx, pool); err != nil {
-		return nil, err
 	}
 	if err := population.readDaemonRead(ctx, pool); err != nil {
 		return nil, err
@@ -275,6 +271,9 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 		return nil, err
 	}
 	if err := population.readIssues(ctx, pool); err != nil {
+		return nil, err
+	}
+	if err := population.readPhaseWork(ctx, pool); err != nil {
 		return nil, err
 	}
 	return population, nil
@@ -427,6 +426,47 @@ func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool
 	return rows.Err()
 }
 
+// readPhaseWork reads which of the issues the tree walk can climb onto carry Legion phase work:
+// the half of what makes an issue Legion's that the daemon's reports do not answer (treeNode). It
+// runs after the other reads, since the walk climbs what they read.
+//
+// An issue the daemon reports is Legion's already, and the walk asks about any other only as the
+// parent of an issue whose `tree` is empty (legion.TreeChain). The daemon names a tree for every
+// issue it records (the daemon's api.Issue.Tree, dispatch://INFRA-980), so a board of such a
+// daemon asks about none and this reads nothing. Where the walk can ask — an issue of a daemon
+// from before that release, or an operator's claim, which stands in no tree — the walk is made
+// once first with every such issue taken as Legion's, which climbs onto every one the real walk
+// can reach and some it cannot, and only those are read (legion.PhaseWorkOf): an index read of
+// those issues' own rows, whose answer for each is the one the whole log gives it.
+func (p *legionBoardPopulation) readPhaseWork(ctx context.Context, pool *store.Pool) error {
+	var climbed []string
+	taken := map[string]bool{}
+	climb := func(key string) (legion.TreeNode, bool) {
+		node, known := p.treeNode(key)
+		if known && !node.Legion {
+			if !taken[key] {
+				taken[key] = true
+				climbed = append(climbed, key)
+			}
+			node.Legion = true
+		}
+		return node, known
+	}
+	// Every walk the board makes starts at an issue the daemon reports (card, nearestCard).
+	for key := range p.issues {
+		legion.TreeChain(key, climb)
+	}
+	if len(climbed) == 0 {
+		return nil
+	}
+	work, err := legion.PhaseWorkOf(ctx, pool, climbed)
+	if err != nil {
+		return err
+	}
+	p.phaseWork = work.Keys
+	return nil
+}
+
 // issueKeys is every issue the board's answer names, which is what the live hub marks its view
 // dirty by (delivery_live_hub_intake.go's dirtyIssueLocked).
 func (p *legionBoardPopulation) issueKeys() map[string]struct{} {
@@ -460,7 +500,8 @@ func (p *legionBoardPopulation) treeNode(key string) (legion.TreeNode, bool) {
 	if !reported && !held {
 		return legion.TreeNode{}, false
 	}
-	node := legion.TreeNode{Parent: parent, Legion: reported || p.phaseWork.has(key)}
+	_, worked := p.phaseWork[key]
+	node := legion.TreeNode{Parent: parent, Legion: reported || worked}
 	if reported {
 		node.Tree = issue.tree
 	}
