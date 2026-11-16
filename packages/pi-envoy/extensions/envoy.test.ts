@@ -265,6 +265,9 @@ const natsState = {
    *  is never drained, and with `maxReconnectAttempts: -1` it outlives every session. */
   closedNames: [] as string[],
   failConnects: 0,
+  /** The error a failed connect throws: nats.js's refusal by default, a resolver's for a row that
+   *  sees what a notice carries of it. */
+  failMessage: "CONNECTION_REFUSED",
   /** Every connection reports itself closed, as one NATS dropped does. */
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
@@ -320,7 +323,7 @@ const natsStandInConnect = async (options: {
   const { name, servers, authenticator } = options;
   if (natsState.failConnects > 0) {
     natsState.failConnects -= 1;
-    throw new Error("CONNECTION_REFUSED");
+    throw new Error(natsState.failMessage);
   }
   natsState.connectedNames.push(name);
   natsState.connects.push({ servers, authenticated: authenticator !== undefined });
@@ -764,6 +767,7 @@ afterEach(async () => {
   relaySeq = 0;
   natsState.controlsByTopic.clear();
   natsState.failConnects = 0;
+  natsState.failMessage = "CONNECTION_REFUSED";
   natsState.connectionsClosed = false;
   natsState.failSubscribes = 0;
   natsState.realConnect = false;
@@ -19047,6 +19051,35 @@ console.log(JSON.stringify(args));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(natsState.connectedNames.length).toBe(connectionsAfterRecovery);
+  });
+
+  test("a NATS failure notice never names an address the log would not", async () => {
+    // A throwaway nkey seed pasted as the NATS server: nats.js's resolver error names it as the
+    // host it could not look up, lowercased, and the notice must carry neither form.
+    const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
+    process.env.ENVOY_NATS_URL = seed;
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    natsState.failConnects = 1;
+    natsState.failMessage = `getaddrinfo EAI_AGAIN ${seed.toLowerCase()}`;
+    const notifications: string[] = [];
+    const context: SessionContext = {
+      cwd: "/tmp/envoy-omp-test",
+      sessionManager: { ...topLevelSession, getSessionId: () => "ses_seed_notice" },
+      setInterval: () => {},
+      ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?seed-notice");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    expect(
+      notifications.some((message) =>
+        message.includes(
+          "because its NATS connection failed: getaddrinfo EAI_AGAIN <a server address not shown>"
+        )
+      )
+    ).toBe(true);
+    expect(notifications.join("\n").toLowerCase()).not.toContain(seed.toLowerCase());
   });
 
   test("natsCredential follows a session switch", async () => {

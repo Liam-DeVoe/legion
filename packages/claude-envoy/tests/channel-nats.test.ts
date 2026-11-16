@@ -5,7 +5,10 @@ import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
-import { brokerNatsCredential } from "@legion/envoy-client/nats-credential"
+import {
+  type BrokerNatsCredential,
+  brokerNatsCredential,
+} from "@legion/envoy-client/nats-credential"
 import { type Authenticator, type ConnectionOptions, type NatsConnection, nkeys } from "nats"
 import { dialChannelNats } from "../src/envoy-channel-server"
 
@@ -150,8 +153,9 @@ test("a credential pasted as a bare server address is never named", async () => 
   const segments = Array.from({ length: 3 }, () =>
     crypto.randomUUID().replaceAll("-", "").repeat(2),
   )
+  // nats.js's own error names the host it could not resolve, lowercased, as getaddrinfo does.
   const refused = async (): Promise<NatsConnection> => {
-    throw new Error("CONNECTION_REFUSED")
+    throw new Error(`getaddrinfo EAI_AGAIN ${seed.toLowerCase()}`)
   }
   const failure = await dialChannelNats(
     {
@@ -165,9 +169,57 @@ test("a credential pasted as a bare server address is never named", async () => 
     () => "dialled",
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
-  expect(failure).not.toContain(seed)
-  for (const segment of segments) expect(failure).not.toContain(segment)
+  expect(failure.toLowerCase()).not.toContain(seed.toLowerCase())
+  for (const segment of segments) expect(failure.toLowerCase()).not.toContain(segment.toLowerCase())
   expect(failure).toBe(
-    "could not connect to NATS at a server address that does not read as a host, a server address that does not read as a host, a server address that does not read as a host, nats.example:4222 presenting no credential: CONNECTION_REFUSED",
+    "could not connect to NATS at a server address that does not read as a host, a server address that does not read as a host, a server address that does not read as a host, nats.example:4222 presenting no credential: getaddrinfo EAI_AGAIN <a server address not shown>",
   )
+})
+
+test("a stop ends the wait for the token and for the dial, and closes a connection made late", async () => {
+  const STOPPING = "the channel server stopped before its NATS subscriptions reached the server"
+  // The dial: pending until after the stop, then a connection the stop must close.
+  const made = Promise.withResolvers<NatsConnection>()
+  let closed = 0
+  const late = { close: async () => void (closed += 1) } as unknown as NatsConnection
+  const stopping = new AbortController()
+  const dialing = dialChannelNats(
+    { natsUrls: ["nats://nats.test:4222"], natsCredential: { kind: "none" } },
+    "claude-envoy-channel-ses_stop",
+    () => {},
+    // The stop lands once the dial has begun.
+    () => {
+      queueMicrotask(() => stopping.abort())
+      return made.promise
+    },
+    stopping.signal,
+  ).then(
+    () => "dialled",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  expect(await dialing).toBe(STOPPING)
+  made.resolve(late)
+  await Bun.sleep(10)
+  expect(closed).toBe(1)
+
+  // The token: a trade that never answers is waited for no longer than the stop.
+  const waiting = new AbortController()
+  // A broker credential whose trade never answers; nothing else of it is reached before the dial.
+  const broker = {
+    ready: () => new Promise<void>(() => undefined),
+  } as unknown as BrokerNatsCredential
+  const trading = dialChannelNats(
+    { natsUrls: ["nats://nats.test:4222"], natsCredential: { kind: "broker", broker } },
+    "claude-envoy-channel-ses_trade",
+    () => {},
+    async () => {
+      throw new Error("dialled before the token")
+    },
+    waiting.signal,
+  ).then(
+    () => "dialled",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  setTimeout(() => waiting.abort(), 20)
+  expect(await trading).toBe(STOPPING)
 })

@@ -86,6 +86,24 @@ function silentHub(): { url: string; pings(): number } {
   return { url: `nats://127.0.0.1:${server.port}`, pings: () => pings }
 }
 
+/** A NATS server that takes the connection and never sends its INFO, so a client's dial waits on
+ *  it until nats.js's own dial timeout. `connections()` counts the clients that reached it. */
+function muteHub(): { url: string; connections(): number } {
+  let connections = 0
+  const server = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open() {
+        connections += 1
+      },
+      data() {},
+    },
+  })
+  cleanups.push(() => server.stop(true))
+  return { url: `nats://127.0.0.1:${server.port}`, connections: () => connections }
+}
+
 interface Started {
   readonly server: Subprocess<"pipe", "ignore", "pipe">
   readonly socketPath: string
@@ -200,6 +218,22 @@ test("a stop asked for while the start waits on a silent hub exits 0, its socket
   expect(await exitWithin(started.server, 500)).toBeUndefined()
   started.server.kill("SIGTERM")
   const code = await exitWithin(started.server, 8_000)
+  expect(code, `still running after SIGTERM: ${started.stderr()}`).toBe(0)
+  expect(started.stderr()).not.toContain("channel server failed")
+  expect(existsSync(started.socketPath)).toBe(false)
+}, 30_000)
+
+test("a stop asked for while the dial waits on a mute hub exits 0, its socket removed", async () => {
+  const hub = muteHub()
+  const started = await startServer([hub.url])
+  const deadline = Date.now() + 8_000
+  while ((hub.connections() < 1 || !existsSync(started.socketPath)) && Date.now() < deadline) {
+    await Bun.sleep(50)
+  }
+  expect(hub.connections(), started.stderr()).toBeGreaterThanOrEqual(1)
+  started.server.kill("SIGTERM")
+  // Well inside nats.js's dial timeout: the stop, not the timeout, ends the wait.
+  const code = await exitWithin(started.server, 1_500)
   expect(code, `still running after SIGTERM: ${started.stderr()}`).toBe(0)
   expect(started.stderr()).not.toContain("channel server failed")
   expect(existsSync(started.socketPath)).toBe(false)

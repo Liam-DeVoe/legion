@@ -95,7 +95,7 @@ import {
 } from "@legion/envoy-client/envoy-settings";
 import { messageFor } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
-import { natsConnectionOptions } from "@legion/envoy-client/nats-connection";
+import { natsConnectionOptions, natsErrorForLog } from "@legion/envoy-client/nats-connection";
 import {
   type BrokerNatsCredential,
   followNatsCredential,
@@ -583,7 +583,7 @@ class RegistrationError extends Error {}
 // opens the subject.
 class InboundError extends Error {
   readonly decided: boolean;
-  constructor(message: string, decided: boolean, options: ErrorOptions) {
+  constructor(message: string, decided: boolean, options?: ErrorOptions) {
     super(message, options);
     this.decided = decided;
   }
@@ -3662,20 +3662,32 @@ export default function envoyExtension(pi: PiApi): void {
     leftSessions.delete(host);
     for (const other of leftSessions) forgetBrokerSession(other);
     leftSessions.clear();
+    // nats.js's own error can name the host it could not resolve, and a pasted seed or token parses
+    // as one: the text a notice carries names no address the log would not (`natsErrorForLog`).
+    const inboundSettings = active?.settings.inbound;
+    const natsUrls =
+      inboundSettings !== undefined && "natsUrls" in inboundSettings
+        ? inboundSettings.natsUrls
+        : [];
+    const failureText =
+      inboundFailure === undefined
+        ? undefined
+        : natsErrorForLog(messageFor(inboundFailure), natsUrls);
     if (registration !== undefined) {
       // A registration refused for want of the relay subject the failed dial would have opened
       // names that dial's own failure too: it is the cause a person can act on (a hub with no auth
       // service under NATS_AUTH=broker says so and what to unset), which the refusal alone hides.
       const refused = messageFor(registration.error);
       throw new RegistrationError(
-        inboundFailure === undefined
+        failureText === undefined
           ? refused
-          : `${refused}, because its NATS connection failed: ${messageFor(inboundFailure)}`,
+          : `${refused}, because its NATS connection failed: ${failureText}`,
         { cause: registration.error }
       );
     }
-    if (inboundFailure !== undefined) {
-      throw new InboundError(messageFor(inboundFailure), decided, { cause: inboundFailure });
+    if (failureText !== undefined) {
+      // No cause: nats.js's own error still carries what the text leaves out.
+      throw new InboundError(failureText, decided);
     }
     return decided;
   };

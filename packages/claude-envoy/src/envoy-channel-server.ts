@@ -45,7 +45,11 @@ import {
 } from "@legion/envoy-client/envoy-settings"
 import { messageFor } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
-import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
+import {
+  natsConnectionOptions,
+  natsErrorForLog,
+  natsServerForLog,
+} from "@legion/envoy-client/nats-connection"
 import {
   followNatsCredential,
   keepNatsCredential,
@@ -648,68 +652,73 @@ const CREDENTIAL_NAMES: Record<NatsCredential["kind"], string> = {
   none: "no credential",
 }
 
-/** What a failed dial says in place of a server address it will not name. */
-const UNNAMED_SERVER = "a server address that does not read as a host"
-
-/** One label of a host name a failed dial names: letters, digits and inner hyphens, at most 32
- *  characters. A pasted nkey seed (58 characters) or a token's segment is a longer label. */
-const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/i
-
-/** Whether `hostname` (a URL's, so an IPv6 literal keeps its brackets) reads as a host: an IP
- *  literal, or a name whose every label is a `HOST_LABEL`. */
-function readsAsHost(hostname: string): boolean {
-  if (/^\[[0-9a-f:.]+\]$/i.test(hostname) || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) return true
-  return hostname.split(".").every((label) => HOST_LABEL.test(label))
-}
-
-/** A NATS server as a failed dial names it: scheme, host and port alone, and host and port alone
- * for one written without a scheme, which nats.js dials as `nats://`. A URL may carry a token or a
- * user and password (`nats://token@host:port`), and a value that does not read as a host may be a
- * credential pasted into the wrong setting (an nkey seed parses as a host name), so neither
- * reaches a log: such an address is `UNNAMED_SERVER`. */
-function serverForLog(server: string): string {
-  const schemed = server.includes("://")
-  try {
-    const { protocol, host, hostname } = new URL(schemed ? server : `nats://${server}`)
-    if (host === "" || /\s/.test(server) || !readsAsHost(hostname)) return UNNAMED_SERVER
-    return schemed ? `${protocol}//${host}` : host
-  } catch {
-    return UNNAMED_SERVER
-  }
-}
-
 /**
  * Opens the session's NATS connection with the credential `inbound` resolved. A broker token is
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
  * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`),
  * until `stop` or the connection closing. A dial that fails throws naming the servers and the
- * credential it presented beside nats.js's own reason. `dial` is nats.js's `connect`, or a test's.
+ * credential it presented beside nats.js's own reason, with no address it does not name and no
+ * credential a URL holds in either (`natsServerForLog`, `natsErrorForLog`; nats.js's resolver
+ * errors name the host they looked up). The error keeps no cause: nats.js's own error still
+ * carries them. `dial` is nats.js's `connect`, or a test's.
+ *
+ * `signal` aborting (the process is stopping) ends the wait for the token and for the dial at once,
+ * with `START_STOPPING`; the token trade itself goes on, since it is shared with every caller of
+ * this session's token, and a connection the dial still makes is closed.
  */
 export async function dialChannelNats(
   inbound: { readonly natsUrls: readonly string[]; readonly natsCredential: NatsCredential },
   name: string,
   warn: (text: string) => void,
   dial: (options: ConnectionOptions) => Promise<NatsConnection> = connect,
+  signal?: AbortSignal,
 ): Promise<ChannelNats> {
-  const { natsCredential } = inbound
-  const broker = natsCredential.kind === "broker" ? natsCredential.broker : undefined
-  await broker?.ready()
-  let connection: NatsConnection
+  const stopped = Promise.withResolvers<"stopping">()
+  const onAbort = (): void => stopped.resolve("stopping")
+  if (signal?.aborted === true) onAbort()
+  signal?.addEventListener("abort", onAbort)
+  /** `waited`, or `START_STOPPING` the moment `signal` aborts. A rejection that lands after the
+   *  stop won is settled here, never left unhandled. */
+  const unlessStopped = async <T>(waited: Promise<T>): Promise<T> => {
+    const outcome = await Promise.race([
+      waited.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      ),
+      stopped.promise,
+    ])
+    if (outcome === "stopping") throw new Error(START_STOPPING)
+    if ("error" in outcome) throw outcome.error
+    return outcome.value
+  }
   try {
-    connection = await dial(
+    const { natsCredential } = inbound
+    const broker = natsCredential.kind === "broker" ? natsCredential.broker : undefined
+    await unlessStopped(broker?.ready() ?? Promise.resolve())
+    const dialing = dial(
       natsConnectionOptions({ servers: inbound.natsUrls, name, credential: natsCredential }),
     )
-  } catch (error) {
-    throw new Error(
-      `could not connect to NATS at ${inbound.natsUrls.map(serverForLog).join(", ")} presenting ${CREDENTIAL_NAMES[natsCredential.kind]}: ${messageFor(error)}`,
-      { cause: error },
-    )
-  }
-  if (broker === undefined) return { connection, stop: () => {} }
-  return {
-    connection,
-    stop: keepNatsCredential(connection, broker, warn),
-    followSession: () => followNatsCredential(connection, broker),
+    let connection: NatsConnection
+    try {
+      connection = await unlessStopped(dialing)
+    } catch (error) {
+      if (signal?.aborted === true) {
+        // A dial that completes after the stop opened a connection nobody will use.
+        dialing.then((late) => late.close()).catch(() => undefined)
+        throw new Error(START_STOPPING)
+      }
+      throw new Error(
+        `could not connect to NATS at ${inbound.natsUrls.map(natsServerForLog).join(", ")} presenting ${CREDENTIAL_NAMES[natsCredential.kind]}: ${natsErrorForLog(messageFor(error), inbound.natsUrls)}`,
+      )
+    }
+    if (broker === undefined) return { connection, stop: () => {} }
+    return {
+      connection,
+      stop: keepNatsCredential(connection, broker, warn),
+      followSession: () => followNatsCredential(connection, broker),
+    }
+  } finally {
+    signal?.removeEventListener("abort", onAbort)
   }
 }
 
@@ -2484,7 +2493,14 @@ export async function runEnvoyChannelServer(): Promise<void> {
         inbound,
         `claude-envoy-channel-${identity.id}`,
         (text) => process.stderr.write(`envoy-channel: ${text}\n`),
-      )
+        connect,
+        booting.signal,
+      ).catch((error: unknown) => {
+        // A stop asked for while the token or the dial was awaited, as in the start below.
+        if (stopping) return undefined
+        throw error
+      })
+      if (dialled === undefined) return
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
       const started = await startChannelSession({

@@ -164,7 +164,11 @@ a plugin dials only with these options), reconnecting forever 2 s apart, and a p
 (`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
 within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2 s wait; nats.js's
-default 120 s interval left a frozen path for up to 6 minutes.
+default 120 s interval left a frozen path for up to 6 minutes. A failed connect is logged through
+`natsServerForLog(server)` and `natsErrorForLog(text, servers)`: a server is named by scheme, host
+and port alone, and an address that does not read as a host (a pasted nkey seed or token parses as
+one) is not named at all, nor is it, or any credential a URL holds, left in nats.js's own error text,
+whose resolver errors name the host they looked up.
 
 A session's NATS credential (`@legion/envoy-client/nats-credential`) is one of three: the nkey user
 a seed names, the session's broker token, or none. The broker token is the session's own, the one
