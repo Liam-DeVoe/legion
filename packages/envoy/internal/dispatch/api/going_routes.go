@@ -294,15 +294,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The whole credential, through model.Actor.SameCredential and never SameAs alone, which
-	// would make any two personal tokens one writer: a run is read by the credential that
-	// asked it. A run whose author names nobody is read by nobody, and that is a test of its
-	// own - graphstore.ProvesAuthor again, asked here of the author the row holds - because
-	// SameCredential calls two credentials that name nobody the one credential: without it,
-	// such a row would be served to every holder of the deployment's shared token, which
-	// resolves as {} exactly as that author does. The POST refuses such an asker before
-	// anything is recorded, so no row this route writes carries one.
-	if !graphstore.ProvesAuthor(request.Author) || !request.Author.SameCredential(actor) {
+	if !goingRunIsTheCallers(request.Author, actor) {
 		writeGoingRequestNotFound(w)
 		return
 	}
@@ -406,6 +398,19 @@ func writeGoingFrame(w http.ResponseWriter, frame goingEvent) error {
 // every run a caller may not read is answered with it.
 func writeGoingRequestNotFound(w http.ResponseWriter) {
 	writeError(w, codeGoingRequestNotFound, http.StatusNotFound, "no answer run of that id is yours to read")
+}
+
+// goingRunIsTheCallers is whether a run whose recorded author is author is the caller's, the one
+// test of a run's owner the stream and a write made for a run (withinGoingRun) both apply. It is
+// the whole credential, through model.Actor.SameCredential and never SameAs alone, which would
+// make any two personal tokens one writer: a run is read by the credential that asked it. A run
+// whose author names nobody is nobody's, and that is a test of its own - graphstore.ProvesAuthor
+// again, asked here of the author the row holds - because SameCredential calls two credentials
+// that name nobody the one credential: without it, such a row would be served to every holder of
+// the deployment's shared token, which resolves as {} exactly as that author does. The POST
+// refuses such an asker before anything is recorded, so no row this route writes carries one.
+func goingRunIsTheCallers(author, caller model.Actor) bool {
+	return graphstore.ProvesAuthor(author) && author.SameCredential(caller)
 }
 
 // getGoingCapability answers whether this deployment has a model configured, and nothing else:

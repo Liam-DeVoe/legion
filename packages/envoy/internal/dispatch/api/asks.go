@@ -233,8 +233,11 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
-	askNode, err := graphstore.WriteUncaused(r.Context(), tx,
-		[]graphstore.Node{graphstore.AskNode(rowID, project, parties, actor, time.Now().UTC())}, nil)
+	// The ask is the node this create makes, so it is marked changed (graphstore.Node's Changed):
+	// a create made for a run names it as changed by it.
+	created := graphstore.AskNode(rowID, project, parties, actor, time.Now().UTC())
+	created.Changed = true
+	askNode, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{created}, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

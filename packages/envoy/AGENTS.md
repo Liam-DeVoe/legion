@@ -5224,6 +5224,15 @@ Another tab can sign someone else in in place, and a retry can go out on the new
 the page drops the presser's writes on that answer.
 A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
 
+A write made for a run of the command bar names the run in the `Dispatch-Going-Run` request header (`contracts.GoingRunHeader`), which `api.GoingCaller.Do` sends on every write for its `Run`.
+`withinGoingRun` (`internal/dispatch/api/going_run_header.go`) is its one reader, wrapped around every `POST`, `PATCH`, `PUT` and `DELETE` route inside the project and session scope checks and outside the key layer.
+The run must be one `going_requests` holds, live (`now() < ends_at`, whatever frames it holds) and the caller's whole credential's (`goingRunIsTheCallers`: `graphstore.ProvesAuthor` and `model.Actor.SameCredential`);
+anything else, a header sent twice or no uuid among it, is `404 GOING_REQUEST_NOT_FOUND`, the stream's answer for a run nobody holds, before the write runs, so nothing is stored and no key is claimed.
+A request without the header costs nothing new: it resolves no caller there and sends no query.
+The admitted run rides on the request's context (`graphstore.WithRun`), and `graphstore.Write` and `graphstore.Caused` append one `changed_by_run` tuple from each node the write marks changed (`graphstore.Node.Changed`, `graphstore.Tuple.Changes`) to `interaction/<uuid>`, in the write's own transaction and under its own cause, once for each node and run.
+The writers that mark: `refs.IndexBlocks` (each block whose words a version adds, changes or restores, and each it drops), the comment path, the issue, document, ask and message creates, `writeReasoningNodes`, the pointer route (the node the pointer goes out of) and `writeNodeState`; an author's `person` or `session` node is never marked.
+A write on a context with no run appends none, so the block-index reconciliation tick, which indexes a version above `deferBlockIndexBlocks` or one with no rendering, names no run.
+
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
 The row holds a SHA-256 of the method, the route pattern, its path values, the query, the media type and the body (a multipart body with its boundary masked, since a client mints a boundary per attempt), so a repeat is told from a reuse:

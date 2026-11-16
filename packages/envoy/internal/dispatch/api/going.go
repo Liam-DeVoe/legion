@@ -160,6 +160,26 @@ func (s *server) readGoingRequest(ctx context.Context, id string) (goingRequest,
 	`, id))
 }
 
+// readLiveGoingRun is the run id names as a write made for it reads it (withinGoingRun): its id in
+// the lowercase text its interaction node is keyed by, its recorded author, and whether it is live,
+// now() < ends_at, the database's own clock against the window the POST wrote from that clock,
+// whatever frames the run has stored. pgx.ErrNoRows where the record holds no such run.
+func (s *server) readLiveGoingRun(ctx context.Context, id string) (string, model.Actor, bool, error) {
+	var run string
+	var stored []byte
+	var live bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `
+		select id::text, author, now() < ends_at from going_requests where id = $1::uuid
+	`, id).Scan(&run, &stored, &live); err != nil {
+		return "", model.Actor{}, false, err
+	}
+	var author model.Actor
+	if err := json.Unmarshal(stored, &author); err != nil {
+		return "", model.Actor{}, false, fmt.Errorf("decode going request author: %w", err)
+	}
+	return run, author, live, nil
+}
+
 // goingNodeLock takes a run's interaction node row, $1 the kind and $2 the run's id, as the
 // first statement of every frame's transaction (lockGoingRun).
 const goingNodeLock = `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`

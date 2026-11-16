@@ -3105,9 +3105,10 @@ type ArtifactReferences struct {
 // last changed (ChangedAt is that version's time). A finding of a lens (kind `lens_block`, id
 // `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. A run of
 // the command bar (kind `interaction`, id the run's uuid) stands under no issue, so it carries no
-// IssueKey and no Parent, and reaches the credential that asked it alone. Text and Pin are set
-// only on the node a reference read names: Text is the block's whole current text, and Pin
-// answers a reference pinned to a version.
+// IssueKey and no Parent, and reaches the credential that asked it alone; it carries Frames, every
+// frame of its stream in sequence, which no other kind carries, so the member is absent from every
+// other node. Text and Pin are set only on the node a reference read names: Text is the block's
+// whole current text, and Pin answers a reference pinned to a version.
 type GraphNode struct {
 	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session,supertag"`
 	ID             string      `json:"id"`
@@ -3127,6 +3128,19 @@ type GraphNode struct {
 	Visibility     string      `json:"visibility" enum:"project,author" required:"false"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
+	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, and
+	// absent for a run that holds none and for every other kind. A server of the release before
+	// never sends it, and `omitempty` keeps every other node's answer byte for byte as it was.
+	Frames []GraphFrame `json:"frames,omitempty"`
+}
+
+// GraphFrame is one frame of a run's stream as the run's interaction node holds it, one `frame`
+// value tuple (graphstore.FrameTuple): its sequence in the run, its name (contracts.GoingEvent*)
+// and its payload, the data the stream writes under that name.
+type GraphFrame struct {
+	Sequence int            `json:"sequence"`
+	Name     string         `json:"name"`
+	Data     map[string]any `json:"data"`
 }
 
 // NodeParent names the node a graph node belongs to: its kind and its node id (an artifact's

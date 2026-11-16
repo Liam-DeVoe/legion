@@ -370,6 +370,49 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 	})
 }
 
+// TestAGoingCallerNamesItsRunOnEveryWriteItMakes: a caller acting for a run sends the run in
+// contracts.GoingRunHeader on every request Do makes, whichever row the action takes, so the
+// server can name each node the write changes as changed by that run. A caller acting for no run
+// sends no such header.
+func TestAGoingCallerNamesItsRunOnEveryWriteItMakes(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatalf("build the catalogue: %v", err)
+	}
+	const run = "01234567-89ab-4cde-8f01-23456789abcd"
+	doer := &countingDoer{}
+	caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Session: "sess-7", Run: run, Doer: doer}
+	for _, call := range []struct {
+		action    string
+		arguments map[string]any
+	}{
+		{"dispatch_issue", map[string]any{"project": "INFRA", "title": "A new issue"}},
+		{"dispatch_claim", map[string]any{"issue": "INFRA-1042", "release": true}},
+		{"dispatch_follow", map[string]any{"ask": "01234567-0000-4000-8000-000000000001", "action": "follow"}},
+	} {
+		if _, err := caller.Do(context.Background(), call.action, call.arguments); err != nil {
+			t.Fatalf("perform %s: %v", call.action, err)
+		}
+	}
+	if len(doer.requests) != 3 {
+		t.Fatalf("the caller sent %d request(s), want one for each of its 3 actions", len(doer.requests))
+	}
+	for _, sent := range doer.requests {
+		if named := sent.Header.Values(contracts.GoingRunHeader); len(named) != 1 || named[0] != run {
+			t.Errorf("the caller's %s %s names the run %v in %s, want %s once", sent.Method, sent.URL.Path, named, contracts.GoingRunHeader, run)
+		}
+	}
+
+	doer = &countingDoer{}
+	caller = GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
+	if _, err := caller.Do(context.Background(), "dispatch_issue", map[string]any{"project": "INFRA", "title": "A new issue"}); err != nil {
+		t.Fatalf("perform dispatch_issue for no run: %v", err)
+	}
+	if named := doer.requests[0].Header.Values(contracts.GoingRunHeader); len(named) != 0 {
+		t.Fatalf("a caller acting for no run sent %s %v, want none", contracts.GoingRunHeader, named)
+	}
+}
+
 // TestAGoingRelationOutsideBothEdgeFamiliesFails: a catalogue entry names the relations its
 // verbs write, and a name in neither edge family — the global relation names
 // (model.GraphEdgeKinds) and the `block[]` attributes of the typed blocks (pmdoc.LinkKinds) — is

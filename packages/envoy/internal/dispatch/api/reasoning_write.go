@@ -86,7 +86,9 @@ type reasoningWrite struct {
 //
 // It answers the nodes the request wrote, in the order it named them, without their authors':
 // the nodes this write made, which are the ones a write made for a run names as changed by it
-// (graphstore.TupleChangedByRun).
+// (graphstore.TupleChangedByRun). Each is marked changed (graphstore.Node's Changed) and no
+// author's node is, so graphstore.Write, on a context holding a run, appends that run's
+// changed_by_run out of each of them alone.
 func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) ([]graphstore.Node, error) {
 	written := make([]graphstore.Node, len(write.nodes))
 	for index, node := range write.nodes {
@@ -104,7 +106,7 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 		written[index] = graphstore.Node{
 			Kind: node.kind, ID: node.id, Supertag: node.kind,
 			Visibility: visibility, State: graphstore.StateLive, Attributes: node.attributes,
-			MadeAt: write.at, MadeBy: madeBy, SourceEvent: graphstore.NoEvent,
+			MadeAt: write.at, MadeBy: madeBy, SourceEvent: graphstore.NoEvent, Changed: true,
 		}
 	}
 	var project string
@@ -193,7 +195,9 @@ type reasoningPointer struct {
 // and then writes through the store, which holds the tuple to its type rule (graphstore's
 // pointerRules) and takes the node rows that rule names after the owner row: an append and a
 // retraction through graphstore.Write, a retarget through graphstore.Retarget. No event is
-// appended, as none is for the nodes these tuples tie (writeReasoningNodes).
+// appended, as none is for the nodes these tuples tie (writeReasoningNodes). The pointer is marked
+// as changing the node it goes out of (graphstore.Tuple's Changes), so a write made for a run names
+// that node, and not its far end, as changed by it.
 //
 // A retraction of a tuple the node does not hold now is a 404, as a retarget of one is
 // (graphstore.ErrPointerNotHeld): there is nothing to retract. That both ends exist, are not
@@ -203,6 +207,7 @@ func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointe
 	if err := tx.QueryRow(ctx, `select true from issues where key = $1`+ownerRowLock, write.issue).Scan(&held); err != nil {
 		return err
 	}
+	write.pointer.Changes = true
 	switch write.action {
 	case pointerRetarget:
 		return graphstore.Retarget(ctx, tx, write.pointer, write.toKind, write.toID)
@@ -250,7 +255,9 @@ type nodeStateWrite struct {
 // and appends the one state tuple that says so, whose writer is who: the row and the log agree,
 // and every read of the node answers the new state at once. made_at and made_by stay the row's
 // own, the store's rule for a node written again, so the node's author is still the writer of its
-// first write. A write of the state the node holds moves nothing and appends nothing.
+// first write. A write of the state the node holds moves nothing and appends nothing. A write that
+// moves it marks the node changed (graphstore.Node's Changed), so one made for a run names the node
+// as changed by that run.
 //
 // It answers the node as the write leaves it and the state it held before. A node the store holds
 // no row of is the rule's to refuse: nothing here writes a node that is not there.
@@ -276,7 +283,7 @@ func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graph
 	if previous == write.state {
 		return node, previous, nil
 	}
-	node.State, node.Restates = write.state, false
+	node.State, node.Restates, node.Changed = write.state, false, true
 	node.MadeAt, node.MadeBy, node.SourceEvent = write.at, write.who, graphstore.NoEvent
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
 		return graphstore.Node{}, "", err

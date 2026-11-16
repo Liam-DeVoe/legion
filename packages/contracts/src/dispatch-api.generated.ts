@@ -4938,6 +4938,13 @@ export interface components {
       block_id?: string;
       text: string;
     };
+    GraphFrame: {
+      data: {
+        [key: string]: unknown;
+      } | null;
+      name: string;
+      sequence: number;
+    };
     GraphNode: {
       block_id?: string;
       /** Format: date-time */
@@ -4945,6 +4952,7 @@ export interface components {
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
       document?: string;
+      frames?: components["schemas"]["GraphFrame"][];
       id: string;
       issue_key?: string;
       /** @enum {string} */
@@ -4997,6 +5005,7 @@ export interface components {
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
       document?: string;
+      frames?: components["schemas"]["GraphFrame"][];
       id: string;
       issue_key?: string;
       /** @enum {string} */
@@ -14720,6 +14729,7 @@ export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
 export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
+export type GraphFrame = components["schemas"]["GraphFrame"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
 export type GraphNodeRead = components["schemas"]["GraphNodeRead"];

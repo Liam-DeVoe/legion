@@ -521,6 +521,14 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // and the frame then takes the node's row. Then the frame takes the run's going_requests row
 // `for key share`, the lock the going_events foreign key takes, appends the frame value tuple and
 // writes the going_events row. No frame takes the revision fence.
+//
+// A write made for a run (graphstore.WithRun, which withinGoingRun puts on a request that names
+// its run) adds one read and no lock: graphstore.Write, after its node step, and graphstore.Caused
+// read which of the nodes the write marks changed already hold that run's changed_by_run tuple,
+// and append the tuples still owed with the write's own. The read takes no row, so it moves no
+// step of the order, and two writes of one node for one run are ordered by what each holds before
+// it reads - the node's row, or the owner row a pointer's write takes first - so the second reads
+// the tuple the first committed and appends none.
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {

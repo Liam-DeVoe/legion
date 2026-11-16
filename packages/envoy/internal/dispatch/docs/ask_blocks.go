@@ -923,8 +923,11 @@ func createAskBlock(
 	if err != nil {
 		return model.Ask{}, openedFollow{}, err
 	}
-	node, err := graphstore.WriteUncaused(ctx, tx,
-		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, author, time.Now().UTC())}, nil)
+	// The ask is the node this block makes, marked changed (graphstore.Node's Changed) so a
+	// version written for a run names it as changed by it.
+	created := graphstore.AskNode(ask.ID, project, parties, author, time.Now().UTC())
+	created.Changed = true
+	node, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{created}, nil)
 	if err != nil {
 		return model.Ask{}, openedFollow{}, fmt.Errorf("write the node of a new ask block: %w", err)
 	}

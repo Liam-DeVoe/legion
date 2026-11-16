@@ -121,7 +121,9 @@ const BlockRefKindsSQL = `select 'mentions'
 // that deleted it, and a block_refs row the pass inserts outside a first indexing takes that
 // event as its tuple's legacy_source_seq (graphstore.UncausedTuple). A pass that lost the
 // revision fence states nothing and answers the zero write, for which graphstore.Caused writes
-// nothing.
+// nothing. Each block whose words the version added, changed or restored, and each it dropped,
+// is marked changed (graphstore.Node's Changed), so where the caller appends the write on a
+// context holding a run each of them, and no other block, carries that run's changed_by_run.
 //
 // A block of the document whose row names no node - a row a build before this release wrote,
 // which the backfill has not reached - takes its node and its membership of the document here,
@@ -218,13 +220,16 @@ func IndexBlocks(
 	}
 	// Every node the pass writes restates its block (blockNode): a block this version holds is
 	// written live and keeps a state a write marked it with, so a version that changes a
-	// proposed requirement's words leaves it proposed, and comes back live only from gone.
+	// proposed requirement's words leaves it proposed, and comes back live only from gone. A
+	// block whose words this version wrote and a block it dropped are what the version changed,
+	// so each is marked changed, and a version written for a run names it as changed by that run
+	// (graphstore.TupleChangedByRun) where its cause is appended (graphstore.Caused).
 	blockNodes := make([]graphstore.Node, 0, len(ids)+len(deleted)+len(nodeless))
 	for _, id := range ids {
 		if !blockIDFits(refKey, id) {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateLive))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateLive, true))
 	}
 	// A block the version no longer holds has its node stated gone, whatever state it held: a
 	// restating write that says gone is written gone, and keeps only the visibility. The tuple
@@ -237,7 +242,7 @@ func IndexBlocks(
 			continue
 		}
 		gone = append(gone, blockNodeAddress(refKey, id))
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateGone))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateGone, true))
 	}
 	// A row written before this release names no node: migration 20261109022248 added the
 	// columns and filled none of them, and the backfill has not reached the document or has
@@ -258,8 +263,10 @@ func IndexBlocks(
 			continue
 		}
 		address := blockNodeAddress(refKey, block.id)
+		// A block whose row only learns its node here is no block this version changed: it is
+		// not marked (blockNode).
 		if _, stated := changed[block.id]; !stated {
-			blockNodes = append(blockNodes, blockNode(address, document, versionAt, graphstore.StateLive))
+			blockNodes = append(blockNodes, blockNode(address, document, versionAt, graphstore.StateLive, false))
 		}
 		memberships = append(memberships, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: address, Kind: TupleInDocument,

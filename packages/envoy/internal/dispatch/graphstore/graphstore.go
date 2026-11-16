@@ -109,6 +109,13 @@ type Node struct {
 	// leaves it false. WriteArms reads none of it: its upsert moves nothing on a node already
 	// there.
 	Restates bool
+	// Changed marks a node this write created or changed, which a write made for a run names as
+	// changed by it (WithRun): Write and Caused, on a context holding a run, append one
+	// TupleChangedByRun from it to that run's interaction. Its writer sets it, because the store
+	// cannot infer it: a block's words are no column of its node, so an edit of them moves
+	// nothing a node write compares. A node a write only names - an author's person or session
+	// node, a block row a pass gives the node it lacked - is never marked. No read answers it.
+	Changed bool
 }
 
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is
@@ -125,6 +132,10 @@ type Tuple struct {
 	SourceEvent      int64
 	LegacySourceSeq  *int64
 	Asserted         bool
+	// Changes marks a fact that changes the node it goes out of - a pointer a request appends,
+	// retracts or moves - so a write made for a run names that node as changed by it, as
+	// Node.Changed names a node the write itself writes. No read answers it.
+	Changes bool
 }
 
 // Queryer is the query surface shared by a pool and a transaction, as internal/dispatch/refs has

@@ -292,8 +292,11 @@ func writeMessageNode(
 	default:
 		parties = graphstore.ThreadParties(author, target)
 	}
-	written, err := graphstore.WriteUncaused(ctx, tx,
-		[]graphstore.Node{graphstore.MessageNode(id, project, parties, author, time.Now().UTC())}, nil)
+	// The message is the node this write makes, marked changed (graphstore.Node's Changed) so a
+	// send made for a run names it as changed by it.
+	created := graphstore.MessageNode(id, project, parties, author, time.Now().UTC())
+	created.Changed = true
+	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{created}, nil)
 	if err != nil {
 		return graphstore.Uncaused{}, fmt.Errorf("write the node of message %s: %w", id, err)
 	}

@@ -302,6 +302,13 @@ const GoingWordsMax = 2000
 const GoingRunWindow = 30000 * time.Millisecond
 const GoingRequestTTL = 3600000 * time.Millisecond
 
+// GoingRunHeader is the request header a write made for a run names the run in: its uuid. The
+// server holds the run to the caller's whole credential and to its window before the write runs,
+// and the nodes a write it accepts creates or changes each carry a changed_by_run tuple to the
+// run's interaction. Generated from GOING_RUN_HEADER in packages/contracts so the server's check
+// and every caller that sends the header name it once.
+const GoingRunHeader = "Dispatch-Going-Run"
+
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = 20

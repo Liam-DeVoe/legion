@@ -95,6 +95,13 @@ export const GOING_WORDS_MAX = 2000;
  *  with `GOING_ERROR_ANSWER_DID_NOT_ARRIVE`. Generated into Go as `contracts.GoingRunWindow`. */
 export const GOING_RUN_MS = 30_000;
 
+/** The request header a write made for a run names the run in: the run's id, the uuid its POST
+ *  answered. The server holds the run to the caller's whole credential and to its window, and
+ *  answers anything else `404 GOING_REQUEST_NOT_FOUND` with nothing stored; the nodes a write it
+ *  accepts creates or changes each carry a `changed_by_run` tuple to the run's interaction.
+ *  Generated into Go as `contracts.GoingRunHeader`. */
+export const GOING_RUN_HEADER = "Dispatch-Going-Run";
+
 /** How long a run's rows are kept, so a reader that reconnects still finds its answer and a
  *  finished run is not kept for ever. Generated into Go as `contracts.GoingRequestTTL`. */
 export const GOING_REQUEST_TTL_MS = 3_600_000;

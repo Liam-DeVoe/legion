@@ -524,7 +524,13 @@ type GoingCaller struct {
 	// follow records this session as the ask's follower. A caller that is no session leaves it
 	// empty, and the rows needing one are passed over.
 	Session string
-	Doer    GoingDoer
+	// Run is the run of the command bar the caller acts for, the id its POST answered, which Do
+	// names in contracts.GoingRunHeader on every write it makes, so each node the write creates or
+	// changes carries a changed_by_run tuple to that run's interaction. A caller acting for no run
+	// leaves it empty, and no header is sent. Nothing in this package builds a caller: the loop
+	// that chooses an action, which would set it, is not here.
+	Run  string
+	Doer GoingDoer
 }
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
@@ -553,7 +559,8 @@ func (e GoingArgumentError) Error() string {
 // fills (chooseGoingRoute) takes its path from the arguments its placeholders name, and every
 // other argument becomes the request's JSON body. Nothing is sent until the catalogue holds the
 // action and the tool's own schema accepts the call. An argument naming a document by slug is
-// the caller's to resolve to the id a row's path takes.
+// the caller's to resolve to the id a row's path takes. Every action of the catalogue writes, so
+// every request Do sends names the caller's Run, where it has one.
 func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string]any) (*http.Response, error) {
 	entry, held := c.Catalogue.Lookup(action)
 	if !held {
@@ -586,6 +593,9 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	if c.Run != "" {
+		request.Header.Set(contracts.GoingRunHeader, c.Run)
+	}
 	return c.Doer.Do(request)
 }
 

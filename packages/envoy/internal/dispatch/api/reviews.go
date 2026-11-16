@@ -786,8 +786,11 @@ func (s *server) openApprovalAsk(
 	if project == "" && artifact.SessionID != nil {
 		parties = []string{graphstore.PartySession(*artifact.SessionID)}
 	}
-	askNode, err := graphstore.WriteUncaused(ctx, tx,
-		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, time.Now().UTC())}, nil)
+	// The approval request's ask is the node this write makes, marked changed (graphstore.Node's
+	// Changed) so a request made for a run names it as changed by it.
+	created := graphstore.AskNode(ask.ID, project, parties, actor, time.Now().UTC())
+	created.Changed = true
+	askNode, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{created}, nil)
 	if err != nil {
 		return nil, model.Event{}, err
 	}

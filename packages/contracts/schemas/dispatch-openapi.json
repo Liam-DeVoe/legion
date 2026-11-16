@@ -20473,6 +20473,29 @@
         ],
         "type": "object"
       },
+      "GraphFrame": {
+        "properties": {
+          "data": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "name",
+          "data"
+        ],
+        "type": "object"
+      },
       "GraphNode": {
         "properties": {
           "block_id": {
@@ -20499,6 +20522,12 @@
           },
           "document": {
             "type": "string"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/GraphFrame"
+            },
+            "type": "array"
           },
           "id": {
             "type": "string"
@@ -20651,6 +20680,12 @@
           },
           "document": {
             "type": "string"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/GraphFrame"
+            },
+            "type": "array"
           },
           "id": {
             "type": "string"

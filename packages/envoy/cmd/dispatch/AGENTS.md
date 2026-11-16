@@ -727,7 +727,14 @@ A write without the header runs unkeyed, as before. `PUT` and `DELETE` take no k
 route, `PUT` and `DELETE` included, that names its presser in `Dispatch-Login` runs only as that
 person: another person, or any bearer, is `409 LOGIN_CHANGED` before anything runs, its key
 untouched; a caller that resolves to nobody keeps the route's own `401` (`refuseChangedLogin`,
-`api/server.go`).
+`api/server.go`). A write made for a run of the command bar names it in `Dispatch-Going-Run`
+(`contracts.GoingRunHeader`, which `api.GoingCaller.Do` sends): every write route reads it once,
+inside the scope checks and outside the key layer (`withinGoingRun`,
+`api/going_run_header.go`), and a run the record does not hold, one past its `ends_at` or one
+that is not the caller's whole credential's is `404 GOING_REQUEST_NOT_FOUND` with nothing stored
+and no key claimed; an admitted run gives each node the write creates or changes one
+`changed_by_run` tuple to `interaction/<uuid>`, and a request without the header costs nothing
+new.
 
 | Path | Method | Access | Purpose |
 | --- | --- | --- | --- |

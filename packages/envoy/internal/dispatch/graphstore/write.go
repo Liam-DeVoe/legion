@@ -33,6 +33,11 @@ import (
 // to its rule once the nodes are written and before the first tuple is appended
 // (checkPointers), so a write that breaks one appends nothing; its refusal ends the caller's
 // transaction, which rolls back the nodes with it.
+//
+// On a context that carries a run (WithRun), the write also appends, with its own tuples, one
+// changed_by_run tuple from each node it marks changed (Node.Changed, Tuple.Changes) to that run's
+// interaction, dated, signed and caused as the node's write or the fact that marked it, unless the
+// node already holds one to that run (changedByRun), read once the node rows are held.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	base, err := writeNodes(ctx, tx, nodes, tuples)
 	if err != nil {
@@ -41,10 +46,14 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	if err := checkPointers(ctx, tx, nodes, tuples); err != nil {
 		return err
 	}
-	if len(base) == 0 {
+	changed, err := changedByRun(ctx, tx, changedByRunMarks(ctx, nodes, tuples))
+	if err != nil {
+		return err
+	}
+	if len(base)+len(changed) == 0 {
 		return appendTuples(ctx, tx, tuples)
 	}
-	return appendTuples(ctx, tx, append(base, tuples...))
+	return appendTuples(ctx, tx, append(append(base, tuples...), changed...))
 }
 
 // Uncaused is a write of this store whose cause did not exist while it ran, held by its writer
@@ -123,6 +132,12 @@ func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple)
 // writer appends facts of its own to what WriteUncaused answered (refs.IndexBlocks does), and
 // those reach the store through here alone. For the same reason a held relation whose kind the
 // pointer type rules hold is held to its rule here (checkPointers), before the nodes move.
+//
+// On a context that carries a run (WithRun), it appends with them one changed_by_run tuple from
+// each node the write marks changed (Node.Changed, Tuple.Changes) to that run's interaction, under
+// event as every fact of the write is, unless the node already holds one to that run
+// (changedByRun). The run is the context's, not the write's: WriteUncaused appends nothing, so a
+// writer whose nodes went in on another context still names the run its cause is appended for.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	tuples := make([]Tuple, len(write.Tuples))
 	for index, held := range write.Tuples {
@@ -142,6 +157,15 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
 		return err
 	}
+	marks := changedByRunMarks(ctx, write.Nodes, tuples)
+	for index := range marks {
+		marks[index].SourceEvent = event
+	}
+	changed, err := changedByRun(ctx, tx, marks)
+	if err != nil {
+		return err
+	}
+	tuples = append(tuples, changed...)
 	if len(tuples) == 0 {
 		return nil
 	}

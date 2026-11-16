@@ -81,6 +81,7 @@ import {
   GOING_MODEL_CALL_MAX,
   GOING_REQUEST_RUNE_MAX,
   GOING_REQUEST_TTL_MS,
+  GOING_RUN_HEADER,
   GOING_RUN_MS,
   GOING_SEARCH_MAX,
   GOING_SEARCH_TOOL,
@@ -393,6 +394,13 @@ const GoingWordsMax = ${GOING_WORDS_MAX}
 // server's windows and the page's account of them cannot drift apart.
 const GoingRunWindow = ${GOING_RUN_MS} * time.Millisecond
 const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
+
+// GoingRunHeader is the request header a write made for a run names the run in: its uuid. The
+// server holds the run to the caller's whole credential and to its window before the write runs,
+// and the nodes a write it accepts creates or changes each carry a changed_by_run tuple to the
+// run's interaction. Generated from GOING_RUN_HEADER in packages/contracts so the server's check
+// and every caller that sends the header name it once.
+const GoingRunHeader = ${JSON.stringify(GOING_RUN_HEADER)}
 
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.

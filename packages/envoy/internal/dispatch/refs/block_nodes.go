@@ -71,13 +71,17 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 // a proposed requirement whose words a version changes stays proposed - while one stored gone,
 // a block a version restores, comes back live. A block the version dropped goes gone whatever
 // it was.
-func blockNode(address string, document indexedDocument, at time.Time, state string) graphstore.Node {
+//
+// changed marks a block whose words this version added, changed or restored, or which it
+// dropped, so a version written for a run names that block as changed by it (graphstore.Node's
+// Changed); a block the pass writes only because its row names no node yet is not marked.
+func blockNode(address string, document indexedDocument, at time.Time, state string, changed bool) graphstore.Node {
 	return graphstore.Node{
 		Kind: BlockNodeKind, ID: address, Supertag: BlockSupertag,
 		Visibility: graphstore.VisibilityProject, State: state,
 		Project: document.project, Parties: document.parties,
 		MadeAt: at, MadeBy: document.writer, SourceEvent: graphstore.NoEvent,
-		Restates: true,
+		Restates: true, Changed: changed,
 	}
 }
 
