@@ -111,15 +111,26 @@ const (
 //  8. The newest run of each leg passed: true, passed; each failed: false, failed (R7: "the latest
 //     counts, and a later failure cancels an earlier pass").
 func CheckStates(in Input) []CheckState {
+	return newCheckJudge(in).states()
+}
+
+// newCheckJudge is the judge of the checks of in: the current approved text of each node, which
+// approved text of each node the files hold, and the results of each check.
+func newCheckJudge(in Input) *checkJudge {
 	current, _ := in.Approved.Current()
-	j := checkJudge{in: in, current: current, holds: Compare(in.Files, in.Approved).Holds,
+	j := &checkJudge{in: in, current: current, holds: Compare(in.Files, in.Approved).Holds,
 		results: map[string][]Result{}, changed: map[string]changedPaths{}}
 	for _, r := range in.Results {
 		j.results[r.Check] = append(j.results[r.Check], r)
 	}
+	return j
+}
+
+// states is the state of each check that CheckStates judges, sorted by id.
+func (j *checkJudge) states() []CheckState {
 	var states []CheckState
-	for _, c := range current.Checks {
-		if readsProduction(c) && in.Subject.Deploy == "" {
+	for _, c := range j.current.Checks {
+		if readsProduction(c) && j.in.Subject.Deploy == "" {
 			continue
 		}
 		state := j.state(c)
