@@ -2,6 +2,7 @@ package rendering_test
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -138,5 +139,35 @@ func TestListenerEnvCheck(t *testing.T) {
 			require.True(t, errors.As(err, &refused), "%v is a core.InputError", err)
 			require.Equal(t, row.input, refused.Input)
 		})
+	}
+}
+
+// The AWS listener carries ENVOY_PRIVATE_PROJECTS=1 exactly when its deployment may make a
+// Dispatch project private (dispatch://INFRA-3862), so the listener decides a project frame that
+// carries no stamp as private. False leaves Variables what it was before the field existed, for
+// the same inputs: the list below, which the merge base's Variables returned (R9), and so every
+// golden under infra/aws/testdata. Negative control, run by hand: copy true into config()
+// whatever the field says; the false row then fails, naming the line.
+func TestAnAwsListenerFollowsPrivateProjects(t *testing.T) {
+	const line = "ENVOY_PRIVATE_PROJECTS=1"
+	mergeBase := []string{
+		"PORT=9020", "ENVOY_LISTEN_HOST=0.0.0.0", "ENVOY_MACHINE_ID=example-machine",
+		"NATS_URLS=nats://example-bus.example-namespace.internal.example:4222", "ENVOY_ALLOW_REMOTE_NATS=1",
+		"ENVOY_NATS_REPLICAS=1", "ENVOY_WEBHOOKS=github,slack",
+		"ENVOY_GITHUB_MENTION_TRIGGER=@legion", "ENVOY_REVIEWER_APP_ID=1234567",
+	}
+	for _, private := range []bool{false, true} {
+		e := listenerEnv()
+		e.NatsUrls = []string{"nats://example-bus.example-namespace.internal.example:4222"}
+		e.PrivateProjects = private
+		require.NoError(t, e.Check())
+		got, err := e.Variables()
+		require.NoError(t, err)
+		if !private {
+			require.Equal(t, mergeBase, got, "privateProjects false renders the merge base's variables, with no %s", line)
+			continue
+		}
+		require.Contains(t, got, line)
+		require.ElementsMatch(t, append(slices.Clone(mergeBase), line), got, "true adds the one line and nothing else")
 	}
 }

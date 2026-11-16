@@ -53,6 +53,10 @@ type ListenerEnv struct {
 	Webhooks       []string
 	ReviewerAppId  *string // written only with github
 	MentionTrigger *string // written only with github
+	// PrivateProjects is ENVOY_PRIVATE_PROJECTS=1 (core.ListenerConfig.PrivateProjects): the
+	// deployment may make a Dispatch project private, so the listener decides a project frame
+	// that carries no stamp as private. False writes nothing.
+	PrivateProjects bool
 }
 
 // Check refuses what the component refuses of these inputs before it registers anything: every
@@ -123,7 +127,7 @@ func (e ListenerEnv) Variables() ([]string, error) {
 
 // config is the environment as core.ListenerConfig takes it, on the listener's fixed port.
 func (e ListenerEnv) config() core.ListenerConfig {
-	return core.ListenerConfig{MachineID: e.MachineID, Port: ListenerPort, ListenHost: e.ListenHost}
+	return core.ListenerConfig{MachineID: e.MachineID, Port: ListenerPort, ListenHost: e.ListenHost, PrivateProjects: e.PrivateProjects}
 }
 
 // SecretReadPolicy is the execution-role policy that reads the secret at arn into a container, as

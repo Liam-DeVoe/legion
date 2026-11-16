@@ -61,6 +61,10 @@ type WebhookListenerArgs struct {
 	ListenHost     string  `pulumi:"listenHost"`              // ENVOY_LISTEN_HOST
 	NatsReplicas   int     `pulumi:"natsReplicas"`            // ENVOY_NATS_REPLICAS
 	MentionTrigger *string `pulumi:"mentionTrigger,optional"` // ENVOY_GITHUB_MENTION_TRIGGER, with github
+	// ENVOY_PRIVATE_PROJECTS=1 when true: the deployment may make a Dispatch project private
+	// (dispatch://INFRA-3862). Default false, which renders what the listener rendered before the
+	// input existed; a program sets it from the same value as its aws:NatsService's privateProjects.
+	PrivateProjects *bool `pulumi:"privateProjects,optional"`
 
 	AlarmTopicArn   pulumi.StringInput `pulumi:"alarmTopicArn"` // the SNS topic the alarms page and clear on
 	BaseTags        map[string]string  `pulumi:"baseTags"`      // the component adds `service`
@@ -328,13 +332,14 @@ func (args *WebhookListenerArgs) webhookSecretArns() map[string]pulumi.StringPtr
 // environment returns the inputs the container's environment is made of, with natsUrls.
 func (args *WebhookListenerArgs) environment(natsUrls []string) rendering.ListenerEnv {
 	return rendering.ListenerEnv{
-		MachineID:      args.MachineID,
-		NatsUrls:       natsUrls,
-		ListenHost:     args.ListenHost,
-		NatsReplicas:   args.NatsReplicas,
-		Webhooks:       args.Webhooks,
-		ReviewerAppId:  args.ReviewerAppId,
-		MentionTrigger: args.MentionTrigger,
+		MachineID:       args.MachineID,
+		NatsUrls:        natsUrls,
+		ListenHost:      args.ListenHost,
+		NatsReplicas:    args.NatsReplicas,
+		Webhooks:        args.Webhooks,
+		ReviewerAppId:   args.ReviewerAppId,
+		MentionTrigger:  args.MentionTrigger,
+		PrivateProjects: args.PrivateProjects != nil && *args.PrivateProjects,
 	}
 }
 

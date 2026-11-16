@@ -2154,6 +2154,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `webhooks` | required | The webhooks the listener serves: `["github", "slack"]`, or `[]` for none. With `[]` the container carries no webhook's setting or secret, and the listener mounts no webhook route. This version takes no other list. |
 | `githubWebhookSecretArn`, `reviewerAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
 | `slackSigningSecretArn` | with `slack` | Required while `webhooks` lists `slack`, refused while it does not. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862)): the container carries `ENVOY_PRIVATE_PROJECTS=1`, so the listener decides a project frame that carries no stamp as private. False or unset renders the container definitions the listener rendered before the input existed. A program that declares an `aws:WebhookListener` beside an `aws:NatsService` sets it from the same value as the service's `authorization.privateProjects`. `envoy-infra render webhook-listener-env` takes no flag for it yet. |
 | `clusterArn`, `executionRoleArn`, `taskRoleArn` | required | The ECS cluster and the task's two roles. |
 | `executionRoleName` | required | The execution role's name, which the read policies attach to. |
 | `subnetIds` | required | The task's subnets, at least one. |
