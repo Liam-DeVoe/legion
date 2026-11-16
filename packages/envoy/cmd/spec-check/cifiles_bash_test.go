@@ -129,7 +129,8 @@ func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 // call of spec-check that it makes. A bash that defines spec-check as a function, and exports it to
 // a nested bash, reads each script with ., as a CI step's bash reads its run: value, and a
 // spec-check on PATH and in ./bin records the calls of a nested sh and of a path. The scripts run
-// in batches, one bash for each.
+// in batches, one bash for each, which writes before each script's calls a byte 1, the script's
+// number and a byte 1, and each call's first argument with a NUL after it.
 func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 	t.Helper()
 	dir := t.TempDir()
@@ -141,14 +142,14 @@ func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 		t.Fatal(err)
 	}
 	driver := filepath.Join(dir, "driver.sh")
-	writeFile(t, driver, []byte("spec-check() { printf '%s\\0' \"$1\" >&3; }\nexport -f spec-check\nfor f; do . \"$f\" 3>\"$f.calls\" </dev/null >/dev/null 2>&1; done\nexit 0\n"))
+	writeFile(t, driver, []byte("spec-check() { printf '%s\\0' \"$1\" >&3; }\nexport -f spec-check\nfor f; do printf '\\001%s\\001' \"${f##*/}\"; . \"$f\" 3>&1 </dev/null >/dev/null 2>&1; done\nexit 0\n"))
 	batches := make([][]string, min(runtime.NumCPU(), 16))
-	paths := make([]string, len(scripts))
 	for n, s := range scripts {
-		paths[n] = filepath.Join(dir, fmt.Sprint(n))
-		writeFile(t, paths[n], []byte(s))
-		batches[n%len(batches)] = append(batches[n%len(batches)], paths[n])
+		path := filepath.Join(dir, fmt.Sprint(n))
+		writeFile(t, path, []byte(s))
+		batches[n%len(batches)] = append(batches[n%len(batches)], path)
 	}
+	outputs := make([][]byte, len(batches))
 	failures := make([]error, len(batches))
 	var wg sync.WaitGroup
 	for b, batch := range batches {
@@ -158,26 +159,34 @@ func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 			run := exec.Command(bash, append([]string{driver}, batch...)...)
 			run.Dir = dir
 			run.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "LC_ALL=C"}
-			if out, err := run.CombinedOutput(); err != nil {
-				failures[b] = fmt.Errorf("%v: %s", err, out)
+			var stderr strings.Builder
+			run.Stderr = &stderr
+			if outputs[b], failures[b] = run.Output(); failures[b] != nil {
+				failures[b] = fmt.Errorf("%v: %s", failures[b], stderr.String())
 			}
 		}()
 	}
 	wg.Wait()
-	for _, err := range failures {
-		if err != nil {
-			t.Fatal(err)
+	calls := make([][]string, len(scripts))
+	ran := 0
+	for b, out := range outputs {
+		if failures[b] != nil {
+			t.Fatal(failures[b])
+		}
+		records := strings.Split(string(out), "\x01")
+		for k := 1; k+1 < len(records); k += 2 {
+			var n int
+			if _, err := fmt.Sscan(records[k], &n); err != nil || n >= len(scripts) {
+				t.Fatalf("batch %d wrote a record of no script, %q", b, records[k])
+			}
+			ran++
+			if records[k+1] != "" {
+				calls[n] = strings.Split(strings.TrimSuffix(records[k+1], "\x00"), "\x00")
+			}
 		}
 	}
-	calls := make([][]string, len(scripts))
-	for n, path := range paths {
-		got, err := os.ReadFile(path + ".calls")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) > 0 {
-			calls[n] = strings.Split(strings.TrimSuffix(string(got), "\x00"), "\x00")
-		}
+	if ran != len(scripts) {
+		t.Fatalf("bash wrote the calls of %d of %d scripts", ran, len(scripts))
 	}
 	return calls
 }
