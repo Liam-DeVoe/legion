@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
@@ -38,6 +38,24 @@ const (
 // requests queue for a slot with a handful of them (queue_test.go).
 var concurrentDecisions = 64
 
+// maxWaiting bounds the requests one replica holds waiting for a decision slot; the one past it is
+// refused at once (waitingRefusal). Each waiting request holds a goroutine, its sealed request and
+// a deadline until a slot frees or its budget ends, and a client holding no credential can send one
+// per TCP connect, so with no bound what a replica holds grows with whatever such a client sends.
+// The bound is sixteen times the slots: at the slowest decision this package's storm measured
+// (146 ms), concurrentDecisions slots decide about 64 x 1.5 s / 146 ms = 650 requests inside one
+// budget, so a request behind 1024 others would be refused at its budget anyway. At faster
+// decisions the bound refuses some that could have waited; their clients retry a refusal
+// (IgnoreAuthErrorAbort) and hear it at once rather than after their budget. It is a var so a test
+// can fill it with a handful of requests (queue_test.go).
+var maxWaiting = 1024
+
+// waitingRefusal is what a request that arrives with maxWaiting others already waiting is refused
+// with. Its label in the decision counter is labelWaitingBound.
+func waitingRefusal() *Refusal {
+	return refuse(labelWaitingBound, fmt.Sprintf("%d requests already wait for a decision slot on this replica, the most it holds", maxWaiting))
+}
+
 // decideBudget is how long one decision may take. A Go client fails its connect when the server's
 // answer arrives later than two seconds: nats.go sets one deadline of Opts.Timeout, 2 s by
 // default, over the whole handshake (nats.go, processConnectInit), and the server sends its PONG
@@ -53,14 +71,26 @@ var decideBudget = 1500 * time.Millisecond
 
 // budgetRefusal is what a decision that ran past decideBudget is refused with, naming the step it
 // was in. Its label in the decision counter is labelBudget.
-func budgetRefusal(kind, step string) *Refusal {
-	return refuse(kind, labelBudget, fmt.Sprintf("decision exceeded its %s budget at %s", decideBudget, step))
+func budgetRefusal(step string) *Refusal {
+	return refuse(labelBudget, fmt.Sprintf("decision exceeded its %s budget at %s", decideBudget, step))
 }
 
-// drainBound bounds how long Close waits for the requests this replica already holds. Each one
-// past its budget is refused at once without a decision (answer), so a long queue drains in far
-// less than this.
+// drainBound bounds how long Close waits for the subscription to finish draining the requests the
+// hub had already routed to this replica. Each one past its budget is refused at once without a
+// decision (answer), so a long queue drains in far less than this.
 const drainBound = 5 * time.Second
+
+// minimumDecision is the least of its budget a request must have left when it gets a decision
+// slot for its decision to start. Less than that, and the wait for the slot spent the budget: the
+// request is refused naming the wait, rather than starting an introspection that its deadline
+// cancels and naming that.
+const minimumDecision = 100 * time.Millisecond
+
+// holdDelivery, when a test sets it, runs at the start of every delivery of a request to replica
+// s, before the request's budget starts; a test that blocks in it holds the hub's requests in that
+// replica's subscription, which is where a replica that drops rather than drains them on Close
+// loses them (queue_test.go). Nil outside tests.
+var holdDelivery func(s *Service)
 
 // Settings is where the service connects and the keys it holds.
 type Settings struct {
@@ -87,6 +117,8 @@ type Service struct {
 	// heldDone is closed once they have ended.
 	stopHeld context.CancelFunc
 	heldDone chan struct{}
+	// waiting counts the requests waiting for a decision slot, which maxWaiting bounds.
+	waiting atomic.Int64
 	// beat is when the heartbeat last took a decision slot, in Unix nanoseconds, and done ends
 	// the heartbeat at Close.
 	beat      atomic.Int64
@@ -105,10 +137,10 @@ var (
 // beatWhileTurning is the heartbeat: every livenessTick it takes a decision slot and gives it back,
 // and records the time it did. When the loop turns a slot is free within a tick, idle or busy, so
 // the beat stays fresh; when every slot is held by a decision that never ends, no request can be
-// decided and the beat goes stale, which LivenessHandler reports. A process stopped outright never
-// answers the probe at all, which a liveness probe also reads as a failure.
+// decided and the beat goes stale, which Livez reports. A process stopped outright never answers
+// the probe at all, which a liveness probe also reads as a failure. Start stores the first beat
+// itself, before anything can read it.
 func (s *Service) beatWhileTurning() {
-	s.beat.Store(time.Now().UnixNano())
 	ticker := time.NewTicker(livenessTick)
 	defer ticker.Stop()
 	for {
@@ -127,23 +159,26 @@ func (s *Service) beatWhileTurning() {
 	}
 }
 
-// LivenessHandler answers 200 while the callout loop turned within livenessBound and 503 once it
-// has not, so a liveness probe kills a replica whose loop has stalled: its connection to the hub
-// then resets and it leaves the queue group, where a stalled replica would keep being sent
-// requests it never answers. The broker serves it at GET /livez on its metrics port.
-func (s *Service) LivenessHandler() http.Handler {
+// Livez is GET /livez on the broker's metrics port, its whole answer: 200 "ok" while the auth
+// service's loop turned within livenessBound, 503 with a line naming how long ago it last turned
+// once it has not, and 200 when service answers nil, a broker that runs no auth service or has
+// not started it yet, since nothing then can stall. A liveness probe that reads the status kills a
+// replica whose loop has stalled: its connection to the hub then resets and it leaves the queue
+// group, where a stalled replica would keep being sent requests it never answers.
+func Livez(service func() *Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		age := time.Since(time.Unix(0, s.beat.Load()))
-		if age > livenessBound {
-			http.Error(w, fmt.Sprintf("the NATS auth service's loop last turned %s ago", age.Round(time.Second)), http.StatusServiceUnavailable)
-			return
+		if s := service(); s != nil {
+			if age := time.Since(time.Unix(0, s.beat.Load())); age > livenessBound {
+				http.Error(w, fmt.Sprintf("the NATS auth service's loop last turned %s ago", age.Round(time.Second)), http.StatusServiceUnavailable)
+				return
+			}
 		}
 		_, _ = w.Write([]byte("ok\n"))
 	})
 }
 
-// decideFunc is how the service decides a request: Decide, unless a test of the guard replaces
-// it.
+// decideFunc is how the service decides a request: Decide, unless a test replaces it to hand the
+// answer a grant of its own.
 type decideFunc func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error)
 
 // Start connects to the hub as the service's own user and answers every authorization request it
@@ -190,6 +225,7 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
 	s := &Service{conn: conn, slots: make(chan struct{}, concurrentDecisions), done: make(chan struct{}), stopHeld: func() {}, heldDone: make(chan struct{})}
+	s.beat.Store(time.Now().UnixNano())
 	// Dispatch's answers about the projects of the entries held to their exchange projects are
 	// asked for in the background from now on, so no decision waits on Dispatch (scopeGrant).
 	if deps.held = newHeldAccess(deps, settings.Services); deps.held != nil {
@@ -201,24 +237,39 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 	}
 	answer := &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide}
 	s.sub, err = conn.QueueSubscribe(authSubject, queueGroup, func(msg *nats.Msg) {
-		// The budget counts from here. The callback never blocks: nats.go delivers one message
-		// at a time on this goroutine, so a callback that waited here for a slot would hold back
-		// the next request's arrival too, and that request's budget would start late. Each
-		// request waits for its slot on a goroutine of its own, and one still waiting when its
-		// budget is spent is answered with a refusal without one (answer).
+		if holdDelivery != nil {
+			holdDelivery(s)
+		}
+		// The budget counts from here, and it is one clock: the deadline below bounds both the
+		// wait for a decision slot and the decision itself. The callback never blocks: nats.go
+		// delivers one message at a time on this goroutine, so a callback that waited here for a
+		// slot would hold back the next request's arrival too, and that request's budget would
+		// start late. Each request waits for its slot on a goroutine of its own, and one still
+		// waiting when its budget is spent is answered with a refusal without one (answer).
 		received := time.Now()
+		// Past maxWaiting the request is refused here, on the delivery goroutine, with no
+		// goroutine of its own: opening, signing and sealing a refusal takes no broker call, and
+		// what a flood of them costs then is this one goroutine's time, which nats.go's pending
+		// limits bound, rather than a goroutine each.
+		if s.waiting.Add(1) > int64(maxWaiting) {
+			s.waiting.Add(-1)
+			answer.answer(context.Background(), msg, received, waitingRefusal())
+			return
+		}
+		ctx, cancel := context.WithDeadline(context.Background(), received.Add(decideBudget))
 		// Added on the delivery goroutine Close waits out, so every Add happens before its Wait.
 		s.wait.Add(1)
 		go func() {
 			defer s.wait.Done()
-			wait := time.NewTimer(decideBudget)
+			defer cancel()
 			select {
 			case s.slots <- struct{}{}:
-				wait.Stop()
+				s.waiting.Add(-1)
 				defer func() { <-s.slots }()
-			case <-wait.C:
+			case <-ctx.Done():
+				s.waiting.Add(-1)
 			}
-			answer.answer(msg, received)
+			answer.answer(ctx, msg, received, nil)
 		}()
 	})
 	if err != nil {
@@ -231,12 +282,20 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 	return s, nil
 }
 
-// Close stops answering. It drains the subscription: that leaves the queue group at once, so the
-// server sends the next request to another replica, and still delivers every request the server
-// had already routed here, which an unsubscribe would drop and leave each of those clients waiting
-// out the server's whole authorization timeout. Once the subscription is no longer valid every
-// held request has reached the callback, so the wait that follows covers every decision started,
-// and then the connection closes.
+// Close stops answering.
+//
+// Connected, it drains the subscription: that leaves the queue group at once, so the hub sends the
+// next request to another replica, and still delivers every request the hub had already routed
+// here, which an unsubscribe would drop and leave each of those clients waiting out the hub's
+// whole authorization timeout. The subscription reports itself closed once the last of them has
+// reached the callback, so the wait that follows covers every decision started.
+//
+// Reconnecting, it unsubscribes instead. A drain then would leave the subscription among the
+// connection's own, which nats.go sends again on the reconnect (nats.go v1.53.1,
+// resendSubscriptions, which does not check draining), putting this closing replica back in the
+// queue group; the drain's end then removes it on the client's side only, and every request the
+// hub routes here after that has no subscriber. An unsubscribe removes it from the connection, so
+// the reconnect never sends it, and while the connection is down the hub can route nothing here.
 func (s *Service) Close() {
 	s.closeOnce.Do(s.close)
 }
@@ -245,10 +304,18 @@ func (s *Service) Close() {
 // a replica early and a cleanup that stops it at the end may both call Close.
 func (s *Service) close() {
 	close(s.done)
-	_ = s.sub.Drain()
-	for deadline := time.Now().Add(drainBound); s.sub.IsValid() && time.Now().Before(deadline); {
-		time.Sleep(readyPoll)
+	if s.conn.IsConnected() {
+		closed := s.sub.StatusChanged(nats.SubscriptionClosed)
+		if s.sub.Drain() == nil {
+			select {
+			case <-closed:
+			case <-time.After(drainBound):
+			}
+		}
 	}
+	// After a drain this removes nothing; without one, or after a drain that outran drainBound, it
+	// is what keeps the subscription from being sent again.
+	_ = s.sub.Unsubscribe()
 	s.wait.Wait()
 	s.stopHeld()
 	<-s.heldDone
@@ -279,27 +346,9 @@ func (s *Service) Ready(ctx context.Context) error {
 	}
 }
 
-// readSeed is the key pair the seed in the file at path makes, refused, naming setting, when the
-// file cannot be read or its seed is not of kind.
-func readSeed(setting, path string, kind nkeys.PrefixByte) (nkeys.KeyPair, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("natscallout: %s names %s, which could not be read: %w", setting, path, err)
-	}
-	seed := []byte(strings.TrimSpace(string(raw)))
-	prefix, _, err := nkeys.DecodeSeed(seed)
-	if err != nil {
-		return nil, fmt.Errorf("natscallout: %s names %s, which holds no nkey seed", setting, path)
-	}
-	if prefix != kind {
-		return nil, fmt.Errorf("natscallout: %s names %s, which holds a %s seed where it needs a %s seed", setting, path, prefix, kind)
-	}
-	pair, err := nkeys.FromSeed(seed)
-	if err != nil {
-		return nil, fmt.Errorf("natscallout: %s names %s, whose seed makes no key: %w", setting, path, err)
-	}
-	return pair, nil
-}
+// readSeed is config.ReadSeedFile, the one reader of the auth service's seeds, which the broker's
+// start also runs (config.loadNATSCallout).
+var readSeed = config.ReadSeedFile
 
 // answerer answers one authorization request.
 type answerer struct {
@@ -309,16 +358,16 @@ type answerer struct {
 	decide       decideFunc
 }
 
-// answer opens msg, decides it and answers it, sealed to the server's key. Its budget counts from
-// received, when the request reached the subscription, so the time it waited for a decision slot
-// is spent from it; a request past its deadline before its decision starts is refused at once,
-// without asking the broker anything. The request's own expiry is not used: the server writes it
-// in whole seconds (server/auth_callout.go, claim.Expires), so it can name a moment up to a second
-// before the server actually gives up, and would cut a budget of 1.5 s by as much. A request it
-// cannot open or read is not answered: the server refuses that connection at its authorization
-// timeout, and the broker's log says why.
-func (a *answerer) answer(msg *nats.Msg, received time.Time) {
-	deadline := received.Add(decideBudget)
+// answer opens msg, decides it and answers it, sealed to the server's key. ctx carries the
+// request's budget, which counts from received, when the request reached the subscription, so the
+// time it waited for a decision slot is spent from it; a request past its deadline before its
+// decision starts is refused at once, without asking the broker anything. The request's own expiry
+// is not used: the server writes it in whole seconds (server/auth_callout.go, claim.Expires), so it
+// can name a moment up to a second before the server actually gives up, and would cut a budget of
+// 1.5 s by as much. A request it cannot open or read is not answered: the server refuses that
+// connection at its authorization timeout, and the broker's log says why. refusal, when it is not
+// nil, is the answer already settled before any decision (waitingRefusal), and nothing is decided.
+func (a *answerer) answer(ctx context.Context, msg *nats.Msg, received time.Time, refusal *Refusal) {
 	serverXKey := msg.Header.Get(serverXKeyHeader)
 	data := msg.Data
 	if serverXKey != "" {
@@ -347,23 +396,22 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time) {
 		// The service always holds a curve key, and a hub configured with it seals every request,
 		// so a request in the clear means the hub's callout lost its xkey and every token and proof
 		// is crossing the wire unencrypted. Refused, and said loudly.
-		refused = refuse(kind, labelUnsealed, "the authorization request was not sealed to the service's key")
+		refused = refuse(labelUnsealed, "the authorization request was not sealed to the service's key")
 		if a.deps.Log != nil {
 			a.deps.Log.Error("natscallout: an authorization request arrived in the clear; the hub's auth_callout names no xkey, so every token and proof crosses the wire unencrypted", "host", req.Host)
 		}
-	case !time.Now().Before(deadline):
-		refused = budgetRefusal(kind, "the wait for a decision slot")
+	case refusal != nil:
+		refused = refusal
+	case time.Since(received) > decideBudget-minimumDecision:
+		refused = budgetRefusal("the wait for a decision slot")
 	default:
-		ctx, cancel := context.WithDeadline(context.Background(), deadline)
-		var err error
 		decision, err = a.decide(ctx, a.deps, a.services, req)
-		cancel()
-		refused = asRefusal(kind, err)
+		refused = asRefusal(err)
 		// A decision that ran past the deadline is refused, whatever it decided: the client is at
 		// or past the point its connect gives up, and admitting it there would hand the server a
 		// user for a connection that is no longer waiting.
-		if refused == nil && time.Now().After(deadline) {
-			refused = budgetRefusal(kind, "the answer")
+		if refused == nil && ctx.Err() != nil {
+			refused = budgetRefusal("the answer")
 		}
 	}
 	user, refused := admit(req, decision, refused)
@@ -400,7 +448,7 @@ func (a *answerer) log(message string, args ...any) {
 
 // asRefusal is err as the refusal it answers: itself when it is one, and a refusal naming the
 // service's own failure, with err as its cause, when it is not.
-func asRefusal(kind string, err error) *Refusal {
+func asRefusal(err error) *Refusal {
 	if err == nil {
 		return nil
 	}
@@ -408,20 +456,18 @@ func asRefusal(kind string, err error) *Refusal {
 	if errors.As(err, &refused) {
 		return refused
 	}
-	return refuse(kind, labelServiceFailed, "the service failed").because(err)
+	return refuse(labelServiceFailed, "the service failed").because(err)
 }
 
 // admit is the verdict an answer carries, settled before it is counted: refused when the decision
-// refused, and otherwise the user decision admits, after the grant guard (guard) and a check of
-// the lists that user actually encodes. jwt drops a blank entry when it adds one (StringList.Add),
-// so a grant of blank entries would pass a check of the grant and still encode an empty allow
-// list, which is every subject; the check here is of what is encoded, so no grant can.
+// refused, and otherwise the user decision admits, once the grant guard (guard) passes it. Every
+// answer the service sends passes here, whatever decided it, so this is the one place the guard
+// runs.
 func admit(req Request, decision Decision, refused *Refusal) (*jwt.UserClaims, *Refusal) {
 	if refused != nil {
 		return nil, refused
 	}
-	kind := credentialKind(req)
-	if refused := guard(kind, decision.Grant); refused != nil {
+	if refused := guard(decision.Grant); refused != nil {
 		return nil, refused
 	}
 	user := jwt.NewUserClaims(req.UserNkey)
@@ -432,12 +478,6 @@ func admit(req Request, decision Decision, refused *Refusal) (*jwt.UserClaims, *
 	user.Sub.Allow.Add(decision.Grant.Subscribe...)
 	user.Pub.Deny.Add(decision.Grant.PublishDeny...)
 	user.Sub.Deny.Add(decision.Grant.SubscribeDeny...)
-	switch {
-	case len(user.Pub.Allow) == 0:
-		return nil, refuse(kind, labelOpenDirection, openDirectionReason("publish"))
-	case len(user.Sub.Allow) == 0:
-		return nil, refuse(kind, labelOpenDirection, openDirectionReason("subscribe"))
-	}
 	return user, nil
 }
 
@@ -465,6 +505,6 @@ func sign(issuer nkeys.KeyPair, req Request, user *jwt.UserClaims, refused *Refu
 // verdict admit settles, signed. It is admit and sign as answer runs them, for a caller that holds
 // a decision and no answerer.
 func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal error) (string, error) {
-	user, refused := admit(req, decision, asRefusal(credentialKind(req), refusal))
+	user, refused := admit(req, decision, asRefusal(refusal))
 	return sign(issuer, req, user, refused)
 }

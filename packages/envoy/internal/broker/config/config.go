@@ -48,7 +48,8 @@ type Config struct {
 	// BROKER_LISTEN_ADDR: the host:port the broker listens on.
 	ListenAddr string
 	// BROKER_METRICS_LISTEN_ADDR: the address the broker's metrics port binds, default
-	// 127.0.0.1:13382, which answers GET /metrics in the Prometheus text format and nothing else.
+	// 127.0.0.1:13382, which answers GET /metrics in the Prometheus text format and the NATS auth
+	// service's liveness at GET /livez (natscallout.Livez), and nothing else.
 	// It is a port of its own rather than a route of the API's, so that who may scrape a pod is
 	// the deployment's to decide apart from who may call the broker: the API's address is the one
 	// the load balancer sends every caller to. It is a third port of the same process, bound and

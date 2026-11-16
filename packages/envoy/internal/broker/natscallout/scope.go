@@ -62,33 +62,33 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 		return grant, nil
 	}
 	if deps.Exchange == nil || deps.Access == nil {
-		return natsgrant.Permissions{}, refuse(credentialService, labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.name())
+		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.name())
 	}
 	person, projects, listed := deps.Exchange(entry.Account)
 	switch {
 	case !listed:
-		return natsgrant.Permissions{}, refuse(credentialService, labelNoExchangeEntry, "account has no exchange entry: "+entry.Account)
+		return natsgrant.Permissions{}, refuse(labelNoExchangeEntry, "account has no exchange entry: "+entry.Account)
 	case len(projects) == 0:
-		return natsgrant.Permissions{}, refuse(credentialService, labelNotHeldToProjects, "account's exchange entry names no project to hold it to: "+entry.Account)
+		return natsgrant.Permissions{}, refuse(labelNotHeldToProjects, "account's exchange entry names no project to hold it to: "+entry.Account)
 	}
 	var repositories []string
 	for _, project := range projects {
 		held, known := deps.held.answer(project, person)
 		switch {
 		case !known:
-			return natsgrant.Permissions{}, refuse(credentialService, labelProjectNotKnown, "project access not yet known: "+project)
+			return natsgrant.Permissions{}, refuse(labelProjectNotKnown, "project access not yet known: "+project)
 		case held.notFound:
-			return natsgrant.Permissions{}, refuse(credentialService, labelProjectNotFound, "project not found: "+project)
+			return natsgrant.Permissions{}, refuse(labelProjectNotFound, "project not found: "+project)
 		case !held.answer.Visible:
 			// The token exchange refuses this entry's token the same way (projectaccess.Visible):
 			// its person cannot see the project, so neither may the connection.
-			return natsgrant.Permissions{}, refuse(credentialService, labelProjectNotVisible, "project not visible to the account's person: "+project)
+			return natsgrant.Permissions{}, refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
 		}
 		repositories = append(repositories, held.answer.Repositories...)
 	}
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Repositories: repositories, Identity: entry.Account})
 	if err != nil {
-		return natsgrant.Permissions{}, refuse(credentialService, labelNotHeldToProjects, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
+		return natsgrant.Permissions{}, refuse(labelNotHeldToProjects, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
 	}
 	return scoped, nil
 }

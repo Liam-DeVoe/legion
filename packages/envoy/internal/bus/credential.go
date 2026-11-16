@@ -34,14 +34,21 @@ const (
 // variables keep the rule they always had, the file winning. Neither set is no credential, as
 // every connection was before servers required one. No error carries a seed or a token.
 func credential(lookup func(string) (string, bool)) (nats.Option, error) {
-	var set []string
-	for _, name := range []string{ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar, nkeySeedFileVariable, NkeySeedEnvVar} {
-		if _, ok := lookup(name); ok {
-			set = append(set, name)
+	set := func(names ...string) []string {
+		var named []string
+		for _, name := range names {
+			if _, ok := lookup(name); ok {
+				named = append(named, name)
+			}
 		}
+		return named
 	}
-	if len(set) >= 2 && (set[0] == ServiceTokenFileEnvVar || set[0] == ServiceGoogleAudienceEnvVar) {
-		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", set[0], set[1])
+	services, seeds := set(ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar), set(nkeySeedFileVariable, NkeySeedEnvVar)
+	switch {
+	case len(services) == 2:
+		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", services[0], services[1])
+	case len(services) == 1 && len(seeds) > 0:
+		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", services[0], seeds[0])
 	}
 	if file, ok := lookup(ServiceTokenFileEnvVar); ok {
 		if file == "" {

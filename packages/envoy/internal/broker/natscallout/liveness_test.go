@@ -22,15 +22,21 @@ func withLiveness(t *testing.T, tick, bound time.Duration) {
 	t.Cleanup(func() { livenessTick, livenessBound = wasTick, wasBound })
 }
 
+// livenessStatus is the status GET /livez answers for service, nil a broker with none.
 func livenessStatus(service *Service) int {
 	recorder := httptest.NewRecorder()
-	service.LivenessHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	Livez(func() *Service { return service }).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	return recorder.Code
 }
 
-// The liveness handler answers 200 while the callout loop is turning, idle included, and 503 once
-// it stops: here every decision slot is held by a decision that never returns, so no request can
-// be decided, and the heartbeat, which beats only when it can take a slot, goes stale. The control
+// A broker that runs no auth service answers /livez 200: nothing of its can stall.
+func TestLivezIsLiveWithNoService(t *testing.T) {
+	require.Equal(t, http.StatusOK, livenessStatus(nil))
+}
+
+// /livez answers 200 while the callout loop is turning, idle included, and 503 once it stops:
+// here every decision slot is held by a decision that never returns, so no request can be
+// decided, and the heartbeat, which beats only when it can take a slot, goes stale. The control
 // is the same service idle, which stays live for as long as the stalled one takes to go stale.
 func TestTheLivenessHandlerFailsWhileTheCalloutLoopIsStalled(t *testing.T) {
 	withLiveness(t, 20*time.Millisecond, 200*time.Millisecond)
