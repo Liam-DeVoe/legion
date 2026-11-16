@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFile, link, rm, writeFile } from "node:fs/promises";
+import { appendFile, link, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
@@ -238,12 +238,29 @@ function answersBefore(seen: readonly Seen[], request: Seen): Seen {
 }
 
 /** How long the session says it waited on Dispatch before it gave up, read off the failure line
- *  or the cached list's reason a request carries: the product's own record of the deadline it
- *  armed (`Dispatch did not answer within N ms`). */
+ *  or the cached list's reason a request carries, or the warning it logged for a read the kept
+ *  bytes hide (`hiddenFailure`): the product's own record of the deadline it armed (`Dispatch did
+ *  not answer within N ms`). */
 function deadlineNamed(text: string): number {
   const named = /Dispatch did not answer within (\d+) ms/.exec(text);
   if (named?.[1] === undefined) throw new Error(`the request names no deadline:\n${text}`);
   return Number(named[1]);
+}
+
+/** The warning the extension logged when a request kept the list placed before over a read that
+ *  failed (`unshownFailure`), from Oh My Pi's own log under the session's `home`, which a warning
+ *  reaches as it is written. The extension logs it once until a read answers, so the session's
+ *  log holds exactly one. */
+async function hiddenFailure(home: string): Promise<string> {
+  const logs = path.join(home, ".omp", "logs");
+  const files = await Promise.all(
+    (await readdir(logs)).map((name) => readFile(path.join(logs, name), "utf8"))
+  );
+  const warned = files
+    .flatMap((text) => text.split("\n"))
+    .filter((line) => line.includes("envoy: people's answers could not be read"));
+  expect(warned).toHaveLength(1);
+  return warned[0] as string;
 }
 
 /**
@@ -272,6 +289,7 @@ async function runSession(
     readonly warm?: boolean;
   } = {}
 ): Promise<{
+  readonly home: string;
   readonly seen: Seen[];
   readonly turns: Seen[];
   readonly answers: Seen[];
@@ -486,6 +504,7 @@ async function runSession(
   await rpc.end();
 
   return {
+    home,
     seen,
     turns: seen.filter(
       (request) => request.path === "/anthropic/v1/messages" && isMainTurn(request)
@@ -694,7 +713,8 @@ test.skipIf(skipped)(
 // every answers request until the case ends, so a Messages request that reaches the stand-in at all
 // went out while the read it waited on was still held, which only the session's own deadline ends:
 // that is the order of events each case reads. How long the session waited is its own record: the
-// failure line, or the cached list's reason, names the deadline it armed
+// failure line, the cached list's reason, or, where a request keeps the bytes placed before over
+// the failed read, the warning the session logs for that read, names the deadline it armed
 // (`SESSION_ANSWERS_DEADLINE_MS`), which is under the second the row allows. No clock of this
 // test's decides it, so a slow scheduling moment on the pod has nothing to move. Each case is a
 // session of its own.
@@ -703,15 +723,15 @@ test.skipIf(skipped)(
   async () => {
     const deadline = `Dispatch did not answer within ${SESSION_ANSWERS_DEADLINE_MS} ms`;
     /** The request went out while the answers read it waited on was still held, which the route
-     *  lets go of only once the case ends, and what it carries names the deadline the session
-     *  waited, under a second. */
+     *  lets go of only once the case ends, and the session's record of that read (`record`) names
+     *  the deadline the session waited, under a second. */
     const heldNoLonger = (
       session: { readonly seen: Seen[] },
       request: Seen,
-      carried: string
+      record: string
     ): void => {
       expect(answersBefore(session.seen, request).answeredAfter).toBeUndefined();
-      expect(deadlineNamed(carried)).toBeLessThan(1_000);
+      expect(deadlineNamed(record)).toBeLessThan(1_000);
     };
 
     // Turn 1, with no list ever read: the failure line.
@@ -725,7 +745,10 @@ test.skipIf(skipped)(
     expect(listOf(coldFirst)).toBe(sessionAnswersFailureLine(deadline));
     heldNoLonger(cold, coldFirst, listOf(coldFirst));
 
-    // Turn 2 after a good read: the list read in turn 1, with its read time.
+    // Turn 2 after a good read: the read hangs and answers from the cache, which shows the same
+    // item, so the list keeps the place turn 1 gave it and the bytes it was placed with, not the
+    // cached read's header (`As read at …; this read failed: …`), whose changed bytes would cost
+    // the request behind them a prompt-cache miss.
     const item = answer("ask_f", "Read before Dispatch hung.", 1);
     const cached = await runSession(
       binary(),
@@ -739,12 +762,14 @@ test.skipIf(skipped)(
     );
     const [cachedFirst, cachedSecond] = cached.turns;
     if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
-    expect(listOf(cachedFirst)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    const earlier = listOf(cachedSecond);
-    const earlierCache = cachedOf(earlier);
-    expect(earlierCache.reason).toBe(deadline);
-    expect(earlier).toBe(renderSessionAnswers([item], { now: Date.now(), cached: earlierCache }));
-    heldNoLonger(cached, cachedSecond, earlier);
+    const placed = listOf(cachedFirst);
+    expect(placed).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(cachedSecond)).toBe(placed);
+    expect(textOf(messagesOf(cachedSecond).at(-1))).toBe("Second question.");
+    // Turn 2 sends turn 1's bytes again, which name no deadline, so the deadline the session
+    // waited is read from its own record of the read those bytes hide: the warning the extension
+    // logs for it (`unshownFailure`), which gives that read's reason.
+    heldNoLonger(cached, cachedSecond, await hiddenFailure(cached.home));
 
     // The subagent's first request: Dispatch hangs from the parent's delegating turn on, so the
     // subagent's read is the first to hang. `task` runs in the foreground here, so no read of the
