@@ -399,9 +399,11 @@ export interface ChannelSessionOptions {
   readonly pluginVersion: string
 }
 
-// The shared tool contract builds schemas from each host's Zod API. Claude's
-// server emits JSON Schema with its own Zod but keeps validation canonical. The
-// specs are frozen module constants, so each schema is built once per spec.
+// The shared tool contract builds schemas from each host's Zod API. Claude's server builds one
+// schema per spec with its own Zod, and both the JSON Schema it serves (channelToolDefinitions)
+// and the validation of a call (parseArguments) come from that one schema, so every value the
+// schema lists is a value the call takes. The specs are frozen module constants, so each schema
+// is built once per spec.
 const argumentSchemas = new WeakMap<ToolSpec, z.ZodObject<z.ZodRawShape>>()
 function argumentsSchema(spec: ToolSpec): z.ZodObject<z.ZodRawShape> {
   let schema = argumentSchemas.get(spec)
