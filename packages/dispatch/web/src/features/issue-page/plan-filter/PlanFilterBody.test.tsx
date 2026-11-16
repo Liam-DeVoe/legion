@@ -665,26 +665,40 @@ test("a task with no words is named by its kind, never by its id", async () => {
   }
 });
 
-// R3 and R4 of dispatch://INFRA-3938: a step's row names each task it needs by that task's first
-// words. Part F's view hands a `needs` chip over with no name while the names read is out, and,
-// at the head the tester read on the preview of INFRA-1196, for good where the server cuts the
-// target's name inside its directive's opening line (task 25, which needs task 24: 11 needs on
-// one line). The row drew "· needs" and an empty need then, which names no task at all.
-test("a need part F has not named is named by the needed task's own words, never drawn empty", () => {
+// Decision 103 of dispatch://INFRA-1196 (decision 66 stands): K names no need from its own node.
+// Part F's view hands a `needs` chip over with no name while the names read is out, and, at the
+// head the tester read on the preview of INFRA-1196, where the server's name of the target ends
+// inside its directive's opening line (task 25, which needs task 24: 11 needs on one line). While
+// a chip has no name the row draws no need for it, and "· needs" only when it draws a need: the
+// row drew "· needs" and an empty need then, which names no task at all.
+test("a need part F has not named draws no empty need and no '· needs' with nothing after it", () => {
   setViewport(1440);
-  const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
+  // t3 needs t1 and t2, t4 needs t1 alone; part F has named t2 and not t1.
+  const root = issue([
+    task("t1"),
+    task("t2"),
+    task("t3", { needs: ["t1", "t2"] }),
+    task("t4", { needs: ["t1"] }),
+  ]);
   const unnamed: TreeNode = {
     ...root,
     children: root.children.map((one) => ({
       ...one,
-      chips: one.chips.map((chip) => ({ ...chip, name: "" })),
+      chips: one.chips.map((chip) => (chip.ref.endsWith("#b-t1") ? { ...chip, name: "" } : chip)),
     })),
   };
   const view = renderBody(unnamed);
   try {
-    const needs = [...rowOf(view, "t2").querySelectorAll("[data-plan-need]")];
-    expect(needs.map((one) => one.getAttribute("data-plan-need"))).toEqual([D("t1")]);
-    expect(needs.map((one) => one.textContent)).toEqual(["Task t1"]);
+    const [both, alone] = ["t3", "t4"].map((blockId) => rowOf(view, blockId));
+    expect(
+      [...(both?.querySelectorAll("[data-plan-need]") ?? [])].map((one) => [
+        one.getAttribute("data-plan-need"),
+        one.textContent,
+      ])
+    ).toEqual([[D("t2"), "Task t2"]]);
+    expect(both?.querySelector("[data-plan-facts]")?.textContent).toContain(PLAN_WORDS.needs);
+    expect(alone?.querySelectorAll("[data-plan-need]")).toHaveLength(0);
+    expect(alone?.querySelector("[data-plan-facts]")?.textContent).not.toContain(PLAN_WORDS.needs);
   } finally {
     view.unmount();
   }
