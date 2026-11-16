@@ -561,3 +561,40 @@ test("a Change of a decision read with no reading counts the decisions' stored m
   ]);
   expect(changeAnchor(second, [first])).toEqual({ occurrence: 0, quote: "Keep the model pure." });
 });
+
+// One rule reads a decision for a Change: a reading that holds no blocks - a `text_tree` with no
+// `content` - is no reading, so the decision is read by its stored markdown, both as the decision
+// the Change is written for and as a row above another. Read as that reading's words, which are
+// none, the first decision held no match above the second, whose Change then named the first
+// decision's paragraph, and a Change quoting the first decision's words was placed on none.
+test("a decision whose reading holds no blocks is read by its stored markdown", () => {
+  const worded = (blockId: string, text: string): Decision => ({
+    ...waitingDecision(blockId, []),
+    text,
+    text_tree: { type: "doc" },
+  });
+  const first = worded("d1", "## Purity\n\nKeep the model pure.");
+  const second = worded("d2", "## Purity again\n\nKeep the model pure.\n\nTest it alone.");
+  const rows = [first, second];
+
+  expect(anchorQuote(first)).toBe("Keep the model pure.");
+  expect(rows.map((row) => changeAnchor(row, rows))).toEqual([
+    { occurrence: 0, quote: "Keep the model pure." },
+    { occurrence: 1, quote: "Keep the model pure." },
+  ]);
+  const quoted: Comment = {
+    ...change,
+    anchor: {
+      artifact_id: made.id,
+      block_id: null,
+      mark_id: "c-quoted",
+      orphaned: false,
+      quote: "Keep the model pure.",
+      version: 3,
+    },
+    id: "c-quoted",
+  };
+  expect(
+    decisionChangeComments({ ...decisions, decisions: rows }, [quoted], issue.artifacts, undefined)
+  ).toEqual(new Map([["c-quoted", first.ref]]));
+});

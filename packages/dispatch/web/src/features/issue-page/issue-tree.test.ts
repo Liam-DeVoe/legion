@@ -952,6 +952,13 @@ test("a stored text read to plain words keeps what markdown reads literally and 
     ["![diagram](shot.png)", ""],
     ["[the plan](https://example.com/plan)", "the plan"],
     ["<https://example.com/a_b*c*>", "https://example.com/a_b*c*"],
+    // A bare address reads as its target's short form, and so does an autolink's, as a link's
+    // words do; an escaped mark after an address is put back before it is read, so it trails the
+    // short form as a sentence's end. An address in a code span stays as its author wrote it.
+    ["see dispatch://CORE-2 and <dispatch://CORE-3>", "see CORE-2 and CORE-3"],
+    ["see dispatch://CORE-2\\.", "see CORE-2."],
+    ["Run `dispatch read dispatch://CORE-2` now", "Run dispatch read dispatch://CORE-2 now"],
+    ["`dispatch://CORE-2` is dispatch://CORE-2", "dispatch://CORE-2 is CORE-2"],
     // An underscore inside a word is no mark; marks nest.
     ["snake_case_name", "snake_case_name"],
     ["_emphasis_ and __strong__", "emphasis and strong"],
@@ -962,6 +969,31 @@ test("a stored text read to plain words keeps what markdown reads literally and 
     ["## Keep it\nKeep the model pure.", "Keep it Keep the model pure."],
     ["   ### Indented", "Indented"],
     ["  one\n\ntwo   three  ", "one two three"],
+  ] as const) {
+    expect(plainWords(stored), stored).toBe(words);
+  }
+});
+
+// R21: a blockquote's and a list item's markers are markup, which the server's reading holds as
+// the blocks they open and no word of them, so a stored text read to plain words drops them at
+// the start of each line, nested ones and a task box included, and a heading's marker after
+// them. What markdown reads literally keeps them: an escaped `1\.` or `\-` opens no list, and
+// `**bold**` at a line's start is no bullet, so a plan task's label still reads `1.` (decision 51).
+test("a stored text read to plain words drops the markers of a quote and of a list", () => {
+  for (const [stored, words] of [
+    ["- Hold the deploy.\n- Then ship.", "Hold the deploy. Then ship."],
+    ["> quoted words\n\nmy reply", "quoted words my reply"],
+    ["> > deeper\n>> deepest\n   > indented", "deeper deepest indented"],
+    ["1. one\n2. two\n10) ten", "one two ten"],
+    ["- [x] done\n* [ ] to do\n+ [X] also done", "done to do also done"],
+    ["- one\n  - nested\n    1. deeper\n\t+ tabbed", "one nested deeper tabbed"],
+    ["> ## Title\n> - item", "Title item"],
+    ["1\\. not a list\n\\- nor this", "1. not a list - nor this"],
+    [
+      "**1\\. Stand the harness up.** Run it.\n**2\\. Then ship.**",
+      "1. Stand the harness up. Run it. 2. Then ship.",
+    ],
+    ["*emphasis* stays a word", "emphasis stays a word"],
   ] as const) {
     expect(plainWords(stored), stored).toBe(words);
   }
@@ -1039,6 +1071,89 @@ test("a node's one line is cut from its first block, so a heading is never run i
   expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(({ name }) => name)).toEqual([
     "Keep it",
   ]);
+});
+
+// A stored heading's text is everything after its one marker, so a heading whose text opens on
+// `#` keeps it: `## # 1 rule` is the heading `# 1 rule`. Cutting the marker off before reading the
+// line to plain words, which cuts a marker off again, read it `1 rule`.
+test("a node's line from a stored heading leaves out its marker once", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const root = buildIssueTree({
+    decisions: decisions([decision("d1", "## # 1 rule\n\nbody", [])]),
+    issue: issueDetails([spec, made]),
+  });
+  const stored = nodeOf(root, blockNodeId("decisions-md", "d1"));
+  expect(stored === undefined ? "" : lineWords(stored)).toBe("# 1 rule");
+});
+
+// A rendered body draws an address in code as its author wrote it (`MarkdownBody.tsx`), so a
+// node's line keeps it there too: in a reading, a text run marked as inline code and a code
+// block's text keep their address while a plain run of the same block reads its address as the
+// target's short form, run by run; in a stored text, a code span keeps its address. The reading
+// the read sent is left as it was, and the node's words keep every address.
+test("an address in code stays as written in a node's line, from a reading and from stored text", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const stored = "Run `dispatch read dispatch://CORE-2` before dispatch://CORE-3 lands.";
+  const inline: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "Run ", type: "text" },
+          {
+            marks: [{ type: "inlineCode" }],
+            text: "dispatch read dispatch://CORE-2",
+            type: "text",
+          },
+          { text: " before dispatch://CORE-3 lands.", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const fenced: DisplayTree = {
+    content: [
+      {
+        attrs: { language: "sh" },
+        content: [{ text: "dispatch read dispatch://CORE-2", type: "text" }],
+        type: "code_block",
+      },
+      readingOf("Then dispatch://CORE-3."),
+    ],
+    type: "doc",
+  };
+  const sent = structuredClone([inline, fenced]);
+  const root = buildIssueTree({
+    decisions: decisions([
+      { ...decision("d1", stored, []), text_tree: inline },
+      {
+        ...decision(
+          "d2",
+          "```sh\ndispatch read dispatch://CORE-2\n```\n\nThen dispatch://CORE-3.",
+          []
+        ),
+        text_tree: fenced,
+      },
+      decision("d3", stored, []),
+    ]),
+    issue: issueDetails([spec, made]),
+  });
+  const node = (id: string): TreeNode | undefined => nodeOf(root, blockNodeId("decisions-md", id));
+  const line = (id: string): string => {
+    const found = node(id);
+    return found === undefined ? "" : lineWords(found);
+  };
+
+  expect(line("d1")).toBe("Run dispatch read dispatch://CORE-2 before CORE-3 lands.");
+  expect(line("d2")).toBe("dispatch read dispatch://CORE-2");
+  expect(line("d3")).toBe("Run dispatch read dispatch://CORE-2 before CORE-3 lands.");
+  expect([inline, fenced]).toEqual(sent);
+  const read = node("d1");
+  expect(read === undefined ? "" : nodeWords(read)).toBe(
+    "Run dispatch read dispatch://CORE-2 before dispatch://CORE-3 lands."
+  );
 });
 
 // The reviewer's Minor at a5714d85: a reading may open with a block that holds no words - a

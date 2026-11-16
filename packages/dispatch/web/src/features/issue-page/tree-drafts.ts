@@ -367,8 +367,9 @@ export function blockWords(name: string): string {
   return lines.join("\n").trim();
 }
 
-/** A blank line, which ends a paragraph: no mark and no code span reaches past one. */
-const BLANK_LINE = /\n\s*\n/u;
+/** A blank line, which ends a paragraph: no mark and no code span reaches past one. A stored
+ *  text's blocks are read one at a time between them (`plainWords`, `lineWords`). */
+export const BLANK_LINE = /\n\s*\n/u;
 
 /** One ASCII punctuation character: what a backslash escapes, and what a code span and an
  *  autolink hold that the marks below would otherwise read as marks. */
@@ -386,8 +387,23 @@ const PUNCTUATION = /[!-/:-@[-`{-~]/gu;
 const LITERAL =
   /\\([!-/:-@[-`{-~])|(`+)(?!`)([\s\S]*?[^`])\2(?!`)|<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)>|`+/gu;
 
+/**
+ * The markers a line of a blockquote or a list item opens on, at the start of the line, each
+ * container's in turn as they nest: a blockquote's `>` and the one space or tab after it, which
+ * markdown allows up to three spaces of indent before, once per quote (`> > deep`); and a
+ * bullet (`-`, `+` or `*`) or an ordered marker (one to nine digits and `.` or `)`), which must
+ * be followed by a space or a tab, after any indent, since a nested item carries its parent's,
+ * with a task box (`[ ]`, `[x]`) after it, which the server's reading holds as the item's state
+ * and no word of it. `**bold**` at a line's start opens on no marker, since its first `*` is
+ * followed by another and not by white space; nor does what `LITERAL` read, which is held as a
+ * stand-in by then, so `1\.` and `\-` stay words.
+ */
+const BLOCK_MARKER =
+  /^(?: {0,3}>[ \t]?|[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ \txX]\][ \t]+)?)+/gmu;
+
 /** A heading marker at the start of a line, `#` to `######` and a space, which markdown allows
- *  up to three spaces of indent before. */
+ *  up to three spaces of indent before, and which a blockquote's or a list item's markers
+ *  (`BLOCK_MARKER`) may stand before. */
 const HEADING_MARKER = /^ {0,3}#{1,6}[ \t]+/gmu;
 
 /** An image, `![alt](src)`, whose words the server's reading of it holds none of. */
@@ -412,9 +428,24 @@ const STAR_EMPHASIS = /\*(?=\S)([^*]*?\S)\*/gu;
  *  `snake_case_name` is one word. */
 const UNDERSCORE_EMPHASIS = /(?<![\p{L}\p{N}])_(?=\S)([^_]*?\S)_(?![\p{L}\p{N}])/gu;
 
-/** The private-use stand-in of each ASCII punctuation character `LITERAL` keeps from the marks
- *  (U+E000 plus its code), which `plainWords` puts the character back for. */
-const KEPT = /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu;
+/**
+ * The private-use stand-ins `LITERAL`'s characters are held as while the marks are taken off,
+ * each ASCII punctuation character as its range's start plus its code, in two ranges that
+ * `plainWords` puts back at two times. An escaped character (`escaped`, U+E000 plus its code) is
+ * put back before bare addresses are written short, so `see dispatch://CORE-2\.` reads
+ * `see CORE-2.`. A code span's content and an autolink's URL (`verbatim`, U+E100 plus its code)
+ * are put back after, so an address in code stays as its author wrote it, and an autolink's,
+ * written short as it is read, is not read again.
+ */
+const KEPT = {
+  escaped: { held: /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu, start: 0xe000 },
+  verbatim: { held: /[\ue121-\ue12f\ue13a-\ue140\ue15b-\ue160\ue17b-\ue17e]/gu, start: 0xe100 },
+} as const;
+
+/** `text` with each stand-in in one range of `KEPT` the ASCII character it is held for. */
+function putBack(text: string, range: (typeof KEPT)[keyof typeof KEPT]): string {
+  return text.replace(range.held, (kept) => String.fromCharCode(kept.charCodeAt(0) - range.start));
+}
 
 /**
  * The words of a stored markdown text as a reader reads them, on one line: what a place that
@@ -423,30 +454,40 @@ const KEPT = /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu;
  *
  * Each paragraph is read on its own, since no mark pairs across a blank line. What markdown
  * reads literally (`LITERAL`) - an escaped punctuation character (`1\.` is `1.`), a code span's
- * content, an autolink's URL - is read first, and each ASCII punctuation character of it is held
- * as a private-use stand-in (U+E000 plus its code) while the marks are taken off, so no mark is
- * read inside it, and put back after. A character of the text already in that private-use range
- * is no word a reader reads, and reads as the ASCII character it stands in for. Then a heading
- * marker at the start of any line goes, an image goes whole, a link reads as its words, and
- * strong, emphasis and struck marks go until none is left, so nested marks (`***x***`) go too.
- * White space collapses to single spaces.
+ * content, an autolink's URL, which reads as a link's words read, its address written short - is
+ * read first, and each ASCII punctuation character of it is held as a private-use stand-in
+ * (`KEPT`: U+E000 plus its code for an escaped character, U+E100 plus its code for a code span's
+ * and an autolink's) while the marks are taken off, so no mark is read inside it. A character of
+ * the text already in either range is no word a reader reads, and reads as the ASCII character it
+ * stands in for. Then a blockquote's and a list item's markers at the start of any line go
+ * (`BLOCK_MARKER`), and a heading marker after them, an image goes whole, a link reads as its
+ * words, and strong, emphasis and struck marks go until none is left, so nested marks
+ * (`***x***`) go too. The escaped characters are put back, and white space collapses to single
+ * spaces.
  *
- * Last, a bare `dispatch://` address reads as its target's short form (`addressesAsShortForms`,
+ * Then a bare `dispatch://` address reads as its target's short form (`addressesAsShortForms`,
  * decision 95): every place that reads a stored text to plain words draws it on one line - a
  * node's line where the node has no reading (`lineWords`), and the name of a chip naming an
  * ask, a comment or a message (`treeContext`) - and no one-line view draws a raw address (R22).
- * A link already reads as its words, so `[the spec](dispatch://…)` reads `the spec`.
+ * A link already reads as its words, so `[the spec](dispatch://…)` reads `the spec`. Last, the
+ * characters of code spans and autolinks are put back, so an address in code reads as its
+ * author wrote it, as a rendered body draws it: a code span holding
+ * `dispatch read dispatch://CORE-2` keeps its address.
  */
 export function plainWords(markdown: string): string {
   const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
     let words = paragraph
-      .replace(
-        LITERAL,
-        (written, escaped?: string, _run?: string, code?: string, url?: string) =>
-          (escaped ?? code ?? url)?.replace(PUNCTUATION, (character) =>
-            String.fromCharCode(0xe000 + character.charCodeAt(0))
+      .replace(LITERAL, (written, escaped?: string, _run?: string, code?: string, url?: string) => {
+        const range = escaped === undefined ? KEPT.verbatim : KEPT.escaped;
+        const literal =
+          escaped ?? code ?? (url === undefined ? undefined : addressesAsShortForms(url));
+        return (
+          literal?.replace(PUNCTUATION, (character) =>
+            String.fromCharCode(range.start + character.charCodeAt(0))
           ) ?? written
-      )
+        );
+      })
+      .replace(BLOCK_MARKER, "")
       .replace(HEADING_MARKER, "")
       .replace(IMAGE, "")
       .replace(LINK, "$1");
@@ -459,9 +500,10 @@ export function plainWords(markdown: string): string {
         .replace(STAR_EMPHASIS, "$1")
         .replace(UNDERSCORE_EMPHASIS, "$1");
     }
-    return words.replace(KEPT, (kept) => String.fromCharCode(kept.charCodeAt(0) - 0xe000));
+    return putBack(words, KEPT.escaped);
   });
-  return addressesAsShortForms(paragraphs.join(" ").replace(/\s+/gu, " ").trim());
+  const words = paragraphs.join(" ").replace(/\s+/gu, " ").trim();
+  return putBack(addressesAsShortForms(words), KEPT.verbatim);
 }
 
 /**
