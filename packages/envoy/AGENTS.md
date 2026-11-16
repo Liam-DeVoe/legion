@@ -3193,13 +3193,23 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   An id the approved spec does not hold, or removed, is exit 2 with nothing on stdout.
 
 - No CI job compares the spec files with the approved spec: Dispatch makes that comparison at each push (R2).
-  `spec-check guard --root <dir>` keeps that true (`cmd/spec-check/guard.go`): it reads every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`, and `specgraph.CIFilesThatCompare` names each line that holds `spec-check`, under any path or quoting, then white space and the word `compare`;
-  a line that ends in a backslash goes on in the next, as a shell reads it.
+  Two parts keep that true.
+  `spec-check compare` refuses to run in a CI job (`cmd/spec-check/compare.go`): when `GITHUB_ACTIONS` or `CI` is `true`, it exits 2 before it reads an argument, with one line on stderr, `spec-check: compare does not run in a CI job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)`.
+  GitHub sets both variables in every step of every job, so the refusal holds whatever route a job takes to the command: a step, a package script, a make target, a script in any directory, or a link to one.
+  The refusal is the command's, not `specgraph`'s: the Dispatch server calls `specgraph.Compare`, and the library's tests run in CI.
+  The built-binary tests start each child without the two variables (`childEnv` in `cmd/spec-check/main_test.go`), and one row sets each of them.
+  `spec-check guard --root <dir>` reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`): every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
+  `specgraph.CIFilesThatCompare` names each line that holds `spec-check`, under any path, then white space and the word `compare`, reading each line as the shell reads it:
+  a quote is removed and a backslash escape reads as the character it escapes, so `spec-check "compare"` is named, and a line that ends in an odd number of backslashes goes on in the next.
+  It also reads each `run:` value of a `.yml` or `.yaml` file as YAML reads it, so a plain, quoted or folded value over two lines is one line, named at the line where the value starts, and a literal block names its own line;
+  a file YAML cannot read is read as text alone, since GitHub runs no step of it.
+  A comment that names the command is named too, which errs on the safe side.
   A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line runs the comparison of the files with the approved spec, which no CI job does (R2)` on stderr for each, and `spec-check: <dir>: <n> lines of CI files run the comparison` on stdout.
   No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
   a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files runs the comparison`.
-  The instrument reads text: a command held in a variable, a line a YAML folded scalar joins, and a Go program that calls `specgraph.Compare` are outside it.
-  `ci.yaml`'s `envoy-go-checks` runs it over this repository (`go run ./cmd/spec-check guard --root ../..`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
+  The guard does not read a file outside the four directories, such as the `package.json` script a `bun run` step runs, nor a command held in a variable; the refusal of `compare` covers those.
+  A Go program that calls `specgraph.Compare` is outside both parts.
+  `envoy-go-checks` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-envoy-go-checks.yaml`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.

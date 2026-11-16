@@ -476,6 +476,34 @@ func testCompare(t *testing.T, binary string) {
 			stderr: "spec-check: " + bad + `: specgraph: approved node "order": it has no version` + "\n",
 		})
 	})
+	t.Run("compare does not run in a CI job", func(t *testing.T) {
+		t.Parallel()
+		dir, approved := fixture(t, "compare", "approved-text", "spec"), fixture(t, "compare", "approved-text", "approved.json")
+		for _, variable := range []string{"GITHUB_ACTIONS", "CI"} {
+			expect(t, runBinaryIn(t, binary, "", []string{variable + "=true"}, "compare", "--dir", dir, "--approved", approved), result{
+				code:   2,
+				stderr: "spec-check: compare does not run in a CI job (" + variable + "=true): Dispatch compares the files with the approved spec at each push (R2)\n",
+			})
+		}
+		// Only "true" names a CI job: the comparison runs where the variable holds another value.
+		expect(t, runBinaryIn(t, binary, "", []string{"CI=false"}, "compare", "--dir", dir, "--approved", approved), result{
+			stdout: "spec-check: " + dir + ": every text the files hold is approved; 3 of 3 approved statements are in the files at their current text\n",
+		})
+	})
+	t.Run("every other subcommand runs in a CI job", func(t *testing.T) {
+		t.Parallel()
+		ci := []string{"GITHUB_ACTIONS=true", "CI=true"}
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		if got := runBinaryIn(t, binary, "", ci, "print", "--approved", approved, "--id", "order"); got.code != 0 || got.stderr != "" {
+			t.Errorf("print in a CI job: exit %d, stderr %q; want exit 0", got.code, got.stderr)
+		}
+		clean := fixture(t, "ci-files", "clean")
+		expect(t, runBinaryIn(t, binary, "", ci, "guard", "--root", clean), result{stdout: "spec-check: " + clean + ": no line of 4 CI files runs the comparison\n"})
+		valid := fixture(t, "trees", "valid")
+		if got := runBinaryIn(t, binary, "", ci, "tree", "--dir", valid); got.code != 0 {
+			t.Errorf("tree in a CI job: exit %d, stderr %q; want exit 0", got.code, got.stderr)
+		}
+	})
 }
 
 // testPrint runs print over the fixtures of testdata/compare: it writes the current approved block
@@ -618,6 +646,30 @@ func testGuard(t *testing.T, binary string) {
 			stderr: "spec-check: " + filepath.Join(root, ".github", "workflows", "spec.yaml") + ":6: this line runs the comparison of the files with the approved spec, which no CI job does (R2)\n",
 		})
 	})
+	t.Run("guard reads a run value as YAML and a word as the shell reads them", func(t *testing.T) {
+		t.Parallel()
+		line := ": this line runs the comparison of the files with the approved spec, which no CI job does (R2)\n"
+		for _, row := range []struct{ name, step string }{
+			{"a quoted subcommand", "      - run: spec-check \"compare\" --dir .dispatch/spec --approved a.json\n"},
+			{"a plain scalar over two lines", "      - run: spec-check\n          compare --dir .dispatch/spec --approved a.json\n"},
+			{"a folded scalar over two lines", "      - run: >-\n          spec-check\n          compare --dir .dispatch/spec --approved a.json\n"},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				root := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				workflow := filepath.Join(root, ".github", "workflows", "spec.yaml")
+				writeFile(t, workflow, []byte("on: pull_request\njobs:\n  spec:\n    steps:\n"+row.step))
+				expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+					code:   1,
+					stdout: "spec-check: " + root + ": 1 line of CI files runs the comparison\n",
+					stderr: "spec-check: " + workflow + ":5" + line,
+				})
+			})
+		}
+	})
 	t.Run("guard does not pass when it reads no workflow", func(t *testing.T) {
 		t.Parallel()
 		root := fixture(t, "ci-files", "no-workflow")
@@ -684,12 +736,19 @@ type result struct {
 	stdout, stderr string
 }
 
-// runBinary runs binary with args in dir, the test's own directory when dir is empty, and answers
-// its exit status and output.
+// runBinary runs binary with args in dir, the test's own directory when dir is empty, in the
+// environment of childEnv with no variable added, and answers its exit status and output.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
+	t.Helper()
+	return runBinaryIn(t, binary, dir, nil, args...)
+}
+
+// runBinaryIn is runBinary with the variables extra, each "NAME=value", added to the environment.
+func runBinaryIn(t *testing.T, binary, dir string, extra []string, args ...string) result {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir
+	cmd.Env = childEnv(extra...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -698,6 +757,16 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 		t.Fatal(err)
 	}
 	return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// childEnv is this process's environment without GITHUB_ACTIONS and CI, then extra. These tests
+// run in a CI job, where compare refuses to run, so every child starts outside one unless a row
+// sets one of the two itself.
+func childEnv(extra ...string) []string {
+	env := slices.DeleteFunc(os.Environ(), func(v string) bool {
+		return strings.HasPrefix(v, "GITHUB_ACTIONS=") || strings.HasPrefix(v, "CI=")
+	})
+	return append(env, extra...)
 }
 
 // expect fails the test unless got is want.

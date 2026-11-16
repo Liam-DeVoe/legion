@@ -9,11 +9,27 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
+// ciVariables are the variables whose value true says that a process runs in a CI job: GitHub
+// Actions sets GITHUB_ACTIONS and CI in every step of every job, and most other CI systems set CI.
+var ciVariables = []string{"GITHUB_ACTIONS", "CI"}
+
 // runCompare is "spec-check compare --dir <dir> --approved <approved.json>": it compares the
 // files of dir with the approved spec and answers 0 when every text they hold is approved, 1 when
 // one is not, and 2 for files that do not parse, a directory or a file it cannot read or
 // arguments it does not take.
+//
+// It answers 2, before it reads an argument, in a CI job: no CI job compares the files, since
+// Dispatch compares them at each push (R2). The refusal is the command's and not specgraph's,
+// whose Compare the Dispatch server calls and whose tests run in CI. It holds whatever route a
+// job takes to the command: a step, a package script, a make target, a script anywhere, or a link
+// to one. spec-check guard names the routes it can read in a workflow, an action or a script.
 func runCompare(args []string, stdout, stderr io.Writer) int {
+	for _, variable := range ciVariables {
+		if os.Getenv(variable) == "true" {
+			say(stderr, "compare does not run in a CI job (%s=true): Dispatch compares the files with the approved spec at each push (R2)", variable)
+			return 2
+		}
+	}
 	flags := flag.NewFlagSet("compare", flag.ContinueOnError)
 	dirFlag := flags.String("dir", "", "the directory of spec files")
 	approvedFlag := flags.String("approved", "", "the approved spec, in the form of approved.json")
