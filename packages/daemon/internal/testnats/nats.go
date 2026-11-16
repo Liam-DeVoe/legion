@@ -174,14 +174,15 @@ func URL(t testing.TB) string {
 		// by another door.
 		//
 		// Measured in an issue pod on 2026-11-10 (dispatch://INFRA-2583), against nats-server
-		// 2.10.22, the line this package's image is, one round being create, publish 12, delete,
-		// create again, read. Under a load of four busy loops on its two CPUs, 9 of 10,000 rounds
-		// of delete-then-create came back holding all 12 messages, and 0 of 10,000 rounds that
-		// purged first did. A run that also read the store directory immediately before each
-		// delete found the rename collision itself: of 6,000 rounds, 28 met a .<name> the
-		// previous delete had not finished removing, and all 19 of the rounds that recovered
-		// anything were among those 28. The purge is a lookup of the stream and one purge
-		// request per stream, and the server answers the purge when the store is empty.
+		// 2.10.22, of the 2.10 line this package's image is (the image reports v2.10.29 now), one
+		// round being create, publish 12, delete, create again, read. Under a load of four busy
+		// loops on its two CPUs, 9 of 10,000 rounds of delete-then-create came back holding all 12
+		// messages, and 0 of 10,000 rounds that purged first did. A run that also read the store
+		// directory immediately before each delete found the rename collision itself: of 6,000
+		// rounds, 28 met a .<name> the previous delete had not finished removing, and all 19 of the
+		// rounds that recovered anything were among those 28. The purge is a lookup of the stream
+		// and one purge request per stream, and the server answers the purge when the store is
+		// empty.
 		stream, err := js.Stream(t.Context(), name)
 		if err != nil {
 			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)

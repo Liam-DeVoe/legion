@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // SessionAcker answers one pulled message (SessionMessage).
@@ -77,10 +80,11 @@ var ErrSessionPullStalled = errors.New("bus: the session consumer's pull heard n
 type SessionPull struct {
 	conn *nats.Conn
 	sub  *nats.Subscription
-	// name is the consumer's, next its pull request subject, inbox the subject the server answers
-	// on, and request the pull request's body.
-	name, next, inbox string
-	request           []byte
+	// session is the session whose consumer this pulls, name the consumer's, next its pull
+	// request subject, inbox the subject the server answers on, and request the pull request's
+	// body.
+	session, name, next, inbox string
+	request                    []byte
 	// remaining is how many messages the pull request in flight may still deliver; 0 when none is.
 	// Only Next reads or writes it.
 	remaining int
@@ -125,7 +129,7 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 		return nil, err
 	}
 	conn := s.client.Connection()
-	p := &SessionPull{conn: conn, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
+	p := &SessionPull{conn: conn, session: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err
 	}
@@ -187,6 +191,11 @@ func (p *SessionPull) pull() error {
 // Next returns the next message the pull holds, waiting for one until ctx ends. It returns
 // ErrSessionConsumerNotFound once the stream holds no such consumer, and ErrSessionPullStalled
 // once the server has sent nothing for twice sessionPullHeartbeat.
+//
+// A message the session may not be handed (handsOver) is acknowledged here and never returned: one
+// a consumer widened for a server that can skip a filter delivered (scanSafeFilters), another
+// session's inbox among them. An acknowledgement that fails ends Next with its error, and the server
+// delivers that message again once its ack wait has passed.
 func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 	for {
 		if p.remaining == 0 {
@@ -201,7 +210,12 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 		switch status, description := pullStatus(msg); {
 		case status == "":
 			p.remaining--
-			return sessionMessageOf(msg)
+			if handsOver(p.session, msg.Subject) {
+				return sessionMessageOf(msg)
+			}
+			if err := msg.Ack(); err != nil {
+				return SessionMessage{}, fmt.Errorf("bus: pull of session consumer %s: acknowledge %s, which is not %s's: %w", p.name, msg.Subject, p.session, err)
+			}
 		case status == pullStatusExpired, status == pullStatusConflict && description == pullLeadershipChange:
 			// The request ended; the next round sends another.
 			p.remaining = 0
@@ -211,6 +225,30 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 			return SessionMessage{}, fmt.Errorf("bus: pull of session consumer %s: %s %s", p.name, status, description)
 		}
 	}
+}
+
+// handsOver reports whether a pull of sessionID's consumer hands the session a message stored on
+// subject: every subject but a private stream subject (privateStreamSubjects) that is not the
+// session's own. Its own are its agent subject in each form its consumer filters on
+// (SessionConsumerFilters: contracts.TopicForms of contracts.LegacyAgentSubject), and a controller
+// notice lane (ControllerNoticeRole), which a consumer is handed only on a filter naming it: its
+// family is private as a whole, so no topic the session may follow there is a wildcard that
+// scanSafeFilters would widen a lane beside.
+//
+// It is what keeps a consumer widened for a server that can skip a filter (scanSafeFilters) to the
+// messages the session may have: the widened notifications.agent.* delivers every session's
+// old-form inbox, and this answers false for each but the session's own. A consumer whose filters
+// are the session's topics in every form (SessionConsumerFilters) delivers nothing it answers false
+// for, since a registration stores no topic reaching another session's private subject
+// (ReachesPrivateStreamSubject).
+func handsOver(sessionID, subject string) bool {
+	if _, lane := ControllerNoticeRole(subject); lane {
+		return true
+	}
+	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(subject, private) }) {
+		return true
+	}
+	return slices.ContainsFunc(contracts.TopicForms(contracts.LegacyAgentSubject(sessionID)), func(own string) bool { return subjectsOverlap(subject, own) })
 }
 
 // take returns the first message the server sent that Next has not read, waiting until one comes,

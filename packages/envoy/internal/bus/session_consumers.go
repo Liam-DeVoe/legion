@@ -322,7 +322,7 @@ type SessionConsumerStart struct {
 // to the stream's first sequence, so no consumer is created past the stream's end, and a start
 // the record lowered or the clamp moved is logged once the create is confirmed (create).
 func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subjects []string, startSeq uint64) (SessionConsumerStart, error) {
-	name, filters, err := sessionConsumerTarget(sessionID, subjects)
+	name, filters, err := s.target(sessionID, subjects)
 	if err != nil {
 		return SessionConsumerStart{}, err
 	}
@@ -358,7 +358,7 @@ func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subject
 // UpdateFilter makes the existing consumer of sessionID filter on what subjects reduce to, keeping
 // its position (Ensure); it returns ErrSessionConsumerNotFound when the session has none.
 func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, subjects []string) error {
-	name, filters, err := sessionConsumerTarget(sessionID, subjects)
+	name, filters, err := s.target(sessionID, subjects)
 	if err != nil {
 		return err
 	}
@@ -440,7 +440,7 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 // holds on the session's own agent subject, its restart reads the consumer as missing, and its
 // calls are not ordered with this one's.
 func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string, subjects []string) (SessionConsumerStart, error) {
-	name, filters, err := sessionConsumerTarget(sessionID, subjects)
+	name, filters, err := s.target(sessionID, subjects)
 	if err != nil {
 		return SessionConsumerStart{}, err
 	}
@@ -826,7 +826,7 @@ func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string
 // own: ackFloor reads no lower than that floor, so the consumer's next sequence is past the
 // sequence after the stream's last, and KeepListed answers not kept for it on that next sequence.
 func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, subjects []string, info *jetstream.ConsumerInfo) (SessionConsumerStart, bool, error) {
-	name, filters, err := sessionConsumerTarget(sessionID, subjects)
+	name, filters, err := s.target(sessionID, subjects)
 	if err != nil {
 		return SessionConsumerStart{}, false, err
 	}
@@ -888,13 +888,142 @@ func sessionConsumerTarget(sessionID string, subjects []string) (string, []strin
 // its project). An issue's topic under a wildcard project (notifications.dispatch.issue.*.KEY.>)
 // would overlap its old form, so contracts.LegacyTwin gives it none and it stays one filter. It is
 // the one computation of that set, which a caller comparing a consumer with the row it was built
-// from reads too.
+// from reads too: the set a consumer carries on a server whose scan reads every filter
+// (serverScansEveryFilter), and widened on any older one (scanSafeFilters, SessionConsumers.target).
 func SessionConsumerFilters(subjects []string) []string {
 	forms := make([]string, 0, 2*len(subjects))
 	for _, subject := range subjects {
 		forms = append(forms, contracts.TopicForms(subject)...)
 	}
 	return ReduceFilterSubjects(forms)
+}
+
+// target is sessionConsumerTarget for the server the connection holds: its filters as they are on
+// a server whose scan of stored messages reads every filter (serverScansEveryFilter), and widened
+// on any other so it misses none of them (scanSafeFilters). Every call that writes a consumer's
+// filters or compares a consumer with them names its consumer through it, so the filters a call
+// compares are the ones a call on the same server writes.
+func (s *SessionConsumers) target(sessionID string, subjects []string) (string, []string, error) {
+	name, filters, err := sessionConsumerTarget(sessionID, subjects)
+	if err != nil || serverScansEveryFilter(s.serverVersion()) {
+		return name, filters, err
+	}
+	return name, scanSafeFilters(filters), nil
+}
+
+// serverVersion is the version the connection's server answers, and "" while it holds none.
+func (s *SessionConsumers) serverVersion() string {
+	if conn := s.client.Connection(); conn != nil {
+		return conn.ConnectedServerVersion()
+	}
+	return ""
+}
+
+// scanFixedPatch is, for each release line before v2.14 that has one, the first patch release
+// whose scan of a multi-filter consumer's stored messages reads every filter
+// (serverScansEveryFilter): v2.11.12 and v2.12.4, read from each release's server/filestore.go.
+var scanFixedPatch = map[int]int{11: 12, 12: 4}
+
+// serverScansEveryFilter reports whether serverVersion, what the connected server answers
+// ((*nats.Conn).ConnectedServerVersion()), is a nats-server whose scan of a consumer's stored
+// messages finds every message on each of its filters: v2.11.12 and later in v2.11, v2.12.4 and
+// later in v2.12 (scanFixedPatch), and every release from v2.14.0, there being no v2.13. Those
+// releases read a block by subject through stree.IntersectGSL, which walks the block's subjects and
+// asks the consumer's filters of each (msgBlock.firstMatchingMulti, server/filestore.go:2524 at
+// v2.11.12; server/stree/stree.go:458-487).
+//
+// Every release before them reads a block by subject through intersectStree, which walks the
+// filters instead and, at a token where one filter holds a wildcard and another a literal after the
+// same tokens, can follow the wildcard and skip the literal. nats-server v2.10.29, the last of
+// v2.10 and the copy of nats:2.10 the natslive matrix and the Legion daemon's rig run, always skips
+// it (server/sublist.go:1750-1784: its `case r.pwc != nil` never reaches the literal tokens of the
+// same level). It reads a block by subject whenever the block holds fewer distinct subjects than
+// the sequences between the consumer's next sequence and the block's last (server/filestore.go:2267,
+// `mb.fss.Size() < lseq-start`), and one read that finds nothing moves the consumer past the
+// stream's last sequence (server/consumer.go:3700-3708), so the skipped message is never delivered
+// and no error says so; the consumer's info still reports the delivered sequence it had
+// (server/consumer.go:2705-2708). Measured on v2.10.29: a session consumer filtering on
+// notifications.agent.*.<session> beside notifications.agent.<session> was handed a new-form message
+// and never the old-form one stored just before it, behind 24 other sessions' messages, in a
+// consumer the session's registration created over them and in one whose pull was already waiting
+// (TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTraffic).
+//
+// The pre-release of a release counts as that release, and a version this cannot read - the empty
+// string a connection with no server answers among them - is no such server, since widening
+// (scanSafeFilters) loses nothing on any server.
+func serverScansEveryFilter(serverVersion string) bool {
+	fields := strings.SplitN(strings.TrimPrefix(serverVersion, "v"), ".", 3)
+	if len(fields) != 3 {
+		return false
+	}
+	major, minor, patch := versionNumber(fields[0]), versionNumber(fields[1]), versionNumber(fields[2])
+	switch {
+	case major < 0 || minor < 0 || patch < 0:
+		return false
+	case major != 2:
+		return major > 2
+	case minor >= 14:
+		return true
+	}
+	fixed, ok := scanFixedPatch[minor]
+	return ok && patch >= fixed
+}
+
+// scanSafeFilters is filters as a consumer on a server that can skip a literal filter token beside
+// a wildcard one (serverScansEveryFilter) delivers in full: wherever filters hold a `*` and a literal
+// at the same token after the same tokens, the literal is widened to `*`, and the set is reduced
+// again (ReduceFilterSubjects), until no token position holds both. The result matches every
+// subject filters match. A `>` never stands beside another token once the set is reduced, since it
+// contains every filter that shares its tokens before it.
+//
+// The pair every session's consumer carries is its own agent subject in the old form beside the
+// new form under any project (SessionConsumerFilters), notifications.agent.<session> beside
+// notifications.agent.*.<session>, which this widens to notifications.agent.* beside
+// notifications.agent.*.<session>: every session's old-form inbox, which the pull hands the session
+// none of but its own (SessionPull.Next, handsOver). Any other pair comes from wildcard topics the
+// session follows, which reach no private stream subject but its own (ReachesPrivateStreamSubject),
+// and widens within their family; what that lets through is handed over as a merged overlap's is
+// (ReduceFilterSubjects), and the session's client, the last reader, answers each message it does
+// not follow `done`.
+func scanSafeFilters(filters []string) []string {
+	for {
+		widened, changed := widenBesideWildcard(filters)
+		if !changed {
+			return filters
+		}
+		filters = ReduceFilterSubjects(widened)
+	}
+}
+
+// widenBesideWildcard widens, for the first token position where filters hold a `*` and a literal
+// after the same tokens, every such literal to `*`, and reports whether it widened any.
+func widenBesideWildcard(filters []string) ([]string, bool) {
+	tokens := make([][]string, len(filters))
+	for i, filter := range filters {
+		tokens[i] = strings.Split(filter, ".")
+	}
+	for _, wildcard := range tokens {
+		for at, token := range wildcard {
+			if token != "*" {
+				continue
+			}
+			widened := false
+			for _, other := range tokens {
+				if len(other) > at && other[at] != "*" && other[at] != ">" && slices.Equal(other[:at], wildcard[:at]) {
+					other[at] = "*"
+					widened = true
+				}
+			}
+			if widened {
+				out := make([]string, len(tokens))
+				for i, filter := range tokens {
+					out[i] = strings.Join(filter, ".")
+				}
+				return out, true
+			}
+		}
+	}
+	return filters, false
 }
 
 // applySettings sets the session consumer settings and filters on config, leaving what an update
