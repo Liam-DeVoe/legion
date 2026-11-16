@@ -5,12 +5,14 @@ import {
 } from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS, PROGRESS_NOUNS } from "../web/src/features/issue-page/page-words";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
+import { setLiveSessions } from "./agents";
 import { getIssue, patchIssue } from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
   filterRow,
   gotoIssue,
+  issuePage,
   issueRead,
   marginShell,
   openDetails,
@@ -30,6 +32,7 @@ import {
   ONE_PAST_FOLD,
   OTHER_LINK,
   PINNED_FIRST_LINE,
+  PLANNER,
   PLANNER_TITLE,
   PRIORITY_TITLE,
   PROJECT,
@@ -102,13 +105,6 @@ function watchRequests(page: Page): { readonly settled: () => boolean; readonly 
   page.on("requestfailed", ended);
   page.on("requestfinished", ended);
   return { settled: () => out === 0, urls };
-}
-
-/** The labels of a section's rows, in the order they stand (`IssueMargin.tsx`'s `Row`). */
-function rowLabels(section: Locator): Promise<string[]> {
-  return section
-    .locator(":scope > div > div > div:first-child > span[data-page-chrome]")
-    .allTextContents();
 }
 
 /** Whether `locator`'s box lies inside the viewport sideways, so it is read with no sideways
@@ -255,9 +251,15 @@ test("Details opens on the properties and holds no conversation @phone", async (
       });
       await editLabels.click();
       await expect(page.getByRole("combobox", { name: "Search or create label" })).toBeVisible();
+      // The popover is drawn over the page, outside the drawer (`AnchoredPanel.tsx`), with no
+      // role of its own: it is read as the box that holds the labels' listbox.
+      const labelsPopover = page
+        .getByRole("listbox", { name: "Labels options" })
+        .locator("xpath=..");
+      await expect(labelsPopover.getByRole("option").first()).toBeVisible();
       await expect(
-        marginShell(page).locator("[title]"),
-        "an element of Details carries a title with the labels' popover open"
+        marginShell(page).locator("[title]").or(labelsPopover.locator("[title]")),
+        "an element of Details or of its labels' popover carries a title"
       ).toHaveCount(0);
       await page.keyboard.press("Escape");
 
@@ -284,10 +286,20 @@ test("Details opens on the properties and holds no conversation @phone", async (
       await closeDetails(page);
     }
 
-    // (4) On a phone: the three sections inside Details' width, and a pin's link that closes it.
+    // (4) On a phone: Escape in a box, the three sections inside Details' width, and a pin's
+    // and a document's link that close it.
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
+    // Escape in the blocked-by box leaves the box's editor and goes no further: the sheet stays.
+    const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+    await blockedBy.getByRole("button", { name: `Edit issues ${one} waits on` }).click();
+    const blockersBox = blockedBy.getByLabel(`Issues ${one} waits on`, { exact: true });
+    await expect(blockersBox).toBeFocused();
+    await blockersBox.press("Escape");
+    await nextFrames(page);
+    await expect(marginShell(page), "Escape in the blocked-by box closed Details").toBeVisible();
+    await expect(blockersBox, "Escape in the blocked-by box left its editor open").toHaveCount(0);
     for (const section of MARGIN_SECTION_ORDER) {
       await expect(marginSection(page, section)).toBeVisible();
     }
@@ -302,6 +314,20 @@ test("Details opens on the properties and holds no conversation @phone", async (
     await expect(page).toHaveURL(
       buildIssuePath({ id: seeded.pinnedCommentId, key: one, kind: "comment" })
     );
+    // A document's link closes it too, as every link followed in Details does on a phone.
+    await openDetails(page);
+    const firstDocument = (await getIssue(one)).artifacts?.[0];
+    expect(firstDocument, `${one} holds no document`).toBeDefined();
+    const documentPath = buildIssuePath({
+      key: one,
+      kind: "artifact",
+      slug: firstDocument?.slug ?? "",
+    });
+    const phoneDocument = filesList(page).locator(`a[href="${documentPath}"]`);
+    await assertWholeInDetails(page, [phoneDocument]);
+    await phoneDocument.click();
+    await expect(marginShell(page), "a document's link left Details open on a phone").toBeHidden();
+    await expect(page).toHaveURL(documentPath);
     await openDetails(page);
     for (let left = 2; left > 0; left -= 1) {
       const unpin = pinsList(page).getByRole("button", { name: CONTROL_LABELS.unpin });
@@ -319,16 +345,23 @@ test("every property with a value is visible in Details at every width @phone", 
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one, parent, three } = seeded.keys;
     const desktopProject = test.info().project.name !== "iphone";
+    // Who opened ONE and how many references point at it, as Dispatch reads them.
+    const oneRead = await getIssue(one);
+    const opener = oneRead.created_by?.id;
+    expect(opener, `${one} names no one who opened it`).toBeDefined();
 
     // (5) Every width: R2's order, the twenty labels whole, and each value in its row.
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
-      expect(
-        await rowLabels(marginSection(page, "development")),
+      // The labels of Development's rows, in the order they stand (`IssueMargin.tsx`'s `Row`).
+      await expect(
+        marginSection(page, "development").locator(
+          ":scope > div > div > div:first-child > span[data-page-chrome]"
+        ),
         `Development's rows are out of order at ${width} px`
-      ).toEqual(ONE_DEVELOPMENT_ROWS);
+      ).toHaveText(ONE_DEVELOPMENT_ROWS);
       const labels = detailsRow(page, PROPERTY_LABELS.labels).locator("[data-author-text]");
       await expect
         .poll(async () =>
@@ -403,11 +436,20 @@ test("every property with a value is visible in Details at every width @phone", 
           "the priority's link",
           detailsRow(page, PROPERTY_LABELS.advances).getByRole("link").first(),
         ],
-        ["who opened it", detailsRow(page, PROPERTY_LABELS.opened_by)],
-        ["the approval step", detailsRow(page, PROPERTY_LABELS.approval)],
+        [
+          "who opened it",
+          detailsRow(page, PROPERTY_LABELS.opened_by).getByText(opener ?? "", { exact: true }),
+        ],
+        [
+          "the approval step",
+          detailsRow(page, PROPERTY_LABELS.approval).locator('[data-approval-step="spec"]'),
+        ],
         [
           "Referenced by's count",
-          marginSection(page, "references").getByRole("button", { name: /Referenced by/ }),
+          marginSection(page, "references").getByRole("button", {
+            exact: true,
+            name: `Referenced by (${oneRead.referenced_by_count})`,
+          }),
         ],
         [
           "a document's link",
@@ -442,7 +484,9 @@ test("every property with a value is visible in Details at every width @phone", 
       await closeDetails(page);
     }
 
-    // (6) Blocks, and Files and documents, fold after ten behind Show all with the count.
+    // (6) Blocks, and Files and documents, fold after ten behind Show all with the count, read on
+    // a phone.
+    await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
     const blocking = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link");
@@ -459,14 +503,31 @@ test("every property with a value is visible in Details at every width @phone", 
       ),
       "a key of Blocks is not bold"
     ).toEqual([]);
-    await expect(detailsRow(page, PROPERTY_LABELS.blocks)).toContainText(
-      `Waits on ONE (${ONE_PAST_FOLD})`
-    );
+    // Each issue that waits on ONE, by its key as the way to it and its own title after it.
+    for (const [index, key] of seeded.keys.blocks.entries()) {
+      const link = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link", {
+        exact: true,
+        name: key,
+      });
+      await expect(link, `Blocks draws no ${key}`).toHaveCount(1);
+      await expect(
+        link.locator("xpath=following-sibling::span[1]"),
+        `Blocks draws ${key} without its title`
+      ).toHaveText(seeded.titles.blocks[index] ?? "");
+    }
+    // Show all is read as it is drawn, with the space before its count: below 1280 px every
+    // button is a flex box (`styles.css`), which drops a space between two of its children.
+    const showAllFiles = marginSection(page, "references").getByRole("button", {
+      name: `${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}`,
+    });
+    await expect
+      .poll(() => showAllFiles.evaluate((button) => (button as HTMLElement).innerText), {
+        message: "Files and documents' Show all is drawn without the space before its count",
+      })
+      .toBe(`${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}`);
     const documents = filesList(page).getByRole("link");
     await expect(documents).toHaveCount(FOLD_AFTER);
-    await marginSection(page, "references")
-      .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}` })
-      .click();
+    await showAllFiles.click();
     await expect(documents).toHaveCount(ONE_PAST_FOLD);
     const firstDocument = (await getIssue(one)).artifacts?.[0];
     expect(firstDocument, `${one} holds no document`).toBeDefined();
@@ -639,11 +700,13 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       .toEqual(relabelled);
     await closeDetails(page);
     await page.keyboard.press("l");
-    await expect(marginShell(page), "l did not open Details").toBeVisible();
+    // The labels' control is in the DOM while Details is closed, so whether `l` pressed it is
+    // read first, and only then whether Details is open on it.
     await expect(
       detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", { name: "Edit labels" }),
       "l did not open Details at Edit labels"
     ).toHaveAttribute("aria-expanded", "true");
+    await expect(marginShell(page), "l did not open Details").toBeVisible();
     await page.keyboard.press("Escape");
     // The list of keys Keys opens names `l` by what it does.
     await closeDetails(page);
@@ -664,10 +727,16 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       CONTROL_LABELS.set_parent
     );
     await addControl(page).click();
-    const entries = await openMenu(page).getByRole("menuitem").allTextContents();
-    // The assignee is listed where the header draws its control, which the menu presses.
+    // The assignee is listed where the header draws its control, which the menu presses: the
+    // header is read once it is drawn.
+    await expect(
+      issuePage(page).getByRole("heading", { level: 1, name: (await getIssue(two)).title })
+    ).toBeVisible();
     const headerAssignee = await page.locator(`[aria-label="Assignee of ${two}"]`).count();
-    expect(entries, "the Add menu lists other than TWO's empty fields, in R5's order").toEqual([
+    await expect(
+      openMenu(page).getByRole("menuitem"),
+      "the Add menu lists other than TWO's empty fields, in R5's order"
+    ).toHaveText([
       PROPERTY_LABELS.parent,
       ...(headerAssignee > 0 ? [PROPERTY_LABELS.assignee] : []),
       PROPERTY_LABELS.labels,
@@ -742,6 +811,21 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "no_holder"
     );
     await expect(page.getByTestId("issue-details-route-unreachable")).toHaveCount(1);
+    // And a route that reaches someone draws no such marker: a live session takes the role.
+    await setLiveSessions([{ roles: ["implementer"], session_id: PLANNER, title: PLANNER_TITLE }]);
+    await expect
+      .poll(async () => (await getIssue(two)).route_status, {
+        message: "role:implementer does not reach the live session that holds it",
+      })
+      .toBe("live");
+    await reopen(two);
+    await expect(
+      routeRow.getByRole("button", { name: "Messages default to role:implementer" })
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("issue-details-route-unreachable"),
+      "Details says a route that reaches a live session reaches nobody"
+    ).toHaveCount(0);
 
     // (11) TWO's blockers: a refused key keeps the editor open, then THREE.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);

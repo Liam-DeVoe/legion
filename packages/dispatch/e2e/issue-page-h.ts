@@ -131,9 +131,9 @@ export interface DetailsSeed {
     readonly two: string;
   };
   readonly pinnedCommentId: string;
-  readonly pinnedEventId: number;
   readonly priorityId: string;
-  readonly titles: { readonly three: string };
+  /** The titles the rows read, each beside its key: `blocks[i]` is the title of `keys.blocks[i]`. */
+  readonly titles: { readonly blocks: readonly string[]; readonly three: string };
 }
 
 /**
@@ -219,6 +219,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     });
   }
   const blocks: string[] = [];
+  const blockTitles: string[] = [];
   for (let index = 1; index <= ONE_PAST_FOLD; index += 1) {
     const waiter = await createIssue({
       force: true,
@@ -227,6 +228,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     });
     await patchIssue(waiter.key, { blocked_by: [one.key] });
     blocks.push(waiter.key);
+    blockTitles.push(waiter.title);
   }
   // The spec's request waits on ONE's assignee, alice, until she hands it on to bob, who has
   // signed in (`PUT /api/v1/asks/{id}/asked-of`, which `e2e/api.ts` has no wrapper for).
@@ -266,9 +268,8 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   return {
     keys: { blocks, one: one.key, parent: parent.key, three: three.key, two: two.key },
     pinnedCommentId: pinned.id,
-    pinnedEventId: event.id,
     priorityId: priority.id,
-    titles: { three: three.title },
+    titles: { blocks: blockTitles, three: three.title },
   };
 }
 

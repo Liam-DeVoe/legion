@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
@@ -27,12 +27,16 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
  * (`ROW_LINK`), and never cut.
  */
 export function IssueRouteControl({
+  controlRef,
   editing,
   isClosed,
   issue,
   onEdit,
   writes,
 }: {
+  /** Takes the control, which the panel gives the focus back to as the reader leaves the
+   *  editor (`IssueMarginPanel`). */
+  controlRef: Ref<HTMLButtonElement>;
   /** Whether the route's editor is open under it, which hides the control that opens it. */
   editing: boolean;
   isClosed: boolean;
@@ -56,6 +60,7 @@ export function IssueRouteControl({
       className={`inline-flex min-h-11 max-w-full min-w-0 items-center rounded-[7px] text-left text-sm [overflow-wrap:anywhere] outline-none focus-visible:ring-2 disabled:cursor-not-allowed md:min-h-0 ${ROW_LINK} ${pageInkText} ${focusVisibleRing}`}
       disabled={isClosed}
       onClick={onEdit}
+      ref={controlRef}
       type="button"
       {...authorText}
     >

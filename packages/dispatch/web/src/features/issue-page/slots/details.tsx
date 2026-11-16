@@ -11,7 +11,7 @@ import { DETAILS_ROW_ATTRIBUTE, useOpenDetailsAt } from "../details-rows";
 import { LABELS_CONTROL_NAME } from "../IssueAddMenu";
 import type { IssueField } from "../IssueFieldForms";
 import { IssueMarginCards, IssueMarginPanel } from "../IssueMargin";
-import { useFillMarginSlot } from "../margin-slot";
+import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
 import type { SlotProps } from "../slot-props";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
@@ -48,13 +48,20 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
     element.className = "contents";
     return element;
   }, []);
+  // The drawer's `aside` the stage sits in, where a control elsewhere on the page asks for a row
+  // of the panel (`IssueMarginPanel`): read as the host takes the stage, since the panel is drawn
+  // before any host holds it.
+  const [drawerBox, setDrawerBox] = useState<HTMLElement | null>(null);
   // The host takes the stage as it is drawn, and lets go of it only while it still holds it.
   const holdPanel = useCallback(
     (host: HTMLElement | null) => {
       if (host === null) return;
       host.append(stage);
+      setDrawerBox(host.closest<HTMLElement>(`aside[${DETAILS_ATTRIBUTE}]`));
       return () => {
-        if (stage.parentElement === host) stage.remove();
+        if (stage.parentElement !== host) return;
+        stage.remove();
+        setDrawerBox(null);
       };
     },
     [stage]
@@ -80,6 +87,7 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         <NoTooltips>
           <IssueMarginPanel
             documentArtifact={primarySpec(issue)}
+            drawerBox={drawerBox}
             editingField={editingField}
             isClosed={issue.closed_at !== null}
             issue={issue}

@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -32,10 +32,11 @@ import { buildDispatchReference } from "../refs/routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
-import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
+import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import {
+  DETAILS_ATTRIBUTE,
   FilledMarginSlot,
   type MarginDrawer,
   MarginSlotProvider,
@@ -188,6 +189,25 @@ function detailsRow(name: string): HTMLElement {
     .closest(".grid");
   if (!(row instanceof HTMLElement)) throw new Error(`Details draws no ${name} row`);
   return row;
+}
+
+/** The row of Details a control elsewhere on the page opens it at (`details-rows.ts`). */
+function rowAt(row: DetailsRow): HTMLElement {
+  const found = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="${row}"]`);
+  if (!(found instanceof HTMLElement)) throw new Error(`Details draws no ${row} row`);
+  return found;
+}
+
+/** Every Escape that reaches the window from now on, by whether a control marked it taken: the
+ *  page's keys pass over a taken press (`shell/keymap.ts`), and the phone's Details sheet closes
+ *  on an Escape no control took (`shell/useDialog.ts`). */
+function watchEscapes(): { readonly stop: () => void; readonly taken: boolean[] } {
+  const taken: boolean[] = [];
+  const record = (event: KeyboardEvent) => {
+    if (event.key === "Escape") taken.push(event.defaultPrevented);
+  };
+  window.addEventListener("keydown", record);
+  return { stop: () => window.removeEventListener("keydown", record), taken };
 }
 
 test("the blocked-by editor stays open on a refusal and says what Dispatch refused", async () => {
@@ -408,6 +428,69 @@ test("closing Development keeps the blocked-by editor, its typed list and a refu
     unmount();
     restore();
     window.localStorage.removeItem(userPreferenceStorageKey("alice", "issue.margin-sections"));
+  }
+});
+
+// Escape in the blocked-by box is the editor's: it closes it and is taken there, so the phone's
+// Details sheet, which closes on an Escape no control took (`useDialog.ts`), stays open.
+test("Escape in the blocked-by box closes its editor and goes no further", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const escapes = watchEscapes();
+  const { unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    const keys = await screen.findByLabelText("Issues CORE-1 waits on");
+    await waitFor(() => expect(keys).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByLabelText("Issues CORE-1 waits on"),
+      "Escape left the blocked-by editor open"
+    ).not.toBeInTheDocument();
+    expect(
+      escapes.taken,
+      "Escape in the blocked-by box went on to the page's keys, which close Details on a phone"
+    ).toEqual([true]);
+  } finally {
+    escapes.stop();
+    unmount();
+    restore();
+  }
+});
+
+// The box goes with the editor, so leaving it - by Cancel or by a save that lands - gives the
+// focus back to the control that opened it, not to the page.
+test("leaving the blocked-by editor gives the focus back to its Add or Edit", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(
+      document.activeElement,
+      "Cancel in the blocked-by editor left the focus on the page"
+    ).toBe(screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }));
+
+    await user.click(screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }));
+    await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.paste("CORE-2");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "a save of the blocked-by list that landed left the focus on the page"
+      ).toBe(screen.queryByRole("button", { name: blockedByControlName("CORE-1", 1) }))
+    );
+  } finally {
+    unmount();
+    restore();
   }
 });
 
@@ -693,6 +776,55 @@ test("the add menu opens the control the panel draws, under the name that contro
   }
 });
 
+// The add menu is a menu a reader on the keyboard can use: it opens with the focus on its first
+// entry, the arrow keys walk it, and Escape closes it with the focus back on Add and is taken
+// there, so the phone's Details sheet, which closes on an Escape no control took, stays open.
+test("the add menu opened by the keyboard takes the focus, walks by the arrows and gives it back on Escape", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const escapes = watchEscapes();
+  const { unmount } = renderDetails();
+
+  try {
+    const add = await screen.findByRole("button", { name: CONTROL_LABELS.add });
+    add.focus();
+    await user.keyboard("{Enter}");
+    const entries = await screen.findAllByRole("menuitem");
+    expect(entries.length, "the add menu lists fewer than two entries to walk").toBeGreaterThan(1);
+    await waitFor(() =>
+      expect(document.activeElement, "the add menu opened with the focus left on Add").toBe(
+        entries[0]
+      )
+    );
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement, "ArrowDown did not move to the next entry").toBe(entries[1]);
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement, "ArrowUp did not move back to the first entry").toBe(entries[0]);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu"), "Escape left the add menu open").not.toBeInTheDocument();
+    expect(document.activeElement, "Escape did not give the focus back to Add").toBe(add);
+    expect(
+      escapes.taken,
+      "Escape in the add menu went on to the page's keys, which close Details on a phone"
+    ).not.toContain(false);
+
+    // An entry chosen by the keyboard opens its control, as one chosen by the pointer does.
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getAllByRole("menuitem")[0]));
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(PROPERTY_LABELS.parent),
+        "the menu's Parent opened no parent's editor"
+      ).toHaveFocus()
+    );
+  } finally {
+    escapes.stop();
+    unmount();
+    restore();
+  }
+});
+
 // R13: the add control lists what has no value yet, so where nothing can be added - a closed
 // issue, or one with a value for every property the menu lists - it is not drawn at all.
 test("the add control is not drawn on a closed issue, nor when every property has a value", async () => {
@@ -954,6 +1086,66 @@ test("the margin's own cards are drawn only while a document's editor is on the 
   }
 });
 
+// A control elsewhere on the page that opens Details at one of its rows asks the drawer for that
+// row first (decision 69 of the parts): the section that holds the row opens for it as its
+// heading opens it, so the reader's kept choice follows, and a section already open stays open.
+test("a request for the Labels row opens a closed Development in the drawer that holds the panel", async () => {
+  const { restore } = stubIssueApi();
+  const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
+  window.localStorage.setItem(kept, "development");
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <MarginProvider>
+          <MarginSlotProvider drawsSlot>
+            <DetailsSlot issue={issue} route={{ key: "CORE-1", kind: "issue" }} />
+            <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
+              <MarginBody />
+            </aside>
+          </MarginSlotProvider>
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const development = await screen.findByRole("button", {
+      name: MARGIN_SECTION_NAMES.development,
+    });
+    await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
+    const drawer = development.closest(`aside[${DETAILS_ATTRIBUTE}]`);
+    expect(drawer, "the panel is not in the drawer's aside").not.toBeNull();
+    const request = (row: DetailsRow) =>
+      act(() => {
+        drawer?.dispatchEvent(new CustomEvent("details-row-request", { detail: row }));
+      });
+
+    request("labels");
+    expect(development, "a request for the Labels row left Development closed").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(
+      document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="labels"]`),
+      "Development opened without its Labels row"
+    ).not.toBeNull();
+    expect(window.localStorage.getItem(kept), "the reader's kept choice did not follow").toBe("");
+
+    request("labels");
+    expect(development, "a request for a row of an open Development closed it").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+  } finally {
+    view.unmount();
+    restore();
+    window.localStorage.removeItem(kept);
+  }
+});
+
 // R3: the header's Set parent issue presses the Parent row's first control (`useOpenDetailsAt`,
 // which presses a row's first control), so that control is the one that opens the parent's
 // editor, and it stands before the parent's link.
@@ -1115,11 +1307,6 @@ test("a route Dispatch refuses is said in the Messages go to row with Dispatch's
     Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: reason }))
   );
   const { unmount } = renderDetails();
-  const routeRow = () => {
-    const row = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="route"]`);
-    if (!(row instanceof HTMLElement)) throw new Error("Details draws no Messages go to row");
-    return row;
-  };
 
   try {
     await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
@@ -1130,11 +1317,11 @@ test("a route Dispatch refuses is said in the Messages go to row with Dispatch's
 
     await waitFor(() =>
       expect(
-        within(routeRow()).queryByRole("alert")?.textContent,
+        within(rowAt("route")).queryByRole("alert")?.textContent,
         "the Messages go to row does not say why Dispatch refused the route"
       ).toBe(reason)
     );
-    await user.click(within(routeRow()).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.retry }));
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     expect(
       patchIssue.mock.calls.map(([, input]) => input),
@@ -1142,9 +1329,87 @@ test("a route Dispatch refuses is said in the Messages go to row with Dispatch's
     ).toEqual([{ route }, { route }]);
     await waitFor(() =>
       expect(
-        within(routeRow()).queryByRole("alert"),
+        within(rowAt("route")).queryByRole("alert"),
         "the refusal is still said after the route landed"
       ).not.toBeInTheDocument()
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A refused route stays the draft until the reader leaves the editor, which puts the saved route
+// back: the refusal is said while the draft still holds the route Dispatch refused, and not once
+// it no longer does, when its Retry would send nothing.
+test("a refused route is said only while the draft still holds it", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
+  );
+  const { unmount } = renderDetails();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await waitFor(() =>
+      expect(within(rowAt("route")).queryByRole("alert")?.textContent).toBe("invalid route")
+    );
+
+    await user.click(
+      within(rowAt("route")).getByRole("button", { name: `Messages default to ${route}` })
+    );
+    await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(
+      within(rowAt("route")).queryByRole("button", { name: "Messages default to no route" }),
+      "Cancel did not put the saved route back"
+    ).toBeInTheDocument();
+    expect(
+      within(rowAt("route")).queryByRole("alert"),
+      "the row still says the refusal of a route the reader left, with a Retry that sends nothing"
+    ).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The box an editor of a row holds the focus in goes with the editor, so leaving it - by a save,
+// by Cancel or by Escape - gives the focus back to the row's own control, not to the page.
+test("leaving the parent's or the route's editor gives the focus back to its row's control", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+  const control = (row: DetailsRow) =>
+    rowAt(row).querySelector("input, textarea, select, button:not(:disabled), a[href]");
+
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.set_parent }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.parent));
+    await user.paste("CORE-9");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(document.activeElement, "Save parent by Enter left the focus on the page").toBe(
+        control("parent")
+      )
+    );
+
+    await within(rowAt("parent")).findByRole("link", { name: "CORE-9" });
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.edit_parent }));
+    await user.click(within(rowAt("parent")).getByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(document.activeElement, "Cancel of the parent's editor left the focus on the page").toBe(
+      control("parent")
+    );
+    expect(control("parent")).toHaveTextContent(CONTROL_LABELS.edit_parent);
+
+    await user.click(screen.getByRole("button", { name: "Messages default to no route" }));
+    await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(document.activeElement, "Cancel of the route's editor left the focus on the page").toBe(
+      control("route")
     );
   } finally {
     unmount();

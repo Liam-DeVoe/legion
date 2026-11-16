@@ -6,6 +6,7 @@ import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { repoControlName } from "../issue/RepoControl";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
+import { roveFocus } from "../shell/roving";
 import { blockedByControlName } from "./BlockedByControl";
 import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
@@ -41,21 +42,40 @@ export function IssueAddMenu({
   const [open, setOpen] = useState(false);
   const drawer = useMarginDrawer();
   const wrapper = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
+    // The menu opens with the focus on its first entry, so a reader on the keyboard is in it.
+    menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     const closeOutside = (event: PointerEvent) => {
       if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
         setOpen(false);
       }
     };
+    // Escape belongs to whatever the reader is in, as an anchored panel takes it
+    // (`components/AnchoredPanel.tsx`): the menu takes a press from inside it or from Add,
+    // closes and gives the focus back to Add. It reads the press in the capture phase and marks
+    // it taken, so neither the phone's Details sheet, which holds the menu, nor Details' own
+    // Escape at every other width closes Details on it.
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (
+        event.key !== "Escape" ||
+        !(event.target instanceof Node) ||
+        wrapper.current?.contains(event.target) !== true
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      trigger.current?.focus();
+      setOpen(false);
     };
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("keydown", closeOnEscape, true);
     return () => {
       document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("keydown", closeOnEscape, true);
     };
   }, [open]);
 
@@ -70,13 +90,30 @@ export function IssueAddMenu({
         aria-label={CONTROL_LABELS.add}
         className={pageHeaderControl}
         onClick={() => setOpen((shown) => !shown)}
+        ref={trigger}
         type="button"
         {...pageChrome}
       >
         {CONTROL_LABELS.add}
       </button>
       {open ? (
-        <div aria-label={CONTROL_LABELS.add} className={`${pageMenu} left-0`} role="menu">
+        <div
+          aria-label={CONTROL_LABELS.add}
+          className={`${pageMenu} left-0`}
+          // The arrow keys walk the entries, as they walk the page's other lists
+          // (`shell/roving.ts`); the press is the menu's, and no key of the page's sees it.
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+            event.preventDefault();
+            roveFocus(
+              [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')],
+              event.target instanceof HTMLElement ? event.target : null,
+              event.key === "ArrowDown" ? 1 : -1
+            );
+          }}
+          ref={menu}
+          role="menu"
+        >
           {fields
             .filter((field) => field.reachable())
             .map((field) => (

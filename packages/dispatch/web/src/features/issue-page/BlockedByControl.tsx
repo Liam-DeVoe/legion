@@ -10,6 +10,7 @@ import {
   pageQuietText,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
+import { focusOnDocument } from "../shell/roving";
 import { FormActions } from "./IssueFieldForms";
 import { authorText, HELP_LINES, pageChrome } from "./page-structure";
 import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
@@ -85,14 +86,25 @@ export function BlockedByControl({
 }): ReactNode {
   const blockers = issue.blocked_by ?? [];
   const input = useRef<HTMLInputElement>(null);
+  const control = useRef<HTMLButtonElement>(null);
   // Set by the reader's own open, so the box takes the focus then and not when Development is
   // opened again over an editor that stayed open.
   const focusBox = useRef(false);
+  // Whether the editor was open at the last commit, so that its close - by Cancel, by Escape or
+  // by a save that lands - is told apart from Development opening over a closed editor.
+  const wasEditing = useRef(editing);
   const isClosed = issue.closed_at !== null;
   // The editor opens with the issue's own list in it, and the focus in the box: the control
   // that opened it is still on the page, so a reader on the keyboard would otherwise have to
-  // find the box themselves.
+  // find the box themselves. It closes with the focus back on that control, where the focus
+  // fell to the document with the box, the one focus the page takes back (`shell/roving.ts`).
   useEffect(() => {
+    const closed = wasEditing.current && !editing;
+    wasEditing.current = editing;
+    if (closed) {
+      if (focusOnDocument()) control.current?.focus();
+      return;
+    }
     if (!editing || !focusBox.current) return;
     focusBox.current = false;
     input.current?.focus();
@@ -129,6 +141,7 @@ export function BlockedByControl({
             aria-label={blockedByControlName(issue.key, blockers.length)}
             className={pageHeaderControl}
             onClick={open}
+            ref={control}
             type="button"
             {...pageChrome}
           >
@@ -145,7 +158,12 @@ export function BlockedByControl({
             id="issue-blocked-by"
             onChange={(event) => onDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") close();
+              if (event.key !== "Escape") return;
+              // The press is the editor's alone, marked as taken: the page's own Escape - the
+              // phone's Details sheet closes on it (`useDialog.ts`) - passes over a press a
+              // control has taken (`shell/keymap.ts`), so Details stays open.
+              event.preventDefault();
+              close();
             }}
             placeholder={`${issue.project}-12 ${issue.project}-13`}
             ref={input}

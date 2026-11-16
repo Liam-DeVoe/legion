@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefCallback, useId, useState } from "react";
+import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
@@ -26,6 +27,7 @@ import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { focusOnDocument } from "../shell/roving";
 import { BlockedByControl, IssueLine } from "./BlockedByControl";
 import { DetailsErrorLine } from "./details-error";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
@@ -55,6 +57,20 @@ import { waitingOnReader } from "./waiting";
 /** How many entries a list of unbounded length draws before it folds behind a count that opens
  *  the rest (dispatch://INFRA-1196 R13). */
 const FOLD_AFTER = 10;
+
+/** The event a control elsewhere on the page sends the Details drawer for the row it opens
+ *  Details at, its `detail` the row (decision 69 of the parts, `details-rows.ts`'s
+ *  `useOpenDetailsAt`), before it looks for that row. */
+const DETAILS_ROW_REQUEST = "details-row-request";
+
+/** The rows of each section that a control elsewhere on the page opens Details at
+ *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
+ *  People holds the issue's collaborators, which part M draws there (`DetailsPeople`). */
+const SECTION_ROWS: Readonly<Record<MarginSection, readonly DetailsRow[]>> = {
+  development: ["labels", "parent", "route"],
+  people: ["collaborators"],
+  references: [],
+};
 
 /**
  * The margin's own side of the issue page's panel (dispatch://INFRA-1196 R12): the margin's
@@ -129,6 +145,7 @@ export function IssueMarginCards({
  */
 export function IssueMarginPanel({
   documentArtifact,
+  drawerBox = null,
   editingField,
   isClosed,
   issue,
@@ -138,6 +155,9 @@ export function IssueMarginPanel({
 }: {
   /** The issue's primary document, whose approval the Approval row draws. */
   documentArtifact: Artifact | undefined;
+  /** The Details drawer's `aside` the panel is placed in (`slots/details.tsx`), which a control
+   *  elsewhere on the page sends its request for a row to; `null` while the panel is in none. */
+  drawerBox?: HTMLElement | null;
   /** The editor open in its row - the parent's or the route's - or `null`. */
   editingField: IssueField | null;
   isClosed: boolean;
@@ -159,6 +179,22 @@ export function IssueMarginPanel({
   const [blockedByEditing, setBlockedByEditing] = useState(false);
   const [blockedByDraft, setBlockedByDraft] = useState("");
   const blockedByWrite = useIssueBlockedBy(issue.key, () => setBlockedByEditing(false));
+  // The row's own control takes the focus back as the reader leaves its editor - by a save, by
+  // Cancel or by Escape - since the box that held it goes with the editor; only where the focus
+  // fell to the document, the one focus the page takes back for the reader (`shell/roving.ts`).
+  const parentControl = useRef<HTMLButtonElement>(null);
+  const routeControl = useRef<HTMLButtonElement>(null);
+  const leftEditor = useRef<IssueField | null>(null);
+  const closeEditor = () => {
+    leftEditor.current = editingField;
+    onEditingField(null);
+  };
+  useEffect(() => {
+    const left = leftEditor.current;
+    leftEditor.current = null;
+    if (left === null || editingField !== null || !focusOnDocument()) return;
+    (left === "parent" ? parentControl : routeControl).current?.focus();
+  }, [editingField]);
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // What Details reads beyond the issue - the titles of the issues around this one, and its
   // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
@@ -219,7 +255,7 @@ export function IssueMarginPanel({
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <PropertySection name="development" sections={sections}>
+      <PropertySection drawerBox={drawerBox} name="development" sections={sections}>
         <Row glyph="◐" label={PROPERTY_LABELS.status}>
           <span
             className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(status)}`}
@@ -283,6 +319,7 @@ export function IssueMarginPanel({
             <button
               className={pageHeaderControl}
               onClick={() => onEditingField("parent")}
+              ref={parentControl}
               type="button"
               {...pageChrome}
             >
@@ -304,7 +341,7 @@ export function IssueMarginPanel({
             field={editingField === "parent" ? "parent" : null}
             isClosed={isClosed}
             issue={issue}
-            onClose={() => onEditingField(null)}
+            onClose={closeEditor}
             writes={writes}
           />
           {writes.parentSaveFailed ? (
@@ -377,6 +414,7 @@ export function IssueMarginPanel({
         </Row>
         <Row glyph="→" label={PROPERTY_LABELS.route} row="route">
           <IssueRouteControl
+            controlRef={routeControl}
             editing={editingField === "route"}
             isClosed={isClosed}
             issue={issue}
@@ -387,15 +425,19 @@ export function IssueMarginPanel({
             field={editingField === "route" ? "route" : null}
             isClosed={isClosed}
             issue={issue}
-            onClose={() => onEditingField(null)}
+            onClose={closeEditor}
             writes={writes}
           />
           {/* A route Dispatch refused, said in the row it was saved from with Dispatch's reason
-              and Retry, as the Parent row says a refused parent. The save is Details' own write
-              (the details slot's `useIssueHeaderWrites`), and inline, so the write store leaves
-              its refusal to this row, and the header, which says the page's other refusals,
-              never sees it. */}
-          {writes.updateIssue.isError && writes.updateIssue.variables?.route !== undefined ? (
+              and Retry, as the Parent row says a refused parent, for as long as the draft still
+              holds a route the issue does not: a reader who leaves the editor puts the saved
+              route back, and Retry would then send nothing. The save is Details' own write (the
+              details slot's `useIssueHeaderWrites`), and inline, so the write store leaves its
+              refusal to this row, and the header, which says the page's other refusals, never
+              sees it. */}
+          {writes.updateIssue.isError &&
+          writes.updateIssue.variables?.route !== undefined &&
+          writes.drafts.route !== (issue.route ?? "") ? (
             <DetailsErrorLine
               error={writes.updateIssue.error}
               message={apiErrorMessage(writes.updateIssue.error, "Could not update this issue.")}
@@ -429,7 +471,7 @@ export function IssueMarginPanel({
           ) : null}
         </div>
       </PropertySection>
-      <PropertySection name="people" sections={sections}>
+      <PropertySection drawerBox={drawerBox} name="people" sections={sections}>
         <Row glyph="☺" label={PROPERTY_LABELS.opened_by}>
           {issue.created_by == null ? (
             none
@@ -441,7 +483,7 @@ export function IssueMarginPanel({
         </Row>
         <DetailsPeople issue={issue} state={state} />
       </PropertySection>
-      <PropertySection name="references" sections={sections}>
+      <PropertySection drawerBox={drawerBox} name="references" sections={sections}>
         {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
             wherever no approval request waits on the reader (R13, R31). */}
         <Row glyph="▤" label={PROPERTY_LABELS.approval}>
@@ -582,7 +624,11 @@ function ShowAll({
       type="button"
       {...pageChrome}
     >
-      {CONTROL_LABELS.show_all} <span {...authorText}>{count}</span>
+      {/* One child, so the space before the count holds where every button is a flex box
+          (`styles.css`, below 1280 px), which drops a space between two of its children. */}
+      <span>
+        {CONTROL_LABELS.show_all} <span {...authorText}>{count}</span>
+      </span>
     </button>
   );
 }
@@ -591,14 +637,38 @@ function ShowAll({
  *  section draws none of its values, so what a reader sees is what the page holds. */
 function PropertySection({
   children,
+  drawerBox,
   name,
   sections,
 }: {
   children: ReactNode;
+  /** The drawer's `aside` the panel is placed in, which a request for a row is sent to. */
+  drawerBox: HTMLElement | null;
   name: MarginSection;
   sections: MarginSections;
 }): ReactNode {
   const open = sections.isOpen(name);
+  // A control elsewhere on the page that opens Details at one of this section's rows asks the
+  // drawer for that row before it looks for it (`DETAILS_ROW_REQUEST`). A closed section opens
+  // for it as its heading opens it, so the reader's kept choice follows, and in the same task,
+  // so the row is on the page when the control looks for it.
+  const latest = useRef(sections);
+  latest.current = sections;
+  useEffect(() => {
+    if (drawerBox === null) return;
+    const openForRow = (event: Event) => {
+      if (
+        !(event instanceof CustomEvent) ||
+        !SECTION_ROWS[name].includes(event.detail) ||
+        latest.current.isOpen(name)
+      ) {
+        return;
+      }
+      flushSync(() => latest.current.toggle(name));
+    };
+    drawerBox.addEventListener(DETAILS_ROW_REQUEST, openForRow);
+    return () => drawerBox.removeEventListener(DETAILS_ROW_REQUEST, openForRow);
+  }, [drawerBox, name]);
   return (
     <section data-margin-section={name}>
       <h2>
