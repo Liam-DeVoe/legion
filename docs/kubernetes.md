@@ -3061,6 +3061,7 @@ At boot the daemon logs, once, `legion daemon connects to NATS` with `user=U…`
 `legion start --check-config` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line.
 Every permission the server refuses the daemon's connection, a subscription or a publish (its JetStream consumers' API requests included), is logged at error as `NATS refused the daemon a permission: its NATS user lacks that grant` with its `operation` and `subject`;
 the server reports a refusal asynchronously, and nats.go's default handler would only write it to stderr, outside the daemon's log.
+Every refusal of the connection's credential on a reconnect (an authorization violation, for a seed or the service token below) is logged at warn as `NATS refused the connection's credential` with its `error`.
 Every other asynchronous error is logged at warn with the `subject` of the subscription it names, a dropped connection at warn as `NATS connection lost` with its `error`, the reconnect at info as `NATS connection restored` with its `server`, and a terminal close (a fatal server `-ERR`) at error, once, as `NATS
 connection closed` with its `error`.
 Reconnects never run out: the connection never drops a server from its pool for having failed too many times, so an outage mid-run shows as `NATS
@@ -3085,7 +3086,9 @@ An EOF during the NATS handshake also refuses at once
 Behind the NATS auth service in the secrets broker, the daemon's own connection may present a platform identity token instead of a seed:
 `nats_daemon_service_token_file` (relative to `legion.yaml`'s directory) names a projected ServiceAccount token for the broker's `BROKER_NATS_K8S_AUDIENCE`, whose account the broker's `BROKER_NATS_SERVICES` lists as a `daemon` entry.
 The daemon reads the file afresh at each connect, connects as user `service` with the token as its password, takes its account's own reply prefix (`_INBOX_` and the account, each byte outside `[A-Za-z0-9-]` escaped), and moves to a later token ten minutes before the one it presented lapses.
-With `-` as its entry's scope, the broker holds that grant to the projects its exchange entry for the account lists (`docs/site/src/content/docs/broker/operate.md`, the NATS auth service).
+List the daemon's entry with `*`, the daemon's whole grant (with its own reply prefix).
+Do not list it with `-` yet: `-` holds the grant to the projects the account's exchange entry lists (`docs/site/src/content/docs/broker/operate.md`, the NATS auth service), and that grant names the consumers the daemon opens only after plan C's t-c-10 (dispatch://INFRA-3884) and drops the stream reads today's daemon makes, so today's daemon would be refused at boot.
+`-` is for daemon entries once t-c-10's release gate opens, which plan E's t-e-23 (dispatch://INFRA-840) waits on.
 A daemon seed beside the token file refuses boot naming both, and so does a token file that cannot be read, is empty, or names no account.
 The auth service refuses a token while it is away, or while it holds no answer yet about a project the daemon's grant needs, so the token's connection waits a refusal out, at boot and while running alike, on one schedule (one second, doubling, capped at a minute):
 at boot each refused attempt is logged as the `connect Envoy NATS` probe's retry with its `detail` (`nats: Authorization Violation`), and the daemon serves nothing, its `/readyz` answering nothing, until the token is admitted;

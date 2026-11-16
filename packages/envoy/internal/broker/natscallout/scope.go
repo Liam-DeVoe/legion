@@ -94,9 +94,11 @@ const accessFetchTimeout = 10 * time.Second
 // 1.5 s (decideBudget), and a Dispatch call may take ten. run asks about every such project at the
 // start and every accessRefresh after, in parallel. A project with no answer held yet (the first
 // ask has not come back, or Dispatch was down at the start) is refused as not yet known, and the
-// client retries. A held answer is used however old it is: an ask that fails keeps the last answer,
-// so a stale answer admits or refuses as Dispatch last said. It is at most accessRefresh beside
-// projectaccess.CacheTTL old, since the Dispatch client answers from its own cache that long.
+// client retries. While Dispatch answers, a held answer is at most 60 s old: the 30 s
+// (projectaccess.CacheTTL) the Dispatch client may have kept it, the accessRefresh to the next ask,
+// and the accessFetchTimeout that ask may take. An ask that fails keeps the last answer, as plan E
+// says (an answer is used however old it is), so while Dispatch cannot be reached a project's
+// answer admits or refuses as Dispatch last said, and the broker logs each failed ask at warn.
 type heldAccess struct {
 	access   func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	projects []string

@@ -607,13 +607,10 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // looks once the connection reports itself closed, and Close does not clear what the connection
 // last recorded.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	name, options := "legion-daemon "+cfg.Project, []nats.Option{natsauth.LogEvents(w.log), natsauth.ReconnectForever()}
+	name, options := "legion-daemon "+cfg.Project, nc.options(w.log)
 	var conn *nats.Conn
 	var err error
 	if nc.tokenFile != "" {
-		// While running, a refused reconnect is waited out on the boot's own schedule
-		// (readinessRetry), which natsConnection.waitsOut holds the boot's connect to.
-		options = append(options, natsauth.ReconnectBackoff(readinessRetry.Initial, readinessRetry.Max))
 		conn, err = natsauth.ConnectService(cfg.NatsURLs, nc.tokenFile, name, options...)
 	} else {
 		conn, err = natsauth.Connect(cfg.NatsURLs, nc.seed, name, options...)

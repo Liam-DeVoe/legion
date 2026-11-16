@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,36 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 	})
 }
 
+// The service token's connection waits its reconnects out on the boot's own schedule
+// (readinessRetry: one second, doubling, capped at a minute), so a refusal of the auth service is
+// waited out alike at boot and while running; a seed's connection, or one with no credential,
+// keeps nats.go's own reconnect wait.
+func TestTheTokenConnectionReconnectsOnTheBootsSchedule(t *testing.T) {
+	apply := func(nc natsConnection) nats.Options {
+		options := nats.GetDefaultOptions()
+		for _, option := range nc.options(quietLogger()) {
+			if err := option(&options); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return options
+	}
+	token := apply(natsConnection{tokenFile: "/var/run/secrets/legion/nats-token", source: natsServiceToken})
+	if token.CustomReconnectDelayCB == nil {
+		t.Fatal("the service token's connection has no reconnect schedule of its own")
+	}
+	for attempt, want := range map[int]time.Duration{1: readinessRetry.Initial, 2: 2 * readinessRetry.Initial, 10: readinessRetry.Max} {
+		if got := token.CustomReconnectDelayCB(attempt); got != want {
+			t.Errorf("reconnect %d waits %s, want %s", attempt, got, want)
+		}
+	}
+	for _, nc := range []natsConnection{{source: natsSeedDaemon}, {source: natsSeedPane}, {source: natsSeedNone}} {
+		if apply(nc).CustomReconnectDelayCB != nil {
+			t.Errorf("a %s connection waits on the token's schedule", nc.source)
+		}
+	}
+}
+
 // The workflow's own NATS connection presents the daemon's platform identity token to a hub whose
 // connections the NATS auth service admits: the daemon boots against such a hub, presenting the
 // token its file holds, and logs the account it names. The control boots the same daemon with no
@@ -257,8 +288,31 @@ func TestTheWorkflowWaitsOutARefusalOfItsServiceToken(t *testing.T) {
 	cfg.NatsDaemonServiceTokenFile = tokenFile
 	var out syncBuffer
 	tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
+	// While the token is refused the daemon is not ready: /readyz answers nothing or 503 until the
+	// fourth CONNECT, the admitted one, has been presented. The count is read after each answer,
+	// so a 200 read with fewer than four presented is a daemon ready before it was admitted.
+	readyEarly, probing := make(chan int, 1), make(chan struct{})
+	go func() {
+		defer close(probing)
+		for len(s.Presented()) < 4 {
+			if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/readyz"); err == nil {
+				response.Body.Close()
+				if presented := len(s.Presented()); response.StatusCode == http.StatusOK && presented < 4 {
+					readyEarly <- presented
+					return
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
 	if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
 		t.Fatalf("boot whose token the auth service refuses three times = %v, want the daemon serving once it is admitted", err)
+	}
+	<-probing
+	select {
+	case presented := <-readyEarly:
+		t.Fatalf("/readyz answered 200 with %d CONNECTs presented, before the token was admitted", presented)
+	default:
 	}
 	if got := len(s.Presented()); got < 4 {
 		t.Fatalf("the daemon presented its token %d times, want at least four: three refused, then admitted", got)
