@@ -2893,6 +2893,28 @@ describe("dispatch result --project, as a CI job writes it", () => {
     expect(requests).toEqual([]);
   });
 
+  // The issue form takes the command's one bound too: a broker whose rate limit never lets the
+  // trade through ends it within the bound, with the project form's one line and no write.
+  test("with the job's identity, --issue ends at the command's one bound when the broker's rate limit refuses every trade", async () => {
+    brokerAnswer = () => rateLimited("1");
+    const { code, stdout, stderr, ms } = await timedJob(
+      issueRecord,
+      jobEnvironment(),
+      shortBound(3_000, 500)
+    );
+    expect({ code, stderr, trades: trades.length, withinTheBound: ms < 3_000 }).toEqual({
+      code: 1,
+      stderr: "",
+      trades: 3,
+      withinTheBound: true,
+    });
+    expect(stdout.split("\n")).toEqual([
+      "the secrets broker's rate limit refused the trade, and the 3 s this command may take leave no time to ask again: the secrets broker refused this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint): HTTP 429 invalid_request: RATE_LIMITED: too many token requests; try again later",
+      "",
+    ]);
+    expect(written).toEqual([]);
+  }, 15_000);
+
   test("with the job's identity, an argument of a role's record is refused on --issue, naming its flag, before any request", async () => {
     for (const [flag, value] of [
       ["--role", "tester"],

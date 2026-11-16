@@ -246,7 +246,7 @@ func (r *ciJobRig) jobToken(change func(*brokertoken.Introspection)) string {
 // sessionToken has the broker answer a session's own token of project ACME, and answers it.
 func (r *ciJobRig) sessionToken() string {
 	answer := liveNamedToken(r.caller.jkt)
-	answer.Project = ciJobProject
+	answer.Projects = []string{ciJobProject}
 	return r.says(answer)
 }
 
