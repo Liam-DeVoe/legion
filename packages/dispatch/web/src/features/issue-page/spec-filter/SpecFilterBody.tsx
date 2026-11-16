@@ -31,7 +31,7 @@ import type { OutlineRequest } from "../IssueTree";
 import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
 import { DETAILS_ATTRIBUTE } from "../margin-slot";
 import { NodeGlyph } from "../NodeGlyph";
-import { NodeEdges, useRowOnScreen } from "../NodeRow";
+import { NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
 import { useReferenceNames } from "../one-line";
@@ -50,7 +50,7 @@ import {
   sentenceCase,
   VERIFICATION_WORDS,
 } from "../page-words";
-import { RowText } from "../RowText";
+import { RowText, useOutOfTabOrder } from "../RowText";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../tree-drafts";
 import type { DrawnRow } from "../tree-fold";
@@ -754,12 +754,14 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
 }
 
 /**
- * One statement: its bullet, its words, the line naming the decision that shaped it, the chips
- * it carries, and its mark at the right of the row (R5, R17, R34). Its words are cut as an
- * agent's are on every row of the page, at six lines where more than 20 words would be hidden,
- * with "more · N words" opening the rest in place (ruling 1 and ruling 6 of build-rulings-md:
- * a statement of twenty lines opened every view on a wall of text); the focused statement
- * draws them whole.
+ * One statement: its bullet, its words with the chips it carries after the last of them, the
+ * line naming the decision that shaped it, and its mark at the right of the row (R5, R6, R17,
+ * R34). Its words are cut as an agent's are on every row of the page, at six lines where more
+ * than 20 words would be hidden, with "more · N words" opening the rest in place (ruling 1 and
+ * ruling 6 of build-rulings-md: a statement of twenty lines opened every view on a wall of text);
+ * the focused statement draws them whole. The row draws its own box rather than `CutWords`, so
+ * its chips stand after its last word while the words are whole, and beside "more" while they
+ * are cut, as a row of the outline draws them (departure 3 of dispatch://INFRA-3939's plan).
  */
 function Statement({
   context,
@@ -781,12 +783,31 @@ function Statement({
 }): ReactNode {
   const node = statement.node;
   const row = useRef<HTMLDivElement | null>(null);
+  const words = useRef<HTMLDivElement | null>(null);
   const press = useRowOnScreen(row, focused);
+  const clamp = useClamp(words, true);
+  useOutOfTabOrder(words, true);
+  const [opened, setOpened] = useState(false);
+  const clamped = clamp !== undefined && !opened && !focused;
+  // "more · N words" opens the rest of cut words and closes it again; the focused statement
+  // draws its words whole, so it draws no such control.
+  const more = clamp !== undefined && !focused;
   // Every gap and chip on the statement but the gap its mark already says: "No check" is the
   // mark at the right of the row and the word for it in the legend (R17), and a chip beside it
   // would say it twice. The rest are drawn as the outline draws them (R4, R10).
   const edged = { ...node, gaps: node.gaps.filter((gap) => gap !== "no_check") };
   const edges = edged.alsoUnder.length > 0 || edged.chips.length > 0 || edged.gaps.length > 0;
+  // The chips at the end of the words, on their line, as a row of the outline draws its trail
+  // (`NodeRow.tsx`, ruling 5); where the words are cut they stand beside "more" instead, so a
+  // cut never hides one.
+  const trail = edges ? (
+    <span
+      className={`ml-1.5 inline-flex max-w-full flex-wrap items-baseline gap-x-2 align-baseline text-xs leading-6 ${pageQuietText}`}
+      data-node-trail=""
+    >
+      <NodeEdges node={edged} />
+    </span>
+  ) : null;
   return (
     <div
       aria-level={1}
@@ -819,21 +840,52 @@ function Statement({
         />
       </span>
       <div className="flex min-w-0 flex-col">
-        <CutWords
-          className={`text-[15px] leading-6 ${context ? pageQuietText : pageWordsText}`}
-          whole={focused}
+        <div
+          className={`relative text-[15px] leading-6 ${context ? pageQuietText : pageWordsText} ${
+            clamped ? "overflow-clip" : ""
+          }`}
+          data-node-words=""
+          ref={words}
+          style={clamped ? { maxHeight: clamp.height } : undefined}
         >
           <RowText markdown={node.text} source={node.source} tree={node.tree} />
-        </CutWords>
-        <Because decision={decision} statement={statement} />
-        {edges ? (
-          <p
-            className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
-            data-node-trail=""
-          >
-            <NodeEdges node={edged} />
+          {/* A direct child of the words' box, which `styles.css` reads to draw the words
+              inline, so the trail follows the last word. */}
+          {clamped ? null : trail}
+          {clamped && !clamp.pictures ? (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-[linear-gradient(transparent,var(--color-page-paper))]"
+            />
+          ) : null}
+        </div>
+        {more ? (
+          <p className="flex min-w-0 flex-wrap items-baseline">
+            {/* A press on it leaves the focus where it is: focusing the statement would draw the
+                words whole under the pointer and move the control before the press ends. */}
+            <button
+              className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
+              data-node-more=""
+              onClick={() => setOpened((held) => !held)}
+              onMouseDown={(event) => event.preventDefault()}
+              tabIndex={-1}
+              type="button"
+              {...pageChrome}
+            >
+              {opened ? (
+                CONTROL_LABELS.read_less
+              ) : (
+                <>
+                  {CONTROL_LABELS.read_more} ·{" "}
+                  <span {...authorText}>{clamp.hidden.toLocaleString()}</span>{" "}
+                  {CONTROL_LABELS.read_more_words}
+                </>
+              )}
+            </button>
+            {clamped ? trail : null}
           </p>
         ) : null}
+        <Because decision={decision} statement={statement} />
         {report === undefined ? null : (
           <p
             className={`text-xs leading-5 ${pageMutedText}`}

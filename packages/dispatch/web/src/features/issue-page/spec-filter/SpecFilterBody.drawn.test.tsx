@@ -827,9 +827,11 @@ test("the body draws one tree, named as the outline is, of the statements and th
   }
 });
 
-// R10, R17: a gap the mark does not already say is drawn under the statement's words, in the
-// few words the page knows it by; the one for a statement no check serves is the mark at the
-// right of the row, and is not said twice.
+// R10, R17: a gap the mark does not already say is drawn with the statement's words, in the
+// few words the page knows it by: while the words are whole it stands in the trail after their
+// last word, a direct child of the words' box (departure 3 of dispatch://INFRA-3939's plan), and
+// nowhere else in the row. The one for a statement no check serves is the mark at the right of
+// the row, and is not said twice: that statement draws no trail at all.
 test("a gap the mark does not say is drawn under the statement, and no check is not said twice", () => {
   const { read, view } = drawBody(
     issueTree([
@@ -840,12 +842,19 @@ test("a gap the mark does not say is drawn under the statement, and no check is 
   try {
     const rows = [...view.container.querySelectorAll("[data-spec-statement]")];
     expect(
-      [...(rows[0]?.querySelectorAll("[data-gap-kind]") ?? [])].map((gap) => [
-        gap.getAttribute("data-gap-kind"),
-        gap.textContent,
-      ])
+      rows[0]?.querySelector("[data-node-words]")?.lastElementChild?.hasAttribute("data-node-trail")
+    ).toBe(true);
+    expect(
+      [
+        ...(rows[0]?.querySelectorAll("[data-node-words] > [data-node-trail] [data-gap-kind]") ??
+          []),
+      ].map((gap) => [gap.getAttribute("data-gap-kind"), gap.textContent])
     ).toEqual([["shaped_disagreement", GAP_WORDS.shaped_disagreement]]);
+    expect(rows[0]?.querySelectorAll("[data-node-trail]")).toHaveLength(1);
+    expect(rows[0]?.querySelectorAll("[data-gap-kind]")).toHaveLength(1);
+    expect(rows[0]?.querySelector("[data-node-more]")).toBeNull();
     expect(rows[1]?.querySelectorAll("[data-gap-kind]")).toHaveLength(0);
+    expect(rows[1]?.querySelector("[data-node-trail]")).toBeNull();
     expect(rows[1]?.getAttribute("data-spec-mark")).toBe("no_check");
   } finally {
     view.unmount();
