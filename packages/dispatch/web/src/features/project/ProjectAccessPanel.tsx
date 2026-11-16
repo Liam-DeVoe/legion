@@ -396,8 +396,9 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
         </h2>
         <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
           The channels this project's agents may post to, by channel id (the `C…` or `G…` Slack
-          shows under About → Channel ID), at most 16, separated by spaces or commas. With none
-          named, the secrets broker releases the Slack bot token for no channel of this project.
+          shows under About → Channel ID), at most 16, separated by spaces or commas. When this
+          project is private, the secrets broker releases the Slack bot token to its agents for
+          these channels alone, and for none while the list is empty.
         </p>
         <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={nameChannels}>
           <label className={fieldLabelClass} htmlFor={`${ids}-slack-channels`}>

@@ -138,7 +138,7 @@ Not applicable: dev sign-in, no outside interaction.
 ## Decisions for a Human
 
 None from this change. The restricted member could open every project's pages, because the read rule
-is a later task of slice A1, not this one.
+is applied to reads in slice A3 (t-a-10, t-a-12 and after), not in this slice.
 
 ## Learnings
 

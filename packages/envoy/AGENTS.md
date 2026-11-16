@@ -3879,7 +3879,7 @@ The verifier is built from settings Dispatch already has and takes none of its o
 A deployment with no broker configured has no such kind at all, and a `DPoP` presentation there is the `401 UNAUTHORIZED` `invalid bearer token` that any non-bearer `Authorization` header has always been.
 
 A deployment names the Kubernetes service accounts it admits in `DISPATCH_OIDC_ACCOUNTS`, comma-separated subjects:
-a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, in `api.serviceTokenActor`, which every route resolves its caller through, so the refusal comes before any handler reads or writes a row.
+a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, in `api.serviceTokenActor`, which every route that reads a credential resolves its caller through, and on both sockets, so the refusal comes before any handler reads or writes a row.
 Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so.
 `DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`), the secrets broker's account in production.
 The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>`, and an access account that a set `DISPATCH_OIDC_ACCOUNTS` leaves out (`cmd/dispatch`'s `checkAccessSettings`).

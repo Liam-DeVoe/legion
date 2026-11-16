@@ -181,7 +181,7 @@ A verified caller acts as the `session` it names in the request body, and every 
 A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; it is never retried as a personal token.
 
 `DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
-a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route and on the live socket.
+a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
 Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
 `DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`), the secrets broker's own account in production;
 every other caller is `403 ACCESS_ACCOUNT_REQUIRED` there.
