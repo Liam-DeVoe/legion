@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -10,18 +10,24 @@ const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
  * mid-wait leaves no `bun hooks/session-hook.ts` behind, waiting on a jj that never answers. */
 const spawnedHooks: Bun.Subprocess[] = []
 
-/** One directory for the pidfiles of every fake jj that never answers (`hangingJjDirectory`),
- * made at load and removed after the file's last row. */
-const hangingJjPids = mkdtempSync(join(tmpdir(), "claude-envoy-hook-jj-pids-"))
-/** Those pidfiles, each recorded before its row runs the hook. The hook spawns jj in a process
- * group of its own (`userConfigChain`, `detached: true`), so killing the hook leaves that jj
- * running: the afterEach below kills the pid each one holds as well. A jj the hook killed before
- * it wrote its pid is gone and leaves nothing to kill. */
-const hangingJjPidFiles: string[] = []
+/** The pidfile directories of the fake jjs that never answer (`hangingJjDirectory`), one per jj,
+ * each recorded before its row runs the hook. The hook spawns jj in a process group of its own
+ * (`userConfigChain`, `detached: true`), so killing the hook leaves that jj running: the afterEach
+ * below kills the pid each directory holds as well, then removes the directory. A jj the hook
+ * killed before it wrote its pid is gone and leaves nothing to kill, and one that starts after the
+ * directory is gone cannot record itself, so it does not sleep. */
+const hangingJjPidDirectories: string[] = []
 
 // First `afterEach` of this scope on purpose: bun runs same-scope hooks in registration order and
 // skips the rest once one throws, so the kills must not sit behind an assertion that can fail.
-// Everything here is synchronous, so no hook limit can cut it short.
+// A hang guard, not a bound on the work: the body is a signal per hook process and a read, a
+// signal and a removal per hanging jj. Timed round it on this two-CPU pod: 0.01 / 0.02 / 1.44 ms
+// (min / median / max) over the 69 invocations of 3 idle runs of this file, and 0.01 / 0.02 /
+// 485.30 ms over the 69 of 3 runs at 160 busy loops (80 per CPU). A limit does not interrupt a
+// synchronous body: bun fails the hook after the fact once the body ran past it, and skips the
+// hooks after it. So this one carries its own: the 60 s the package's `bun test
+// --timeout=60000` gives every hook, written here so that a run of this file without that flag
+// gets it too rather than bun's 5 s default, which a starved host can pass on its charge alone.
 afterEach(() => {
   for (const child of spawnedHooks) {
     try {
@@ -31,10 +37,10 @@ afterEach(() => {
     }
   }
   spawnedHooks.length = 0
-  for (const pidFile of hangingJjPidFiles.splice(0)) {
+  for (const directory of hangingJjPidDirectories.splice(0)) {
     let pid = 0
     try {
-      pid = Number(readFileSync(pidFile, "utf8").trim())
+      pid = Number(readFileSync(join(directory, "pid"), "utf8").trim())
     } catch {
       // The jj was killed before it wrote its pid.
     }
@@ -45,13 +51,9 @@ afterEach(() => {
         // The expected path: the hook's own bound killed the jj's group.
       }
     }
-    rmSync(pidFile, { force: true })
+    rmSync(directory, { recursive: true, force: true })
   }
-})
-
-afterAll(() => {
-  rmSync(hangingJjPids, { recursive: true, force: true })
-})
+}, 60_000)
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment. The session's cwd is
  * the test's scratch HOME unless the input names one: the hook reads `<cwd>/.envoy/envoy.json`, so a
@@ -577,15 +579,16 @@ async function jjDirectory(scratch: string, body: string): Promise<string> {
   return bin
 }
 
-/** A `jjDirectory` whose jj never answers: it writes its pid to a pidfile the afterEach above
- * kills, then sleeps 300 s in that same process. 300 s, not 30: a hook that stopped bounding its
- * wait for jj would have returned behind a 30 s sleep well inside a row's 180 s limit and left the
- * row green while broken. Nothing returns inside 300 s, so the row's limit is what tells a
- * bounded wait from an unbounded one. */
+/** A `jjDirectory` whose jj never answers: it writes its pid to a pidfile, in a directory of its
+ * own the afterEach above kills it from, and only then sleeps 300 s in that same process. 300 s,
+ * not 30: a hook that stopped bounding its wait for jj would have returned behind a 30 s sleep
+ * well inside a row's 180 s limit and left the row green while broken. Nothing returns inside
+ * 300 s, so the row's limit is what tells a bounded wait from an unbounded one. */
 async function hangingJjDirectory(scratch: string): Promise<string> {
-  const pidFile = join(hangingJjPids, `jj-${hangingJjPidFiles.length}.pid`)
-  hangingJjPidFiles.push(pidFile)
-  return jjDirectory(scratch, `echo $$ > ${JSON.stringify(pidFile)}; exec sleep 300`)
+  const pidDirectory = mkdtempSync(join(tmpdir(), "claude-envoy-hook-jj-pid-"))
+  hangingJjPidDirectories.push(pidDirectory)
+  const pidFile = join(pidDirectory, "pid")
+  return jjDirectory(scratch, `echo $$ > ${JSON.stringify(pidFile)} && exec sleep 300`)
 }
 
 /** A Dispatch answering one empty open-asks snapshot, so a test can see the summary the hook
@@ -928,11 +931,10 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     await rm(scratch, { recursive: true, force: true })
   }
   // A hang guard, not a budget: the only thing that reaches this limit is a hook that waits for a
-  // jj that never answers, which costs the full 300 s `hangingJjDirectory` sleeps. The row itself costs under 4 s idle
-  // and 86 s at its worst over 40 runs on a 2-CPU host carrying 240 busy loops, so 180 s is far
-  // above what load can cost it and far below what the defect costs. Written here rather than
-  // left to the package's `bun test --timeout=60000`, so a run of this file without that flag
-  // gets the same guard. What the limit does not guard is load reaching the assertions below it:
+  // jj that never answers, which costs the full 300 s `hangingJjDirectory` sleeps. Written here
+  // rather than left to the package's `bun test --timeout=60000`, so a run of this file without
+  // that flag gets the same guard. What the limit does not guard is load reaching the assertions
+  // below it:
   // in a whole-suite run of this package on this 2-CPU host carrying 80 busy loops per CPU the
   // row failed on `expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")`,
   // charged 36624.60 ms and so nowhere near this limit, because the hook's own
@@ -998,9 +1000,10 @@ test("keeps the session's own export when a later run of the same id has no jj t
     await rm(scratch, { recursive: true, force: true })
   }
   // A hang guard, not a bound on the work: the only thing that reaches this limit is a hook that
-  // waits for a jj that never answers, which costs the full 300 s `hangingJjDirectory` sleeps. The row's own cost,
-  // read from bun's junit reporter on this two-CPU pod: 3.5 s idle (3.55 / 3.58 / 3.62 s
-  // min / median / max over 5 runs), and 11195.06 / 26057.49 / 38409.39 ms over 20 runs under
+  // waits for a jj that never answers, which costs the full 300 s `hangingJjDirectory` sleeps.
+  // The row's own cost, read from bun's junit reporter on this two-CPU pod: 3.5 s idle (3.55 /
+  // 3.58 / 3.62 s min / median / max over 5 runs), and 11195.06 / 26057.49 / 38409.39 ms over 20
+  // runs under
   // 80 busy loops, 40 per CPU, this row's acceptance rung, so this 180_000 is 4.7 times that
   // worst. The rung is 80 and not the 160 this file was calibrated at: there the same 20 runs cost
   // 15480.51 to 147320.91 ms under a 600_000 provisional, 20 of 20 green, so the row is correct

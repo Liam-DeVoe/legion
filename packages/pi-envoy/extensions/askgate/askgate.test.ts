@@ -58,7 +58,11 @@ import { renderTemplate } from "./text";
 // reaches 120_000 still leaves the pi-envoy job's `timeout-minutes: 10`
 // (.github/workflows/ci.yaml) room to redden with the row named. A guard whose six times passes
 // the ceiling takes the ceiling and says how many times its worst that is; a row whose loaded
-// worst the ceiling cannot cover moves to a lower rung instead, and its comment says so.
+// worst the ceiling cannot cover moves to a lower rung instead, and its comment says so. A row
+// that runs on the gate's own 90 s default deadline (`GATE_TIMEOUT_MS`) keeps its guard below
+// that deadline, at 60_000, whatever six times its worst is: the runner's limit then ends a call
+// that never returns before the gate's deadline can fire and decide the row by the host's speed,
+// and the row's comment says how many times its worst 60_000 is.
 
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
@@ -89,10 +93,27 @@ const snapshotDirs = () =>
  * is collected whether the row returns or the runner abandons it at its limit.
  */
 const childPidFiles: string[] = [];
-// The first `afterEach` of this file on purpose: bun runs same-scope hooks in registration order
-// and skips the rest once one throws, so the kill must not sit behind the call ends below. It is
-// synchronous, so no hook limit can cut it short.
-afterEach(() => {
+/**
+ * Ends every call a test's gates were handed, as the runner ends a call's tool, so the gate releases
+ * the marker each one took: a test that never ends its call would otherwise leave it behind.
+ */
+const callEnders: Array<() => Promise<void>> = [];
+// A hang guard, not a bound on the work: what can hang is one call's end, which releases the
+// marker that call took. Measured on this two-CPU pod with a timer round the call ends: 0.00 ms to
+// 1.57 ms over the 25 invocations of 5 idle runs, and 0.00 ms to 3.07 ms over the 1377 of 3 idle
+// runs of the whole file; under 240 busy loops (120 per CPU, the rung that reddens this file)
+// 0.00 ms to 498.65 ms over the 50 invocations of 10 runs, median 0.53 ms. Bun's unwritten 5 s
+// default is what failed a correct run at that load twice in 20, at 15887.94 ms and 11035.86 ms,
+// charged to a hook of this file as "a beforeEach/afterEach hook timed out", so the load starves
+// the process far past what this body costs. Six times that worst is 95 s, so this takes this
+// file's ceiling, 120_000 (the rule above `DryRunner`): 7.6 times that worst, and well inside the
+// pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a call end that never returns
+// still reddens with this file named instead of cancelling the job, which names nothing. The kills
+// run first and in this same hook. A limit does not interrupt a body: bun fails a hook whose body
+// ran past it, after the fact, and skips the same scope's hooks registered after it, so a kill in
+// a hook of its own would carry bun's 5 s default and could be failed there or skipped behind the
+// call ends. Its own work is a file read and a signal for each pidfile a row registered.
+afterEach(async () => {
   for (const pidFile of childPidFiles.splice(0)) {
     let pid = 0;
     try {
@@ -108,24 +129,6 @@ afterEach(() => {
       }
     }
   }
-});
-/**
- * Ends every call a test's gates were handed, as the runner ends a call's tool, so the gate releases
- * the marker each one took: a test that never ends its call would otherwise leave it behind.
- */
-const callEnders: Array<() => Promise<void>> = [];
-// A hang guard, not a bound on the work: what can hang is one call's end, which releases the
-// marker that call took. Measured on this two-CPU pod with a timer round the body: 0.00 ms to
-// 1.57 ms over the 25 invocations of 5 idle runs, and 0.00 ms to 3.07 ms over the 1377 of 3 idle
-// runs of the whole file; under 240 busy loops (120 per CPU, the rung that reddens this file)
-// 0.00 ms to 498.65 ms over the 50 invocations of 10 runs, median 0.53 ms. Bun's unwritten 5 s
-// default is what failed a correct run at that load twice in 20, at 15887.94 ms and 11035.86 ms,
-// charged to a hook of this file as "a beforeEach/afterEach hook timed out", so the load starves
-// the process far past what this body costs. Six times that worst is 95 s, so this takes this
-// file's ceiling, 120_000 (the rule above `DryRunner`): 7.6 times that worst, and well inside the
-// pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a call end that never returns
-// still reddens with this file named instead of cancelling the job, which names nothing.
-afterEach(async () => {
   for (const end of callEnders.splice(0)) await end();
 }, 120_000);
 
@@ -1997,7 +2000,7 @@ console.log(JSON.stringify(args, null, 2));
     const both = Promise.withResolvers<void>();
     // The gate's own default deadline: 90 s (`GATE_TIMEOUT_MS`), above this row's limit below, so
     // a stop the tool's end misses shows at the `aborted` assertion and nothing the host's speed
-    // decides comes first. An earlier form set `OMP_ASKGATE_TIMEOUT_MS: "3000"`, which no floor
+    // decides comes first. At the base the row set `OMP_ASKGATE_TIMEOUT_MS: "3000"`, which no floor
     // raises (`deadlineAtBind` takes the lesser of it and the ceiling's), so on a loaded host the
     // deadline fired before the tool's end and the row read `timeout` where it asserts `abandoned`.
     const g = bind({
@@ -2028,9 +2031,11 @@ console.log(JSON.stringify(args, null, 2));
     // the stop aborts it. The row's own cost, read from bun's junit reporter on this two-CPU pod:
     // 169.33 / 526.93 / 3599.86 ms (min/median/max over 20 runs under 96 busy loops, 48 per CPU)
     // and 1806.78 / 6202.16 / 15992.96 ms over 10 runs under 240, 120 per CPU, the rung this file
-    // takes. This 60_000 is 3.75 times that worst and sits below the gate's own 90 s deadline, so
-    // the runner's limit, which names the row, is what ends a dry run or a call that never
-    // returns. Control: with the tool's end leaving the call's stop out
+    // takes; on the pod of 2026-11-16, 1.6 times slower, 282.91 / 5440.77 / 29939.11 ms over 20
+    // runs under 240. The row runs on the gate's own 90 s deadline, so by the rule above
+    // `DryRunner` it takes 60_000 below that deadline, 2.0 times the slower pod's worst, and the
+    // runner's limit, which names the row, is what ends a dry run or a call that never returns.
+    // Control: with the tool's end leaving the call's stop out
     // (`inflight.get(event.toolCallId)?.("abandoned")` removed from the gate's
     // `tool_execution_end` handler) the row fails 3 of 3 at the `aborted` assertion above.
   }, 60_000);
@@ -3425,16 +3430,18 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     );
   });
   test("the runner kills a dry-run that outlives its limit", async () => {
-    // `sleep 300 & wait` leaves two processes in the group, bash and the `sleep` that holds the
-    // child's pipes: a kill narrowed to bash alone leaves that `sleep` holding `child.stdout`, so
-    // the call cannot return inside any limit this row sets. 300 s is far above the row's limit,
-    // so a run that kills nothing cannot return either. Bash writes the `sleep`'s pid to a
-    // pidfile `childPidFiles` holds, so a group the runner fails to kill does not leave it running
-    // after the row.
+    // The script leaves two processes in the group, bash and the `sleep` that holds the child's
+    // pipes: a kill narrowed to bash alone leaves that `sleep` holding `child.stdout`, so the
+    // call cannot return inside any limit this row sets. 300 s is far above the row's limit, so a
+    // run that kills nothing cannot return either. The `sleep` records its own pid before it
+    // starts, in the subshell that `exec` turns into it, to a pidfile `childPidFiles` holds: a
+    // kill that reaches bash at any moment leaves no `sleep` unrecorded, and a subshell that
+    // cannot write the pidfile does not sleep. So a group the runner fails to kill does not leave
+    // it running after the row.
     const pidFile = path.join(fs.mkdtempSync(path.join(tmpdir(), "dry-run-kill-")), "pid");
     childPidFiles.push(pidFile);
     const result = await core.spawnDryRun(
-      `sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`,
+      `(echo $BASHPID > ${JSON.stringify(pidFile)} && exec sleep 300) & wait`,
       {
         cwd: work,
         env: { PATH: process.env.PATH ?? "", HOME: work },

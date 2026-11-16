@@ -608,8 +608,10 @@ describe("userConfigChain", () => {
   /** The pidfiles a row's fake jj writes its pid to, each recorded when the row makes it, before
    *  anything the row awaits can hang: the afterEach below kills every pid it finds in them, so a
    *  child the code under test fails to kill is collected whether the row returns or the runner
-   *  abandons it at its limit — a `userConfigChain` that never returns included — and one whose
-   *  pid lands only after the row ended is collected too. A pidfile leaves this list once `reaped`
+   *  abandons it at its limit — a `userConfigChain` that never returns included. Each sleeping
+   *  process writes its own pid before it sleeps, with `&&`, so one that cannot write it does not
+   *  sleep: a fake jj that starts only after the afterEach has removed its pidfile's directory
+   *  cannot record itself, and so does not sleep either. A pidfile leaves this list once `reaped`
    *  has seen its pid gone, so a green row leaves the afterEach no pid to kill. */
   const pidFiles: string[] = [];
   /** A pidfile for one fake jj, in a directory of its own, recorded for the afterEach. */
@@ -651,12 +653,10 @@ describe("userConfigChain", () => {
   // its own, so what decides a row that waits here is that row's own per-test limit, which names
   // it: a pidfile that is never written, or a child the kill misses, ends the row there, and the
   // afterEach above kills the fake jj's `sleep 300` either way instead of leaving it for five
-  // minutes. Once the row has ended, the afterEach advances `rowGeneration` and the poll stops. An
-  // earlier version gave up at 30 s, inside the rows' 60 s limit, so that the row's own `finally`
-  // could kill the child; at 240 busy loops the wrapper's fork alone took 33478 ms and that 30 s
-  // failed a correct run, which is a bound on real time deciding a row, so the kill moved to the
-  // afterEach and the bound went. The old 3 s deadlines before it were removed because they sat
-  // below the file's 5 s per-test limit and two of them ran in series in one row.
+  // minutes. Once the row has ended, the afterEach advances `rowGeneration` and the poll stops. At
+  // the base these polls gave up at 3 s, below the file's 5 s per-test limit, and two of them ran
+  // in series in one row; a give-up on real time inside the row's own limit is a bound on real
+  // time deciding the row, which a wrapper's fork costing 33478 ms at 240 busy loops shows.
   /** Polls `read` until it answers, warning once at 2 s, which names what it waits for and decides
    *  nothing. */
   async function polled<T>(what: string, read: () => Promise<T | undefined>): Promise<T> {
@@ -704,7 +704,7 @@ describe("userConfigChain", () => {
   // `userConfigChain` is named at its own call below.
   it("gives up on a jj that never answers, so attribution never holds bootstrap", async () => {
     const pidFile = await childPidFile();
-    const env = await withJj(`echo $$ > ${JSON.stringify(pidFile)}; exec sleep 300`);
+    const env = await withJj(`echo $$ > ${JSON.stringify(pidFile)} && exec sleep 300`);
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
     dirs.push(dir);
     const exported: NodeJS.ProcessEnv = {};
@@ -724,12 +724,19 @@ describe("userConfigChain", () => {
 
   it("kills a wrapper's forked child when jj times out", async () => {
     const pidFile = await childPidFile();
-    const env = await withJj(`sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`);
-    // The bound has to outlast the host's own process start: a group killed before the wrapper
-    // has forked writes no pid, and the row then waits for something that cannot arrive. Measured
+    // The child records itself: `sh -c` writes its own pid and only then becomes the `sleep`, so a
+    // kill that reaches the wrapper at any moment leaves no `sleep` unrecorded. A wrapper that
+    // wrote `$!` after forking left a window in which a kill narrowed to the wrapper missed the
+    // child and no pid was written.
+    const env = await withJj(
+      `sh -c 'echo $$ > "$1" && exec sleep 300' sh ${JSON.stringify(pidFile)} & wait`
+    );
+    // The bound has to outlast the host's own process start: a group killed before the child has
+    // started writes no pid, and the row then waits for something that cannot arrive. Measured
     // on one pod at 240 busy loops on 2 CPUs, the wrapper took up to 3.1 s (p50 995 ms) to write
-    // its pid, against 14 ms unloaded, and on a later pod at that load up to 33478 ms, which is
-    // past this 10 s; at the row's own rung of 96, below, the whole row costs at most 12515.71 ms.
+    // its child's pid, against 14 ms unloaded, and on a later pod at that load up to 33478 ms,
+    // which is past this 10 s; at the row's own rung of 96, below, the whole row costs at most
+    // 12515.71 ms.
     // 10 s is the production default, and `sleep 300` means jj still times out, so the row's
     // subject — the bound fires, the group is killed, the forked child dies — is unchanged. The row
     // above keeps 200 ms because it needs no fork: its subject is only that the resolve gives up
@@ -753,8 +760,11 @@ describe("userConfigChain", () => {
 
   it("kills a wrapper's detached child after jj returns a config path", async () => {
     const pidFile = await childPidFile();
+    // Here the wrapper writes `$!` after forking, and that leaves no window: the group is killed
+    // only once the wrapper exits, after it has written the pid and answered, and `&&` keeps it
+    // from answering when it could not write the pid.
     const env = await withJj(
-      `sleep 300 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
+      `sleep 300 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)} && printf '/u/a.toml\\n'`
     );
     // This row's subject is that the detached child is killed after jj answers, and `killGroup`
     // runs off the child's own exit, so the bound is no part of it. The production default of
