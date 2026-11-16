@@ -4536,10 +4536,13 @@ Each item below names a path with its method and identity, then its purpose.
       A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
       The finding of each rule lists the forms that it reads.
 
-    A term line is `- **<term>**: <definition>` under a heading `Terms`.
-    Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
-    Its finding names the line.
-    A request that holds one is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
+    - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
+      Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
+      So a decision block under that heading breaks the form at its question line.
+      A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
+      The finding names the line, and it says where a decision block goes.
+
+    A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
     `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
     The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
     A person's approval of a covered document gets the same refusal through three routes.
