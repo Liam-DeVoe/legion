@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -43,21 +42,37 @@ var inboxPrefixBase = strings.TrimSuffix(nats.InboxPrefix, ".") + "_"
 // sets it with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in
 // place of _INBOX.>; both ends call this function with the identity their credential names.
 func InboxPrefix(identity string) string {
+	return token(inboxPrefixBase, identity)
+}
+
+// GitHubConsumerName is the name of the durable consumer through which a Legion daemon of project
+// hears repository's GitHub events: legion-go-<project>-github- and repository ("owner/name")
+// spelled as InboxPrefix spells an identity, so two repositories never share a consumer and the
+// name is one token whatever the repository holds. The daemon names its consumer with it and
+// WithinProjects grants it, so the two cannot drift apart.
+func GitHubConsumerName(project, repository string) string {
+	return token(daemonConsumerPrefix+project+"-github-", repository)
+}
+
+// token is prefix followed by s with each byte outside [A-Za-z0-9-], '_' included, written '_'
+// and its two lowercase hex digits: '_' always opens an escape, so distinct values give distinct
+// tokens, and the result holds no '.', wildcard, whitespace or control character.
+func token(prefix, s string) string {
 	const hex = "0123456789abcdef"
-	var prefix strings.Builder
-	prefix.Grow(len(inboxPrefixBase) + 3*len(identity))
-	prefix.WriteString(inboxPrefixBase)
-	for i := range len(identity) {
-		c := identity[i]
+	var out strings.Builder
+	out.Grow(len(prefix) + 3*len(s))
+	out.WriteString(prefix)
+	for i := range len(s) {
+		c := s[i]
 		if 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '-' {
-			prefix.WriteByte(c)
+			out.WriteByte(c)
 		} else {
-			prefix.WriteByte('_')
-			prefix.WriteByte(hex[c>>4])
-			prefix.WriteByte(hex[c&15])
+			out.WriteByte('_')
+			out.WriteByte(hex[c>>4])
+			out.WriteByte(hex[c&15])
 		}
 	}
-	return prefix.String()
+	return out.String()
 }
 
 // The subjects of Dispatch and the Legion daemon that the daemon's consumers filter on and that
@@ -113,9 +128,8 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 //     filter, which nats-server holds the request's body to), the info, the pull
 //     (CONSUMER.MSG.NEXT) and the acknowledgements. The kinds are dispatch (the project's issue
 //     events), mapping (its repository mapping changes), wake (its Legion wake lane), ready (the
-//     one wake lane every daemon shares, which carries no project's message) and github-<n> for
-//     each n below the number of repositories, each creatable on any repository of the scope: the
-//     daemon numbers its own sorted list, which need not be the scope's;
+//     one wake lane every daemon shares, which carries no project's message) and, for each
+//     repository of the scope, its GitHub consumer (GitHubConsumerName) on that repository's lane;
 //   - the notification stream's info and stored-message get are dropped: the info lists every
 //     stored subject with its count, the get reads any stored message, and the daemon reads its
 //     consumers' info instead.
@@ -162,10 +176,9 @@ type heldScope struct {
 }
 
 // daemonConsumer is one durable consumer the Legion daemon opens on the notification stream: its
-// name and the filters its create may name.
+// name and the one filter its create names.
 type daemonConsumer struct {
-	name    string
-	filters []string
+	name, filter string
 }
 
 func newHeldScope(scope Scope) (heldScope, error) {
@@ -181,22 +194,26 @@ func newHeldScope(scope Scope) (heldScope, error) {
 	repositories := slices.Clone(scope.Repositories)
 	slices.Sort(repositories)
 	repositories = slices.Compact(repositories)
-	var repoLanes []string
-	for _, repository := range repositories {
+	if len(projects) == 0 && len(repositories) > 0 {
+		return heldScope{}, fmt.Errorf("natsgrant: scope names repositories %q but no project they belong to", repositories)
+	}
+	held := heldScope{identity: scope.Identity, projects: projects}
+	lanes := make([]string, len(repositories))
+	for i, repository := range repositories {
 		owner, name, found := strings.Cut(repository, "/")
 		if !found || !repositoryPart(owner) || !repositoryPart(name) {
 			return heldScope{}, fmt.Errorf("natsgrant: scope repository %q is not owner/name", repository)
 		}
+		lanes[i] = contracts.GithubRepositoryPrefix(owner, name) + ".>"
 		// Two repositories can spell one lane (a.b and a_b): the lane is held once.
-		if lane := contracts.GithubRepositoryPrefix(owner, name) + ".>"; !slices.Contains(repoLanes, lane) {
-			repoLanes = append(repoLanes, lane)
+		if !slices.Contains(held.repoLanes, lanes[i]) {
+			held.repoLanes = append(held.repoLanes, lanes[i])
 		}
 	}
 
-	held := heldScope{identity: scope.Identity, projects: projects, repoLanes: repoLanes}
 	for _, project := range projects {
-		named := func(kind string, filters ...string) daemonConsumer {
-			return daemonConsumer{name: daemonConsumerPrefix + project + "-" + kind, filters: filters}
+		named := func(kind, filter string) daemonConsumer {
+			return daemonConsumer{name: daemonConsumerPrefix + project + "-" + kind, filter: filter}
 		}
 		held.consumers = append(held.consumers,
 			named("dispatch", contracts.DispatchIssueTopicPrefix+project+".>"),
@@ -204,10 +221,8 @@ func newHeldScope(scope Scope) (heldScope, error) {
 			named("wake", contracts.LegionWakeSubject(strings.ToLower(project))),
 			named("ready", bus.LegionWakeTopic),
 		)
-		// The daemon numbers its own sorted repositories, which need not be the scope's, so each
-		// index below the repository count may open on any lane of the scope.
-		for n := range repositories {
-			held.consumers = append(held.consumers, named("github-"+strconv.Itoa(n), repoLanes...))
+		for i, repository := range repositories {
+			held.consumers = append(held.consumers, daemonConsumer{name: GitHubConsumerName(project, repository), filter: lanes[i]})
 		}
 	}
 	return held, nil
@@ -269,11 +284,7 @@ func (h heldScope) subjects(entry, subject string) ([]string, error) {
 		switch rest := strings.TrimPrefix(subject, consumerCreate); {
 		case rest == ">" || rest == "*.>":
 			return h.consumerCalls(func(c daemonConsumer) []string {
-				calls := make([]string, len(c.filters))
-				for i, filter := range c.filters {
-					calls[i] = consumerCreate + c.name + "." + filter
-				}
-				return calls
+				return []string{consumerCreate + c.name + "." + c.filter}
 			}), nil
 		case !strings.Contains(rest, "."):
 			return refuse("creates a consumer whose subject names no filter")
