@@ -778,16 +778,24 @@ export function NodeOptions({
             {answering ? (
               // Out of the tab order, as every control inside a row is: the line the press sets
               // draws the same options as its own chips, which the keyboard reaches (R9). A
-              // press leaves the focus where it is: focusing the row on mousedown opens its body,
-              // whose options' own words push every option below one that has them down, and
-              // the press would end on another option or on none.
+              // press leaves the focus where it is until it ends: focusing the row on mousedown
+              // opens its body, whose options' own words push every option below one that has
+              // them down, and the press would end on another option or on none. Once the press
+              // has picked, the focus goes to the row, which opens it: one press picks the option
+              // and opens the row it is drawn on (decision 120).
               <button
                 aria-pressed={picks.includes(option.label)}
                 className={`dispatch-inline-link ${pageRowOption} ${
                   node.waiting ? pageStateText.waiting : pageQuietText
                 }`}
                 data-pick-option={option.label}
-                onClick={() => writer.pick(node, option.label)}
+                onClick={(event) => {
+                  writer.pick(node, option.label);
+                  const row = event.currentTarget.closest<HTMLElement>("[data-node-row]");
+                  if (row !== null && !row.contains(document.activeElement)) {
+                    row.focus({ preventScroll: true });
+                  }
+                }}
                 onMouseDown={(event) => event.preventDefault()}
                 tabIndex={tabStops ? undefined : -1}
                 type="button"

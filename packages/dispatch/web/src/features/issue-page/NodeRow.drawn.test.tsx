@@ -1066,6 +1066,86 @@ test("an option's press keeps the focus, and only a waiting question's are in th
   }
 });
 
+/** One row the way the conversation's rows draw it: closed until it takes the focus, open from
+ *  then on, under the page's writer. */
+function RowOpenedByFocus({ drawn }: { drawn: TreeNode }): ReactNode {
+  const [focused, setFocused] = useState(false);
+  return (
+    <NodeRow
+      author={{ kind: "agent", name: "Planner", reader: false }}
+      body={focused}
+      context={false}
+      focused={focused}
+      isClosed={false}
+      level={1}
+      node={drawn}
+      onFocus={() => setFocused(true)}
+      onPin={() => {}}
+      onToggle={() => {}}
+      ownAnswer={false}
+      pinned={false}
+      rowKey="row"
+      tabStop
+      tabStops
+    />
+  );
+}
+
+// Decision 120: a control a reader can see acts on its first press. An option drawn on a row
+// that is not open yet is picked by that press, and the same press opens the row: the reader
+// never presses twice.
+test("a press on an option of a closed row picks it and opens the row in one", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  for (const key of [
+    ["asks", "CORE-1"],
+    ["comments", "CORE-1"],
+    ["issue-messages", "CORE-1"],
+    ["agents"],
+  ]) {
+    queryClient.setQueryData(key, []);
+  }
+  const asked = node({
+    id: "ask-1",
+    options: [{ description: "Where the rail fits.", label: "1280 px" }, { label: "1024 px" }],
+    reference: "dispatch://CORE-1/ask/ask-1",
+    state: "open",
+    text: "At which width does the identity block condense?",
+    type: "ask",
+    waiting: true,
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <NoTooltips>
+          <OutlineWriterProvider issueKey="CORE-1">
+            <RowOpenedByFocus drawn={asked} />
+          </OutlineWriterProvider>
+        </NoTooltips>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    expect(view.container.querySelector("[data-node-body]")).toBeNull();
+    const option = view.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
+    if (option === null) throw new Error("the closed row draws no option to press");
+    await user.click(option);
+    await waitFor(() => {
+      expect(
+        view.container.querySelector('[data-pick-option="1024 px"]')?.getAttribute("aria-pressed")
+      ).toBe("true");
+      expect(
+        view.container.querySelector("[data-node-body]"),
+        "the press picked the option and left the row closed"
+      ).not.toBeNull();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 // Ruling 5: a child issue's row is one line - its title, then how it stands and what blocks it -
 // and its key is the row's tag, a link to the child's own page; it names no author and no time.
 test("a child issue's row draws its title, its facts and its key as the tag", () => {
