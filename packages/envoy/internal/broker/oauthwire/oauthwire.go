@@ -1,8 +1,9 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
 // callers it answers share: the clients they present, the scope a machine login asks for and the
-// one a read entry's token holds, the names the token exchange knows a subject token by, and the
-// fields the broker adds to a token answer. It imports nothing, so the agent-secrets helper reads
-// it without the broker's storage.
+// ones a read entry's and a result entry's tokens hold, the names the token exchange knows a
+// subject token by, the fields the broker adds to a token answer, and the run a result entry's
+// token carries. It imports nothing, so the agent-secrets helper reads it without the broker's
+// storage.
 package oauthwire
 
 const (
@@ -12,12 +13,19 @@ const (
 	// Scope is the one scope a machine login asks for and is granted.
 	Scope = "machine"
 	// ScopeRead is the one OAuth scope a token minted from a read entry
-	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds, and the only scope the exchange grants: a token
-	// that writes nothing and reads only the routes a resource server lists for it, which
-	// Dispatch does in its read list and every other service refuses (brokertoken). The entry
-	// decides it, never the request: the exchange client is registered for Scope alone, so the
-	// library refuses a request that names this one invalid_scope under every entry.
+	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds: a token that writes nothing and reads only the
+	// routes a resource server lists for it, which Dispatch does in its read list and every
+	// other service refuses (brokertoken). The entry decides it, never the request: the exchange
+	// client is registered for Scope alone, so the library refuses a request that names this one
+	// invalid_scope under every entry.
 	ScopeRead = "read"
+	// ScopeResults is the one OAuth scope a token minted from a result entry
+	// (BROKER_EXCHANGE_RESULT_WORKFLOWS) holds, beside the project scope ProjectScopeResults: a
+	// token that writes the results of its one project's spec checks for the run it carries
+	// (Introspection.CI), and nothing else, on the routes a resource server lists for it. The
+	// entry decides it, never the request, as it decides ScopeRead. ScopeRead and ScopeResults are
+	// the only scopes the exchange grants.
+	ScopeResults = "results"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -100,7 +108,41 @@ const (
 	// build that predates it refuses it, since it accepts only the two words above, and one of
 	// this build accepts it only where it asks to (brokertoken).
 	ProjectScopeNone = "none"
+	// ProjectScopeResults is a token that may write the results of the one project it names, for
+	// the run it carries, and nothing else: the token a result entry mints, which holds the scope
+	// ScopeResults beside it. A resource server of a build that predates it refuses it, as it
+	// refuses ProjectScopeNone, and one of this build accepts it only where it asks to
+	// (brokertoken).
+	ProjectScopeResults = "results"
 )
+
+// CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
+// token named it: the claims of that token, copied onto the token the exchange mints and answered
+// back by introspection (Introspection.CI). The exchange mints such a token only when every field
+// is set: a commit of 40 lowercase hex digits, and a run, an attempt and a check run that are
+// positive decimal numbers (exchange.Set.Workflow). The check run is the job's identity: GitHub
+// names the check run of each job, and a resource server reads its name and its commit from
+// GitHub by this id.
+type CIRun struct {
+	// Repository is <owner>/<name>, the repository the run belongs to.
+	Repository string `json:"repository"`
+	// WorkflowRef is <owner>/<name>/<workflow path>@<ref>, the workflow the run started.
+	WorkflowRef string `json:"workflow_ref"`
+	// Ref is the git ref the run is on, such as refs/heads/main.
+	Ref string `json:"ref"`
+	// SHA is the commit the run was started for.
+	SHA string `json:"sha"`
+	// EventName is the event that started the run, such as push.
+	EventName string `json:"event_name"`
+	// RunID is the workflow run.
+	RunID string `json:"run_id"`
+	// RunAttempt is which attempt of that run the token was minted in, from 1.
+	RunAttempt string `json:"run_attempt"`
+	// RunnerEnvironment is github-hosted or self-hosted, as GitHub names the runner.
+	RunnerEnvironment string `json:"runner_environment"`
+	// CheckRunID is the check run of the job the token was minted in.
+	CheckRunID string `json:"check_run_id"`
+}
 
 // Introspection is what the broker knows about one of its access tokens: the RFC 7662 answer the
 // broker's introspection route serialises and a resource server reads a presented token back
@@ -132,16 +174,20 @@ type Introspection struct {
 	// as the actor token's issuer spells it, which is a Google subject rather than an account,
 	// so this is the name a reader can act on.
 	Machine string `json:"machine,omitempty"`
-	// ProjectScope is what Project means: ProjectScopeNamed, ProjectScopePerson or
-	// ProjectScopeNone. A machine login's own token, which no exchange decided for, carries
-	// neither this nor Project.
+	// ProjectScope is what Project means: ProjectScopeNamed, ProjectScopePerson,
+	// ProjectScopeNone or ProjectScopeResults. A machine login's own token, which no exchange
+	// decided for, carries neither this nor Project.
 	ProjectScope string `json:"project_scope,omitempty"`
-	// Project is the one project key a ProjectScopeNamed token may write.
+	// Project is the one project key a ProjectScopeNamed token may write, or whose results a
+	// ProjectScopeResults token may write.
 	Project string `json:"project,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
-	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a
-	// machine login's own token holds Scope.
+	// exchanged token holds ScopeRead when a read entry minted it, ScopeResults when a result
+	// entry minted it, and no scope otherwise, and a machine login's own token holds Scope.
 	Scope string `json:"scope,omitempty"`
+	// CI is the run a result entry's token was minted for. It is set exactly beside
+	// ProjectScopeResults, and absent from every other token.
+	CI *CIRun `json:"ci,omitempty"`
 	// ExpiresAt is when the token expires, in seconds since the epoch (RFC 7662's 'exp'), so a
 	// caller that remembers an affirmative answer can keep it no longer than the token lives.
 	ExpiresAt int64 `json:"exp,omitempty"`

@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -29,7 +30,8 @@ import (
 // trusted to the hint. An error is returned only where the broker itself failed — a storage
 // outage, or a row it could not decode — because answering that as "not live" would both deny a
 // sound token and hide the outage; notLive is how the two are told apart, and brokerFailure makes
-// that error say which of the two it was.
+// that error say which of the two it was. A row whose run (ClaimCI) does not decode as one is the
+// broker's failure too, for the same reason.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
 	kind, request, err := p.oauth.IntrospectToken(ctx, token, oauth2.AccessToken, oauthstore.NewExchangeSession())
 	if err != nil {
@@ -59,7 +61,32 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
 	answer.Project, _ = session.Extra[ClaimProject].(string)
+	run, err := ciOf(session.Extra[ClaimCI])
+	if err != nil {
+		return oauthwire.Introspection{}, err
+	}
+	answer.CI = run
 	return answer, nil
+}
+
+// ciOf is the run a token's row carries under ClaimCI, read back through the one declaration the
+// exchange wrote it with (oauthwire.CIRun), and nil for a row that carries none. The store hands
+// a row's claims back as the JSON object it wrote, so the claim is decoded the way it was encoded
+// rather than read field by field under names spelled a second time here. A claim that is no such
+// object is the broker's own row failing to decode, never a token without a run.
+func ciOf(claim any) (*oauthwire.CIRun, error) {
+	if claim == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(claim)
+	if err != nil {
+		return nil, fmt.Errorf("oauth: encode the token's %s claim: %w", ClaimCI, err)
+	}
+	var run oauthwire.CIRun
+	if err := json.Unmarshal(raw, &run); err != nil {
+		return nil, fmt.Errorf("oauth: the token's %s claim is not a run: %w", ClaimCI, err)
+	}
+	return &run, nil
 }
 
 // notLiveCauses are the library's own sentinels for a token it found wanting: a string with no

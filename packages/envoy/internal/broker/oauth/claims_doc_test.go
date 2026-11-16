@@ -29,17 +29,18 @@ import (
 // What is compared: the names the document's bullets open with, against the keys decide writes into
 // an exchange session's extra claims, which is where this provider's opaque tokens carry them. The
 // code's side is collected by calling decide for each kind of subject token — a pod's, whose entry
-// gives the named project scope, a pod's of a read entry, whose project scope is none, a machine
-// access token's, whose scope is the person's, and a machine's Google identity token, whose entry
-// names a service — and taking the union, since `project` is written under one scope and deleted
-// under the others. So a claim a new scope or a new decision adds is a claim this fails until the
-// list names it. The OAuth scope a decision grants is a claim too, though decide grants it on the
+// gives the named project scope, a pod's of a read entry, whose project scope is none, a run's of a
+// result entry, whose project scope is results and which carries its run, a machine access
+// token's, whose scope is the person's, and a machine's Google identity token, whose entry names a
+// service — and taking the union, since `project` is written under one scope and deleted under
+// the others. So a claim a new scope or a new decision adds is a claim this fails until the list
+// names it. The OAuth scope a decision grants is a claim too, though decide grants it on the
 // request rather than writing it into the extras: `scope`, which an introspection answers from the
-// granted scopes and a read entry's token alone carries (writeProjectScope), joins the union when
-// any decision granted one. The one claim no decision writes, the launcher credential a machine's
-// exchange mints (machineCredential, which runs after decide because the credential does not
-// exist until the request's key is bound), is added to that union by name; what proves it is
-// written is the live exchange in cmd/broker.
+// granted scopes and only a read entry's and a result entry's tokens carry (writeProjectScope),
+// joins the union when any decision granted one. The one claim no decision writes, the launcher
+// credential a machine's exchange mints (machineCredential, which runs after decide because the
+// credential does not exist until the request's key is bound), is added to that union by name;
+// what proves it is written is the live exchange in cmd/broker.
 //
 // A claim is the backticked name a bullet opens with, followed by the em dash the list's shape puts
 // after it, and a backticked word later in a bullet's prose is not a claim. The `project_scope`
@@ -51,9 +52,9 @@ import (
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes
 // here; it does not know the order the list is written in; it says nothing about the claims an
 // introspection answer adds around them (`exp`, `client_id`, `jkt`); and the union is over the
-// subject kinds it calls decide with, so a claim only a workflow run's token could carry would be
-// missed. A reader still owns all of that. What it does own is the two sets drifting apart while
-// each side looks right on its own.
+// subject kinds it calls decide with, so a claim only an exact workflow entry's run could carry
+// would be missed. A reader still owns all of that. What it does own is the two sets drifting
+// apart while each side looks right on its own.
 const (
 	// claimsDocHeading is the section's heading, matched as a whole line: a heading is a line of
 	// its own, so the list is reached without parsing the hard-wrapped prose above it.
@@ -92,10 +93,17 @@ const (
 	// domain a signing-in person must belong to.
 	claimsDeviceAudience = "https://broker.example/signin"
 	claimsSignInDomain   = "example.com"
+	// The result entry's half: the issuer a workflow run's token comes from, the audience it must
+	// carry, and the repository and workflow the entry lists on every branch.
+	claimsGitHubIssuer     = "https://token.actions.example"
+	claimsGitHubAudience   = "https://broker.example/ci"
+	claimsRepository       = "example-org/example-repo"
+	claimsResultsWorkflow  = ".github/workflows/ci-results.yaml"
+	claimsResultsBranchRef = "refs/heads/main"
 )
 
 // The claims docs/kubernetes.md lists are exactly the claims an exchanged token carries. Both sides
-// are read: the document's bullets, and the keys decide writes for the three project scopes a
+// are read: the document's bullets, and the keys decide writes for the four project scopes a
 // token can be issued under, with the scope it grants.
 func TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries(t *testing.T) {
 	documented := documentedClaims(t)
@@ -125,7 +133,13 @@ func issuedClaims(t *testing.T) []string {
 		Account: claimsReadAccount,
 		Service: claimsReadService,
 		Session: claimsSessionName,
-	}}, nil, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
+	}}, nil, []exchange.ResultWorkflowEntry{{
+		Repository: claimsRepository,
+		Workflow:   claimsResultsWorkflow,
+		RefPattern: "refs/heads/*",
+		Project:    claimsProject,
+		Person:     claimsPerson,
+	}}, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -135,15 +149,19 @@ func issuedClaims(t *testing.T) []string {
 	provider := &Provider{exchange: ExchangeConfig{
 		Policy:     policy,
 		Kubernetes: IssuerConfig{Issuer: claimsIssuer, Audience: claimsAudience},
+		GitHub:     IssuerConfig{Issuer: claimsGitHubIssuer, Audience: claimsGitHubAudience},
 		Google:     IssuerConfig{Issuer: claimsGoogleIssuer, Audience: claimsGoogleAudience},
 		// The person's own token is checked against Google's issuer too, under the device-flow
 		// client's audience; the actor token below is the machine's, under Google's own.
 		PersonAudience: claimsDeviceAudience,
 	}}
 
+	// session is the session name each request names: claimsSessionName, but for the run of the
+	// result entry's workflow, whose entry fixes the session it writes under and refuses another.
 	subjects := []struct {
 		tokenType    string
 		token, actor map[string]any
+		session      string
 	}{{
 		tokenType: oauthwire.SubjectTokenTypeKubernetes,
 		token: map[string]any{
@@ -157,6 +175,22 @@ func issuedClaims(t *testing.T) []string {
 			"sub":           claimsReadAccount,
 			"aud":           claimsAudience,
 			"kubernetes.io": map[string]any{"pod": map[string]any{"uid": claimsPodUID}},
+		},
+	}, {
+		tokenType: oauthwire.SubjectTokenTypeGitHub,
+		session:   exchange.ResultSession(claimsRepository, claimsResultsWorkflow),
+		token: map[string]any{
+			"aud":                claimsGitHubAudience,
+			"repository":         claimsRepository,
+			"workflow_ref":       claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsBranchRef,
+			"job_workflow_ref":   claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsBranchRef,
+			"ref":                claimsResultsBranchRef,
+			"sha":                "0123456789abcdef0123456789abcdef01234567",
+			"event_name":         "push",
+			"run_id":             "7",
+			"run_attempt":        "1",
+			"runner_environment": "github-hosted",
+			"check_run_id":       "9",
 		},
 	}, {
 		tokenType: tokenTypeAccessToken,
@@ -190,10 +224,14 @@ func issuedClaims(t *testing.T) []string {
 	issued := map[string]bool{}
 	for _, subject := range subjects {
 		session := oauthstore.NewExchangeSession()
+		name := subject.session
+		if name == "" {
+			name = claimsSessionName
+		}
 		request := &oauth2.Request{
 			Form: url.Values{
 				FormSubjectTokenType:  {subject.tokenType},
-				oauthwire.FormSession: {claimsSessionName},
+				oauthwire.FormSession: {name},
 			},
 			Session: session,
 		}

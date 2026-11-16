@@ -6646,7 +6646,17 @@ whitespace-separated `<repository>=<workflow path>=<ref>=<project>=<person>[=<se
 Every field is compared exactly and nothing is wildcarded, so a run of another workflow, or of this one on another ref, is not this entry;
 the session is everything after the fifth `=`, and a workflow listed twice is refused.
 Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
-unset, no workflow exchanges), `BROKER_ACCESS_TOKEN_SECONDS` (default 900, min 1, max 3600
+unset, no workflow exchanges), `BROKER_EXCHANGE_RESULT_WORKFLOWS` (optional;
+whitespace-separated `<repository>=<workflow path>=<ref pattern>=<project>=<person>` entries, such as `example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com`:
+the token minted for a run of that workflow on a ref the pattern matches holds the OAuth scope `results` alone and the project scope `results`, acts for that person, names that project, writes under the session `ci-results:<repository>/<workflow path>`, and carries the run as its `ci` claim (`oauthwire.CIRun`: the repository, the workflow, the ref, the commit, the event, the run, the attempt, the runner and the check run of the job).
+The repository and the path are compared exactly, and the pattern is read as `path.Match` reads one, so a `*` stands for one segment of the ref and never a `/`;
+its first two segments are literal, `refs/` and a kind of ref such as `refs/heads/` (`exchange.CheckRefPattern`).
+Every field is required and none may carry `=`.
+The run's GitHub token must carry every claim of the run, the `check_run_id` of its job among them, and a run whose ref two patterns of one workflow match is refused (`exchange.ErrTwoEntries`).
+A workflow listed twice under one pattern, and a workflow `BROKER_EXCHANGE_WORKFLOWS` lists too, are refused, the second naming both entries.
+A broker of a build older than this setting does not read it, so it mints those runs no token at all.
+Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
+unset, no run exchanges for a results token), `BROKER_ACCESS_TOKEN_SECONDS` (default 900, min 1, max 3600
 — how long an access token the OAuth provider issues lasts, a machine login's and an exchanged one's alike:
 it trades how often every caller renews against how long a revoked credential's last token stays spendable), `BROKER_ENVOY_URL` (optional;
 turns on best-effort wake notifications to the requesting session through Envoy's `/v1/messages/send`, sent with `BROKER_ENVOY_TOKEN` — read only when the URL is set, and not itself required at startup), `BROKER_LEASE_SECONDS` (default 900, max 3600), `BROKER_SESSION_CARRY_SECONDS` (default 43200, min 0, max 86400
@@ -6682,7 +6692,7 @@ a `BROKER_SECRETS_STORE` that is neither store's name;
 with the AWS store, a `BROKER_SECRETS_PREFIX` that does not end in `/`, starts with one or holds white space, and a `BROKER_SECRETS_KMS_KEY_ARN` that is not a key ARN (an alias can be pointed elsewhere, and a bare key id names no account);
 with the GCP store, a prefix not of its form (a project id in place of the number among them) and a key name outside `global`;
 the other store's key variable set; exactly one of `BROKER_K8S_OIDC_ISSUER`/`BROKER_K8S_OIDC_AUDIENCE` set;
-a `BROKER_API_ACCOUNTS`, `BROKER_SERVICE_LOGINS` or `BROKER_EXCHANGE_K8S_AUDIENCE` set with no cluster issuer, a `BROKER_EXCHANGE_ACCOUNTS` or `BROKER_EXCHANGE_READ_ACCOUNTS` with no `BROKER_EXCHANGE_K8S_AUDIENCE` and a `BROKER_EXCHANGE_WORKFLOWS` with no `BROKER_EXCHANGE_GITHUB_ISSUER`, each naming the pair whose tokens its callers present;
+a `BROKER_API_ACCOUNTS`, `BROKER_SERVICE_LOGINS` or `BROKER_EXCHANGE_K8S_AUDIENCE` set with no cluster issuer, a `BROKER_EXCHANGE_ACCOUNTS` or `BROKER_EXCHANGE_READ_ACCOUNTS` with no `BROKER_EXCHANGE_K8S_AUDIENCE` and a `BROKER_EXCHANGE_WORKFLOWS` or `BROKER_EXCHANGE_RESULT_WORKFLOWS` with no `BROKER_EXCHANGE_GITHUB_ISSUER`, each naming the pair whose tokens its callers present;
 an account that both `BROKER_EXCHANGE_ACCOUNTS` and `BROKER_EXCHANGE_READ_ACCOUNTS` name, naming both settings, since one account mints one kind of token;
 any of `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_SIGNIN_DEVICE_AUDIENCE` set with no `BROKER_GOOGLE_OIDC_AUDIENCE`, and that audience set with no `BROKER_VM_SERVICES`;
 each machine-account refusal of the paragraph above; and a `_SECONDS` variable that isn't a whole number between the min and max its row of Load's `ints` table gives (non-numeric fails the same check as out of range).
@@ -6844,14 +6854,16 @@ Any other request — another client presenting nothing, this client on another 
 — goes to the library and is answered as it always was.
 `internal/broker/exchange` is the policy half and nothing else (it verifies no token, reads no configuration and takes no clock):
 handed the verified claims, it answers the session the token writes as, the person it acts for or the service it is, and its project scope
-— `named`, the one project `BROKER_EXCHANGE_ACCOUNTS`/`BROKER_EXCHANGE_WORKFLOWS`/`BROKER_VM_EXCHANGE_ACCOUNTS` fixes, `person`, every project its person may write, which is what a person's own credential gets and the word a machine's token naming no person carries, being held to no one project, or `none`, no project at all, which only a read entry's token carries (`BROKER_EXCHANGE_READ_ACCOUNTS`, `exchange.ReadEntry`).
+— `named`, the one project `BROKER_EXCHANGE_ACCOUNTS`/`BROKER_EXCHANGE_WORKFLOWS`/`BROKER_VM_EXCHANGE_ACCOUNTS` fixes, `person`, every project its person may write, which is what a person's own credential gets and the word a machine's token naming no person carries, being held to no one project, `none`, no project at all, which only a read entry's token carries (`BROKER_EXCHANGE_READ_ACCOUNTS`, `exchange.ReadEntry`), or `results`, the results of the one project a result entry names and nothing else, which only a result entry's token carries (`BROKER_EXCHANGE_RESULT_WORKFLOWS`, `exchange.ResultWorkflowEntry`), beside the run it was minted for (`exchange.Claims.CI`).
 A read entry is keyed on a pod's service account as an account entry is, gives a service and a fixed session in place of a project and a person, and is a list of its own so that a broker of an older build reads none of it.
-`oauth.Provider.decide` writes one wire word for each of the three project scopes (`writeProjectScope`), and grants the OAuth scope `read` beside `none` and no scope beside the other two.
-It refuses any other value with a server error that names it and writes nothing, so a value this package adds later is never minted as one of the three.
-The entry decides the scope, and the request's own `scope` parameter never does: the exchange client is registered for `machine` alone, so the library refuses a request that names `read` with `invalid_scope` under every entry.
+A result entry is keyed on a workflow's repository and path as a workflow entry is, matches the run's ref against a pattern rather than exactly, fixes the session `ci-results:<repository>/<workflow path>` under the principal `workflow-results:<repository>/<workflow path>` whatever the ref, and is a list of its own for the same reason.
+`oauth.Provider.decide` writes one wire word for each of the four project scopes (`writeProjectScope`), grants the OAuth scope `read` beside `none`, `results` beside `results` and no scope beside the other two, and writes the run as the `ci` claim (`oauth.ClaimCI`) beside `results` alone, which an introspection answers as `Introspection.CI`.
+It refuses any other value, a run beside any other scope and a `results` decision with no run, with a server error that names it and writes nothing, so a value this package adds later is never minted as one of the four.
+The entry decides the scope, and the request's own `scope` parameter never does: the exchange client is registered for `machine` alone, so the library refuses a request that names `read` or `results` with `invalid_scope` under every entry.
+Every exchanged token is issued to that client, which the library refuses to exchange its own token (`invalid_grant`), so no read-only or results token is the subject token of another exchange.
 It is also the one reading of a Google identity token's own claim shapes (`exchange.ReadGoogleIdentity`, `GoogleIdentity`, `ComputeEngine`), which `api.GoogleTokens.VerifyGoogle` reads the same token through (the verifier and its `api.GoogleToken` live beside their two callers in `internal/broker/api`, behind the `api.GoogleVerifier` interface a test wires its own), so `email`, `email_verified` and the `google.compute_engine` members are spelled once.
 Its refusals are one answer an operator can act on each:
-`ErrNoEntry`, `ErrNoPodBinding`, `ErrSessionMismatch`, `ErrSessionRequired`, `ErrSessionInvalid`, `ErrClaimMissing`, `ErrEmailNotVerified`, `ErrNoComputeEngine` and `ErrMachineNotAllowed` of a machine, and `ErrNotInDomain` and `ErrNoActorToken` of a person's sign-in, and, of a pod-session registration, `ErrSessionFixed`.
+`ErrNoEntry`, `ErrTwoEntries` of a run whose ref two result entries' patterns match, `ErrNoPodBinding`, `ErrSessionMismatch`, `ErrSessionRequired`, `ErrSessionInvalid`, `ErrClaimMissing`, `ErrEmailNotVerified`, `ErrNoComputeEngine` and `ErrMachineNotAllowed` of a machine, and `ErrNotInDomain` and `ErrNoActorToken` of a person's sign-in, and, of a pod-session registration, `ErrSessionFixed`.
 The whole exchange runs in one transaction, because the claim on the session name and the token it is claimed for must land together or not at all.
 
 Beside the session name, the exchange reads one parameter of the broker's own: `launcher_credential` (`oauthwire.FormLauncherCredential`), whether this trade wants the launcher credential its identity holds minted or moved onto the key it proved.
