@@ -134,11 +134,17 @@ func (c *lockClone) plant(path, content string, age time.Duration) string {
 	return path
 }
 
+// lockAgeClock is a sweep's clock in a row: the wall clock with only the row's moves added
+// (clocktest.Held), because the sweep dates each lock by its file's modification time, which the
+// file system stamps on the machine's clock (plant), so a still clock would read every lock's age
+// wrong by the time the row has run. Its timers fire only when the row moves it.
+func lockAgeClock() *clocktest.Fake { return clocktest.Held() }
+
 // sweep is a sweep over this clone with the launcher's own removal — the walk is the launcher's
 // own wherever the sweep runs, since it calls it outright — a /proc root of the row's own, and a
-// clock of the row's own: the wall clock with only the row's moves added (clocktest.Held), so a
-// lock planted an age ago is that age old to the sweep, and whose timers fire only when the row
-// moves it, so a clock pass waits its recheck until the row moves the clock past it (clockPass).
+// clock of the row's own (lockAgeClock), so a lock planted an age ago is that age old to the
+// sweep, and whose timers fire only when the row moves it, so a clock pass waits its recheck
+// until the row moves the clock past it (clockPass).
 // The clone is derived here through the call the launcher derives it with, once, before any role
 // process exists (workspace.WorkspaceOf, gitLockSweep.ws), so every row of this package drives a
 // sweep over a workspace that derivation accepted. The guard is the package's, which a row changes
@@ -151,7 +157,7 @@ func (c *lockClone) sweep(log *lockedBuffer, proc string) *gitLockSweep {
 		c.t.Fatal(err)
 	}
 	return &gitLockSweep{
-		proc: proc, guard: gitLockGuard, remove: os.Remove, clock: clocktest.Held(),
+		proc: proc, guard: gitLockGuard, remove: os.Remove, clock: lockAgeClock(),
 		log: (&roleLog{stdout: log, stderr: log}).linef, ws: ws,
 	}
 }
@@ -816,7 +822,7 @@ func TestALearnWhoseDerivationFailedLearnsNothingFromALaterStart(t *testing.T) {
 	broken.write(gitdir, filepath.Join(filepath.Dir(broken.dir), "infra-2", ".git")+"\n")
 	log := &lockedBuffer{}
 	s := &gitLockSweep{
-		proc: procRoot(t, os.Getpid()), guard: gitLockGuard, remove: os.Remove, clock: clocktest.Held(),
+		proc: procRoot(t, os.Getpid()), guard: gitLockGuard, remove: os.Remove, clock: lockAgeClock(),
 		log: (&roleLog{stdout: log, stderr: log}).linef,
 	}
 	s.learn(context.Background(), broken.dir)
@@ -859,7 +865,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 
 	t.Run("Run waits for the ticker", func(t *testing.T) {
 		c := newLockClone(t)
-		clk := clocktest.Held()
+		clk := lockAgeClock()
 		t.Chdir(c.dir)
 		useSweepingLauncher(t)
 		f := newFleetOf(t, Config{StopGrace: 2 * time.Second, Clock: clk}, "tester")
@@ -1346,7 +1352,7 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 		mine := c.lock("packed-refs.lock", "ours", time.Hour)
 		t.Chdir(c.dir)
 		log := &lockedBuffer{}
-		s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+		s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 		s.proc = procRoot(t, os.Getpid())
 		clockPass(t, s)
 		for _, path := range planted {
@@ -1407,7 +1413,7 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 			mine := d.lock("index.lock", "ours", time.Hour)
 			t.Chdir(d.dir)
 			log := &lockedBuffer{}
-			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 			s.proc = procRoot(t, os.Getpid())
 			s.pass(context.Background(), true)
 			// The sibling directory first: a reverted derivation empties it, and that is the
@@ -1421,7 +1427,7 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 			mine := d.lock("index.lock", "ours", time.Hour)
 			t.Chdir(t.TempDir())
 			log := &lockedBuffer{}
-			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 			s.proc = procRoot(t, os.Getpid())
 			s.learn(context.Background(), d.dir)
 			untouched(t, d, log)
@@ -1575,7 +1581,7 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 			t.Chdir(c.dir)
 			log := &lockedBuffer{}
 			proc := procRoot(t, os.Getpid())
-			clk := clocktest.Held()
+			clk := lockAgeClock()
 			withinBound(t, log, clk, gitdir, func() { row.unstick(gitdir) }, func() {
 				s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clk)
 				s.proc = proc
@@ -1777,7 +1783,7 @@ func TestTheSweepNamesThisWorkspacesUnreadableWorktreeEntryOnceAndSweepsTheRest(
 			c := newLockClone(t)
 			t.Chdir(c.dir)
 			log := &lockedBuffer{}
-			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 			if s.ws.Dir == "" {
 				t.Fatalf("the launcher derived no workspace from a sound clone; its log:\n%s", log.String())
 			}
@@ -1839,7 +1845,7 @@ func TestTheDerivationNamesThisWorkspacesUnreadableWorktreeEntry(t *testing.T) {
 				entry := c.worktreeLock("index.lock", "ours", time.Hour)
 				t.Chdir(c.dir)
 				log := &lockedBuffer{}
-				s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+				s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 				requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep works the workspace %q, which is the launcher's own working directory, and its clone %q", c.dir, c.clone))
 				if s.ws.Dir != c.dir {
 					t.Fatalf("a launcher whose own worktree entry is unreadable gave its sweep the workspace %q, want %q; log:\n%s", s.ws.Dir, c.dir, log.String())
@@ -1871,7 +1877,7 @@ func TestTheDerivationNamesThisWorkspacesUnreadableWorktreeEntry(t *testing.T) {
 				stale := c.lock("refs/heads/main.lock", "stale", time.Hour)
 				t.Chdir(t.TempDir())
 				log := &lockedBuffer{}
-				s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+				s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 				s.proc = procRoot(t, os.Getpid())
 				s.learn(context.Background(), c.dir)
 				requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep works the workspace %q, which the first role start named, and its clone %q", c.dir, c.clone))
@@ -2061,7 +2067,7 @@ func TestTheDerivationRefusesAPointerThatNamesNoEntryItCanRead(t *testing.T) {
 			log := &lockedBuffer{}
 			proc := procRoot(t, os.Getpid())
 			var s *gitLockSweep
-			clk := clocktest.Held()
+			clk := lockAgeClock()
 			withinBound(t, log, clk, filepath.Join(c.dir, ".git"), unstick, func() {
 				s = newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clk)
 				s.proc = proc
@@ -2093,7 +2099,7 @@ func TestTheSweepNamesAPointerThatNamesNoEntryOnceAndSweepsTheGitDirectory(t *te
 			c := newLockClone(t)
 			t.Chdir(c.dir)
 			log := &lockedBuffer{}
-			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 			if s.ws.Dir == "" {
 				t.Fatalf("the launcher derived no workspace from a sound clone; its log:\n%s", log.String())
 			}
@@ -2131,7 +2137,7 @@ func TestTheSweepKeepsTheLocksOfTheEntryItsPointerNamesWhenNoEntryIsItsOwn(t *te
 	c := newLockClone(t)
 	t.Chdir(c.dir)
 	log := &lockedBuffer{}
-	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 	if s.ws.Dir == "" {
 		t.Fatalf("the launcher derived no workspace from a sound clone; its log:\n%s", log.String())
 	}
@@ -2198,7 +2204,7 @@ func TestTheSweepReadsNoPointerWhileThisWorkspacesEntryIsSound(t *testing.T) {
 			entry := c.worktreeLock("index.lock", "ours", time.Hour)
 			t.Chdir(c.dir)
 			log := &lockedBuffer{}
-			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 			s.proc = procRoot(t, os.Getpid())
 			s.pass(context.Background(), true)
 			requireRemoved(t, log, entry)
@@ -2234,7 +2240,7 @@ func TestTheSweepReadsNoPointerWhileThisWorkspacesEntryIsSound(t *testing.T) {
 			log := &lockedBuffer{}
 			proc := procRoot(t, os.Getpid())
 			var s *gitLockSweep
-			clk := clocktest.Held()
+			clk := lockAgeClock()
 			withinBound(t, log, clk, filepath.Join(c.dir, ".git"), unstick, func() {
 				s = newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clk)
 				s.proc = proc
@@ -2411,7 +2417,7 @@ func TestTheDerivationRefusesACloneThatIsASymlinkBeforeTheSweepStarts(t *testing
 	planted := filepath.Join(elsewhere, ".git", "refs", "heads", "main.lock")
 	t.Chdir(c.dir)
 	log := &lockedBuffer{}
-	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, clocktest.Held())
+	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef, lockAgeClock())
 	refusal := fmt.Sprintf("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start",
 		c.dir, fmt.Sprintf("refusing workspace operation in %s: %s is a symlink, and no directory of the workspace layout below the state directory is one", c.dir, c.clone))
 	requireLine(t, log, refusal)

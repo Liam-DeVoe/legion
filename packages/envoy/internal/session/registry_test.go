@@ -23,6 +23,13 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// bucketClock is a registry's clock over a real session bucket: the wall clock plus the row's own
+// moves (clocktest.Held), because the registry dates each row from the Created time the NATS
+// server stamps on the row's revision on the machine's clock (expiryFor), and a still clock would
+// read every such row's age wrong by the time the row has run. Its timers fire only when the row
+// moves it.
+func bucketClock() *clocktest.Fake { return clocktest.Held() }
+
 // setupNATS connects t to the package's shared NATS server, in the JetStream account testnats.URL
 // hands t, where no earlier test made a session bucket.
 func setupNATS(t *testing.T) *bus.Client {
@@ -213,7 +220,7 @@ func TestSessionRegistry_GetNotFound(t *testing.T) {
 
 func TestSessionRegistry_TTLExpiry(t *testing.T) {
 	client := setupNATS(t)
-	clk := clocktest.Held()
+	clk := bucketClock()
 	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second), WithSessionClock(clk))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)

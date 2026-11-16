@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -60,10 +61,10 @@ func firstStaleRoute(t *testing.T, outputs ...string) (time.Time, bool) {
 	return first, !first.IsZero()
 }
 
-// drained is what a route drain left: when the burst began, when A had queued all of it for the
-// route (the publisher's flush returned), when a server first logged the route closed as stale, if
-// one did, and how many of the burst's bytes had reached B's subscriber routeStaleBound after the
-// burst began.
+// drained is what a route drain left: when the burst began and when A had queued all of it for
+// the route (the publisher's flush returned), both on A's own clock, when a server first logged
+// the route closed as stale, if one did, and how many of the burst's bytes had reached B's
+// subscriber when B's clock read routeStaleBound after the burst began.
 type drained struct {
 	burst, queued, stale time.Time
 	crossed              int64
@@ -76,8 +77,10 @@ func (d drained) closedBy(from time.Time, bound time.Duration) bool {
 
 // drainARoute runs two servers of the pods r renders on natsConf, A routing to B through a
 // testnats.Proxy at routeRate, so the one route is A's; publishes routeBurst on A to a subscriber
-// on subject, which is the burst's subject on B unless a control moves it; and waits until
-// routeStaleBound and a second have passed since A queued it. B is its own only peer, so it
+// on subject, which is the burst's subject on B unless a control moves it; and waits until a
+// server logs the route closed as stale, or A's clock reads routeStaleBound and a second past A
+// queuing the burst. Every bound is read on the servers' own clocks (/varz now), which their
+// ping timers run on, and the stale close from the server's own log. B is its own only peer, so it
 // solicits a route to its own route port, which nats-server ignores (server/route.go
 // routesToSelf), since a JetStream cluster refuses to start with no configured route ("JetStream
 // cluster requires configured routes"); start builds that route from the port B binds, a re-drawn
@@ -127,24 +130,48 @@ func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject 
 
 	payload := make([]byte, 16<<10)
 	var d drained
-	d.burst = time.Now()
+	d.burst = serverNow(t, a)
 	for range routeBurst / len(payload) {
 		require.NoError(t, pub.Publish("load.burst", payload))
 	}
 	require.NoError(t, pub.FlushTimeout(30*time.Second))
-	d.queued = time.Now()
-	time.Sleep(time.Until(d.burst.Add(routeStaleBound)))
+	d.queued = serverNow(t, a)
+	// What had crossed is read once B's clock reads routeStaleBound after the burst began.
+	testwait.Until(t, fmt.Sprintf("B's clock to read %s after the burst began", routeStaleBound), func() (time.Duration, bool) {
+		since := serverNow(t, b).Sub(d.burst)
+		return since, since >= routeStaleBound
+	})
 	d.crossed = received.Load()
-	time.Sleep(time.Until(d.queued.Add(routeStaleBound + time.Second)))
-	d.stale, _ = firstStaleRoute(t, a.proc.Output.String(), b.proc.Output.String())
+	// A server logs the route closed as stale when its ping timer closes it; with none logged,
+	// the wait ends once A's clock reads routeStaleBound and a second past A queuing the burst.
+	testwait.Until(t, fmt.Sprintf("a server to log the route closed as stale, or A's clock to read %s past A queuing the burst", routeStaleBound+time.Second), func() (string, bool) {
+		past := serverNow(t, a).Sub(d.queued)
+		if stale, ok := firstStaleRoute(t, a.proc.Output.String(), b.proc.Output.String()); ok {
+			d.stale = stale
+			return "", true
+		}
+		return fmt.Sprintf("no stale route logged %s past A queuing the burst", past), past >= routeStaleBound+time.Second
+	})
 	if d.stale.IsZero() {
-		t.Logf("no route was closed as stale within %s of the burst (queued in %s); %d of %d bytes had crossed %s after the burst began",
-			time.Since(d.burst).Round(time.Second), d.queued.Sub(d.burst).Round(time.Millisecond), d.crossed, routeBurst, routeStaleBound)
+		t.Logf("no route was closed as stale within %s of A queuing the burst (queued in %s); %d of %d bytes had crossed %s after the burst began",
+			routeStaleBound+time.Second, d.queued.Sub(d.burst).Round(time.Millisecond), d.crossed, routeBurst, routeStaleBound)
 	} else {
 		t.Logf("a route was closed as stale %s after the burst began and %s after A had queued it; %d of %d bytes had crossed %s after the burst began",
 			d.stale.Sub(d.burst).Round(time.Millisecond), d.stale.Sub(d.queued).Round(time.Millisecond), d.crossed, routeBurst, routeStaleBound)
 	}
 	return d
+}
+
+// serverNow is s's own clock as its /varz reports it: the clock its ping timers run on, which the
+// drain's bounds are read on.
+func serverNow(t *testing.T, s *hubServer) time.Time {
+	t.Helper()
+	var varz struct {
+		Now time.Time `json:"now"`
+	}
+	require.NoError(t, s.monitorJSON("/varz", &varz))
+	require.False(t, varz.Now.IsZero(), "%s's /varz reports no now", s.name)
+	return varz.Now
 }
 
 // pinnedRouteKept is the pinned row's judgement of d: nil when the route was not closed as stale

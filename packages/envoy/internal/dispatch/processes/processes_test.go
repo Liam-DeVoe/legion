@@ -164,7 +164,7 @@ func TestTheFleetColumnsRoundTripThroughRegisterAndLive(t *testing.T) {
 	database := storetest.Open(t)
 	// The registration's heartbeat runs on this clock, so the beat that writes the pruned row
 	// back comes where the test moves it.
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	registration, err := RegisterOn(context.Background(), fake, database.Pool, Instance{
 		Commit: "c1", DashboardBuild: "build-c1", SigningKeys: fingerprints(t, "K0"),
 		SchemaVersion: 3, SchemaCreatable: 2, EmbedderIdentity: "azure:example.openai.azure.com/embed", FileStore: true,
@@ -212,7 +212,7 @@ func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
 func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T) {
 	// The registrations' clock, which nothing moves: no heartbeat of theirs stamps a row the
 	// test has aged.
-	held := clocktest.Held()
+	held := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	fresh := mustRegisterOn(t, database, held, "c1", "K0")
 	stale := mustRegisterOn(t, database, held, "c1", "K0")
@@ -228,7 +228,7 @@ func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T
 // is live again within a heartbeat, since no live process disagrees with its key set.
 func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 	database := storetest.Open(t)
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	registration := mustRegisterOn(t, database, fake, "c1", "K0")
 	ageHeartbeat(t, database, registration.ID, time.Hour)
 
@@ -248,7 +248,7 @@ func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 // again.
 func TestDeregisterDeletesTheRow(t *testing.T) {
 	database := storetest.Open(t)
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	registration := mustRegisterOn(t, database, fake, "c1", "K0")
 	if err := registration.Deregister(context.Background()); err != nil {
 		t.Fatalf("deregister: %v", err)
@@ -274,14 +274,14 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 	// The registrations' clock, which nothing moves: no heartbeat of theirs stamps a row the
 	// test has aged. The prune loop's own clock is a second one, so moving it to the loop's
 	// tick brings a pass and no beat.
-	held := clocktest.Held()
+	held := clocktest.New(time.Now())
 	old := mustRegisterOn(t, database, held, "c1", "K0")
 	recent := mustRegisterOn(t, database, held, "c1", "K0")
 	live := mustRegisterOn(t, database, held, "c1", "K0")
 	ageHeartbeat(t, database, old.ID, 10*time.Minute+time.Second)
 	ageHeartbeat(t, database, recent.ID, 9*time.Minute)
 
-	pruning := clocktest.Held()
+	pruning := clocktest.New(time.Now())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -329,7 +329,7 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			database := storetest.Open(t)
-			fake := clocktest.Held()
+			fake := clocktest.New(time.Now())
 			peer := mustRegisterOn(t, database, fake, "c1", c.peer)
 			if c.stale {
 				// A gone process does not heartbeat back into Live: its clock never moves here.
@@ -384,7 +384,7 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 // this test takes on the table, and released together, which is the moment two reads without the
 // registry's own lock would both find the registry empty.
 func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	gate, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -444,7 +444,7 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 // Register waits for the row to lapse instead of refusing at once, and admits the newcomer then.
 func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *testing.T) {
 	database := storetest.Open(t)
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	var dead string
 	underRegistryLock(t, database, func(tx pgx.Tx) { dead = livePeer(t, tx, "K9") })
 
@@ -480,7 +480,7 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 // row is live on the database's clock throughout.
 func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T) {
 	database := storetest.Open(t)
-	beating := clocktest.Held()
+	beating := clocktest.New(time.Now())
 	peer := mustRegisterOn(t, database, beating, "c1", "K9")
 	beating.AwaitArmed(t, "the peer's heartbeat", 1)
 	beating.Advance(HeartbeatInterval)
@@ -517,7 +517,7 @@ func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T
 // peer to lapse stops then, registered nowhere, not once the wait is over.
 func TestRegistersWaitEndsWithItsContext(t *testing.T) {
 	database := storetest.Open(t)
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	peer := mustRegisterOn(t, database, fake, "c1", "K9")
 
 	ctx, stop := context.WithCancel(context.Background())
@@ -645,7 +645,7 @@ func TestALapsedHeartbeatChecksTheKeysAgainBeforeTheProcessCountsAsLive(t *testi
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			database := storetest.Open(t)
-			fake := clocktest.Held()
+			fake := clocktest.New(time.Now())
 			registration := mustRegisterOn(t, database, fake, "c1", "K1 K0")
 			var peer string
 			underRegistryLock(t, database, func(tx pgx.Tx) {
@@ -684,7 +684,7 @@ func TestALapsedHeartbeatChecksTheKeysAgainBeforeTheProcessCountsAsLive(t *testi
 func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T) {
 	t.Run("no live peer disagrees", func(t *testing.T) {
 		database := storetest.Open(t)
-		fake := clocktest.Held()
+		fake := clocktest.New(time.Now())
 		registration := mustRegisterOn(t, database, fake, "c1", "K1 K0")
 		underRegistryLock(t, database, func(tx pgx.Tx) {
 			prunedRow(t, tx, registration.ID)
@@ -707,7 +707,7 @@ func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T
 	})
 	t.Run("a live peer does not share the keys", func(t *testing.T) {
 		database := storetest.Open(t)
-		fake := clocktest.Held()
+		fake := clocktest.New(time.Now())
 		registration := mustRegisterOn(t, database, fake, "c1", "K1 K0")
 		var peer string
 		underRegistryLock(t, database, func(tx pgx.Tx) {
@@ -728,7 +728,7 @@ func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T
 // disagrees, written past Register's check, refuses nothing while this process's row stays live.
 func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 	database := storetest.Open(t)
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	registration := mustRegisterOn(t, database, fake, "c1", "K1 K0")
 	underRegistryLock(t, database, func(tx pgx.Tx) { livePeer(t, tx, "K9") })
 

@@ -57,7 +57,7 @@ func TestTheExcerptLeaseHolderPassesOverDocumentsHoldingNewerContent(t *testing.
 	// A fake the test never moves is the service's clock, so no deferred document's retry falls due
 	// while the test runs (refs.DeferExcerpts writes next_attempt_at from that clock). The loop runs
 	// at the server's own schedule: the batch after a full one comes within its two-second gap.
-	service := newExcerptServiceOn(t, database, nil, clocktest.Held())
+	service := newExcerptServiceOn(t, database, nil, clocktest.New(time.Now()))
 	for _, document := range documents[:newer] {
 		if err := service.InjectUnknownElementForTest(ctx, document); err != nil {
 			t.Fatalf("write an element this build does not know into %s: %v", document, err)
@@ -366,7 +366,7 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 	database := storetest.Open(t)
 	failing := owedDocuments(t, database, 1)[0]
 	persistence := newUnreadableDocumentStore(database, failing)
-	passClock := clocktest.Held()
+	passClock := clocktest.New(time.Now())
 	service := newExcerptServiceOn(t, database, persistence, passClock)
 	ctx := context.Background()
 	base := referenceExcerptSchedule.retryBase
@@ -414,7 +414,7 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 	// due while the test runs (refs.DeferExcerpts writes next_attempt_at from that clock). The loop
 	// runs at the server's own schedule: the pass the wake earns comes within its two-second gap,
 	// which the waits below wait out.
-	service := newExcerptServiceOn(t, database, persistence, clocktest.Held())
+	service := newExcerptServiceOn(t, database, persistence, clocktest.New(time.Now()))
 	leases := excerptLeases(t, database)
 	wake := make(chan struct{}, 1)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, wake) })

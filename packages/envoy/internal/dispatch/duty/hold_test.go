@@ -152,6 +152,8 @@ func holdTakenOverAfterTheLapse(t *testing.T) time.Duration {
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
+	// Held: the hold's loss deadline is measured against the row's expiry, which PostgreSQL dates
+	// with clock_timestamp() on the machine's clock, so the hold's clock must run with it.
 	fake := clocktest.Held()
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: fake}
 	ctx := context.Background()
@@ -310,7 +312,7 @@ func TestHoldLapseFreesAtOnceAndKeepsTheToken(t *testing.T) {
 func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	opts := duty.HoldOptions{TTL: 10 * time.Second, Renew: 200 * time.Millisecond, Margin: time.Second, Clock: fake}
 	ctx := context.Background()
 	hold := mustTakeHold(t, database.Pool, uuid.New(), opts)

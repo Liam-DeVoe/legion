@@ -21,7 +21,7 @@ import (
 // their deadlines alone. Its clock is a fake that stands where the wall clock is until the test
 // moves it, so a deadline passes when the test says and the expiry timer fires then (newTestRegistryOn).
 func newTestRegistry(ttl time.Duration) *SessionRegistry {
-	return newTestRegistryOn(ttl, clocktest.Held())
+	return newTestRegistryOn(ttl, clocktest.New(time.Now()))
 }
 
 // newTestRegistryOn is newTestRegistry on c, for a test that moves the clock its rows expire on:
@@ -117,7 +117,7 @@ func TestRegistryReadsRaceWatchedWritesAndExpiry(t *testing.T) {
 		ttl    = 20 * time.Millisecond
 		writes = 1000
 	)
-	now := clocktest.Held()
+	now := clocktest.New(time.Now())
 	r := newTestRegistryOn(ttl, now)
 	ids := make([]string, 40)
 	puts := make([]watchedEntry, len(ids))
@@ -203,7 +203,7 @@ func TestRegistryReadsRaceWatchedWritesAndExpiry(t *testing.T) {
 // entry and keep it.
 func TestExpiryKeepsAnEntryRewrittenBetweenItsDeadlineAndItsCallback(t *testing.T) {
 	const ttl = time.Minute
-	clk := clocktest.Held()
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(ttl, clk)
 	const id = "ses_rewritten"
 	created := clk.Now()
@@ -256,7 +256,7 @@ func TestExpiryKeepsAnEntryRewrittenBetweenItsDeadlineAndItsCallback(t *testing.
 // at the record's deadline, and a replay after that stays absent on its age alone (decodeLocked).
 func TestRevisionFenceLeavesWithAReadAndAStaleReplayStaysAbsent(t *testing.T) {
 	const ttl = 100 * time.Millisecond
-	clk := clocktest.Held()
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(ttl, clk)
 	// The live window is this registry's TTL, as production's is the bucket's maximum age today,
 	// so a record past its deadline is past its live window too and reads live nowhere.
@@ -306,7 +306,7 @@ func TestRevisionFenceLeavesWithAReadAndAStaleReplayStaysAbsent(t *testing.T) {
 // the registry holds no entry, lastSeen record, fence or deadline for any of them (R3).
 func TestRevisionFencesStayBoundedAsSessionsComeAndGo(t *testing.T) {
 	const ttl = 50 * time.Millisecond
-	clk := clocktest.Held()
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(ttl, clk)
 	revision := uint64(0)
 	for wave := range 3 {
@@ -347,7 +347,7 @@ func TestRevisionFencesStayBoundedAsSessionsComeAndGo(t *testing.T) {
 func TestNonPositiveTTLNeverRemovesOrSchedules(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -time.Second} {
 		t.Run(ttl.String(), func(t *testing.T) {
-			clk := clocktest.Held()
+			clk := clocktest.New(time.Now())
 			r := newTestRegistryOn(ttl, clk)
 			old := clk.Now().Add(-time.Hour)
 			r.applyWatched(watchedPut(t, "ses_kept", 1, old, SessionEntry{Port: 1, UpdatedAt: old.UnixMilli()}))
@@ -394,7 +394,7 @@ func TestLastSeenRetentionKeepsTheRecordAndFenceThatLong(t *testing.T) {
 		ttl       = 50 * time.Millisecond
 		retention = time.Second
 	)
-	clk := clocktest.Held()
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(ttl, clk)
 	r.lastSeenRetention = retention
 	created := clk.Now()
@@ -454,7 +454,7 @@ func TestLastSeenRetentionKeepsTheRecordAndFenceThatLong(t *testing.T) {
 // record is still kept one TTL, and the fence stays until a completed read of the bucket drops it.
 func TestLastSeenRetentionShorterThanTheTTLKeepsOneTTL(t *testing.T) {
 	const ttl = 500 * time.Millisecond
-	clk := clocktest.Held()
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(ttl, clk)
 	r.lastSeenRetention = time.Millisecond
 	now := clk.Now()
@@ -501,7 +501,7 @@ func rowDeadline(r *SessionRegistry, id string) (time.Time, bool) {
 // at once through the expiry timer, which keeps its last heartbeat as any other expiry does.
 func TestSetTTLMovesEveryCachedRowsDeadline(t *testing.T) {
 	const id = "ses_maxage"
-	clk := clocktest.Held()
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(time.Hour, clk)
 	r.lastSeenRetention = time.Minute
 	created := clk.Now()

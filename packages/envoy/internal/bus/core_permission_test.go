@@ -154,7 +154,7 @@ func TestStartRequestStoredToReportsAForwardNATSDenies(t *testing.T) {
 // answered: its timeout is on the client's clock, which stands still, so a Request that waited it
 // out would never be answered.
 func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
-	client, _ := grantedClient(t, bus.WithClock(clocktest.Held()))
+	client, _ := grantedClient(t, bus.WithClock(clocktest.New(time.Now())))
 	err := testwait.Receive(t, "the denied Request's answer with its timeout's clock standing still",
 		client.WindowUntil(nil).Request(deniedRole, roleEnvelope(deniedRole), bus.RequestOptions{MsgID: bus.ForwardMsgID("denied", deniedRole)}))
 	if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, bus.ErrNotAcknowledged) {
@@ -168,7 +168,7 @@ func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
 // deadline and the client's own bound are on a clock that stands still, so a request that waited
 // either out would never be answered, and the shared wait names it.
 func TestARequestCoreNATSDeniesAnswersTheDenialAtOnce(t *testing.T) {
-	still := clocktest.Held()
+	still := clocktest.New(time.Now())
 	client, _ := grantedClient(t, bus.WithClock(still))
 	ctx, cancel := still.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()

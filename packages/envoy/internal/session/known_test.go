@@ -705,6 +705,8 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 // read has completed, the store answers again. The watcher's clock is the test's, so the bound is
 // passed without waiting it out.
 func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
+	// Held, not a still clock: the watcher's own waits stay real timers here (only WithNow is
+	// set), and it reads this clock for how long they ran, so a still one would re-arm them for ever.
 	watcherClock := clocktest.Held()
 	known, conn, grant, logged, timers := knownOverGrant(t, WithKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
 	const stale = "ses_stale_store"

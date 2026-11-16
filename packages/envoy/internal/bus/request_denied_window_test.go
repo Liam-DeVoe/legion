@@ -40,7 +40,7 @@ const deniedRequests = 8
 // before the move is one the first read named, and one answered after it is the timeout's, each
 // naming its own subject.
 func TestEveryDeniedRequestOfOneWindowNamesItsOwnSubject(t *testing.T) {
-	clock := clocktest.Held()
+	clock := clocktest.New(time.Now())
 	client, _ := grantedClient(t, bus.WithClock(clock))
 	window := client.WindowUntil(nil)
 

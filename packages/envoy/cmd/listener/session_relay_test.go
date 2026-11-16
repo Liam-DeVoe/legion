@@ -38,7 +38,8 @@ type relayRig struct {
 	// relayClock is the clock the relay's own waits run on (the receipt wait, the pause and
 	// retry backoffs): a clocktest.Held the test advances, so a silent session pauses and a
 	// paused relay restarts only when the test moves the clock past relayReceiptWait or
-	// relayPauseFirst, never when the machine's clock gets there.
+	// relayPauseFirst. It is Held rather than still because the relay hands frames back in the
+	// order of their sentAt stamps (sessionRelays.release), which a still clock would make equal.
 	relayClock *clocktest.Fake
 }
 

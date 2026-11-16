@@ -12,7 +12,6 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -478,7 +477,7 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 // row is past its TTL, it is not found.
 func TestARefreshTheFenceDropsAnswersTheBucketsEntry(t *testing.T) {
 	client := setupNATS(t)
-	now := clocktest.Held()
+	now := bucketClock()
 	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
@@ -533,7 +532,7 @@ func TestARefreshTheFenceDropsAnswersTheBucketsEntry(t *testing.T) {
 // the row's own deadline, the bucket's backstop, takes the row away (expireDue).
 func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testing.T) {
 	client := setupNATS(t)
-	now := clocktest.Held()
+	now := bucketClock()
 	r, held := holdingRegistry(t, client, WithSessionClock(now), WithSessionLiveWindow(time.Minute))
 	if err := r.Put("ses_old", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -583,7 +582,7 @@ func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testin
 // bucket adopts its MaxAge.
 func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 	client := setupNATS(t)
-	now := clocktest.Held()
+	now := bucketClock()
 	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
@@ -627,7 +626,7 @@ func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 // lag, answers both the same way.
 func TestTheLeaderRefreshAnswersAsRefreshDoes(t *testing.T) {
 	client := setupNATS(t)
-	now := clocktest.Held()
+	now := bucketClock()
 	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)

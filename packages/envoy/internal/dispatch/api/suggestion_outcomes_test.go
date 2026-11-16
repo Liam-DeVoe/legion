@@ -160,7 +160,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	schedule := suggestionSchedule{minGap: suggestionOutcomeSchedule.minGap, settle: settle, page: suggestionOutcomePage}
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	// The sweep reads through the counted pool and observes the horizon through the server's own
 	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
 	runSweep(t, func(ctx context.Context) {

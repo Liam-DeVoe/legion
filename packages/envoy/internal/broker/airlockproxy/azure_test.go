@@ -279,7 +279,7 @@ func TestAnExchangeTheEndpointRefusesKeepsItsStatus(t *testing.T) {
 // so a token within mintAgainBefore of its expiry is exchanged again rather than handed to a
 // call that then fails on it - the same rule a minted value follows.
 func TestAnAccessTokenNearItsExpiryIsExchangedAgain(t *testing.T) {
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	r, stand := newAzureRig(t, Options{Clock: fake})
 	// A token of its own for the second exchange, so what leaves says which exchange it came
 	// from.

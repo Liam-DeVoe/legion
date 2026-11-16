@@ -76,7 +76,7 @@ func hold(t *testing.T, r *SessionRegistry, rows map[string]cachedSession) {
 }
 
 func TestList_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
-	clk := clocktest.Held()
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(5*time.Minute, clk)
 	now := clk.Now()
 	updated := now.Add(-6 * time.Minute).UnixMilli()
@@ -108,8 +108,10 @@ func TestList_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 }
 
 func TestGet_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
-	const ttl = 300 * time.Millisecond
-	clk := clocktest.Held()
+	// A TTL longer than the row runs, so only the registry's clock, which the row moves, takes the
+	// row away: an expiry judged on the machine's clock would never come due here.
+	const ttl = time.Minute
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(ttl, clk)
 	hold(t, r, map[string]cachedSession{
 		"ses_expired": {entry: SessionEntry{Port: 2}, expiresAt: clk.Now().Add(-time.Second)},
@@ -127,8 +129,12 @@ func TestGet_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	if _, err := r.Get("ses_short"); err != nil {
 		t.Fatalf("Get(ses_short) before its deadline: %v", err)
 	}
+	// The move runs the expiry timer's callback and returns once it has (clocktest.Fake.Advance),
+	// so the row has left the copy by then.
 	clk.Advance(ttl + time.Millisecond)
-	waitForCacheSize(t, r, 0)
+	if size := r.CacheSize(); size != 0 {
+		t.Fatalf("the copy holds %d rows once its clock passed ses_short's deadline, want none: the expiry did not take it", size)
+	}
 	if _, err := r.Get("ses_short"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("Get(ses_short) after its deadline = %v, want ErrKeyNotFound", err)
 	}
@@ -154,7 +160,7 @@ func TestGet_ValidReturnsEntry(t *testing.T) {
 
 func TestExpiredLastSeenReadsZeroAndLeavesAtItsDeadline(t *testing.T) {
 	const ttl = 200 * time.Millisecond
-	clk := clocktest.Held()
+	clk := clocktest.New(time.Now())
 	r := newTestRegistryOn(ttl, clk)
 	r.lastSeen["ses_lapsed"] = lastSeenSession{
 		lastSeen:  clk.Now().Add(-2 * time.Minute).UnixMilli(),

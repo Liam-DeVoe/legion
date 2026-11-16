@@ -644,10 +644,12 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	// hold's loss deadline has passed.
 	const lateNumber = 310
 	relay, holderURL := startNATSCut(t, natsURL, 0)
-	holdClock := clocktest.Held()
+	// Both clocks stand still until the row moves them: the hold measures its lapse, and the stop
+	// its drain wait, as elapsed time on them, which the machine's clock must not supply.
+	holdClock := clocktest.New(time.Now())
 	holder := startIntakeProcessWith(t, pool, holderURL, nil, func(p *intakeProcess) {
 		p.intake.holdClock = holdClock
-		p.intake.clock = clocktest.Held()
+		p.intake.clock = clocktest.New(time.Now())
 	})
 	awaitBoundDurable(t, publisher)
 	standby := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { p.leases.cut.Store(true) })

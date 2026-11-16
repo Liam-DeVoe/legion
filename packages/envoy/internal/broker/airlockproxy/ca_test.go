@@ -102,7 +102,7 @@ func TestOneLeafPerHostSignedOnce(t *testing.T) {
 func TestALeafNearingItsEndIsSignedAgain(t *testing.T) {
 	const host = "api.example.com"
 	authority := newTestAuthority(t)
-	fake := clocktest.Held()
+	fake := clocktest.New(time.Now())
 	authority.clock = fake
 	began := fake.Now()
 
