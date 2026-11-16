@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
 
 import type { DispatchEvent } from "../web/src/api/types";
-import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
+import {
+  MARGIN_SECTION_NAMES,
+  PROPERTY_LABELS,
+} from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../web/src/features/issue-page/page-words";
 import {
   agentRow,
@@ -55,6 +58,7 @@ import { requirementText } from "./issue-layout-seed-text";
 import {
   closeDetails,
   gotoIssue,
+  issueRead,
   marginShell,
   openDetails,
   phase,
@@ -79,7 +83,7 @@ import {
   rowFacts,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
-import { setEventCreatedAt } from "./seed";
+import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { ONE_PIXEL_PNG } from "./sends";
 import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
@@ -366,9 +370,10 @@ test("the history lists the events and the agents' threads the outline does not 
 
 // SLOW(>=2s): four status moves, three of them back-dated a day and the read watermark set,
 // before one cold load of the history. A day before today is one line with its count, which
-// opens it; the reader's watermark is drawn where it stood when the history first drew, and a
-// later move of the mark - the outline's own write once part L lands, made here by the API and
-// read back on a refocus - leaves the line where it was.
+// opens it; the reader's watermark is drawn where it stood when the history first drew, at the
+// end of today's list when the reader stopped on an earlier day, and a later move of the mark -
+// the outline's own write once part L lands, made here by the API and read back on a refocus -
+// leaves the line where it was, across a close and an open of Details too.
 test("the history folds each day before today and marks where the reader stopped", async ({
   browser,
 }) => {
@@ -411,7 +416,8 @@ test("the history folds each day before today and marks where the reader stopped
     await expect(days.first()).toContainText("Today");
     const earlier = days.nth(1).getByRole("button", { name: "Yesterday · 3" });
     await expect(earlier).toHaveAttribute("aria-expanded", "false");
-    // Today's lines are drawn; yesterday's are behind its one line.
+    // Today's lines are drawn, and the line that says what is new closes today's list, which is
+    // open, rather than heading the day the list folds; yesterday's are behind its one line.
     const order = () =>
       historyPanel(page)
         .locator("[data-event-seq], li[aria-label]")
@@ -420,7 +426,10 @@ test("the history folds each day before today and marks where the reader stopped
             (item) => item.getAttribute("data-event-seq") ?? item.getAttribute("aria-label")
           )
         );
-    expect(await order()).toEqual([String(fourth.seq), String(third.seq)]);
+    expect(
+      await order(),
+      "the line that says what is new is not at the end of today's list"
+    ).toEqual([String(fourth.seq), String(third.seq), "New since you last read"]);
 
     await earlier.click();
     await expect(earlier).toHaveAttribute("aria-expanded", "true");
@@ -435,6 +444,11 @@ test("the history folds each day before today and marks where the reader stopped
       String(created.seq),
     ];
     expect(await order()).toEqual(marked);
+    // The line stays the last of today's list, above yesterday's lines, with the day open.
+    await expect(
+      days.first().locator(":scope > ol > li").last(),
+      "opening Yesterday moved the line out of today's list"
+    ).toHaveAttribute("aria-label", "New since you last read");
 
     // The mark moves on to the newest line, as the outline's end writes it, and the page reads
     // it again on a refocus, as a tab left open does: the line stays where the reader stopped.
@@ -453,6 +467,12 @@ test("the history folds each day before today and marks where the reader stopped
     await reread;
     await twoFrames(page);
     expect(await order(), "a later move of the read mark moved the line").toEqual(marked);
+
+    // Details closed and opened again draws the history as the reader left it.
+    await closeDetails(page);
+    await openDetails(page);
+    await twoFrames(page);
+    expect(await order(), "closing and opening Details moved the line").toEqual(marked);
   } finally {
     await alice.close();
   }
@@ -940,7 +960,8 @@ test("a new entry arriving while the reader is on a filter leaves Details where 
 
 // Paging is the history's: the outline reads each of its three lists whole and offers no
 // `Load older` at all. Older events land beneath the entries already on screen, so the entry
-// the reader is on does not move.
+// the reader is on does not move; and the reader who presses on reaches the log's start, where
+// the control goes (R2).
 test("loading older history entries keeps the reader anchor", async ({ browser }) => {
   // One more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists.
   const issue = await seedMessages("Older events", 205, "Older message");
@@ -949,7 +970,9 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
   try {
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/conversation`);
-    await expect(tree(page)).toBeVisible();
+    // Every write of this issue is an agent's message, which the outline draws no row for, so
+    // the tree is drawn with no row in it.
+    await expectIssuePageDrawn(page);
     await expect(page.getByRole("button", { name: "Load older" })).toHaveCount(0);
 
     await gotoIssue(page, `/issues/${issue.key}/activity`);
@@ -972,33 +995,73 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     // which only the page beneath the first 200 holds.
     await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
     await expect.poll(async () => (await anchor.boundingBox())?.y).toBe(before);
+
+    // Pressed until it goes: each press reads the next page, and the last page takes it away.
+    for (let presses = 1; await loadOlder.isVisible(); presses += 1) {
+      expect(presses, "Load older is still offered past the log's last page").toBeLessThan(3);
+      const answered = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === `/api/v1/issues/${issue.key}/events` && url.searchParams.has("before")
+        );
+      });
+      await loadOlder.click();
+      await answered;
+      await twoFrames(page);
+    }
+    await expect(
+      historyPanel(page).getByRole("button", { name: "Load older" }),
+      "Load older is still offered once the whole log is read"
+    ).toHaveCount(0);
   } finally {
     await context.close();
   }
 });
 
 // The read mark draws one line in the history, "New since you last read", where the mark falls
-// among its entries (`history-model.ts`): a mark that moves back adds that line above the
-// entries the reader has not read, so the reader's own entry has to stay where it was. The
-// reader is parked over a gap between two entries, where `ViewportAnchor`'s probe has to fall
-// back to the entry below.
+// among its entries (`history-model.ts`): a mark that moves back adds that line under the
+// entries the reader has not read, above the reader's place, so the reader's own entry has to
+// stay where it was. The reader is parked over a gap between two entries, where
+// `ViewportAnchor`'s probe has to fall back to the entry below. One day's entries are drawn flush,
+// one rule down their left (the prototype's `.hev`), so the gap between two entries is where one
+// day ends and the next opens with its line: the first ten comments and the issue's creation are
+// a day old, and the reader opens that day.
 async function verifyGapDetection(
   browser: Browser,
   viewport?: { height: number; width: number }
 ): Promise<void> {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Attention test" });
+  const comments: string[] = [];
   for (let index = 0; index < 20; index += 1) {
-    await createComment(issue.key, { body: `Gap comment ${index}` }, attentionSession);
+    const comment = await createComment(
+      issue.key,
+      { body: `Gap comment ${index}` },
+      attentionSession
+    );
+    comments.push(comment.id);
   }
+  const events = await getIssueEvents(issue.key, { limit: 200 });
+  const dayOld = new Set(comments.slice(0, 10));
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+  await Promise.all([
+    ...[...dayOld].map((id) => setCreatedAt("comments", id, yesterday)),
+    ...events
+      .filter(
+        (event) =>
+          event.type === "issue.created" ||
+          (event.type === "comment.created" && dayOld.has(event.payload.id))
+      )
+      .map((event) => setEventCreatedAt(event.id, yesterday)),
+  ]);
   // Far beyond the issue's head, so nothing is unread and the history draws no line yet.
   await putIssueState(issue.key, { last_read_seq: 10_000 }, { login: "alice" });
-  // The mark moves back to the fourth comment below: the sixteen after it are unread.
-  const created = (await getIssueEvents(issue.key, { limit: 200 })).filter(
-    (event) => event.type === "comment.created"
-  );
-  const fourth = created[3]?.seq;
-  if (fourth === undefined) throw new Error("the seed wrote fewer than four comments");
+  // The mark moves back to the twelfth comment below: the eight after it are unread, so the line
+  // comes in today's list, two entries above the gap the reader is parked on.
+  const twelfth = events.find(
+    (event) => event.type === "comment.created" && event.payload.id === comments[11]
+  )?.seq;
+  if (twelfth === undefined) throw new Error("the seed recorded no twelfth comment");
 
   const context = await reader(browser, "alice");
   try {
@@ -1009,6 +1072,12 @@ async function verifyGapDetection(
     await openHistory(page, issue.key, "Gap comment 19");
     const divider = historyPanel(page).getByRole("listitem", { name: "New since you last read" });
     await expect(divider).toHaveCount(0);
+    const dayBefore = historyPanel(page).getByRole("button", { name: /^Yesterday · \d+$/ });
+    await dayBefore.click();
+    await expect(dayBefore).toHaveAttribute("aria-expanded", "true");
+    await expect(historyPanel(page).getByText("Gap comment 0", { exact: true })).toBeVisible();
+    // The reader's hand leaves the list, so the place the history keeps is the one at its centre.
+    await handsOff(page);
 
     // Where the gap nearest the middle of the history sits, as an offset from the centre of the
     // box it is clipped to: the reader is moved by that offset, so the gap lands on the very
@@ -1076,9 +1145,9 @@ async function verifyGapDetection(
 
     const lowerEntry = historyPanel(page).locator(`[data-history-entry="${gap.lowerEntry}"]`);
     const before = (await lowerEntry.boundingBox())?.y;
-    // The reader's mark moves back, so the history gains its line above every unread entry.
-    // Only a refocus re-reads it, as a tab left open overnight would.
-    await putIssueState(issue.key, { last_read_seq: fourth }, { login: "alice" });
+    // The reader's mark moves back, so the history gains its line under the unread entries,
+    // above the reader. Only a refocus re-reads it, as a tab left open overnight would.
+    await putIssueState(issue.key, { last_read_seq: twelfth }, { login: "alice" });
     await page.evaluate(() => {
       const now = Date.now();
       Date.now = () => now + 31_000;
@@ -1194,12 +1263,15 @@ test("the panel lists an issue's people and its Legion agents, running or not", 
       marginShell(page).getByRole("button", { exact: true, name: PROPERTY_LABELS.collaborators })
     ).toHaveAttribute("aria-expanded", "true");
 
-    // People, with how each of them worked the issue.
+    // People, with how each of them worked the issue, in the page's words for the server's
+    // `reasons` tokens.
     const people = collaborators.getByRole("region", { name: "People" });
     await expect(people.getByRole("listitem").filter({ hasText: "alice" })).toContainText(
-      "assignee"
+      CONTROL_LABELS.collaborator_reasons.assignee
     );
-    await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText("posted");
+    await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText(
+      CONTROL_LABELS.collaborator_reasons.posted
+    );
 
     // The Legion agents, by role in workflow order (`LEGION_ROLES`), each role's newest first.
     const legion = collaborators.getByRole("region", { name: "Legion agents" });
@@ -1292,9 +1364,11 @@ test("the panel says so when Legion's record of the issue cannot be read", async
     // The people are Dispatch's own, so the notice takes none of them with it.
     const people = panel.getByRole("region", { name: "People" });
     await expect(people.getByRole("listitem").filter({ hasText: "alice" })).toContainText(
-      "assignee"
+      CONTROL_LABELS.collaborator_reasons.assignee
     );
-    await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText("posted");
+    await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText(
+      CONTROL_LABELS.collaborator_reasons.posted
+    );
     // And nothing stands in for the agents.
     await expect(panel.getByRole("region", { name: "Legion agents" })).toHaveCount(0);
   } finally {
@@ -1555,7 +1629,8 @@ test("a person hands an ask to another person and it moves between the two Inbox
 
     // 9. Bob answers it, and the control is gone from the focused ask's facts the moment the
     // question is no longer open; the answer, and who gave it, is drawn on the ask's own row of
-    // the outline.
+    // the outline. The replies of step 6 made that row a branch, which the outline folds to its
+    // one line (part G's R1), so the row is read with its branch opened.
     await handTo(issueControl, "bob");
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await selectRow(bobPage, moved.id);
@@ -1566,14 +1641,16 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect
       .poll(async () => (await getAsk(moved.id, { login: "bob" })).ask.state)
       .toBe("answered");
-    await expect(nodeRow(aliceIssue, moved.id).first()).toContainText(
-      "Read DISPATCH_ROLLOUT_FLAG."
-    );
-    await expect(nodeRow(aliceIssue, moved.id).first()).toContainText("bob");
+    await expect(aliceCard).toHaveAttribute("data-focused-node", moved.id);
     await expect(
       handOnControl(aliceCard, moved.id),
       "the hand-on control stayed on an answered question"
     ).toHaveCount(0);
+    await unfoldEveryBranch(aliceIssue);
+    await expect(nodeRow(aliceIssue, moved.id).first()).toContainText(
+      "Read DISPATCH_ROLLOUT_FLAG."
+    );
+    await expect(nodeRow(aliceIssue, moved.id).first()).toContainText("bob");
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
   } finally {
@@ -1835,6 +1912,21 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
       ).toHaveCount(1);
       await expect(facts).toHaveAttribute("data-focused-node", seeded.first);
       await expect(facts).toContainText("The first row's words.");
+      // R9: the collaborators are read only once their list opens, and Details opens with it
+      // shut. The history's log, read as Details opens, says Details' reads have gone out.
+      const collaboratorsRead = `/api/v1/issues/${seeded.key}/collaborators`;
+      await expect(
+        marginShell(page).getByRole("button", { exact: true, name: PROPERTY_LABELS.collaborators })
+      ).toHaveAttribute("aria-expanded", "false");
+      await expect
+        .poll(
+          () => read.includes(`/api/v1/issues/${seeded.key}/events`),
+          "Details drew the history and read no log"
+        )
+        .toBe(true);
+      expect(read, "opening Details read the collaborators with their list shut").not.toContain(
+        collaboratorsRead
+      );
 
       // `j` moves the focus to the next row, and the facts follow it.
       await focusRow(page, seeded.first);
@@ -1850,11 +1942,15 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
       await closeDetails(page);
       await openDetails(page);
       await expect(facts).toHaveAttribute("data-focused-node", seeded.second);
+      expect(read, "Details read the collaborators with their list shut").not.toContain(
+        collaboratorsRead
+      );
     }
   );
 });
 
-/** An issue with an agents' thread, a message an agent wrote that no person wrote in. */
+/** An issue with an agents' thread, a message an agent wrote that no person wrote in, dated a
+ *  day back with its event, so the history folds the day it is in. */
 async function seedAgentsThread(): Promise<{ key: string; message: string }> {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "The history's addresses" });
@@ -1870,12 +1966,24 @@ async function seedAgentsThread(): Promise<{ key: string; message: string }> {
   for (let index = 0; index < 12; index += 1) {
     await createMessage(issue.key, { body: `An agent's later note ${index}.` }, attentionSession);
   }
+  const created = (await getIssueEvents(issue.key, { limit: 200 })).find(
+    (event) => event.type === "message.created" && event.payload.id === message.id
+  );
+  if (created === undefined) throw new Error(`${issue.key} recorded no event of ${message.id}`);
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+  await Promise.all([
+    setCreatedAt("messages", message.id, yesterday),
+    setEventCreatedAt(created.id, yesterday),
+  ]);
   return { key: issue.key, message: message.id };
 }
 
-// R4 of dispatch://INFRA-3948: `t v` opens `/activity` with the focus in the history, `t o` opens
-// `/collaborators` with the focus on the Collaborators control, the address of an agents' turn
-// opens Details at that turn, marked and on screen, once per arrival, and Keys lists both keys.
+// R4 of dispatch://INFRA-3948: `t v` opens `/activity` with the history's heading in view and the
+// focus in the history, and a Close there is the later word; `/collaborators` and `t o` open the
+// People section the reader closed, with the collaborators' list open and the focus on its
+// control; the address of an agents' turn opens Details at that turn, its folded day open, marked
+// and on screen, once per arrival, and a turn that arrives while the history's log is held is
+// reached at once; and Keys lists both keys.
 test("t v and t o open Details at the history and at the collaborators, and an agents' turn's address marks it", async ({
   browser,
 }) => {
@@ -1894,46 +2002,149 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     await expect
       .poll(() => focusInside(historyPanel(page)), "t v did not put the focus in the history")
       .toBe(true);
+    await expect(
+      historyPanel(page).getByRole("heading", { exact: true, name: CONTROL_LABELS.history }),
+      "t v left the history's heading out of view"
+    ).toBeInViewport();
+    // At `/activity` the reader's Close is the later word.
+    await closeDetails(page);
+    await twoFrames(page);
+    await expect(
+      marginShell(page),
+      "Details opened again at /activity after its Close"
+    ).toBeHidden();
 
+    // The reader closes People with its own control, and a reload keeps it closed.
+    const people = marginShell(page).getByRole("button", {
+      exact: true,
+      name: MARGIN_SECTION_NAMES.people,
+    });
+    const collaborators = marginShell(page)
+      .locator('[data-details-row="collaborators"]')
+      .getByRole("button", { exact: true, name: PROPERTY_LABELS.collaborators });
+    await openDetails(page);
+    await expect(people).toHaveAttribute("aria-expanded", "true");
+    await people.click();
+    await expect(people).toHaveAttribute("aria-expanded", "false");
+    await page.reload();
+    await issueRead(page);
+    await openDetails(page);
+    await expect(people, "a reload opened People the reader closed").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+
+    // `/collaborators` opens it, with the list open and the focus on its control.
+    await gotoIssue(page, `/issues/${seeded.key}/collaborators`);
+    await expect(people, "/collaborators left People closed").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await expect(collaborators).toHaveAttribute("aria-expanded", "true");
+    await expect(
+      collaborators,
+      "/collaborators did not focus the Collaborators control"
+    ).toBeFocused();
+
+    // And so does `t o`, from the issue with People closed again.
+    await people.click();
+    await expect(people).toHaveAttribute("aria-expanded", "false");
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expect(marginShell(page)).toBeHidden();
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("o");
     await expect(page, "t o did not open the collaborators").toHaveURL(
       new RegExp(`/issues/${seeded.key}/collaborators$`)
     );
-    const collaborators = marginShell(page).locator('[data-details-row="collaborators"] button');
-    await expect(
-      collaborators.first(),
-      "t o did not focus the Collaborators control"
-    ).toBeFocused();
-    await expect(collaborators.first()).toHaveAttribute("aria-expanded", "true");
+    await expect(people, "t o left People closed").toHaveAttribute("aria-expanded", "true");
+    await expect(collaborators).toHaveAttribute("aria-expanded", "true");
+    await expect(collaborators, "t o did not focus the Collaborators control").toBeFocused();
 
     // Keys names both.
     await focusThePage(page);
     await page.keyboard.press("?");
     const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await expect(keys).toBeVisible();
-    await expect(keys).toContainText("Open the issue's history in Details");
-    await expect(keys).toContainText("Open the issue's collaborators in Details");
+    await expect(keys).toContainText(CONTROL_LABELS.open_history);
+    await expect(keys).toContainText(CONTROL_LABELS.open_collaborators);
     await page.keyboard.press("Escape");
     await expect(keys).toBeHidden();
 
-    // An agents' turn's own address, on a fresh load, opens Details there with the turn marked.
+    // An agents' turn's own address, on a fresh load, opens Details there: the day before today
+    // the turn is in open, the turn marked and on screen. A press on that day's line folds it.
     await gotoIssue(page, `/issues/${seeded.key}/messages/${seeded.message}`);
     await expect(marginShell(page), "the turn's address did not open Details").toBeVisible();
     const turn = historyItem(page, seeded.message);
+    const dayBefore = historyPanel(page).getByRole("button", { name: /^Yesterday · \d+$/ });
+    await expect(dayBefore, "the turn's address left its day folded").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     await expect(turn).toHaveAttribute("aria-current", "true");
     await expect(turn).toBeInViewport();
+    await dayBefore.click();
+    await expect(dayBefore, "a press on the opened day's line left it open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect(turn).toHaveCount(0);
     // Once per arrival: the reader's Close is the later word.
     await closeDetails(page);
     await twoFrames(page);
     await expect(marginShell(page), "Details opened again after the reader closed it").toBeHidden();
+
+    // A turn that arrives while the history's log is held in the app is reached at once: the
+    // history reads the log at `/activity`, Details closes, the turn arrives, and a person's
+    // comment in the outline links its address. Reached in the app - the router's own history
+    // moving to it, as a link the router follows moves it, with no reload - the turn is marked
+    // and on screen. The link in the comment's words is an anchor the browser follows, which
+    // loads the page again, and it reaches the turn too.
+    await gotoIssue(page, `/issues/${seeded.key}/activity`);
+    await expect(historyPanel(page).getByText("An agent's later note 11.")).toBeVisible();
+    await closeDetails(page);
+    await page.evaluate(() => document.documentElement.setAttribute("data-loaded-once", "yes"));
+    const arrived = await createMessage(
+      seeded.key,
+      { body: "A turn that arrived while the log was held." },
+      attentionSession
+    );
+    const citing = await createComment(
+      seeded.key,
+      { body: `Read dispatch://${seeded.key}/message/${arrived.id} first.` },
+      { login: "bob" }
+    );
+    const link = nodeRow(page, citing.id).locator(`a[href$="/messages/${arrived.id}"]`);
+    await expect(link).toBeVisible();
+    const address = new URL((await link.getAttribute("href")) ?? "", page.url()).pathname;
+    await page.evaluate((path) => {
+      window.history.pushState(null, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, address);
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/messages/${arrived.id}$`));
+    const arrival = historyItem(page, arrived.id);
+    await expect(arrival, "the arrived turn's address did not mark it").toHaveAttribute(
+      "aria-current",
+      "true"
+    );
+    await expect(arrival).toBeInViewport();
+    await expect(page.locator("html"), "reaching the address reloaded the page").toHaveAttribute(
+      "data-loaded-once",
+      "yes"
+    );
+
+    await closeDetails(page);
+    await link.click();
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/messages/${arrived.id}$`));
+    await expect(marginShell(page), "the comment's link did not open Details").toBeVisible();
+    await expect(arrival).toHaveAttribute("aria-current", "true");
+    await expect(arrival).toBeInViewport();
   });
 });
 
 // R2 of dispatch://INFRA-3948: at 767 px and below Details covers the page, so a link of the
 // history that leaves it, and Reply, close Details; a turn's own time is the turn's address,
-// which opens Details at it, so it leaves Details open.
+// which opens Details at it, so it leaves Details open, and never hides it for a moment.
 test("on a phone a link of the history and Reply close Details", async ({ browser }) => {
   await phase(
     browser,
@@ -1957,10 +2168,45 @@ test("on a phone a link of the history and Reply close Details", async ({ browse
       await gotoIssue(page, `/issues/${seeded.key}/activity`);
       await expect(marginShell(page)).toBeVisible();
 
-      // A turn's time keeps Details open.
+      // A turn's time keeps Details open: the page records each value the aside of Details takes
+      // for its `hidden` attribute and its class during the press, and keeps the hidden ones.
+      await page.evaluate(() => {
+        const aside = document.querySelector<HTMLElement>('[data-testid="desktop-margin-shell"]');
+        if (aside === null) throw new Error("the page draws no Details");
+        const record: string[] = [];
+        const held = window as unknown as { detailsAside?: HTMLElement; detailsHidden?: string[] };
+        held.detailsAside = aside;
+        held.detailsHidden = record;
+        new MutationObserver((changes) => {
+          changes.forEach((change, index) => {
+            const name = change.attributeName ?? "";
+            // The value after this change is the next change's old value, or the one it has now.
+            const next = changes.slice(index + 1).find((later) => later.attributeName === name);
+            const value = next === undefined ? aside.getAttribute(name) : next.oldValue;
+            const hidden =
+              name === "hidden" ? value !== null : (value ?? "").split(/\s+/u).includes("hidden");
+            if (hidden) record.push(`${name}="${value ?? ""}"`);
+          });
+        }).observe(aside, { attributeFilter: ["hidden", "class"], attributeOldValue: true });
+      });
       await historyItem(page, seeded.message).locator("[data-history-time]").click();
       await expect(page).toHaveURL(new RegExp(`/messages/${seeded.message}$`));
       await expect(marginShell(page), "a turn's time closed Details").toBeVisible();
+      await twoFrames(page);
+      const pressed = await page.evaluate(() => {
+        const held = window as unknown as { detailsAside?: HTMLElement; detailsHidden?: string[] };
+        return {
+          hidden: held.detailsHidden ?? null,
+          same:
+            held.detailsAside !== undefined &&
+            held.detailsAside === document.querySelector('[data-testid="desktop-margin-shell"]'),
+        };
+      });
+      expect(pressed.same, "the press on a turn's time drew Details anew").toBe(true);
+      expect(
+        pressed.hidden,
+        "Details was hidden for a moment of the press on a turn's time"
+      ).toEqual([]);
 
       // A file's link closes it.
       const file = historyPanel(page).getByRole("link", { exact: true, name: "phone-shot.png" });
@@ -2005,20 +2251,30 @@ test("what references the focused row opens from its facts, and each row leads t
       return {
         comment: comment.id,
         key: issue.key,
+        reference: `dispatch://${issue.key}/spec#b-r-cited`,
         specSlug: spec.slug,
         statement: blockNode(spec.slug, "r-cited"),
       };
     },
     async (page, seeded) => {
+      // The reads of what references the statement, by its own address: the page reads others
+      // of `/references` (Blocks', Referenced by's), which are not this list's.
       const references: string[] = [];
       page.on("request", (request) => {
-        if (new URL(request.url()).pathname === "/api/v1/references")
+        const url = new URL(request.url());
+        if (
+          url.pathname === "/api/v1/references" &&
+          url.searchParams.get("to") === seeded.reference
+        ) {
           references.push(request.url());
+        }
       });
 
-      // The issue itself draws no control: Details' "Referenced by" row holds its list.
+      // The issue itself draws no control: Details' "Referenced by" row holds its list. The
+      // focus is on no row, so the facts are the issue's.
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expect(tree(page)).toBeVisible();
+      await focusThePage(page);
       await openDetails(page);
       await expect(focusedNodeFacts(page)).toHaveAttribute("data-focused-node", seeded.key);
       const control = focusedNodeFacts(page).getByRole("button", {
@@ -2037,7 +2293,11 @@ test("what references the focused row opens from its facts, and each row leads t
       await expect(rows).toHaveCount(1);
       expect(references, "the references were not read once").toHaveLength(1);
       await expect(rows.first()).toContainText(NODE_REFERENCES_WORDS.kinds.comment);
-      await expect(rows.first()).toContainText("Bob checks");
+      // The comment's first line, from its tree, with the reference it writes named as the
+      // outline names it: by the statement's own words.
+      await expect(rows.first()).toContainText(
+        "Bob checks The history is drawn in Details. against the page."
+      );
       const text = (await rows.first().textContent()) ?? "";
       for (const name of ["dispatch://", seeded.specSlug, "spec block", "#b-"]) {
         expect(text, `a row of what references the statement names it by "${name}"`).not.toContain(
@@ -2063,11 +2323,13 @@ test("what references the focused row opens from its facts, and each row leads t
 
       // A read that fails says so, with Retry, after at most three requests.
       await page.route("**/api/v1/references?**", (route) =>
-        route.fulfill({
-          body: JSON.stringify({ code: "INTERNAL", error: "refused" }),
-          contentType: "application/json",
-          status: 500,
-        })
+        new URL(route.request().url()).searchParams.get("to") === seeded.reference
+          ? route.fulfill({
+              body: JSON.stringify({ code: "INTERNAL", error: "refused" }),
+              contentType: "application/json",
+              status: 500,
+            })
+          : route.fallback()
       );
       references.length = 0;
       await page.reload();

@@ -13,6 +13,7 @@ import { useMarginDrawer } from "../margin-slot";
 import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
+import { useKnownReferenceNames } from "../reference-names";
 import { ROW_LINK } from "../row-references";
 import { issueItemWords, referenceRows } from "./references-list";
 
@@ -70,8 +71,10 @@ function useIssueItemWords(
  * mentions it, so this is where a reader reads that.
  *
  * Each row names the citing node by words the page already holds for it: a comment, a message
- * or a question of this issue by the first line of its words, beside its word, and any other
- * node by the word of its tie or of its kind alone, with its issue and its time (D4 of
+ * or a question of this issue by the first line of its words, beside its word, each reference in
+ * that line named from the page's one batched read of what references point at
+ * (`useKnownReferenceNames`), as the outline's row names it; and any other node by the word of its
+ * tie or of its kind alone, with its issue and its time (D4 of
  * dispatch://INFRA-3948/artifact/plan-md). The read's excerpt is the node's stored text, the
  * markdown its author typed with every address it cites, and is drawn nowhere (R22).
  *
@@ -97,9 +100,11 @@ export function NodeReferences({
 }): ReactNode {
   const drawer = useMarginDrawer();
   const panelId = useId();
-  // Which row the reader opened the list on, so the focus moving to another row closes it:
-  // the state is the row's own id and not a flag.
+  // Which row the reader opened the list on. The focus moving to another row closes it, and a
+  // reader coming back to the row finds it closed (R9): the row the list was opened on is let
+  // go of as the focus leaves it, in the render that moves it.
   const [openedOn, setOpenedOn] = useState<string | undefined>(undefined);
+  if (openedOn !== undefined && openedOn !== node.id) setOpenedOn(undefined);
   const addressed = node.type === "issue" ? undefined : reference;
   const open = addressed !== undefined && openedOn === node.id;
   // Outside the shell no drawer holds the panel and it is always open; on the issue page it is
@@ -112,10 +117,13 @@ export function NodeReferences({
   const here = addressed === undefined ? undefined : parseNodeReference(addressed);
   const issueKey = here !== undefined && "key" in here ? here.key : undefined;
   const itemWords = useIssueItemWords(issueKey, open);
+  // The names the page's one batched read gave what its references point at, which a reference in
+  // a citing item's line is named by: a context the page publishes, so no request (R21).
+  const names = useKnownReferenceNames();
   // An edge a newer build answers with, of a kind or to a node this page does not know, is left
   // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
   // the node kind's, which says it was only named.
-  const rows = referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge));
+  const rows = referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge), names);
   if (addressed === undefined) {
     return null;
   }

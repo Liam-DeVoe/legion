@@ -8,6 +8,7 @@ import type {
 import { isBlockItemKind } from "../../refs/block-reference";
 import { wordsOf } from "../../refs/tree-fragment";
 import { drawnLine, firstLineOf } from "../issue-tree";
+import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
 
 /**
  * What references one node, as Details draws it (dispatch://INFRA-1196 R14, R19): one row per
@@ -25,15 +26,19 @@ import { drawnLine, firstLineOf } from "../issue-tree";
  * own text: the read's excerpt is the stored text, the markdown its author typed with every
  * `dispatch://` address of it, where the page draws a node by the words of the server's reading
  * of it (R20, R22). The page holds those words for the comments, messages and questions of the
- * focused node's own issue, which the outline reads (`issueItemWords`); every other node is
- * named by the word of its tie or of its kind, with its issue and its time (D4 of
- * dispatch://INFRA-3948/artifact/plan-md).
+ * focused node's own issue, which the outline reads (`issueItemWords`); a reference in them is
+ * named as the outline's row names it, from the page's one batched read of what its references
+ * point at; every other node is named by the word of its tie or of its kind, with its issue and
+ * its time (D4 of dispatch://INFRA-3948/artifact/plan-md).
  *
  * Pure, so the rows are read without a browser: the component draws them and holds the reads.
  */
 
 /** The edge kind that is no tuple of the model: one node's text names another. */
 const MENTIONS = "mentions";
+
+/** No name at all: a caller that holds none of the page's names. */
+const NO_NAMES: ReadonlyMap<string, string> = new Map();
 
 /** One node that references the focused one. */
 export interface ReferenceRow {
@@ -46,8 +51,9 @@ export interface ReferenceRow {
   readonly kind: string;
   /** The first line of the citing item's words, where it is a comment, a message or a question
    *  of the focused node's own issue and the page holds its words (`issueItemWords`), as every
-   *  place that draws one line for a node draws it (R1, `firstLineOf`, `drawnLine`); `""` for
-   *  every other node, which the component names by its word. Never the read's own text. */
+   *  place that draws one line for a node draws it (R1, `firstLineOf`, `drawnLine`), with each
+   *  reference it writes named (`itemLine`); `""` for every other node, which the component
+   *  names by its word. Never the read's own text. */
   readonly line: string;
   /** What kind of node cites, as the graph names it: `block`, `comment`, `ask`, `message`,
    *  `artifact`, `issue`, `component`, `session`. A comment, a message or a question whose block
@@ -129,11 +135,14 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  *
  * `itemWords` holds the words of the comments, messages and questions of the focused node's own
  * issue by their ids (`issueItemWords`). A citing item among them carries the first line of its
- * words; every other node, and an item whose words the page does not hold yet, carries none.
+ * words (`itemLine`), its references named from `names`, the page's one batched read of what its
+ * references point at, by reference (`reference-names.tsx`); every other node, and an item whose
+ * words the page does not hold yet, carries none.
  */
 export function referenceRows(
   itemWords: ReadonlyMap<string, string>,
-  edges: readonly GraphEdge[]
+  edges: readonly GraphEdge[],
+  names: ReadonlyMap<string, string> = NO_NAMES
 ): ReferenceRow[] {
   const rows = new Map<string, ReferenceRow>();
   for (const edge of edges) {
@@ -148,11 +157,34 @@ export function referenceRows(
       at: held?.at ?? edge.created_at,
       key,
       kind: edge.kind,
-      line: words === undefined ? "" : drawnLine(firstLineOf(words)),
+      line: words === undefined ? "" : itemLine(words, names),
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
     });
   }
   return [...rows.values()];
+}
+
+/**
+ * The one line a citing item is named by: the first line of its words, cut where every one line
+ * of a node is cut (`firstLineOf`, `drawnLine`), with each reference it writes named as the
+ * outline's row names it (`rowReferenceWords`): an issue by its key and its title, anything else
+ * by its target's words. The server's reading of a bare `dispatch://` reference is a link whose
+ * words are the address itself, so the words write it as typed; a line holding a reference the
+ * read has not named is `""`, and the row is named by its word, since an address is no name (R8,
+ * R22).
+ */
+function itemLine(words: string, names: ReadonlyMap<string, string>): string {
+  const first = firstLineOf(words);
+  let line = "";
+  let at = 0;
+  for (const one of rowReferences(first.line, knownIssueKeys(names))) {
+    if ((names.get(one.reference) ?? "").trim() === "") return "";
+    const named = rowReferenceWords(one, names);
+    line += first.line.slice(at, one.start);
+    line += named.key === undefined ? named.words : `${named.key} ${named.words}`;
+    at = one.end;
+  }
+  return drawnLine({ cut: first.cut, line: `${line}${first.line.slice(at)}` });
 }

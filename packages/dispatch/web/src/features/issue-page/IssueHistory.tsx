@@ -5,7 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
@@ -81,7 +81,8 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
  * replied in a thread, the outline draws it and this list no longer does (R1).
  *
  * `/activity`, `t v` and the address of a comment or message of such a thread open Details here
- * (R20): at `/activity` the heading is brought into Details' view once for each arrival;
+ * (R20): at `/activity` the heading is brought into Details' view once for each arrival, except a
+ * reader's coming back to the history they left drawn, who finds it where they left it (R3);
  * `item` is the entry such an address names, which is marked and brought into view, its day
  * opened. It writes no read mark. The line that says what is new is drawn at `visitMark`,
  * where the reader's mark stood as the history first drew in this visit, which
@@ -217,10 +218,15 @@ export function IssueHistory({
   // `/activity` opens Details at the history (R4): its heading is brought into Details' view
   // once for each arrival at that address, on the first render it has a box - Details still
   // closed around it, or the panel not yet placed in the drawer, gives it none - and leaving the
-  // address lets the next arrival bring it again. Only the box Details scrolls in moves, never
-  // the page under it; the reader's own scroll after that is theirs.
+  // address lets the next arrival bring it again. A reader who comes back with the browser's
+  // Back or Forward to the history this list drew there before - Details left open beside a
+  // view, or at a turn's address - finds Details where they left it (R3), so that arrival brings
+  // nothing. Only the box Details scrolls in moves, never the page under it; the reader's own
+  // scroll after that is theirs.
+  const navigation = useNavigationType();
   const heading = useRef<HTMLHeadingElement>(null);
   const headingLanded = useRef<string | undefined>(undefined);
+  const landedBefore = useRef(false);
   useEffect(() => {
     if (activityAddress === undefined) {
       headingLanded.current = undefined;
@@ -235,6 +241,9 @@ export function IssueHistory({
       return;
     }
     headingLanded.current = activityAddress;
+    const comingBack = navigation === "POP" && landedBefore.current;
+    landedBefore.current = true;
+    if (comingBack) return;
     const box = scrollingAncestor(element);
     if (box !== null) scrollElementToTop(element, box);
   });
