@@ -1,6 +1,15 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import { createAsk, createIssue, createIssueArtifact, createProject, patchIssue } from "./api";
+import type { IssueDecisions } from "../web/src/api/types";
+import {
+  baseUrl,
+  createAsk,
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  patchIssue,
+  userHeaders,
+} from "./api";
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
@@ -175,6 +184,57 @@ export function labelsLeft(page: Page): Locator {
   return issueHeader(page).getByTestId("issue-labels-left");
 }
 
+/** How many times `scope` draws `words`, read in its drawn text (`innerText`) with each run of
+ *  white space one space, and counted only where the words stand whole, so a key such as
+ *  `HDR-2` is not found inside `HDR-20`. A name a control carries for assistive technology is
+ *  not drawn text, so the copy control's name, which holds the key, is not counted. */
+export function timesDrawn(scope: Locator, words: string): Promise<number> {
+  return scope.evaluate((element, words) => {
+    const text = (element as HTMLElement).innerText.replace(/\s+/g, " ");
+    const escaped = words.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const whole = new RegExp(`(?<![\\p{L}\\p{N}-])${escaped}(?![\\p{L}\\p{N}])`, "gu");
+    return [...text.matchAll(whole)].length;
+  }, words);
+}
+
+/** The name a reader hears of the first control row one of the header draws - its
+ *  `aria-label`, else its words - or null where it draws none. Row one, the key's
+ *  (`IssueIdentityRow.tsx`), is the band's first row on an issue that is not closed. */
+export function firstControlOfRowOne(page: Page): Promise<string | null> {
+  return identityBand(page).evaluate((band) => {
+    const row = band.firstElementChild;
+    const control = [...(row?.querySelectorAll("a, button, select, input, textarea") ?? [])].find(
+      (one) => one.checkVisibility()
+    );
+    if (control === undefined) return null;
+    return control.getAttribute("aria-label") ?? (control.textContent ?? "").trim();
+  });
+}
+
+/** A part of the properties line `lineOrder` reads: the elements `selector` matches, and of
+ *  those, where `words` is given, the ones whose words are exactly `words`. */
+export interface LinePart {
+  readonly name: string;
+  readonly selector: string;
+  readonly words?: string;
+}
+
+/** The parts of the properties line `parts` names, by `name`, in the line's document order: a
+ *  run of one part's elements is named once, and a part the line does not draw is not named. */
+export function lineOrder(page: Page, parts: readonly LinePart[]): Promise<string[]> {
+  return propertiesLine(page).evaluate((line, parts) => {
+    const drawn = parts.flatMap(({ name, selector, words }) =>
+      [...line.querySelectorAll(selector)]
+        .filter((element) => words === undefined || (element.textContent ?? "").trim() === words)
+        .map((element) => ({ element, name }))
+    );
+    drawn.sort((a, b) =>
+      a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    );
+    return drawn.map(({ name }) => name).filter((name, at, names) => name !== names[at - 1]);
+  }, parts);
+}
+
 /**
  * The label chips the frame after the properties line narrows by `by` px draws cut. In one task,
  * so before any frame is drawn and before the labels are read again on the next one, the line
@@ -217,6 +277,18 @@ export function labelsCutAsTheLineNarrows(page: Page, by: number): Promise<strin
 /** The count of what waits on the reader, or whose turn it is when nothing waits. */
 export function waitingCount(page: Page): Locator {
   return issueHeader(page).getByTestId("issue-whose-turn");
+}
+
+/** The issue's decisions as the server reads them for alice, each with `waiting_review`
+ *  (`GET /api/v1/issues/{key}/decisions`). `e2e/api.ts` wraps no read of the route, so this is a
+ *  plain fetch with her sign-in, as `e2e/bare-references.e2e.ts` reads an issue. */
+export async function issueDecisions(key: string): Promise<IssueDecisions> {
+  const path = `/api/v1/issues/${encodeURIComponent(key)}/decisions`;
+  const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders("alice") });
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
+  }
+  return (await response.json()) as IssueDecisions;
 }
 
 /** Details, the drawer over the right of the page. */

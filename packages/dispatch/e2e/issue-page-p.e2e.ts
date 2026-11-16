@@ -1,3 +1,4 @@
+import { statusGlyph } from "../web/src/features/issue-page/issue-status";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import {
   createAsk,
@@ -7,6 +8,7 @@ import {
   editArtifact,
   getArtifact,
   getArtifactVersion,
+  getAsk,
   getIssue,
   patchIssue,
   requestApproval,
@@ -22,15 +24,18 @@ import {
   details,
   expectHeaderDrawn,
   expectHeaderWithinItsLimit,
+  firstControlOfRowOne,
   HEADER_PROJECT,
   headerFamilies,
   headerLabels,
   headerParts,
   IPHONE_13,
   identityBand,
+  issueDecisions,
   issueHeader,
   labelsCutAsTheLineNarrows,
   labelsLeft,
+  lineOrder,
   MEASURED_TITLE,
   propertiesLine,
   seedHeader,
@@ -38,6 +43,7 @@ import {
   stickyReading,
   TWENTY_LABELS,
   TYPEFACE,
+  timesDrawn,
   titleOfLines,
   typefaceAddress,
   typefaceStatuses,
@@ -59,11 +65,12 @@ import { asUser } from "./users";
  * the header alone: no row waits for a row of the outline.
  */
 
-/** Whom the server resolves an open ask of `key` to (`waiting_on_person`), from the issue's open
- *  asks: an ask's own read carries no such field, because the server resolves it at read time
- *  (`packages/contracts/src/dispatch-api-asks.ts`). */
-async function waitingOnPersonOf(key: string, askId: string): Promise<string | undefined> {
-  return (await getIssue(key)).open_asks?.find((ask) => ask.id === askId)?.waiting_on_person;
+/** The person the server resolves the ask `askId` to (`waiting_on_person`): whoever it was handed
+ *  to, else the issue's assignee, else the project's default assignee. `GET /api/v1/asks/{id}`
+ *  answers `AskRead`, whose `ask` carries `waiting_on_person`, resolved at read time: the stored
+ *  row holds no such field (`packages/contracts/src/dispatch-api-asks.ts`). */
+async function waitingOnPersonOf(askId: string): Promise<string | undefined> {
+  return (await getAsk(askId)).ask.waiting_on_person;
 }
 
 /** The page's own address of the view a press of the count opens. */
@@ -85,18 +92,50 @@ function reviewActions(scope: Locator): Locator {
   return scope.getByRole("button", { name: /^(Approve( v\d+)?|Request changes)$/ });
 }
 
-/** Presses `control` as the row's width does it: a click, or Enter with the focus on it. */
-async function press(page: Page, control: Locator, how: "click" | "Enter"): Promise<void> {
+/** How a row presses a control: the mouse's click, a tap of the phone's touch screen, or Enter
+ *  with the focus on it. */
+type Press = "click" | "Enter" | "tap";
+
+/** Presses `control` as the row's project and width do it. */
+async function press(page: Page, control: Locator, how: Press): Promise<void> {
   if (how === "click") {
     await control.click();
+    return;
+  }
+  if (how === "tap") {
+    await control.tap();
     return;
   }
   await control.focus();
   await page.keyboard.press("Enter");
 }
 
+/** A real press on `control` straight out of the title's edit, `what` naming it: on `iphone` a
+ *  tap, whose mouse events follow its touch events, and on `chromium` the mouse's down and up at
+ *  its middle. */
+async function pressOutOfTheEdit(
+  page: Page,
+  control: Locator,
+  what: string,
+  tap: boolean
+): Promise<void> {
+  if (tap) {
+    await control.tap();
+    return;
+  }
+  const box = await control.boundingBox();
+  if (box === null) throw new Error(`${what} is not drawn while the title is edited`);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.up();
+}
+
 // c-header (1): the header's half of the checkpoint's "every property with a value is visible at
 // every width @phone" (`e2e/issue-layout.e2e.ts:2988`), on the measured title and 20 labels.
+// On the phone it reads what the 390 px viewport decides (R1 of "Phone acceptance" in
+// `packages/dispatch/AGENTS.md`): R3's limit there, the 24 px targets, the page no wider than
+// the window, the navigation's control first on row one and the dialog it opens, and the 44 px
+// buttons and 16 px type of the dialog a header control opens.
 test("the header holds R13's list and its limits at every width @phone", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -142,6 +181,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
       /^issue-route-unreachable$/,
     ];
 
+    let drawnAtDesktop: number | undefined;
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
@@ -175,6 +215,11 @@ test("the header holds R13's list and its limits at every width @phone", async (
         await header.getByRole("combobox", { name: "Status" }).inputValue(),
         `the status reads otherwise at ${width} px`
       ).toBe("in_progress");
+      // The status draws its mark beside its word.
+      await expect(
+        header.locator('label:has(> select[aria-label="Status"]) > [aria-hidden="true"]'),
+        `the status draws another mark at ${width} px`
+      ).toHaveText(statusGlyph("in_progress"));
       // Approve is filled with the page's ink, its words the paper's (row 17).
       expect(
         await header
@@ -204,11 +249,50 @@ test("the header holds R13's list and its limits at every width @phone", async (
         parts.filter((part) => order.includes(part)),
         `the properties line is out of R1's order at ${width} px`
       ).toEqual(order);
+      // The approval control stands after the count and before the labels.
+      expect(
+        await lineOrder(page, [
+          { name: "the count", selector: '[data-testid="issue-whose-turn"]' },
+          { name: "the approval control", selector: "[data-approval-artifact]" },
+          { name: "the labels", selector: '[data-testid="issue-header-labels"]' },
+        ]),
+        `the approval control is not between the count and the labels at ${width} px`
+      ).toEqual(["the count", "the approval control", "the labels"]);
+
+      // The page draws the key and the title one time, the title as its one `h1`.
+      await expect(
+        page.locator("[data-issue-page] h1"),
+        `the issue page does not hold one h1 at ${width} px`
+      ).toHaveCount(1);
+      expect(
+        await timesDrawn(page.locator("[data-issue-page]"), MEASURED_TITLE),
+        "the page draws the title more than once"
+      ).toBe(1);
+      expect(
+        await timesDrawn(header, seeded.key),
+        `the header does not draw the key once at ${width} px`
+      ).toBe(1);
+
+      // Where the shell draws no rail, row one starts with the navigation's control; beside the
+      // rail the header draws none.
+      if (width === IPHONE_13.width) {
+        expect(
+          await firstControlOfRowOne(page),
+          "the navigation's control is not the first control of row one at 390 px"
+        ).toBe("Open navigation");
+      }
+      if (width === DESKTOP.width) {
+        await expect(
+          header.getByRole("button", { exact: true, name: "Open navigation" }),
+          "the navigation's control is drawn beside the rail at 1440 px"
+        ).toHaveCount(0);
+      }
 
       // The labels that fit, and a count equal to the labels the line does not draw.
       await expect(labelsLeft(page), `the labels end on no count at ${width} px`).toBeVisible();
       const drawn = await headerLabels(page).count();
       expect(drawn, `the header draws every label at ${width} px`).toBeLessThan(20);
+      if (width === DESKTOP.width) drawnAtDesktop = drawn;
       await expect(labelsLeft(page)).toHaveText(
         `+${20 - drawn} ${20 - drawn === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}`
       );
@@ -242,16 +326,14 @@ test("the header holds R13's list and its limits at every width @phone", async (
       }
 
       await expectHeaderWithinItsLimit(page, width, true, TYPEFACE);
-      if (width === IPHONE_13.width) {
-        expect(
-          await undersizedTargets(page),
-          "a header control fails WCAG 2.5.8 at 390 px"
-        ).toEqual([]);
-        expect(
-          await shortControls(page, seeded.key),
-          "a control R3 holds to 24 px is shorter at 390 px"
-        ).toEqual([]);
-      }
+      expect(
+        await undersizedTargets(page),
+        `a header control fails WCAG 2.5.8 at ${width} px`
+      ).toEqual([]);
+      expect(
+        await shortControls(page, seeded.key),
+        `a control R3 holds to 24 px is shorter at ${width} px`
+      ).toEqual([]);
       await assertPageFits(page);
       if (width === IPHONE_13.width) {
         // A dialog a header control opens keeps the page's floors at 390 px: 16 px type in its
@@ -280,12 +362,20 @@ test("the header holds R13's list and its limits at every width @phone", async (
         await expect(requestChanges, "Escape left the Request changes dialog open").toHaveCount(0);
       }
 
-      // The labels' count and Details' control each open Details.
+      // The labels' count, Details' control and the menu's parent action - Edit parent, on an
+      // issue with a parent - each open Details.
       await labelsLeft(page).click();
       await expect(details(page), "the labels' count opened no Details").toBeVisible();
       await closeDetails(page);
       await header.getByTestId("issue-details-control").click();
       await expect(details(page), "Details' control opened no Details").toBeVisible();
+      await closeDetails(page);
+      await header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions }).click();
+      await header.getByRole("button", { exact: true, name: CONTROL_LABELS.edit_parent }).click();
+      await expect(
+        details(page),
+        `the menu's parent action opened no Details at ${width} px`
+      ).toBeVisible();
       await closeDetails(page);
       if (width === IPHONE_13.width) {
         await header.getByRole("button", { exact: true, name: "Open navigation" }).click();
@@ -297,6 +387,19 @@ test("the header holds R13's list and its limits at every width @phone", async (
       }
     }
 
+    // At 1440 px, the labels the line drew there of the twenty and one more end on the count of
+    // one label.
+    if (drawnAtDesktop !== undefined) {
+      await page.setViewportSize(viewportAt(DESKTOP.width));
+      await patchIssue(seeded.key, { labels: TWENTY_LABELS.slice(0, drawnAtDesktop + 1) });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expect(
+        labelsLeft(page),
+        `${drawnAtDesktop + 1} labels at 1440 px do not end on "+1 ${CONTROL_LABELS.labels_left_one}"`
+      ).toHaveText(`+1 ${CONTROL_LABELS.labels_left_one}`);
+    }
+
     // An issue whose labels fit draws them all and no count.
     await page.setViewportSize(viewportAt(DESKTOP.width));
     await patchIssue(seeded.key, { labels: ["dispatch"] });
@@ -306,11 +409,31 @@ test("the header holds R13's list and its limits at every width @phone", async (
     await expect(labelsLeft(page), "a label that fits ends on a count").toHaveCount(0);
     await expect(issueHeader(page).getByTestId("issue-route-unreachable")).toHaveCount(0);
 
-    // The parent, whose route reaches nobody, draws the header's one marker.
+    // A child of the issue, which has no children of its own, draws no children's progress.
+    await gotoIssue(page, `/issues/${seeded.childKeys[0]}`);
+    await expectHeaderDrawn(page);
+    await expect(
+      issueHeader(page).getByTestId("issue-progress-children"),
+      "an issue with no children draws its progress"
+    ).toHaveCount(0);
+
+    // The parent, whose route reaches nobody, draws the header's one marker, after its approval
+    // control and before its one label.
+    await patchIssue(seeded.parentKey, { labels: ["dispatch"] });
     await gotoIssue(page, `/issues/${seeded.parentKey}`);
     await expectHeaderDrawn(page);
     await expect(issueHeader(page).getByTestId("issue-route-unreachable")).toHaveCount(1);
     await expect(issueHeader(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
+    await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
+    await expect(headerLabels(page)).toHaveText(["dispatch"]);
+    expect(
+      await lineOrder(page, [
+        { name: "the approval control", selector: "span", words: CONTROL_LABELS.not_requested },
+        { name: "the route's marker", selector: '[data-testid="issue-route-unreachable"]' },
+        { name: "the labels", selector: '[data-testid="issue-header-labels"]' },
+      ]),
+      `the route's marker is not between "${CONTROL_LABELS.not_requested}" and the labels`
+    ).toEqual(["the approval control", "the route's marker", "the labels"]);
   });
 });
 
@@ -482,6 +605,9 @@ test("the approval entries stay in the header and read the document each step ap
 
 // c-header (3): the checkpoint's "the header holds its rule when the typeface does not load
 // @phone" (`e2e/issue-layout.e2e.ts:5714`), less part B's readings of the file and its licence.
+// On the phone it reads what the 390 px viewport decides in the fallback, as row (1) reads it in
+// the face (R1 of "Phone acceptance" in `packages/dispatch/AGENTS.md`): R3's limit and the 24 px
+// targets at 390 px, and the page no wider than the window at 390 and 320 px.
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -543,6 +669,16 @@ test("the header holds its limits when the typeface does not load @phone", async
             })
             .toEqual(["error"]);
           await expectHeaderWithinItsLimit(without, width, requestWaiting, "the fallback");
+          if (requestWaiting && (width === DESKTOP.width || width === IPHONE_13.width)) {
+            expect(
+              await undersizedTargets(without),
+              `a header control fails WCAG 2.5.8 at ${width} px in the fallback`
+            ).toEqual([]);
+            expect(
+              await shortControls(without, seeded.key),
+              `a control R3 holds to 24 px is shorter at ${width} px in the fallback`
+            ).toEqual([]);
+          }
           const fit = await without.evaluate(() => ({
             clientWidth: document.documentElement.clientWidth,
             scrollWidth: document.documentElement.scrollWidth,
@@ -564,19 +700,23 @@ test("the header holds its limits when the typeface does not load @phone", async
 
 // c-header (4): the count's half of the checkpoint's "the count of what waits on the reader
 // opens the first thing that waits @phone" (`e2e/issue-layout.e2e.ts:3275`). The node the press
-// reaches is parts I's and Q's.
+// reaches is parts I's and Q's. On the phone every press of the count is a tap of the touch
+// screen (R2 of "Phone acceptance" in `packages/dispatch/AGENTS.md`), and each opens what the
+// mouse's click opens on `chromium`.
 test("the count of what waits is a control that opens the Decisions address @phone", async ({
   browser,
 }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     const desktopProject = test.info().project.name !== "iphone";
+    // The pointer the project presses with: the mouse on `chromium`, the touch screen on `iphone`.
+    const pointer: Press = desktopProject ? "click" : "tap";
     for (const [width, how] of (desktopProject
       ? [
           [DESKTOP.width, "click"],
           [IPHONE_13.width, "Enter"],
         ]
-      : [[IPHONE_13.width, "click"]]) as readonly (readonly [number, "click" | "Enter"])[]) {
+      : [[IPHONE_13.width, "tap"]]) as readonly (readonly [number, Press])[]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
@@ -619,7 +759,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     await gotoIssue(page, `/issues/${lone.key}`);
     await expectHeaderDrawn(page);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
-    await waitingCount(page).click();
+    await press(page, waitingCount(page), pointer);
     await expect
       .poll(() =>
         page.evaluate(() => document.activeElement?.hasAttribute("data-approval-artifact"))
@@ -633,7 +773,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     // The spec approved and the Verification document's request alone waiting: the header draws
     // the spec's chip and no chip of the Verification document, so the press puts the focus on
     // no chip rather than on the spec's (decision 58). The press's handler moves the focus as it
-    // runs, so the focus is read once the click is done.
+    // runs, so the focus is read once the press is done.
     const verifying = await createIssue({
       force: true,
       project: HEADER_PROJECT,
@@ -654,7 +794,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
       issueHeader(page).locator(`[data-approval-artifact="${spec}"]`),
       "the header draws no chip of the approved spec"
     ).toBeVisible();
-    await waitingCount(page).click();
+    await press(page, waitingCount(page), pointer);
     expect(
       [null, verification.artifact.id],
       "the count's press focused another document's chip"
@@ -663,6 +803,41 @@ test("the count of what waits is a control that opens the Decisions address @pho
         () => document.activeElement?.getAttribute("data-approval-artifact") ?? null
       )
     );
+
+    // A decision on the review list is all that waits: the issue's decisions document holds an
+    // agent's decision that names the requirement its spec holds, which the server reads as
+    // waiting for review, and no ask of the issue is open. The count counts it, and its press
+    // opens the Decisions address.
+    const decided = await createIssue({
+      force: true,
+      project: HEADER_PROJECT,
+      spec: ":::requirement{#r1}\nThe header counts a decision that waits.\n:::\n",
+      title: "Decided",
+    });
+    await createIssueArtifact(decided.key, {
+      content: `## The count reads the decisions\n\nThe header counts what the Decisions filter lists for review. It shapes dispatch://${decided.key}/spec#b-r1.\n`,
+      name: "decisions.md",
+    });
+    expect(
+      ((await issueDecisions(decided.key)).decisions ?? []).map((decision) => ({
+        names: (decision.links ?? []).map((link) => link.to.block_id),
+        waiting: decision.waiting_review,
+      })),
+      "the server does not read the agent's decision as waiting for review"
+    ).toEqual([{ names: ["r1"], waiting: true }]);
+    expect((await getIssue(decided.key)).open_asks ?? [], "an ask of the issue is open").toEqual(
+      []
+    );
+    await gotoIssue(page, `/issues/${decided.key}`);
+    await expectHeaderDrawn(page);
+    await expect(waitingCount(page), "a decision on the review list is not counted").toHaveText(
+      "Waiting on you (1)"
+    );
+    await press(page, waitingCount(page), pointer);
+    await expect(
+      page,
+      "the count's press with a decision waiting did not open the Decisions address"
+    ).toHaveURL(decisionsAddress(decided.key));
   });
 });
 
@@ -680,7 +855,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
       await bob.setViewportSize(viewportAt(DESKTOP.width));
       await patchIssue(issue.key, { assignee: "alice" });
       const asked = await createAsk(issue.key, { question: "Which way does it go?" }, asAgent);
-      expect(await waitingOnPersonOf(issue.key, asked.id)).toBe("alice");
+      expect(await waitingOnPersonOf(asked.id)).toBe("alice");
 
       // The agent's question waits on alice, who holds the issue: her count, not bob's. Each
       // absence is read once the header draws the assignee.
@@ -698,7 +873,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
         { question: "And who decides it?" },
         { as: "user", login: "bob" }
       );
-      expect(await waitingOnPersonOf(issue.key, bobsQuestion.id)).toBe("alice");
+      expect(await waitingOnPersonOf(bobsQuestion.id)).toBe("alice");
       await gotoIssue(bob, `/issues/${issue.key}`);
       await expectHeaderDrawn(bob);
       await expect(badgeValue(bob, `Assignee of ${issue.key}`)).toHaveText("alice");
@@ -708,7 +883,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
 
       // The issue handed to bob: both questions wait on him now, and none on alice.
       await patchIssue(issue.key, { assignee: "bob" });
-      expect(await waitingOnPersonOf(issue.key, asked.id)).toBe("bob");
+      expect(await waitingOnPersonOf(asked.id)).toBe("bob");
       await gotoIssue(bob, `/issues/${issue.key}`);
       await expect(waitingCount(bob)).toHaveText("Waiting on you (2)");
       await gotoIssue(alice, `/issues/${issue.key}`);
@@ -828,14 +1003,17 @@ test("a press on the status straight out of the title's editor lands on the stat
 
 // c-header (7): `e2e/issue.e2e.ts:1016` at 750e2716, "issue header delivers the click that ends
 // a title edit to the control under the pointer @phone": ending the edit of a title of two or
-// three lines must not move the control under it between the mousedown and the mouseup.
+// three lines must not move the control under it between the mousedown and the mouseup. On the
+// phone the press is a tap of the touch screen (R2 of "Phone acceptance" in
+// `packages/dispatch/AGENTS.md`), whose mouse events come after its touch events: the order
+// `IssueTitleRow.tsx` holds the title's height by until the press is delivered, at 390 px.
 test("the press that ends a title edit reaches the control under it @phone", async ({
   browser,
 }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
-    const widths =
-      test.info().project.name === "iphone" ? [IPHONE_13.width] : [DESKTOP.width, IPHONE_13.width];
+    const tap = test.info().project.name === "iphone";
+    const widths = tap ? [IPHONE_13.width] : [DESKTOP.width, IPHONE_13.width];
     for (const width of widths) {
       await page.setViewportSize(viewportAt(width));
       for (const lines of [2, 3]) {
@@ -861,16 +1039,26 @@ test("the press that ends a title edit reaches the control under it @phone", asy
         expect
           .soft(drawnLines, `the editor draws the ${lines}-line title in another number of lines`)
           .toBe(lines);
-        // A real press, down and up, on the count under the title, straight out of the edit.
-        const box = await waitingCount(page).boundingBox();
-        if (box === null) throw new Error("the count is not drawn while the title is edited");
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        await page.mouse.down();
-        await page.mouse.up();
+        // A real press on the count under the title, straight out of the edit.
+        await pressOutOfTheEdit(page, waitingCount(page), "the count", tap);
         await expect(
           page,
           `the press out of a ${lines}-line title's edit at ${width} px landed on nothing`
         ).toHaveURL(decisionsAddress(seeded.key));
+
+        // The same press on the status, straight out of an edit of the same title, lands too,
+        // and the status takes the focus.
+        await gotoIssue(page, `/issues/${seeded.key}`);
+        await expectHeaderDrawn(page);
+        await heading.click();
+        await expect(editor).toBeFocused();
+        const status = issueHeader(page).getByRole("combobox", { name: "Status" });
+        await pressOutOfTheEdit(page, status, "the status", tap);
+        await expect(
+          status,
+          `the press out of a ${lines}-line title's edit at ${width} px did not reach the status`
+        ).toBeFocused();
+        await page.keyboard.press("Escape");
       }
     }
   });
@@ -1048,7 +1236,10 @@ test("the header's keys and the palette reach their controls", async ({ browser 
 });
 
 // c-header (9): the header's half of the checkpoint's "the identity and the title stay when the
-// page scrolls, and on a phone the filter control @phone" (`e2e/issue-layout.e2e.ts:3472`).
+// page scrolls, and on a phone the filter control @phone" (`e2e/issue-layout.e2e.ts:3472`). On
+// the phone it reads what the 390 px viewport decides (R1 of "Phone acceptance" in
+// `packages/dispatch/AGENTS.md`): the title's 20 px type and its 362 px words with no clamp, and
+// the whole header scrolling off the screen with the page, where the band stays from 761 px up.
 test("the band stays when the page scrolls, and on a phone the header goes @phone", async ({
   browser,
 }) => {
