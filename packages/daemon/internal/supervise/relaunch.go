@@ -269,6 +269,14 @@ func turnKindOf(d Delivery) turnKind {
 // Burstable pod evicts itself in every such turn completes no turn, and counting those ends
 // against the open record's turn is what bounds it; uncounted, it would be relaunched for ever.
 //
+// One shape of loop is left unbounded, by decision (dispatch://INFRA-1117's decisions document):
+// an end in a turn a message started, then an end in the record's turn that follows, then that
+// record's completed turn. The completed turn of the record the second end cut off ends both
+// counts, the first end's with them, so a loop that repeats those three steps resets every two
+// ends. Ending only the counts counted against the record would need a count of them on each
+// delivery, which is a column on every delivery for one shape that needs the record's turn to
+// complete every other cycle.
+//
 // What the turn is the turn of is decided where the turn confirms its delivery (confirm), the one
 // place every confirming path goes through — a turn's start (beginTurn), sendPending's askFirst
 // branch, and a prompt's result that confirms a task no start was matched to (promptResulted) —
