@@ -640,6 +640,15 @@ test("every property with a value is visible in Details at every width @phone", 
         underline: UNDERLINE,
       });
     }
+    // Who opened the issue is part E's `AgentName`, which draws its link in the ink inside
+    // `NoTooltips` (its own underline is E's, R8's last sentence).
+    expect(
+      await detailsRow(page, PROPERTY_LABELS.opened_by)
+        .getByRole("link")
+        .first()
+        .evaluate((element) => getComputedStyle(element).color),
+      "the opener in Details is not the ink"
+    ).toBe(INK);
     expect(
       await documents.first().evaluate((element) => getComputedStyle(element).color),
       "a document's entry in Details is not the ink"

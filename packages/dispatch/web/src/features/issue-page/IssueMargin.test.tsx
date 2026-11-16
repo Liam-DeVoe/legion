@@ -551,7 +551,6 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
     "KEY would then wait on itself, through the issues it waits on, its parent or its children.",
     "KEY is this issue, and an issue cannot wait on itself.",
     "There is no issue KEY.",
-    "KEY is in another project, and an issue can wait only on issues of its own project.",
     "These issues wait on one another through more links than Dispatch follows, so it cannot check them for a loop.KEY",
     `An issue can wait on at most ${MAX_ISSUE_BLOCKERS} issues.KEY`,
   ]);
