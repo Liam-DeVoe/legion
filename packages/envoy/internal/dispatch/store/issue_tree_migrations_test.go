@@ -47,11 +47,13 @@ var keepsItsShape = []string{
 	"check_results", "artifact_versions", "artifact_reviews", "document_blocks",
 }
 
-// createdNew are the tables this child creates: document_rooms and version_renders (R19), and
-// issue_trees, which holds each issue's one tree. Each is created new, by a create table of its
-// own that is the first statement of the set to name it, and no statement of the set fills it
-// from a stored row. A table no migration of the set names is no finding.
-var createdNew = []string{"document_rooms", "version_renders", "issue_trees"}
+// createdNew are the tables this child creates: document_rooms and version_renders (R19),
+// issue_trees, which holds each issue's one tree, node_search, the search rows of a node (T15),
+// and issue_tree_block_drain, the one-row record of how far the block drain got (T6). Each is
+// created new, by a create table of its own that is the first statement of the set to name it,
+// and no statement of the set fills it from a stored row. A table no migration of the set names
+// is no finding.
+var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "node_search", "issue_tree_block_drain"}
 
 // The statement forms the test reads, each over a statement as pgmigrate.Statements gives it: its
 // words one space apart, and a DO block's body read as statements, so a form is found anywhere in
@@ -647,7 +649,7 @@ func sizeRefusedTable(refusal string) string {
 // requireTheIssueTreeMigrationsKeepToTheLimit holds the migrations of fsys named
 // <timestamp>_issue_tree_<what> to R19 and R20, and prints one `TOUCHED: <table>` line for each
 // table the set touches (pgmigrate.TouchedTables), one `SHAPE: <table>` line for each table whose
-// shape a migration of the set changes, and one `SIZE: <table> <bytes> limit <bytes>` line for
+// shape a migration of the set changes, and one `SIZE: <table> <bytes> <limit>` line for
 // each of graph_nodes and graph_tuples the set touches, with the size the census at
 // pgmigrate.CensusTableLimit read, each at the start of its own line of the test's output, where
 // the check's run reads them beside the pull request body.
@@ -747,7 +749,7 @@ func requireTheIssueTreeMigrationsKeepToTheLimit(t *testing.T, fsys fs.FS) {
 	}
 	for _, table := range typeTables {
 		if bytes, held := sizes[table]; held {
-			fmt.Printf("SIZE: %s %d limit %d\n", table, bytes, pgmigrate.CensusTableLimit)
+			fmt.Printf("SIZE: %s %d %d\n", table, bytes, pgmigrate.CensusTableLimit)
 		} else {
 			t.Logf("%s: no migration of this child touches it, so the census read no size of it", table)
 		}
