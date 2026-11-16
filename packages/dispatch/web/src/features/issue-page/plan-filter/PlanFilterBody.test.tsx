@@ -664,3 +664,28 @@ test("a task with no words is named by its kind, never by its id", async () => {
     view.unmount();
   }
 });
+
+// R3 and R4 of dispatch://INFRA-3938: a step's row names each task it needs by that task's first
+// words. Part F's view hands a `needs` chip over with no name while the names read is out, and,
+// at the head the tester read on the preview of INFRA-1196, for good where the server cuts the
+// target's name inside its directive's opening line (task 25, which needs task 24: 11 needs on
+// one line). The row drew "· needs" and an empty need then, which names no task at all.
+test("a need part F has not named is named by the needed task's own words, never drawn empty", () => {
+  setViewport(1440);
+  const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
+  const unnamed: TreeNode = {
+    ...root,
+    children: root.children.map((one) => ({
+      ...one,
+      chips: one.chips.map((chip) => ({ ...chip, name: "" })),
+    })),
+  };
+  const view = renderBody(unnamed);
+  try {
+    const needs = [...rowOf(view, "t2").querySelectorAll("[data-plan-need]")];
+    expect(needs.map((one) => one.getAttribute("data-plan-need"))).toEqual([D("t1")]);
+    expect(needs.map((one) => one.textContent)).toEqual(["Task t1"]);
+  } finally {
+    view.unmount();
+  }
+});
