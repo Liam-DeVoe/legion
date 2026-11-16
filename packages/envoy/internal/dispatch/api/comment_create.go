@@ -60,16 +60,19 @@ func askReplyTurn(actor model.Actor, requested *string) string {
 }
 
 // commentParties is who one comment names: the delivering parties, each once and in the order
-// the request's array and then the body name them, and whether the body named a person. It is
-// the set every mention rule is keyed on and the set the deliveries are resolved from.
+// the request's array and then the body name them, and the login of each person the body names,
+// each once and in the order it names them. It is the set every mention rule is keyed on and the
+// set the deliveries are resolved from.
 //
-// A person is in person and never in targets: a person reads the record and is never a
+// A person is in people and never in targets: a person reads the record and is never a
 // delivering party, so nothing is sent to one, nothing is resolved for one, and one never
 // counts toward the cap. A comment names somebody when it has a target or a person
 // (validateCommentMentions), which is what makes a typed `/btw` the command it looks like.
+// The logins are kept rather than counted because what a comment says about the people it names
+// is to be written from them; every rule here asks only whether there is one.
 type commentParties struct {
 	targets []string
-	person  bool
+	people  []string
 }
 
 // partyTarget is the delivery route a party reference names - `session:<id>` for an agent,
@@ -135,7 +138,11 @@ func commentPartiesOf(input commentInput, body []text.Located) (commentParties, 
 		// is a route this reader writes; for a kind added to text.IsParty alone partyTarget
 		// answers "", which checkMentionRoute refuses rather than let it pass for a person.
 		if located.Kind == "person" {
-			parties.person = true
+			// The same person named twice is one person, as a repeated target is one party.
+			// A handful of logins is a short list, so it is searched rather than indexed.
+			if !slices.Contains(parties.people, located.ID) {
+				parties.people = append(parties.people, located.ID)
+			}
 			continue
 		}
 		target := partyTarget(located.Ref)
@@ -161,7 +168,7 @@ func validateCommentMentions(input commentInput, body []text.Located) (string, [
 	if err != nil {
 		return "", nil, err
 	}
-	if len(parties.targets) == 0 && !parties.person {
+	if len(parties.targets) == 0 && len(parties.people) == 0 {
 		if input.Delivery != nil {
 			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "delivery requires mentions")
 		}

@@ -456,13 +456,13 @@ func TestCommentPartiesOfNamesThePersonByKind(t *testing.T) {
 		name    string
 		body    string
 		targets []string
-		person  bool
+		people  []string
 		refused bool
 	}{
-		{"an agent", "[p](dispatch://agent/s1) please look.", []string{"session:s1"}, false, false},
-		{"a role", "[r](dispatch://role/reviewer) please look.", []string{"role:reviewer"}, false, false},
-		{"a person", "[a](dispatch://person/alice@example.com) should see this.", nil, true, false},
-		{"an agent address no route reaches", "[x](dispatch://agent/a.b) please look.", nil, false, true},
+		{"an agent", "[p](dispatch://agent/s1) please look.", []string{"session:s1"}, nil, false},
+		{"a role", "[r](dispatch://role/reviewer) please look.", []string{"role:reviewer"}, nil, false},
+		{"a person", "[a](dispatch://person/alice@example.com) should see this.", nil, []string{"alice@example.com"}, false},
+		{"an agent address no route reaches", "[x](dispatch://agent/a.b) please look.", nil, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(tc.body, ""))
@@ -472,10 +472,49 @@ func TestCommentPartiesOfNamesThePersonByKind(t *testing.T) {
 			if err != nil {
 				return
 			}
-			if !slices.Equal(parties.targets, tc.targets) || parties.person != tc.person {
-				t.Errorf("commentPartiesOf(%q) = %#v / person %v, want %#v / person %v",
-					tc.body, parties.targets, parties.person, tc.targets, tc.person)
+			if !slices.Equal(parties.targets, tc.targets) || !slices.Equal(parties.people, tc.people) {
+				t.Errorf("commentPartiesOf(%q) = %#v / people %#v, want %#v / people %#v",
+					tc.body, parties.targets, parties.people, tc.targets, tc.people)
 			}
 		})
+	}
+}
+
+// The people a comment names are kept as their logins, each once and in the order the body names
+// them, so a later write can say what the comment said about each of them. Naming one twice names
+// one person, and nothing is delivered to either: a person reads the record (R5).
+func TestCommentPartiesOfKeepsEachPersonsLoginOnceInOrder(t *testing.T) {
+	body := "[Bob](dispatch://person/bob@example.com), [Alice](dispatch://person/alice@example.com) " +
+		"and [Bob again](dispatch://person/bob@example.com) should see this."
+	parties, err := commentPartiesOf(commentInput{}, text.ExtractAt(body, ""))
+	if err != nil {
+		t.Fatalf("commentPartiesOf(%q) = %v", body, err)
+	}
+	if want := []string{"bob@example.com", "alice@example.com"}; !slices.Equal(parties.people, want) {
+		t.Fatalf("people = %#v, want %#v: each login once, in the order the body names them", parties.people, want)
+	}
+	if len(parties.targets) != 0 {
+		t.Fatalf("targets = %#v, want none: nothing is delivered to a person", parties.targets)
+	}
+}
+
+// The same body through the route: both people are named, so a delivery mode is not refused, and
+// neither is delivered to, resolved for or counted.
+func TestCommentBodyNamingTwoPeopleDeliversToNeither(t *testing.T) {
+	listener, sends := partyListener(t)
+	defer listener.Close()
+	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	issue := createInteractionIssue(t, handler, "TEST", "Two people", "before")
+
+	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+		"body": "[Bob](dispatch://person/bob@example.com), [Alice](dispatch://person/alice@example.com) " +
+			"and [Bob again](dispatch://person/bob@example.com) should see this.",
+		"delivery": "btw",
+	}))
+	if len(created.Mentions) != 0 || len(created.Deliveries) != 0 {
+		t.Fatalf("two people = %#v / %#v, want neither delivered to", created.Mentions, created.Deliveries)
+	}
+	if len(sends()) != 0 {
+		t.Fatalf("sends = %#v, want none", sends())
 	}
 }
