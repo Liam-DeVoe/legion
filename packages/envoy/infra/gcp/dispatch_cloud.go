@@ -34,19 +34,18 @@ type dispatchCluster struct {
 
 // dispatchDatabase is what the component's database resources give the rest of it: the Cloud SQL
 // instance, the generated secrets, and the pods' principal with the grants it holds. clusterOnly
-// registers none of them, so that mode builds no dispatchDatabase at all. listenerToken, the
-// bearer the app and its listener share, is nil with listenerAudience, where the app presents its
-// own token and no bearer is shared; seedAccessor, the grant that lets the pods' principal read
-// the NATS seed, is nil with natsAudience, where the pods present their projected token and
-// mount no seed.
+// registers none of them, so that mode builds no dispatchDatabase at all.
 type dispatchDatabase struct {
 	instance *sql.DatabaseInstance
 	password *random.RandomPassword
 	// signing is the signing-key set, one generated key per generation of
 	// signingKeyGenerations and in that order: the first signs every new cookie, every one
 	// verifies.
-	signing       []*random.RandomPassword
-	agentToken    *random.RandomPassword
+	signing    []*random.RandomPassword
+	agentToken *random.RandomPassword
+	// listenerToken, the bearer the app and its listener share, is nil with listenerAudience, and
+	// seedAccessor, the grant that lets the pods' principal read the NATS seed, is nil with
+	// natsAudience: newDispatchKubernetes reads each only without its setting.
 	listenerToken *random.RandomPassword
 	principal     pulumi.StringOutput
 	seedAccessor  *secretmanager.SecretIamMember
