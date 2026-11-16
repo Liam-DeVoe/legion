@@ -3,6 +3,7 @@ package graphstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -126,21 +127,30 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	return appendTuples(ctx, tx, tuples)
 }
 
-// The two base attributes, as the kind of the tuple that states each spells it. graph_nodes
-// carries a column for each, which is that attribute's projection, and nodeArm states the same
-// two for a node the publisher's record makes.
+// The base attributes, as the kind of the tuple that states each spells it. graph_nodes carries a
+// column for each, which is that attribute's projection, and nodeArm states the same four for a
+// node the publisher's record makes. Every node carries visibility and state; a node a project
+// owns carries project, and one no project owns but parties do carries parties (Node).
 const (
 	AttributeVisibility = "visibility"
 	AttributeState      = "state"
+	AttributeProject    = "project"
+	AttributeParties    = "parties"
 )
 
 // baseAttributes is the set BaseAttributes answers and IsBaseAttribute reads, held once.
-var baseAttributes = [...]string{AttributeVisibility, AttributeState}
+var baseAttributes = [...]string{AttributeVisibility, AttributeState, AttributeProject, AttributeParties}
+
+// ErrProjectMoved is a write that names a project for a node the store already holds in another:
+// a node's project is what every read of it is limited by, so it never moves once stated, and the
+// write is refused rather than the node read under two projects' rules over its life. A write
+// that names no project moves nothing and is not refused.
+var ErrProjectMoved = errors.New("a node's project never moves")
 
 // BaseAttributes is the tuple kind of every base attribute, a fresh slice for each caller. No
 // other attribute's values may be stored under one of these kinds: a value tuple of one of them
-// out of a node reads as that node's own visibility or state, whoever wrote it, so an attribute a
-// type declares under one of these names is stored under another name
+// out of a node reads as that node's own visibility, state, project or parties, whoever wrote it,
+// so an attribute a type declares under one of these names is stored under another name
 // (pmdoc/schemanodes.StoreName).
 func BaseAttributes() []string { return slices.Clone(baseAttributes[:]) }
 
@@ -152,24 +162,30 @@ func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:
 // touching several nodes takes its row locks in that order, so two such writes cannot each hold
 // the row the other waits for. The first inserts every node the store does not hold and locks
 // every node it does, at the level an update of that row takes, changing nothing in it; the
-// second moves supertag, visibility, state, attributes and source_event on each row whose
-// columns differ, and leaves made_at and made_by as the row's own first write left them - the
-// row is the projection of its tuples and may be written again, and a later write that learns
-// the event id has to be able to move source_event.
+// second moves supertag, visibility, state, attributes, parties and source_event on each row
+// whose columns differ, fills a project the row does not hold yet, and leaves made_at and made_by
+// as the row's own first write left them - the row is the projection of its tuples and may be
+// written again, and a later write that learns the event id has to be able to move source_event.
+// A node written with no project or no parties keeps what its row holds of each: that writer
+// knows neither, and is no word that the node has none.
 //
 // It answers the base attributes this write states as tuples, one attribute at a time. A node
-// the insert made is stated `visibility` and `state`, which is the node carrying both from its
-// first write. A node that was already there is stated `visibility` where this write moved its
-// stored visibility, and `state` where this write moved its stored state, each on its own: a
-// write that moves one of the two states that one, and a node written again with neither moved
-// is stated neither, so a re-index of a document nothing moved appends nothing. The two are read
-// and compared separately because they move separately - a node hidden from a project keeps its
-// state, and a deleted block keeps its visibility - and a row whose column moved while the log
-// said nothing would be a row no appended fact explains, which nothing may mend later, since no
-// tuple is ever updated. Each tuple carries the time, the writer and the cause of the node write
-// that states it.
+// the insert made is stated `visibility` and `state`, and `project` and `parties` where it
+// carries them, which is the node carrying each from its first write. A node that was already
+// there is stated each attribute this write moved on its row, each on its own: a write that
+// moves one states that one, a write that gives a node an earlier build stored without a project
+// its project states `project` alone, and a node written again with nothing moved is stated
+// nothing, so a re-index of a document nothing moved appends nothing. They are read and compared
+// separately because they move separately - a node hidden from a project keeps its state, and a
+// deleted block keeps its visibility - and a row whose column moved while the log said nothing
+// would be a row no appended fact explains, which nothing may mend later, since no tuple is ever
+// updated. Each tuple carries the time, the writer and the cause of the node write that states
+// it.
 //
-// Both stored values are read from the row this write updates. The second statement reads them,
+// A write naming a project for a node the row holds in another is refused with ErrProjectMoved,
+// whether or not anything else of the node moved, and the row keeps its project either way.
+//
+// The stored values are read from the row this write updates. The second statement reads them,
 // and under READ COMMITTED it reads a snapshot of its own, taken once the first holds every row
 // the write touches: what it compares against is the newest committed version of each row, and
 // no other writer can move one until this transaction ends. Read in the snapshot of a statement
@@ -191,10 +207,10 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 	if err != nil {
 		return nil, err
 	}
-	// marks holds, by each node's position, the base attributes this write states for it: both
-	// for a node the insert made, each one that moved for a node already there. It is made by
-	// the first node that states one, so a write that states none - a re-index of a document
-	// nothing moved - makes none.
+	// marks holds, by each node's position, the base attributes this write states for it: each
+	// one the node carries for a node the insert made, each one that moved for a node already
+	// there. It is made by the first node that states one, so a write that states none - a
+	// re-index of a document nothing moved - makes none.
 	var marks []byte
 	mark := func(position int64, attributes byte) {
 		if marks == nil {
@@ -202,12 +218,22 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 		}
 		marks[position-1] |= attributes
 	}
-	made, err := insertNodes(ctx, tx, args, func(position int64) { mark(position, markVisibility|markState) })
+	made, err := insertNodes(ctx, tx, args, func(position int64) {
+		node := nodes[position-1]
+		attributes := markVisibility | markState
+		if node.Project != "" {
+			attributes |= markProject
+		}
+		if len(node.Parties) > 0 {
+			attributes |= markParties
+		}
+		mark(position, attributes)
+	})
 	if err != nil {
 		return nil, err
 	}
 	if made < len(nodes) {
-		if err := moveNodes(ctx, tx, args, mark); err != nil {
+		if err := moveNodes(ctx, tx, args, nodes, mark); err != nil {
 			return nil, err
 		}
 	}
@@ -215,8 +241,8 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 		return nil, nil
 	}
 	own := statedAttributes(stated)
-	// Two attributes per node at most, so the slice made here at that size grows none.
-	base := make([]Tuple, 0, 2*len(nodes))
+	// Four attributes per node at most, so the slice made here at that size grows none.
+	base := make([]Tuple, 0, len(baseAttributes)*len(nodes))
 	for index, marked := range marks {
 		node := nodes[index]
 		if marked&markVisibility != 0 {
@@ -224,6 +250,12 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 		}
 		if marked&markState != 0 {
 			base = statesAttribute(base, own, node, AttributeState, node.State)
+		}
+		if marked&markProject != 0 {
+			base = statesAttribute(base, own, node, AttributeProject, node.Project)
+		}
+		if marked&markParties != 0 {
+			base = statesAttribute(base, own, node, AttributeParties, PartiesValue(node.Parties))
 		}
 	}
 	return base, nil
@@ -233,12 +265,14 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 const (
 	markVisibility byte = 1 << iota
 	markState
+	markProject
+	markParties
 )
 
 // incomingNodes is the common table expression both of writeNodes' statements read the nodes
-// through, each with its position in the caller's list, from the arrays bound at $1.
+// through, each with its position in the caller's list, from the arrays bound at $1 (nodeBound).
 var incomingNodes = `with incoming as (
-			select ` + nodeColumns + `, ordinality
+			select ` + nodeBound + `, ordinality
 			from unnest(` + nodeArrays(1) + `)
 				with ordinality as node(` + nodeColumns + `, ordinality)
 		)`
@@ -293,14 +327,16 @@ func insertNodes(ctx context.Context, tx pgx.Tx, args []any, made func(position 
 }
 
 // moveNodes is writeNodes' second statement: it moves every node already there whose supertag,
-// visibility, state or attributes this write changes, and calls moved with the position of each
-// and the base attributes it moved, comparing against the row as its own snapshot holds it,
-// which is the row insertNodes locked. A node insertNodes made holds what this write states, so
-// it moves nothing here.
-func moveNodes(ctx context.Context, tx pgx.Tx, args []any, moved func(position int64, attributes byte)) error {
+// visibility, state, attributes or parties this write changes, or whose missing project it gives,
+// and calls moved with the position of each and the base attributes it moved, comparing against
+// the row as its own snapshot holds it, which is the row insertNodes locked. A node insertNodes
+// made holds what this write states, so it moves nothing here. It answers ErrProjectMoved for a
+// node whose stored project this write names another for, whether or not the update fired: the
+// update keeps the stored project, and the refusal ends the caller's transaction.
+func moveNodes(ctx context.Context, tx pgx.Tx, args []any, nodes []Node, moved func(position int64, attributes byte)) error {
 	rows, err := tx.Query(ctx, incomingNodes+`,
 		stored as (
-			select held.kind, held.id, held.visibility, held.state
+			select held.kind, held.id, held.visibility, held.state, held.project_key, held.parties
 			from graph_nodes held
 			join incoming on incoming.kind = held.kind and incoming.id = held.id
 		),
@@ -310,21 +346,28 @@ func moveNodes(ctx context.Context, tx pgx.Tx, args []any, moved func(position i
 				visibility = incoming.visibility,
 				state = incoming.state,
 				attributes = incoming.attributes,
-				source_event = incoming.source_event
+				source_event = incoming.source_event,
+				project_key = coalesce(graph_nodes.project_key, incoming.project_key),
+				parties = coalesce(incoming.parties, graph_nodes.parties)
 			from incoming
 			where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id
 			  and (graph_nodes.supertag is distinct from incoming.supertag
 			       or graph_nodes.visibility is distinct from incoming.visibility
 			       or graph_nodes.state is distinct from incoming.state
-			       or graph_nodes.attributes is distinct from incoming.attributes)
-			returning graph_nodes.kind, graph_nodes.id, graph_nodes.visibility, graph_nodes.state
+			       or graph_nodes.attributes is distinct from incoming.attributes
+			       or (graph_nodes.project_key is null and incoming.project_key is not null)
+			       or (incoming.parties is not null and graph_nodes.parties is distinct from incoming.parties))
+			returning graph_nodes.kind, graph_nodes.id, graph_nodes.visibility, graph_nodes.state,
+				graph_nodes.project_key, graph_nodes.parties
 		)
-		select incoming.ordinality,
-			stored.visibility is distinct from written.visibility,
-			stored.state is distinct from written.state
-		from written
-		join incoming on incoming.kind = written.kind and incoming.id = written.id
-		join stored on stored.kind = written.kind and stored.id = written.id
+		select incoming.ordinality, stored.project_key,
+			written.kind is not null and stored.visibility is distinct from written.visibility,
+			written.kind is not null and stored.state is distinct from written.state,
+			written.kind is not null and stored.project_key is distinct from written.project_key,
+			written.kind is not null and stored.parties is distinct from written.parties
+		from incoming
+		join stored on stored.kind = incoming.kind and stored.id = incoming.id
+		left join written on written.kind = incoming.kind and written.id = incoming.id
 	`, append([]any{pgx.QueryExecModeDescribeExec}, args...)...)
 	if err != nil {
 		return fmt.Errorf("write graph nodes: %w", err)
@@ -332,9 +375,14 @@ func moveNodes(ctx context.Context, tx pgx.Tx, args []any, moved func(position i
 	defer rows.Close()
 	for rows.Next() {
 		var position int64
-		var movedVisibility, movedState bool
-		if err := rows.Scan(&position, &movedVisibility, &movedState); err != nil {
+		var storedProject *string
+		var movedVisibility, movedState, movedProject, movedParties bool
+		if err := rows.Scan(&position, &storedProject, &movedVisibility, &movedState, &movedProject, &movedParties); err != nil {
 			return fmt.Errorf("write graph nodes: %w", err)
+		}
+		if node := nodes[position-1]; storedProject != nil && node.Project != "" && *storedProject != node.Project {
+			return fmt.Errorf("write graph node %s/%s in project %s, which the store holds in %s: %w",
+				node.Kind, node.ID, node.Project, *storedProject, ErrProjectMoved)
 		}
 		var attributes byte
 		if movedVisibility {
@@ -342,6 +390,12 @@ func moveNodes(ctx context.Context, tx pgx.Tx, args []any, moved func(position i
 		}
 		if movedState {
 			attributes |= markState
+		}
+		if movedProject {
+			attributes |= markProject
+		}
+		if movedParties {
+			attributes |= markParties
 		}
 		if attributes != 0 {
 			moved(position, attributes)
@@ -390,11 +444,13 @@ func baseAttributeTuple(node Node, attribute, value string) Tuple {
 	}
 }
 
-// BaseAttributeFacts is the two base attributes of each node, as facts a writer holds for the
-// event it appends after its node write (Uncaused). A writer that splices the node arm into a
-// statement of its own and has no cause yet (WriteArmsUncaused) states none of them there and
-// hands these to Caused instead, so the node row and its base tuples name one event. The nodes
-// given are the ones that write made: a node it found there is another write's to describe.
+// BaseAttributeFacts is the base attributes of each node, as facts a writer holds for the event
+// it appends after its node write (Uncaused): its visibility and state, and its project and
+// parties where it carries them, as the node arm states them. A writer that splices the node arm
+// into a statement of its own and has no cause yet (WriteArmsUncaused) states none of them there
+// and hands these to Caused instead, so the node row and its base tuples name one event. The
+// nodes given are the ones that write made: a node it found there is another write's to
+// describe.
 func BaseAttributeFacts(nodes []Node) []UncausedTuple {
 	if len(nodes) == 0 {
 		return nil
@@ -402,9 +458,19 @@ func BaseAttributeFacts(nodes []Node) []UncausedTuple {
 	facts := make([]UncausedTuple, 0, len(baseAttributes)*len(nodes))
 	for _, node := range nodes {
 		for _, attribute := range baseAttributes {
-			value := node.Visibility
-			if attribute == AttributeState {
+			var value string
+			switch attribute {
+			case AttributeVisibility:
+				value = node.Visibility
+			case AttributeState:
 				value = node.State
+			case AttributeProject:
+				value = node.Project
+			case AttributeParties:
+				value = PartiesValue(node.Parties)
+			}
+			if value == "" {
+				continue
 			}
 			facts = append(facts, UncausedTuple{Tuple: baseAttributeTuple(node, attribute, value)})
 		}

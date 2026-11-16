@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -491,6 +492,12 @@ func (s *server) storeArtifact(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (agentArtifactTarget.ownsEvents). A ref_key past the store's address bound is no node
+	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
+	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
@@ -519,6 +526,14 @@ func (s *server) storeArtifact(
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		if refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug); graphstore.AddressFits(refKey) {
+			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{graphstore.ArtifactNode(
+				refKey, deref(project), deref(session), actor, time.Now().UTC())}, nil)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 		artifact, err = scanArtifact(tx.QueryRow(r.Context(), `
 			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by)
@@ -717,6 +732,10 @@ func (s *server) storeArtifact(
 		published = append(published, event)
 	}
 	if err := graphstore.Caused(r.Context(), tx, indexedBlocks, blockCause); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, documentNode, blockCause); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

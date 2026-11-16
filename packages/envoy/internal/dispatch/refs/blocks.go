@@ -123,10 +123,11 @@ func IndexBlocks(
 	if err != nil || !won {
 		return nil, won, graphstore.Uncaused{}, err
 	}
-	refKey, writer, err := indexedVersionRecord(ctx, tx, artifactID, version)
+	document, err := indexedVersionRecord(ctx, tx, artifactID, version)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
+	refKey, writer := document.refKey, document.writer
 	stored, err := storedBlocks(ctx, tx, artifactID, len(blocks))
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
@@ -198,7 +199,7 @@ func IndexBlocks(
 		if !blockIDFits(refKey, id) {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateLive))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateLive))
 	}
 	// A block the version no longer holds has its node stated gone. The tuple that says so is
 	// not built here: the node write states a base attribute it moved, with this write's own
@@ -208,7 +209,7 @@ func IndexBlocks(
 		if !blockIDFits(refKey, id) {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateGone))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateGone))
 	}
 	// A row written before this release names no node: migration 20261109022248 added the
 	// columns and filled none of them, and the backfill has not reached the document or has
@@ -230,7 +231,7 @@ func IndexBlocks(
 		}
 		address := blockNodeAddress(refKey, block.id)
 		if _, stated := changed[block.id]; !stated {
-			blockNodes = append(blockNodes, blockNode(address, writer, versionAt, graphstore.StateLive))
+			blockNodes = append(blockNodes, blockNode(address, document, versionAt, graphstore.StateLive))
 		}
 		memberships = append(memberships, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: address, Kind: TupleInDocument,

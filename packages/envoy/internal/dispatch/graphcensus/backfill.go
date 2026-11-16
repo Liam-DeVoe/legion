@@ -114,6 +114,23 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 		report.Kinds = append(report.Kinds, done)
 		writeKindBackfill(out, done)
 	}
+	// The project of every node (dispatch://INFRA-3862): the node of each issue, document, ask
+	// and message written before its kind's writer wrote one, and the project of each comment
+	// and block node written before a node named its project. Both run after the passes above,
+	// so a comment or a block those passes wrote a node for takes its project from them, and the
+	// fill finds nothing of it to do.
+	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
+		backfillObjectNodes, backfillScopes,
+	} {
+		done, err := write(ctx, database)
+		report.Kinds = append(report.Kinds, done...)
+		for _, kind := range done {
+			writeKindBackfill(out, kind)
+		}
+		if err != nil {
+			return report, err
+		}
+	}
 	return report, nil
 }
 
@@ -130,6 +147,9 @@ type blockRow struct {
 	address, refKey     string
 	createdAt           time.Time
 	event               int64
+	// project is the document's project, and session its conversation's, which the block's node
+	// carries as its project or its party (refs' blockNode).
+	project, session string
 }
 
 // backfillBlocks writes a node and an in_document tuple for every block row that names none,
@@ -188,7 +208,7 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 	rows, err := database.Pool.Query(ctx, `
 		with batch as (
 			select d.artifact_id, d.block_id, d.node_id, d.created_at, d.changed_version,
-			       a.ref_key, a.issue_key, a.project_key
+			       a.ref_key, a.issue_key, a.project_key, a.session_id
 			from document_blocks d
 			join artifacts a on a.id = d.artifact_id
 			where d.node_kind is null and octet_length(d.node_id) <= `+addressBound+`
@@ -213,7 +233,7 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 			) found on true
 		)
 		select batch.artifact_id::text, batch.block_id, batch.node_id, batch.ref_key,
-		       batch.created_at, coalesce(caused.id, $3)
+		       batch.created_at, coalesce(caused.id, $3), coalesce(batch.project_key, ''), coalesce(batch.session_id, '')
 		from batch
 		left join caused on caused.artifact_id = batch.artifact_id
 			and caused.changed_version is not distinct from batch.changed_version
@@ -227,7 +247,7 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 	for rows.Next() {
 		var row blockRow
 		if err := rows.Scan(&row.artifactID, &row.blockID, &row.address, &row.refKey,
-			&row.createdAt, &row.event); err != nil {
+			&row.createdAt, &row.event, &row.project, &row.session); err != nil {
 			return nil, fmt.Errorf("read a block naming no node: %w", err)
 		}
 		batch = append(batch, row)
@@ -287,9 +307,14 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	blockIDs := make([]string, 0, len(held))
 	artifacts := make([]string, 0, len(held))
 	for _, row := range held {
+		var parties []string
+		if row.project == "" && row.session != "" {
+			parties = []string{graphstore.PartySession(row.session)}
+		}
 		nodes = append(nodes, graphstore.Node{
 			Kind: refs.BlockNodeKind, ID: row.address, Supertag: refs.BlockSupertag,
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+			Project: row.project, Parties: parties,
 			MadeAt: row.createdAt, MadeBy: backfillActor, SourceEvent: row.event,
 		})
 		tuples = append(tuples, graphstore.Tuple{
@@ -325,7 +350,7 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	if err := tx.Commit(ctx); err != nil {
 		return nil, 0, fmt.Errorf("commit a block batch: %w", err)
 	}
-	return held, int64(len(tuples)) + 2*int64(len(nodes)), nil
+	return held, int64(len(tuples)) + statedOf(nodes), nil
 }
 
 // lockBlockDocuments takes the rows the fence's writers hold while they write a document's blocks
@@ -674,7 +699,8 @@ func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]bl
 
 // commentRow is one comments row the backfill reads: its id, its author as the row stored it,
 // when it was written, the addresses of the artifact it is anchored to and the artifact that
-// owns it, and the event that stored it.
+// owns it, the event that stored it, and the project of the issue or the document it belongs to,
+// or the session of the conversation that owns that document (graphstore.ScopeOf's rule).
 type commentRow struct {
 	id        string
 	author    model.Actor
@@ -682,6 +708,8 @@ type commentRow struct {
 	anchor    string
 	owner     string
 	event     int64
+	project   string
+	parties   []string
 }
 
 // backfillComments writes a node and the facts its row is the projection of for every comment
@@ -737,8 +765,10 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 			  and e.type = 'comment.created'
 			  and e.payload->>'id' = c.id::text
 			order by e.id limit 1
-		       ), $3)
+		       ), $3),
+		       coalesce(issue.project_key, owner.project_key, ''), coalesce(owner.session_id, '')
 		from comments c
+		left join issues issue on issue.key = c.issue_key
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
 		left join artifacts owner on owner.id = c.artifact_id
 		where c.node_kind is null and c.id > $1::uuid
@@ -755,11 +785,15 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 	for rows.Next() {
 		var row commentRow
 		var author []byte
-		if err := rows.Scan(&row.id, &author, &row.createdAt, &row.anchor, &row.owner, &row.event); err != nil {
+		var session string
+		if err := rows.Scan(&row.id, &author, &row.createdAt, &row.anchor, &row.owner, &row.event, &row.project, &session); err != nil {
 			return nil, fmt.Errorf("read a comment naming no node: %w", err)
 		}
 		if err := json.Unmarshal(author, &row.author); err != nil {
 			return nil, fmt.Errorf("read the author of comment %s: %w", row.id, err)
+		}
+		if row.project == "" && session != "" {
+			row.parties = []string{graphstore.PartySession(session)}
 		}
 		batch = append(batch, row)
 	}
@@ -803,7 +837,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		// out of the store, so readCommentRows never reads it and this batch never writes one:
 		// a far end past the bound does not reach here (api's commentStored, outbox's rule).
 		var node graphstore.Node
-		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner)
+		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner, row.project, row.parties)
 		nodes = append(nodes, node)
 		// One write writes a node once, so an author several comments of the batch name is made
 		// by the first of them, and so is the owner a proved session names; each comment still
@@ -834,7 +868,15 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, fmt.Errorf("commit a comment batch: %w", err)
 	}
-	return int64(len(nodes)), int64(len(tuples)) + 2*int64(len(batch)), nil
+	// Each comment's node states its visibility and its state, and its project or its parties
+	// where it belongs to one.
+	stated := 2 * int64(len(batch))
+	for _, row := range batch {
+		if row.project != "" || len(row.parties) > 0 {
+			stated++
+		}
+	}
+	return int64(len(nodes)), int64(len(tuples)) + stated, nil
 }
 
 // roleRow is one role the store census holds to a node (addressedRoles) whose node or page the

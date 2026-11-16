@@ -1745,6 +1745,13 @@ The cause every one of them carries is the event that recorded the version, whic
 the block-index reconciliation reads the event before the pass instead (`docs.versionEventID`) and appends them itself, and a version no event recorded takes the `source_event` sentinel 0.
 A pass whose `document_block_versions` row did not move forward writes neither a projection row nor a tuple: the fence is that row's conditional write, the first write the pass makes (`refs.standsAtVersion`).
 
+Every node of an object a project owns names that project, and a node of an object no project owns names the parties it is between (dispatch://INFRA-3862): `graphstore.Node`'s `Project` and `Parties`, two base attributes beside `visibility` and `state`, stated by the write that stores the node and projected to `graph_nodes.project_key` and `graph_nodes.parties`.
+A block's node takes its document's project (`refs.blockNode`); a comment's takes its issue's or its document's (`graphstore.CommentFacts`, `graphstore.ScopeOf`).
+An issue, a document, an ask and a message each write their node at their own create site, before their row and in the create's transaction (`graphstore.WriteUncaused`, then `graphstore.Caused` once the event exists): `api`'s `createIssue`, `storeArtifact`, `createAskFor`, `openApprovalAsk`, `docs`' `createAskBlock`, and `writeMessageNode` for every message, a broadcast's copies and a session's replies among them.
+A message on no issue is between the parties of its thread's root (`graphstore.ThreadParties`): who wrote the root, and the session it was sent to.
+A node's project never moves once stated: a write naming another fails with `graphstore.ErrProjectMoved`.
+A create route that stores an object of these kinds without its node fails `api`'s `TestEveryCreateStoresItsNode`, which calls every `POST` row of `writeClasses` and reads `graphcensus.ProjectComplete`; `envoy-dispatch census --store` prints the same classes per kind (`census: project kind=`), and `backfill-graph-store` writes the nodes and the projects of the rows written before.
+
 The document keeps its own `refs` rows, which the closure and the older `GET /api/v1/artifacts/{id}/references` read, but a document's mention of a target that one of its blocks holds a link of any kind to, listed or not, is listed and counted from that block alone (`heldByABlock`, in `refs.Edges` and `refs.BacklinkCounts`), so a node is counted once for each block link to it and each link shows once, where its block holds it.
 A document's own read (`?to=` or `?from=` a document reference) also lists the edges at its current blocks, each naming that block as the edge's `block`;
 its `part_of` edges are left out unless `?kind=` names them.

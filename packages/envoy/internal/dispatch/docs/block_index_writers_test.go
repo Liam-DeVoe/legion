@@ -468,18 +468,30 @@ var indexPasses = map[string]string{
 	// the renewal appended none.
 	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
 	"docs/ask_blocks.go#causeFollows": "the follows a settlement made and the ask.opened events it appended after them",
+	// The node of every ask and message a request or a settlement creates, before its row, in the
+	// project or between the parties it belongs to, and caused by the event the create appends.
+	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
+	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
+	"api/messages.go#writeMessageNode":           "the message the request stores, its issue, and the root of the thread it answers",
+	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
+	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
+	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
-	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated and the event the upload appended",
+	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated, the uploaded document and the event the upload appended",
 	"api/artifacts.go#commitArtifactVersionEvent":   "the facts the version's index pass stated and the event that recorded the version",
-	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated and the issue's own event",
-	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated",
+	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
+	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
 	"docs/settlement.go#commitVersion":              "the facts the settled version's index pass stated and the event that recorded it",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
+	// The seed's issues, asks and messages: each one's node, in its project, drawn from the plan
+	// before the batch writes its rows.
+	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeItemNodes": "the seed's own plan",
 	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
 	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",
@@ -503,6 +515,11 @@ var indexPasses = map[string]string{
 	// names now or an ask.follower_added event ever named (recordedSessions). It writes the nodes
 	// the store lacks of them, and a node another write made it leaves alone.
 	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
+	// The backfill of the project of every node: the rows of the issues, documents, asks and
+	// messages that no node marks, and the comment and block nodes that name no project, each
+	// with the row its project is read from.
+	"graphcensus/projects.go#writeObjectBatch": "the issue, document, ask and message rows no node marks",
+	"graphcensus/projects.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through
@@ -532,6 +549,12 @@ var indexPasses = map[string]string{
 	// caller has just written take the id of the event that recorded them, which is known only
 	// once that event is appended (graphstore.Caused). It reads no projection and mends nothing.
 	"graphstore/write.go#causeNodes": "the nodes its caller stated and the event that recorded the write",
+	// FillScopes states the project of a node an earlier build stored with none: it locks and
+	// updates the rows of the nodes its caller names, reading of each only whether it carries a
+	// project already and its own made_at, made_by and cause, which the fact it states takes. The
+	// project itself is its caller's, read off the node's own row of its kind (graphcensus'
+	// backfillScopes), so it reads no projection to mend the store.
+	"graphstore/scope.go#FillScopes": "the nodes its caller names and the rows of them it fills",
 	// The publisher's record of a batch splices the store's arms into its own statement
 	// (graphstore.WriteArms): the roles and sessions the batch reached, and its deliveries.
 	"outbox/publisher.go#recordBatch": "the batch of events the publisher sent and the destinations each reached",
@@ -554,7 +577,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
 // the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the
