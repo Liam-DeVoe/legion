@@ -222,7 +222,11 @@ const legacyAgentSubjectText = goConcat(
   ["session"]
 );
 const legacyDispatchIssueSubjectText = goConcat(
-  splitAtSentinels(legacyDispatchIssueSubject(issueSentinel, typeSentinel), issueSentinel, typeSentinel),
+  splitAtSentinels(
+    legacyDispatchIssueSubject(issueSentinel, typeSentinel),
+    issueSentinel,
+    typeSentinel
+  ),
   ["issueKey", "typ"]
 );
 const roleSubjectText = goConcat(
