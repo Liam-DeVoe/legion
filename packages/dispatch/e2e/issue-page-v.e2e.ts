@@ -1200,6 +1200,7 @@ test("the Verification view says nothing of a check's statements before the Veri
       const seen = new Set<string>();
       while (Date.now() < end) {
         for (const one of contradictions(truth, await readServed(page, ids))) seen.add(one);
+        // The gap between two readings of the view: a contradiction must not be drawn at any reading of the window, and the held or refused read keeps one on screen for the whole window, so a reading every 100 ms cannot miss it.
         await page.waitForTimeout(100);
       }
       return [...seen];
