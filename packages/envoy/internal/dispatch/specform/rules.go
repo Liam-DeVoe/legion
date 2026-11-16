@@ -23,6 +23,15 @@ const (
 	rulePerson        Rule = "person"
 )
 
+// ruleTermLine is the rule of a line under a heading Terms that is no term line, which the
+// extractor reads as a text of Kind line. A definition in another form than the term line would
+// otherwise pass the rules of R49 unread.
+const ruleTermLine Rule = "term-line"
+
+// termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
+// of a term line.
+const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>"`
+
 // maxWords is R49's bound on a sentence, which is also ste-lint's.
 const maxWords = 25
 
@@ -55,8 +64,12 @@ type broken struct {
 }
 
 // breaks is each rule of R49 that text breaks, once for each detail: the form rules for the
-// kinds that are prose of The Spec, then the four reference rules for every kind.
+// kinds that are prose of The Spec, then the four reference rules for every kind. A line under
+// Terms that is no term line (Kind line) breaks the one rule term-line, and no other.
 func breaks(c Context, people map[string]bool, text Text) []broken {
+	if text.Kind == KindLine {
+		return []broken{{ruleTermLine, termLineDetail}}
+	}
 	line := oneLine(text.Body)
 	var found []broken
 	if text.Kind != KindFailingExample && text.Kind != KindName {
@@ -97,17 +110,52 @@ func formBreaks(kind Kind, line string) []broken {
 }
 
 // sentencesOf is each sentence of line, as its words, that a rule of the form counts: each piece
-// that ste-lint's splitter cuts (ste.Sentences, the one place that says where a sentence ends)
-// and that holds a word with a letter. A piece with no such word, such as "42", "...", "—" or
-// "12:30.", is no sentence, so a text of such pieces alone has no sentence.
+// that ste-lint's splitter cuts (ste.Sentences, the one place that says where a sentence ends),
+// cut again after each stop that an upper-case letter follows directly (joinedStops), that holds
+// a word with a letter. A piece with no such word, such as "42", "...", "—" or "12:30.", is no
+// sentence, so a text of such pieces alone has no sentence. The count rules read English text, and
+// a text in another language is the reviewer's to name.
 func sentencesOf(line string) [][]string {
 	var sentences [][]string
 	for _, sentence := range ste.Sentences(line) {
-		if slices.ContainsFunc(sentence, hasLetter) {
-			sentences = append(sentences, sentence)
+		for _, piece := range joinedStops(sentence) {
+			if slices.ContainsFunc(piece, hasLetter) {
+				sentences = append(sentences, piece)
+			}
 		}
 	}
 	return sentences
+}
+
+// joinedStops cuts a sentence, as its words, after each ".", "!" or "?" that an upper-case letter
+// follows directly, as in "comment.Dispatch": ste-lint's splitter ends a sentence only where white
+// space follows the stop. A lower-case letter or a digit after the stop ends none, so "1.5" and
+// "terms.md" stay one word.
+func joinedStops(words []string) [][]string {
+	var pieces [][]string
+	var piece []string
+	for _, word := range words {
+		for at := joinedStop(word); at > 0; at = joinedStop(word) {
+			pieces = append(pieces, append(piece, word[:at]))
+			piece, word = nil, word[at:]
+		}
+		piece = append(piece, word)
+	}
+	return append(pieces, piece)
+}
+
+// joinedStop is the index in word just after its first ".", "!" or "?" that an upper-case letter
+// follows directly, or 0 when it has none.
+func joinedStop(word string) int {
+	for index, letter := range word {
+		if letter != '.' && letter != '!' && letter != '?' {
+			continue
+		}
+		if next, _ := utf8.DecodeRuneInString(word[index+1:]); unicode.IsUpper(next) {
+			return index + 1
+		}
+	}
+	return 0
 }
 
 // hasLetter reports whether word holds a letter of any script.

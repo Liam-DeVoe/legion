@@ -18,9 +18,12 @@ const (
 	KindName           Kind = "name"            // a component's or interface's name; reference rules only
 	KindPurpose        Kind = "purpose"
 	KindDefinition     Kind = "definition"
+	KindLine           Kind = "line" // a line under a heading Terms that is no term line; the rule term-line only
 )
 
-// kinds is every Kind, in the order a count of them is written.
+// kinds is every Kind that ExtractDocument counts in each document, in the order a count of them
+// is written. A line under Terms that is no term line (KindLine) is a break of the form, not a text
+// to read, so its count is written only for a document that holds one.
 var kinds = []Kind{KindStatement, KindClaim, KindProcedure, KindFailingExample, KindName, KindPurpose, KindDefinition}
 
 // Rule is the stable id of a rule of the form, such as "sentences" or "ste100-semicolon".

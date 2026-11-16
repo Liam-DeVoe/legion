@@ -4515,9 +4515,16 @@ Each item below names a path with its method and identity, then its purpose.
     These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
     A hard finding of ASD-STE100 also breaks it.
     A sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
+    A `.`, `!` or `?` that an upper-case letter follows directly also ends a sentence, so `comment.Dispatch` starts a second sentence.
+    A lower-case letter or a digit after the stop ends no sentence, so `1.5` and `terms.md` are one word each.
+    The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
+    A term line is `- **<term>**: <definition>` under a heading `Terms`.
+    Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
+    Its finding names the line.
     A request that holds one is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
     `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
+    The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
     A person's approval of a covered document gets the same refusal through three routes.
     These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
     That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
