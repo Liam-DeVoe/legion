@@ -8,10 +8,10 @@ import (
 // CodeNames finds each sign of code in a text (level_check.py's code_signs and the level format's
 // "How the checker finds code", and the name of a Go test): a span in backticks, a word with a
 // file ending, a word with a slash between two ASCII letters, a word that ends with "()", a word
-// with an underscore between letters or digits, a word in lower camel case or of a package and its
-// symbol, and a word that has the form of a Go test's name. It reads a word by its shape alone, so
-// it finds a plain word or a product name of such a shape too; only the product names that
-// productNames lists are excepted.
+// with an underscore between two ASCII letters or digits, a word in lower camel case or of a
+// package and its symbol, and a word that has the form of a Go test's name. It reads a word by its
+// shape alone, so it finds a plain word or a product name of such a shape too; only the product
+// names that productNames lists are excepted.
 func TestCodeNames(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -37,7 +37,8 @@ func TestCodeNames(t *testing.T) {
 		{text: "runs TestARestartLosesNoMessage, then TestB.", want: []string{"TestARestartLosesNoMessage", "TestB"}},
 		{text: "the TestARestart_LosesNoClaim test", want: []string{"TestARestart_LosesNoClaim"}},
 		{text: "Test results. Tests of the daemon, a Testament and Test's end", want: nil},
-		// R4: a symbol with an underscore, in lower camel case, as a package and its symbol, or with "()".
+		// R4: a symbol with an underscore, in lower camel case, as a package and its symbol, or
+		// with "()".
 		{text: "the read_set value", want: []string{"read_set"}},
 		{text: "readSet gives each message an owner, as isValid says", want: []string{"readSet", "isValid"}},
 		{text: "pmdoc.ReadSet gives each message an owner, and so does notes.ReadSet's set.", want: []string{"pmdoc.ReadSet", "notes.ReadSet"}},
@@ -67,8 +68,8 @@ func TestCodeNames(t *testing.T) {
 	}
 }
 
-// An id is lower-case words of letters and digits joined by single hyphens, with no word that is
-// digits alone or one letter and digits, which state a position.
+// An id is words of lower-case ASCII letters and digits joined by single hyphens, with no word that
+// is digits alone or one letter and digits, which state a position.
 func TestIsID(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
