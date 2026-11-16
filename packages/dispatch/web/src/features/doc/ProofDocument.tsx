@@ -1061,10 +1061,21 @@ export function ProofDocument({
   // PATCH (`SetIssueClosed`); this covers the two sockets that close never reaches: one whose
   // room another process holds, and one whose room the close could not close, each of which
   // keeps the read-only admission it was given.
+  //
+  // So the page readmits only a socket whose admission is read-only, and a blocked admission,
+  // which has no socket and reads the text again. The room's close and the PATCH's answer race:
+  // the provider reconnects after a draw of up to two seconds, and a draw shorter than the wait
+  // for the answer opens a socket the reopened server has already admitted read-write before
+  // the page knows the issue is open. Readmitting that socket closed it for nothing, and a fourth
+  // socket opened (`e2e/close-withdraws-asks.e2e.ts`'s Reopen row failed that way at random).
   useEffect(() => {
     setQuoteRefusal(undefined);
     editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));
-    if (wasClosedRef.current && !isClosed) {
+    if (
+      wasClosedRef.current &&
+      !isClosed &&
+      (readmitRef.current !== undefined || schemaReadOnlyRef.current)
+    ) {
       readmit();
     }
     wasClosedRef.current = isClosed;

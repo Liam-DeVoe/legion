@@ -723,3 +723,28 @@ test("a reopened issue's document is admitted again and takes edits once that ad
     view.unmount();
   }
 });
+
+// The reopen's room close and its PATCH answer race. A provider whose reconnect draw is short
+// opens a socket the reopened server admits read-write before the answer tells the page the issue
+// is open; that socket is already what the page wants, and admitting it again only closed it and
+// opened another (`e2e/close-withdraws-asks.e2e.ts`'s Reopen row saw four sockets for three).
+test("a socket admitted read-write before the page sees its issue reopened is not admitted again", async () => {
+  const { admit, connections, editors, rerender, sync, view } = renderProofDocument({
+    isClosed: true,
+  });
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    act(() => admit(true));
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+
+    act(() => admit(false));
+    rerender({ isClosed: false });
+    expect(connections[0]?.readmitted).toBe(0);
+    expect(editors[0]?.access).toBe("edit");
+    expect(within(view.container).queryByText("Reload to edit.")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
