@@ -3,10 +3,10 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
-	"strconv"
+	"regexp"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -18,11 +18,17 @@ import (
 // documents, it names two resident rooms and two connections.
 func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
 	database := storetest.Open(t)
-	pprofPort := freeLoopbackPort(t)
+	// Port 0: the profiler binds a port the kernel chooses, so no other program can take it first,
+	// and its listening line names that port.
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		Env: map[string]string{"DISPATCH_PPROF_PORT": strconv.Itoa(pprofPort)},
+		Env: map[string]string{"DISPATCH_PPROF_PORT": "0"},
 	})
 	process.waitHealthy(t)
+	process.waitForLog(t, 30*time.Second, `msg="dispatch: pprof listening"`)
+	listening := pprofListening.FindStringSubmatch(process.Output.String())
+	if listening == nil {
+		t.Fatalf("the pprof listening line names no 127.0.0.1 address:\n%s", process.Output.String())
+	}
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ROOM","name":"Rooms"}`, http.StatusCreated)
 	for _, spec := range []string{"first", "second"} {
 		var issue struct {
@@ -35,7 +41,7 @@ func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
 		process.openEditor(t, issue.PrimaryArtifactID, spec+"\n")
 	}
 
-	response, err := http.Get("http://127.0.0.1:" + strconv.Itoa(pprofPort) + "/debug/vars")
+	response, err := http.Get("http://" + listening[1] + "/debug/vars")
 	if err != nil {
 		t.Fatalf("GET /debug/vars on the profiler: %v", err)
 	}
@@ -61,16 +67,5 @@ func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
 	}
 }
 
-// freeLoopbackPort is a loopback port the kernel chose and nothing held when it returned. The
-// profiler takes its port by number (DISPATCH_PPROF_PORT, never 0), not as an inherited socket, so
-// the port is free only until another program binds it, which on a test machine none does.
-func freeLoopbackPort(t *testing.T) int {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
-	return port
-}
+// pprofListening is the line startPprof logs once it has bound, naming the address it bound.
+var pprofListening = regexp.MustCompile(`msg="dispatch: pprof listening" addr=(127\.0\.0\.1:\d+)`)

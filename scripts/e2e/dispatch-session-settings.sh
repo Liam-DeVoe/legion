@@ -80,6 +80,9 @@ timeout_hook=
 nats_pid=
 listener_pid=
 dispatch_pid=
+# The ports start_held reads back from held-port.py (rig.sh), each the kernel's choice.
+envoy_port=
+dispatch_port=
 holder_pid=
 # The run has its database's name from `setup`, before it creates it, so the drop below reads
 # database_created, which the `create database` sets, and never names a database that is not there.
@@ -213,24 +216,26 @@ database_created=1
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 listener() { curl -fsS -H "@$work/envoy-auth-header" "$@"; }
-envoy_port=$(bun "$driver" free-port)
-dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
-# holding legion/envoy.json would hand Dispatch a production configuration.
-env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
+# holding legion/envoy.json would hand Dispatch a production configuration. Each serves on a socket
+# held from the choice of its port until it serves (rig.sh's start_held), and under `env -i` names
+# its descriptor variable itself. A held socket queues a connection until its service serves, so
+# each readiness poll carries a timeout of its own.
+start_held listener envoy_port ENVOY_LISTEN_FD -- \
+  env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_FD=3 PORT='{port}' \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
-  "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
-listener_pid=$!
-until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+  "$work/envoy-listener"
+until_true 60 "the Envoy listener" listener --max-time 5 "http://127.0.0.1:$envoy_port/v1/sessions"
+start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
+  env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
-  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
-  DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
+  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
+  DISPATCH_LISTEN_FD=3 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
+  DISPATCH_SERVER_URL='http://127.0.0.1:{port}' DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
   ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" \
-  "$work/dispatch" >"$evidence/logs/dispatch.log" 2>&1 &
-dispatch_pid=$!
-until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
+  "$work/dispatch"
+until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS --max-time 5 http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 
 # The broken provider's port: bound and never listened on, by a process of the run's own, so every
 # connection to it is refused for the whole run and nothing else can take it.

@@ -35,9 +35,11 @@ func TestPprofUnsetStartsNoListener(t *testing.T) {
 }
 
 // A valid port binds 127.0.0.1 alone, and nothing else: the address it names is the loopback
-// one, whatever the port.
+// one, whatever the port. 0 is the port the kernel chooses as the listener binds, which a test
+// that starts Dispatch reads back from the listening line, so no port is free between its choice
+// and the bind.
 func TestPprofAddressIsLoopbackOnly(t *testing.T) {
-	for _, port := range []string{"1", "6060", "65535", " 6060 "} {
+	for _, port := range []string{"0", " 0 ", "1", "6060", "65535", " 6060 "} {
 		addr, err := pprofAddress(envGetter(map[string]string{"DISPATCH_PPROF_PORT": port}))
 		want := "127.0.0.1:" + strings.TrimSpace(port)
 		if err != nil || addr != want {
@@ -46,9 +48,9 @@ func TestPprofAddressIsLoopbackOnly(t *testing.T) {
 	}
 }
 
-// A value that is not a port 1-65535 refuses startup, naming the variable.
+// A value that is neither 0 nor a port 1-65535 refuses startup, naming the variable.
 func TestPprofInvalidPortRefusesStartup(t *testing.T) {
-	for _, value := range []string{"0", "65536", "-1", "+6060", "abc", "6060x", "127.0.0.1:6060", "18446744073709552616"} {
+	for _, value := range []string{"00", "+0", "-0", "65536", "-1", "+6060", "abc", "6060x", "127.0.0.1:6060", "18446744073709552616"} {
 		if _, err := pprofAddress(envGetter(map[string]string{"DISPATCH_PPROF_PORT": value})); err == nil || !strings.Contains(err.Error(), "DISPATCH_PPROF_PORT") {
 			t.Errorf("DISPATCH_PPROF_PORT=%q: err = %v; want a refusal naming DISPATCH_PPROF_PORT", value, err)
 		}
