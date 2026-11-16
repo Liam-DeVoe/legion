@@ -583,7 +583,7 @@ write identity errors with `identity.WriteError`.
   no person and no project. `brokerTokenVerifier` sets
   `brokertoken.Options.ServesReadOnly`, so Dispatch accepts that token and
   marks its credential `model.Credential.ReadOnly`, with no OAuth scope.
-  `api.refuseReadOnlyToken` then answers it `403 READ_ONLY_TOKEN`
+  `api.refuseLimitedToken` then answers it `403 READ_ONLY_TOKEN`
   (`contracts.DispatchReadOnlyToken`) on every route the read list
   (`readScopeRoutes`) does not name and on `/ws/live`, with no
   `WWW-Authenticate` challenge. That refusal comes before the scope gate, the
@@ -594,7 +594,7 @@ write identity errors with `identity.WriteError`.
   `results`, a person, one project and the run. `brokerTokenVerifier` sets
   `brokertoken.Options.ServesResults` too, `model.Credential.ResultsOnly` and
   `model.Credential.CI` carry the mark and the run, and
-  `api.refuseResultsOnlyToken` answers it `403 RESULTS_ONLY_TOKEN` on every
+  `api.refuseLimitedToken` answers it `403 RESULTS_ONLY_TOKEN` on every
   route the results list (`resultsScopeRoutes`) does not name and on
   `/ws/live`. Since the credential
   proves the session, `bearerSessionActor` takes a body with no `actor` at all,
@@ -666,7 +666,7 @@ each route's `scopes` as `GET /api/v1` does. Beside that map, `readScopeRoutes` 
 a read-only broker token may call, today `GET /api/v1/projects/{key}/architecture` alone.
 `routes()` stamps it onto `apiRoute.ReadScope`, a listed name that is not a mounted GET row
 refuses to mount (`readRoutesNotMountedAsGET`), and neither `GET /api/v1` nor the OpenAPI document
-carries it. `register` wraps every row in `refuseReadOnlyToken`, outside `gateRouteScopes`, so a
+carries it. `register` wraps every row in `refuseLimitedToken`, outside `gateRouteScopes`, so a
 route added later stays closed to such a token until it is listed. An unknown path
 under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`), and a known path asked with a
 method its route does not serve, is answered by `routes/router.go` with

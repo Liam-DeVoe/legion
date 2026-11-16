@@ -452,13 +452,13 @@ type routeScopeSet []string
 //
 // The scope `read` a read-only token holds is no value of this map: a scope here is one the
 // caller must hold, and no person holds that one. The routes such a token may call are a list of
-// their own, readScopeRoutes below, which its own gate reads (refuseReadOnlyToken).
+// their own, readScopeRoutes below, which its own gate reads (refuseLimitedToken).
 //
 // A route that takes an id written short needs no scope of its own for it: the prefix layer
 // (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so a
 // credential that holds none of the row's scopes is refused before any id is read, and the one
 // check a request meets ahead of the row's scopes is whether a read-only token may call the row
-// at all (refuseReadOnlyToken) - and it only rewrites the path value, so a short id reaches
+// at all (refuseLimitedToken) - and it only rewrites the path value, so a short id reaches
 // exactly the scopes the whole id reaches, and a row that needs none with a whole id needs none
 // with a prefix.
 var routeScopes = map[string]routeScopeSet{
@@ -531,7 +531,7 @@ var routeScopes = map[string]routeScopeSet{
 // secrets broker minted from a read entry, which holds the scope read alone and names a service
 // and a session and no person and no project (model.Credential.ReadOnly). Every other row of the
 // table, and GET /ws/live beside it, answers such a token 403 READ_ONLY_TOKEN before anything
-// else the route does (refuseReadOnlyToken), so a route added later stays closed to it until it
+// else the route does (refuseLimitedToken), so a route added later stays closed to it until it
 // is listed here.
 //
 // A route is listed only when, for such a caller, it writes nothing but the row that records its
@@ -552,7 +552,7 @@ var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture"}
 // the secrets broker minted from a result entry for one CI run, which holds the scope results
 // alone and names a person, one project and the run (model.Credential.ResultsOnly). Every other
 // row of the table, and GET /ws/live beside it, answers such a token 403 RESULTS_ONLY_TOKEN
-// before anything else the route does (refuseResultsOnlyToken), so a route added later stays
+// before anything else the route does (refuseLimitedToken), so a route added later stays
 // closed to it until it is listed here. It is a list beside the table for the reason the read
 // list is, and routes() stamps it onto the row (apiRoute.ResultsScope); register refuses to
 // mount a table whose list names a route it does not mount.
@@ -618,10 +618,10 @@ type routeRow struct {
 // mounts the table and GET /api/v1 lists it, so the two can never disagree about what the server
 // serves. Every mutating row carries a Scope, and a GET row carries none (project_scope.go);
 // OAuthScopes is empty on every row any authenticated caller may reach; ReadScope and
-// ResultsScope are true on the rows their list names and on no other, and only their gates read
-// them (refuseReadOnlyToken, refuseResultsOnlyToken), never the route index or the OpenAPI
-// document; the row's own five columns are read through it by promotion. What the route takes
-// and answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
+// ResultsScope are true on the rows their list names and on no other, and only their gate reads
+// them (refuseLimitedToken), never the route index or the OpenAPI document; the row's own five
+// columns are read through it by promotion. What the route takes and answers is routeShapes',
+// which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope        writeScope

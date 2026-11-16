@@ -34,7 +34,7 @@ import (
 // a JSON error, a closed socket — and reaches this decision through optionalActor as it always
 // has. A request presenting no such token passes straight through and is resolved where it
 // always was. The one layer that reads the decision without resolving anything is the read-only
-// gate inside it (refuseReadOnlyToken), which answers a read-only token on every route the read
+// gate inside it (refuseLimitedToken), which answers a read-only token on every route the read
 // list does not name.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +92,7 @@ func errNoBrokerConfigured() *apiError {
 // A read-only token is one of those too, a service and no person, and the broker held it to less
 // still: the scope read alone, the project scope none, no project (brokertoken.Caller.ReadOnly,
 // which only a verifier built with Options.ServesReadOnly answers). Its credential is marked
-// read-only (model.Credential.ReadOnly) and holds no OAuth scope, and refuseReadOnlyToken answers
+// read-only (model.Credential.ReadOnly) and holds no OAuth scope, and refuseLimitedToken answers
 // it 403 READ_ONLY_TOKEN on every route the read list does not name (readScopeRoutes), ahead of
 // the scope gate, the sign-in check and everything else the route does. On a listed route it is
 // the session it names, reading as that session does.
@@ -102,7 +102,7 @@ func errNoBrokerConfigured() *apiError {
 // which a verifier built with Options.ServesResults answers, and Dispatch's is). Its credential
 // is marked results-only with the run (model.Credential.ResultsOnly, model.Credential.CI) and
 // holds no OAuth scope, its project rides on model.Actor.Project as a named token's does, and
-// refuseResultsOnlyToken answers it 403 RESULTS_ONLY_TOKEN on every route the results list does
+// refuseLimitedToken answers it 403 RESULTS_ONLY_TOKEN on every route the results list does
 // not name (resultsScopeRoutes), ahead of everything else the route does.
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
@@ -181,8 +181,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		ID:   caller.Session,
 		// The broker proved this session, so the credential already names the agent behind the
 		// request and no request body has to name it. A read-only token and a results token are
-		// marked as such, which is all refuseReadOnlyToken and refuseResultsOnlyToken read; a
-		// results token carries its run, which the results route holds the result to.
+		// marked as such, which is all refuseLimitedToken reads; a results token carries its run,
+		// which the results route holds the result to.
 		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, ResultsOnly: caller.ResultsOnly, CI: caller.CI},
 	}
 	// A caller names a person or a service, never both and never neither (brokertoken.Caller),

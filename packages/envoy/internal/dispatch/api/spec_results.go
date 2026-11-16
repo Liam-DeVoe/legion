@@ -36,7 +36,7 @@ const specDir = ".dispatch/spec"
 // The codes of this route's own refusals, and of the gate that holds a results token to it.
 const (
 	// codeResultsOnlyToken refuses a results token on every route the results list does not
-	// name (refuseResultsOnlyToken).
+	// name (refuseLimitedToken).
 	codeResultsOnlyToken = "RESULTS_ONLY_TOKEN"
 	// codeResultsScopeRequired refuses every other credential on the route: only a CI job's
 	// results token writes a result of a spec check.
@@ -106,8 +106,9 @@ type specCheckFacts struct {
 
 // specFiles is what the route reads of the spec files at a commit: how many problems the graph
 // logic finds in them and the first one, as specgraph.Judge orders them, and, when it finds none,
-// their checks by id. Each file over notes.MaxFileSize is one problem, as it is to every reader
-// of spec files, and then the graph logic reads none of them.
+// their checks by id. A set over notes.MaxFiles or notes.MaxSetSize is one problem, and each file
+// over notes.MaxFileSize is one, as they are to every reader of spec files, and then the graph
+// logic reads none of them.
 type specFiles struct {
 	Problems int                       `json:"problems,omitempty"`
 	First    string                    `json:"first,omitempty"`
@@ -361,77 +362,95 @@ func (r *repositoryReader) installationToken(ctx context.Context) (string, error
 	return token, nil
 }
 
+// readCached is what cache holds under key, decoded from the JSON it is held as, or, where it holds
+// nothing that decodes, what read answers, which is then held as JSON. An error of read is answered
+// with the zero value, and nothing is held.
+func readCached[T any](cache *bytelru.Cache[string, []byte], key string, read func() (T, error)) (T, error) {
+	if cached, ok := cache.Get(key); ok {
+		var value T
+		if err := json.Unmarshal(cached, &value); err == nil {
+			return value, nil
+		}
+	}
+	value, err := read()
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	if encoded, err := json.Marshal(value); err == nil {
+		cache.Put(key, encoded)
+	}
+	return value, nil
+}
+
 // specCheckRun is check run id of repository: the process's cached answer, or GitHub's.
 func (s *server) specCheckRun(ctx context.Context, reader *repositoryReader, repository string, id int64) (githubapp.CheckRun, error) {
 	s.specReads.init()
-	key := repository + "#" + strconv.FormatInt(id, 10)
-	if cached, ok := s.specReads.checkRuns.Get(key); ok {
-		var run githubapp.CheckRun
-		if err := json.Unmarshal(cached, &run); err == nil {
-			return run, nil
+	return readCached(s.specReads.checkRuns, repository+"#"+strconv.FormatInt(id, 10), func() (githubapp.CheckRun, error) {
+		token, err := reader.installationToken(ctx)
+		if err != nil {
+			return githubapp.CheckRun{}, err
 		}
-	}
-	token, err := reader.installationToken(ctx)
-	if err != nil {
-		return githubapp.CheckRun{}, err
-	}
-	run, err := s.deps.GitHub.CheckRun(ctx, token, reader.owner, reader.name, id)
-	if err != nil {
-		return githubapp.CheckRun{}, err
-	}
-	if encoded, err := json.Marshal(run); err == nil {
-		s.specReads.checkRuns.Put(key, encoded)
-	}
-	return run, nil
+		return s.deps.GitHub.CheckRun(ctx, token, reader.owner, reader.name, id)
+	})
 }
 
 // specFilesAt is what the spec files of repository at commit hold: the process's cached answer, or
 // the files GitHub serves read with the graph logic's one reading of them (specgraph.Judge), with
 // no retired list, since the files hold no history. A commit whose tree holds no spec directory
-// holds no check. A file over notes.MaxFileSize is a problem of the files, not a GitHub that did
-// not answer: each listed file over it is one problem, found before any file is read, as
-// spec-check counts them (notes.ReadSet), and where none is, a file GitHub serves over it is one.
+// holds no check. A set over the bounds of the notes package is a problem of the files, not a
+// GitHub that did not answer, found from GitHub's listing before any file is read, as spec-check
+// finds it (notes.ReadSet): a listing over notes.MaxFiles files or notes.MaxSetSize bytes in sum
+// is one problem (notes.CheckSet), and else each listed file over notes.MaxFileSize is one; where
+// none is, a file GitHub serves over it is one. A listing GitHub truncates, or one over the
+// response limit Dispatch reads it within, is one problem too: a commit's tree never changes, so
+// every read of it answers the same, and a write again could never be judged.
 func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repository, commit string) (specFiles, error) {
 	s.specReads.init()
-	key := repository + "@" + commit
-	if cached, ok := s.specReads.checks.Get(key); ok {
-		var files specFiles
-		if err := json.Unmarshal(cached, &files); err == nil {
-			return files, nil
+	return readCached(s.specReads.checks, repository+"@"+commit, func() (specFiles, error) {
+		token, err := reader.installationToken(ctx)
+		if err != nil {
+			return specFiles{}, err
 		}
-	}
-	token, err := reader.installationToken(ctx)
-	if err != nil {
-		return specFiles{}, err
-	}
-	listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir)
-	if err != nil {
-		return specFiles{}, err
-	}
-	var files specFiles
-	for _, file := range listing.Files {
-		if err := notes.CheckSize(file.Path, file.Size); err != nil {
-			if files.Problems == 0 {
-				files.First = err.Error()
-			}
-			files.Problems++
-		}
-	}
-	if files.Problems == 0 {
-		read, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
+		listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir)
+		var tooLarge *githubapp.ResponseTooLargeError
 		switch {
-		case errors.Is(err, notes.ErrFileTooLarge):
-			files = specFiles{Problems: 1, First: err.Error()}
+		case errors.Is(err, githubapp.ErrTreeTruncated):
+			return specFiles{Problems: 1, First: fmt.Sprintf("%v: GitHub truncated its listing of %s, as it does past 100,000 entries or 7 MB; a set holds at most %d files", notes.ErrSetTooLarge, specDir, notes.MaxFiles)}, nil
+		case errors.As(err, &tooLarge):
+			return specFiles{Problems: 1, First: fmt.Sprintf("%v: GitHub's listing of %s is over %d bytes, the most Dispatch reads of one listing; a set holds at most %d files, whose listing fits", notes.ErrSetTooLarge, specDir, tooLarge.Limit, notes.MaxFiles)}, nil
 		case err != nil:
 			return specFiles{}, err
-		default:
-			files = judgeSpecFiles(read)
 		}
-	}
-	if encoded, err := json.Marshal(files); err == nil {
-		s.specReads.checks.Put(key, encoded)
-	}
-	return files, nil
+		var listed int64
+		for _, file := range listing.Files {
+			listed += file.Size
+		}
+		if err := notes.CheckSet(specDir, len(listing.Files), listed); err != nil {
+			return specFiles{Problems: 1, First: err.Error()}, nil
+		}
+		var files specFiles
+		for _, file := range listing.Files {
+			if err := notes.CheckSize(file.Path, file.Size); err != nil {
+				if files.Problems == 0 {
+					files.First = err.Error()
+				}
+				files.Problems++
+			}
+		}
+		if files.Problems == 0 {
+			read, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
+			switch {
+			case errors.Is(err, notes.ErrFileTooLarge), errors.Is(err, notes.ErrSetTooLarge):
+				files = specFiles{Problems: 1, First: err.Error()}
+			case err != nil:
+				return specFiles{}, err
+			default:
+				files = judgeSpecFiles(read)
+			}
+		}
+		return files, nil
+	})
 }
 
 // judgeSpecFiles is what the route keeps of files as specgraph.Judge reads them: how many
@@ -562,7 +581,7 @@ func insertSpecCheckResult(ctx context.Context, q queryer, row specCheckRow) (mo
 
 // listSpecCheckResults is GET /api/v1/projects/{key}/results: every stored result of the project
 // at ?commit=, of ?check= alone when it is given, newest first by record number. A results token
-// never reaches it (refuseResultsOnlyToken): it writes results and reads nothing.
+// never reaches it (refuseLimitedToken): it writes results and reads nothing.
 func (s *server) listSpecCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

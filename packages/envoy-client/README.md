@@ -630,7 +630,15 @@ and that the write may or may not have taken effect, so check before running it 
 command is a new key. A write that ends with no answer at all is one too, naming the request: its
 last attempt cut off for silence ("made no progress for 20 s, so it was cut off"), or the call's
 deadline ending it while an attempt was out or after one that may have reached Dispatch ("had no
-definitive answer when its deadline ended it"); `last` is the cut or the timeout. A write Dispatch
+definitive answer when its deadline ended it"); `last` is the cut or the timeout.
+`writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown: a
+`DispatchWriteUnsettledError`, a gateway's answer with `mayHaveReachedDispatch`, Dispatch's own
+5xx, or a transport failure after an attempt that may have reached Dispatch, which is thrown as it
+is. A connection that was never opened (refused, a name that did not resolve, no route) reached
+nothing, and so did a request Dispatch's check of its broker token turned away before any handler
+ran (`tokenNotChecked`: `429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`), which counts
+as no attempt that may have reached Dispatch. A refusal carries its `Retry-After` as
+`retryAfterMs`. A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
@@ -864,12 +872,26 @@ middle was cut (`SPEC_CHECK_OBSERVED_CUT_NOTE`) and its last characters
 failed at its end, and a test log of any size still writes its result. A NUL, which Dispatch
 cannot store, goes as U+FFFD, and so does each byte of a file that is not UTF-8. It prints the
 stored result as JSON and exits 0. A write that landed with its answer lost prints
-`{"landed_without_answer":"<code>"}` and exits 0: the result is stored. The stored result names
-the run as its recorder and no person, so the job's log holds no person's address. It prints
-Dispatch's refusal as `<CODE>: <message>` and exits 1, such as `SPEC_FILES_REFUSED` with the first
-problem of spec files the graph logic refuses. A refusal of its arguments, or an identity with a
-variable missing, sends nothing and exits 2. `--observed` text that opens with `-`, such as a
-test's `--- FAIL` line, goes as `--observed=<text>` or through `--observed-file`.
+`{"landed_without_answer":"<code>"}` and exits 0: the result is stored. A write that reached
+Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`) prints
+`{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET`, and exits
+1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A call
+that the broker's rate limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check
+of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
+turns away before anything is stored is asked again after the answer's `Retry-After`, or a second,
+for at most 60 s of waits in all, after which the command prints which turned it away and exits 1. The
+stored result names the run as its recorder and no person, so the job's log holds no person's
+address. It prints Dispatch's refusal as `<CODE>: <message>` and exits 1, such as
+`SPEC_FILES_REFUSED` with the first problem of spec files the graph logic refuses. A refusal of
+its arguments, or an identity with a variable missing, sends nothing and exits 2. `--observed`
+text that opens with `-`, such as a test's `--- FAIL` line, goes as `--observed=<text>` or through
+`--observed-file`. A GitHub runner reads workflow commands from the job's log, so each text the
+command did not write (an argument, a variable, a file's name, an answer of the broker or of
+Dispatch) prints by the rule of Go's `runnerlog.Printable` (`runner-log.ts`): each control
+character, format character, line or paragraph separator as its escape, `\n` or `\u0085`, and
+the `[` of every `##[` as `\x5b`, or as `\u005b` inside JSON, so no such text starts a line of its
+own or names a workflow command. A refusal that starts with `::` has that first `:` written as
+`\x3a`.
 `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a session's read of those
 results, one line each, newest first, or the stored results as JSON with `--json`.
 

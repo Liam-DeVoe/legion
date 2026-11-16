@@ -1740,7 +1740,14 @@ export const dispatchToolSpecs = [
       "command sends a longer text as its start and its end, with a line between them that says " +
       "the middle was cut, and it sends a NUL as U+FFFD. verdict could_not_run is a test that did " +
       "not finish. The command prints the stored result as JSON, an in-toto statement of the " +
-      "run. It reads DISPATCH_URL, AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY " +
+      "run. A write that reached Dispatch with no answer that says whether it stored the result " +
+      'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
+      "second run is safe, because Dispatch keeps each result. A call that the broker's rate " +
+      "limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check of the job's " +
+      "token (429 BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
+      "is stored is asked again after the answer's Retry-After, or a second, for at most 60 s of " +
+      "waits in all. " +
+      "It reads DISPATCH_URL, AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY " +
       "(github-actions in a GitHub Actions job), AGENT_SECRETS_MACHINE_AUDIENCE, and the runner's " +
       "ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN, or " +
       "AGENT_SECRETS_MACHINE_TOKEN_FILE in their place. Its trade names no session. " +

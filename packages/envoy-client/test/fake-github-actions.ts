@@ -156,6 +156,10 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
           repository: run.repository,
           repository_owner: owner,
           workflow_ref: workflowRef,
+          // A job written directly in its workflow, as each job here is, gets job_workflow_ref
+          // equal to workflow_ref (measured on real runs on 2026-11-16), though GitHub's OIDC
+          // reference describes the claim for a reusable workflow. The broker refuses a token
+          // without it.
           job_workflow_ref: workflowRef,
           ref: run.ref,
           ref_type: "branch",

@@ -3,7 +3,7 @@
 // scope results, a person, one project and the run - reaches the routes resultsScopeRoutes names
 // and nothing else. Every other row of the table and GET /ws/live answer it 403
 // RESULTS_ONLY_TOKEN before the route's handler, before the sign-in check and before its
-// Idempotency-Key is read (refuseResultsOnlyToken). The walks are the read-only token's, run with
+// Idempotency-Key is read (refuseLimitedToken). The walks are the read-only token's, run with
 // this token and this list (limitedToken).
 package api
 
@@ -55,8 +55,8 @@ type limitedAnswer struct {
 
 // limitedToken is a broker token Dispatch serves on a list of its own beside the route table and
 // answers 403 on every other row and on GET /ws/live, before the row's handler: a read-only token
-// (readScopeRoutes, refuseReadOnlyToken) or a results token (resultsScopeRoutes,
-// refuseResultsOnlyToken). The two walks below take one, so both tokens are held to one walk.
+// (readScopeRoutes) or a results token (resultsScopeRoutes), and refuseLimitedToken holds each to
+// its list. The two walks below take one, so both tokens are held to one walk.
 type limitedToken struct {
 	// kind names the token in a failure: "a read-only token".
 	kind string
