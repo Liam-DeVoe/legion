@@ -175,8 +175,9 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
   the Save view panel with "Triage" typed, and then the saved tab it adds after Done;
 - `columns-menu-1440`: the Columns menu;
 - `filter-open-asks-1440`: Open asks' filter open (With open asks, No open asks);
-- `filter-time-in-legion-phase-1440` and `filter-waiting-on-1440`: Time in Legion phase, and
-  Waiting on, each ticked in the Columns menu with its filter open;
+- `filter-time-in-legion-phase-1440` and `filter-why-it-waits-1440`: Time in Legion phase, and
+  Why it waits (Its turn, A blocker, A person, None), each ticked in the Columns menu with its
+  filter open;
 - `view-open-info-hint-open-1440`: the Legion daemon hint open, from its place in the control
   row;
 - `project-settings-legion-panel-1440`: the project's settings page;
@@ -219,6 +220,8 @@ check of what the page drew failed:
   daemon's queue holds;
 - the week the Closed filter writes, or the count its Done tab reads;
 - the tooltip naming no phase, or the table scrolled sideways under it;
+- Created by or Open asks not whole on Open's first screen at 1440, on INFRA or on the project
+  with no daemon;
 - Time per phase not whole on Done's first screen at 1440, in Share or in Hours;
 - a Board card reading "Workers None" where no worker runs, or drawing its claimer's name in
   under 24 px, on any of the four Boards (Open by Status, Open by Legion phase, the kept Legion
@@ -229,7 +232,8 @@ check of what the page drew failed:
 - the Board's Group by menu not offering Status and Legion phase, or the Board not by Legion
   phase under `group=legion_phase`;
 - the Columns menu missing a Legion column's name, holding an old one, or scrolling;
-- Open asks', Time in Legion phase's or Waiting on's filter missing one of its choices;
+- Open asks', Time in Legion phase's or Why it waits' filter missing one of its choices, or Why
+  it waits still offering an old word;
 - the saved tab not standing open, or a failure flag left in the address.
 
 The report in the output lists all of it.

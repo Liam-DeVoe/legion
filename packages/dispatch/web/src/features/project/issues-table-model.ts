@@ -369,7 +369,9 @@ export const COLUMNS: readonly ColumnSpec[] = [
     // reads as `none`, and any other count as `any`.
     id: "asks",
     size: 152,
-    min: 152,
+    // Its header and its filter button measure 126 px at 1280 px and wider, 138 px below it,
+    // which is what Open's first screen at 1440 px has room for.
+    min: 140,
     filter: {
       kind: "picks",
       values: (item) => [item.issue.open_asks > 0 ? "any" : "none"],
@@ -434,8 +436,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
     filter: duration((item) => ageMs(item.card?.card.waiting?.since)),
   },
   {
-    // What the card waits on (the board's `waiting.reason`): set for a card in the queue, and
-    // for a root that waits on a person outside it.
+    // Why the card waits (the board's `waiting.reason`): set for a card in the queue, and for
+    // a root that waits on a person outside it.
     id: "waiting_reason",
     size: 164,
     min: 164,

@@ -345,17 +345,26 @@ async function onFirstScreen(
   }, column);
 }
 
-async function checkPhaseOnFirstScreen(page: Page, name: string): Promise<void> {
-  const { whole, scrolled, scrolls } = await onFirstScreen(page, "Time per phase");
-  check(
-    whole && scrolled === 0,
-    `${name}: Time per phase stands whole on Done's first screen (scrollLeft ${scrolled}; the table scrolls ${scrolls} px in all)`
-  );
+/** Checks that each named column's header stands whole on a view's first screen, the table
+ *  unscrolled. */
+async function checkOnFirstScreen(
+  page: Page,
+  name: string,
+  view: string,
+  columns: string[]
+): Promise<void> {
+  for (const column of columns) {
+    const { whole, scrolled, scrolls } = await onFirstScreen(page, column);
+    check(
+      whole && scrolled === 0,
+      `${name}: ${column} stands whole on ${view}'s first screen (scrollLeft ${scrolled}; the table scrolls ${scrolls} px in all)`
+    );
+  }
 }
 
 /** The Legion columns under their names since the owner's reviews, and the names they had. */
 const LEGION_COLUMNS = [
-  "Waiting on",
+  "Why it waits",
   "Time waiting",
   "Time in Legion phase",
   "Worker state",
@@ -364,6 +373,7 @@ const LEGION_COLUMNS = [
   "Legion tree",
 ];
 const OLD_COLUMN_NAMES = [
+  "Waiting on",
   "Waiting",
   "Waited",
   "Queue state",
@@ -383,6 +393,7 @@ const afterShots: Shot[] = [
       await open(page, view("open"));
       check(!(await legendScrolls(page)), "view-open-1440: the legend draws no scroll bar");
       await checkHeaders(page, "view-open-1440");
+      await checkOnFirstScreen(page, "view-open-1440", "Open", ["Created by", "Open asks"]);
     },
   },
   // Open scrolled sideways to its last column, as a reader swipes the table: the pinned columns
@@ -485,7 +496,7 @@ const afterShots: Shot[] = [
     take: async (page) => {
       await openDoneInHours(page);
       await page.waitForTimeout(500);
-      await checkPhaseOnFirstScreen(page, "done-time-per-phase-hours-1440");
+      await checkOnFirstScreen(page, "done-time-per-phase-hours-1440", "Done", ["Time per phase"]);
     },
   },
   // The pointer on the first row's Time per phase cell, its tooltip open. The pointer moves to
@@ -496,7 +507,9 @@ const afterShots: Shot[] = [
     viewport: DESKTOP,
     take: async (page) => {
       await open(page, view("done"));
-      await checkPhaseOnFirstScreen(page, "done-time-per-phase-tooltip-1440");
+      await checkOnFirstScreen(page, "done-time-per-phase-tooltip-1440", "Done", [
+        "Time per phase",
+      ]);
       const cell = page.locator("[data-issue-row]").first().locator("[data-phase-hours]");
       const box = await cell.boundingBox();
       if (box === null) throw new Error("the first row's Time per phase cell is not drawn");
@@ -692,22 +705,25 @@ const afterShots: Shot[] = [
       );
     },
   },
-  // Waiting on, ticked in the Columns menu, with its filter open: what each card in the queue
-  // waits on (Capacity shows only while a row holds it), and None.
+  // Why it waits, ticked in the Columns menu, with its filter open: the daemon's reason for each
+  // card in the queue (Its slot back shows only while a row holds it), and None.
   {
-    name: "filter-waiting-on-1440",
+    name: "filter-why-it-waits-1440",
     viewport: DESKTOP,
     take: async (page) => {
       await open(page, view("open"));
-      await showColumn(page, "Waiting on");
-      await page.getByRole("button", { name: "Filter Waiting on", exact: true }).click();
+      await showColumn(page, "Why it waits");
+      await page.getByRole("button", { name: "Filter Why it waits", exact: true }).click();
       await page.waitForTimeout(500);
-      const choices = await filterChoices(page, "Waiting on");
+      const choices = await filterChoices(page, "Why it waits");
       check(
-        ["Ready to start", "A blocker", "A person", "None"].every((reason) =>
+        ["Its turn", "A blocker", "A person", "None"].every((reason) =>
           choices.some((each) => each.startsWith(`${reason}, `))
-        ),
-        `Waiting on filters by ${choices.join("; ")}`
+        ) &&
+          !["Ready to start", "Capacity"].some((old) =>
+            choices.some((each) => each.startsWith(old))
+          ),
+        `Why it waits filters by ${choices.join("; ")}`
       );
     },
   },
@@ -758,7 +774,13 @@ const afterShots: Shot[] = [
   {
     name: "no-daemon-view-open-1440",
     viewport: DESKTOP,
-    take: (page) => open(page, view("open", "", flags["no-daemon-project"])),
+    take: async (page) => {
+      await open(page, view("open", "", flags["no-daemon-project"]));
+      await checkOnFirstScreen(page, "no-daemon-view-open-1440", "Open", [
+        "Created by",
+        "Open asks",
+      ]);
+    },
   },
   {
     name: "no-daemon-board-open-1440",

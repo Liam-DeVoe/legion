@@ -34,19 +34,20 @@ const OPEN: BuiltInView = {
   name: "Open",
   params: () => [...OPEN_STATUSES, ["sort", "queue"]],
   // Main's default columns (every column but Updated), with Queue and Legion phase where a
-  // daemon runs. What does not fit scrolls sideways under the pinned columns.
+  // daemon runs, and Created by and Open asks early, so the first screen at 1440 px beside the
+  // sidebar holds them. What does not fit scrolls sideways under the pinned columns.
   cols: [
     "priority",
     "key",
     "title",
     "queue",
     "status",
+    "author",
+    "asks",
     "legion_phase",
     "assignee",
-    "author",
     "labels",
     "claim",
-    "asks",
     "created",
   ],
   bar: true,

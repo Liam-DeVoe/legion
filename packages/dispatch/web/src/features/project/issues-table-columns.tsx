@@ -365,7 +365,7 @@ const renderings = (
     },
   },
   waiting_reason: {
-    header: "Waiting on",
+    header: "Why it waits",
     accessorFn: (item) => item.card?.card.waiting?.reason ?? "",
     sortingFn: emptyLast((item) => {
       const index = (WAITING_REASONS as readonly string[]).indexOf(
