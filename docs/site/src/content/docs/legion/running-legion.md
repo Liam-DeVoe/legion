@@ -620,8 +620,9 @@ What each part is for:
 - **`nats_daemon_service_token_file`** (optional) names a projected ServiceAccount token the
   daemon's own NATS connection presents, in place of a seed, to a hub whose connections the
   Secrets Broker's NATS auth service admits. The broker's `BROKER_NATS_SERVICES` must list the
-  token's account as a `daemon`. The connection waits out a refusal of the auth service at boot and
-  while running, logging each one, and a daemon seed beside it refuses boot.
+  token's account as a `daemon` with `*` (the daemon's whole grant) until plan C's t-c-10 release
+  gate opens. The connection waits out a refusal of the auth service at boot and while running,
+  logging each one, and a daemon seed beside it refuses boot.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
   [Secrets Broker](/legion/broker/): `url` is the broker, and `token_file` is where the daemon's own
   projected ServiceAccount token for the broker's audience is mounted. The daemon logs in with that
