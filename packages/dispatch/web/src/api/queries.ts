@@ -141,33 +141,22 @@ export const artifactBlocksQuery = (id: string) =>
     queryFn: () => api.getArtifactBlocks(id),
   });
 
-/** What every `dispatch://` reference a page draws points at, in one read
- *  (`GET /api/v1/reference-targets`). The key holds the references themselves, sorted, so two
- *  surfaces naming the same set share one answer and a set that grows by one is a read of its
- *  own rather than a stale hit. An empty set is never read: `enabled` is off, because a read of
- *  nothing still costs a request.
- *
- *  A set past either bound of one request is read in batches rather than cut to it, so the
- *  addresses past it are named too: a page the bounds were not sized for - an issue whose tree
- *  holds a node per comment, message, ask and typed block - would otherwise draw the rest of
- *  its rows with no words at all and say nothing about it. The bounds are the server's cap
- *  (`REFERENCE_TARGETS_MAX`, which it refuses with `400 CAP_EXCEEDED`) and the request line a
- *  proxy in front of it admits (`REFERENCE_TARGETS_MAX_QUERY_CHARS`): a full batch of comment
- *  or message addresses is longer than 16 KB of query string, and a read refused there would
- *  draw every typed-block row of the heaviest issues blank. One request is still one request:
- *  a page inside both bounds, which is every ordinary one, reads exactly as it did.
- */
-export const referenceTargetsQuery = (refs: readonly string[]) => {
-  const named = [...new Set(refs)].sort();
+/** The batches `referenceTargetsQuery` reads `named` in, in its order: each at most
+ *  `REFERENCE_TARGETS_MAX` references and at most `REFERENCE_TARGETS_MAX_QUERY_CHARS` characters
+ *  of query string, written as the client writes it - `ref=<encoded>` for each reference, joined
+ *  by `&` - and every reference in exactly one of them. */
+function referenceTargetBatches(named: readonly string[]): string[][] {
   const batches: string[][] = [];
   let batch: string[] = [];
   let written = 0;
   for (const ref of named) {
-    // What this address costs the request line, written as the client writes it: `ref=<encoded>`
-    // and the `&` joining it to the one before.
-    const cost = new URLSearchParams({ ref }).toString().length + 1;
+    // What this address writes into the query string: `ref=<encoded>`, after the `&` that
+    // separates it from the address before it when the batch already holds one. Only such a
+    // batch can be full, so the check below counts that `&`.
+    const length = new URLSearchParams({ ref }).toString().length;
     const full =
-      batch.length === REFERENCE_TARGETS_MAX || written + cost > REFERENCE_TARGETS_MAX_QUERY_CHARS;
+      batch.length === REFERENCE_TARGETS_MAX ||
+      written + 1 + length > REFERENCE_TARGETS_MAX_QUERY_CHARS;
     // An address longer than the whole budget still goes out, alone: a batch of none names
     // nothing at all, which is what this read is here to avoid.
     if (full && batch.length > 0) {
@@ -175,15 +164,37 @@ export const referenceTargetsQuery = (refs: readonly string[]) => {
       batch = [];
       written = 0;
     }
+    written += (batch.length > 0 ? 1 : 0) + length;
     batch.push(ref);
-    written += cost;
   }
   if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
+/** What the `dispatch://` references a page names point at (`GET /api/v1/reference-targets`): a
+ *  page that names many references reads their names with this query, in as few requests as
+ *  both bounds of one request allow. The key holds the references themselves, sorted, so two
+ *  surfaces naming the same set share one answer and a set that grows by one is a read of its
+ *  own rather than a stale hit. An empty set is never read: `enabled` is off, because a read of
+ *  nothing still costs a request.
+ *
+ *  A set past either bound of one request is read in batches (`referenceTargetBatches`), every
+ *  address named in exactly one of them, so a page naming more references than one request
+ *  carries draws every row with its words. The bounds are the server's cap
+ *  (`REFERENCE_TARGETS_MAX`, which it refuses with `400 CAP_EXCEEDED`) and the client's budget
+ *  for the request line (`REFERENCE_TARGETS_MAX_QUERY_CHARS`), which a full batch of comment or
+ *  message addresses passes. A set inside both bounds is one request. The batches are built
+ *  when the query runs, not when its options are made.
+ */
+export const referenceTargetsQuery = (refs: readonly string[]) => {
+  const named = [...new Set(refs)].sort();
   return queryOptions({
     enabled: named.length > 0,
     queryKey: ["reference-targets", named],
     queryFn: async () => {
-      const answers = await Promise.all(batches.map((batch) => api.getReferenceTargets(batch)));
+      const answers = await Promise.all(
+        referenceTargetBatches(named).map((batch) => api.getReferenceTargets(batch))
+      );
       return { targets: answers.flatMap((answer) => answer.targets ?? []) };
     },
   });

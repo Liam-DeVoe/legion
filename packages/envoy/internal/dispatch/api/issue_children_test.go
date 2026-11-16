@@ -112,11 +112,12 @@ func newIssueChildrenFixture(t *testing.T) issueChildrenFixture {
 	}
 }
 
-// issueChildrenRows runs one children statement and returns the first columns values of each
-// row as text, one string per row in the order the statement gave them, which is how the two
-// statements' answers are compared here. The children statement answers two columns main's did
-// not — the child's blockers and its claim — so the comparison takes the columns both answer
-// and the test below checks the new ones against the read itself.
+// issueChildrenRows runs one children statement and returns the values of the first columns of
+// each row as text, one string per row in the order the statement gave them, which is how the
+// two statements' answers are compared here. The children statement answers three columns
+// main's did not — the child's needs, the array of the keys it waits on, and the two of its
+// claim, claimed_by and claimed_at — so the comparison takes the columns both answer and the
+// test below checks the new ones against the read itself.
 func issueChildrenRows(t *testing.T, database *store.Store, statement, key string, columns int) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), statement, key)
@@ -144,8 +145,9 @@ func issueChildrenRows(t *testing.T, database *store.Store, statement, key strin
 // The children statement answers, row for row and in the same order, what main's statement
 // answered over the same issues: the same subtree counts, the same newest updated_at and the
 // same external links. A leaf with no descendant is read as well as a branch with a subtree,
-// because the walk now carries the columns the rollup counts. The blockers and the claim this
-// statement adds are the two columns past main's seven, which the issue read's own test checks.
+// because the walk now carries the columns the rollup counts. The needs and the claim this
+// statement adds are the three columns past main's seven, the needs array and the claim's two,
+// which the issue read's own test checks.
 func TestTheIssueChildrenAnswerWhatMainsStatementDid(t *testing.T) {
 	fixture := newIssueChildrenFixture(t)
 	const mainColumns = 7
@@ -222,7 +224,7 @@ func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 	}
 
 	for _, child := range []model.IssueChild{blocked, claimed} {
-		own := readIssue(t, fixture.handler, child.Key)
+		own := readTestIssue(t, fixture.handler, child.Key)
 		if !slices.Equal(child.Needs, own.BlockedBy) {
 			t.Errorf("%s needs %v as a child and is blocked by %v as an issue", child.Key, child.Needs, own.BlockedBy)
 		}
@@ -253,7 +255,7 @@ func TestTheIssueChildrenCarryWhatBlocksThemAndWhoHoldsThem(t *testing.T) {
 	}
 }
 
-// readIssueChildren is the children of key's issue read, and readIssue the issue itself.
+// readIssueChildren is the children of key's issue read.
 func readIssueChildren(t *testing.T, handler http.Handler, key string) []model.IssueChild {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
@@ -263,13 +265,4 @@ func readIssueChildren(t *testing.T, handler http.Handler, key string) []model.I
 	return decodeBody[struct {
 		Children []model.IssueChild `json:"children"`
 	}](t, response).Children
-}
-
-func readIssue(t *testing.T, handler http.Handler, key string) model.Issue {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
-	}
-	return decodeBody[model.Issue](t, response)
 }
