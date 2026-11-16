@@ -1,0 +1,295 @@
+package specgraph
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+)
+
+// The valid tree holds a top statement with two children, a leaf with three checks (a normal
+// case, a boundary and a failure), a structure statement about an interface, a program check
+// that names its runner, selector and job, a query check of the graph and an agent check with
+// no test part, and a term. Validate finds no problem in it.
+func TestValidTreesHaveNoProblem(t *testing.T) {
+	t.Parallel()
+	tree := parseDir(t, "testdata/trees/valid")
+	if got := len(tree.Statements) + len(tree.Checks) + len(tree.Components) + len(tree.Terms); got != 11 {
+		t.Fatalf("the valid tree holds %d nodes, want 11: %+v", got, tree)
+	}
+	if problems := Validate(tree, Options{}); len(problems) != 0 {
+		t.Errorf("Validate(valid): %+v, want none", problems)
+	}
+}
+
+// A program check whose test part names a runner, a selector and a job is valid (v-tree: a
+// checker that refuses that tree fails).
+func TestAProgramCheckWithItsTestPartIsValid(t *testing.T) {
+	t.Parallel()
+	tree := parseDir(t, "testdata/trees/program-check-test-part")
+	if c, ok := tree.CheckByID("a-restart-keeps-the-claim"); !ok || c.Test == nil || c.Test.Job != "go-checks" {
+		t.Fatalf("the tree holds no program check with its test part: %+v", tree)
+	}
+	if problems := Validate(tree, Options{}); len(problems) != 0 {
+		t.Errorf("Validate: %+v, want none", problems)
+	}
+}
+
+// plantedFaults is each fixture tree of the controls of v-tree, v-components and v-check-shape,
+// and of R1, R3 and R6, with the one problem Validate must find in it. spec-check's built-binary
+// test reads the same table.
+var plantedFaults = []struct {
+	dir     string
+	retired []string
+	want    Problem
+}{
+	{dir: "doubled-id", want: Problem{Position{"b.md", 1}, "a-claim-survives-a-restart", "doubled-id", "doubled-id: also at a.md:1"}},
+	{dir: "missing-parent", want: Problem{Position{"spec.md", 1}, "a-claim-survives-a-restart", "no-parent", `no-parent: the files hold no statement "legion-keeps-each-claim"`}},
+	{dir: "parent-loop", want: Problem{Position{"spec.md", 1}, "a-claim-survives-a-restart", "loop",
+		"loop: a-claim-survives-a-restart -[parent]-> legion-keeps-each-claim -[parent]-> a-claim-survives-a-restart"}},
+	{dir: "parent-and-serves-loop", want: Problem{Position{"spec.md", 1}, "a-claim-survives-a-restart", "loop",
+		"loop: a-claim-survives-a-restart -[serves]-> legion-keeps-each-claim -[parent]-> a-claim-survives-a-restart"}},
+	{dir: "retired-id", retired: []string{"gone-statement"}, want: Problem{Position{"spec.md", 1}, "gone-statement", "retired-id", "retired-id: the approved spec removed this id"}},
+	{dir: "leaf-without-check", want: Problem{Position{"spec.md", 1}, "a-claim-survives-a-restart", "leaf-without-check", "leaf-without-check: no statement is under it and no check serves it"}},
+	{dir: "claim-names-a-path", want: Problem{Position{"spec.md", 5}, "a-restart-keeps-the-claim", "code-in-text", "code-in-text: claim names code: cmd/listener/main.go"}},
+	{dir: "statement-names-a-package", want: Problem{Position{"spec.md", 1}, "a-document-keeps-its-blocks", "code-in-text", "code-in-text: text names code: internal/dispatch/pmdoc"}},
+	{dir: "component-no-purpose", want: Problem{Position{"spec.md", 1}, "dispatch", "bad-component", "bad-component: a component has a name and one sentence of purpose"}},
+	{dir: "interface-joins-one", want: Problem{Position{"spec.md", 9}, "legion-to-dispatch", "bad-interface", "bad-interface: an interface joins two or more components"}},
+	{dir: "interface-joins-a-missing-component", want: Problem{Position{"spec.md", 5}, "legion-to-dispatch", "bad-interface", `bad-interface: joins "legion", which is no component`}},
+	{dir: "component-names-a-package", want: Problem{Position{"spec.md", 1}, "dispatch", "code-in-text", "code-in-text: purpose names code: internal/dispatch/pmdoc"}},
+	{dir: "about-a-missing-component", want: Problem{Position{"spec.md", 1}, "a-claim-survives-a-restart", "missing-target", `missing-target: about names "legion", which the files do not hold`}},
+	{dir: "structure-statement-without-about", want: Problem{Position{"spec.md", 1}, "legion-reads-issues-only-through-dispatch", "no-about", "no-about: a statement of kind structure names its components or interfaces"}},
+	{dir: "check-without-failing-example", want: Problem{Position{"spec.md", 5}, "a-restart-keeps-the-claim", "no-failing-example", "no-failing-example: the check has no failing example"}},
+	{dir: "check-subject-not-allowed", want: Problem{Position{"spec.md", 5}, "a-restart-keeps-the-claim", "bad-subject", `bad-subject: "the logs" is not code, production or graph`}},
+	{dir: "program-procedure-names-a-test", want: Problem{Position{"spec.md", 5}, "a-restart-keeps-the-claim", "code-in-text", "code-in-text: procedure names code: TestARestart_LosesNoClaim"}},
+	{dir: "program-check-without-test-part", want: Problem{Position{"spec.md", 5}, "a-restart-keeps-the-claim", "no-test", "no-test: a program check names its runner and its selector"}},
+	{dir: "program-check-without-job", want: Problem{Position{"spec.md", 5}, "a-restart-keeps-the-claim", "no-job", "no-job: a program check names the job that runs its test"}},
+	{dir: "query-check-with-test-part", want: Problem{Position{"spec.md", 5}, "each-claim-is-in-the-graph", "test-on-non-program", "test-on-non-program: a query check names no runner, selector or job"}},
+	{dir: "go-selector-two-words-missing", want: Problem{Position{"spec.md", 5}, "a-restart-keeps-the-claim", "bad-selector", `bad-selector: a go selector is "<import path> <TopLevelTestName>"`}},
+	{dir: "check-serves-two-statements", want: Problem{Position{"spec.md", 21}, "each-restart-keeps-the-claim", "check-serves", "check-serves: a check serves exactly one statement of the files"}},
+	{dir: "statement-without-kind", want: Problem{Position{"spec.md", 1}, "a-claim-survives-a-restart", "bad-kind", `bad-kind: "" is not behavior, structure or property`}},
+	{dir: "bad-id", want: Problem{Position{"spec.md", 1}, "step-3", "bad-id", `bad-id: "step-3" is lower-case words joined by hyphens, with no word that states a position`}},
+}
+
+// Each planted fault fails the checker, which names its node, its rule and the line of its block,
+// and finds no other problem in the tree.
+func TestEachPlantedFaultIsNamed(t *testing.T) {
+	t.Parallel()
+	entries, err := os.ReadDir("testdata/trees")
+	if err != nil {
+		t.Fatal(err)
+	}
+	covered := map[string]bool{"valid": true, "program-check-test-part": true}
+	for _, row := range plantedFaults {
+		covered[row.dir] = true
+		t.Run(row.dir, func(t *testing.T) {
+			t.Parallel()
+			tree := parseDir(t, filepath.Join("testdata/trees", row.dir))
+			got := Validate(tree, Options{Retired: row.retired})
+			if !reflect.DeepEqual(got, []Problem{row.want}) {
+				t.Errorf("Validate(%s):\n got %+v\nwant %+v", row.dir, got, []Problem{row.want})
+			}
+		})
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && !covered[entry.Name()] {
+			t.Errorf("testdata/trees/%s is in no row", entry.Name())
+		}
+	}
+}
+
+// Without its retired list, the retired-id tree is valid: the rule reads only the ids the
+// approved spec removed, and Options.Retired nil checks none.
+func TestNoRetiredListChecksNoID(t *testing.T) {
+	t.Parallel()
+	if problems := Validate(parseDir(t, "testdata/trees/retired-id"), Options{}); len(problems) != 0 {
+		t.Errorf("Validate: %+v, want none", problems)
+	}
+}
+
+// The rules that no fixture tree of the approved checks plants, over trees built in memory: each
+// row adds one fault to a valid leaf and its check, and wants exactly the one problem.
+func TestTheOtherRules(t *testing.T) {
+	t.Parallel()
+	pos := func(line int) Position { return Position{File: "x.md", Line: line} }
+	leaf := func(edit func(*Statement)) Statement {
+		s := Statement{ID: "a-claim-survives-a-restart", Text: "Legion keeps each claim.", Kind: KindBehavior, Pos: pos(1)}
+		if edit != nil {
+			edit(&s)
+		}
+		return s
+	}
+	check := func(edit func(*Check)) Check {
+		c := Check{
+			ID: "a-restart-keeps-the-claim", Serves: "a-claim-survives-a-restart", Claim: "The daemon reads the claim.",
+			ProcedureText: "An agent reads the claims.", FailingExample: "A daemon with no store.",
+			Subject: SubjectCode, Procedure: ProcedureAgent, Pos: pos(5),
+		}
+		if edit != nil {
+			edit(&c)
+		}
+		return c
+	}
+	component := func(id string, edit func(*Component)) Component {
+		c := Component{ID: id, Name: "Part " + id, Purpose: "It does one thing.", Pos: pos(20)}
+		if edit != nil {
+			edit(&c)
+		}
+		return c
+	}
+	for _, row := range []struct {
+		name string
+		tree Tree
+		want Problem
+	}{
+		{
+			name: "a statement with no text",
+			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.Text = "" })}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "no-text", "no-text: a statement has a text"},
+		},
+		{
+			name: "a block with no id",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil)}, Terms: []Term{{Name: "work unit", Definition: "A work unit is work.", Pos: pos(9)}}},
+			want: Problem{pos(9), "-", "bad-id", "bad-id: the block has no id"},
+		},
+		{
+			name: "a statement that serves one that the files do not hold",
+			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.Serves = []string{"legion-keeps-each-claim"} })}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "missing-target", `missing-target: serves names "legion-keeps-each-claim", which the files do not hold`},
+		},
+		{
+			name: "a statement about a node that is no component",
+			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.About = []string{"a-restart-keeps-the-claim"} })}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "missing-target", `missing-target: about names "a-restart-keeps-the-claim", which is a check, not a component or an interface`},
+		},
+		{
+			name: "a statement whose parent is a check",
+			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.Parent = "a-restart-keeps-the-claim" })}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "no-parent", `no-parent: the files hold no statement "a-restart-keeps-the-claim"`},
+		},
+		{
+			name: "a statement that is its own parent",
+			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.Parent = s.ID })}, Checks: []Check{check(nil)}},
+			want: Problem{pos(1), "a-claim-survives-a-restart", "loop", "loop: a-claim-survives-a-restart -[parent]-> a-claim-survives-a-restart"},
+		},
+		{
+			name: "a check and a statement that share an id",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil), check(func(c *Check) { c.ID = "a-claim-survives-a-restart"; c.Pos = pos(9) })}},
+			want: Problem{pos(9), "a-claim-survives-a-restart", "doubled-id", "doubled-id: also at x.md:1"},
+		},
+		{
+			name: "a check with no claim",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) { c.Claim = "" })}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "no-claim", "no-claim: the check has no claim"},
+		},
+		{
+			name: "a check with no procedure",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) { c.ProcedureText = "" })}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "no-procedure", "no-procedure: the check has no procedure"},
+		},
+		{
+			name: "a procedure that is not program, query or agent",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) { c.Procedure = "programm" })}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "bad-procedure", `bad-procedure: "programm" is not program, query or agent`},
+		},
+		{
+			name: "an agent check with a test part",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) { c.Test = &Test{Job: "go-checks"} })}},
+			want: Problem{pos(5), "a-restart-keeps-the-claim", "test-on-non-program", "test-on-non-program: an agent check names no runner, selector or job"},
+		},
+		{
+			name: "a term with no definition",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(nil)}, Terms: []Term{{ID: "work-unit", Name: "work unit", Pos: pos(9)}}},
+			want: Problem{pos(9), "work-unit", "bad-term", "bad-term: a term has a name and a definition"},
+		},
+		{
+			name: "a component whose parent is an interface",
+			tree: Tree{Components: []Component{
+				component("dispatch", nil), component("legion", nil),
+				component("legion-to-dispatch", func(c *Component) { c.Interface, c.Joins, c.Pos = true, []string{"dispatch", "legion"}, pos(30) }),
+				component("the-queue", func(c *Component) { c.Parent, c.Pos = "legion-to-dispatch", pos(40) }),
+			}},
+			want: Problem{pos(40), "the-queue", "bad-component", `bad-component: parent "legion-to-dispatch" is no component`},
+		},
+		{
+			name: "a component that joins components",
+			tree: Tree{Components: []Component{component("dispatch", nil), component("legion", func(c *Component) { c.Joins = []string{"dispatch"} })}},
+			want: Problem{pos(20), "legion", "bad-component", `bad-component: only a component of kind="interface" joins components`},
+		},
+		{
+			name: "two components that are each other's parent",
+			tree: Tree{Components: []Component{
+				component("dispatch", func(c *Component) { c.Parent = "legion" }),
+				component("legion", func(c *Component) { c.Parent, c.Pos = "dispatch", pos(30) }),
+			}},
+			want: Problem{pos(20), "dispatch", "loop", "loop: dispatch -[parent]-> legion -[parent]-> dispatch"},
+		},
+		{
+			name: "an interface that joins an interface",
+			tree: Tree{Components: []Component{
+				component("dispatch", nil), component("legion", nil),
+				component("legion-to-dispatch", func(c *Component) { c.Interface, c.Joins, c.Pos = true, []string{"dispatch", "legion"}, pos(30) }),
+				component("one-more-interface", func(c *Component) {
+					c.Interface, c.Joins, c.Pos = true, []string{"dispatch", "legion-to-dispatch"}, pos(40)
+				}),
+			}},
+			want: Problem{pos(40), "one-more-interface", "bad-interface", `bad-interface: joins "legion-to-dispatch", which is no component`},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			got := Validate(row.tree, Options{})
+			if !reflect.DeepEqual(got, []Problem{row.want}) {
+				t.Errorf("Validate:\n got %+v\nwant %+v", got, []Problem{row.want})
+			}
+		})
+	}
+}
+
+// A program check of another runner than go keeps its selector as its runner writes it: the go
+// selector rule judges a go check alone.
+func TestAnotherRunnersSelectorIsItsOwn(t *testing.T) {
+	t.Parallel()
+	tree := Tree{
+		Statements: []Statement{{ID: "a-claim-survives-a-restart", Text: "Legion keeps each claim.", Kind: KindBehavior}},
+		Checks: []Check{{
+			ID: "a-restart-keeps-the-claim", Serves: "a-claim-survives-a-restart", Claim: "The daemon reads the claim.",
+			ProcedureText: "The program reads the claims.", FailingExample: "A daemon with no store.", Subject: SubjectCode,
+			Procedure: ProcedureProgram, Test: &Test{Runner: "bun", Selector: "src/claims.test.ts", Job: "bun-checks"},
+		}},
+	}
+	if problems := Validate(tree, Options{}); len(problems) != 0 {
+		t.Errorf("Validate: %+v, want none", problems)
+	}
+}
+
+// Validate sorts its problems by file, line, node and rule, whatever order the rules find them in.
+func TestValidateSortsItsProblems(t *testing.T) {
+	t.Parallel()
+	tree, parseProblems := Parse(map[string][]byte{
+		"b.md": []byte(":::requirement{#leaf-two}\nA leaf.\n:::\n"),
+		"a.md": []byte(":::requirement{#leaf-one kind=\"behavior\"}\nA leaf in cmd/listener.\n:::\n"),
+	})
+	if len(parseProblems) != 0 {
+		t.Fatal(parseProblems)
+	}
+	got := Validate(tree, Options{})
+	var keys []string
+	for _, p := range got {
+		keys = append(keys, p.Pos.File+" "+p.Node+" "+p.Rule)
+	}
+	want := []string{"a.md leaf-one code-in-text", "a.md leaf-one leaf-without-check", "b.md leaf-two bad-kind", "b.md leaf-two leaf-without-check"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Errorf("Validate order %q, want %q", keys, want)
+	}
+}
+
+// parseDir parses every spec file directly in dir and fails the test on a parse problem.
+func parseDir(t *testing.T, dir string) Tree {
+	t.Helper()
+	tree, problems := Parse(readFiles(t, dir))
+	if len(problems) != 0 {
+		t.Fatalf("Parse(%s): %+v", dir, problems)
+	}
+	return tree
+}

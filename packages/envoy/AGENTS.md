@@ -887,7 +887,9 @@ The replica is listed for its document's reads (`Service.replicas`), the documen
 the update observer, which the document holds, is the replica's one strong holder, so the replica is collected with an evicted document, in the same collection, and the listing goes once the document is collected (`keepReplica`, `TestAnEvictedRoomsReplicaGoesWithIt`).
 A reader holding an evicted instance of a room reaches that instance's replica or none, never its successor's.
 `TestReadsOfALiveDocumentRunBesideItsPeers` runs each of these reads while a websocket peer types, until 50 of its runs have overlapped one of the peer's updates, and CI runs the `docs` and `api` packages under `-race`, each in a race job of its own, which reports a walk of the live tree beside a write;
-the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else: `envoy-go`'s unit step leaves both out, and the only plain run it keeps of them is its step "Test what the race build cannot run at all or at full size", which runs the few tests the detector makes impossible or shrinks.
+the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else, since `envoy-go`'s unit step leaves both out.
+The tests of those two packages that the race build cannot run, or runs smaller, have one plain run each:
+the `docs` package's few in `envoy-go`'s step "Test what the race build cannot run at all or at full size", and the API's source guards, which carry `//go:build !race`, in the `text-checks` job's step "Test the Dispatch API's source guards (no database)".
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
 — `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 60-minute deadline, and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
@@ -2596,9 +2598,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `closed_since`, `closed_before`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
   alone it pages `contracts.DefaultIssuePageLimit`, 50): `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
   Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
+
+- The listing's three time bounds.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
-  The three time bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it; the window refusal judges the bounds as the caller wrote them.
+  The three bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
+  the window refusal judges the bounds as the caller wrote them.
+
+- The listing's paging, which is `GET /api/v1/issues`' own.
   `parseIssuePage` (`api/issue_page.go`) reads `limit` and `offset`, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
   so is `cursor`, which the listing does not page with, since answering it with the first page would hand back rows the caller cannot tell from the ones it asked for (LEGION-406:
   the route ignored all three and answered every row).
@@ -3089,6 +3096,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
   `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
   and `Parse` validates the set.
+  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check`.
   `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
@@ -3108,7 +3116,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `cmd/architecture-check` reads one directory of architecture notes from disk, a checkout's `.dispatch/architecture`, and judges it by the rules the importer applies to that directory on GitHub (`cmd/architecture-check/main.go`).
   `architecture-check [--allow-empty] <directory>` makes the directory absolute before it reads anything, and every line it prints about the directory or an entry of it names that absolute path.
   Every rule it applies is the notes package's, as `githubapp`'s are:
-  `notes.FileKind` and `notes.IsNote` decide which entries are notes, `notes.CheckSize` bounds every note before any is read and each note again once read, and `notes.Parse` judges the set, so no second reader of the rules exists.
+  `notes.ReadSet` reads the directory by them, `notes.FileKind` and `notes.IsNote` deciding which entries are notes and `notes.CheckSize` bounding every note before any is read and each note again once read, and `notes.Parse` judges the set, so no second reader of the rules exists.
   A valid set is exit 0 and one line on stdout, `architecture-check: <directory>: <n> notes, the set is valid` (`note` for one).
   A refused set is exit 1:
   one line on stderr for each problem, `architecture-check: <directory>: <problem>`, then `architecture-check: <directory>: <n> notes, the set is refused` on stdout.
@@ -3118,7 +3126,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   neither prints a count line.
   Each entry `notes.IsNote` rejects is a warning on stderr, `architecture-check: warning: <path>: not a note (<kind>); the importer passes over it`, and changes no exit status:
   the importer passes over such an entry in silence, and its author expects it to count.
-  `say` writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `printable` escapes the rest of the line:
+  `runnerlog.Say` (`internal/runnerlog`, which imports only the standard library) writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `runnerlog.Printable` escapes the whole line, so a `##[` that the fixed text and the rest make together is escaped too:
   each control character (Cc), since a GitHub runner ends a line at `\n` and `\r` and reads a command from a line starting `::` after its leading white space and from a `##[` anywhere;
   the `[` of every `##[` as `\x5b`, since only a literal `##[` names a command: the runner's search can pass over an ignorable character, but it reads the name three characters after the match's start and accepts only a name of its registered commands, compared without regard to case, so a name read through an ignorable character starts at `#`, `[` or that character, and no command the runner defines has that name (actions/runner at `8cfa1049f86781d141056082d73802d56cd2b433`: `ActionCommand.TryParse` reads it at `cmdIndex = prefixIndex + Prefix.Length`, and `ActionCommandManager`'s `_registeredCommands` is a `StringComparer.OrdinalIgnoreCase` set);
   and each format character (Cf, invisible or reordering text), the line separator U+2028 (Zl) and the paragraph separator U+2029 (Zp), which the runner does not end a line at (it reads lines with `StreamReader.ReadLine`) but a log viewer can show as a line break, and each byte not UTF-8, for a log reader.
@@ -3131,9 +3139,42 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Right after its setup-go it removes the `go` problem matcher that setup-go adds (`::remove-matcher owner=go::`), since that matcher reads every later line of the job and would make an error annotation, with the author's text, of a check line holding `.go: `, such as one naming a file `cmd.go: forged annotation`;
   the runner keeps one matcher per owner, so in a caller's job that set up Go earlier the action's setup-go replaces that job's `go` matcher and the removal deletes it for every later step, and the README sends a caller to a job of its own or to a place before the job's own setup-go, which adds the matcher again.
   Any other matcher an earlier step of the job added reads the check's lines too, one more reason for a job of its own.
-  `ci.yaml`'s `envoy-go-checks` runs the notes package's and the command's tests, runs the action over this repository's own notes first, right after its checkout and before the job's own setup-go, which adds the Go matcher again for every later step, and fails unless `count` is a positive whole number;
+  `ci.yaml`'s `envoy-go-checks` runs the tests of the notes package, of `internal/runnerlog` and of the command, runs the action over this repository's own notes first, right after its checkout and before the job's own setup-go, which adds the Go matcher again for every later step, and fails unless `count` is a positive whole number;
   `ci-caches.yaml`'s `architecture-check` job, a job of its own, runs the action on every push to main, which fills its `architecture-check-<os>-<arch>-go<version>-<hash>` cache entry in main's scope (`<hash>` is the SHA-256 of `packages/envoy/go.sum`, and on a miss the action restores the newest entry of the same Go version and still saves the new key), since the action saves only on a miss in a `push`, `schedule` or `workflow_dispatch` run;
   a run of any other event (`pull_request`, `pull_request_target`, `merge_group`, `issue_comment`, `workflow_run` and the rest) may hold another person's code, so it restores and never saves.
+
+- `internal/dispatch/specgraph` reads the spec files of a repository, the `*.md` files directly in its `.dispatch/spec`, and judges the tree they hold.
+  It is logic over bytes and values, with no store, no route and no database (`TestSpecgraphReachesNoStore` runs `go list -deps` over it), so `cmd/spec-check`, Dispatch's importer and the pilot can call the same rules.
+  `Parse` reads the four blocks, statements (`requirement`), checks (`check`), components (`component`) and terms (`term`), with `pmdoc.ParseTypedDirectiveOpen`, the one reader of a typed block's opening line, and refuses any attribute a block does not take;
+  it does not call `pmdoc.Parse`, whose block schema lacks the attributes these files need.
+  `Print` writes a node as the block that `Parse` reads back as that node, and `Digest` names a node's content apart from its file and line.
+  `Validate` finds each fault a program can find (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
+  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a check without its parts, and a name of code in a text (`CodeNames`).
+  `Changes` lists each statement that only one of two trees holds, or whose text, parent, relations or checks differ between them;
+  a statement that only moved to another file is no change.
+  `ReadGoTestJSON` reads a `go test -json` report and `MatchTests` matches a check's selector to its one test:
+  a test that go test killed, or that started and has no end, could not run and never reads as a failure.
+
+- `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
+  It reads each directory with `notes.ReadSet`, so the entries it reads and the 1 MiB bound are the architecture importer's.
+  `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
+  a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one and an interface being a component with `kind="interface"`;
+  a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
+  with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
+  `--retired` names a file of the ids the approved spec removed, one id a line;
+  without it, a line on stderr says that no id was checked against them.
+  `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`.
+  `spec-check checks --dir <dir> --job <job>` prints the program checks that name the job as one line of JSON, `[]` for none.
+  Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read and for arguments it does not take.
+  Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
+  `runnerlog.Say` writes every line but the usage and the JSON, with the fixed text `spec-check: `, escaped as the `cmd/architecture-check` item says, and `checks` writes the `[` of each `##[` in its JSON as `\u005b`.
+  It opens no database and reaches no network.
+
+- The composite action `.github/actions/spec-check` runs `spec-check tree` as `.github/actions/architecture-check` runs its command (its own `README.md` is the caller's guide):
+  it builds `cmd/spec-check` from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, removes setup-go's `go` problem matcher, runs over its `path` input (default `.dispatch/spec`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number of statements to the caller as its `count` output, on exit 0 and on exit 1.
+  Its cache entry is `spec-check-<os>-<arch>-go<version>-<hash>`, saved only on a miss in a `push`, `schedule` or `workflow_dispatch` run, and `ci-caches.yaml`'s `spec-check` job, a job of its own, fills it on every push to main.
+  `ci.yaml`'s `envoy-go-checks` runs the tests of `specgraph` and of `cmd/spec-check` with the architecture-note ones, and runs the action over this repository's `.dispatch/spec` right after the architecture-note action, before the job's own setup-go, with `allow-empty: 'true'` while main holds no spec file;
+  a pull request whose spec files break a rule fails that job with one line for each fault, naming its file, its line and its node, and the next step fails unless `count` is a whole number.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
@@ -7313,7 +7354,7 @@ That person carries both claim shapes Dispatch reads:
 a Google Workspace account of the email's domain, and a Cognito pool user federated from `DevIdP`, a member of `--sign-in-group <group>`'s group when that flag is given.
 Dispatch accepts `DISPATCH_SIGNIN_DOMAIN` only under Google's issuer, so a local Dispatch signs in through this issuer with `DISPATCH_SIGNIN_GROUP` set to that group.
 Each `dev-broker.sh` run creates and drops its own isolated database, on the shared `dispatch-pg` container, which it boots through `dev-postgres.sh` (so a `dispatch-pg` off that script's pinned image is refused before anything is created), or, with `DEV_BROKER_POSTGRES_URL` set, through `psql` on the server that URL names (no Docker), so concurrent instances never see each other's enrollments, requests or grants, and listens on the port its own `cmd/broker` binds and logs (`BROKER_LISTEN_ADDR=127.0.0.1:0`), so concurrent instances can never collide on a shared port either.
-`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, its exchange account and its read entry, exports the caller token that issuer wrote, has that issuer write the read entry's pod token at the exchange's audience and names that file in its banner, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go` job.
+`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, its exchange account and its read entry, exports the caller token that issuer wrote, has that issuer write the read entry's pod token at the exchange's audience and names that file in its banner, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go-checks` job.
 `scripts/github-narrowing-check.sh` drives that stack end to end, as `airlock-check.sh` and `judge-check.sh` drive theirs: it starts `dev-broker.sh`, enrols one pod session of the registered service, runs checks k1, k2 and k4 of `dispatch://INFRA-2687` and k1 of `dispatch://INFRA-3099` — the narrowing the broker refuses before it opens the approval request a person must decide, and, as that one's control, the same request for a repository the stand-in reaches, approved on the broker's page as the person does — against it, and prints one PASS or FAIL line for each property with `all <n> assertions passed` as its last line.
 `DEV_BROKER_POSTGRES_URL` is required there, where `dev-broker.sh` takes it as an option, and a run without it exits 2 and starts nothing:
 one property is about what the broker itself wrote, so the script reads the broker's own database, putting the database name `dev-broker.sh` logged in place of that URL's path, which keeps every password out of what it parses.
