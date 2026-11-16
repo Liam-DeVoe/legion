@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -617,18 +618,25 @@ func getBody(t *testing.T, handler http.Handler, target string) json.RawMessage 
 	return json.RawMessage(response.Body.Bytes())
 }
 
-// windowTarget is the GET route of kind for the window a body answered: a timeline or measures
-// body names its window, a pipeline body its days, whose first day's midnight and the midnight
-// after its last are the window the route reads back, and a legion body its project, which is the
-// whole of what its route reads.
+// windowTarget is the GET route of kind for what a body answered, built of what that route reads.
+// A timeline or measures body names its window, and query is the rest of what its route reads; a
+// legion body names its project, and its route reads its path alone, so it takes no query. A
+// pipeline body can name neither: its route reads `at` and nothing else, and the body's days carry
+// only at's UTC day while its failing-jobs table looks 24 hours back from at itself, so query is
+// the view's own `at=`, and a call without one fails rather than read the present on both sides.
 func windowTarget(t *testing.T, kind string, body json.RawMessage, query string) string {
 	t.Helper()
-	if kind == legionBoardView {
-		target := "/api/v1/projects/" + legionBodyProject(t, body) + "/legion/board"
+	switch kind {
+	case legionBoardView:
 		if query != "" {
-			target += "?" + query
+			t.Fatalf("the board's route reads its path alone, so query %q would be read by nothing", query)
 		}
-		return target
+		return "/api/v1/projects/" + legionBodyProject(t, body) + "/legion/board"
+	case deliveryLivePipeline:
+		if values, err := url.ParseQuery(query); err != nil || len(values) != 1 || values.Get("at") == "" {
+			t.Fatalf("the pipeline route reads at alone and a pipeline body names none, so query must be the view's at=, not %q", query)
+		}
+		return "/api/v1/delivery/pipeline?" + query
 	}
 	var shape struct {
 		Window delivery.DeliveryWindowView `json:"window"`
@@ -636,41 +644,11 @@ func windowTarget(t *testing.T, kind string, body json.RawMessage, query string)
 	if err := json.Unmarshal(body, &shape); err != nil {
 		t.Fatalf("read the body's window: %v", err)
 	}
-	from, to := shape.Window.From, shape.Window.To
-	if kind == deliveryLivePipeline {
-		days := pipelineBodyDays(t, body)
-		if len(days) == 0 {
-			t.Fatal("the pipeline body shows no day")
-		}
-		from, to = utcMidnightOf(t, days[0]), utcMidnightOf(t, days[len(days)-1]).AddDate(0, 0, 1)
-	}
-	target := "/api/v1/delivery/" + kind + "?from=" + from.Format(time.RFC3339Nano) + "&to=" + to.Format(time.RFC3339Nano)
+	target := "/api/v1/delivery/" + kind + "?from=" + shape.Window.From.Format(time.RFC3339Nano) + "&to=" + shape.Window.To.Format(time.RFC3339Nano)
 	if query != "" {
 		target += "&" + query
 	}
 	return target
-}
-
-// pipelineBodyDays is the UTC days a pipeline body shows, oldest first.
-func pipelineBodyDays(t *testing.T, body json.RawMessage) []string {
-	t.Helper()
-	var shape struct {
-		Days []string `json:"days"`
-	}
-	if err := json.Unmarshal(body, &shape); err != nil {
-		t.Fatalf("read the pipeline body's days: %v", err)
-	}
-	return shape.Days
-}
-
-// utcMidnightOf is midnight UTC of a YYYY-MM-DD day.
-func utcMidnightOf(t *testing.T, day string) time.Time {
-	t.Helper()
-	midnight, err := time.Parse(time.DateOnly, day)
-	if err != nil {
-		t.Fatalf("read the day %q: %v", day, err)
-	}
-	return midnight
 }
 
 // withoutComputedAt is a body decoded, without the computed_at it moves on every compute.
@@ -2126,11 +2104,10 @@ func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
 		view  DeliveryLiveView
 		kind  string
 		query string
-		get   string
 	}{
 		{sub: "timeline", view: timelineRange(from, to, "author=octocat"), kind: deliveryLiveTimeline, query: "author=octocat"},
 		{sub: "measures", view: measuresRange(from, to, ""), kind: deliveryLiveMeasures},
-		{sub: "pipeline", view: livePipelineView(&at), get: "/api/v1/delivery/pipeline?at=" + at.Format(time.RFC3339)},
+		{sub: "pipeline", view: livePipelineView(&at), kind: deliveryLivePipeline, query: "at=" + at.Format(time.RFC3339Nano)},
 		{sub: "preset", view: presetView(deliveryLiveTimeline, 7, ""), kind: deliveryLiveTimeline},
 	} {
 		rig.hub.Subscribe(conn, subscribeFrame(test.sub, test.view))
@@ -2140,11 +2117,7 @@ func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
 			// followed by it.
 			conn.freshness(t, time.Second, "the verdict after the snapshot of "+test.sub)
 		}
-		target := test.get
-		if target == "" {
-			target = windowTarget(t, test.kind, snapshot.Body, test.query)
-		}
-		requireSameBody(t, test.sub, snapshot.Body, getBody(t, rig.handler, target))
+		requireSameBody(t, test.sub, snapshot.Body, getBody(t, rig.handler, windowTarget(t, test.kind, snapshot.Body, test.query)))
 		if snapshot.Seq == "" || len(snapshot.Revs.Fields) == 0 {
 			t.Fatalf("%s snapshot seq = %q, revs = %+v; want its change position and every revision", test.sub, snapshot.Seq, snapshot.Revs)
 		}

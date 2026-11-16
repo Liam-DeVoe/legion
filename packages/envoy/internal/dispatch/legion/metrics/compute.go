@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"fmt"
 	"math"
 	"slices"
 	"time"
@@ -11,7 +10,11 @@ import (
 )
 
 // Scope is which of a project's Legion issues an answer counts: all of them, the tree roots, or
-// the children.
+// the children. A caller names one of the three constants, and nothing parses one from text: a
+// `scope` parameter was the metrics route's, and that route never ships (Report), while the evals
+// of dispatch://INFRA-2916 take no scope from a request either, since they carry roots and
+// children as series of each measure beside all issues (that spec's R6 and "Series, not a
+// toggle").
 type Scope string
 
 const (
@@ -19,19 +22,6 @@ const (
 	ScopeRoots    Scope = "roots"
 	ScopeChildren Scope = "children"
 )
-
-// ParseScope reads the scope parameter, defaulting to all.
-func ParseScope(raw string) (Scope, error) {
-	switch Scope(raw) {
-	case "", ScopeAll:
-		return ScopeAll, nil
-	case ScopeRoots:
-		return ScopeRoots, nil
-	case ScopeChildren:
-		return ScopeChildren, nil
-	}
-	return "", fmt.Errorf("scope must be one of all, roots or children")
-}
 
 // The bars of metric 2: the six roles, each holding the phases that role works, and the seventh
 // for the phases no role works. "A seventh bar, 'no role', holds the phases no role works:

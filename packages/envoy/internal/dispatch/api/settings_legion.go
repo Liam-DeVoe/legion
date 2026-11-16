@@ -122,18 +122,14 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 }
 
 // legionProject is the {key} of the path, once it is a project key and a project of that key
-// exists; an unknown one is the 404 NOT_FOUND every unknown row is.
+// exists. Every Legion route of one project is under /api/v1/projects/{key}/legion/, the three
+// daemon routes and the board alike, so each reads its project here and answers a badly spelled
+// key one refusal, 400 LEGION_SETTING_INPUT; an unknown project is the 404 NOT_FOUND every
+// unknown row is.
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return s.legionProjectNamed(w, r, strings.TrimSpace(r.PathValue("key")), "LEGION_SETTING_INPUT")
-}
-
-// legionProjectNamed is project once it is a project key and a project of that key exists. code
-// is the refusal a badly spelled key carries: legionProject passes `LEGION_SETTING_INPUT`, which
-// the daemon routes and the board route answer alike. An unknown project is the 404 NOT_FOUND
-// every unknown row is.
-func (s *server) legionProjectNamed(w http.ResponseWriter, r *http.Request, project, code string) (string, bool) {
+	project := strings.TrimSpace(r.PathValue("key"))
 	if !projectKeyPattern.MatchString(project) {
-		writeError(w, code, http.StatusBadRequest, projectKeyProblem("project", project))
+		writeError(w, "LEGION_SETTING_INPUT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return "", false
 	}
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select key from projects where key = $1`, project).Scan(new(string)); err != nil {
