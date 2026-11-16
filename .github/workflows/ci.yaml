@@ -4976,6 +4976,9 @@ jobs:
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3; no real Postgres or network)
         run: bash scripts/dev-stack.test.sh
         working-directory: packages/envoy
+      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
+        run: bash scripts/callout-check.test.sh
+        working-directory: packages/envoy
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: bash scripts/dev-postgres.test.sh
         working-directory: packages/envoy
@@ -5045,9 +5048,10 @@ jobs:
     # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
     # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
     # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, natslive's default 10 and the bus matrix's own 5 are 53, and the integration
-    # step's 5 is less.
-    timeout-minutes: 60
+    # exceed that, natslive's default 10 and the bus matrix's own 5 are 53, the integration
+    # step's 5 is less, and the callout check's own 6 after it, measured at about 1 minute on a
+    # dev box with its build cache, keeps the whole under 65.
+    timeout-minutes: 65
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5171,6 +5175,16 @@ jobs:
 
       - name: Integration test envoy (a real NATS server, in the test process)
         run: go test ./internal/integration/ -timeout 300s -count=1
+        working-directory: packages/envoy
+      # check c-callout-live of dispatch://INFRA-840: the real broker (twice, one queue group),
+      # listener, Dispatch and nats-server behind the auth callout, built and started by
+      # dev-stack.sh --callout on this job's Postgres, and driven by natsprobe. It prints one
+      # PASS line per property and exits 1 on any FAIL or UNKNOWN.
+      - name: Prove the hub behind the NATS auth service on the local stack (callout-check.sh)
+        timeout-minutes: 6
+        run: bash scripts/callout-check.sh
+        env:
+          LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

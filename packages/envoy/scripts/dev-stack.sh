@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2317 # cleanup is trap-invoked and each reader is invoked by name
+# shellcheck disable=SC2317,SC2329 # cleanup is trap-invoked and each reader is invoked by name
 # packages/envoy/scripts/dev-stack.sh
 #
 # The whole local stack a session is driven against, on one machine, with no cluster, no AWS and
@@ -25,11 +25,11 @@
 # --binaries <dir> names a directory that already holds them, built elsewhere: a Legion pod sends
 # a Go build out to the builds farm rather than running it itself. Then it runs those in place of
 # its go build, and needs no go on PATH. It requires each of them in that directory, broker,
-# dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper and natsd, each an
-# executable file, and refuses before it creates or starts anything -- no database, no port, no
-# process -- when one is missing or is not, naming each such file. It copies them into this run's
-# own bin directory, where a build would have put them, so everything after that step is the
-# same either way.
+# dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper, natsd and natsprobe,
+# each an executable file, and refuses before it creates or starts anything -- no database, no
+# port, no process -- when one is missing or is not, naming each such file. It copies them into
+# this run's own bin directory, where a build would have put them, so everything after that step
+# is the same either way.
 #
 # Every port is chosen by the kernel and read back from the process that holds it: the issuer's
 # "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
@@ -104,6 +104,19 @@
 # cannot take: a run ended by SIGKILL, which no process can trap, leaves its two databases on the
 # server for someone to drop by hand, as does any other signal this script does not trap.
 #
+# With --callout the hub runs behind the NATS auth service (internal/broker/natscallout), as the
+# deployment's hub does once its static users are gone: natsd runs with -callout-keys, so every
+# client but the service's own user is sent to the service, and the service runs in two brokers
+# on the one database, in one queue group, as two replicas do. The brokers admit a session by its
+# broker access token and a proof of its key, and the listener and Dispatch by the platform token
+# the issuer writes each of them for the NATS audience (envoy-nats), listed in
+# BROKER_NATS_SERVICES under their own machine ids. Neither holds a seed. The banner then also
+# exports DEV_STACK_CALLOUT=1, NATS_AUTH=broker, DEV_STACK_NATS_SERVICE_TOKEN_FILE (the
+# listener's NATS token), DEV_STACK_EXCHANGE_SESSION (the session this run registered the pod for)
+# and DEV_STACK_BROKER_PIDS, the two brokers' pids. The second broker is the one replica the stack
+# outlives: killing it stops nothing else, which is how scripts/callout-check.sh proves a stopped
+# replica delays no connection. Without --callout natsd admits every client, as it always has.
+#
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
 #     --binaries "$TMPDIR/dev-stack-bin"                # the builds farm made
@@ -123,7 +136,7 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 
 usage() {
   cat <<'EOF'
-Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--help]
+Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout] [--help]
 
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
@@ -131,14 +144,18 @@ drives them with. The Postgres URL is this one option, else LEGION_TEST_PG_DSN, 
 DATABASE_URL; this run creates and drops two databases of its own on that server.
 
 With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, agent-secrets,
-agent-secrets-helper and natsd in <dir> in place of building them; a directory short of any of
-them, or holding one that is not an executable file, is refused, naming each, before anything is
-created or started.
+agent-secrets-helper, natsd and natsprobe in <dir> in place of building them; a directory short
+of any of them, or holding one that is not an executable file, is refused, naming each, before
+anything is created or started.
+
+With --callout, run the hub behind the NATS auth service in two brokers, and the listener and
+Dispatch with NATS service tokens rather than no credential.
 EOF
 }
 
 DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
+CALLOUT=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url)
@@ -167,6 +184,10 @@ while [ "$#" -gt 0 ]; do
         echo "dev-stack: --binaries needs the directory that holds the stack's binaries" >&2
         exit 2
       fi
+      shift
+      ;;
+    --callout)
+      CALLOUT=true
       shift
       ;;
     --help | -h)
@@ -205,7 +226,7 @@ POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 # binary for its package's last path element, so the build's arguments and the names --binaries
 # checks and copies all come from here. The header and the usage name them for a reader. ---
 STACK_PACKAGES=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
 STACK_BINARIES=()
 for stack_package in "${STACK_PACKAGES[@]}"; do
   STACK_BINARIES+=("${stack_package##*/}")
@@ -261,6 +282,8 @@ DISPATCH_LOG="$LOG_DIR/dispatch.log"
 KEEPER_LOG="$LOG_DIR/dispatch-port-keeper.log"
 KEEPER_SOCKET="$WORK_DIR/dispatch-port.sock"
 KEEPER_PORT_FILE="$WORK_DIR/dispatch-port"
+# The second broker, which runs only with --callout: the one replica the stack outlives.
+BROKER2_LOG="$LOG_DIR/broker-2.log"
 
 # The issuer and what it mints for, as dev-broker.sh names them (internal/broker/brokertest's rig):
 # the audience every listed caller's and every enrolment's token carries, the exchange's own
@@ -279,6 +302,16 @@ LISTENER_TOKEN_FILE="$WORK_DIR/listener-token"
 EXCHANGE_TOKEN_FILE="$WORK_DIR/exchange-token"
 REGISTRAR_TOKEN_FILE="$WORK_DIR/registrar-token"
 POD_TOKEN_FILE="$WORK_DIR/pod-token"
+# With --callout: the audience a service's NATS token carries, the token the issuer writes for
+# the listener and for Dispatch at it, the machine ids BROKER_NATS_SERVICES lists each of them
+# under (the listener's is its ENVOY_MACHINE_ID, which names its durable and its queue group), and
+# the directory natsd keeps the auth callout's three seeds in, which the brokers read.
+NATS_AUDIENCE="envoy-nats"
+LISTENER_NATS_TOKEN_FILE="$WORK_DIR/listener-nats-token"
+DISPATCH_NATS_TOKEN_FILE="$WORK_DIR/dispatch-nats-token"
+LISTENER_MACHINE_ID="dev-stack-$RUN_SUFFIX"
+DISPATCH_MACHINE_ID="dev-stack-dispatch"
+CALLOUT_DIR="$WORK_DIR/nats-callout"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
@@ -353,6 +386,7 @@ admin_psql() { psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
 KEEPER_PID=""
 ISSUER_PID=""
 BROKER_PID=""
+BROKER2_PID=""
 NATS_PID=""
 LISTENER_PID=""
 DISPATCH_PID=""
@@ -390,7 +424,7 @@ cleanup() {
   trap - EXIT
   trap '' INT TERM
   set +e
-  for pid in "$DISPATCH_PID" "$LISTENER_PID" "$NATS_PID" "$BROKER_PID" "$ISSUER_PID" "$KEEPER_PID"; do
+  for pid in "$DISPATCH_PID" "$LISTENER_PID" "$BROKER2_PID" "$BROKER_PID" "$NATS_PID" "$ISSUER_PID" "$KEEPER_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
@@ -503,6 +537,7 @@ nats_port_in() {
   grep -q 'Server is ready' "$1" || return 1
   sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$1" | head -n1
 }
+nats_monitor_in() { sed -n 's/.*Starting http monitor on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$1" | head -n1; }
 listener_addr_in() { jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$1"; }
 dispatch_addr_in() { sed -n 's/.*msg="dispatch: listening" addr=\([^ ]*\).*/\1/p' "$1" | head -n1; }
 kept_port_in() { grep -o '^[0-9][0-9]*$' "$1" | head -n1; }
@@ -532,7 +567,14 @@ DISPATCH_URL="http://127.0.0.1:${DISPATCH_PORT}"
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$MACHINE_SECRET_FILE")
 echo "dev-stack: starting dev-oidc-issuer..." >&2
 : >"$ISSUER_LOG"
-env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" \
+# With --callout the issuer also writes the listener's and Dispatch's tokens for the NATS
+# audience, which each presents to the hub as a service (NATS_SERVICE_TOKEN_FILE).
+callout_tokens=()
+if [ "$CALLOUT" = true ]; then
+  callout_tokens=(--token "$NATS_AUDIENCE=$LISTENER_ACCOUNT=$LISTENER_NATS_TOKEN_FILE"
+    --token "$NATS_AUDIENCE=$API_ACCOUNT=$DISPATCH_NATS_TOKEN_FILE")
+fi
+env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_tokens[@]}" \
   --token "$BROKER_AUDIENCE=$API_ACCOUNT=$ACCOUNT_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$LISTENER_ACCOUNT=$LISTENER_TOKEN_FILE" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
@@ -547,6 +589,30 @@ ISSUER_PID=$!
 await dev-oidc-issuer "$ISSUER_PID" "$ISSUER_LOG" "$ISSUER_LOG" 'its URL' issuer_url_in
 ISSUER_URL="$awaited"
 echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
+
+# --- The bus: one nats-server in a process of this run's own (internal/testnats/cmd/natsd), with
+# JetStream in the work directory, since an agent's machine has no container runtime. -1 is
+# nats-server's own "choose a port". With --callout it runs behind the auth callout, whose seeds
+# it makes in CALLOUT_DIR before it serves, so it starts before the brokers that read them. ---
+natsd_args=(-p -1 -store_dir "$WORK_DIR/nats-store")
+if [ "$CALLOUT" = true ]; then
+  # The monitor port too, the kernel's choice, whose connection list (/connz?auth=true) names the
+  # user the auth service admitted each connection as.
+  natsd_args+=(-callout-keys "$CALLOUT_DIR" -m -1)
+fi
+echo "dev-stack: starting natsd..." >&2
+: >"$NATS_LOG"
+env -i PATH="$PATH" "$BIN_DIR/natsd" "${natsd_args[@]}" >"$NATS_LOG" 2>&1 &
+NATS_PID=$!
+await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client port' nats_port_in
+NATS_URL="nats://127.0.0.1:$awaited"
+echo "dev-stack: natsd $NATS_URL" >&2
+NATS_MONITOR_URL=""
+if [ "$CALLOUT" = true ]; then
+  await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its monitor port' nats_monitor_in
+  NATS_MONITOR_URL="http://127.0.0.1:$awaited"
+  echo "dev-stack: natsd monitor $NATS_MONITOR_URL" >&2
+fi
 
 # --- The broker, on a fake Secrets Manager holding one agent-tier secret its owner's sessions get
 # without asking, one human-tier secret its owner approves — both owned by the person the issuer
@@ -573,40 +639,82 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
+# With --callout every broker also runs the NATS auth service on that natsd: the seeds natsd made,
+# the listener and Dispatch listed by account under their machine ids, and the NATS audience their
+# tokens carry.
+broker_nats_env=()
+if [ "$CALLOUT" = true ]; then
+  broker_nats_env=(
+    BROKER_NATS_URLS="$NATS_URL"
+    BROKER_NATS_SEED_FILE="$CALLOUT_DIR/service.seed"
+    BROKER_NATS_ISSUER_SEED_FILE="$CALLOUT_DIR/issuer.seed"
+    BROKER_NATS_XKEY_SEED_FILE="$CALLOUT_DIR/xkey.seed"
+    BROKER_NATS_SERVICES="listener/$LISTENER_MACHINE_ID/*=$LISTENER_ACCOUNT dispatch/$DISPATCH_MACHINE_ID/*=$API_ACCOUNT"
+    BROKER_NATS_K8S_AUDIENCE="$NATS_AUDIENCE"
+  )
+fi
+# start_broker starts one broker logging to $1 and sets started_pid. Every broker of a run is the
+# same process on the same database, as two replicas of one deployment are.
+started_pid=""
+start_broker() {
+  : >"$1"
+  env -i PATH="$PATH" \
+    BROKER_DATABASE_URL="$BROKER_DATABASE_URL" \
+    BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
+    BROKER_LISTEN_ADDR="127.0.0.1:0" \
+    BROKER_PUBLIC_URL="http://127.0.0.1:0" \
+    BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
+    BROKER_MACHINE_LOGIN_URL="$DISPATCH_URL/credentials/machine" \
+    BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
+    BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
+    BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
+    BROKER_DRAIN_SECONDS=0 \
+    BROKER_K8S_OIDC_ISSUER="$ISSUER_URL" \
+    BROKER_K8S_OIDC_AUDIENCE="$BROKER_AUDIENCE" \
+    BROKER_API_ACCOUNTS="dispatch=$API_ACCOUNT listener=$LISTENER_ACCOUNT" \
+    BROKER_SIGNIN_ISSUER="$ISSUER_URL" \
+    BROKER_SIGNIN_CLIENT_ID="$SIGNIN_CLIENT_ID" \
+    BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
+    BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
+    BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
+    BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
+    BROKER_GOOGLE_OIDC_ISSUER="$ISSUER_URL" \
+    BROKER_GOOGLE_OIDC_AUDIENCE="$MACHINE_CLIENT_ID" \
+    BROKER_VM_SERVICES="$FLEET_SERVICE=$FLEET_ACCOUNT $PERSON_FLEET_SERVICE=$PERSON_FLEET_ACCOUNT" \
+    BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
+    BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
+    BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
+    "${broker_nats_env[@]}" \
+    "$BIN_DIR/broker" >"$1" 2>&1 &
+  started_pid=$!
+}
+callout_answering_in() { grep -q 'the NATS auth service is answering' "$1" && echo answering; }
 echo "dev-stack: starting broker..." >&2
-: >"$BROKER_LOG"
-env -i PATH="$PATH" \
-  BROKER_DATABASE_URL="$BROKER_DATABASE_URL" \
-  BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
-  BROKER_LISTEN_ADDR="127.0.0.1:0" \
-  BROKER_PUBLIC_URL="http://127.0.0.1:0" \
-  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
-  BROKER_MACHINE_LOGIN_URL="$DISPATCH_URL/credentials/machine" \
-  BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
-  BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
-  BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
-  BROKER_DRAIN_SECONDS=0 \
-  BROKER_K8S_OIDC_ISSUER="$ISSUER_URL" \
-  BROKER_K8S_OIDC_AUDIENCE="$BROKER_AUDIENCE" \
-  BROKER_API_ACCOUNTS="dispatch=$API_ACCOUNT listener=$LISTENER_ACCOUNT" \
-  BROKER_SIGNIN_ISSUER="$ISSUER_URL" \
-  BROKER_SIGNIN_CLIENT_ID="$SIGNIN_CLIENT_ID" \
-  BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
-  BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
-  BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
-  BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
-  BROKER_GOOGLE_OIDC_ISSUER="$ISSUER_URL" \
-  BROKER_GOOGLE_OIDC_AUDIENCE="$MACHINE_CLIENT_ID" \
-  BROKER_VM_SERVICES="$FLEET_SERVICE=$FLEET_ACCOUNT $PERSON_FLEET_SERVICE=$PERSON_FLEET_ACCOUNT" \
-  BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
-  BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
-  BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
-  "$BIN_DIR/broker" >"$BROKER_LOG" 2>&1 &
-BROKER_PID=$!
+start_broker "$BROKER_LOG"
+BROKER_PID=$started_pid
 await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broker_addr_in
 BROKER_URL="http://$awaited"
 until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
 echo "dev-stack: broker $BROKER_URL" >&2
+# The second replica starts once the first has migrated the database they share, and the listener
+# and Dispatch start once both answer the hub, so neither waits out an authorization timeout.
+if [ "$CALLOUT" = true ]; then
+  echo "dev-stack: starting the second broker..." >&2
+  start_broker "$BROKER2_LOG"
+  BROKER2_PID=$started_pid
+  await 'the second broker' "$BROKER2_PID" "$BROKER2_LOG" "$BROKER2_LOG" 'its bound address' broker_addr_in
+  echo "dev-stack: broker-2 http://$awaited" >&2
+  await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its NATS auth service answering' callout_answering_in
+  await 'the second broker' "$BROKER2_PID" "$BROKER2_LOG" "$BROKER2_LOG" 'its NATS auth service answering' callout_answering_in
+fi
+# With --callout the listener and Dispatch connect to the hub as services, each presenting the
+# NATS-audience token the issuer keeps for it, and holding no seed.
+listener_nats_env=()
+dispatch_nats_env=()
+if [ "$CALLOUT" = true ]; then
+  listener_nats_env=(NATS_SERVICE_TOKEN_FILE="$LISTENER_NATS_TOKEN_FILE")
+  dispatch_nats_env=(NATS_SERVICE_TOKEN_FILE="$DISPATCH_NATS_TOKEN_FILE")
+fi
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
 # session name to the listed account and never to a pod, so what keeps two pods of one account
@@ -620,17 +728,6 @@ if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
   echo "dev-stack: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi
-
-# --- The bus: one nats-server in a process of this run's own (internal/testnats/cmd/natsd), with
-# JetStream in the work directory, since an agent's machine has no container runtime. -1 is
-# nats-server's own "choose a port". ---
-echo "dev-stack: starting natsd..." >&2
-: >"$NATS_LOG"
-env -i PATH="$PATH" "$BIN_DIR/natsd" -p -1 -store_dir "$WORK_DIR/nats-store" >"$NATS_LOG" 2>&1 &
-NATS_PID=$!
-await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client port' nats_port_in
-NATS_URL="nats://127.0.0.1:$awaited"
-echo "dev-stack: natsd $NATS_URL" >&2
 
 # --- The listener, on that bus. ENVOY_HOST_BRIDGE=127.0.0.1 because every session of this stack
 # runs on this machine. It serves on a socket held-port.py opened on a port the kernel chose
@@ -651,12 +748,13 @@ python3 "$HELD_PORT" exec --host 127.0.0.1 --fd-env ENVOY_LISTEN_FD -- \
   env -i PATH="$PATH" \
   ENVOY_LISTEN_FD=3 \
   ENVOY_LISTEN_HOST=127.0.0.1 \
-  ENVOY_MACHINE_ID="dev-stack-$RUN_SUFFIX" \
+  ENVOY_MACHINE_ID="$LISTENER_MACHINE_ID" \
   ENVOY_HOST_BRIDGE=127.0.0.1 \
   ENVOY_PUBLIC_URL="http://127.0.0.1:{port}" \
   ENVOY_AGENT_SECRETS_URL="$BROKER_URL" \
   ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE" \
   NATS_URLS="$NATS_URL" \
+  "${listener_nats_env[@]}" \
   "$BIN_DIR/listener" >"$LISTENER_LOG" 2>&1 &
 LISTENER_PID=$!
 await listener "$LISTENER_PID" "$LISTENER_LOG" "$LISTENER_LOG" 'its address' listener_addr_in
@@ -692,6 +790,7 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
   DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist" \
   ENVOY_URL="$LISTENER_URL" \
   NATS_URLS="$NATS_URL" \
+  "${dispatch_nats_env[@]}" \
   "$BIN_DIR/dispatch" >"$DISPATCH_LOG" 2>&1 &
 DISPATCH_PID=$!
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
@@ -822,6 +921,19 @@ chmod 700 "$METADATA_SCRIPT"
 mkdir -p "$BOX2_HOME" "$BOX2_RUNTIME_DIR" "$BOX2_STATE_DIR" "$BOX2_KEY_DIR" "$BOX2_SIGNIN_DIR"
 chmod 700 "$BOX2_DIR" "$BOX2_HOME" "$BOX2_RUNTIME_DIR" "$BOX2_STATE_DIR" "$BOX2_KEY_DIR" "$BOX2_SIGNIN_DIR"
 echo "$APPROVER_LOGIN" >"$BOX2_OPERATOR_FILE"
+# With --callout, what a second shell needs to drive the hub behind the auth service: that it is,
+# the session this run registered the pod for, the listener's NATS token, and the two brokers'
+# pids, the second of which the stack outlives.
+CALLOUT_EXPORTS=""
+if [ "$CALLOUT" = true ]; then
+  CALLOUT_EXPORTS="
+  export DEV_STACK_CALLOUT=1
+  export NATS_AUTH=broker
+  export DEV_STACK_NATS_SERVICE_TOKEN_FILE=$LISTENER_NATS_TOKEN_FILE
+  export DEV_STACK_EXCHANGE_SESSION=$EXCHANGE_SESSION
+  export DEV_STACK_BROKER_PIDS=\"$BROKER_PID $BROKER2_PID\"
+  export DEV_STACK_NATS_MONITOR_URL=$NATS_MONITOR_URL"
+fi
 
 cat <<EOF
 
@@ -849,7 +961,7 @@ dev-stack: ready.
   export DEV_STACK_LISTENER_TOKEN_FILE=$LISTENER_TOKEN_FILE
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
-  export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT
+  export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$CALLOUT_EXPORTS
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for
@@ -958,8 +1070,10 @@ dev-stack: ready.
 EOF
 
 # The stack stands until it is interrupted or any one of its processes stops; either way the trap
-# above stops the rest and drops the databases.
+# above stops the rest and drops the databases. The second broker is not one of them: with
+# --callout it is the replica scripts/callout-check.sh kills to show a stopped replica delays no
+# connection, so the stack outlives it.
 status=0
-wait -n || status=$?
+wait -n "$KEEPER_PID" "$ISSUER_PID" "$NATS_PID" "$BROKER_PID" "$LISTENER_PID" "$DISPATCH_PID" || status=$?
 echo "dev-stack: a process of this stack stopped (status $status); stopping the rest" >&2
 exit "$status"

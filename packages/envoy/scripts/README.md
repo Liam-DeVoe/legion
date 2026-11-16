@@ -290,6 +290,36 @@ an HTTP client that trusts the host's own roots and nothing else.
 with, `--help` prints the usage, and a usage error exits 2. It needs bash, curl, jq,
 go and psql, and takes a few minutes.
 
+## callout-check.sh
+
+Proves, on the whole local stack behind the NATS auth service, what the hub lets a
+connection reach: `check c-callout-live` of dispatch://INFRA-840's verification.
+`dev-stack.sh --callout` is that stack: natsd behind the auth callout, the service in two
+brokers on one database, and the listener and Dispatch connecting as services with the
+NATS-audience tokens the issuer writes them. The check prints one line per property:
+a session subscribes its own delivery channel; it is refused another session's, in
+nats-server's own words (`Permissions Violation for Subscription to "..."`); a connection
+with no credential is refused; a token neither broker issued is refused (a stand-in token
+endpoint plays the other broker); the hub lists the listener's connection authorized as
+`listener/<its machine id>`; and with one broker killed, three new sessions are each
+admitted within 2 s. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
+assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
+
+```bash
+LEGION_TEST_PG_DSN=postgres://... bash scripts/callout-check.sh   # starts and stops its own stack
+# or, in a shell that exported a `dev-stack.sh --callout` banner:
+bash scripts/callout-check.sh
+```
+
+With nothing exported it starts `dev-stack.sh --callout` itself, passing on its own
+arguments (`--database-url`, `--binaries`), and stops it on exit, which drops its
+databases; against an exported stack it kills that stack's second broker, which the stack
+outlives. Each probe is `natsprobe` (`cmd/natsprobe`), which tries any one subject by
+hand too: as a session it trades the stack's pod token for a broker token, as a service
+it presents `--service-token-file`, and `--no-credential` presents nothing.
+`callout-check.test.sh` holds the verdicts to fakes, including the negative control:
+`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2.
+
 ## airlock-lean-axioms.sh
 
 Holds the airlock model's theorems to the axioms Lean's own kernel admits, and is the

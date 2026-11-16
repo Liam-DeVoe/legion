@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -218,10 +219,11 @@ func TestASessionCannotSubscribeTheAuthSubject(t *testing.T) {
 	}
 }
 
-// With two replicas in the queue group and one of them closed, every connection is admitted within
-// a second: the closed replica left the group, so the server sends it nothing. The control is a
-// replica that stops answering but keeps its place in the group, which the server keeps sending
-// requests to: some connection then waits out the authorization timeout.
+// Two replicas answer in one queue group, so the server sends each request to one of them: with
+// both up, every connection is decided once. With one of them closed, every connection is
+// admitted within a second: the closed replica left the group, so the server sends it nothing.
+// The control is a replica that stops answering but keeps its place in the group, which the
+// server keeps sending requests to: some connection then waits out the authorization timeout.
 func TestOneStoppedReplicaDelaysNoConnection(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
@@ -229,9 +231,21 @@ func TestOneStoppedReplicaDelaysNoConnection(t *testing.T) {
 	for index := range sessions {
 		sessions[index] = newSession(t, "ses_"+strings.Repeat("a", index+1), 15*time.Minute)
 	}
-	deps := Deps{Introspect: introspector(sessions...)}
+	var decided atomic.Int64
+	introspect := introspector(sessions...)
+	deps := Deps{Introspect: func(ctx context.Context, token string) (oauthwire.Introspection, error) {
+		decided.Add(1)
+		return introspect(ctx, token)
+	}}
 	stopped := startService(t, url, keys, deps, Decide)
 	startService(t, url, keys, deps, Decide)
+
+	for _, s := range sessions[:10] {
+		nc, err := connectSession(t, url, s, nil)
+		require.NoError(t, err, "%s was not admitted", s.id)
+		nc.Close()
+	}
+	require.EqualValues(t, 10, decided.Load(), "ten connections were decided %d times: the replicas do not share one queue group", decided.Load())
 	stopped.Close()
 
 	for _, s := range sessions {
@@ -267,4 +281,13 @@ func TestOneStoppedReplicaDelaysNoConnection(t *testing.T) {
 		wait.Wait()
 		require.Positive(t, slow.Load(), "no connection waited on the replica that stopped answering: the test cannot see a delay")
 	})
+}
+
+// Ready answers under a context with no deadline, which is what the broker's own serving context
+// is: a Ready that needed one never returned there, so the broker never logged the service up.
+func TestReadyNeedsNoDeadline(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	service := startService(t, url, keys, Deps{}, Decide)
+	require.NoError(t, service.Ready(context.Background()))
 }

@@ -127,22 +127,28 @@ func (s *Service) Close() {
 	s.conn.Close()
 }
 
-// readyPoll is how often Ready asks whether the service's connection is up.
-const readyPoll = 50 * time.Millisecond
+// readyPoll is how often Ready asks whether the service's subscription has reached the hub, and
+// readyFlush how long one ask waits for the hub's answer.
+const (
+	readyPoll  = 50 * time.Millisecond
+	readyFlush = time.Second
+)
 
 // Ready returns once the service's subscription has reached the hub, so the next connection the
-// hub authorizes is sent to it, or ctx's error when ctx ends first. Start does not wait for it,
-// since a hub that is down when the broker starts is answered once it is up; the broker logs when
-// it is (cmd/broker).
+// hub authorizes is sent to it, or ctx's error when ctx ends first; ctx needs no deadline, as the
+// broker's own serving context has none. Start does not wait for it, since a hub that is down
+// when the broker starts is answered once it is up; the broker logs when it is (cmd/broker).
 func (s *Service) Ready(ctx context.Context) error {
-	for !s.conn.IsConnected() {
+	for {
+		if s.conn.IsConnected() && s.conn.FlushTimeout(readyFlush) == nil {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(readyPoll):
 		}
 	}
-	return s.conn.FlushWithContext(ctx)
 }
 
 // readSeed is the key pair the seed in the file at path makes, refused, naming setting, when the
