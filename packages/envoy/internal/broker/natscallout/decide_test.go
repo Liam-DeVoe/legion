@@ -24,6 +24,14 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
+// encodeAnswer is the authorization response the server reads for req, signed by issuer: the
+// verdict admit settles, signed, as answer runs them, for a test that holds a decision and no
+// running service.
+func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal error) (string, error) {
+	user, refused := admit(req, decision, asRefusal(refusal))
+	return sign(issuer, req, user, refused)
+}
+
 // session is one session's key, the access token the broker bound to it and the broker's answer
 // about that token, as the auth service's Introspect would read it.
 type session struct {

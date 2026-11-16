@@ -97,8 +97,8 @@ func TestAGrantWithAnEmptyDirectionIsRefused(t *testing.T) {
 // subject — which is why the guard exists — and the service refuses that grant. The control runs
 // first: a stand-in service holding the service's keys answers with exactly that user, and a
 // message the user publishes on a subject no grant of natsgrant names reaches a subscriber. Then
-// the real service, deciding with decide's guard bypassed so encodeAnswer's is the one standing,
-// refuses the same grant.
+// the real service, its decision replaced by one answering that grant, refuses it in admit, the
+// guard every answer passes.
 func TestAnEmptyAllowListIsRefused(t *testing.T) {
 	requireAnEmptyPublishListRefused(t, func(keys testnats.CalloutKeys, static ...testnats.StaticUser) string {
 		return testnats.StartWithCallout(t, keys, static...)

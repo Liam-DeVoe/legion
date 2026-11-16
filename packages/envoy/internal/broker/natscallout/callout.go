@@ -483,11 +483,3 @@ func sign(issuer nkeys.KeyPair, req Request, user *jwt.UserClaims, refused *Refu
 	response.Jwt = userJWT
 	return response.Encode(issuer)
 }
-
-// encodeAnswer is the authorization response the server reads for req, signed by issuer: the
-// verdict admit settles, signed. It is admit and sign as answer runs them, for a caller that holds
-// a decision and no answerer.
-func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal error) (string, error) {
-	user, refused := admit(req, decision, asRefusal(refusal))
-	return sign(issuer, req, user, refused)
-}
