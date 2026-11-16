@@ -87,7 +87,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	if pass.mappingRefused {
 		return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so which projects map a repository's lane is not known: service "+entry.name())
 	}
-	var repositories []string
+	var repositories, every []string // every repository the answers map, and those not withheld
 	withheld := 0
 	for _, project := range projects {
 		held, known := pass.answers[heldKey{project: project, person: person}]
@@ -107,6 +107,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 			// its person cannot see the project, so neither may the connection.
 			return natsgrant.Permissions{}, refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
 		}
+		every = append(every, held.answer.Repositories...)
 		for _, repository := range held.answer.Repositories {
 			if pass.sharedWith(repository, projects) {
 				withheld++
@@ -117,13 +118,18 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	}
 	deps.Metrics.withheldSharedLanes(withheld)
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Repositories: repositories, Identity: entry.Account})
-	switch {
-	case err != nil && withheld > 0:
-		return natsgrant.Permissions{}, refuse(labelSharedLane, "grant cannot be held to its projects once the repositories whose lane a project outside the entry maps are withheld: service "+entry.name()+": "+err.Error())
-	case err != nil:
-		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
+	if err == nil {
+		return scoped, nil
 	}
-	return scoped, nil
+	// The refusal is the withheld lanes' only when the same grant held to every repository the
+	// answers map is held: a scope that one refuses too is refused for a repository of its own (one
+	// that is not owner/name, say), whatever was withheld beside it.
+	if withheld > 0 {
+		if _, whole := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Repositories: every, Identity: entry.Account}); whole == nil {
+			return natsgrant.Permissions{}, refuse(labelSharedLane, "grant cannot be held to its projects once the repositories whose lane a project outside the entry maps are withheld: service "+entry.name()+": "+err.Error())
+		}
+	}
+	return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
 }
 
 // accessRefresh is how often the service reads Dispatch again, and accessFetchTimeout how long one
