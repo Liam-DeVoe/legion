@@ -39,6 +39,7 @@ const SETTLE_MS = 200;
 
 let getArtifact: Mock<typeof api.getArtifact>;
 let getArtifactText: Mock<typeof api.getArtifactText>;
+let getArtifactTextWithBlocks: Mock<typeof api.getArtifactTextWithBlocks>;
 let getIssue: Mock<typeof api.getIssue>;
 
 beforeEach(() => {
@@ -48,6 +49,11 @@ beforeEach(() => {
     token: "",
     version: null,
   });
+  // A decision block's card drawn in the column's place reads the block's own question from its
+  // document (`block-question.ts`); with no document seeded it draws the ask's question.
+  getArtifactTextWithBlocks = spyOn(api, "getArtifactTextWithBlocks").mockRejectedValue(
+    new Error("no document seeded")
+  );
   // The pane reads one field of the issue: whether it is closed, which it hands the document.
   getIssue = spyOn(api, "getIssue").mockResolvedValue({
     closed_at: null,
@@ -57,6 +63,7 @@ beforeEach(() => {
 afterEach(() => {
   getArtifact.mockRestore();
   getArtifactText.mockRestore();
+  getArtifactTextWithBlocks.mockRestore();
   getIssue.mockRestore();
 });
 

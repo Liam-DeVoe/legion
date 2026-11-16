@@ -17,6 +17,11 @@ export function threadReplySendKey(sendKey: MutationKey, commentId: string): Mut
   return [...threadRepliesSendKey(sendKey), commentId];
 }
 
+/** The name of the phone thread view's own composer's send, beneath the tab's `sendKey`. */
+export function phoneThreadComposerKey(sendKey: MutationKey): MutationKey {
+  return [...sendKey, "phone-thread"];
+}
+
 /** The Conversation's full-screen thread view on a phone, and the composer of its own that a
  *  comment's Reply answers in there. */
 export interface PhoneThread {
@@ -67,7 +72,7 @@ export function usePhoneThread({
 }): PhoneThread {
   const store = useHeldSends();
   const [openId, setOpenId] = useState<string>();
-  const composerKey = useMemo<MutationKey>(() => [...sendKey, "phone-thread"], [sendKey]);
+  const composerKey = useMemo(() => phoneThreadComposerKey(sendKey), [sendKey]);
   const [replyTo, setReplyTo] = useHeldReplyTo(composerKey);
   // Set when the viewport widened past the phone layout while a send from the view was out - its
   // card's own reply, or the thread composer's: the view stays open, full-screen at any width,

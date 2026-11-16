@@ -75,6 +75,14 @@ import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
+import {
+  onQuote,
+  ownWords,
+  quoteWaiting,
+  takeQuote,
+  useQuotePlacement,
+  withQuote,
+} from "../threads/quote-reply";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import {
@@ -438,13 +446,14 @@ function draftRefusal(
   if (kind === "suggestion") {
     return replacement.trim() === "" ? "Type the replacement text first." : undefined;
   }
-  if (body.trim() === "")
+  // A quote (`> ` lines, Quote reply's) is the words the reply answers, not the reader's own.
+  if (ownWords(body).trim() === "")
     return kind === "ask" ? "Type the question first." : "Type a message first.";
   if (
     kind === "comment" &&
     outbound.delivery !== undefined &&
     outbound.delivery !== "steer" &&
-    outbound.body.trim() === ""
+    ownWords(outbound.body).trim() === ""
   ) {
     return `Type the message after ${DELIVERY_COMMANDS[outbound.delivery]}.`;
   }
@@ -618,6 +627,35 @@ export function MentionComposer({
     setMentions([...draft.mentions]);
     setReplacement(draft.replacement ?? "");
   }, []);
+  /** A Quote reply's words (`threads/quote-reply.ts`), at the end of the draft, with the cursor on
+   *  the empty line under them once the field holds them (`useQuotePlacement`). */
+  const placeQuote = useQuotePlacement(textarea, body);
+  const insertQuote = useCallback(
+    (blocks: readonly string[]) => {
+      const quoted = withQuote(previousBody.current, blocks);
+      if (quoted === null) return;
+      previousBody.current = quoted.text;
+      followedBlocks.current = followEdit(
+        followedBlocks.current,
+        quoted.text,
+        undefined,
+        undefined
+      );
+      setBody(quoted.text);
+      placeQuote(quoted);
+    },
+    [placeQuote]
+  );
+  // A quote handed to this composer while it is mounted wakes it (`quoteInto`); the effect after
+  // the reply prefill below takes it.
+  const [quoteWake, setQuoteWake] = useState(0);
+  useEffect(
+    () =>
+      composerName === undefined
+        ? undefined
+        : onQuote(composerName, () => setQuoteWake((wake) => wake + 1)),
+    [composerName]
+  );
   const [askOptions, setAskOptions] = useState<AskOptionDraft[]>(() =>
     initial.ask === undefined || initial.ask.options.length === 0
       ? [emptyAskOption()]
@@ -780,7 +818,9 @@ export function MentionComposer({
     const takeFocus = () => {
       if (!standing) textarea.current?.focus();
     };
-    if (tookHeldDraft) {
+    // A mount that took a held send's draft keeps it, and so does a Quote reply that names this
+    // reply over what the reader has written: its quote goes at the end of that (below).
+    if (tookHeldDraft || (quoteWaiting(composerName) && previousBody.current.trim() !== "")) {
       takeFocus();
       return;
     }
@@ -806,7 +846,14 @@ export function MentionComposer({
       }),
     });
     takeFocus();
-  }, [replaceDraft, replyTo, standing]);
+  }, [composerName, replaceDraft, replyTo, standing]);
+  // After the reply prefill above, which a Quote reply that names a new reply runs in the same
+  // commit: the quote goes at the end of what the prefill wrote.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `quoteWake` is the trigger
+  useEffect(() => {
+    const selected = takeQuote(composerName);
+    if (selected !== undefined) insertQuote(selected);
+  }, [composerName, insertQuote, quoteWake]);
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now

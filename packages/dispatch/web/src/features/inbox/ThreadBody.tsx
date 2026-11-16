@@ -63,6 +63,8 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
+import { quoteInto } from "../threads/quote-reply";
+import { QuotableText } from "../threads/SelectionBar";
 import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -305,6 +307,7 @@ function CommentThreadBody({
   thread: MyReplyThreadRow;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const { sending } = useSending(threadSendKey(thread.thread_id));
   const markNewest = useThreadRead(
     thread,
     owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
@@ -340,34 +343,44 @@ function CommentThreadBody({
     )
     .map(commentTurn);
   const rootTurn = root === undefined ? undefined : commentTurn(root);
+  // Quote reply on the thread's words goes into its reply box below (`threads/quote-reply.ts`),
+  // while no reply of the thread's is on its way.
   return (
-    <ThreadTurns
-      composer={
-        root === undefined ? null : (
-          <MentionComposer
-            closed={issue.data !== undefined && issue.data.closed_at !== null}
-            frame="mt-2"
-            inline
-            kind="comment"
-            mutationKey={threadSendKey(thread.thread_id)}
-            onClose={noReturn}
-            onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: commentsKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-            }}
-            owner={owner}
-            replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
-            standing
-          />
-        )
+    <QuotableText
+      onQuote={
+        root === undefined || sending
+          ? undefined
+          : (blocks) => quoteInto(threadSendKey(thread.thread_id), blocks)
       }
-      markNewest={markNewest}
-      openAtFirstUnread={openAtFirstUnread}
-      replies={replies}
-      root={rootTurn}
-      threadId={thread.thread_id}
-      unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
-    />
+    >
+      <ThreadTurns
+        composer={
+          root === undefined ? null : (
+            <MentionComposer
+              closed={issue.data !== undefined && issue.data.closed_at !== null}
+              frame="mt-2"
+              inline
+              kind="comment"
+              mutationKey={threadSendKey(thread.thread_id)}
+              onClose={noReturn}
+              onSent={() => {
+                void queryClient.invalidateQueries({ queryKey: commentsKey });
+                void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              }}
+              owner={owner}
+              replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+              standing
+            />
+          )
+        }
+        markNewest={markNewest}
+        openAtFirstUnread={openAtFirstUnread}
+        replies={replies}
+        root={rootTurn}
+        threadId={thread.thread_id}
+        unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
+      />
+    </QuotableText>
   );
 }
 
@@ -406,6 +419,7 @@ function MessageThreadBody({
   thread: MyReplyThreadRow;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const { sending } = useSending(threadSendKey(thread.thread_id));
   const markNewest = useThreadRead(thread, { issue: issueKey });
   const issue = useQuery(issueQuery(issueKey));
   const messagesKey = ["issue-messages", issueKey];
@@ -427,40 +441,50 @@ function MessageThreadBody({
     read === undefined ? undefined : newestAttempt([read.message, ...(read.replies ?? [])]);
   const target = root?.target;
   return (
-    <ThreadTurns
-      composer={
-        root === undefined ? null : (
-          <MentionComposer
-            closed={issue.data !== undefined && issue.data.closed_at !== null}
-            frame="mt-2"
-            inline
-            mutationKey={threadSendKey(thread.thread_id)}
-            onClose={noReturn}
-            onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: messagesKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-            }}
-            owner={{ issueKey, kind: "issue" }}
-            replyTo={{
-              actor: root.author,
-              excerpt: "",
-              id: root.id,
-              parentKind: "message",
-              ...(target === null || target === undefined
-                ? {}
-                : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }),
-            }}
-            standing
-          />
-        )
+    <QuotableText
+      onQuote={
+        root === undefined || sending
+          ? undefined
+          : (blocks) => quoteInto(threadSendKey(thread.thread_id), blocks)
       }
-      markNewest={markNewest}
-      openAtFirstUnread={openAtFirstUnread}
-      replies={replies}
-      root={rootTurn}
-      threadId={thread.thread_id}
-      unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
-    />
+    >
+      <ThreadTurns
+        composer={
+          root === undefined ? null : (
+            <MentionComposer
+              closed={issue.data !== undefined && issue.data.closed_at !== null}
+              frame="mt-2"
+              inline
+              mutationKey={threadSendKey(thread.thread_id)}
+              onClose={noReturn}
+              onSent={() => {
+                void queryClient.invalidateQueries({ queryKey: messagesKey });
+                void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              }}
+              owner={{ issueKey, kind: "issue" }}
+              replyTo={{
+                actor: root.author,
+                excerpt: "",
+                id: root.id,
+                parentKind: "message",
+                ...(target === null || target === undefined
+                  ? {}
+                  : {
+                      thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target },
+                    }),
+              }}
+              standing
+            />
+          )
+        }
+        markNewest={markNewest}
+        openAtFirstUnread={openAtFirstUnread}
+        replies={replies}
+        root={rootTurn}
+        threadId={thread.thread_id}
+        unread={unreadWrites(thread, [...(rootTurn === undefined ? [] : [rootTurn]), ...replies])}
+      />
+    </QuotableText>
   );
 }
 
@@ -566,37 +590,53 @@ function AgentThreadBody({
   const turns = read === undefined ? [] : [read.message, ...(read.replies ?? [])].map(turn);
   return (
     <>
-      <ThreadTurns
-        composer={
-          agent === undefined || read === undefined || newest === undefined ? null : (
-            <div data-inbox-agent-composer="">
-              {(agent.capabilities ?? []).length === 0 ? (
-                <>
-                  <p className={`mt-2 text-xs ${textMutedOnCanvas}`}>Takes no messages</p>
-                  <p className={`mt-1 text-sm ${dangerText}`} data-testid="agent-takes-no-messages">
-                    {NO_DELIVERY_LINE}
-                  </p>
-                </>
-              ) : null}
-              <AgentMessageComposer
-                agent={agent}
-                hold={hold}
-                onCancelReply={noReturn}
-                onClose={noReturn}
-                replyTo={agentReplyTo(agent, read, newest)}
-                sendKey={sendKey}
-                standing
-              />
-            </div>
-          )
+      {/* Quote reply on the conversation's words goes into its message box, while the session
+          takes a message and none is on its way. */}
+      <QuotableText
+        onQuote={
+          agent === undefined ||
+          read === undefined ||
+          (agent.capabilities ?? []).length === 0 ||
+          hold.sending
+            ? undefined
+            : (blocks) => quoteInto(sendKey, blocks)
         }
-        markNewest={markNewest}
-        openAtFirstUnread={openAtFirstUnread}
-        replies={turns.slice(1)}
-        root={turns[0]}
-        threadId={thread.thread_id}
-        unread={unreadWrites(thread, turns)}
-      />
+      >
+        <ThreadTurns
+          composer={
+            agent === undefined || read === undefined || newest === undefined ? null : (
+              <div data-inbox-agent-composer="">
+                {(agent.capabilities ?? []).length === 0 ? (
+                  <>
+                    <p className={`mt-2 text-xs ${textMutedOnCanvas}`}>Takes no messages</p>
+                    <p
+                      className={`mt-1 text-sm ${dangerText}`}
+                      data-testid="agent-takes-no-messages"
+                    >
+                      {NO_DELIVERY_LINE}
+                    </p>
+                  </>
+                ) : null}
+                <AgentMessageComposer
+                  agent={agent}
+                  hold={hold}
+                  onCancelReply={noReturn}
+                  onClose={noReturn}
+                  replyTo={agentReplyTo(agent, read, newest)}
+                  sendKey={sendKey}
+                  standing
+                />
+              </div>
+            )
+          }
+          markNewest={markNewest}
+          openAtFirstUnread={openAtFirstUnread}
+          replies={turns.slice(1)}
+          root={turns[0]}
+          threadId={thread.thread_id}
+          unread={unreadWrites(thread, turns)}
+        />
+      </QuotableText>
       {/* A session the live list no longer holds takes no message at all, so the thread shows
           what the live view shows and offers no composer, as the Agents page's "Replied, no
           longer connected" rows do. */}

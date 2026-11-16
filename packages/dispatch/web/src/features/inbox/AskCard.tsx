@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -6,6 +6,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -27,6 +28,7 @@ import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
+import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askQuestionProse,
@@ -56,6 +58,14 @@ import { buildDispatchReference, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useKeymapScope } from "../shell/keymap";
+import {
+  quoteInto,
+  useQuotePlacement,
+  useQuoteTarget,
+  useQuoteTargetRef,
+  withQuote,
+} from "../threads/quote-reply";
+import { stepAsideFromSelection } from "../threads/SelectionBar";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -457,29 +467,68 @@ export function AskCard({
     if (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) {
       if (active.type !== "radio" && active.type !== "checkbox") return null;
     }
+    // Define is the question's and the options': words of a reply in the thread under them are
+    // the reply's, which `d` and the menu leave alone as the selection bar does.
+    const selection = window.getSelection();
+    const inThread = (node: Node | null | undefined) =>
+      (node instanceof Element ? node : node?.parentElement)?.closest("[data-ask-thread]") != null;
+    if (inThread(selection?.anchorNode) || inThread(selection?.focusNode)) return null;
     return selectedWordsIn(articleRef.current);
   };
   const openDefine = (picked: SelectedWords | null) => {
     if (picked === null) return false;
     setDefinition(picked);
+    // The answer beside the words is the one thing drawn over them.
+    stepAsideFromSelection();
     return true;
   };
+  // Quote reply (`threads/quote-reply.ts`): the selected words go into the answer box, which a
+  // compact card opens from behind its disclosure, and the cursor waits on the empty line under
+  // them once the box holds them (`useQuotePlacement`). The button that sends the answer comes
+  // into view with the box, where the page has room.
+  const placeQuote = useQuotePlacement(answerFieldRef, answerText, () =>
+    actionsRef.current?.scrollIntoView({ block: "nearest" })
+  );
+  const quoteIntoAnswer = (blocks: readonly string[]) => {
+    const quoted = withQuote(answerText, blocks);
+    if (quoted === null) return;
+    if (isCompact) setOwnWordsOpen(true);
+    setQuestionChoice(false);
+    setAnswerText(quoted.text);
+    placeQuote(quoted);
+  };
+  // The card that holds an answer box - an open question's, and an answered one's while the
+  // reader changes the answer - quotes into that box, from the question, the options and the
+  // replies in its thread, but not while its answer or question back is out; a decision block's
+  // card, like every other text inside a document, offers no Quote reply. Define is the question's
+  // and the options' alone (the article's target): the thread under them is a text of its own
+  // (`openThreadQuoteRef`), whose replies quote into the same box and offer no Define.
+  const takesAnswer =
+    completed === null && displayedAsk.state !== "resolved" && !inBlock && !isSubmitting;
+  useQuoteTarget(
+    articleRef,
+    takesAnswer ? { define: () => openDefine(selectionInCard()), quote: quoteIntoAnswer } : null
+  );
+  const openThreadQuoteRef = useQuoteTargetRef(takesAnswer ? { quote: quoteIntoAnswer } : null);
   const changeMenuOpen = (open: boolean) => {
     if (open) setMenuSelection(selectionInCard());
     setMenuOpen(open);
   };
   const declinable = displayedAsk.state === "open" && displayedAsk.kind === "question";
-  // Registered again on every commit, so the keys always reach this render's state.
+  // Registered again on every commit, so the keys always reach this render's state. While the
+  // reader changes a recorded answer the card takes Define, `w` and the save alone: the selection
+  // bar offers Define over its question there (INFRA-3231's R7), and `d` is the bar's key for it.
   useLayoutEffect(() => {
     const element = articleRef.current;
-    if (element === null || displayedAsk.state !== "open") return undefined;
+    if (element === null || (displayedAsk.state !== "open" && !changing)) return undefined;
+    const open = displayedAsk.state === "open";
     const actions: AskCardActions = {
-      askBack: startAskBack,
+      askBack: open ? startAskBack : undefined,
       decline: declinable ? () => setDeclineOpen(true) : undefined,
       define: () => openDefine(selectionInCard()),
-      handOn: () => setHandOnOpen(true),
+      handOn: open ? () => setHandOnOpen(true) : undefined,
       hasSelection: () => selectionInCard() !== null,
-      rewrite: isApproval ? undefined : startRewrite,
+      rewrite: isApproval || !open ? undefined : startRewrite,
       send: () => formRef.current?.requestSubmit(),
       stopAskingBack,
       toggleOriginal:
@@ -589,6 +638,25 @@ export function AskCard({
         ) : null}
       </div>
     );
+  // An answered ask quotes into the reply box of its thread (`AskReplyComposer`), from its record
+  // and its replies, while a reply is not out; this card's own box, named for this card alone
+  // (`replyQuoteKey`), since the margin can draw another card of the same ask beside it. A
+  // resolved ask takes no reply, and a decision block's card none of Quote reply.
+  const cardInstance = useId();
+  const replyQuoteKey = useMemo<MutationKey>(
+    () => ["ask-reply-quote", displayedAsk.id, cardInstance],
+    [cardInstance, displayedAsk.id]
+  );
+  const { sending: replySending } = useSending(["ask-reply", displayedAsk.id]);
+  const answeredQuoteRef = useQuoteTargetRef(
+    completed?.state === "answered" && !resolved && !inBlock && !replySending
+      ? { quote: (blocks) => quoteInto(replyQuoteKey, blocks) }
+      : null
+  );
+  const threadQuote = {
+    key: replyQuoteKey,
+    ref: completed === null ? openThreadQuoteRef : answeredQuoteRef,
+  };
   const threadNode =
     thread === "collapsed" ? (
       <AskThreadDisclosure
@@ -598,6 +666,7 @@ export function AskCard({
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
+        quote={threadQuote}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
@@ -610,6 +679,7 @@ export function AskCard({
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
+        quote={threadQuote}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
@@ -718,7 +788,8 @@ export function AskCard({
       {mutation.isPending ? "Saving…" : "Save answer"}
     </button>
   ) : (
-    <div className="inline-flex" ref={actionsRef}>
+    // `scroll-mb-4`: a Quote reply brings this row into view with the card's foot under it.
+    <div className="inline-flex scroll-mb-4" ref={actionsRef}>
       <AskSplitButton
         action={
           askingBack
@@ -799,6 +870,7 @@ export function AskCard({
           frame={frame}
           markRef={answerIsNewest ? markNewest : undefined}
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
+          quoteRef={answeredQuoteRef}
         />
         {unsentAnswer === "" ? null : (
           <div
@@ -1112,8 +1184,9 @@ export function AskCard({
                   name={`ask-${displayedAsk.id}`}
                   onChange={() => {
                     selectRealOption(option.label);
+                    // The box stays open while it holds anything, a quote included.
                     if (isCompact)
-                      setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
+                      setOwnWordsOpen(requiresReason(option.label) || answerText.trim() !== "");
                   }}
                   option={shown}
                 />

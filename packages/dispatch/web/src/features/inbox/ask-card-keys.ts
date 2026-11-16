@@ -1,4 +1,5 @@
 import { type KeyBinding, type KeymapScope, useKeymap } from "../shell/keymap";
+import { quoteReplyKey, quoteSelection } from "../threads/quote-reply";
 
 /**
  * What an open ask's card does on its keys. Each mounted `AskCard` registers its own against
@@ -7,12 +8,16 @@ import { type KeyBinding, type KeymapScope, useKeymap } from "../shell/keymap";
  * own state through the element alone.
  */
 export interface AskCardActions {
-  /** Absent on an approval request, which is not rewritten. */
+  /** Absent on an approval request, which is not rewritten, and while the reader changes a
+   *  recorded answer. */
   rewrite?: () => void;
-  askBack: () => void;
-  /** Absent on an approval request, which cannot be declined. */
+  /** Absent while the reader changes a recorded answer, where the card offers Save answer alone. */
+  askBack?: () => void;
+  /** Absent on an approval request, which cannot be declined, and while the reader changes a
+   *  recorded answer. */
   decline?: () => void;
-  handOn: () => void;
+  /** Absent while the reader changes a recorded answer. */
+  handOn?: () => void;
   /** Opens Define on the words selected in the card; false when none are. */
   define: () => boolean;
   hasSelection: () => boolean;
@@ -82,11 +87,11 @@ const OPTION_PLACES = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
  * The card's keys, under the `ask` scope the shortcut help lists as **Ask card**, in the order
  * and with the labels of the card's menu: `lead` first (`1`–`9` and Enter, `askCardLeadKeys`),
  * then `r` Rewrite, `b` Ask back, `a` Hand this question to, `n` Decline to answer, `d` Define
- * selected words, `w` the original wording, and, from the answer box, the modified Enter that
- * sends and Escape, which leaves Ask back. `card` names the card in hand, or null for none; the
- * host also pushes the `ask` scope above its own while one is (`useKeymapScope`), so these act
- * before its keys. A host drawn in a dialog (the Inbox's drawer) registers them in `scope`, the
- * dialog's, which is the one scope a dialog consults.
+ * selected words, `q` Quote reply, `w` the original wording, and, from the answer box, the
+ * modified Enter that sends and Escape, which leaves Ask back. `card` names the card in hand, or
+ * null for none; the host also pushes the `ask` scope above its own while one is
+ * (`useKeymapScope`), so these act before its keys. A host drawn in a dialog (the Inbox's drawer)
+ * registers them in `scope`, the dialog's, which is the one scope a dialog consults.
  *
  * The command bar lists the card's keys that act with no text field in focus. A row presses
  * only its binding's first key, so `1`–`9` are one key binding and nine rows of their own, one
@@ -121,15 +126,15 @@ export function useAskCardKeys(
       id: "ask-back",
       keys: "b",
       label: "Ask back",
-      run: () => actions()?.askBack(),
-      when: () => actions() !== undefined,
+      run: () => actions()?.askBack?.(),
+      when: () => actions()?.askBack !== undefined,
     },
     {
       id: "hand-on",
       keys: "a",
       label: "Hand this question to…",
-      run: () => actions()?.handOn(),
-      when: () => actions() !== undefined,
+      run: () => actions()?.handOn?.(),
+      when: () => actions()?.handOn !== undefined,
     },
     {
       id: "decline",
@@ -145,6 +150,13 @@ export function useAskCardKeys(
       run: () => actions()?.define(),
       when: () => actions()?.hasSelection() === true,
     },
+    // The selection bar's other action (`threads/SelectionBar.tsx`): the selected words, quoted
+    // in the answer box.
+    quoteReplyKey(
+      "Quote selected words in your answer",
+      quoteSelection,
+      () => actions()?.hasSelection() === true
+    ),
     {
       id: "original",
       keys: "w",

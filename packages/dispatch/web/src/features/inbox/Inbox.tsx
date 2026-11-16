@@ -56,13 +56,14 @@ import {
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { quotableSelection, quoteReplyKey, quoteSelection } from "../threads/quote-reply";
 import { useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
 import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
-import { ASKING_BACK_SELECTOR, useAskCardKeys } from "./ask-card-keys";
+import { ASKING_BACK_SELECTOR, askCardActions, useAskCardKeys } from "./ask-card-keys";
 import { type AskOrdinal, askOrdinals, controlName } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { BlockedOnYou, waitingOnHuman } from "./BlockedOnYou";
@@ -1257,6 +1258,19 @@ export function Inbox({
   ];
   // The lead goes in with the card's other keys, in the help's order.
   useAskCardKeys(cardHand, cardLead, cardScope);
+  // Quote reply on words of a thread the list or the column shows (`threads/quote-reply.ts`).
+  // The card in hand quotes its own question's words with its own `q`; in the drawer both are
+  // the dialog's scope, so this one stands down while the card's applies.
+  useKeymap(
+    keymapScope,
+    listKeys([
+      quoteReplyKey(
+        "Quote selected words in a reply",
+        quoteSelection,
+        () => askCardActions(cardHand())?.hasSelection() !== true && quotableSelection() !== null
+      ),
+    ])
+  );
   useKeymap(
     keymapScope,
     listKeys([

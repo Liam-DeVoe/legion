@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -66,18 +67,65 @@ type Text struct {
 }
 
 // Input is the user message of one call: the agent text the person's text replies to, left out
-// where its words are empty; the part of a document the person's text points to, left out where it
-// is empty; and the person's text. Each is cut at its bound (Clip).
+// where its words are empty; what the person's text points to, left out where it is empty: the
+// part of a document its anchor quotes, then the lines it quotes itself (SplitQuote); and the
+// person's own lines. A quoted line is not the person's words (INFRA-3231's R7, Quote reply), so
+// a question in it is no question of theirs, while the words they ask about may be in it. Each
+// part is cut at its bound (Clip).
 func Input(agent Text, quote string, person Text) string {
+	own, quoted := SplitQuote(person.Text)
+	pointed := quote
+	if quoted != "" {
+		if pointed != "" {
+			pointed += "\n\n"
+		}
+		pointed += quoted
+	}
 	var b strings.Builder
 	if strings.TrimSpace(agent.Text) != "" {
 		fmt.Fprintf(&b, "<agent_text kind=%q>\n%s\n</agent_text>\n\n", agent.Kind, Clip(agent.Text, AgentChars))
 	}
-	if quote != "" {
-		fmt.Fprintf(&b, "<quoted_part>\n%s\n</quoted_part>\n\n", Clip(quote, QuoteChars))
+	if pointed != "" {
+		fmt.Fprintf(&b, "<quoted_part>\n%s\n</quoted_part>\n\n", Clip(pointed, QuoteChars))
 	}
-	fmt.Fprintf(&b, "<person_text kind=%q>\n%s\n</person_text>\n", person.Kind, Clip(person.Text, PersonChars))
+	fmt.Fprintf(&b, "<person_text kind=%q>\n%s\n</person_text>\n", person.Kind, Clip(own, PersonChars))
 	return b.String()
+}
+
+// quoteLine matches a line Markdown reads as a quote's: `>` after at most three spaces, and the
+// one space that may follow it.
+var quoteLine = regexp.MustCompile(`^ {0,3}> ?`)
+
+// SplitQuote splits a person's text into their own lines and the lines they quote: a line that
+// starts with `>` (after at most three spaces), as Quote reply writes one. A quoted line loses
+// that `>` and the space after it. Each part keeps its lines in order, without the blank lines at
+// its ends. A text that quotes nothing is its own words as written, and quotes "".
+func SplitQuote(text string) (own, quoted string) {
+	lines := strings.Split(text, "\n")
+	if !slices.ContainsFunc(lines, quoteLine.MatchString) {
+		return text, ""
+	}
+	var ownLines, quotedLines []string
+	for _, line := range lines {
+		if loc := quoteLine.FindStringIndex(line); loc != nil {
+			quotedLines = append(quotedLines, line[loc[1]:])
+		} else {
+			ownLines = append(ownLines, line)
+		}
+	}
+	return trimBlankLines(ownLines), trimBlankLines(quotedLines)
+}
+
+// trimBlankLines joins lines, leaving out the blank lines at either end.
+func trimBlankLines(lines []string) string {
+	blank := func(line string) bool { return strings.TrimSpace(line) == "" }
+	for len(lines) > 0 && blank(lines[0]) {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && blank(lines[len(lines)-1]) {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Clip is s cut to at most n bytes at a rune boundary, with a line that says how much was cut.

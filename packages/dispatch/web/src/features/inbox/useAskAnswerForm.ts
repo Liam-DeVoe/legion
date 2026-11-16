@@ -14,6 +14,7 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
+import { ownWords } from "../threads/quote-reply";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { useAnswerDraft } from "./answer-drafts";
@@ -296,7 +297,10 @@ export function useAskAnswerForm({
   const hasOptions = (displayedAsk.options ?? []).length > 0;
   const isApproval = displayedAsk.kind === "approval";
   const isSubmitting = mutation.isPending || clarification.isPending;
-  const trimmedAnswer = answerText.trim();
+  // What the reader wrote in the box, which every check of it reads: their own lines, without a
+  // quote's (`> ` lines, Quote reply's), which are the asker's words. A box holding a quote alone
+  // holds no answer, no reason and no question back; what is sent is the whole box, quote and all.
+  const trimmedAnswer = ownWords(answerText).trim();
   // The server rejects Request changes without text; the form says so instead of leaving the
   // submit button silently dead.
   const requiresReason = (label: string): boolean => isApproval && label === "Request changes";
@@ -380,9 +384,8 @@ export function useAskAnswerForm({
     sendAnswer(answerText);
   };
   const sendClarification = () => {
-    const text = answerText.trim();
-    if (text === "") return;
-    submitGuard.guard(() => clarification.mutate(text));
+    if (trimmedAnswer === "") return;
+    submitGuard.guard(() => clarification.mutate(answerText.trim()));
   };
   const completed = changing ? null : recordedAsk;
   // What the reader typed and no form will ever send: the question closed under them - withdrawn,

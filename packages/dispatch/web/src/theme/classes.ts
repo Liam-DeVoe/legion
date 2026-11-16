@@ -725,6 +725,27 @@ export const menuItemRefusedText =
   "refused:cursor-default refused:text-slate-400 dark:refused:text-slate-600";
 export const menuRule = "bg-slate-200 dark:bg-slate-800";
 
+/** The bar over words a reader selected in an ask, a comment or a message
+ *  (`features/threads/SelectionBar.tsx`): the document editor's own selection bar
+ *  (`.dispatch-action-bar`, `@legion/proof-editor`'s `lib.css`, `#1f1f1f` under `#f5f5f5`) drawn
+ *  again in the palette's nearest shades, the same neutral charcoal pill in either scheme, with
+ *  each action's key in a faint chip beside its name, as the card's menu draws its keys. The
+ *  chip's fill is a white tint over the pill, so its text is measured against the pill. */
+export const selectionBarBg = "border-white/12 bg-neutral-900 shadow-[0_6px_18px_rgba(0,0,0,0.2)]";
+export const selectionBarText = "text-neutral-100";
+export const selectionBarKey = "bg-white/12 text-neutral-300";
+export const selectionBarButtonHoverBg = "hover:bg-white/12";
+registerText(
+  "selection bar action",
+  pair(P.NEUTRAL_100, P.NEUTRAL_100),
+  pair(P.NEUTRAL_900, P.NEUTRAL_900)
+);
+registerText(
+  "selection bar key",
+  pair(P.NEUTRAL_300, P.NEUTRAL_300),
+  pair(P.NEUTRAL_900, P.NEUTRAL_900)
+);
+
 /** An input/select/textarea's resting border and background, plus its focus border. Pass
  * `recessed: true` when the control sits inside a `SURFACE` card (its dark background needs to
  * read one level below the card, i.e. `SURFACE_RECESSED`); leave it `false` when the control

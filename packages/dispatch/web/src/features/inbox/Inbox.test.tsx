@@ -4321,6 +4321,9 @@ function mockDocumentColumnReads(rows: readonly InboxRow[]) {
     mockIssueReads(),
     getArtifact,
     spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    // The card the column falls back to reads a decision block's own question from its document
+    // (`block-question.ts`); here it draws the ask's question.
+    spyOn(api, "getArtifactTextWithBlocks").mockRejectedValue(new Error("no document seeded")),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "listIssueAsks").mockResolvedValue(
       rows.map((row) => ({ ...row, last_reply: null }))
