@@ -3058,7 +3058,7 @@ the process boundary holds only when the daemon runs apart from its agents, as a
 Every command the daemon itself starts (git and jj in a managed repository's checkout, `mise where`, a key command) runs without `NATS_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED`, so a seed passed by value never reaches a repository's tooling;
 still, prefer the file forms (`nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, or the `_FILE` variables), since a value stays in the daemon's own process environment.
 At boot the daemon logs, once, `legion daemon connects to NATS` with `user=U…` (the public key, never the seed, or, for the service token below, the account the token names), `paneUser=true|false`, and `seed=service-token|daemon|pane|none`.
-`legion start --check-config` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line.
+`legion start --check-config` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line, or, for the service token below, `nats-daemon-service-account=` and the account the token names, never the token.
 Every permission the server refuses the daemon's connection, a subscription or a publish (its JetStream consumers' API requests included), is logged at error as `NATS refused the daemon a permission: its NATS user lacks that grant` with its `operation` and `subject`;
 the server reports a refusal asynchronously, and nats.go's default handler would only write it to stderr, outside the daemon's log.
 Every refusal of the connection's credential on a reconnect (an authorization violation, for a seed or the service token below) is logged at warn as `NATS refused the connection's credential` with its `error`.
