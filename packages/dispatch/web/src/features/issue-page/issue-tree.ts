@@ -17,7 +17,15 @@ import type {
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
-import { type Draft, plainWords, type TreeContext, treeContext, treeDrafts } from "./tree-drafts";
+import {
+  addressesAsShortForms,
+  BLANK_LINE,
+  type Draft,
+  plainWords,
+  type TreeContext,
+  treeContext,
+  treeDrafts,
+} from "./tree-drafts";
 
 /**
  * The issue's node tree, built from the page's reads and nothing else
@@ -352,7 +360,10 @@ export function drawnLine({
 
 /** The node's own words as a reader reads them: the words of the server's reading of its text
  *  where its read sent one (`tree`), so its first line holds none of the symbols its body draws
- *  as formatting, and its text as stored otherwise. */
+ *  as formatting, and its text as stored otherwise. A bare address stays in them as written,
+ *  never as the short form a line reads (`lineWords`): the body draws these words, the words
+ *  filter matches them (`presets.ts`), and the citations the batched reference read is asked to
+ *  name are read from them (`useIssueTree.ts`), which a short form would drop. */
 export function nodeWords(node: TreeNode): string {
   return node.tree === undefined ? node.text : wordsOf(node.tree);
 }
@@ -360,19 +371,27 @@ export function nodeWords(node: TreeNode): string {
 /**
  * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
  * the first top-level block of its reading that holds any, a heading or a paragraph, and where
- * the node has no reading the first block of its stored text that holds any, to its blank line,
- * with a leading heading marker (`#` to `######` and a space) left out and a heading ending at
- * its own line, as markdown ends one. A block that holds no words - a horizontal rule, a
- * paragraph that is only an image - is passed over, or the line would be empty while the node
- * has words. A decision's reading opens with its own `##` heading, and `wordsOf` joins a heading
- * and the paragraph after it with one space, so a line cut from the whole reading ran the heading
- * into its body: "Keep it Keep the model pure.".
+ * the node has no reading the first block of its stored text that holds any, to its blank line
+ * (`BLANK_LINE`), a heading ending at its own line, as markdown ends one, and its one marker
+ * (`#` to `######` and a space) left out as `plainWords` leaves it out, so `## # 1 rule` reads
+ * `# 1 rule`. A block that holds no words - a horizontal rule, a paragraph that is only an
+ * image - is passed over, or the line would be empty while the node has words. A decision's
+ * reading opens with its own `##` heading, and `wordsOf` joins a heading and the paragraph after
+ * it with one space, so a line cut from the whole reading ran the heading into its body: "Keep it
+ * Keep the model pure.".
  *
  * A stored block is markdown, and its marks are no word of it, so it is read to plain words
  * (`plainWords`) as the server's reading holds them: a plan task stored as
  * `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`, whose label
  * `firstLineOf` reads as no sentence end (decision 51), and whose sentence end is no longer
  * hidden behind the `**` that followed it.
+ *
+ * A bare `dispatch://` address in these words reads as its target's short form, as a link to it
+ * draws it (`addressesAsShortForms`, decision 95): the server's reading keeps one as a plain
+ * text run, which is no link, a stored text holds it as written, and no one-line view draws a
+ * raw address (R22). An address in code stays as its author wrote it, as a rendered body draws
+ * it. The first block of a reading is written short here, text run by text run
+ * (`firstBlockWords`), and a stored block as it is read to plain words (`plainWords`).
  *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
@@ -382,9 +401,9 @@ export function nodeWords(node: TreeNode): string {
  */
 export function lineWords(node: TreeNode): string {
   if (node.tree !== undefined) return firstBlockWords(node.tree);
-  for (const stored of node.text.split(/\n\s*\n/u)) {
+  for (const stored of node.text.split(BLANK_LINE)) {
     const block = stored.trimStart();
-    const words = plainWords(/^#{1,6} +(.*)/u.exec(block)?.[1] ?? block);
+    const words = plainWords(/^#{1,6} +.*/u.exec(block)?.[0] ?? block);
     if (!NO_WORDS.test(words)) return words;
   }
   return "";
@@ -395,15 +414,39 @@ export function lineWords(node: TreeNode): string {
  *  `___`). */
 const NO_WORDS = /^[\s*_-]*$/u;
 
-/** The words of the first top-level block of a reading that holds any (`lineWords`); `""` for a
- *  reading none of whose blocks holds a word. */
+/** The words of the first top-level block of a reading that holds any (`lineWords`), each bare
+ *  address outside code in them written as its target's short form (`withShortAddresses`); `""`
+ *  for a reading none of whose blocks holds a word. */
 function firstBlockWords(reading: DisplayTree): string {
   const content = reading.content;
   for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
-    const words = wordsOf(block);
+    const words = wordsOf(withShortAddresses(block));
     if (words.trim() !== "") return words;
   }
   return "";
+}
+
+/**
+ * A copy of `node` with each bare address in each of its text runs written as its target's short
+ * form (`addressesAsShortForms`), one run at a time before their words are joined, so the words
+ * of the copy are spaced as the node's are. A run marked as inline code, or inside a code block,
+ * stays as its author wrote it, as a rendered body's one line keeps it (`markdown-engine.ts`'s
+ * `shortenReferences`). `node` itself is left as it was.
+ */
+function withShortAddresses(node: DisplayTree, inCode = false): DisplayTree {
+  if (typeof node.text === "string") {
+    const marks = Array.isArray(node.marks) ? (node.marks as DisplayTree[]) : [];
+    return inCode || marks.some((mark) => mark.type === "inlineCode")
+      ? node
+      : { ...node, text: addressesAsShortForms(node.text) };
+  }
+  const content = node.content;
+  if (!Array.isArray(content)) return node;
+  const code = inCode || node.type === "code_block";
+  return {
+    ...node,
+    content: (content as DisplayTree[]).map((child) => withShortAddresses(child, code)),
+  };
 }
 
 /** The line a chip names a block by, and the page publishes as the block's name: the line a row
@@ -432,14 +475,14 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * to now, by its address: the name a chip naming it draws (`NodeChip.name`), by the same rule
  * (`namingContext`), which the page publishes for every link beside the tree to draw
  * (`reference-names.tsx`). A link and a chip naming one target so never disagree. A target whose
- * name is `""` - another issue's block the read sent no reading for - is left out, so a link
- * that finds no name reads its own (`useKnownReferenceName`).
+ * name is `""` is left out, so a link that finds no name reads its own (`useKnownReferenceName`):
+ * a target that is gone, which its chip names by `""` (`treeContext`), and another issue's block
+ * the read sent no reading for.
  */
 export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> {
   const context = namingContext(reads);
   const names = new Map<string, string>();
   for (const target of reads.targets ?? []) {
-    if (target.gone) continue;
     const name = context.chipOf(target.ref).name;
     if (name !== "") names.set(target.ref, name);
   }
