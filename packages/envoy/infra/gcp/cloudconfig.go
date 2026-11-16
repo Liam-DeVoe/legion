@@ -62,6 +62,8 @@ type vm struct {
 
 // listener is the hub's Envoy listener: its image, the secret id of its NATS seed, which the VM
 // fetches whenever the listener starts, and its environment but the seed (core.ListenerConfig.Env).
+// seedSecret is empty for a listener behind the auth service, whose environment names its service
+// identity instead: the VM writes no seed script and fetches no seed for it.
 type listener struct {
 	image      string
 	seedSecret string
@@ -91,15 +93,15 @@ type writeFile struct {
 //
 // write_files holds the NATS configuration, the secret fetcher and the units; runcmd loads the
 // units and starts them in order. Every hub gets a Tailscale Serve configuration, empty without a
-// listener; a hub with a listener also gets its seed script. They are started, never enabled: /etc
-// does not outlive the boot.
+// listener; a hub whose listener has a seed also gets its seed script. They are started, never
+// enabled: /etc does not outlive the boot.
 func (v vm) document() cloudConfig {
 	files := []writeFile{
 		{Path: natsConfPath, Permissions: "0644", Content: v.natsConf},
 		{Path: fetchPath, Permissions: "0755", Content: fetchScript},
 		{Path: joinedPath, Permissions: "0755", Content: joinedScript},
 	}
-	if v.listener != nil {
+	if v.listener != nil && v.listener.seedSecret != "" {
 		files = append(files, writeFile{Path: seedEnvPath, Permissions: "0755", Content: seedEnvScript})
 	}
 	files = append(files, writeFile{Path: servePath, Permissions: "0644", Content: serveConfig(v.listener != nil)})
@@ -402,21 +404,26 @@ func (v vm) natsUnit() string {
 	}, "ExecStop=/usr/bin/docker stop -t 30 nats")
 }
 
-// listenerUnit runs the hub's Envoy listener on the host's network, after NATS, with its seed
-// fetched before every start: a fetch that fails fails the start, and the unit's restart fetches
-// again 10 seconds later. It listens on the VM's loopback, where Tailscale Serve forwards the
-// tailnet's connections to its port, and reaches NATS there too. It is stopped with
-// docker stop -t 30, since the listener's own shutdown takes up to about twenty-three seconds.
+// listenerUnit runs the hub's Envoy listener on the host's network, after NATS. A listener with a
+// seed has it fetched before every start: a fetch that fails fails the start, and the unit's
+// restart fetches again 10 seconds later. A listener behind the auth service has no seed, and so
+// no env file and no fetch: its environment names the audience its bus asks the metadata server,
+// on the host's network, for an identity token for. It listens on the VM's loopback, where
+// Tailscale Serve forwards the tailnet's connections to its port, and reaches NATS there too. It
+// is stopped with docker stop -t 30, since the listener's own shutdown takes up to about
+// twenty-three seconds.
 func (v vm) listenerUnit() string {
-	run := []string{"--env-file", listenerEnvPath}
+	var run, service []string
+	if v.listener.seedSecret != "" {
+		run = append(run, "--env-file", listenerEnvPath)
+		service = append(service, "ExecStartPre="+seedEnvPath+" "+listenerEnvPath+" "+v.listener.seedSecret)
+	}
 	for _, e := range v.listener.env {
 		run = append(run, "-e", e)
 	}
 	return containerUnit("Envoy's listener, which the tailnet reaches through Tailscale Serve", natsService, "envoy-listener",
 		append(run, v.listener.image),
-		"ExecStartPre="+seedEnvPath+" "+listenerEnvPath+" "+v.listener.seedSecret,
-		"TimeoutStartSec=600",
-		"ExecStop=/usr/bin/docker stop -t 30 envoy-listener")
+		append(service, "TimeoutStartSec=600", "ExecStop=/usr/bin/docker stop -t 30 envoy-listener")...)
 }
 
 // containerUnit is a unit that runs one container, name, on the host's network, with run its

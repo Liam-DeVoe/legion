@@ -236,6 +236,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"tailnet.listener.machineId", "tailnet.listener.machineId", func(a *A, s string) { listener(a).MachineID = str(s) }},
 		{"tailnet.listener.seedSecretName", "tailnet.listener.seedSecretName", func(a *A, s string) { listener(a).SeedSecretName = strings.ToLower(s) }},
 		{"tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey", func(a *A, s string) { listener(a).SeedSecretKey = s }},
+		{"tailnet.listener.natsAudience", "tailnet.listener.natsAudience", func(a *A, s string) { listener(a).NatsAudience = splitSeed(s, "-") }},
 		{"tailnet.listener.allowedHosts", "tailnet.listener.allowedHosts[0]", func(a *A, s string) {
 			listener(a).AllowedHosts = []string{strings.ToLower(s) + ".example.com"}
 		}},

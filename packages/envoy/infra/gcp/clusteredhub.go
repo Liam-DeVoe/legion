@@ -198,17 +198,27 @@ func (t *ClusteredHubTailnetArgs) Annotate(a infer.Annotator) {
 }
 
 // ClusteredHubListenerArgs are the session listener the hub runs as a workload of its own, which
-// the tailnet hosts forward the Tailscale Service's port 9020 to: its image, its machine id, the
-// public key of its NATS user's seed, and the existing Kubernetes Secret in the hub's namespace,
-// and the key in it, holding that seed, which the component mounts by reference and never reads.
-// The hub renders the listener's user itself, named after the machine id and granted
-// core.ListenerPermissions for it, as gcp:NatsHub renders its own listener's.
+// the tailnet hosts forward the Tailscale Service's port 9020 to: its image, its machine id, and
+// the NATS identity it connects with. Without authCallout that is a user with a seed: the seed's
+// public key, and the existing Kubernetes Secret in the hub's namespace, and the key in it,
+// holding that seed, which the component mounts by reference and never reads; the hub renders the
+// user itself, named after the machine id and granted core.ListenerPermissions for it, as
+// gcp:NatsHub renders its own listener's. With authCallout it is a projected token of the
+// listener's own ServiceAccount for natsAudience, which the auth service admits it by
+// (dispatch://INFRA-840): the hub renders no user and mounts no Secret, so the seed's inputs are
+// refused.
 type ClusteredHubListenerArgs struct {
-	Image          string  `pulumi:"image"`              // pinned: <name>@sha256:<digest>
-	MachineID      *string `pulumi:"machineId,optional"` // default tailnet.serviceName
-	NKey           string  `pulumi:"nkey"`               // the seed's public key; never the seed
-	SeedSecretName string  `pulumi:"seedSecretName"`
-	SeedSecretKey  string  `pulumi:"seedSecretKey"`
+	Image          string  `pulumi:"image"`                   // pinned: <name>@sha256:<digest>
+	MachineID      *string `pulumi:"machineId,optional"`      // default tailnet.serviceName
+	NKey           string  `pulumi:"nkey,optional"`           // the seed's public key, never the seed: required without authCallout
+	SeedSecretName string  `pulumi:"seedSecretName,optional"` // required without authCallout
+	SeedSecretKey  string  `pulumi:"seedSecretKey,optional"`  // required without authCallout
+	// NatsAudience is the audience of the projected ServiceAccount token the listener presents to
+	// the auth service as its NATS credential (NATS_SERVICE_TOKEN_FILE names its file): the
+	// broker's BROKER_NATS_K8S_AUDIENCE, whose BROKER_NATS_SERVICES lists the listener's account,
+	// system:serviceaccount:<namespace>:<name>-listener, as a listener of its machine id. Required
+	// with authCallout and refused without.
+	NatsAudience string `pulumi:"natsAudience,optional"`
 	// Any further address a client dials the listener by, beyond <serviceName>.<tailnetDnsName>,
 	// which it always serves.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
@@ -283,10 +293,13 @@ type clusteredHubTailnet struct {
 
 // clusteredHubListener is the resolved session listener the hub runs beside its tailnet hosts,
 // which forward the Tailscale Service's port 9020 to it: env is its environment but the seed
-// (core.ListenerConfig.Env).
+// (core.ListenerConfig.Env). natsAudience is set behind the auth service, where the listener
+// presents a projected token for it and the seed's Secret is empty; it is empty otherwise, where
+// the pod mounts that Secret.
 type clusteredHubListener struct {
 	image, machineID              string
 	seedSecretName, seedSecretKey string
+	natsAudience                  string
 	cpu, memory                   string
 	env                           []string
 }
@@ -334,7 +347,8 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 		list("tailnet.tags", t.Tags)
 		if l := t.Listener; l != nil {
 			fields = append(fields, field{"tailnet.listener.image", l.Image},
-				field{"tailnet.listener.seedSecretName", l.SeedSecretName}, field{"tailnet.listener.seedSecretKey", l.SeedSecretKey})
+				field{"tailnet.listener.seedSecretName", l.SeedSecretName}, field{"tailnet.listener.seedSecretKey", l.SeedSecretKey},
+				field{"tailnet.listener.natsAudience", l.NatsAudience})
 			opt("tailnet.listener.machineId", l.MachineID)
 			opt("tailnet.listener.cpu", l.Cpu)
 			opt("tailnet.listener.memory", l.Memory)
@@ -428,9 +442,6 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 		if err := checkNamespaces(list.input, list.namespaces); err != nil {
 			return clusteredHubSettings{}, err
 		}
-	}
-	if args.AuthCallout != nil && args.Tailnet != nil && args.Tailnet.Listener != nil {
-		return clusteredHubSettings{}, listenerBesideCallout("tailnet.listener")
 	}
 	var listener *listenerUser
 	if s.tailnet, listener, err = newClusteredHubTailnet(args, s); err != nil {
@@ -644,6 +655,12 @@ func checkNamespaces(input string, namespaces []string) error {
 // reaches NATS through the hub's client Service. It answers on the Service's tailnet name and on
 // every further address allowedHosts names; the operator's entries are checked as their own
 // list, so a refusal names tailnet.listener.allowedHosts and the index the operator wrote.
+//
+// Its NATS identity follows authCallout (listenerIdentity): without it, the user the hub renders
+// for the listener's seed, from the Secret the pod mounts; with it, the projected token of the
+// listener's own ServiceAccount for natsAudience, which the pod reads at
+// clusteredHubListenerTokenFile, while the hub renders no user for it. ENVOY_PRIVATE_PROJECTS=1 is
+// in its environment exactly when privateProjects is.
 func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) (*clusteredHubTailnet, *listenerUser, error) {
 	t := args.Tailnet
 	if t == nil {
@@ -702,14 +719,21 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	if err := core.CheckMachineID("tailnet.listener.machineId", machineID); err != nil {
 		return nil, nil, err
 	}
-	if l.NKey == "" {
-		return nil, nil, core.InputErrorf("tailnet.listener.nkey", "tailnet.listener.nkey is required")
+	service := args.AuthCallout != nil
+	if err := listenerIdentity("tailnet.listener.", service, l.NatsAudience, "a projected ServiceAccount token's audience", "BROKER_NATS_K8S_AUDIENCE",
+		[][2]string{{"nkey", l.NKey}, {"seedSecretName", l.SeedSecretName}, {"seedSecretKey", l.SeedSecretKey}}); err != nil {
+		return nil, nil, err
 	}
-	if !dnsSubdomain(l.SeedSecretName) {
-		return nil, nil, core.InputErrorf("tailnet.listener.seedSecretName", "tailnet.listener.seedSecretName %q must be a DNS subdomain, the name of a Secret in namespace %s", l.SeedSecretName, s.namespace)
-	}
-	if !secretKeyRule.MatchString(l.SeedSecretKey) {
-		return nil, nil, core.InputErrorf("tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey %q must match %s", l.SeedSecretKey, secretKeyRule)
+	if !service {
+		if l.NKey == "" {
+			return nil, nil, core.InputErrorf("tailnet.listener.nkey", "tailnet.listener.nkey is required")
+		}
+		if !dnsSubdomain(l.SeedSecretName) {
+			return nil, nil, core.InputErrorf("tailnet.listener.seedSecretName", "tailnet.listener.seedSecretName %q must be a DNS subdomain, the name of a Secret in namespace %s", l.SeedSecretName, s.namespace)
+		}
+		if !secretKeyRule.MatchString(l.SeedSecretKey) {
+			return nil, nil, core.InputErrorf("tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey %q must match %s", l.SeedSecretKey, secretKeyRule)
+		}
 	}
 	if err := core.CheckAllowedHosts("tailnet.listener.allowedHosts", l.AllowedHosts); err != nil {
 		return nil, nil, err
@@ -719,6 +743,7 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 		machineID:      machineID,
 		seedSecretName: l.SeedSecretName,
 		seedSecretKey:  l.SeedSecretKey,
+		natsAudience:   l.NatsAudience,
 	}
 	// The listener is the only container of its own pod, so its size is that pod's whole request,
 	// refused where Autopilot would raise or reject the pod, as the hub pod's size is.
@@ -736,14 +761,19 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	// The listener serves on every address of its own pod: the tailnet hosts reach it through its
 	// cluster Service, which a NetworkPolicy admits their pods alone to, and no longer over a
 	// loopback they share with it.
-	env, err := core.ListenerConfig{
-		MachineID:      machineID,
-		Port:           core.DefaultListenerPort,
-		ListenHost:     "0.0.0.0",
-		AllowedHosts:   append([]string{host}, l.AllowedHosts...),
-		NATSReplicas:   s.natsReplicas,
-		StreamMaxBytes: s.streamMaxBytes,
-	}.Env([]string{s.serviceURL})
+	config := core.ListenerConfig{
+		MachineID:       machineID,
+		Port:            core.DefaultListenerPort,
+		ListenHost:      "0.0.0.0",
+		AllowedHosts:    append([]string{host}, l.AllowedHosts...),
+		NATSReplicas:    s.natsReplicas,
+		StreamMaxBytes:  s.streamMaxBytes,
+		PrivateProjects: args.PrivateProjects,
+	}
+	if service {
+		config.ServiceTokenFile = clusteredHubListenerTokenFile
+	}
+	env, err := config.Env([]string{s.serviceURL})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -751,7 +781,7 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	tailnet.listener = listener
 	tailnet.natsURL = fmt.Sprintf("nats://%s:%d", host, natsPort)
 	tailnet.envoyURL = fmt.Sprintf("http://%s:%d", host, core.DefaultListenerPort)
-	return tailnet, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
+	return tailnet, &listenerUser{machineID: machineID, nkey: l.NKey, service: service}, nil
 }
 
 // authorizationRefusal is a refusal of the users' rendering as a core.InputError: core's refusal of

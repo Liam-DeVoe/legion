@@ -202,12 +202,12 @@ the new `nats.conf` and `auth.conf` is applied, and every restarted pod starts o
 | `clientNamespaces` | required | The namespaces admitted to NATS's client port, 4222: at least one, each a DNS label, none repeated. |
 | `monitorNamespaces` | none | The namespaces admitted to NATS's monitoring port, 8222, with the same rules. Without one, no namespace is. |
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
-| `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub has `tailnet`, whose listener is a user of its own. |
+| `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub has `tailnet` without `authCallout`, whose listener is then a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). A change to it, or to the keys of `users` while it is set, rolls the hub pods (`envoy-infra.sjawhar.dev/auth-callout`), since nats-server refuses to reload one. Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, and beside any entry of `users` but `authCallout.serviceUser`. |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). With it, `tailnet.listener` connects by its service identity, a projected token for `tailnet.listener.natsAudience`, and is no user of the hub. A change to it, or to the keys of `users` while it is set, rolls the hub pods (`envoy-infra.sjawhar.dev/auth-callout`), since nats-server refuses to reload one. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, and beside any entry of `users` but `authCallout.serviceUser`. With it, the session listener's environment carries `ENVOY_PRIVATE_PROJECTS=1`, so the listener decides a project frame that carries no stamp as private. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to. |
-| `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. |
+| `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; its NATS identity, which follows `authCallout`; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Without `authCallout` the listener connects as a user whose seed is stored: `nkey`, the public key of that seed, and `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold the seed and which the component mounts by reference and never reads, are required, and `natsAudience` is refused. With `authCallout` it connects by its service identity: `natsAudience` is required, the audience of a projected token of the listener's own ServiceAccount, `system:serviceaccount:<namespace>:<name>-listener`, which the broker's `BROKER_NATS_K8S_AUDIENCE` names and its `BROKER_NATS_SERVICES` lists as a listener of `machineId`; the pod reads the token at `NATS_SERVICE_TOKEN_FILE`, and the hub renders no user for it, so `nkey`, `seedSecretName` and `seedSecretKey` are refused. |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -222,8 +222,8 @@ input:
   `namespace`, `name`, `serviceName`, the images, `storageClassName`, `natsCpu`, `natsMemory`,
   `priorityClassName`, an entry of any of the three namespace lists, a user's `machineId`,
   `listenerMachineId` or `dispatchMachineId`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a tag,
-  and the listener's `image`, `seedSecretName`, `seedSecretKey`, `machineId`, `cpu`, `memory` and
-  `allowedHosts` entries. The refusal names the input by its path and never its value. A seed in
+  and the listener's `image`, `seedSecretName`, `seedSecretKey`, `natsAudience`, `machineId`, `cpu`,
+  `memory` and `allowedHosts` entries. The refusal names the input by its path and never its value. A seed in
   a user's name, a rule entry or an `nkey` is refused by the authorization, as for `gcp:NatsHub`;
 - no `kubeconfig`;
 - a `name` that is not a DNS-1035 label or is over 43 bytes, a `namespace` that is not a DNS
@@ -246,8 +246,10 @@ input:
 - a `tailnetAuthKey` without `tailnet`, and no `tailnetAuthKey` with it;
 - of `tailnet`: a `serviceName` or `tailnetDnsName` outside its rule, no `tags` or a tag outside
   Tailscale's rule, `replicas` below 2, and no `listener`; of the listener: a `machineId` the
-  shared machine-id rule refuses, an empty `nkey`, a `seedSecretName` that is not a DNS subdomain,
-  a `seedSecretKey` outside `[-._a-zA-Z0-9]+`, an `allowedHosts` entry refused as `gcp:NatsHub`'s
+  shared machine-id rule refuses; without `authCallout`, an empty `nkey`, a `seedSecretName` that is
+  not a DNS subdomain, a `seedSecretKey` outside `[-._a-zA-Z0-9]+` and any `natsAudience`; with
+  `authCallout`, no `natsAudience`, one holding whitespace or a control character, and any `nkey`,
+  `seedSecretName` or `seedSecretKey`; an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, and a `cpu` or `memory` at which Autopilot would not run the
   listener pod as rendered (see [Sizing](#sizing));
 - no `users` without `tailnet`, and a user refused as
@@ -310,12 +312,17 @@ one per zone, held hard, with `minDomains` the lesser of `replicas` and 3. With
 
 The Deployment `<n>-listener` runs Envoy's session listener as a workload of its own, in one pod,
 rolled with `maxUnavailable: 0` and `maxSurge: 1`. The pod runs under the ServiceAccount
-`<n>-listener`, which mounts no token, since the listener calls no Kubernetes API. It runs as uid
-999, the listener image's own user, with no privilege escalation and every Linux capability
+`<n>-listener`, which automounts no token, since the listener calls no Kubernetes API. It runs as
+uid 999, the listener image's own user, with no privilege escalation and every Linux capability
 dropped, and with `priorityClassName` it names the class. Its one container, `listener`, runs
 `tailnet.listener.image` at `tailnet.listener.cpu` and `tailnet.listener.memory` (`500m` and `1Gi`
-by default). The NATS seed is mounted read-only at `/var/run/secrets/envoy/nats-seed`, from the
-consumer's Secret by reference.
+by default). Without `authCallout` the NATS seed is mounted read-only at
+`/var/run/secrets/envoy/nats-seed`, from the consumer's Secret by reference. With `authCallout`
+the pod mounts no Secret: a projected token of `<n>-listener` for `tailnet.listener.natsAudience`
+alone, which the kubelet rewrites at 80% of its hour, is mounted read-only at
+`/var/run/secrets/envoy/nats-token`, which `NATS_SERVICE_TOKEN_FILE` names.
+`gcp/testdata/clustered-hub-listener-pod.golden` and
+`clustered-hub-listener-pod-service-identity.golden` are the two pods.
 
 The component writes the pod count, one, and no input changes it. Two copies would contend for the
 one durable `listener-<tailnet.listener.machineId>`: until cybermonklabs/legion#2404 gives the
@@ -478,9 +485,14 @@ With `tailnet`, also:
   only once approved. The same policy decides which devices reach the Service's 4222 and 9020:
   `gcp:NatsHub`'s [listener](docs/nats-hub.md#the-hubs-listener) and
   [session user](docs/nats-hub.md#the-hubs-users) cautions hold for them as written.
-- The Secret `tailnet.listener.seedSecretName`, in `namespace`, holds the listener user's seed under
-  `tailnet.listener.seedSecretKey`, its public key being `tailnet.listener.nkey`. The listener's
-  pod starts only once the Secret exists; the component never reads, creates or waits on it.
+- Without `authCallout`, the Secret `tailnet.listener.seedSecretName`, in `namespace`, holds the
+  listener user's seed under `tailnet.listener.seedSecretKey`, its public key being
+  `tailnet.listener.nkey`. The listener's pod starts only once the Secret exists; the component
+  never reads, creates or waits on it. With `authCallout`, the broker's `BROKER_NATS_SERVICES`
+  lists the listener's account, `system:serviceaccount:<namespace>:<name>-listener`, as a listener
+  of the listener's machine id, and its `BROKER_NATS_K8S_AUDIENCE` is `tailnet.listener.natsAudience`
+  and its `BROKER_K8S_OIDC_ISSUER` this cluster's issuer; until then the auth service refuses the
+  listener's connection, naming the account.
 
 A hub may run without `tailnet` first and take it in a later update.
 
@@ -2872,10 +2884,9 @@ callout is a `nats:AuthCallout` alike. `gcp:NatsHub` and `gcp:ClusteredNatsHub` 
 server's from their `users`, `listener` and `sessionUser`, with `authCallout` and
 `privateProjects` as `callout` and `privateProjects` (see
 [The hub's users](docs/nats-hub.md#the-hubs-users) and
-[The auth service](docs/nats-hub.md#the-auth-service)). A hub refuses its own listener beside
-`authCallout`, naming both: the listener connects as a user whose seed the hub stores, and its
-service identity, with which it would connect through the auth service, arrives with
-dispatch://INFRA-840 (t-e-13). `host:Listener` runs no NATS server and takes none.
+[The auth service](docs/nats-hub.md#the-auth-service)). Behind `authCallout` a hub's own listener
+is no user of the server: it connects by its service identity, which the auth service admits it
+by. `host:Listener` runs no NATS server and takes none.
 
 | Input | What it is |
 | --- | --- |

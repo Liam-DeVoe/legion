@@ -60,6 +60,36 @@ type ListenerConfig struct {
 	AgentSecretsURL      string
 	AgentSecretsAudience string
 	PublicURL            string
+	// ServiceTokenFile and ServiceGoogleAudience are the platform identity the listener's NATS
+	// connection presents to a hub whose connections the auth service in the secrets broker
+	// admits (dispatch://INFRA-840, internal/broker/natscallout): the path of a projected
+	// ServiceAccount token, NATS_SERVICE_TOKEN_FILE, which a listener in a pod reads afresh at
+	// each connect, or the audience of the Google identity token a VM's metadata server mints,
+	// NATS_SERVICE_GOOGLE_AUDIENCE (bus.ServiceTokenFileEnvVar, bus.ServiceGoogleAudienceEnvVar).
+	// The audience or the token's is the one the broker's BROKER_NATS_GOOGLE_AUDIENCE or
+	// BROKER_NATS_K8S_AUDIENCE names. A listener connects as one identity, so at most one is set,
+	// and a component that sets one gives the listener no seed (EnvNATSSeed): the bus refuses
+	// either beside a seed when it starts. Both empty leaves both variables unset.
+	ServiceTokenFile      string
+	ServiceGoogleAudience string
+	// PrivateProjects is ENVOY_PRIVATE_PROJECTS=1: the listener's deployment may make a Dispatch
+	// project private (dispatch://INFRA-3862), so a project frame that carries no stamp is decided
+	// as private rather than by the listener's copy of the private projects. A component sets it
+	// from the same value as its hub's privateProjects. False leaves the variable unset, and the
+	// listener decides by its copy alone, as before the field existed.
+	PrivateProjects bool
+}
+
+// EnvPrivateProjects names the variable PrivateProjects renders. The listener reads the name
+// (dispatch://INFRA-3862, PlanC's rule 3); core may not import the listener's packages, for the
+// reason brokerVars gives, so the name is written here once.
+const EnvPrivateProjects = "ENVOY_PRIVATE_PROJECTS"
+
+// serviceVars are the two variables of the listener's service identity, in the order Env renders
+// them, each with the input a refusal names it by: the bus's own names.
+var serviceVars = [2]struct{ input, variable string }{
+	{"serviceTokenFile", bus.ServiceTokenFileEnvVar},
+	{"serviceGoogleAudience", bus.ServiceGoogleAudienceEnvVar},
 }
 
 // TailnetHostName is the address a client reaches the listener of the tailnet machine hostname by,
@@ -143,6 +173,23 @@ var brokerVars = [3]struct{ input, variable string }{
 	{"publicUrl", "ENVOY_PUBLIC_URL"},
 }
 
+// CheckEnvValue refuses value, which a component renders as variable's value in the listener's
+// environment and names by its own input, input, where the environment cannot carry it. A value
+// holding an nkey seed is refused first, naming input and never the value, for Check's reason; and
+// one holding whitespace or a control character is refused because a component renders each
+// variable as one KEY=value argument of the unit's docker run command, where a space splits the
+// argument and a line break ends the heredoc a watchdog writes it into, and because the listener
+// trims what it reads, so a blank value is no value there at all.
+func CheckEnvValue(input, variable, value string) error {
+	if bus.HoldsSeed(value) {
+		return InputErrorf(input, "%w", SeedRefusal(input))
+	}
+	if strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl) {
+		return InputErrorf(input, "%s holds whitespace or a control character, which %s cannot carry (not echoed)", input, variable)
+	}
+	return nil
+}
+
 // CheckBroker refuses a broker check the listener would refuse at boot. prefix is the caller's
 // own path for the three inputs — "" for a listener's config, and a component's spelling, such
 // as "listener.", where it carries them under one input — so each refusal names the input as the
@@ -151,20 +198,12 @@ var brokerVars = [3]struct{ input, variable string }{
 // The listener reads the three as one all-or-nothing set (cmd/listener/brokerauth.go,
 // resolveListenerBrokerConfig), so a partial set is refused here, naming the missing input and
 // the one that asks for it, rather than deploying a listener that refuses its own environment at
-// boot. A value holding an nkey seed is refused first, naming the input and never the value, for
-// Check's reason; and one holding whitespace or a control character is refused because a
-// component renders each as one KEY=value argument of the unit's docker run command, where a
-// space splits the argument and a line break ends the heredoc a watchdog writes it into, and
-// because the listener trims what it reads, so a blank value is no value there at all.
+// boot. Each value is held to CheckEnvValue first.
 func CheckBroker(prefix, brokerURL, audience, origin string) error {
 	values := [3]string{brokerURL, audience, origin}
 	for i, v := range brokerVars {
-		input := prefix + v.input
-		if bus.HoldsSeed(values[i]) {
-			return InputErrorf(input, "%w", SeedRefusal(input))
-		}
-		if strings.ContainsFunc(values[i], unicode.IsSpace) || strings.ContainsFunc(values[i], unicode.IsControl) {
-			return InputErrorf(input, "%s holds whitespace or a control character, which %s cannot carry (not echoed)", input, v.variable)
+		if err := CheckEnvValue(prefix+v.input, v.variable, values[i]); err != nil {
+			return err
 		}
 	}
 	set := -1
@@ -200,7 +239,9 @@ func CheckBroker(prefix, brokerURL, audience, origin string) error {
 // are refused below 0, which is no count, and NATSReplicas above bus.MaxReplicas, which NATS
 // refuses when the listener creates its stream. CheckBroker owns the broker check's rule, under
 // core's own input names, so a component that renders those three under an input of its own
-// calls it with its own prefix first.
+// calls it with its own prefix first. Each of the service identity's two values is held to
+// CheckEnvValue, and the two together are refused: the listener's bus connects as one identity
+// and refuses both variables at start.
 func (c ListenerConfig) Check() error {
 	if bus.HoldsSeed(c.MachineID) {
 		return InputErrorf("machineId", "%w", SeedRefusal("machineId"))
@@ -234,6 +275,16 @@ func (c ListenerConfig) Check() error {
 	if err := CheckBroker("", c.AgentSecretsURL, c.AgentSecretsAudience, c.PublicURL); err != nil {
 		return err
 	}
+	for i, value := range [2]string{c.ServiceTokenFile, c.ServiceGoogleAudience} {
+		if err := CheckEnvValue(serviceVars[i].input, serviceVars[i].variable, value); err != nil {
+			return err
+		}
+	}
+	if c.ServiceTokenFile != "" && c.ServiceGoogleAudience != "" {
+		return InputErrorf(serviceVars[1].input,
+			"%s and %s are both set: the listener connects to NATS as one identity, and its bus refuses %s beside %s when it starts",
+			serviceVars[0].input, serviceVars[1].input, serviceVars[0].variable, serviceVars[1].variable)
+	}
 	return nil
 }
 
@@ -252,9 +303,10 @@ func (c ListenerConfig) Check() error {
 // without one renders what it always rendered. ENVOY_NATS_REPLICAS then ENVOY_STREAM_MAX_BYTES
 // follow, each only when its field is above 0, for that reason too; ENVOY_NATS_REPLICAS there
 // is where aws/rendering's ListenerEnv writes its own, after Env's variables. The broker check
-// comes last, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
-// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, so
-// a listener without one renders what it always rendered, byte for byte.
+// follows, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
+// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — then the service identity's one
+// variable, then ENVOY_PRIVATE_PROJECTS=1 last, each only on a config that sets it, so a listener
+// without them renders what it always rendered, byte for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -310,6 +362,14 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 		if value != "" {
 			env = append(env, brokerVars[i].variable+"="+value)
 		}
+	}
+	for i, value := range [2]string{c.ServiceTokenFile, c.ServiceGoogleAudience} {
+		if value != "" {
+			env = append(env, serviceVars[i].variable+"="+value)
+		}
+	}
+	if c.PrivateProjects {
+		env = append(env, EnvPrivateProjects+"=1")
 	}
 	return env, nil
 }

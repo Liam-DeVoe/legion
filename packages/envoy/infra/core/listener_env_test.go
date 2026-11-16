@@ -3,6 +3,7 @@ package core_test
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -201,4 +202,100 @@ func TestListenerConfigSOCKS5Proxy(t *testing.T) {
 
 	_, err = config.Env([]string{"nats://127.0.0.1:4222"})
 	requireInputError(t, err, "socks5Proxy", "natsUrls")
+}
+
+// serviceIdentityVars are the two variables a listener's bus connection reads a service's platform
+// identity from (internal/bus, credential), written out here rather than taken from bus, so a
+// rename of one is seen in the environment a listener boots on.
+var serviceIdentityVars = []string{"NATS_SERVICE_TOKEN_FILE", "NATS_SERVICE_GOOGLE_AUDIENCE"}
+
+// A listener behind the auth service presents a service's platform identity on its NATS
+// connection: a projected ServiceAccount token's file, in a pod, or the audience of the VM's
+// Google identity token, each as the bus reads it, after the broker check, and each only when it
+// is set, so a config that sets neither renders what it always rendered. The listener connects as
+// one identity, so both set are refused naming both; a seed in either is refused naming the
+// field and never quoting it, and so is whitespace or a control character, which one docker run
+// argument or a watchdog's heredoc line cannot carry.
+func TestListenerEnvServiceIdentity(t *testing.T) {
+	urls := []string{"nats://127.0.0.1:4222"}
+	base := core.ListenerConfig{
+		MachineID: "m", Port: 9020,
+		AgentSecretsURL: "https://example-broker.internal.example", AgentSecretsAudience: "example-broker-audience",
+		PublicURL: "http://example-hub.example-tailnet.ts.net:9020",
+	}
+	without, err := base.Env(urls)
+	require.NoError(t, err)
+	for _, name := range serviceIdentityVars {
+		require.NotContains(t, strings.Join(without, "\n"), name, "a config with no service identity renders neither variable")
+	}
+	for _, row := range []struct {
+		name string
+		edit func(*core.ListenerConfig)
+		line string
+	}{
+		{"a projected token's file", func(c *core.ListenerConfig) { c.ServiceTokenFile = "/var/run/secrets/envoy/nats-token" },
+			"NATS_SERVICE_TOKEN_FILE=/var/run/secrets/envoy/nats-token"},
+		{"a VM's Google audience", func(c *core.ListenerConfig) { c.ServiceGoogleAudience = "example-nats-audience" },
+			"NATS_SERVICE_GOOGLE_AUDIENCE=example-nats-audience"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			config := base
+			row.edit(&config)
+			got, err := config.Env(urls)
+			require.NoError(t, err)
+			require.Equal(t, append(slices.Clone(without), row.line), got, "the identity follows the broker check, and nothing else changes")
+		})
+	}
+	for _, row := range []struct {
+		name, input, err string
+		edit             func(*core.ListenerConfig)
+	}{
+		{"both identities", "serviceGoogleAudience", "serviceTokenFile and serviceGoogleAudience are both set: the listener connects to NATS as one identity",
+			func(c *core.ListenerConfig) {
+				c.ServiceTokenFile, c.ServiceGoogleAudience = "/var/run/secrets/envoy/nats-token", "example-nats-audience"
+			}},
+		{"a seed as the token's file", "serviceTokenFile", "serviceTokenFile holds an nkey seed (not echoed)",
+			func(c *core.ListenerConfig) { c.ServiceTokenFile = "/var/run/" + readmeSeed }},
+		{"a lowercase seed as the audience", "serviceGoogleAudience", "serviceGoogleAudience holds an nkey seed (not echoed)",
+			func(c *core.ListenerConfig) { c.ServiceGoogleAudience = strings.ToLower(readmeSeed) }},
+		{"a token file with a space", "serviceTokenFile", "serviceTokenFile holds whitespace or a control character, which NATS_SERVICE_TOKEN_FILE cannot carry (not echoed)",
+			func(c *core.ListenerConfig) { c.ServiceTokenFile = "/var/run/token --privileged" }},
+		{"an audience with a line break", "serviceGoogleAudience", "serviceGoogleAudience holds whitespace or a control character, which NATS_SERVICE_GOOGLE_AUDIENCE cannot carry (not echoed)",
+			func(c *core.ListenerConfig) { c.ServiceGoogleAudience = "example-nats-audience\nENVEOF" }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			config := base
+			row.edit(&config)
+			requireInputError(t, config.Check(), row.input, row.err)
+			env, err := config.Env(urls)
+			require.Nil(t, env)
+			requireInputError(t, err, row.input, row.err)
+			require.NotContains(t, strings.ToUpper(err.Error()), readmeSeed[:12], "the refusal quotes no part of the seed")
+		})
+	}
+}
+
+// PrivateProjects renders ENVOY_PRIVATE_PROJECTS=1, last, which the listener reads to decide a
+// project frame that carries no stamp as private (dispatch://INFRA-3862, PlanC's rule 3), and
+// false renders no such line: every config written before the field existed renders what it always
+// rendered (R9), so the goldens every component that renders a listener pins (gcp/testdata,
+// aws/testdata, host's) hold no such line. Negative control, run by hand: render the line whatever
+// the field says; this test's false row and those goldens then fail, naming the line.
+func TestListenerEnvPrivateProjects(t *testing.T) {
+	urls := []string{"nats://hub.internal.example:4222"}
+	config := core.ListenerConfig{
+		MachineID: "m", Port: 9020, ListenHost: "0.0.0.0", AllowedHosts: []string{"hub.internal.example"},
+		NATSReplicas: 3, StreamMaxBytes: 1073741824,
+		AgentSecretsURL: "https://example-broker.internal.example", AgentSecretsAudience: "example-broker-audience",
+		PublicURL:        "http://example-hub.example-tailnet.ts.net:9020",
+		ServiceTokenFile: "/var/run/secrets/envoy/nats-token",
+	}
+	off, err := config.Env(urls)
+	require.NoError(t, err)
+	require.NotContains(t, strings.Join(off, "\n"), "ENVOY_PRIVATE_PROJECTS", "false renders no line")
+
+	config.PrivateProjects = true
+	on, err := config.Env(urls)
+	require.NoError(t, err)
+	require.Equal(t, append(slices.Clone(off), "ENVOY_PRIVATE_PROJECTS=1"), on, "true adds the one line, last")
 }
