@@ -68,8 +68,8 @@ function neededIds(task: TreeNode): readonly string[] {
   });
 }
 
-/** The id of the node one chip of `task` names as a need (`neededIds`), or undefined for a chip
- *  that is no `needs` pointer. */
+/** The id of the node one chip of `task` names as a need (`neededIds`, `needsChip`), or
+ *  undefined for a chip that is no `needs` pointer. */
 function neededId(task: TreeNode, chip: NodeChip): string | undefined {
   if (task.type !== "plan_task" || chip.label !== BLOCK_ATTRIBUTE_LABELS.needs) return undefined;
   const route = parseNodeReference(chip.ref);
@@ -247,31 +247,16 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
 }
 
 /**
- * `tasks` with each `needs` chip naming the task it points at by `words` of that task, where
- * `tasks` holds it (the tester's F18). A chip's own name is the batched reference read's `name`,
- * the block's stored excerpt in its raw source (`tree-drafts.ts`'s `chipOf`), which draws its
- * markdown marks; a task's words come from the server's reading of its text (`nodeWords`). A
- * chip naming a task `tasks` does not hold keeps its name, and a task that needs none of them
- * is the same node.
+ * The chip of `task` that names `needed` as a need: the `needs` pointer the order read that edge
+ * from (`neededId`), or undefined where no chip of `task` points at `needed`.
+ *
+ * The chart names each need by this chip's own name, as part F's view gives it (decision 66 of
+ * dispatch://INFRA-1196, dispatch://INFRA-3938 R3 and R4): the needed task's first line, and the
+ * page's word for its kind where that task holds no words. The steps' rows draw the same chip
+ * through part G's `Chip`, so the switch changes the drawing alone (R6) and no edge is named
+ * twice: the view gives the rows no chips renamed by the chart's line for the task, which was a
+ * second naming of what F's view already names.
  */
-export function namedNeeds(
-  tasks: readonly TreeNode[],
-  words: (task: TreeNode) => string
-): readonly TreeNode[] {
-  const held = new Map(tasks.map((task) => [task.id, task]));
-  const neededOf = (task: TreeNode, chip: NodeChip): TreeNode | undefined => {
-    const id = neededId(task, chip);
-    return id === undefined ? undefined : held.get(id);
-  };
-  return tasks.map((task) =>
-    task.chips.every((chip) => neededOf(task, chip) === undefined)
-      ? task
-      : {
-          ...task,
-          chips: task.chips.map((chip) => {
-            const needed = neededOf(task, chip);
-            return needed === undefined ? chip : { ...chip, name: words(needed) };
-          }),
-        }
-  );
+export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
+  return task.chips.find((chip) => neededId(task, chip) === needed.id);
 }

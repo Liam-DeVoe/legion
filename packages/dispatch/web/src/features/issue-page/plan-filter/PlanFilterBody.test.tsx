@@ -10,7 +10,13 @@ import { MarginProvider } from "../../margin/margin-context";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
-import type { NodeChip, ParentLine, TreeNode } from "../issue-tree";
+import {
+  firstLineOf,
+  type NodeChip,
+  nodeWords,
+  type ParentLine,
+  type TreeNode,
+} from "../issue-tree";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   EMPTY_STATE_LINES,
@@ -29,7 +35,9 @@ import { PlanFilterBody } from "./PlanFilterBody";
  *
  * The nodes are built as `presets.ts`'s `filterView` leaves them for the Plan filter: each task
  * a row of its own, the statement it serves its parent line, and any further statement a chip
- * naming what it is also under.
+ * naming what it is also under; and each `needs` chip is named as part F's view names it, from
+ * the task it points at (`issue`), since the view draws F's names and names no edge itself
+ * (decision 66 of dispatch://INFRA-1196, dispatch://INFRA-3938 R3 and R4).
  */
 
 const KEY = "CORE-1";
@@ -67,15 +75,27 @@ function taskRef(blockId: string): string {
 }
 
 /** The chip the tree draws for one `needs` pointer of a task's block (`tree-drafts.ts`'s
- *  `placeBlocks`): the target's name under the attribute's own word. */
+ *  `placeBlocks`), under the attribute's own word; `issue` names it from the task it points at,
+ *  once a test has built every task. */
 function need(blockId: string): NodeChip {
   return {
     answered: true,
     gone: false,
     label: BLOCK_ATTRIBUTE_LABELS.needs,
-    name: `Task ${blockId}`,
+    name: "",
     ref: taskRef(blockId),
   };
+}
+
+/** `chip` named as part F's view names a `needs` chip (decision 66 of dispatch://INFRA-1196):
+ *  by the needed task's first line, by the page's word for its kind where that task holds no
+ *  words ("plan task", dispatch://INFRA-3938 R3), and as gone where the plan holds no such task,
+ *  which is how the reference read answers for a block a write removed (`tree-drafts.ts`'s
+ *  `chipOf`). */
+function namedBy(chip: NodeChip, needed: TreeNode | undefined): NodeChip {
+  if (needed === undefined) return { ...chip, gone: true, name: "" };
+  const line = firstLineOf(nodeWords(needed)).line;
+  return { ...chip, name: line === "" ? NODE_TYPE_NAMES[needed.type] : line };
 }
 
 /** One statement, as the line a task's row draws for the parent the filter draws as no row. */
@@ -117,7 +137,16 @@ function task(
   };
 }
 
-function issue(children: readonly TreeNode[]): TreeNode {
+/** The issue's root over a test's tasks, each `needs` chip named from the task it points at
+ *  among them (`namedBy`), as part F's view hands the tree over. */
+function issue(tasks: readonly TreeNode[]): TreeNode {
+  const byReference = new Map(tasks.map((one) => [one.reference, one]));
+  const children = tasks.map((one) => ({
+    ...one,
+    chips: one.chips.map((chip) =>
+      chip.label === BLOCK_ATTRIBUTE_LABELS.needs ? namedBy(chip, byReference.get(chip.ref)) : chip
+    ),
+  }));
   return {
     alsoUnder: [],
     children,
@@ -525,9 +554,14 @@ test("a task with no words is named by its kind, never by its id", async () => {
       "Task t4",
     ]);
     for (const id of ["t1", "t3"]) expect(view.container.textContent).not.toContain(D(id));
-    // Under "Steps" the row that waits on it names it after "needs" by the same word.
+    // Under "Steps" the row that waits on it names it after "needs" by the same word: F's name
+    // of its needs chip, read on the chip, since G's row draws the kind's tag "plan task" on
+    // every task row.
     await showSteps(view);
     expect(rowOf(view, "t2").textContent).toContain(kind);
+    expect(rowOf(view, "t2").querySelector("[data-node-chip] [data-chip-name]")?.textContent).toBe(
+      kind
+    );
     for (const id of ["t1", "t3"]) expect(view.container.textContent).not.toContain(D(id));
   } finally {
     view.unmount();

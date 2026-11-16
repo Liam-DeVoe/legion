@@ -62,8 +62,10 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   return (
     <NoTooltips>
       {/* The view's box, the prototype's `.plan`: at most 1300 px, in the middle of the column,
-          and at 760 px and below the column less 10 px at each side. */}
-      <div className="mx-auto flex w-full max-w-[1300px] min-w-0 flex-col max-[760px]:max-w-[calc(100%-20px)]">
+          and at 760 px and below the column less 10 px at each side (dispatch://INFRA-3938 R1
+          and its Sizes). That is `max-[761px]:`, since Tailwind writes `max-[N]:` as
+          `(width < N)` and 760 px itself is a phone (decision 72 of dispatch://INFRA-1196). */}
+      <div className="mx-auto flex w-full max-w-[1300px] min-w-0 flex-col max-[761px]:max-w-[calc(100%-20px)]">
         <PlanFilterBody
           artifacts={artifacts}
           context={view.context}

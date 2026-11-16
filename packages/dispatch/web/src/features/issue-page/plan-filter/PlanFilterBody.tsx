@@ -36,7 +36,7 @@ import { chipWords } from "../node-row-chip";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PLAN_WORDS, PRESET_NAMES } from "../page-words";
 import {
-  namedNeeds,
+  needsChip,
   type PlanBar,
   type PlanCycle,
   type PlanEntry,
@@ -53,8 +53,8 @@ import {
  * and the statements it serves at the end of its row. One control switches to the ordered
  * steps, which are the outline's own rows in the same order (`IssueTree`): each task after every
  * task in its `needs`, each row drawing the task's words, the chips naming what it needs by the
- * needed task's own first line, and the line naming the statement it serves, which is the parent
- * the filter draws as no row (R2).
+ * names part F's view gives them, and the line naming the statement it serves, which is the
+ * parent the filter draws as no row (R2).
  *
  * Tasks that need each other can be given no place of their own, so the order gives the cycle
  * one place (`plan-order.ts`): the chart draws it there as one line that lists its tasks, and
@@ -127,14 +127,13 @@ export function PlanFilterBody({ root, ...tree }: ComponentProps<typeof IssueTre
     () => entries.flatMap((entry) => (entry.kind === "cycle" ? [entry] : [])),
     [entries]
   );
-  // The steps, in the plan's order, with the tasks of a cycle at the cycle's place. Each `needs`
-  // chip names its task by the line the chart draws for it, which is read from the server's
-  // reading of the task's text and never from the block's stored source (the tester's F18).
+  // The steps, in the plan's order, with the tasks of a cycle at the cycle's place. Each row is
+  // its task as part F's view gives it: its `needs` chips carry F's names - the needed task's
+  // first line, and the page's word for its kind where that task holds no words - which are the
+  // names the chart draws for the same needs (`needsChip`), so the switch changes the drawing
+  // alone (decision 66 of dispatch://INFRA-1196; dispatch://INFRA-3938 R3, R4 and R6).
   const ordered = useMemo(() => {
-    const rows = namedNeeds(
-      entries.flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks)),
-      lineOf
-    );
+    const rows = entries.flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks));
     return { ...root, children: rows, held: rows.reduce((held, row) => held + row.held + 1, 0) };
   }, [entries, root]);
   const view = (pressed: boolean): string =>
@@ -145,10 +144,16 @@ export function PlanFilterBody({ root, ...tree }: ComponentProps<typeof IssueTre
     }`;
   const empty = root.children.length === 0;
   return (
-    <div className="mt-[22px] flex w-full min-w-0 flex-col max-[760px]:mt-2.5" data-plan-body="">
+    <div
+      className="mt-3 mb-[120px] flex w-full min-w-0 flex-col max-[761px]:mt-0"
+      data-plan-body=""
+    >
       {/* R26's one control: the chart of time, or the ordered steps. A plan with no task has
           nothing to switch between. The box is 22 px under the view row, and 10 px at 760 px
-          and below, as the prototype's `.plan` is. */}
+          and below, as the prototype's `.plan` is (dispatch://INFRA-3938 R1 and its Sizes): D's
+          column already stands 10 px under the row (`pt-2.5` of `[data-testid="issue-column"]`),
+          so the box adds 12 px, and nothing at 760 px and below. The 120 px above the page's foot
+          are the box's, so the steps keep them as the chart does. */}
       {empty ? null : (
         // biome-ignore lint/a11y/useSemanticElements: two toggles of one control; a fieldset would draw a frame the picture has none of.
         <div
@@ -227,7 +232,8 @@ function lineOf(task: TreeNode): string {
   return own === "" ? NODE_TYPE_NAMES[task.type] : own;
 }
 
-/** Whose words `lineOf` draws: the author's, or the page's own for a task that holds none. */
+/** Whose words `lineOf` draws for `task`, and F's name of a `needs` chip pointing at it: the
+ *  author's, or the page's own for a task that holds none, since both are then its kind's word. */
 function lineMarks(task: TreeNode): Readonly<Record<string, string>> {
   return firstLineOf(nodeWords(task)).line === "" ? pageChrome : authorText;
 }
@@ -253,9 +259,14 @@ function TaskLink({ task }: { task: TreeNode }): ReactNode {
 }
 
 /** The chart's three columns, as the prototype's `.prow` divides them: the step, the time, and
- *  what the step serves; one column at 760 px and below, where each row is a card (`.pitem`). */
+ *  what the step serves; at 1240 px and below the checkpoint's narrower outer columns
+ *  (dispatch://INFRA-3938 R5). At 760 px and below the head row is not drawn and each row is a
+ *  card that lays its parts out itself (`BarRow`, `.pitem`). "And below" is one pixel over the
+ *  width: Tailwind writes an arbitrary `max-[N]:` as `(width < N)`, so `max-[1241px]:` and
+ *  `max-[761px]:` take 1240 px and 760 px themselves, as the header's `(max-width: 760px)` does
+ *  (decision 72 of dispatch://INFRA-1196; `NodeRow.tsx`'s `NODE_ROW_LAYOUT`). */
 const CHART_COLUMNS =
-  "grid min-w-0 grid-cols-[330px_minmax(0,1fr)_320px] max-[1240px]:grid-cols-[260px_minmax(0,1fr)_220px] max-[760px]:grid-cols-[minmax(0,1fr)]";
+  "grid min-w-0 grid-cols-[330px_minmax(0,1fr)_320px] max-[1241px]:grid-cols-[260px_minmax(0,1fr)_220px]";
 
 /** A column heading, in the prototype's `.cap`. */
 const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
@@ -264,7 +275,7 @@ const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQ
  *  below its card as `.pitem.focused` does: a ring of ink outside a gap of paper, on the card's
  *  own paper, so the mark is not the tint alone. */
 const FOCUSED =
-  "bg-page-step-tint shadow-[inset_3px_0_0_var(--color-page-step)] max-[760px]:bg-page-paper max-[760px]:shadow-[0_0_0_2px_var(--color-page-paper),0_0_0_4px_var(--color-page-ink)]";
+  "bg-page-step-tint shadow-[inset_3px_0_0_var(--color-page-step)] max-[761px]:bg-page-paper max-[761px]:shadow-[0_0_0_2px_var(--color-page-paper),0_0_0_4px_var(--color-page-ink)]";
 
 /**
  * The chart of time (R26, the prototype's `.chart`): one row per place in the plan's order. A
@@ -454,18 +465,25 @@ function PlanChart({
 
   return (
     <div
-      className={`relative mb-[120px] min-w-0 rounded-[10px] border pb-2 max-[760px]:rounded-none max-[760px]:border-0 max-[760px]:pb-0 ${pageLineBorder} ${pagePaperBg}`}
+      className={`relative min-w-0 rounded-[10px] border pb-2 max-[761px]:rounded-none max-[761px]:border-0 max-[761px]:pb-0 ${pageLineBorder} ${pagePaperBg}`}
       data-plan-chart=""
       ref={chart}
     >
+      {/* The head row's three columns are "Steps", the axis and "Serves" (dispatch://INFRA-3938
+          R4): the axis is drawn in a cell of its own, as tall as the row, which holds it as a
+          bar's track holds its own, so "Serves" stands over the statements' column and every
+          line of the axis inside the time's column. Drawn straight into the grid, the axis was
+          no cell of it: "Serves" took the second column and the lines spanned the chart. */}
       <div
-        className={`${CHART_COLUMNS} min-h-10 items-center max-[760px]:hidden`}
+        className={`${CHART_COLUMNS} min-h-10 items-center max-[761px]:hidden`}
         data-plan-head=""
       >
         <span className={`px-3.5 ${CAP}`} {...pageChrome}>
           {PLAN_WORDS.steps}
         </span>
-        <Units end={end} unit={unit} />
+        <div className="relative min-w-0 self-stretch">
+          <Units end={end} unit={unit} />
+        </div>
         <span className={`px-3.5 ${CAP}`} {...pageChrome}>
           {PLAN_WORDS.serves}
         </span>
@@ -486,7 +504,7 @@ function PlanChart({
           row.kind === "cycle" ? (
             <div
               aria-level={1}
-              className={`border-t px-3.5 pt-2 max-[760px]:border-0 max-[760px]:px-0 ${pageLineBorder}`}
+              className={`border-t px-3.5 pt-2 max-[761px]:border-0 max-[761px]:px-0 ${pageLineBorder}`}
               key={row.tasks.map((task) => task.id).join(" ")}
               role="treeitem"
               tabIndex={-1}
@@ -512,7 +530,7 @@ function PlanChart({
           today's model holds no sizes to find. */}
       <svg
         aria-hidden="true"
-        className="pointer-events-none absolute top-0 left-0 overflow-visible max-[760px]:hidden"
+        className="pointer-events-none absolute top-0 left-0 overflow-visible max-[761px]:hidden"
         data-plan-links=""
         height={links.height}
         width={links.width}
@@ -536,12 +554,14 @@ function PlanChart({
 }
 
 /** The axis: one faint line per unit of the chart (the prototype's `.grid-l`). It draws no
- *  number: a unit is a size, and today's plan holds none (R26). */
+ *  number: a unit is a size, and today's plan holds none (R26). The last line is drawn against
+ *  the column's right edge, so every line stands inside the column that holds the axis
+ *  (dispatch://INFRA-3938 R4): at `left: 100%` it would be one pixel past it. */
 function Units({ end, unit }: { end: number; unit: number }): ReactNode {
   return (
     <span
       aria-hidden="true"
-      className="absolute inset-0 block max-[760px]:hidden"
+      className="absolute inset-0 block max-[761px]:hidden"
       data-plan-axis=""
     >
       {Array.from({ length: end + 1 }, (_unused, tick) => (
@@ -549,7 +569,7 @@ function Units({ end, unit }: { end: number; unit: number }): ReactNode {
           className="absolute inset-y-0 w-px bg-page-line"
           // biome-ignore lint/suspicious/noArrayIndexKey: a line is its unit and nothing else.
           key={tick}
-          style={{ left: `${tick * unit}%` }}
+          style={tick === end ? { right: 0 } : { left: `${tick * unit}%` }}
         />
       ))}
     </span>
@@ -563,6 +583,22 @@ function Units({ end, unit }: { end: number; unit: number }): ReactNode {
  * line, so each bar is labelled with it (R26). The bar is the step's plain tint inside a dashed
  * border: the prototype's hatch is its legend's "Not started", a state today's model holds
  * none of, and the dash says the length is no size anybody wrote.
+ *
+ * A need is named by the task's own `needs` chip for it (`needsChip`), as part F's view names
+ * it and the steps' row draws it (decision 66 of dispatch://INFRA-1196, dispatch://INFRA-3938
+ * R3 and R4), in the needed task's marks: the author's words, or the page's own where that task
+ * holds none, since F names it then by its kind's word.
+ *
+ * At 761 px and above the row is the chart's three columns. At 760 px and below it is one card
+ * that draws, from the top, the task's first line, the track with the bar at its place and
+ * length, and one line, wrapping where it must, with "No size", the needs and the statements
+ * (dispatch://INFRA-3938 R5). Each part is drawn once, in the order the row's name reads them:
+ * the card is a wrapping flex box, the columns' own boxes give their parts to it
+ * (`display: contents`), and the first line and the track each take a line of their own ahead
+ * of the rest (`order`), so the track, which says nothing to a screen reader, is the one part
+ * drawn out of the document's order. The track stands 8 px under the first line and over the
+ * line under it: 3 px of its own margin and the card's 5 px between two lines, which is also
+ * what parts the chips' lines where they wrap.
  */
 function BarRow({
   bar,
@@ -593,7 +629,7 @@ function BarRow({
   return (
     <div
       aria-level={1}
-      className={`${CHART_COLUMNS} min-h-[54px] items-center border-t outline-none max-[760px]:my-2 max-[760px]:rounded-lg max-[760px]:border max-[760px]:border-l-4 max-[760px]:border-l-page-step max-[760px]:px-3 max-[760px]:py-2.5 ${pageLineBorder} ${
+      className={`${CHART_COLUMNS} min-h-[54px] items-center border-t outline-none max-[761px]:my-2 max-[761px]:flex max-[761px]:flex-wrap max-[761px]:gap-x-1.5 max-[761px]:gap-y-[5px] max-[761px]:rounded-lg max-[761px]:border max-[761px]:border-l-4 max-[761px]:border-l-page-step max-[761px]:px-3 max-[761px]:py-2.5 ${pageLineBorder} ${
         focused ? FOCUSED : ""
       }`}
       data-node-id={task.id}
@@ -607,16 +643,16 @@ function BarRow({
       role="treeitem"
       tabIndex={tabStop ? 0 : -1}
     >
-      <div className="min-w-0 px-3.5 py-2 max-[760px]:p-0">
+      <div className="min-w-0 px-3.5 py-2 max-[761px]:contents">
         <p
-          className={`text-[15px] leading-[22px] break-words ${pageInkText}`}
+          className={`text-[15px] leading-[22px] break-words ${pageInkText} max-[761px]:-order-2 max-[761px]:min-w-0 max-[761px]:basis-full`}
           data-node-words=""
           {...lineMarks(task)}
         >
           {lineOf(task)}
         </p>
         <p
-          className={`mt-px flex min-w-0 flex-wrap gap-x-1.5 text-xs leading-[18px] ${pageQuietText}`}
+          className={`mt-px flex min-w-0 flex-wrap gap-x-1.5 text-xs leading-[18px] ${pageQuietText} max-[761px]:contents`}
           data-plan-facts=""
         >
           <span data-plan-no-size="" {...pageChrome}>
@@ -625,26 +661,33 @@ function BarRow({
           {bar.needs.length === 0 ? null : (
             <>
               <span {...pageChrome}>· {PLAN_WORDS.needs}</span>
-              {bar.needs.map((needed) => (
-                <span data-plan-need={needed.id} key={needed.id} {...lineMarks(needed)}>
-                  {chipWords(lineOf(needed))}
-                </span>
-              ))}
+              {bar.needs.flatMap((needed) => {
+                // `planChart` reads each need from one of the task's `needs` chips, so every
+                // need has its chip.
+                const chip = needsChip(task, needed);
+                return chip === undefined
+                  ? []
+                  : [
+                      <span data-plan-need={needed.id} key={needed.id} {...lineMarks(needed)}>
+                        {chipWords(chip.name)}
+                      </span>,
+                    ];
+              })}
             </>
           )}
         </p>
       </div>
-      <div className="relative h-[54px] min-w-0 max-[760px]:my-2 max-[760px]:h-2.5 max-[760px]:rounded-[5px] max-[760px]:bg-page-mark">
+      <div className="relative h-[54px] min-w-0 max-[761px]:-order-1 max-[761px]:my-[3px] max-[761px]:h-2.5 max-[761px]:basis-full max-[761px]:rounded-[5px] max-[761px]:bg-page-mark">
         <Units end={end} unit={unit} />
         <span
           aria-hidden="true"
-          className="absolute top-4 block h-[22px] rounded-[5px] border-[1.5px] border-dashed border-page-step bg-page-step-tint max-[760px]:top-0 max-[760px]:h-full"
+          className="absolute top-4 block h-[22px] rounded-[5px] border-[1.5px] border-dashed border-page-step bg-page-step-tint max-[761px]:top-0 max-[761px]:h-full"
           data-plan-bar={task.id}
           style={{ left: `${bar.start * unit}%`, width: `${unit}%` }}
         />
       </div>
       <div
-        className="flex min-w-0 flex-wrap items-start gap-[5px] px-3.5 py-2 max-[760px]:p-0"
+        className="flex min-w-0 flex-wrap items-start gap-[5px] px-3.5 py-2 max-[761px]:contents"
         data-plan-serves=""
       >
         {serves.map((one) => {
