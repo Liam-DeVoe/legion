@@ -48,12 +48,22 @@ var steRules = map[string]string{
 var (
 	// bareKey is an issue key standing as a word: the server's own reference grammar finds
 	// only dispatch:// and http(s):// references, so this one is this package's.
-	bareKey     = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
-	recordID    = regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	incident    = regexp.MustCompile(`(?i:\bincident\s+(?:#?\d+|[a-z][a-z0-9]*-\d+|\d{4}-\d{2}-\d{2}))|\bINC-\d+\b`)
-	pullRequest = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:number\s+)?#?\d+)|\b[\w.-]+/[\w.-]+#\d+|github\.com/[\w.-]+/[\w.-]+/pull/\d+|#\d+`)
+	bareKey  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
+	recordID = regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	// incident and pullRequest name a record only by a form that only a name has: "#" and digits,
+	// the word "number" and digits, an incident's key or date, and a pull request's
+	// <owner>/<repo>#<digits> or address. A bare number after the words is a count, such as
+	// "each pull request 10 minutes after", and names nothing.
+	incident    = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
+	pullRequest = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|github\.com/[\w.-]+/[\w.-]+/pull/\d+|#\d+`)
 	email       = regexp.MustCompile(`[\w.+-]+@[\w-]+\.[\w.-]*[\w-]`)
 	handle      = regexp.MustCompile(`(?:^|[^\w@])(@[A-Za-z][\w-]*)`)
+)
+
+// incidentForms and pullRequestForms say, in a finding, which forms the two rules read as a name.
+const (
+	incidentForms    = "Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date"
+	pullRequestForms = "Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address"
 )
 
 // broken is one rule a text breaks, and the detail of the break.
@@ -161,10 +171,10 @@ func referenceBreaks(c Context, people map[string]bool, line string) []broken {
 		found = append(found, link.broken)
 	}
 	for _, match := range incident.FindAllString(line, -1) {
-		found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q", match)})
+		found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", match, incidentForms)})
 	}
 	for _, match := range pullRequest.FindAllString(line, -1) {
-		found = append(found, broken{rulePullRequest, fmt.Sprintf("it names a pull request: %q", match)})
+		found = append(found, broken{rulePullRequest, fmt.Sprintf("it names a pull request: %q. %s", match, pullRequestForms)})
 	}
 	for _, name := range personNames(people, line, inReference) {
 		found = append(found, broken{rulePerson, fmt.Sprintf("it names a person: %q", name)})
