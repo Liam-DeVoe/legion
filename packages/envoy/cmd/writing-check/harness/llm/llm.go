@@ -1,9 +1,10 @@
 // Package llm makes the harness's model calls: one system prompt and one user turn in, whose
 // start other calls may share and the provider then caches, one reply out, through agentloop.Run,
-// with a bound on the calls in flight that every client of a run shares, retries with a backoff,
-// and each call's tokens priced at the model's price. It holds the Foundry client. The Claude
-// client is package claude, which is the only package that can read a writer session's text:
-// this package cannot name that type, since package claude imports it.
+// with a bound on the calls in flight and a pace of uncached input tokens a minute that every
+// client of a run shares, retries with a backoff, and each call's tokens priced at the model's
+// price. It holds the Foundry client. The Claude client is package claude, which is the only
+// package that can read a writer session's text: this package cannot name that type, since
+// package claude imports it.
 package llm
 
 import (
@@ -119,23 +120,55 @@ func (l Limit) acquire(ctx context.Context) error {
 
 func (l Limit) release() { <-l }
 
-// Hold takes one slot of the runner's bound for a call that does not go through Run, such as the
-// detector's own reader, and answers the function that gives it back.
-func (r *Runner) Hold(ctx context.Context) (func(), error) {
-	if r.Limit == nil {
-		return func() {}, nil
+// enter takes a slot of the runner's bound, then passes its pacer with the attempt's estimate,
+// and answers the attempt's charge. On an error it holds no slot.
+func (r *Runner) enter(ctx context.Context, e estimate) (paced, error) {
+	if r.Limit != nil {
+		if err := r.Limit.acquire(ctx); err != nil {
+			return paced{}, err
+		}
 	}
-	if err := r.Limit.acquire(ctx); err != nil {
-		return nil, err
+	charge, err := r.Pacer.admit(ctx, e)
+	if err != nil && r.Limit != nil {
+		r.Limit.release()
 	}
-	return r.Limit.release, nil
+	return charge, err
 }
 
-// Runner makes calls on any model: within the shared Limit, again after a backoff on a failure a
-// retry can clear, and again at once on a reply its schema does not fit.
+// leave corrects the attempt's charge to the usage its reply reported, and gives its slot back.
+func (r *Runner) leave(charge paced, used agentloop.Usage) {
+	charge.settle(used)
+	if r.Limit != nil {
+		r.Limit.release()
+	}
+}
+
+// Hold takes one slot of the runner's bound and passes its pacer, for a call that does not go
+// through Run, such as the detector's own reader. The harness does not build that call's prompt,
+// so the pacer charges it nothing before it starts: it waits while the last minute leaves no
+// room, and it counts the tokens the call's model calls report. Hold answers the function that
+// gives the slot back, given the usage of each model call the call made.
+func (r *Runner) Hold(ctx context.Context) (func(used ...agentloop.Usage), error) {
+	charge, err := r.enter(ctx, estimate{})
+	if err != nil {
+		return nil, err
+	}
+	return func(used ...agentloop.Usage) {
+		var sum agentloop.Usage
+		for _, u := range used {
+			addUsage(&sum, u)
+		}
+		r.leave(charge, sum)
+	}, nil
+}
+
+// Runner makes calls on any model: within the shared Limit and Pacer, again after a backoff on a
+// failure a retry can clear, and again at once on a reply its schema does not fit.
 type Runner struct {
 	// Limit bounds the calls in flight; nil bounds none.
 	Limit Limit
+	// Pacer paces each attempt's uncached input tokens; nil paces and counts none.
+	Pacer *Pacer
 	// Timeout bounds one attempt; zero is DefaultTimeout.
 	Timeout time.Duration
 	// Retries and Backoff are the retries after a failure a retry can clear and the first
@@ -185,7 +218,8 @@ func retryableDetail(detail string) bool {
 
 // Run makes req on model. Every attempt's tokens count in the Response's Usage, priced at
 // model.Price, whether the call answered or not: a cache write at the model's cache write price
-// and a cache read at its cache read price.
+// and a cache read at its cache read price. Every attempt passes the runner's Pacer, which
+// charges its estimate before it starts and the uncached input its reply reports after.
 func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (resp Response, err error) {
 	resp = Response{Requested: model.ID}
 	started := time.Now()
@@ -236,15 +270,18 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 		history = []agentloop.Message{{Role: agentloop.User, Blocks: shared}}
 	}
 	input := []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: req.User}}}}
+	var est estimate
+	if r.Pacer != nil {
+		est = estimateOf(model, req, shared)
+	}
 	backoffs, replies := 0, 0
 	fail := func(fault agentloop.Fault, detail string, err error) (Response, error) {
 		return resp, &CallError{Purpose: req.Purpose, Model: model.ID, Fault: fault, Detail: detail, Err: err, Attempts: resp.Attempts}
 	}
 	for {
-		if r.Limit != nil {
-			if err := r.Limit.acquire(ctx); err != nil {
-				return fail("", "", err)
-			}
+		charge, err := r.enter(ctx, est)
+		if err != nil {
+			return fail("", "", err)
 		}
 		resp.Attempts++
 		result, err := agentloop.Run(ctx, agentloop.Request{
@@ -258,9 +295,7 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 			Final:           req.Schema,
 			Temperature:     temperature,
 		})
-		if r.Limit != nil {
-			r.Limit.release()
-		}
+		r.leave(charge, result.Usage)
 		addUsage(&resp.Usage, result.Usage)
 		if n := len(result.Steps); n > 0 {
 			resp.Served = result.Steps[n-1].Model

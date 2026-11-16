@@ -188,6 +188,7 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
 	graderFlag := fs.String("grader", "", "the grading model of this test in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that plays no other role; a candidate may grade here, since no candidate wrote a planted output (default: roles.grader)")
 	mf := addModelFlags(fs)
+	mf.addPaceFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -278,8 +279,10 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}()
 	}
 	wg.Wait()
-	report := graderReport(results, graderID, candidate, time.Since(started))
-	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": graderID, "grader_is_candidate": candidate, "grader_inputs": inputs.String(), "prompts_sha256": PromptsDigest(), "results": results}); err != nil {
+	uncached := runner.Pacer.Use()
+	report := graderReport(results, graderID, candidate, time.Since(started)) + paceText(mf.uncachedPerMinute, uncached)
+	if err := writeJSON(filepath.Join(*out, "grader-test.json"), map[string]any{"grader": graderID, "grader_is_candidate": candidate, "grader_inputs": inputs.String(), "prompts_sha256": PromptsDigest(),
+		"uncached_input_per_minute": mf.uncachedPerMinute, "uncached_input": uncached, "results": results}); err != nil {
 		return fail(err)
 	}
 	if err := os.WriteFile(filepath.Join(*out, "grader-test.md"), []byte(report), 0o600); err != nil {

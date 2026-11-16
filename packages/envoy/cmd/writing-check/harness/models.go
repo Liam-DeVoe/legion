@@ -24,12 +24,14 @@ const (
 )
 
 // modelFlags are the flags that say how a command reaches the models: the gateway for Claude,
-// the Foundry account and its sign-in, and the calls in flight.
+// the Foundry account and its sign-in, the calls in flight, and, for a command that adds it
+// (addPaceFlag), the pace of the calls' uncached input.
 type modelFlags struct {
 	gateway, keyFile                   string
 	foundry, apiVersion                string
 	tenant, clientID, tokenFile, scope string
 	concurrency                        int
+	uncachedPerMinute                  int
 }
 
 func addModelFlags(fs *flag.FlagSet) *modelFlags {
@@ -46,12 +48,21 @@ func addModelFlags(fs *flag.FlagSet) *modelFlags {
 	return m
 }
 
-// runner is the one Runner of a command: every client it builds shares its bound.
+// addPaceFlag adds --uncached-input-per-minute, the pace of the command's own model calls.
+func (m *modelFlags) addPaceFlag(fs *flag.FlagSet) {
+	fs.IntVar(&m.uncachedPerMinute, "uncached-input-per-minute", 0, "hold this process's own model calls, retries and fallbacks included, to this many uncached input tokens in any one minute: the prompt tokens not read from the provider's cache, cache writes included (0: no pacing; the calls are still counted)")
+}
+
+// runner is the one Runner of a command: every client it builds shares its bound and its pacer.
+// The pacer counts the calls' uncached input even where it paces none.
 func (m *modelFlags) runner() (*llm.Runner, error) {
-	if m.concurrency < 1 {
+	switch {
+	case m.concurrency < 1:
 		return nil, fmt.Errorf("--concurrency must be at least 1")
+	case m.uncachedPerMinute < 0:
+		return nil, fmt.Errorf("--uncached-input-per-minute must not be below 0")
 	}
-	return &llm.Runner{Limit: llm.NewLimit(m.concurrency)}, nil
+	return &llm.Runner{Limit: llm.NewLimit(m.concurrency), Pacer: llm.NewPacer(m.uncachedPerMinute)}, nil
 }
 
 // foundryConfig is the Foundry account the flags name.

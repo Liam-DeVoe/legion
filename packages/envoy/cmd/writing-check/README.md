@@ -1267,6 +1267,48 @@ The gateway serves each Claude model from more than one deployment and sends eac
 them. A deployment reads only the prefixes that it wrote, so a prefix is written once on each
 deployment that its calls reach (measured 2026-11-16: `claude-opus-5` has two).
 
+### Pacing
+
+`score --uncached-input-per-minute N` holds the process's own model calls to at most N uncached
+input tokens in any one minute. `grader-test` takes the same flag. The default, 0, paces no call;
+the calls are still counted. Uncached input is the prompt tokens that the provider bills at the
+full input price: a call's input tokens less the tokens it read from the cache. A cache write
+counts.
+
+Every model call of the process passes the pacer (`llm.Pacer`, which the run's `llm.Runner`
+holds). These are the grader and its fallbacks, the writer and the fresh readers, with every
+retry and every reply asked again. They are also the calls to the candidate that the harness
+makes itself: change 7a's detector reader, and Rewrite and Define where the harness calls the
+component (see "The changes").
+
+- Before each attempt, the pacer charges the attempt's estimate: the bytes of its system prompt,
+  schema, shared blocks and user message, at four bytes a token. The pacer leaves the prefix out
+  of the estimate only when an earlier attempt sent the same prefix (the model and its effort,
+  the system prompt, the schema and the shared blocks), its reply reported the prefix written to
+  the cache or read from it, and that attempt began less than five minutes before. Else the whole
+  prompt is charged.
+- An attempt waits while the charges of the last minute leave no room for its charge. The
+  attempts go through in the order they came.
+- After the reply, the charge becomes the reply's input tokens plus its cache write tokens. A
+  reply that reports no counts keeps the estimate. A charge that falls gives tokens back, and an
+  attempt that waits for them goes at once.
+- An attempt larger than N goes when the last minute holds no charge. No other attempt goes in
+  the minute after it.
+- A candidate call that the harness makes itself builds its own prompt, so the pacer has no
+  estimate of it. It is charged nothing before it starts, it waits while the last minute leaves no
+  room, and the tokens its model calls report count when it ends.
+
+The flag does not pace the candidate calls that the local Dispatch makes: the reviewer's draft
+route (changes 3 and 4, and 7b), the Rewrite and Define routes (changes 5 and 6). The local
+Dispatch is a process of its own, and only its own settings bound those calls.
+
+`run.json` records the setting as `uncached_input_per_minute` (0 for none), so a run that
+continues in a directory must give the same value. `scores.md` gives the uncached input of this
+run's own calls and the most of it in any one minute; `scores.json` holds them as
+`uncached_input_this_run`. The busiest minute can pass N: an attempt larger than N goes alone, and
+a reply can report more than its estimate. `grader-test` records the setting and the same counts
+in `grader-test.json` and `grader-test.md`.
+
 ### Session text
 
 Session text reaches Claude models only. Package `claude` reads the session export, and its
@@ -1317,6 +1359,7 @@ writes the rows as JSON.
 | `--vocabulary` | The `owner-texts.jsonl.gz` of `dataset owner-texts`. The `undefined` judgement then reads the words of each case's text that the owner wrote himself before the case (see "The owner's own words"). |
 | `--judgements` | The judgements to give, comma-separated (default all): a measurement of a few, such as `undefined` on the question cases. A run gives no reader answer that no named judgement grades. |
 | `--repeatability` | A `repeatability.json` of `harness compare`, whose agreement `scores.md` gives beside each score. |
+| `--uncached-input-per-minute` | Hold the run's own model calls to this many uncached input tokens in any one minute (default 0: no pacing). See "Pacing". |
 
 For each case, the judgements are:
 
@@ -1376,6 +1419,8 @@ figures: for the whole part and for the cases with a session (plan Decision 18),
 case group and all groups, the cases by kind and by conversation, each score, the wait, the
 change's own model cost per text, and each model's calls, attempts, replies in another shape,
 prompt tokens at the input price, cache write and cache read tokens, reply tokens and cost.
+`scores.md` also gives the uncached input of the run's own calls and its busiest minute (see
+"Pacing").
 
 Every share has a 95% interval: a cluster bootstrap over the split groups, by a PCG source
 seeded with `--seed`, the 2.5th and 97.5th percentiles of the ratio of the resampled groups'
@@ -1446,7 +1491,8 @@ written by hand from development cases and hold Dispatch text, so they are kept 
 and never in the repository. `--grader-inputs` sets the grader's input modes, as `score` takes
 them. `--grader` names the grading model, as `score` takes it, except that a candidate may grade
 here: no candidate wrote a planted output. The report then says the grader is a candidate, and
-`grader-test.json` records the grader and `grader_is_candidate`.
+`grader-test.json` records the grader and `grader_is_candidate`. `--uncached-input-per-minute`
+paces the test's calls as it paces `score`'s (see "Pacing").
 
 ### compare and repeatability
 

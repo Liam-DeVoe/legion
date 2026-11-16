@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 )
 
 // Figures is a run's scores.json: every score of R2 for each population and case group, each
@@ -34,6 +36,9 @@ type FigureRun struct {
 	CallSeconds   float64   `json:"call_seconds_all_results"`
 	ScoredThisRun int       `json:"scored_this_run"`
 	FailedThisRun int       `json:"failed_this_run"`
+	// UncachedInput is the uncached input tokens of this run's own model calls, and the most of
+	// them in any one minute (llm.Pacer): none for a run that called no model.
+	UncachedInput llm.PaceUse `json:"uncached_input_this_run"`
 	// ReusedAnswers and ReusedGrades are the readers' answers and the grades that the results
 	// took from other runs (score --readers-from, --grades-from): no call and no cost of them is
 	// among Models.
@@ -462,11 +467,26 @@ func (f Figures) markdown() string {
 		total += u.CostUSD
 	}
 	fmt.Fprintf(&b, "\nTotal model cost: %.2f USD. Wall time of this run: %.0f s; the calls' own time, summed: %.0f s.\n", total, f.Run.WallSeconds, f.Run.CallSeconds)
+	b.WriteString(paceText(p.UncachedInputPerMinute, f.Run.UncachedInput))
+	if p.Local != nil {
+		b.WriteString("The candidate calls that the local Dispatch makes are not among them: that server is a process of its own, which the pace does not hold.\n")
+	}
 	for _, family := range slices.Sorted(maps.Keys(f.Prices)) {
 		s := f.Prices[family]
 		fmt.Fprintf(&b, "Prices of %s models: %s (read %s).\n", family, strings.TrimSpace(s.Source), s.Read)
 	}
 	return b.String()
+}
+
+// paceText is the line of a report that gives the uncached input of the run's own model calls,
+// its busiest minute, and the pace the run held them to.
+func paceText(perMinute int, use llm.PaceUse) string {
+	pace := "not paced"
+	if perMinute > 0 {
+		pace = fmt.Sprintf("paced to at most %d a minute", perMinute)
+	}
+	return fmt.Sprintf("Uncached input of this run's own model calls (prompt tokens not read from the provider's cache, cache writes included): %d tokens; the busiest minute held %d; %s.\n",
+		use.Tokens, use.BusiestMinute, pace)
 }
 
 func countsText(m map[string]int) string {

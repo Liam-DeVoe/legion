@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -313,6 +314,46 @@ func TestScoreContinuesTheCasesWithNoResult(t *testing.T) {
 	code, _, stderr = runHarness("score", "--cases", build, "--sessions", sessions, "--out", out, "--gateway", second.URL, "--gateway-key-file", key, "--groups", "plain", "--exposure-log", exposure)
 	if code != 1 || !strings.Contains(stderr, "holds a run of other parameters") {
 		t.Errorf("a run of other parameters in the same directory = %d:\n%s", code, stderr)
+	}
+}
+
+// A paced run records its pace in run.json, and scores.md gives the uncached input of the run's
+// own calls and its busiest minute. A run in the same directory at another pace is refused.
+func TestAPacedRunRecordsItsPaceAndItsUncachedInput(t *testing.T) {
+	build, sessions := writeFixture(t)
+	stand := modeltest.New(t, graderRules(t)...)
+	out := t.TempDir()
+	key := keyFile(t)
+	exposure := filepath.Join(t.TempDir(), "exposure.log")
+	code, stdout, stderr := runHarness("score", "--cases", build, "--sessions", sessions, "--out", out, "--uncached-input-per-minute", "2000000",
+		"--gateway", stand.URL, "--gateway-key-file", key, "--draws", "50", "--exposure-log", exposure)
+	if code != 0 {
+		t.Fatalf("a paced score = %d:\n%s", code, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "run.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var params RunParams
+	if err := json.Unmarshal(data, &params); err != nil || params.UncachedInputPerMinute != 2000000 {
+		t.Errorf("run.json records the pace %d (%v), want 2000000", params.UncachedInputPerMinute, err)
+	}
+	f := readFigures(t, out)
+	// The stand-in reports no cache tokens, so each call's uncached input is its input.
+	input := 0
+	for _, u := range f.Models {
+		input += u.Input + u.CacheWrite
+	}
+	if u := f.Run.UncachedInput; input == 0 || u.Tokens != input || u.BusiestMinute <= 0 || u.BusiestMinute > u.Tokens {
+		t.Errorf("the run's uncached input is %+v, want the %d tokens its calls reported, and a busiest minute of at most that", u, input)
+	}
+	if want := "the busiest minute held " + strconv.Itoa(f.Run.UncachedInput.BusiestMinute) + "; paced to at most 2000000 a minute."; !strings.Contains(stdout, want) {
+		t.Errorf("scores.md does not say %q:\n%s", want, stdout)
+	}
+	code, _, stderr = runHarness("score", "--cases", build, "--sessions", sessions, "--out", out,
+		"--gateway", stand.URL, "--gateway-key-file", key, "--draws", "50", "--exposure-log", exposure)
+	if code != 1 || !strings.Contains(stderr, "holds a run of other parameters") {
+		t.Errorf("a run at no pace in the paced run's directory = %d:\n%s", code, stderr)
 	}
 }
 

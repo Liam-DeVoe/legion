@@ -916,7 +916,8 @@ func (r *changeRun) defineComponent(ctx context.Context, t *textRun, words []str
 }
 
 // component makes one call of the reviewer component with the candidate, in a slot of the run's
-// bound, again after a provider's failure; the calls of every attempt are the text's.
+// bound and past its pacer, again after a provider's failure; the calls of every attempt are the
+// text's.
 func (r *changeRun) component(ctx context.Context, t *textRun, call func(reviewer.Model) ([]reviewer.Call, error)) error {
 	m := reviewer.Model{Model: r.candModel}
 	for attempt := 0; ; attempt++ {
@@ -926,7 +927,11 @@ func (r *changeRun) component(ctx context.Context, t *textRun, call func(reviewe
 		}
 		started := time.Now()
 		calls, err := call(m)
-		release()
+		used := make([]agentloop.Usage, len(calls))
+		for i, c := range calls {
+			used[i] = c.Usage
+		}
+		release(used...)
 		seconds := time.Since(started).Seconds()
 		t.out.WaitSeconds += seconds
 		for i, c := range calls {
@@ -1039,7 +1044,7 @@ func (r *changeRun) checkStep(ctx context.Context, t *textRun) error {
 		}
 		started := time.Now()
 		result = writingcheck.New(writingcheck.Config{Enabled: true, Rules: writingcheck.EnabledRules, Detector: true, Reader: detector}).Check(ctx, checkFields(t))
-		release()
+		release(observed.Usage)
 		seconds := time.Since(started).Seconds()
 		t.out.WaitSeconds += seconds
 		if called {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/claude"
+	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 )
 
 // Change is one of R3's changes: what it makes of a case's text.
@@ -302,8 +303,8 @@ func (s *scorer) scoreCase(ctx context.Context, c *Case) CaseResult {
 	return res
 }
 
-// RunParams are what a run's figures depend on. A run that continues in an output directory
-// must have the parameters the directory's run.json records.
+// RunParams are what a run's figures depend on, and the pace of its own model calls. A run that
+// continues in an output directory must have the parameters the directory's run.json records.
 type RunParams struct {
 	Change string `json:"change"`
 	// Changes are the changes a combination holds, and Model the candidate the change calls; each
@@ -337,6 +338,10 @@ type RunParams struct {
 	Rounds   int               `json:"rounds,omitempty"`
 	Unedited string            `json:"unedited,omitempty"`
 	Local    map[string]string `json:"local,omitempty"`
+	// UncachedInputPerMinute is the pace of the run's own model calls in uncached input tokens a
+	// minute (--uncached-input-per-minute), 0 for no pacing. So every part of a run that
+	// continues in a directory was paced the same.
+	UncachedInputPerMinute int `json:"uncached_input_per_minute"`
 }
 
 // readResults reads the last line of each case in a run's cases.jsonl; a line a crash cut short
@@ -467,6 +472,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	repeatability := fs.String("repeatability", "", "a repeatability.json (harness compare) whose agreement scores.md gives beside each score")
 	judgementsFlag := fs.String("judgements", "", "the judgements to give, comma-separated (default: every one), for a measurement of a few")
 	mf := addModelFlags(fs)
+	mf.addPaceFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -511,6 +517,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return usage(fmt.Sprintf("change %s calls the local Dispatch: give --local and --loaded", change.Name()))
 	case *rounds < 1 || (*unedited != uneditedRewrite && *unedited != uneditedAsWritten):
 		return usage("--rounds must be at least 1, and --unedited rewrite or as_written")
+	case mf.uncachedPerMinute < 0:
+		return usage("--uncached-input-per-minute must not be below 0")
 	}
 	if err := outsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
@@ -631,6 +639,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		Change: change.Name(), Part: *part, Groups: groups, Models: models, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
 		GradesFrom: gradesDirs, VocabularySHA256: vocabularySHA,
 		PromptsSHA256: PromptsDigest(), CasesSHA256: casesSHA, SessionsSHA: sessionsSHA, SessionChars: *sessionChars,
+		UncachedInputPerMinute: mf.uncachedPerMinute,
 	}
 	if plan != nil {
 		params.Model = run.candidate
@@ -686,6 +695,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintf(stderr, "writing-check harness score: change %s, part %s: %d cases, %d with a result, %d to score\n",
 		change.Name(), *part, len(selected), len(selected)-len(todo), len(todo))
 	scored, failed := 0, 0
+	var uncached llm.PaceUse
 	if !*figuresOnly && len(todo) > 0 {
 		sessions, err := claude.CachedExcerpts(*sessionsDir, ids, *sessionChars, filepath.Join(*out, "session-excerpts.jsonl.gz"))
 		if err != nil {
@@ -714,6 +724,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if err != nil {
 			return fail(err)
 		}
+		uncached = runner.Pacer.Use()
 		if done, err = readResults(resultsPath); err != nil {
 			return fail(err)
 		}
@@ -727,6 +738,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	figures := computeFigures(params, results, len(selected), *seed, *draws, cfg)
 	figures.Run.WallSeconds = time.Since(started).Seconds()
 	figures.Run.ScoredThisRun, figures.Run.FailedThisRun = scored, failed
+	figures.Run.UncachedInput = uncached
 	figures.Repeatability = agreement
 	if err := writeJSON(filepath.Join(*out, "scores.json"), figures); err != nil {
 		return fail(err)
