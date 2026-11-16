@@ -42,13 +42,15 @@
 -- is this hole already used, or a bug, and nothing recorded which claim took it first. Such a name
 -- is held for neither: its claim is the empty string, which no claim's token is, so every claim is
 -- refused every registration, resume and enrollment under it. The daemon logs each such name at boot
--- at Error, naming every claim whose current session records it, and suspends them (internal/daemon's
--- suspendSessionConflicts), and an operator records the rightful holder by hand:
+-- at Error, naming every claim whose current session records it, suspends each it can, and names at
+-- Warn each it leaves as it was, being queued, launching uncertainly, failed or retired
+-- (internal/daemon's suspendSessionConflicts). An operator records the rightful holder by hand:
 --   update claim_sessions set claim = '<token>'
 --     where project = '<project>' and kind = '<kind>' and name = '<name>';
--- and gives every other claim that records the name a new session (`legion claims forget-session`,
--- then `legion claims resume`). A name only an abandoned session records suspends nothing: nothing
--- resumes or enrolls an abandoned session, so the boot logs it at Warn alone.
+-- and gives every other claim the boot names a new session (`legion claims forget-session`, then
+-- `legion claims resume` for a suspended one, `legion claims retry` for a failed or retired one; a
+-- queued one launches by itself). A name only an abandoned session records suspends nothing:
+-- nothing resumes or enrolls an abandoned session, so the boot logs it at Warn alone.
 --
 -- A daemon rolled back to a release before this one runs on this table without writing it, so the
 -- claims it registers record names no row holds. This backfill runs once, so the daemon runs its

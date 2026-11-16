@@ -6303,16 +6303,29 @@ each issue's pod (every role of it alike) and the image probe's.
   A registration under a name another claim recorded is refused `409` (`session <name> is recorded for another claim of this daemon; …`) before anything of it is recorded or enrolled, and the daemon's log names the claim that holds it;
   a relaunch whose record names one is refused before anything starts, as a launch failure.
   A claim's own earlier session and a session no claim has recorded register as before.
-  The record is the `claim_sessions` table, one row per project, kind and name.
+
+- The daemon's record of held names is the `claim_sessions` table, one row per project, kind and name.
   The migration that made it filled it from every claim's session and the session it last abandoned; an earlier abandoned session is not held.
   At every boot the daemon holds again each name a claim records that no row holds, which a daemon rolled back to a release before the hold leaves: such a daemon runs on the table without writing it.
-  A name two claims recorded is held for neither, and a name a rolled-back daemon let a claim take from another stays the first claim's: at each boot the daemon logs each at Error with its claims, and suspends with the operator's suspend each claim whose current session records a name it does not hold.
+
+- At each boot the daemon also finds every claim that records a name it does not hold.
+  A name two claims recorded is held for neither, and a name a rolled-back daemon let a claim take from another stays the first claim's: at each boot the daemon logs each at Error with the claims whose current session records it, suspends with the operator's suspend each of them it can, and names at Warn each it leaves as it was, being queued, launching uncertainly, failed or retired.
   A name only an abandoned session records suspends nothing, since nothing resumes or enrolls an abandoned session; the boot logs it at Warn.
-  An operator gives each suspended claim that is not the rightful holder a new session (`legion claims forget-session`, then `legion claims resume`), and for a name held for no claim records the rightful holder with the statement the line gives (`update claim_sessions set claim = '<token>' where project = '<project>' and kind = '<kind>' and name = '<name>'`) and resumes that claim with `legion claims resume`.
+
+- An operator settles what the boot names.
+  For each claim the boot names that is not the rightful holder, an operator gives it a new session with `legion claims forget-session`, then starts it as its state asks: `legion claims resume` for a suspended claim, `legion claims retry` for a failed or retired one, and nothing for a queued one, which launches by itself; a claim still launching uncertainly is given its new session once its launch settles.
+  For each name held for no claim, whether the claims the line names were suspended or left as they were, an operator records the rightful holder with the statement the line gives (`update claim_sessions set claim = '<token>' where project = '<project>' and kind = '<kind>' and name = '<name>'`), then starts that claim the same way.
   A name held for another claim stays that claim's; the line gives no statement for it.
-  A session id, and a session file's name, are at most 255 bytes: a registration of a longer one is refused `400`, and the boot holds no name past that bound.
-  One claim holds at most 2,048 names, 10 times what the busiest claim in production could hold: a registration that would take a claim past it is refused `409` (`this claim holds the most session names one claim may (2048) …`), and the claim keeps its names and resumes the session it recorded.
-  A project whose daemon moves to a new database starts with an empty table, so no session recorded in the old one is held; the broker's carry window, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default), bounds what an old session's grants can still reach.
+
+- A session id, and a session file's name, are at most 255 bytes: a registration of a longer one is refused `400`, and the boot holds no name past that bound.
+
+- One claim holds at most 2,048 names, 10 times what the busiest claim in production could hold.
+  A registration that would take a claim past it is refused `409` (`this claim holds the most session names one claim may (2048) …`), recording nothing.
+  The claim keeps its names, so a claim that records a session still resumes it; a claim that needs a new one, after a fresh start or because its agent began another, starts none until an operator frees the names of its older sessions.
+  The refusal's Warn line gives the statement that does so in its `release` field: it deletes the claim's holds recorded more than 12 hours ago, the broker's carry window by default, except every name of the session the claim records and of the one it last abandoned.
+  Past that window the broker has swept those sessions' grants, so a claim that later takes a freed name takes none of them; a deployment with a longer `BROKER_SESSION_CARRY_SECONDS` puts its own interval in the statement.
+
+- A project whose daemon moves to a new database starts with an empty table, so no session recorded in the old one is held; the broker's carry window, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default), bounds what an old session's grants can still reach.
   Another project's daemon is not held to this project's names; the broker holds a pod's grants to the pair of its account and the daemon that enrolled it, so a pod of another project's daemon enrolled under the same session id takes nothing.
 
 - The daemon logs in as the service `legion-daemon`, and its pods run as the ServiceAccount `runtime.kubernetes.pod.service_account` names (`default` when unset, above).
