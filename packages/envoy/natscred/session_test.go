@@ -19,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
 )
 
@@ -109,4 +111,65 @@ func TestConnectionProofVerifiesWithBrokertoken(t *testing.T) {
 		require.Eventually(t, func() bool { return strings.Contains(rig.log.String(), `reason="proof invalid: ath"`) },
 			5*time.Second, 50*time.Millisecond, "the service did not refuse the rotated token for its proof's 'ath':\n%s", rig.log.String())
 	})
+}
+
+// A session's keeper reconnects on each token its renewal loop lands after the first: the loop
+// trades on its first pass (brokerclient.Client.Run) just after the connection presented a live
+// token, so the first is no renewal, and a reconnect on it would cut the connection at once. A
+// later token the connection did not present is a renewal; one it did present is not. The control
+// is the keeper without the skip of the first, which reconnects on it.
+func TestSessionKeeperReconnectsOnEachTokenAfterTheFirst(t *testing.T) {
+	_, url := testnats.Start(t)
+	var reconnected atomic.Int64
+	nc, err := nats.Connect(url, nats.Timeout(10*time.Second), nats.ReconnectWait(50*time.Millisecond),
+		nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
+	require.NoError(t, err)
+	defer nc.Close()
+
+	// run lands each token the test sends it, as brokerclient.Client.Run lands each it trades.
+	landed, handled := make(chan string), make(chan struct{})
+	run := func(ctx context.Context, onToken func(context.Context, *brokerclient.Token) error) error {
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case token := <-landed:
+				if err := onToken(ctx, &brokerclient.Token{AccessToken: token}); err != nil {
+					return err
+				}
+				handled <- struct{}{}
+			}
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	kept := make(chan struct{})
+	go func() {
+		defer close(kept)
+		natscred.SessionKeeper(run, "tok-presented").Keep(ctx, nc)
+	}()
+	land := func(token string) {
+		t.Helper()
+		select {
+		case landed <- token:
+		case <-kept:
+			t.Fatalf("the keeper stopped before %s landed", token)
+		}
+		select {
+		case <-handled:
+		case <-kept:
+			t.Fatalf("the keeper stopped on %s", token)
+		}
+	}
+
+	land("tok-first")
+	require.Never(t, func() bool { return reconnected.Load() > 0 }, 2*time.Second, 50*time.Millisecond,
+		"the keeper reconnected on the first token its loop landed")
+	land("tok-second")
+	testwait.WithinPolling(t, 5*time.Second, 50*time.Millisecond, "the keeper's reconnect with the second token", func() bool {
+		return reconnected.Load() == 1
+	})
+	land("tok-presented")
+	require.Never(t, func() bool { return reconnected.Load() > 1 }, time.Second, 50*time.Millisecond,
+		"the keeper reconnected on the token the connection presented")
 }

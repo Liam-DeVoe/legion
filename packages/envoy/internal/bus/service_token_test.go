@@ -36,6 +36,9 @@ func unsignedToken(expiry time.Time) string {
 
 // A bus connection presenting a service's token file moves to the later token the file holds,
 // natscred.ServiceRenewBefore ahead of the one it connected with, by one reconnect, and stays up.
+// The keeper first dials a throwaway connection with the later token and reconnects only once
+// that is admitted, so the auth service is presented the later token twice, by that probe and by
+// the connection's one reconnect.
 func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
@@ -103,10 +106,10 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 
 	later := unsignedToken(time.Now().Add(50 * time.Minute))
 	require.NoError(t, os.WriteFile(tokenFile, []byte(later), 0o600))
-	testwait.WithinPolling(t, 10*time.Second, 50*time.Millisecond, "the reconnect with the later token", func() bool {
-		return count(later) == 1
+	testwait.WithinPolling(t, 10*time.Second, 50*time.Millisecond, "the probe and the reconnect with the later token", func() bool {
+		return count(later) == 2 && nc.Stats().Reconnects == 1
 	})
 	testwait.Eventually(t, "the connection back up", nc.IsConnected)
-	require.Never(t, func() bool { return count(later) > 1 }, 3*time.Second, 100*time.Millisecond, "the client reconnected more than once")
+	require.Never(t, func() bool { return count(later) > 2 || nc.Stats().Reconnects > 1 }, 3*time.Second, 100*time.Millisecond, "the client reconnected more than once")
 	require.Equal(t, 1, count(first))
 }

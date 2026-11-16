@@ -24,8 +24,14 @@ const ServiceUser = "service"
 const ServiceRenewBefore = 10 * time.Minute
 
 // servicePoll is how often a service's Keeper, once its token is due, asks its reader for a later
-// one, and checks that its reconnect has presented it.
+// one and tries it, and checks that its reconnect has presented it.
 const servicePoll = time.Second
+
+// serviceProbeCutoff is how long before the presented token lapses a service's Keeper stops
+// trying to move its connection to a later one: past it, the connection keeps the user it has,
+// the server drops it when that user expires, and nats.go reconnects with whatever token the
+// reader answers then, retrying a refusal (IgnoreAuthErrorAbort).
+const serviceProbeCutoff = 30 * time.Second
 
 // TokenReader reads a service's platform identity token as it is now, for each CONNECT.
 type TokenReader interface {
@@ -40,8 +46,14 @@ type TokenReader interface {
 // password, which the auth service refuses and the client retries.
 //
 // The Keeper reads the expiry of the token the connection presented (unverified, its 'exp') and,
-// ServiceRenewBefore ahead of it, waits for reader to answer a token that lapses later, then
-// reconnects once, and waits for that reconnect to present it before it reads the next expiry.
+// ServiceRenewBefore ahead of it, waits for reader to answer a token that lapses later. It then
+// dials a throwaway connection (a probe) with that token, and reconnects the connection only once
+// a probe is admitted: while the auth service is down, a reconnect would be refused and the
+// connection cut until the service answers again, though its user has minutes left to live. A
+// probe refused or failing is tried again every servicePoll until serviceProbeCutoff before the
+// presented token lapses; past that, the connection is left as it is until the server drops it
+// at expiry. Once it has reconnected, the Keeper waits for that reconnect to present a token
+// before it reads the next expiry.
 func Service(reader TokenReader) (nats.Option, Keeper) {
 	credential := &serviceCredential{reader: reader}
 	return allOf(nats.UserInfoHandler(credential.userInfo), nats.IgnoreAuthErrorAbort()), credential
@@ -73,8 +85,10 @@ func (c *serviceCredential) token() string {
 	return c.presented
 }
 
-// Keep reconnects nc with a later token ServiceRenewBefore ahead of each one it presented, until
-// ctx ends or nc closes.
+// Keep moves nc to a later token ServiceRenewBefore ahead of each one it presented, reconnecting
+// it only once a probe with that token is admitted, until ctx ends or nc closes. Past
+// serviceProbeCutoff before the presented token lapses it stops trying for that token, and waits
+// for the reconnect nats.go makes when the server drops the connection at expiry.
 func (c *serviceCredential) Keep(ctx context.Context, nc *nats.Conn) {
 	for {
 		presented := c.token()
@@ -91,12 +105,15 @@ func (c *serviceCredential) Keep(ctx context.Context, nc *nats.Conn) {
 			// another token while this waited: read the expiry again.
 			continue
 		}
-		if !c.awaitLaterToken(ctx, nc, expiry) {
+		admitted, live := c.admitLater(ctx, nc, presented, expiry)
+		if !live {
 			return
 		}
-		if nc.ForceReconnect() != nil {
+		if admitted && nc.ForceReconnect() != nil {
 			return
 		}
+		// Wait for the connection to present another token: the reconnect just made, or, past
+		// the cutoff, the one nats.go makes once the server drops the connection at expiry.
 		for c.token() == presented {
 			if !sleep(ctx, servicePoll) || nc.IsClosed() {
 				return
@@ -105,19 +122,63 @@ func (c *serviceCredential) Keep(ctx context.Context, nc *nats.Conn) {
 	}
 }
 
-// awaitLaterToken waits, asking the reader every servicePoll, for a token that lapses after
-// expiry, and reports false when ctx ended or nc closed first.
-func (c *serviceCredential) awaitLaterToken(ctx context.Context, nc *nats.Conn, expiry time.Time) bool {
-	for {
+// admitLater waits, asking the reader every servicePoll, for a token that lapses after expiry
+// and that a probe is admitted with, and reports whether one was. It gives up, reporting false,
+// at serviceProbeCutoff before expiry, and when the connection presents a token other than
+// presented on a reconnect of nats.go's own. live is false when ctx ended or nc closed first.
+func (c *serviceCredential) admitLater(ctx context.Context, nc *nats.Conn, presented string, expiry time.Time) (admitted, live bool) {
+	cutoff := expiry.Add(-serviceProbeCutoff)
+	for time.Now().Before(cutoff) && c.token() == presented {
 		if token, err := c.reader.Read(); err == nil {
-			if later, err := expiryOf(token); err == nil && later.After(expiry) {
-				return true
+			if later, err := expiryOf(token); err == nil && later.After(expiry) && probe(nc, token) == nil {
+				return true, true
 			}
 		}
 		if !sleep(ctx, servicePoll) || nc.IsClosed() {
-			return false
+			return false, false
 		}
 	}
+	return false, true
+}
+
+// probe dials a throwaway connection where nc connects, presenting token as the password of user
+// ServiceUser, and closes it: nil when the server admitted it, which for a service means the auth
+// service answers and admits token now.
+//
+// It reaches the server as nc does, through the fields of nc's options that say where and how:
+// its servers, name, TLS, dialer, websocket proxy path and headers, and timeout. It reads them as
+// they are when it runs, since by then they are final whatever applied them: internal/bus sets
+// the SOCKS5 proxy's dialer, its host lookup and a bounded timeout after the credential's option
+// (connect.go, connectWithContext), so a copy of the options taken when that option was applied
+// would dial the hub around the proxy. It reads no other field, and never copies nc.Opts whole:
+// nats.go writes a running connection's options only through its Set*Handler methods, under a
+// lock this package cannot take, and internal/bus calls two of them on a replacement connection
+// it discards (nats.go, ensureConnWithContext), so a whole copy would race with those writes and
+// these field reads do not.
+//
+// Everything else is nats.go's default, so the probe presents no other credential, never
+// reconnects, and has no callbacks: nc's ConnectedCB starts a Keeper beside the connection it
+// makes and its ClosedCB stops one (internal/bus, keepAlongside), and its handlers would report
+// the probe's connect and close as nc's own.
+func probe(nc *nats.Conn, token string) error {
+	from := &nc.Opts
+	opts := nats.GetDefaultOptions()
+	opts.Url, opts.Servers, opts.NoRandomize, opts.IgnoreDiscoveredServers = from.Url, from.Servers, from.NoRandomize, from.IgnoreDiscoveredServers
+	opts.InProcessServer = from.InProcessServer
+	opts.Name = strings.TrimSpace(from.Name + " probe")
+	opts.Secure, opts.TLSConfig, opts.TLSHandshakeFirst = from.Secure, from.TLSConfig, from.TLSHandshakeFirst
+	opts.TLSCertCB, opts.RootCAsCB = from.TLSCertCB, from.RootCAsCB
+	opts.Timeout, opts.Dialer, opts.CustomDialer, opts.SkipHostLookup = from.Timeout, from.Dialer, from.CustomDialer, from.SkipHostLookup
+	opts.ProxyPath, opts.Compression = from.ProxyPath, from.Compression
+	opts.WebSocketConnectionHeaders, opts.WebSocketConnectionHeadersHandler = from.WebSocketConnectionHeaders, from.WebSocketConnectionHeadersHandler
+	opts.User, opts.Password = ServiceUser, token
+	opts.AllowReconnect = false
+	conn, err := opts.Connect()
+	if err != nil {
+		return err
+	}
+	conn.Close()
+	return nil
 }
 
 // sleep waits d, reporting false when ctx ended first.
