@@ -11,6 +11,12 @@
 // holds no token for the slot does the exchange for itself from what the slot carries, as each
 // pod mints the other kinds for itself.
 //
+// Both paths hold the exchange to the application and the tenant the name's own document
+// names (azureBound), since the federated token is the broker's own and not the name's: Entra
+// takes it as the assertion of every application whose federated credential trusts the broker,
+// and an exchange made as whatever application the command named would sell the grant of one
+// name for a token of any of them.
+//
 // The exchange is the one place the proxy writes an answer of its own. It still reads no answer
 // of any API service, which is what the design's rule is about: what it reads here is the
 // answer to a call the broker itself made to a token endpoint, and every answer to a call of
@@ -111,6 +117,41 @@ func isTokenRequest(r *http.Request) bool {
 	return r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/oauth2/") && strings.HasSuffix(r.URL.Path, "/token")
 }
 
+// The two paths of a token endpoint after its tenant: Microsoft's v2.0 endpoint and its v1 one,
+// the two isTokenRequest reads a request to.
+const (
+	tokenPathV2 = "/oauth2/v2.0/token"
+	tokenPathV1 = "/oauth2/token"
+)
+
+// azureBound refuses an exchange of name's federated token that is not made as the application
+// and in the tenant name's own document names (app), before the broker puts its federated
+// token in it. clientIDs is every client_id the exchange's form carries: exactly one, since of
+// two the endpoint and not this check would choose the one that counts. path is the token
+// endpoint's path, which is where the tenant is, and it is read whole - "/", the tenant, then
+// one of the two token paths - so no spelling of another tenant's endpoint, a dot segment or a
+// second segment before the tenant, reads as this one's. scope is not bounded: one application
+// asks for tokens of several resources, and what a token of it may do is Entra's to say.
+//
+// Both compare exactly, as the document writes them: the session was released that document and
+// signs in with the ids it holds. A spelling that differs, even in case alone, is refused rather
+// than read as the same, which costs a client that respells them a refusal and never reads one
+// application or tenant as another. The refusal names the name and the field and neither value,
+// the document's or the command's.
+func azureBound(name string, app requests.AzureApplication, clientIDs []string, path string) error {
+	if app.ClientID == "" || len(clientIDs) != 1 || clientIDs[0] != app.ClientID {
+		return errors.New("refusing an exchange of " + name + "'s federated token whose client_id is not the application " + name + "'s secret names")
+	}
+	rest, ok := strings.CutPrefix(path, "/")
+	if ok {
+		rest, ok = strings.CutPrefix(rest, app.TenantID)
+	}
+	if app.TenantID == "" || !ok || (rest != tokenPathV2 && rest != tokenPathV1) {
+		return errors.New("refusing an exchange of " + name + "'s federated token whose tenant, the token endpoint's path, is not the tenant " + name + "'s secret names")
+	}
+	return nil
+}
+
 // accessKey is one access token this pod holds: whose grant, which name of it, and which
 // exchange (the slot). The grant is in the key because two grants of one secret hold two
 // federated tokens and so two access tokens.
@@ -177,8 +218,9 @@ func (s *Server) dropAccess(name string) {
 // exchangeToken answers one token request of an azure name: the broker makes the exchange
 // itself with the real federated token, keeps the access token, and answers the command the
 // endpoint's own answer with a placeholder in place of that token. Nothing of this request
-// reaches the endpoint as the command wrote it.
-func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Request, chosen pair, federated string) {
+// reaches the endpoint as the command wrote it, and nothing of it reaches the endpoint at all
+// unless it is made as app, the application and tenant the name's document names.
+func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Request, chosen pair, federated string, app requests.AzureApplication) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxTokenRequest))
 	if err != nil {
 		s.refuse(w, info, r, chosen, http.StatusBadRequest, "reading this token request's form: "+err.Error())
@@ -194,6 +236,10 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 		// Refused rather than forwarded: an assertion that is not this grant's placeholder is
 		// a credential the command holds of its own, and the airlock carries no such thing.
 		s.refuse(w, info, r, chosen, http.StatusForbidden, "refusing a token request whose client_assertion is not this grant's placeholder")
+		return
+	}
+	if err := azureBound(chosen.name, app, form["client_id"], r.URL.Path); err != nil {
+		s.refuse(w, info, r, chosen, http.StatusForbidden, err.Error())
 		return
 	}
 	x := azureExchange{
@@ -270,6 +316,11 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 		// The exchange is a call the broker makes with the real federated token, so where it
 		// is made is held to the same hosts as every other call of this name: the rules file's.
 		return "", errors.New("the token endpoint this slot names is no host " + chosen.name + " is bound to")
+	}
+	if err := azureBound(chosen.name, secret.Azure, []string{x.ClientID}, endpoint.Path); err != nil {
+		// The slot is the broker's own row, written by an exchange this check let through; one
+		// written before the check existed is held to it all the same.
+		return "", err
 	}
 	federated := secret.Slots[requests.SlotAzureFederated]
 	if federated == "" {

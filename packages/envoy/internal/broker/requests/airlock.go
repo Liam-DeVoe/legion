@@ -35,10 +35,11 @@ import (
 var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session may still have")
 
 // ErrAirlockValueShape is airlockSplitOf's refusal of a value that does not hold what its kind
-// releases: no JSON object, a missing or non-string token, two installations of one owner. The
-// release of that name is refused rather than made, since the one other answer would be to hand
-// over the real value the rules hold back, and no retry changes a value's shape, so the proxy
-// answers it 403 in these words.
+// releases: no JSON object, a missing or non-string token, two installations of one owner, an
+// azure-login identity that names no tenant or no application. The release of that name is
+// refused rather than made, since the one other answer would be to hand over the real value the
+// rules hold back, and no retry changes a value's shape, so the proxy answers it 403 in these
+// words.
 var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its kind releases")
 
 // The slots of a secret. A slot names which value of a secret a placeholder stands for, because
@@ -238,6 +239,11 @@ type airlockSplit struct {
 	// fill answers what the session holds for this name, taking each slot's placeholder from
 	// bySlot.
 	fill func(bySlot map[string]string) (string, error)
+	// azure is the application and tenant an azure-login document names, zero for every other
+	// kind (azureLoginSplit). The proxy answers it beside values, as AirlockSecret.Azure, and
+	// the session's release reads nothing of it: the session's document carries both ids as
+	// they were minted.
+	azure AzureApplication
 }
 
 // slots are the name's slots, sorted, so they are in one order whatever the map iteration gave,
@@ -268,7 +274,7 @@ func airlockSplitOf(entry *airlock.SecretRule, kind, value string) (airlockSplit
 	case kind == policy.KindGitHubApp:
 		split, err = githubAppSplit(value)
 	case kind == policy.KindAzureLogin:
-		split, err = objectSplit(value, map[string]string{"federated_token": SlotAzureFederated}, nil)
+		split, err = azureLoginSplit(value)
 	case kind == "" && entry.Kind == airlock.KindAWS:
 		split, err = objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
 			map[string]string{"session_token": SlotAWSSessionToken})
@@ -300,6 +306,12 @@ func objectSplit(value string, required, optional map[string]string) (airlockSpl
 	if err != nil {
 		return airlockSplit{}, err
 	}
+	return fieldsSplit(doc, required, optional)
+}
+
+// fieldsSplit is objectSplit of a document already read, for a kind that reads more of the same
+// document than its secret fields (azureLoginSplit) and so must not read it twice.
+func fieldsSplit(doc map[string]json.RawMessage, required, optional map[string]string) (airlockSplit, error) {
 	holes := map[string]string{}  // field -> slot
 	values := map[string]string{} // slot -> the field's own string
 	for field, slot := range required {
@@ -321,6 +333,41 @@ func objectSplit(value string, required, optional map[string]string) (airlockSpl
 		}
 		return marshalObject(filled)
 	}}, nil
+}
+
+// azureLoginSplit is the split of an azure-login's minted identity: the federated token's slot,
+// taken as objectSplit takes it, and beside it the tenant and the application the document
+// names, read in the same walk so the ids the proxy holds are the ones of the document whose
+// token it holds. A document that names either one as no string, or as an empty one, releases
+// nothing: the proxy holds every exchange of the token to the two (AirlockSecret.Azure), and
+// could hold an exchange to nothing. The minter refuses such a document before it ever mints
+// (secrets.AzureLogin), so this refuses what no release made by it can hold.
+func azureLoginSplit(value string) (airlockSplit, error) {
+	doc, err := jsonObject(value)
+	if err != nil {
+		return airlockSplit{}, err
+	}
+	split, err := fieldsSplit(doc, map[string]string{"federated_token": SlotAzureFederated}, nil)
+	if err != nil {
+		return airlockSplit{}, err
+	}
+	if split.azure.TenantID, err = azureIDOf(doc, "tenant_id"); err != nil {
+		return airlockSplit{}, err
+	}
+	if split.azure.ClientID, err = azureIDOf(doc, "client_id"); err != nil {
+		return airlockSplit{}, err
+	}
+	return split, nil
+}
+
+// azureIDOf is one id field of an azure-login document. The refusal names the field and never
+// what the document holds there.
+func azureIDOf(doc map[string]json.RawMessage, field string) (string, error) {
+	id, ok := jsonString(doc[field])
+	if !ok || id == "" {
+		return "", fmt.Errorf("its minted identity holds no %s string, which the airlock holds every exchange of its federated token to", field)
+	}
+	return id, nil
 }
 
 // githubAppSplit is the split of a github-app secret's minted installations: one slot per
@@ -534,12 +581,33 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 }
 
 // AirlockSecret is one airlock name as the proxy holds it: the real value behind each of its
-// slots, when the broker must read or mint it again, and the policy kind that says what the
-// slots are.
+// slots, when the broker must read or mint it again, the policy kind that says what the slots
+// are, and for an azure-login name the application and tenant its document names.
 type AirlockSecret struct {
 	Slots   map[string]string // slot -> the real value that slot's placeholder stands for
 	Expires time.Time         // zero for a stored value, which no clock ends
 	Kind    string
+	Azure   AzureApplication // zero for every kind but azure-login
+}
+
+// AzureApplication is the tenant and the application an azure-login name's own document names
+// (secrets.AzureLogin writes both beside the federated token). The proxy refuses every exchange
+// of that name's federated token made as another application or in another tenant, because the
+// token is the broker pod's own: Entra takes it as the assertion of every application whose
+// federated credential trusts the broker, so the grant of one name would otherwise buy a token
+// of any of them.
+//
+// The two travel as fields of their own rather than as slots or as the document whole. Not
+// slots, because a slot is a value a placeholder stands for: the release would mint
+// placeholders for them and put those in the session's document, where az needs the ids
+// themselves. Not the document, because the proxy would then hold every field a minter ever
+// writes there; these are the two it bounds an exchange by, named, read in the one walk that
+// takes the federated token out (azureLoginSplit). Neither is a secret - the session is handed
+// both in the clear - so holding them widens nothing the proxy knows of the secret beyond what
+// the bound needs.
+type AzureApplication struct {
+	TenantID string
+	ClientID string
 }
 
 // AirlockValues runs the full release checks of Values - the record chain, the policy
@@ -571,7 +639,7 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	}
 	values := map[string]AirlockSecret{}
 	for _, released := range read {
-		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Kind: released.kind}
+		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Kind: released.kind, Azure: released.split.azure}
 	}
 	// The same grant.used row a session's own release writes, marked as the proxy's: the values
 	// did leave the broker, and an operator reading the trail must see that they did.
