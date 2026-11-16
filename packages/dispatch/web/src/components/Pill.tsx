@@ -88,7 +88,15 @@ function approvalTone(state: string): keyof typeof approvalPill {
  * lets a long document name break, and so drops the pill's min-content width to something a
  * narrow row can hold. Both utilities belong to this one string rather than being appended by a
  * host, for the reason `pillShapeClassName` records above: two conflicting Tailwind utilities
- * are settled by the generated CSS's order, not the attribute's. */
-export function approvalPillClassName(state: ArtifactApproval["state"]): string {
-  return `inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] ${approvalPill[approvalTone(state)]}`;
+ * are settled by the generated CSS's order, not the attribute's.
+ *
+ * `compact` is the new issue page header's: the prototype's `.pill`, 12 px type on an 18 px
+ * line inside its rule, 20 px tall, the size of every other pill on that line
+ * (dispatch://INFRA-1196 R13). `default` is every other host's. */
+export function approvalPillClassName(
+  state: ArtifactApproval["state"],
+  size: "compact" | "default" = "default"
+): string {
+  const height = size === "compact" ? "py-0 leading-[18px]" : "py-1";
+  return `inline-flex min-w-0 items-center rounded-full border px-2 ${height} text-center text-xs font-medium [overflow-wrap:anywhere] ${approvalPill[approvalTone(state)]}`;
 }
