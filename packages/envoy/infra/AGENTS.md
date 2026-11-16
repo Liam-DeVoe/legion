@@ -92,13 +92,18 @@ versions. Never add the module to the root `go.work`.
   is tested in both.
 - **Refusals.** Every refusal names the input. `core.CheckMachineID` is the one machine-id rule
   shared by `core.ListenerConfig.Check` and the hub's users. It refuses an empty id; leading or
-  trailing whitespace; `.`, `*`, `>`, `/` or `\`; control characters; and whitespace other than
-  an ordinary space; and any id over 246 bytes, so `listener-<id>` fits NATS's 255-byte consumer-name
-  limit. The hub also refuses two ids that give one durable (`a b` and `a-b` collide), an id that
-  takes the hub listener's durable, and a second `dispatchMachineId` user, since every one binds
-  `core.DispatchDurables()`. An ordinary space is accepted only inside the id and becomes a hyphen in
-  `bus.ListenerDurable`'s `listener-<id>` and `bus.ListenerQueue`'s
-  `envoy-listener-<id>`. A seed check that already precedes this rule stays first.
+  trailing whitespace; control characters; and whitespace other than an ordinary space; then what
+  the listener refuses at start (`bus.CheckListenerMachineID`): an id holding `%`, and an id whose
+  durable `listener-<id>` is over NATS's 255-byte consumer-name limit, escapes included (a plain id
+  of up to 246 bytes fits). The hub also refuses two ids that give one durable (`a b` and `a-b`
+  collide), an id that takes the hub listener's durable, and a second `dispatchMachineId` user,
+  since every one binds `core.DispatchDurables()`. `bus.ListenerDurable`'s `listener-<id>` and
+  `bus.ListenerQueue`'s `envoy-listener-<id>` spell the id as the listener does: an ordinary space,
+  accepted only inside the id, becomes a hyphen, and each other character NATS refuses in a
+  consumer name (`.`, `*`, `>`, `/`, `\`) becomes `%` and two hex digits, so a fully qualified host
+  name is accepted and `host.example.internal` names `listener-host%2Eexample%2Einternal`. Every
+  other id keeps its names byte for byte. `%` starts every escape, so an id holding it could give
+  another id's names, and is refused. A seed check that already precedes this rule stays first.
   `core.ListenerConfig.Check` also holds the checks of the listener's environment that the
   resolver can make (`port`, `listenHost`), run once before anything registers;
   `ListenerConfig.Env` runs `Check` again, so no caller renders a config `Check` refuses, then

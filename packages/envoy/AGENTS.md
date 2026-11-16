@@ -4090,6 +4090,15 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 - The two Kubernetes listener pods, the clustered hub's (`infra/gcp/clusteredhub_listener.go`) and `gcp:Dispatch`'s (`infra/gcp/dispatch_kube.go`), ask for 40 s of grace, of which the preStop hook spends 5, so the stop above keeps 35.
   That is a margin of 7 seconds (`listenerGraceMargin`) over the stop's 28, and it covers the kubelet's own latency between that hook's return and SIGTERM, the container's teardown and a late tick on a loaded node; the grace stays under the listener's own 135 s bind deadline.
 
+- The listener names its durable `listener-<machine id>` (`bus.ListenerDurable`) and its machine's role-lane group `envoy-listener-<machine id>` (`bus.ListenerQueue`), and envoy-infra's grants call the same two functions.
+  A space in `ENVOY_MACHINE_ID` is a hyphen in both names, as it has always been.
+  Each other character NATS refuses in a consumer name (`.`, `*`, `>`, `/`, `\`, a tab, a line break, a form feed) is `%` and its byte in two upper-case hex digits, so `host.example.internal` names `listener-host%2Eexample%2Einternal`.
+  Every other machine id keeps its names byte for byte, so no deployed durable is renamed.
+  Without the escape, a listener with a dot in its machine id stays `starting`, and its bind retries `nats: invalid consumer name`.
+  At start the listener refuses, naming `ENVOY_MACHINE_ID` (`bus.CheckListenerMachineID`, from `config.Load`), an id that holds `%`, since `%` starts every escape and such an id can give the names of another id, and an id whose durable is over NATS's 255-byte limit for a consumer name.
+  `core.CheckMachineID` in envoy-infra refuses the same ids.
+  A space and a hyphen still give one name: `a b` and `a-b` share a durable, which the hub's duplicate-durable check refuses among its users.
+
 - The listener refuses to bind its durable (`listener-<machine id>`) when the durable's idle heartbeat or ack policy differs from the listener's consumer policy (no heartbeat, explicit acks), because NATS cannot change either in place.
   It checks the durable right after the NATS connect, before the cache warm-ups, logs `subscribe refused, shutting down`, naming the durable and every such setting it carries, and exits 1 at once rather than retrying a bind that cannot succeed.
   Deleting the durable lets the next start recreate it at deliver policy `all`, which replays every message the stream retains (72 hours).

@@ -479,7 +479,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 
 | Setting | What it is |
 | --- | --- |
-| `ENVOY_MACHINE_ID` | Required. Names this listener; its durable consumer is `listener-<machine id>`. |
+| `ENVOY_MACHINE_ID` | Required. Names this listener; its durable consumer is `listener-<machine id>`. A space in the id is a hyphen in the name, and a `.`, `*`, `>`, `/` or `\` is `%` and two hex digits, so `host.example.internal` names `listener-host%2Eexample%2Einternal`. The listener refuses to start with an id that holds `%`, since that id can name another machine's durable. |
 | `NATS_URLS` | Required. Comma-separated NATS addresses, such as `nats://<nats-host>:4222`. |
 | `NATS_NKEY_SEED_FILE` | The NATS user to connect as, as a file holding its seed. |
 | `ENVOY_ALLOW_REMOTE_NATS` | Set to `1` when NATS runs on another machine; otherwise the listener refuses it. |
@@ -715,7 +715,7 @@ intact.
    cp -n single-node.env.example .env
    ```
 
-   Set `ENVOY_MACHINE_ID` in `.env` to what `hostname -s` prints, with no `.` in it; the file says
+   Set `ENVOY_MACHINE_ID` in `.env` to what `hostname -s` prints; the file says
    what its other settings do. The other compose files here read the same `.env`, so `cp -n` leaves
    one that already exists alone (it may print `not replacing`): add to it the template's settings
    it lacks.

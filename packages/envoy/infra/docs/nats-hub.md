@@ -227,11 +227,15 @@ checked the names. `githubWebhook: true` beside any kind but `listenerMachineId`
 naming it, as
 `users[0].githubWebhook is set beside machineId; it names the listener that receives GitHub's webhook, so only a listenerMachineId user takes it`.
 A `machineId`, `listenerMachineId` or `dispatchMachineId` names the durable consumer
-`listener-<id>` and queue group `envoy-listener-<id>`. The shared machine-ID rule refuses
-an empty id; leading or trailing whitespace; `.`, `*`, `>`, `/` or `\`; a control character; and
-any whitespace other than an ordinary space; and any id over 246 bytes, so `listener-<id>` fits
-NATS's 255-byte consumer-name limit. An ordinary space is accepted only inside the id and becomes a hyphen in both names. The refusal names the field itself, as
-`users[1].dispatchMachineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry`. Two ids that give one durable name, of any kind
+`listener-<id>` and queue group `envoy-listener-<id>`, spelled as the listener spells them: an
+ordinary space, accepted only inside the id, becomes a hyphen, and each `.`, `*`, `>`, `/` or `\`
+becomes `%` and two hex digits, so `host.example.internal` names
+`listener-host%2Eexample%2Einternal`. The shared machine-ID rule refuses an empty id; leading or
+trailing whitespace; a control character; any whitespace other than an ordinary space; an id
+holding `%`, which starts every escape and so could give another id's names; and an id whose
+durable is over NATS's 255-byte consumer-name limit, each escape counted as three bytes. The
+listener refuses the same `%` and length at start. The refusal names the field itself, as
+`users[1].dispatchMachineId holds '%', which starts an escape in the listener's NATS names, so another machine id can give the same names`. Two ids that give one durable name, of any kind
 (`a b` and `a-b` collide), or one giving the hub's own listener's (the `hostname`'s), would put
 two listeners on one durable and queue group, so the later one is refused, as
 `users[2]: dispatchMachineId gives the same durable name as users[0].machineId` or

@@ -116,16 +116,77 @@ const DispatchDeliveryDurable = "delivery-events"
 const DispatchJobDurable = "delivery-jobs"
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
-// binds. A space in the machine id is a hyphen in the name.
+// binds: listener-<machineID> in the listener's spelling (listenerName).
 func ListenerDurable(machineID string) string {
-	return "listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return listenerName("listener-", machineID)
 }
 
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,
-// so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two.
-// A space in the machine id is a hyphen in the name.
+// so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two:
+// envoy-listener-<machineID> in the listener's spelling (listenerName).
 func ListenerQueue(machineID string) string {
-	return "envoy-listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return listenerName("envoy-listener-", machineID)
+}
+
+// listenerNameRefused are the characters NATS refuses in a consumer name: nats-server refuses a
+// space, a tab, a carriage return, a line feed, a form feed, '.', '*', '>', '\' and '/'
+// (server/jetstream.go isValidAssetName), and nats.go refuses '.' and a space (jsm.go
+// checkConsumerName). A dot is also the separator of the subject tokens that carry the durable's
+// name ($JS.API.CONSUMER.CREATE.<stream>.<durable>, $JS.ACK.<stream>.<durable>.>).
+const listenerNameRefused = " \t\r\n\f.*>\\/"
+
+// machineIDEscape starts each escape in a listener name (listenerName).
+const machineIDEscape = '%'
+
+// maxConsumerNameBytes is the longest consumer name nats-server takes (server/jetstream_api.go
+// JSMaxNameLen).
+const maxConsumerNameBytes = 255
+
+// listenerName is prefix then machineID, with each ordinary space as a hyphen, as the listener has
+// always named its durable and queue group, and each other character NATS refuses in a consumer
+// name (listenerNameRefused) as machineIDEscape and that byte in two upper-case hex digits: a dot is
+// "%2E". Every other byte stays as it is, so the names of a machine id NATS takes do not change.
+// The escape makes a name NATS takes of an id with a dot, such as a fully qualified host name. An
+// id that holds machineIDEscape is refused (CheckListenerMachineID), so no two ids a listener
+// starts with give one name, except a space and a hyphen, which the listener has always spelled
+// alike.
+func listenerName(prefix, machineID string) string {
+	if !strings.ContainsAny(machineID, listenerNameRefused) {
+		return prefix + machineID
+	}
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(prefix) + 3*len(machineID))
+	b.WriteString(prefix)
+	for i := range len(machineID) {
+		switch c := machineID[i]; {
+		case c == ' ':
+			b.WriteByte('-')
+		case strings.IndexByte(listenerNameRefused, c) >= 0:
+			b.WriteByte(machineIDEscape)
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0f])
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// CheckListenerMachineID refuses a machine id whose listener names (ListenerDurable,
+// ListenerQueue) can be the names of another id, or that NATS refuses. An id that holds
+// machineIDEscape can spell the escape of a dot in another id, and then the two ids share one
+// durable and one queue group. An id whose durable is over NATS's 255-byte limit for a consumer
+// name names no durable. The error does not name the setting: the caller adds the name of the
+// setting it read the id from.
+func CheckListenerMachineID(machineID string) error {
+	if strings.ContainsRune(machineID, machineIDEscape) {
+		return fmt.Errorf("holds %q, which starts an escape in the listener's NATS names, so another machine id can give the same names", machineIDEscape)
+	}
+	if n := len(ListenerDurable(machineID)); n > maxConsumerNameBytes {
+		return fmt.Errorf("makes the durable name listener-<id> %d bytes long, over NATS's %d-byte limit for a consumer name", n, maxConsumerNameBytes)
+	}
+	return nil
 }
 
 // RoleLaneQueue is the queue group every listener subscribes the role lanes in, whatever its

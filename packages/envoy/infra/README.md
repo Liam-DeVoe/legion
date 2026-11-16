@@ -1726,7 +1726,7 @@ The listener's outputs are `containerName` and `port`.
 
 | Input | Default | What it is |
 | --- | --- | --- |
-| `machineId` | required | The listener's name, `ENVOY_MACHINE_ID`. It names the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>`; an interior ordinary space becomes a hyphen in both names. |
+| `machineId` | required | The listener's name, `ENVOY_MACHINE_ID`. It names the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>`; an interior ordinary space becomes a hyphen in both names, and a `.`, `*`, `>`, `/` or `\` becomes `%` and two hex digits, so `host.example.internal` names `listener-host%2Eexample%2Einternal`. |
 | `natsUrls` | required | The NATS servers to connect to. May come from another resource or stack. |
 | `image` | required | The listener image, such as `ghcr.io/cybermonklabs/legion/envoy:<tag>`. |
 | `containerName` | `envoy-listener` | The container's name. |
@@ -1756,10 +1756,12 @@ The listener refuses these before it registers anything, with an error naming wh
   names the input and never the value, as `envoy-infra:host:Listener example-host-a: image holds an
   nkey seed (not echoed)`, since each would reach a resource's inputs, an alias or another refusal.
   `seed` is the one input that is a seed;
-- an empty `machineId`, one with leading or trailing whitespace, or one holding `.`, `*`, `>`, `/`,
-  `\`, a control character, or whitespace other than an interior ordinary space, or one over 246 bytes: none can be used
-  the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>` the
-  listener uses;
+- an empty `machineId`, one with leading or trailing whitespace, or one holding `%`, a control
+  character, or whitespace other than an interior ordinary space, or one whose durable
+  `listener-<machineId>` is over 255 bytes, each escape counted as three (a plain id of up to 246
+  bytes fits): the listener refuses the same ids at start, since an id holding `%` can give the
+  names of another id, and the other ids cannot be carried by the durable consumer
+  `listener-<machineId>`, the queue group `envoy-listener-<machineId>` or the watchdog's files;
 - a `port` outside 1-65535;
 - `watchdog` with a `containerName` other than `envoy-listener`;
 - `watchdog` with `seed`;
@@ -2126,7 +2128,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 
 | Input | Default | What it is |
 | --- | --- | --- |
-| `machineId` | required | `ENVOY_MACHINE_ID`, the listener's name. It names the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>`; an interior ordinary space becomes a hyphen in both names. |
+| `machineId` | required | `ENVOY_MACHINE_ID`, the listener's name. It names the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>`; an interior ordinary space becomes a hyphen in both names, and a `.`, `*`, `>`, `/` or `\` becomes `%` and two hex digits. |
 | `natsUrls` | required | The NATS servers. May come from another resource as an output of the whole list, such as `nats.internal_url.apply(lambda url: [url])`. |
 | `image` | required | The listener image, such as `ghcr.io/cybermonklabs/legion/envoy@sha256:<digest>`. |
 | `region` | required | The container's `awslogs-region`. |
@@ -2173,8 +2175,9 @@ the input:
   a webhook's input missing while `webhooks` lists it (a blank `reviewerAppId` or `mentionTrigger`
   counts as missing) or given while it does not, each input checked before the list; then a
   `webhooks` other than `[]` or exactly `["github", "slack"]`; an empty `machineId`, one with
-  leading or trailing whitespace, or one holding `.`, `*`, `>`, `/`, `\`, a control character, or
-  whitespace other than an interior ordinary space, or one over 246 bytes; a `listenHost` holding
+  leading or trailing whitespace, or one holding `%`, a control character, or whitespace other
+  than an interior ordinary space, or one whose durable `listener-<machineId>` is over 255 bytes,
+  each escape counted as three; a `listenHost` holding
   a control character; a blank `listenHost`; a `natsReplicas` below 1 or above 5; an empty
   `subnetIds`; a `baseTags` holding `service`.
 - Either, without an `aws` provider (see [Providers and transformations](#providers-and-transformations)).
