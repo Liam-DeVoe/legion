@@ -701,8 +701,10 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // asked the member kind (projectaccess.ErrUnchecked): the session is enrolled, and a line says it
 // was enrolled unchecked. A list Dispatch did not answer for is refused, since taking it
 // unchecked could name a project its person may not see; so is any list, empty or not, when
-// Dispatch refused the broker's own account (projectaccess.ErrBrokerRefused), a deployment that
-// has not listed the broker, through which no caller enrolls.
+// Dispatch refused the broker's own account or the broker could not read its token
+// (projectaccess.ErrBrokerRefused), a deployment that has not listed the broker, through which no
+// caller enrolls, and when Dispatch answered a member kind the broker does not know
+// (projectaccess.ErrUnknownMemberKind). Each refusal wraps the project-access error it met.
 func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
 	if err := oauthwire.ValidProjects(in.Projects); err != nil {
 		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)
@@ -730,7 +732,7 @@ func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
 			"person", *in.Operator, "runtime_id", in.RuntimeID, "error", err)
 		return nil
 	}
-	return fmt.Errorf("%w: %v", ErrProjectsUnchecked, err)
+	return fmt.Errorf("%w: %w", ErrProjectsUnchecked, err)
 }
 
 // createAttempt makes one insert-then-recover attempt. retry is true when the row that conflicted

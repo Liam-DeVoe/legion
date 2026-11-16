@@ -3,12 +3,14 @@ package enroll
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
 // The people and projects of the enrollment's project tests: PRIV is private, owned by carol,
@@ -139,6 +141,29 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 		svc.Projects = projectaccess.New(dispatch.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
 		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-refused"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, projectaccess.ErrBrokerRefused) && !strings.Contains(err.Error(), "refused the broker") {
 			t.Fatalf("a session naming no project while Dispatch refuses the broker's account = %v; want ErrProjectsUnchecked saying Dispatch refused the broker", err)
+		}
+	})
+	// Base #4119's cfe6a5f216 adds two answers that are neither an outage nor a refusal of the
+	// list: a member kind the broker does not know (projectaccess.ErrUnknownMemberKind), and a
+	// token file the broker cannot read, which ErrBrokerRefused now covers. The exchange mints
+	// through neither, and no session enrols through them either, naming a project or not.
+	t.Run("Dispatch answers a member kind the broker does not know", func(t *testing.T) {
+		svc := newService(t)
+		dispatch := projectaccesstest.NewServer(t, nil, map[string]string{aliceLogin: "guest"})
+		svc.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
+		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-guest"); !errors.Is(err, ErrProjectsUnchecked) || !errors.Is(err, projectaccess.ErrUnknownMemberKind) && !strings.Contains(err.Error(), "guest") {
+			t.Fatalf("a session naming no project while Dispatch answers an unknown member kind = %v; want ErrProjectsUnchecked naming it", err)
+		}
+	})
+	t.Run("the broker cannot read its token file", func(t *testing.T) {
+		svc := newService(t)
+		dispatch := withProjects(t, svc)
+		svc.Projects = projectaccess.New(dispatch.URL, brokertoken.NewAccountToken(filepath.Join(t.TempDir(), "missing-token")), nil)
+		if _, err := enrolSession(t, svc, aliceLogin, "box-alice-no-token"); !errors.Is(err, ErrProjectsUnchecked) {
+			t.Fatalf("a session naming no project while the broker cannot read its token file = %v; want ErrProjectsUnchecked", err)
+		}
+		if calls := dispatch.Calls(); calls != 0 {
+			t.Errorf("Dispatch was asked %d times; want none, since there is no token to ask with", calls)
 		}
 	})
 }
