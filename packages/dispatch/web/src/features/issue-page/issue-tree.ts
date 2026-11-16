@@ -150,7 +150,8 @@ export interface NodeOption {
 /** The one line a filter's row draws for its node's parent (R2, R1's first-line rule). */
 export interface ParentLine {
   readonly id: string;
-  /** The parent's own first line, cut by R1's rule (`firstLineOf`). */
+  /** The parent's own first line, cut by R1's rule (`firstLineOf`) and drawn as `drawnLine`
+   *  reads it: an ellipsis only where the cut ended inside a sentence. */
   readonly line: string;
   /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
    *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */

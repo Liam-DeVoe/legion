@@ -256,3 +256,33 @@ test("a parent line carries the parent's own address", () => {
     { id: "comment-1", line: "comment-1", type: "comment" },
   ]);
 });
+
+// R1, R2 and the architect's ruling 1: a parent's line is drawn as a row's first line is
+// (`drawnLine`), with an ellipsis where the cut ended inside a sentence and none where the line
+// is a whole sentence, whose own mark ends it.
+test("a parent's line draws its ellipsis only where the cut ended inside a sentence", () => {
+  // The words R1's limit keeps of one sentence of 114 characters: it is cut at the last word
+  // that fits.
+  const kept = [
+    "Which of the three layouts does the page take when a reader opens",
+    "an issue that holds many asks and",
+  ].join(" ");
+  const root = node("CORE-1", "issue", [
+    node("ask-1", "ask", [node("spec#b-r1", "requirement")], {
+      state: "answered",
+      text: `${kept} many comments?`,
+    }),
+    node("ask-2", "ask", [node("spec#b-r2", "requirement")], {
+      state: "answered",
+      text: "Which layout does the page take? The three pictures show it.",
+    }),
+  ]);
+  const view = presetView(root, "spec", "");
+  expect(drawn(root, "spec")).toEqual(["spec#b-r1", "spec#b-r2"]);
+  const [long, short] = view.root.children.map((row) => row.parentLine?.line);
+  // The one sentence runs past the limit, so the line stops inside it and says it carries on.
+  expect(long).toEndWith("…");
+  expect(long).toBe(`${kept}…`);
+  // Two short sentences: the line is the first, whole, and its own mark ends it.
+  expect(short).toBe("Which layout does the page take?");
+});

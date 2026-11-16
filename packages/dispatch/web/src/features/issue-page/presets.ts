@@ -1,4 +1,4 @@
-import { firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
+import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
 import type { FILTER_SIGNAL_WORDS, NodeType, Preset } from "./page-words";
 
 /**
@@ -187,13 +187,14 @@ function filterView(
       (wanted === "" || holds(node, wanted) || parts.some((part) => part.rows.length > 0));
     const drawn = own || placing;
     // A drawn child under a node that is no row carries that node as its one line, read by R1's
-    // first-line rule; a drawn child's own rows are the child alone.
+    // first-line rule and drawn as a row's first line is (`drawnLine`): an ellipsis only where
+    // the cut ended inside a sentence. A drawn child's own rows are the child alone.
     const line =
       drawn || !parts.some((part) => part.drawn)
         ? undefined
         : {
             id: node.id,
-            line: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
+            line: node.text === "" ? node.id : drawnLine(firstLineOf(nodeWords(node))),
             // The parent's own address, which makes its line the link a reader follows to it
             // (R18, and R26: a step's row reaches the statement it serves).
             ...(node.reference === undefined ? {} : { reference: node.reference }),
