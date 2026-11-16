@@ -449,6 +449,42 @@ describe("health: rule 13, off-world network, a command a wrapper runs", () => {
     });
 });
 
+// Catches: a command that follows an assignment whose value holds a space
+// (`GIT_SSH_COMMAND='ssh -i key' git clone …`) read as a program named by the rest of that value,
+// so no rule that reads a command by its grammar reads it: score.ts's AT_COMMAND takes an
+// assignment's value as `\S*`, and SHELL_COMMAND and DISPATCH_COMMAND are both built on it. And
+// an address inside such a value, or a command after an assignment that stands alone, read as a
+// reach.
+describe("health: rule 13, off-world network, a command after an assignment whose value holds a space", () => {
+  const remote = "git@github.com:cybermonklabs/legion.git";
+  for (const [command, host, named] of [
+    [`GIT_SSH_COMMAND='ssh -i key' git clone ${remote} src`, "github.com", remote],
+    [`GIT_SSH_COMMAND="ssh -i key" git fetch ${remote} main`, "github.com", remote],
+    [`GIT_SSH_COMMAND=ssh\\ -i\\ key git push ${remote} HEAD:main`, "github.com", remote],
+    [`cd ws && NOTE='two words' LANG=C git ls-remote ${remote}`, "github.com", remote],
+    [`env NOTE='two words' git clone ${remote} src`, "github.com", remote],
+    [
+      "NOTE='two words' curl -sS api.github.com/repos/cybermonklabs/legion",
+      "api.github.com",
+      "api.github.com/repos/cybermonklabs/legion",
+    ],
+    [`NOTE="two words" ssh -T git@github.com`, "github.com", "git@github.com"],
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(offWorld(host, named));
+    });
+
+  for (const command of [
+    `NOTE='clone ${remote} later' git status`,
+    `NOTE="see git@github.com for the key" bun test`,
+    "NOTE='two words' git show HEAD:docs/cli.md",
+    `NOTE='two words'; git status`,
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
+});
+
 // Catches: the host ssh, scp, sftp, rsync, nc, ncat or telnet connects to read as no reach: an
 // operand that takes a host by the tool's own grammar, or an option that names one (`-J`,
 // `-o ProxyJump`, `-o HostName`, a proxy); and the words of those tools that name no host (an

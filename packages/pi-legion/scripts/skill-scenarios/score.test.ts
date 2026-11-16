@@ -292,6 +292,12 @@ run("tester-proof-cross-1", { "out.txt": "exit=0\n", "world.json": world }, [
   turn[0],
   bash(`echo ${"x".repeat(220)} && cat /checkouts/base/skills/legion-worker/SKILL.md`),
 ]);
+// The same read, after an assignment whose value holds a space.
+run("tester-proof-cross-2", { "out.txt": "exit=0\n", "world.json": world }, [
+  ...header,
+  turn[0],
+  bash("NOTE='two words' cat /checkouts/base/skills/legion-worker/SKILL.md"),
+]);
 // Read the rig's own harness under the head label's checkout: rig.sh puts the stand-ins and the
 // panes of the checkout it runs from on every label's PATH, so the `gh` a base run is given is a
 // script naming that checkout's gh-standin.ts, and an agent that reads the gh it was given reads
@@ -8806,6 +8812,15 @@ test("a tester handoff of a checkout whose prompt still asks for a completed tim
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {
   expect(out).toContain(
     "tester-proof-cross-1\trig error: a bash call reads base's checkout: /checkouts/base/skills/legion-worker/SKILL.md"
+  );
+});
+
+// Catches: a command that follows an assignment whose value holds a space read as a program named
+// by the rest of that value (AT_COMMAND takes an assignment's value as `\S*`), so the `cat` of
+// the other label's skill is no reader's command and the run is scored.
+test("a tool call reading the other label's checkout after an assignment whose value holds a space is a rig error", () => {
+  expect(out).toContain(
+    "tester-proof-cross-2\trig error: a bash call reads base's checkout: /checkouts/base/skills/legion-worker/SKILL.md"
   );
 });
 
