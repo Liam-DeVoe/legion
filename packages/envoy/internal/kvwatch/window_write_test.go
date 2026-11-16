@@ -570,7 +570,12 @@ type windowCache struct {
 	scanEnded bool
 	done      bool
 	scanned   []string
-	before    func(kvwatch.Read)
+	// scannedOps is the operation of each record scanned names, in order.
+	scannedOps []kvwatch.Op
+	before     func(kvwatch.Read)
+	// absent runs on each key the bucket's answer says it holds no record of (kvwatch.OpAbsent),
+	// before the copy takes that answer.
+	absent func(key string)
 }
 
 func newWindowCache(target int) *windowCache {
@@ -606,12 +611,25 @@ func (c *windowCache) Apply(entry kvwatch.Entry, read kvwatch.Read) {
 	// where it completes: what comes after either is no record of the scan.
 	if c.begun == c.target && !c.scanEnded && !done {
 		c.scanned = append(c.scanned, entry.Key)
+		c.scannedOps = append(c.scannedOps, entry.Op)
 	}
+	absent := c.absent
 	c.mu.Unlock()
 	if done {
 		<-c.let
 	}
+	if entry.Op == kvwatch.OpAbsent && absent != nil {
+		absent(entry.Key)
+	}
 	c.seen.Apply(entry, read)
+}
+
+// onAbsent sets what runs on each key the bucket answers it holds no record of, before the copy
+// takes the answer.
+func (c *windowCache) onAbsent(absent func(key string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.absent = absent
 }
 
 func (c *windowCache) Unseen(read kvwatch.Read) []string {
@@ -651,6 +669,26 @@ func (c *windowCache) requireNotScanned(t *testing.T, keys ...string) {
 	for _, key := range keys {
 		if slices.Contains(scanned, key) {
 			t.Fatalf("the read's scan delivered %v: %s did not land after its consumer was made", scanned, key)
+		}
+	}
+}
+
+// requireScanned fails the test unless the target read's scan delivered each of keys, as a put and
+// never as a delete or purge marker: they were in the bucket when its consumer was made, and what
+// came to them after that is past the scan.
+func (c *windowCache) requireScanned(t *testing.T, keys ...string) {
+	t.Helper()
+	c.mu.Lock()
+	scanned, ops := slices.Clone(c.scanned), slices.Clone(c.scannedOps)
+	c.mu.Unlock()
+	for _, key := range keys {
+		if !slices.Contains(scanned, key) {
+			t.Fatalf("the read's scan delivered %v, not %s: it was not in the bucket when the consumer was made", scanned, key)
+		}
+		for i, scannedKey := range scanned {
+			if scannedKey == key && ops[i] != kvwatch.OpPut {
+				t.Fatalf("the read's scan delivered %s as operation %d: its delete landed before the consumer was made, not in the window", key, ops[i])
+			}
 		}
 	}
 }

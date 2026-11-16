@@ -210,6 +210,14 @@ type Watcher struct {
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
 	bound time.Duration
+	// unverifiedSince is when the first of an unbroken run of reads that could not read their
+	// unseen keys from the bucket ended (readUnseen), on now, zero once a read completes;
+	// unverifiedErr is the last of their errors and unverifiedRuns how many there were. The run
+	// spaces its re-reads apart (readAgainUnverified), and ReadErr reports it once it outlasts the
+	// stale bound.
+	unverifiedSince time.Time
+	unverifiedErr   error
+	unverifiedRuns  int
 
 	// completedOnce is set by the first read that completed, and following while the copy follows
 	// the bucket: from a read's completion until the next stop (stopFollowing, watch). staleSince is
@@ -759,7 +767,7 @@ func (w *Watcher) readUnseen(generation uint64, read Read) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	found := make([]nats.KeyValueEntry, len(keys))
+	answers := make([]Entry, len(keys))
 	reads, ctx := errgroup.WithContext(context.Background())
 	reads.SetLimit(unseenReads)
 	for i, key := range keys {
@@ -770,8 +778,9 @@ func (w *Watcher) readUnseen(generation uint64, read Read) error {
 			entry, err := kv.GetFromLeader(ctx, key)
 			switch {
 			case err == nil:
-				found[i] = entry
+				answers[i] = LegacyEntry(entry)
 			case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, bus.ErrRefused):
+				answers[i] = Entry{Key: key, Op: OpAbsent}
 			default:
 				return err
 			}
@@ -786,9 +795,9 @@ func (w *Watcher) readUnseen(generation uint64, read Read) error {
 	if !w.current(generation) {
 		return nil
 	}
-	for _, entry := range found {
-		if entry != nil {
-			w.cache.Apply(LegacyEntry(entry), read)
+	for _, answer := range answers {
+		if answer.Key != "" {
+			w.cache.Apply(answer, read)
 		}
 	}
 	return nil
@@ -822,7 +831,7 @@ func (w *Watcher) completeRead(generation uint64, read Read) {
 				w.logger().Warn(w.name+" read could not read from its bucket a key its scan did not deliver; it removes nothing and is read again",
 					slog.String("bucket", w.bucket), slog.String("error", err.Error()))
 			}
-			w.readAgainLater(generation, unverifiedCause)
+			w.readAgainUnverified(generation, err)
 			return
 		}
 		switch w.confirmStream(generation) {
@@ -859,6 +868,7 @@ func (w *Watcher) completeRead(generation uint64, read Read) {
 		w.following = true
 		w.completedOnce = true
 		w.staleSince = time.Time{}
+		w.unverifiedSince, w.unverifiedErr, w.unverifiedRuns = time.Time{}, nil, 0
 		w.armScheduledRead(generation)
 		// The copy can be served now, so a caller waiting for one (WaitComplete) is released.
 		w.wakeComplete()

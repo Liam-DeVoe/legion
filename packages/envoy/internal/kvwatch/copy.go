@@ -24,16 +24,24 @@ type Copy[V any] struct {
 	marks     marks
 	readEpoch uint64
 	// unsure holds each key a write site took a result for while a watch was in flight
-	// (Watcher.epochInFlight), with the number of its latest such touch (touches). A result taken
-	// then can be of a record that landed past the consumer that watch makes, which the read it
-	// begins does not deliver, and of a bucket deleted and created again it can be of either
-	// bucket; so whatever it did to the copy, a stored row or a removed one, that read reads the
-	// key from the bucket before it completes (Unseen). verified is the touch number the last
-	// Unseen answered through: a completed read forgets the touches up to it, and keeps any made
-	// since for the next read (CompleteRead).
+	// (Watcher.epochInFlight), and each key whose result it refused for an earlier epoch while a
+	// read was under way, with the number of its latest such touch (touches). A result taken then
+	// can be of a record that landed past the consumer that watch makes, which the read it begins
+	// does not deliver, and of a bucket deleted and created again it can be of either bucket; so
+	// whatever it did to the copy - a stored row, a removed one, or nothing, for a result refused -
+	// that read reads the key from the bucket before it completes (Unseen). verified is the touch
+	// number the last Unseen answered through: a completed read forgets the touches up to it, and
+	// keeps any made since for the next read (CompleteRead).
 	unsure   map[string]uint64
 	touches  uint64
 	verified uint64
+	// probes holds the fence revision each key Unseen named had when the read of it began, and
+	// absent the keys among them the bucket then answered it holds no record of (OpAbsent). The
+	// read's completion removes each absent key whose fence still holds that revision, a row its
+	// scan delivered included, so a write the copy took after the read of the key began stands,
+	// and a read that does not complete removes nothing.
+	probes map[string]uint64
+	absent map[string]struct{}
 }
 
 // Rows is how one copy turns a record into its entry, and what the cache that keeps it records
@@ -111,7 +119,20 @@ func (c *Copy[V]) BeginRead(read Read) {
 // Delivered takes one record the current read delivered (Cache.Apply). Its key is marked before
 // the fence is compared, so a delivered value older than a local write still keeps the key
 // through the sweep. The error is a value Rows.Decode could not decode, for the caller to log.
+//
+// An OpAbsent entry is the bucket's answer, read after the scan, that it holds no record of a key
+// Unseen named (Watcher.readUnseen). It changes nothing now and marks nothing: the read's
+// completion removes the key (CompleteRead).
 func (c *Copy[V]) Delivered(entry Entry) error {
+	if entry.Op == OpAbsent {
+		if _, probed := c.probes[entry.Key]; probed {
+			if c.absent == nil {
+				c.absent = map[string]struct{}{}
+			}
+			c.absent[entry.Key] = struct{}{}
+		}
+		return nil
+	}
 	c.marks.mark(entry.Key)
 	_, err := c.apply(entry)
 	return err
@@ -121,9 +142,16 @@ func (c *Copy[V]) Delivered(entry Entry) error {
 // removed entry to Rows.Removed, and ends the read's marks (Cache.CompleteRead): the bucket no
 // longer holds those keys. The watcher has read from the bucket each key Unseen named before it
 // calls this, and applied each one the bucket holds as a delivered record (Delivered), so a key it
-// removes is one the bucket held no record of when it was read. It forgets the unsure touches that
-// read read.
+// removes is one the bucket held no record of when it was read. First it removes each key the
+// bucket answered it holds no record of whose fence has not moved since the read of it began, even
+// one the scan delivered (absent): the record the scan delivered is gone from the bucket. It
+// forgets the unsure touches that read read.
 func (c *Copy[V]) CompleteRead() {
+	for key := range c.absent {
+		if revision := c.probes[key]; c.revisions[key] == revision {
+			c.evict(key, revision)
+		}
+	}
 	sweep(&c.marks, c.entries, c.rows.Removed)
 	sweep(&c.marks, c.revisions, nil)
 	c.marks.end()
@@ -132,6 +160,7 @@ func (c *Copy[V]) CompleteRead() {
 			delete(c.unsure, key)
 		}
 	}
+	c.probes, c.absent = nil, nil
 }
 
 // Unseen is the keys the read under way must read from the bucket before it completes
@@ -152,6 +181,11 @@ func (c *Copy[V]) Unseen() []string {
 			keys = append(keys, key)
 		}
 	}
+	c.probes = make(map[string]uint64, len(keys))
+	for _, key := range keys {
+		c.probes[key] = c.revisions[key]
+	}
+	c.absent = nil
 	c.verified = c.touches
 	return keys
 }
@@ -204,21 +238,26 @@ func (c *Copy[V]) FenceFor(epoch uint64, key string) uint64 {
 }
 
 // current reports whether a result through a handle of epoch may reach the copy, and marks key
-// for the read under way when it may. A result taken while a watch is in flight also makes key
-// unsure, for the read that watch begins to read from the bucket (Unseen).
+// for the read under way when it may. A result taken while a watch is in flight makes key unsure,
+// for the read that watch begins to read from the bucket (Unseen), and so does a result refused
+// for an earlier epoch while a watch is in flight or a read is under way: the epoch moves at the
+// install, before the read begins, so a result of a write that landed in the new bucket after its
+// consumer was made can arrive through the handle its store captured before, and only the
+// bucket's answer can say which bucket took it.
 func (c *Copy[V]) current(w *Watcher, epoch uint64, key string) bool {
 	current, inFlight := w.epochInFlight()
-	if current != epoch {
-		return false
-	}
-	c.marks.mark(key)
-	if inFlight {
+	taken := current == epoch
+	if inFlight || (!taken && c.marks.active) {
 		if c.unsure == nil {
 			c.unsure = map[string]uint64{}
 		}
 		c.touches++
 		c.unsure[key] = c.touches
 	}
+	if !taken {
+		return false
+	}
+	c.marks.mark(key)
 	return true
 }
 

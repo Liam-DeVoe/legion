@@ -676,6 +676,12 @@ func (s *Store) WatchErr() error {
 	return s.watcher.Err()
 }
 
+// ReadErr is the cache watcher's run of reads that could not read their unseen keys from the
+// bucket past its stale bound, or nil (kvwatch.Watcher.ReadErr).
+func (s *Store) ReadErr() error {
+	return s.watcher.ReadErr()
+}
+
 // NeedsRead reports whether the copy does not follow its bucket with no read under way to make it,
 // which only a Rewatch repairs (kvwatch.Watcher.NeedsRead).
 func (s *Store) NeedsRead() bool {

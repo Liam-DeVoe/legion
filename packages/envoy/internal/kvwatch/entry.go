@@ -18,6 +18,10 @@ const (
 	// OpPurge is a purge marker, which also stands for a record the server removed for its TTL
 	// (a "MaxAge" or "Purge" marker reason, which the jetstream watcher reads as a purge).
 	OpPurge
+	// OpAbsent is no record: the bucket's answer, to a read the watcher made after a scan, that it
+	// holds no record of the key (Watcher.readUnseen), applied only to the copy that asked for it
+	// (Copy.Delivered). It carries no revision.
+	OpAbsent
 )
 
 // Entry is one record of a bucket as a cache applies it (Cache.Apply). The watcher delivers the

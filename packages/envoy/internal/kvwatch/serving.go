@@ -46,6 +46,31 @@ func (w *Watcher) servable() error {
 	return ErrRefilling
 }
 
+// ErrUnverified is what ReadErr wraps: every read of the bucket for longer than the copy's stale
+// bound ended without completing, because its unseen keys could not be read from the bucket.
+var ErrUnverified = errors.New("kvwatch: no read could read the keys its scan did not deliver")
+
+// ReadErr reports an unbroken run of reads that could not read their unseen keys from the bucket
+// (readUnseen) once it has lasted the stale bound (2 minutes, or half the stream's MaxAge when
+// that is shorter) with no read completed: from then on the copy is refused (Servable) because
+// those reads fail, and only a bucket that answers them repairs it. It names how long the run has
+// lasted and its last error, and is nil before the bound and once a read completes. A watcher
+// whose reads fail so keeps running, so Err stays nil; the listener's /healthz reports this
+// instead.
+func (w *Watcher) ReadErr() error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.unverifiedRuns == 0 {
+		return nil
+	}
+	failing := w.now().Sub(w.unverifiedSince)
+	if failing < w.bound {
+		return nil
+	}
+	return fmt.Errorf("%w for %s over %d reads, past the %s stale bound: %w",
+		ErrUnverified, failing.Round(time.Second), w.unverifiedRuns, w.bound, w.unverifiedErr)
+}
+
 // WaitComplete blocks until the copy can be served, the state Servable reports, and then returns
 // nil: a view that answers no read until then (store.Registry.RolesHeldBy) gates its caller on
 // this rather than on WaitReady, which a read whose scan timed out releases too. Being servable is

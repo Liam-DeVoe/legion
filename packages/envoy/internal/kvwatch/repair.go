@@ -47,6 +47,40 @@ func (w *Watcher) readAgainLater(generation uint64, cause string) {
 	w.armReread(generation, rereadDelay, cause)
 }
 
+// unverifiedRetryMax is the longest wait between two reads of a run that could not read their
+// unseen keys (readAgainUnverified). A run's waits double from rereadDelay - 5, 10, 20 and 40 s -
+// and then stay at this, so a bucket whose leader does not answer key reads is asked at most once
+// a minute, while the first reads after a blip still come within seconds.
+const unverifiedRetryMax = time.Minute
+
+// readAgainUnverified ends generation's read without completing it because its unseen keys could
+// not be read (readUnseen failed with err), so the cache removes nothing, and reads the bucket
+// again after the run's next wait: rereadDelay doubled once for each read of the run before this
+// one, at most unverifiedRetryMax. The run, and the first moment of it, are kept on the watcher
+// across the re-reads' generations until a read completes (completeRead), so ReadErr can report
+// one that outlasts the stale bound.
+func (w *Watcher) readAgainUnverified(generation uint64, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if generation != w.generation || w.stopped {
+		return
+	}
+	if w.unverifiedRuns == 0 {
+		w.unverifiedSince = w.now()
+	}
+	w.unverifiedRuns++
+	w.unverifiedErr = err
+	delay := rereadDelay
+	for range w.unverifiedRuns - 1 {
+		if delay *= 2; delay >= unverifiedRetryMax {
+			delay = unverifiedRetryMax
+			break
+		}
+	}
+	w.reading = false
+	w.armReread(generation, delay, unverifiedCause)
+}
+
 // armReread arms the re-read of generation's bucket (reread) after delay, under mu, in place of
 // any armed before. cause names it in the line a failed re-read logs.
 func (w *Watcher) armReread(generation uint64, delay time.Duration, cause string) {

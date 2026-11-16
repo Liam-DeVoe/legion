@@ -781,6 +781,13 @@ func (r *SessionRegistry) WatchErr() error {
 	return r.watcher.Err()
 }
 
+// ReadErr is the cache watcher's run of reads that could not read their unseen keys from the
+// bucket past its stale bound, or nil (kvwatch.Watcher.ReadErr): Ping reads the bucket's stream
+// and the terminal error only, so without this a copy whose every read fails so would ping healthy.
+func (r *SessionRegistry) ReadErr() error {
+	return r.watcher.ReadErr()
+}
+
 // Put is PutWithin with no deadline of its own, for a caller that answers no request.
 func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 	return r.PutWithin(context.Background(), sessionID, entry)
