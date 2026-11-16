@@ -49,7 +49,7 @@ func TestEachSubcommandReportsAStandardOutputThatTakesNoText(t *testing.T) {
 			passLine(filepath.Join(approvedText, "spec"), "3 of 3"), ""},
 		{[]string{"print", "--approved", filepath.Join(approvedText, "approved.json"), "--id", "order"},
 			":::term{#order name=\"order\"}\nAn order is a request of a customer for one or more products.\n:::\n", ""},
-		{[]string{"guard", "--root", clean}, "spec-check: " + clean + ": no line of 4 CI files runs the comparison\n", ""},
+		{[]string{"guard", "--root", clean}, "spec-check: " + clean + ": no line of 4 CI files holds the command that compares the files\n", ""},
 	} {
 		name := row.args[0]
 		var stdout, stderr strings.Builder

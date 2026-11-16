@@ -330,7 +330,7 @@ func testCompare(t *testing.T, binary string) {
 			t.Errorf("print in a CI job: exit %d, stderr %q; want exit 0", got.code, got.stderr)
 		}
 		clean := ciFiles(t, "clean")
-		expect(t, runBinaryIn(t, binary, "", ci, "guard", "--root", clean), result{stdout: "spec-check: " + clean + ": no line of 4 CI files runs the comparison\n"})
+		expect(t, runBinaryIn(t, binary, "", ci, "guard", "--root", clean), result{stdout: "spec-check: " + clean + ": no line of 4 CI files holds the command that compares the files\n"})
 		valid := fixture(t, "trees", "valid")
 		if got := runBinaryIn(t, binary, "", ci, "tree", "--dir", valid); got.code != 0 {
 			t.Errorf("tree in a CI job: exit %d, stderr %q; want exit 0", got.code, got.stderr)
