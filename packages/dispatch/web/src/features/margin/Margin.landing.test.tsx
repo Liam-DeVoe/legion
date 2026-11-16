@@ -316,6 +316,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
 // it closes the sheet. The page draws its panels into the drawer through a portal, outside the
 // drawer's React tree, so the drawer must hear the link's click from the DOM.
 test("on a phone, a link followed in a panel portaled into Details closes the sheet", async () => {
+  const user = userEvent.setup();
   const restoreMatchMedia = stubMatchMedia(true);
   const tree = (target: Element | null) => (
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
@@ -341,7 +342,7 @@ test("on a phone, a link followed in a panel portaled into Details closes the sh
     const details = await screen.findByTestId("desktop-margin-shell");
     await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
     view.rerender(tree(details));
-    fireEvent.click(screen.getByRole("link", { name: "a panel's link" }));
+    await user.click(screen.getByRole("link", { name: "a panel's link" }));
     await waitFor(() =>
       expect(
         details.hasAttribute("hidden"),
