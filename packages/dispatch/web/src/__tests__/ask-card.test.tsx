@@ -16,6 +16,7 @@ import type {
   CreateCommentInput,
   InboxRow,
 } from "../api/types";
+import { setFormRefusal } from "../features/doc/form-refusals";
 import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
@@ -1290,6 +1291,94 @@ for (const variant of ["full", "compact"] as const) {
     }
   });
 }
+
+// One page can show one approval request in two cards, as the issue page's Conversation tab and
+// its Needs you card do. Dispatch's refusal of Approve belongs to the request, so both cards show
+// it and pick Request changes with the reason. The focus stays in the card that the person
+// pressed, on Answer: the other card takes no focus. One row presses the first card of the page,
+// and the other row presses the second.
+for (const pressed of ["first", "second"] as const) {
+  test(`a form refusal of Approve shows in both cards of one request, and the focus stays on Answer in the ${pressed} card, which the person pressed`, async () => {
+    const user = userEvent.setup();
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const answerAsk = async (): Promise<Ask> => {
+      throw specFormRefusal();
+    };
+    const { view } = renderCard(
+      (["first", "second"] as const).map((place) => (
+        <div data-testid={place} key={place} tabIndex={-1}>
+          <AskCard
+            answerAsk={answerAsk}
+            ask={input}
+            getAskThread={emptyThread(input)}
+            variant="compact"
+          />
+        </div>
+      ))
+    );
+
+    try {
+      const card = within(view.getByTestId(pressed)).getByTestId("ask-ask-1");
+      const otherPlace = pressed === "first" ? "second" : "first";
+      const other = within(view.getByTestId(otherPlace)).getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+
+      for (const each of [card, other]) {
+        expect((await within(each).findByRole("alert")).textContent).toBe(cardRefusal);
+        expect(
+          (within(each).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+        ).toBe(true);
+      }
+      await waitFor(() =>
+        expect(within(card).getByRole("button", { name: "Answer" })).toHaveFocus()
+      );
+      expect(other.contains(document.activeElement)).toBe(false);
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// The same rule with no race in it: a card of the request that the person did not press, and that
+// was on the page before the press, shows the refusal and picks Request changes with the reason,
+// and the focus stays where the person has it. The press is of a surface that is not on the page
+// and comes after every draw, so no card here stands in for it.
+test("a card of the request that the person did not press shows Dispatch's form refusal and leaves the focus where it is", async () => {
+  const input = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <>
+      <input aria-label="Elsewhere" />
+      <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+    </>
+  );
+
+  try {
+    const elsewhere = view.getByLabelText("Elsewhere");
+    elsewhere.focus();
+    const card = view.getByTestId("ask-ask-1");
+    act(() =>
+      setFormRefusal("ask:ask-1", {
+        error: specFormRefusal(),
+        press: { at: Number.MAX_SAFE_INTEGER, surface: 0, version: undefined },
+      })
+    );
+
+    expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+    expect(
+      (within(card).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+    ).toBe(true);
+    expect(elsewhere).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
 
 test("a Done / Can't question is an ordinary question: Other stays, Can't needs no reason", async () => {
   const user = userEvent.setup();

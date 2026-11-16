@@ -389,6 +389,45 @@ test("the person's Approve on the Needs you card of the issue page shows Dispatc
   });
 });
 
+// The issue page's Conversation tab shows the request in a card of its own, beside the Needs you
+// card of the margin. The refusal belongs to the request, so both cards show it and pick Request
+// changes. The focus stays on Answer in the card that the person pressed: the margin's card takes
+// no focus, and the page does not move to it.
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around the issue page and an answer written in it.
+test("the person's refused Approve on the Conversation tab's card keeps the focus in that card, and the Needs you card beside it shows the refusal too", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/issues/${tree.card.key}`);
+    await page.getByRole("tab", { name: "Conversation" }).first().click();
+    const card = page.locator(`[data-turn] [data-testid="ask-${tree.asks.card}"]`);
+    const margin = page
+      .locator(`[data-margin-item="${tree.asks.card}"]`)
+      .getByTestId(`ask-${tree.asks.card}`);
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    const answer = card.getByRole("button", { exact: true, name: "Answer" });
+    await answer.click();
+
+    for (const each of [card, margin]) {
+      await expect(each.getByRole("alert")).toContainText(
+        "Dispatch refused this approval, because 1 text breaks the form of The Spec."
+      );
+      await expect(each.getByRole("radio", { name: /^Request changes / })).toBeChecked();
+      await expect(each.getByLabel("Reason (required)")).toHaveValue(changesReason);
+    }
+    await expect(answer).toBeFocused();
+    // An absence window: the margin's card, drawn with the refusal, must not take the focus after.
+    await page.waitForTimeout(1000);
+    await expect(answer).toBeFocused();
+    expect(await margin.evaluate((element) => element.contains(document.activeElement))).toBe(
+      false
+    );
+  });
+});
+
 // The reason field of the Inbox card grows with the reason Dispatch wrote, up to half the height
 // of the window, and scrolls past that: a reason of three findings that is shorter than half the
 // window shows whole on a phone, and one of twenty-five stops at half the window, so Answer stays

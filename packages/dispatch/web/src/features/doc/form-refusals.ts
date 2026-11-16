@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
 import type { ApiError } from "../../api/client";
 
@@ -12,7 +12,8 @@ import type { ApiError } from "../../api/client";
  * while the answer is out. The issue page's Needs you does that every time, because the answer
  * takes the ask's row out of the Inbox read and the refusal puts it back. The card drawn again
  * reads the refusal here, and with it picks Request changes and takes the focus that the press
- * owes.
+ * owes. Each surface that shows the approval shows its refusal, and only one takes the focus
+ * (`takeFormRefusalFocus`).
  *
  * Each refusal holds the version it judged, and a read for another version finds none, since the
  * findings are of the text that version holds. The next press of the same approval, or an answer
@@ -20,19 +21,48 @@ import type { ApiError } from "../../api/client";
  */
 interface FormRefusal {
   readonly error: ApiError;
-  readonly version: number | undefined;
+  readonly press: FormRefusalPress;
   /** Whether the press it answers still owes the focus to a surface that shows it: true until
    *  one takes it (`takeFormRefusalFocus`). */
   focusOwed: boolean;
 }
 
+/** One press of Approve: the surface where the person pressed it (`useRefusalSurface`), when,
+ *  and the version it judged. */
+export interface FormRefusalPress {
+  readonly surface: number;
+  readonly at: number;
+  readonly version: number | undefined;
+}
+
 const refusals = new Map<string, FormRefusal>();
 const listeners = new Map<string, Set<() => void>>();
+/** The order of draws and presses: each surface and each press takes the next number. */
+let moments = 0;
+/** The surfaces that are in the page now. */
+const drawn = new Set<number>();
 
-/** Keeps `error` as the refusal of `key` at `version`, or lets the refusal of `key` go. */
+/** This surface's number, in the order of draws and presses, for as long as it is in the page. */
+export function useRefusalSurface(): number {
+  const [surface] = useState(() => ++moments);
+  useEffect(() => {
+    drawn.add(surface);
+    return () => {
+      drawn.delete(surface);
+    };
+  }, [surface]);
+  return surface;
+}
+
+/** A press of Approve on `surface`, for the version it judges. */
+export function pressOn(surface: number, version: number | undefined): FormRefusalPress {
+  return { at: ++moments, surface, version };
+}
+
+/** Keeps `error` as the refusal of `key` that answers `press`, or lets the refusal of `key` go. */
 export function setFormRefusal(
   key: string,
-  refusal: { readonly error: ApiError; readonly version: number | undefined } | undefined
+  refusal: { readonly error: ApiError; readonly press: FormRefusalPress } | undefined
 ): void {
   if (refusal === undefined && !refusals.has(key)) return;
   if (refusal === undefined) refusals.delete(key);
@@ -55,14 +85,22 @@ export function useFormRefusal(key: string, version: number | undefined): ApiErr
     [key]
   );
   const refusal = useSyncExternalStore(subscribe, () => refusals.get(key));
-  return refusal === undefined || refusal.version !== version ? undefined : refusal.error;
+  return refusal === undefined || refusal.press.version !== version ? undefined : refusal.error;
 }
 
-/** Whether the press that `key`'s refusal answers still owes the focus. The first surface that
- *  asks takes it, so a surface drawn later leaves the focus where the reader put it. */
-export function takeFormRefusalFocus(key: string): boolean {
+/**
+ * Whether `surface` takes the focus that the press of `key`'s refusal owes, and takes it once.
+ * The surface where the person pressed takes it. When its host took that surface out of the page,
+ * a surface drawn after the press stands in for it, while the focus is on no control or inside
+ * `root`. Another surface that shows the refusal, such as a second card of the same request on
+ * the page, takes no focus: the focus stays where the person pressed.
+ */
+export function takeFormRefusalFocus(key: string, surface: number, root: Element | null): boolean {
   const refusal = refusals.get(key);
   if (refusal === undefined || !refusal.focusOwed) return false;
+  const { press } = refusal;
+  const standsIn = !drawn.has(press.surface) && surface > press.at && focusIsFreeFor(root);
+  if (surface !== press.surface && !standsIn) return false;
   refusal.focusOwed = false;
   return true;
 }

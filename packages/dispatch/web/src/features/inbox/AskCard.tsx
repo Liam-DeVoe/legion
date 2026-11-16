@@ -437,14 +437,18 @@ export function AskCard({
   });
   const uploading = upload.pending > 0;
   const answerFieldRef = useRef<HTMLTextAreaElement>(null);
-  // Picking Request changes moves the person straight to the field the server insists
-  // on. Keyed on the field actually being mounted, not just on the option: the compact variant
-  // unmounts the field when its disclosure closes, and reopening it must refocus.
+  // Picking Request changes moves the person straight to the field the server insists on. Keyed
+  // on the field actually being mounted, not just on the option: the compact variant mounts the
+  // field when its disclosure opens (reopening it is the disclosure's own move, below). Only the
+  // person's own pick moves the focus, so the intent is recorded as the option is picked: a
+  // refusal of the form also picks Request changes, in each card of the ask, and leaves the focus
+  // where the person pressed (`takeFormRefusalFocus`, below).
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
+  const focusReasonOnShow = useRef(false);
   useEffect(() => {
-    if (reasonFieldShown) {
-      answerFieldRef.current?.focus();
-    }
+    if (!reasonFieldShown) return;
+    if (focusReasonOnShow.current) answerFieldRef.current?.focus();
+    focusReasonOnShow.current = false;
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
   // own click, and the Inbox's Enter, which presses this same control (`Inbox.tsx`). The field
@@ -482,13 +486,14 @@ export function AskCard({
   // control in the form: Answer, or the answer field. A card drawn again after the press - the
   // host took the card that wrote out of the page - holds no pressed control, and takes the focus
   // the press owes onto Answer, the press the refusal's last line names, unless the reader has
-  // put the focus elsewhere. An answer that lands leaves the focus where the hand-off put it, as
-  // every answered card does.
+  // put the focus elsewhere. Another card of the same ask on the page shows the refusal and takes
+  // no focus. An answer that lands leaves the focus where the hand-off put it, as every answered
+  // card does.
   useEffect(() => {
     if (mutation.isPending) return;
     const pressed = handedOffFrom.current;
     handedOffFrom.current = null;
-    if (formRefusal === null || !takeFormRefusalFocus()) return;
+    if (formRefusal === null || !takeFormRefusalFocus(formRef.current)) return;
     if (pressed === null && !focusIsFreeFor(formRef.current)) return;
     const control =
       pressed?.isConnected === true
@@ -928,6 +933,7 @@ export function AskCard({
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
+                  focusReasonOnShow.current = requiresReason(option.label);
                   selectRealOption(option.label);
                   if (isCompact)
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
