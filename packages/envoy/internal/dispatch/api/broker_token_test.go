@@ -9,6 +9,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -363,6 +364,26 @@ func TestANamedBrokerTokenNamingTwoProjectsWritesNothing(t *testing.T) {
 	}))
 	if refusal := decodeBody[refusalAnswer](t, written); written.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_NOT_A_SESSION" {
 		t.Fatalf("a write under a named token naming two projects: status=%d body=%s, want 401 BROKER_TOKEN_NOT_A_SESSION", written.Code, written.Body.String())
+	}
+}
+
+// TestAnOlderBrokersNamedAnswerWritesNothing: while an older broker replica answers introspection
+// for a named token this release stored (a rolling update, a canary, a rollback), it reads the
+// token's one project from the older `project` claim the exchange also writes, and answers
+// `"project":"<key>"` with no `projects`. Dispatch refuses that answer before any write, rather
+// than reading a named token naming no project, which it would hold to no project at all.
+func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-named-token-an-older-replica-answers-for"
+	rig.broker.SaysRaw(token, fmt.Sprintf(`{"active":true,"session":%q,"person":%q,"project_scope":"named","project":%q,"exp":%d,"client_id":%q,"jkt":%q}`,
+		brokerTestSession, brokerTestPerson, brokerTestProject, time.Now().Add(time.Hour).Unix(), brokertoken.ExchangeClientID, caller.jkt))
+	seedProject(t, rig, "OTHER", "Other")
+	written := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written under an older replica's answer", "spec": "# Spec",
+	}))
+	if refusal := decodeBody[refusalAnswer](t, written); written.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_NOT_A_SESSION" {
+		t.Fatalf("a write under an older replica's named answer: status=%d body=%s, want 401 BROKER_TOKEN_NOT_A_SESSION", written.Code, written.Body.String())
 	}
 }
 

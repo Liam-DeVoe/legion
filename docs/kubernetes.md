@@ -6251,6 +6251,10 @@ An issued token carries these claims and no others:
 - `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
   A token whose trade named none, and a token that names a service and no person, carry none.
 
+- `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
+  No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
+  Every other token carries none.
+
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
   That credential names the machine's fleet and no person, whatever the fleet's entry says, so the sessions it enrols read the secrets that service owns and no person's.
   Every other kind of subject token carries none.
@@ -6272,7 +6276,10 @@ a person's sign-in is taken as a full member's and asks no member kind, since th
 An operator's entry is held to Dispatch the same way: a `named` token is refused when the entry's person may not see the entry's project.
 Dispatch's answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins.
 A broker with neither setting asks Dispatch nothing: it mints every token that names no project as before, mints an entry's token as before, and refuses a `person` trade that names a project.
-So does a broker whose Dispatch cannot be reached, except that it refuses such a trade `temporarily_unavailable` for the client to ask again.
+So does a broker whose Dispatch cannot be reached, except that it refuses such a trade `temporarily_unavailable` for the client to ask again, and logs one line naming each token it mints unchecked.
+A Dispatch that answers 401 or 403 to the broker's own account token has not listed the broker as one that may ask: every trade that asks it is refused `server_error`, saying so, and nothing is minted unchecked.
+A 404 is Dispatch holding no such project only with the code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
+A `named` token naming a project fails until every broker replica, Dispatch and listener run the release that carries the list: this release's readers refuse an older broker's `project` answer, the broker also stores a named token's one project under `project` so an older replica answers it that way, and an older Dispatch refuses this release's named answers.
 The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
 
 A session name belongs to one principal — the service account, the workflow, the Google account, or the person
