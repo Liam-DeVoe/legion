@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
+import { renderHook } from "@testing-library/react";
 
 import type { CheckBlock, Decision } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT, chipWords } from "../node-row-chip";
+import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
 import {
@@ -359,6 +361,31 @@ test("a person's decision carries their whole answer where it says more than its
   );
   expect(groups[0]?.runs[0]?.decision?.whole).toBe(long);
   expect(groups[1]?.runs[0]?.decision?.whole).toBeUndefined();
+});
+
+// R5: the focus draws the whole answer character for character. A quote names each reference in
+// words (reading (b) of dispatch://INFRA-3939's plan), so an answer of one sentence that cites a
+// block is not what its quote draws, and the stored text is carried beside it for the focus.
+test("a person's answer that cites a block carries its whole text for the focus, though it is one sentence", () => {
+  const cited = statementRef("r2");
+  const stored = `Keep it as ${cited} says.`;
+  const tree = issueTree([
+    answeredAsk("ask-1", { text: stored }, [statement("r1")]),
+    // The tree names the block by a chip of the batched read (`tree-drafts.ts`), which is the
+    // name the page gives a reference a plain line cites.
+    decisionNode("d1", {
+      chips: [{ answered: true, gone: false, name: "the one-line rule", ref: cited }],
+    }),
+  ]);
+  const names = renderHook(() => useReferenceNames(tree, nodeIdOf));
+  try {
+    const made = bodyOf(tree, [], READER, [], names.result.current)[0]?.runs[0]?.decision;
+    expect(made?.quote).toBe("Keep it as the one-line rule says.");
+    expect(made?.quote).not.toContain("dispatch://");
+    expect(made?.whole).toBe(stored);
+  } finally {
+    names.unmount();
+  }
 });
 
 // R9: no agent's words are drawn under a person's name. A section the server marks a person's

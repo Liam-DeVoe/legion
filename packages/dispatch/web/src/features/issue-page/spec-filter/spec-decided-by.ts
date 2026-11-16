@@ -97,8 +97,9 @@ export interface SpecDecision {
   readonly type: NodeType;
   /** Whether the model marks this decision unsure (`Decision.unsure`). */
   readonly unsure: boolean;
-  /** A person's whole answer as the store holds it, where it says more than `quote`: what the
-   *  focus on the decision's line draws, character for character (R5). */
+  /** A person's whole answer as the store holds it, where it holds anything other than what
+   *  `quote` draws - more than its first sentence, or a reference `quote` names in words: what
+   *  the focus on the decision's line draws, character for character (R5). */
   readonly whole?: string;
   /** An agent's decision's own text whole, as the cell draws it (`RowText`): as stored, the
    *  server's reading of it where one was sent, and the record it is. Absent for a person's. */
@@ -385,9 +386,9 @@ function decisionOf(
   };
 }
 
-/** A person's answer to `ask` as the column draws it: their first sentence word for word, or
- *  the options they chose where they wrote none (R5), with the whole answer where it says
- *  more. */
+/** A person's answer to `ask` as the column draws it: their first sentence word for word with
+ *  each reference named, or the options they chose where they wrote none (R5), with the whole
+ *  answer as stored wherever it is not what the quote draws. */
 function answerDecision(
   ask: TreeNode,
   reader: string | undefined,
@@ -396,18 +397,22 @@ function answerDecision(
   const answer = ask.answer;
   if (answer === undefined) throw new Error("an answered ask with no answer");
   const written = firstSentenceOf(answer.text);
+  const quote = written === "" ? answer.selected.join(", ") : namedLine(written, nameOf);
+  const stored = answer.text.trim();
   return {
     at: answer.at,
     by: answer.by,
     chose: answer.selected,
     id: ask.id,
     question: drawnLine(firstLineOf(namedLine(nodeWords(ask), nameOf))),
-    quote: written === "" ? answer.selected.join(", ") : namedLine(written, nameOf),
+    quote,
     ...(ask.reference === undefined ? {} : { reference: ask.reference }),
     said: isReader(answer.by, reader) ? "you" : "person",
     type: "ask",
     unsure: false,
-    ...(answer.text.trim() === "" || answer.text.trim() === written ? {} : { whole: answer.text }),
+    // A quote that names a reference in words is not the characters the person wrote, so the
+    // focus draws those too, though the answer is one sentence.
+    ...(stored === "" || stored === quote ? {} : { whole: answer.text }),
   };
 }
 
