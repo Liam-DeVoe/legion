@@ -65,6 +65,10 @@ const tables = [
   // people row - so the closure does not find them: a group one row made would stand in the next
   // row's Settings and its name would be taken. Its members follow it through their own key.
   "access_groups",
+  // The projects a session acted in (the same migration), which names its project by key with no
+  // foreign key, so a session's write takes no lock on projects: the closure does not reach it,
+  // and a row one row wrote would make the next row's session one of a project's agents.
+  "session_projects",
   "user_sessions",
 ];
 

@@ -25,6 +25,12 @@
 --     another open transaction that records the same pair, inside two writers that may hold
 --     crossed issue locks, which is a deadlock. A writer records a pair only where no committed
 --     row holds it, so two open at once may both record it; every read asks whether a row exists.
+--     It has no foreign key to projects either, on purpose: the key's check takes a share lock on
+--     the project row inside the event step of every session's write, which the store's lock
+--     order (api's TestEveryApiStoreWriterTakesTheStoreLockOrder) puts last, after the issue or
+--     document the write owns. A project's delete sweeps its rows instead
+--     (projects_session_projects_swept, below), and a reader of the table only ever matches a row
+--     against a project it read from projects, so a row of a project gone matches nothing.
 --
 -- **Every project's owner.** The fill gives each project its default assignee as owner where a
 -- `people` row holds that email (the join 20261111210103 reads its defaults through): a person
@@ -96,7 +102,7 @@ create index access_group_members_person on access_group_members (person);
 
 create table session_projects (
   session_id text not null check (session_id <> ''),
-  project_key text not null references projects (key) on delete cascade,
+  project_key text not null check (project_key <> ''),
   first_at timestamptz not null default now()
 );
 
@@ -106,6 +112,17 @@ create index session_projects_project on session_projects (project_key);
 create table session_projects_filled (
   filled_at timestamptz not null default now()
 );
+
+create function projects_session_projects_swept() returns trigger
+language plpgsql as $$
+begin
+  delete from session_projects where project_key = old.key;
+  return old;
+end $$;
+
+create trigger projects_session_projects_swept
+  after delete on projects
+  for each row execute function projects_session_projects_swept();
 
 update projects p
 set owner = p.default_assignee
