@@ -170,7 +170,10 @@ func TestStatementState(t *testing.T) {
 			want: []StatementState{held(P, "unknown", "check_unknown", CP, "unknown"), held(T, "unknown", "supporter_unknown", P, "met")}},
 		{name: "P is not built", change: func(s *checkCase) { s.drop(P, CP) },
 			want: []StatementState{missing(P), held(T, "unknown", "supporter_not_built", P, "met")}},
-		{name: "a loop of supporters: Q, derived first, reads its supporter T as unknown although T is not met", change: func(s *checkCase) {
+		// Validate refuses the loop at Q, so Q reads refused (the derivation gives no clean state for
+		// a tree that the rules refuse); the derivation of T still reads Q through the loop as unknown,
+		// and ends.
+		{name: "a loop of supporters: Q reads refused (loop), and T reads not met by its own check", change: func(s *checkCase) {
 			loop := checkStateTop
 			loop.Serves = []string{Q}
 			s.replace(loop)
@@ -178,7 +181,7 @@ func TestStatementState(t *testing.T) {
 			fast.Serves = []string{T}
 			s.addNodes(fast, statementFastCheck)
 			s.runOutcome(CT, OutcomeFail)
-		}, want: []StatementState{held(Q, "unknown", "supporter_unknown", T, "met"), held(T, "not_met", "check_false", CT, "not_met")}},
+		}, want: []StatementState{held(Q, "unknown", "refused", "loop", "unknown"), held(T, "not_met", "check_false", CT, "not_met")}},
 		// R6: "Each leaf statement has one or more checks." R7: "silence is not a pass." A leaf that
 		// the approved spec gives no check reads unknown when the files hold its text, and so does
 		// each statement above it that it would otherwise leave met. Its own state for a wait is
@@ -219,6 +222,26 @@ func TestStatementState(t *testing.T) {
 			s.addNodes(statementFast, statementFastCheck)
 			s.remove(CT)
 		}, want: []StatementState{held(Q, "unknown", "no_check", T, "met"), held(T, "unknown", "no_check", T, "unknown"), met(L1)}},
+		// D1: the derivation gives no clean state for a tree that the rules refuse. A statement that
+		// Validate refuses reads unknown, refused, with the rule as the detail, and each statement
+		// above it reads unknown, statement_refused, with the detail that names it; its own state is
+		// unknown, so a wait on it holds. A problem that names no check and no statement refuses each
+		// check and statement of its file, or of the tree when its file holds none.
+		{name: "D1: L1, whose text has no letter and no digit, reads refused, and T above it reads unknown; subject the head of main", change: func(s *checkCase) {
+			bare := checkStateLeaf
+			bare.Text = "-"
+			s.replace(bare)
+			s.Subject.Branch = "main"
+		}, want: []StatementState{held(L1, "unknown", "refused", "no-text", "unknown"), held(T, "unknown", "statement_refused", L1, "met"), met(L2), met(P)},
+			waits: map[string]bool{L1: false, T: true}},
+		{name: "D1: a problem of a term in the file of the statements refuses each of them", change: func(s *checkCase) {
+			s.files["spec.md"] = append(s.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
+		}, want: []StatementState{held(T, "unknown", "refused", "bad-term", "unknown"), held(L1, "unknown", "refused", "bad-term", "unknown"),
+			held(L2, "unknown", "refused", "bad-term", "unknown"), held(P, "unknown", "refused", "bad-term", "unknown")}},
+		{name: "D1: a problem of a component in a file of its own refuses each statement of the tree", change: func(s *checkCase) {
+			s.files["components.md"] = []specNode{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
+		}, want: []StatementState{held(T, "unknown", "refused", "bad-component", "unknown"), held(L1, "unknown", "refused", "bad-component", "unknown"),
+			held(L2, "unknown", "refused", "bad-component", "unknown"), held(P, "unknown", "refused", "bad-component", "unknown")}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -292,6 +315,106 @@ func TestTheTreeAndTheDerivationAskForACheckOfOneSetOfStatements(t *testing.T) {
 			}
 		})
 	}
+}
+
+// D1: the derivation gives no clean state for a tree that the rules refuse. For each problem that
+// Validate finds in the files, Derive reads no check that the problem names as true, and no
+// statement that it names, or that is above a check or a statement that it names, as met; a
+// problem that names no check and no statement does so for each check and statement of its file,
+// or of the tree when its file holds none. The rule is read from the problems, so a rule that
+// Validate gains is under the test too. Each row is the base of TestStatementState with one fault.
+func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name   string
+		change func(s *checkCase)
+	}{
+		{"a program check that names no job", func(s *checkCase) { s.refuse(func(c *Check) { c.Test.Job = "" }) }},
+		{"a program check that names no test", func(s *checkCase) { s.refuse(func(c *Check) { c.Test = nil }) }},
+		{"a check whose claim has no letter and no digit", func(s *checkCase) { s.refuse(func(c *Check) { c.Claim = "-" }) }},
+		{"a check of another procedure", func(s *checkCase) { s.refuse(func(c *Check) { c.Procedure = "script" }) }},
+		{"a check of another subject", func(s *checkCase) { s.refuse(func(c *Check) { c.Subject = "staging" }) }},
+		{"a check whose failing example has no letter and no digit", func(s *checkCase) { s.refuse(func(c *Check) { c.FailingExample = "-" }) }},
+		{"a statement whose text has no letter and no digit", func(s *checkCase) {
+			bare := checkStateLeaf
+			bare.Text = "-"
+			s.replace(bare)
+		}},
+		{"a statement of another kind", func(s *checkCase) {
+			other := statementLeafTwo
+			other.Kind = "rule"
+			s.replace(other)
+		}},
+		{"a leaf with no check", func(s *checkCase) { s.remove(statementLeafTwoCheck.ID) }},
+		{"a supported statement with no check of its own", func(s *checkCase) { s.remove(statementTopCheck.ID) }},
+		{"a term with no definition in the file of the statements", func(s *checkCase) {
+			s.files["spec.md"] = append(s.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
+		}},
+		{"a component with no purpose in a file of its own", func(s *checkCase) {
+			s.files["components.md"] = []specNode{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStatementCase(t)
+			row.change(s)
+			files := s.parse()
+			problems := Validate(files, Options{})
+			if len(problems) == 0 {
+				t.Fatal("Validate finds no problem, so the row tests nothing")
+			}
+			state := Derive(s.input())
+			for _, p := range problems {
+				for _, id := range namedBy(files, p) {
+					for _, c := range state.Checks {
+						if c.ID == id && c.State == "true" {
+							t.Errorf("%s: check %s reads %+v", p.Rule, id, c)
+						}
+					}
+					for _, st := range state.Statements {
+						if st.ID == id && st.State == "met" {
+							t.Errorf("%s: statement %s reads %+v", p.Rule, id, st)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// namedBy is each check and statement of files that the problem p names: the node it names, and,
+// for a check, the statement it serves; for a problem that names no check and no statement, each
+// check and statement of its file, or of files when its file holds none; then each statement
+// above one of them.
+func namedBy(files Tree, p Problem) []string {
+	var named []string
+	if c, held := files.CheckByID(p.Node); held {
+		named = append(named, c.ID, c.Serves)
+	} else if _, held := files.StatementByID(p.Node); held {
+		named = append(named, p.Node)
+	} else {
+		for _, all := range []bool{false, true} {
+			for _, st := range files.Statements {
+				if all || st.Pos.File == p.Pos.File {
+					named = append(named, st.ID)
+				}
+			}
+			for _, c := range files.Checks {
+				if all || c.Pos.File == p.Pos.File {
+					named = append(named, c.ID)
+				}
+			}
+			if len(named) > 0 {
+				break
+			}
+		}
+	}
+	for i := 0; i < len(named); i++ {
+		if st, held := files.StatementByID(named[i]); held && st.Parent != "" && !slices.Contains(named, st.Parent) {
+			named = append(named, st.Parent)
+		}
+	}
+	return named
 }
 
 // Derive gives the subject, the state of each check that CheckStates judges, and the state of each

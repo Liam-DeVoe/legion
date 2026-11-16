@@ -239,6 +239,30 @@ func TestCheckState(t *testing.T) {
 			bare.FailingExample = "-"
 			c.replace(bare)
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		// D1: the derivation gives no clean state for a tree that the rules refuse, since the pilot
+		// calls it with no reader. A check that Validate refuses reads unknown, refused, with the
+		// rule as the detail, whatever its results (TestNoTreeThatTheRulesRefuseReadsTrueOrMet).
+		{name: "D1: a program check that names no job", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Test.Job = "" })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-job"}},
+		{name: "D1: a program check that names no test", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Test = nil })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-test"}},
+		{name: "D1: a check whose claim has no letter and no digit", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Claim = "-" })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "no-claim"}},
+		{name: "D1: a check of a procedure that is not program, query or agent", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Procedure = "script" })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-procedure"}},
+		{name: "D1: a check of a subject that is not code, production or graph", change: func(c *checkCase) {
+			c.refuse(func(r *Check) { r.Subject = "staging" })
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-subject"}},
+		{name: "D1: a problem of a term in the file of the check", change: func(c *checkCase) {
+			c.files["spec.md"] = append(c.files["spec.md"], Term{ID: "message", Name: "message", Definition: "-"})
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-term"}},
+		{name: "D1: a problem of a term in a file that holds no check and no statement", change: func(c *checkCase) {
+			c.files["terms.md"] = []specNode{Term{ID: "message", Name: "message", Definition: "-"}}
+		}, want: CheckState{State: "unknown", Reason: "refused", Detail: "bad-term"}},
 		{name: "v-state 18: a merge changes a file that the test reads", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/testdata/a.json")
 			c.Subject.Commit = "c2"
@@ -603,6 +627,27 @@ func (s *checkCase) replace(n specNode) {
 	delete(s.Approved.Nodes, id)
 	s.approve(at, n)
 	s.swap(n)
+}
+
+// refuse puts in the files and in the approved spec C's text with change, a text that the tree
+// rules refuse, and gives each result of C the job of that text, so that only the refusal keeps
+// its results from counting.
+func (s *checkCase) refuse(change func(c *Check)) {
+	s.t.Helper()
+	c := checkStateCheck
+	test := *c.Test
+	c.Test = &test
+	change(&c)
+	s.replace(c)
+	job := ""
+	if c.Test != nil {
+		job = c.Test.Job
+	}
+	for i := range s.Results {
+		if s.Results[i].Check == c.ID {
+			s.Results[i].Job = job
+		}
+	}
 }
 
 // swap puts n in the files in the place of the node with its id.
