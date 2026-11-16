@@ -1,10 +1,13 @@
 package oauth_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -960,6 +963,16 @@ func TestAnIntrospectionFailureNamesItsCause(t *testing.T) {
 		}
 	})
 
+	t.Run("a stored projects claim that is not its string", func(t *testing.T) {
+		if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(jsonb_set(request, '{client_id}', '"dispatch-token-exchange"'), '{session,extra,projects}', '["ACME"]')`); err != nil {
+			t.Fatalf("rewrite the token's row: %v", err)
+		}
+		_, err := f.provider.Introspect(ctx, token)
+		if !errors.Is(err, oauth.ErrStoredClaimMalformed) || !strings.Contains(err.Error(), "implementer-g1") {
+			t.Fatalf("Introspect of a row whose projects claim is a list = %v, want ErrStoredClaimMalformed naming the session implementer-g1", err)
+		}
+	})
+
 	t.Run("a store that has gone away", func(t *testing.T) {
 		f.pool.Close()
 		_, err := f.provider.Introspect(ctx, token)
@@ -1086,7 +1099,9 @@ type fakeAccess struct {
 	held  []string            // the projects Dispatch holds
 	kinds map[string]string   // person → member kind; absent is none
 	down  bool
-	asked []string
+	// refused is Dispatch answering 403 to the broker's own account token.
+	refused bool
+	asked   []string
 }
 
 func newFakeAccess() *fakeAccess {
@@ -1104,6 +1119,9 @@ func (a *fakeAccess) Access(_ context.Context, key, who string) (projectaccess.A
 	if a.down {
 		return projectaccess.Answer{}, errors.New("dispatch could not be reached")
 	}
+	if a.refused {
+		return projectaccess.Answer{}, fmt.Errorf("%w: dispatch answered 403", projectaccess.ErrBrokerRefused)
+	}
 	if !slices.Contains(a.held, key) {
 		return projectaccess.Answer{}, projectaccess.ErrProjectNotFound
 	}
@@ -1116,6 +1134,9 @@ func (a *fakeAccess) MemberKind(_ context.Context, who string) (string, error) {
 	a.asked = append(a.asked, "kind "+who)
 	if a.down {
 		return "", errors.New("dispatch could not be reached")
+	}
+	if a.refused {
+		return "", fmt.Errorf("%w: dispatch answered 403", projectaccess.ErrBrokerRefused)
 	}
 	if kind, held := a.kinds[who]; held {
 		return kind, nil
@@ -1309,6 +1330,104 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	machines.introspectsProjects(t, machines.exchanged(t, form, key), oauthwire.ProjectScopeNamed, []string{project})
 }
 
+// TestATokenStoredBeforeTheListIsNotLive: a token minted before this release stored its one
+// project under `project` and no `projects`. Read with no `projects`, it would pass as a named
+// token naming none, the public-session account's shape, which Dispatch holds to no project; it
+// is answered not live instead, so its holder trades again for a token of this release. The same
+// row with `projects` restored, and a machine login's own token, which no exchange decided and so
+// carries neither claim, are unchanged.
+func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	ctx := context.Background()
+	key := newKey(t)
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	tag, err := f.pool.Exec(ctx, `update oauth_access_tokens
+		set request = jsonb_set(request #- '{session,extra,projects}', '{session,extra,project}', to_jsonb($1::text))
+		where request #> '{session,extra,projects}' is not null and request #> '{session,extra,project_scope}' is not null`, project)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("rewrite the token's row to the older shape: %v, %d rows; want exactly the one row rewritten", err, tag.RowsAffected())
+	}
+	answer, err := f.provider.Introspect(ctx, token)
+	if err != nil || !reflect.DeepEqual(answer, oauthwire.Introspection{}) {
+		t.Fatalf("Introspect of a row stored before the list = %+v, %v; want not live", answer, err)
+	}
+	if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request #- '{session,extra,project}', '{session,extra,projects}', to_jsonb($1::text))`, project); err != nil {
+		t.Fatal(err)
+	}
+	f.introspectsProjects(t, token, oauthwire.ProjectScopeNamed, []string{project})
+
+	machine := f.devBoxToken(t, newKey(t), person)
+	if answer, err := f.provider.Introspect(ctx, machine); err != nil || !answer.Active || answer.ProjectScope != "" || answer.Projects != nil {
+		t.Fatalf("Introspect of a machine login's own token = %+v, %v; want live with neither project claim", answer, err)
+	}
+
+	// A person token stored before the list wrote its scope and no project claim at all, which
+	// meant then what an empty list means now: it is read as the person token naming no project
+	// it always was, so a deployment with no private project keeps every such token live.
+	boxKey := newKey(t)
+	traded := f.exchanged(t, exchangeForm(f.devBoxToken(t, boxKey, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), boxKey)
+	tag, err = f.pool.Exec(ctx, `update oauth_access_tokens set request = request #- '{session,extra,projects}'
+		where request #>> '{session,extra,project_scope}' = 'person'`)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("rewrite the person token's row to the older shape: %v, %d rows; want exactly the one row rewritten", err, tag.RowsAffected())
+	}
+	f.introspectsProjects(t, traded, oauthwire.ProjectScopePerson, nil)
+}
+
+// TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject: the shared public-session
+// account's entry names a person and no project. Its pod's token introspects named, with the
+// entry's person and no project; when Dispatch calls that person a restricted member, who sees
+// only the projects that name them, the trade is refused; a broker with no check, and one whose
+// Dispatch cannot be reached, mint it as they would any entry's token. A workflow entry may not
+// leave its project empty.
+func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) {
+	trade := func(t *testing.T, access projectaccess.Access) (*exchangeFixture, int, map[string]any) {
+		t.Helper()
+		f := newExchangeFixture(t, func(c *oauth.Config) {
+			c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
+			c.Exchange.Projects = access
+		})
+		f.registers(t, account, "pod-uid-1", "public-session-1")
+		status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
+		return f, status, body
+	}
+	mints := func(t *testing.T, access projectaccess.Access) {
+		t.Helper()
+		f, status, body := trade(t, access)
+		token := accessTokenOf(t, status, body)
+		f.introspectsProjects(t, token, oauthwire.ProjectScopeNamed, nil)
+		answer, err := f.provider.Introspect(context.Background(), token)
+		if err != nil || answer.Person != person {
+			t.Fatalf("Introspect = %+v, %v; want the entry's person %s", answer, err, person)
+		}
+	}
+
+	t.Run("a full member's entry mints a named token naming no project", func(t *testing.T) {
+		access := newFakeAccess()
+		access.kinds[person] = projectaccess.MemberFull
+		mints(t, access)
+	})
+	t.Run("a restricted member's entry is refused", func(t *testing.T) {
+		access := newFakeAccess()
+		access.kinds[person] = projectaccess.MemberRestricted
+		_, status, body := trade(t, access)
+		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names no project, and its person "+person+" is a restricted member")
+	})
+	t.Run("with no check, and with Dispatch down, it mints as any entry's token", func(t *testing.T) {
+		mints(t, nil)
+		down := newFakeAccess()
+		down.kinds[person] = projectaccess.MemberRestricted
+		down.down = true
+		mints(t, down)
+	})
+	t.Run("a workflow entry may not leave its project empty", func(t *testing.T) {
+		if _, err := exchange.NewSet(nil, []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Person: person}}, nil, signInDomain); err == nil {
+			t.Fatal("NewSet with a workflow entry naming no project = nil error, want a refusal")
+		}
+	})
+}
+
 // TestANamedTradeMintsAsTodayWithNoProjectAccess: a broker with no project-access check, and one
 // whose Dispatch cannot be reached, mint an entry's token as they always have: the operator's own
 // setting is what chose its project.
@@ -1351,4 +1470,133 @@ func TestEveryTradeChecksAgainBecauseThereIsNoRefreshToken(t *testing.T) {
 	access.set(func(a *fakeAccess) { a.sees[person] = []string{project} })
 	status, body = f.exchange(t, form(), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "The token names a project its person cannot see: PRIV.")
+}
+
+// capturedLog swaps the default logger for one that writes JSON lines into a buffer until the
+// test ends, for the tests that read what the exchange logs.
+func capturedLog(t *testing.T) *lockedBuffer {
+	t.Helper()
+	buffer := &lockedBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return buffer
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// lines is every logged line carrying each of fragments.
+func (b *lockedBuffer) lines(fragments ...string) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var found []string
+	for _, line := range strings.Split(b.buf.String(), "\n") {
+		matches := line != ""
+		for _, fragment := range fragments {
+			matches = matches && strings.Contains(line, fragment)
+		}
+		if matches {
+			found = append(found, line)
+		}
+	}
+	return found
+}
+
+// TestANamedTokenStoresItsProjectUnderTheOlderClaimToo: while an older broker replica still
+// answers introspection beside this one (a rolling update, a canary, a rollback), it reads a named
+// token's one project from the older `project` claim. A named token naming one project stores it
+// there too, so the older replica answers `"project":"ACME"`, which this release's readers refuse,
+// rather than a named token naming none, which they would read as the public-session shape and
+// hold to no project. A named token naming none, and a person token, store no such claim.
+func TestANamedTokenStoresItsProjectUnderTheOlderClaimToo(t *testing.T) {
+	olderClaim := func(t *testing.T, f *exchangeFixture, session string) any {
+		t.Helper()
+		var claim any
+		if err := f.pool.QueryRow(context.Background(), `select request #> '{session,extra,project}' from oauth_access_tokens
+			where request #>> '{session,extra,session}' = $1`, session).Scan(&claim); err != nil {
+			t.Fatalf("read the stored row of %s: %v", session, err)
+		}
+		return claim
+	}
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
+	if got := olderClaim(t, f, "implementer-g1"); got != project {
+		t.Fatalf("the named token's stored `project` claim = %#v, want %q, so an older replica answers it and this release's readers refuse it", got, project)
+	}
+	boxKey := newKey(t)
+	f.exchanged(t, exchangeForm(f.devBoxToken(t, boxKey, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), boxKey)
+	if got := olderClaim(t, f, "ada-devbox"); got != nil {
+		t.Fatalf("the person token's stored `project` claim = %#v, want none", got)
+	}
+
+	public := newExchangeFixture(t, func(c *oauth.Config) {
+		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
+	})
+	public.registers(t, account, "pod-uid-1", "public-session-1")
+	public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
+	if got := olderClaim(t, public, "public-session-1"); got != nil {
+		t.Fatalf("the public-session token's stored `project` claim = %#v, want none", got)
+	}
+}
+
+// TestDispatchRefusingTheBrokersTokenRefusesTheTrade: Dispatch answering 403 to the broker's own
+// account token is a deployment that has not listed the broker as one that may ask, a
+// misconfiguration and not an outage, so the trade is refused naming that refusal and the setting
+// that holds the token, never minted unchecked: an operator entry's token, a person's trade naming
+// a project, and a person's trade naming none alike.
+func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
+	access := newFakeAccess()
+	access.refused = true
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	const says = "Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
+	machine := f.devBoxToken(t, key, person)
+	status, body = f.exchange(t, withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), "PRIV"), key)
+	refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
+	status, body = f.exchange(t, exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+	refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
+}
+
+// TestAnUncheckedMintLogsItsEntry: while Dispatch cannot be reached, an operator entry's token and
+// a person's trade naming no project mint as they always have, and each such mint logs one line
+// naming what was minted unchecked: the entry's principal, or the person.
+func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
+	logs := capturedLog(t)
+	access := newFakeAccess()
+	access.down = true
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	if got := logs.lines("unchecked", account, "implementer-g1"); len(got) != 1 {
+		t.Fatalf("the entry's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), account, strings.Join(logs.lines(), "\n"))
+	}
+
+	public := newExchangeFixture(t, func(c *oauth.Config) {
+		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: otherAccount, Person: person}}, nil)
+		c.Exchange.Projects = access
+	})
+	public.registers(t, otherAccount, "pod-uid-2", "public-session-1")
+	public.exchanged(t, exchangeForm(public.podTokenOf(t, otherAccount, "pod-uid-2"), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key)
+	if got := logs.lines("unchecked", otherAccount, "public-session-1"); len(got) != 1 {
+		t.Fatalf("the no-project entry's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), otherAccount, strings.Join(logs.lines(), "\n"))
+	}
+
+	f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+	if got := logs.lines("unchecked", person, "ada-devbox"); len(got) != 1 {
+		t.Fatalf("the person's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), person, strings.Join(logs.lines(), "\n"))
+	}
 }

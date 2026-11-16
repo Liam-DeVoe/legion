@@ -282,7 +282,7 @@ jobs:
       # The session message-wait suite, in a job of its own: it is the one test of the test job
       # that needs a database, and a Postgres service there would start one for every change
       # that selects any of that job's thirty-two harness steps.
-      sessions_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.sessions_script }}
+      sessions_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.sessions_script }}
       # The guides' layout step of the test job, which has a filter of its own: the job's other
       # steps read none of the guides, so a run that changed none of them skips that step.
       guide_layout: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.guide_layout }}
@@ -407,7 +407,7 @@ jobs:
       # proof too, which drives the same action over the same manifest through the same helper
       # and so reads the same files.
       tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.tool_fallback }}
-      proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.proof_sdk_offline }}
+      proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.proof_sdk_offline }}
       # The paths filter's own verdict for every filter, before the `full-ci` term above rewrites
       # the eight outputs the nine slow suites run behind. On a pull request without that
       # label each of those eight is `false` whether its paths matched or not, so a reader of the
@@ -561,6 +561,7 @@ jobs:
             daemon_envoy_deps: &daemon_envoy_deps
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
+              - 'packages/envoy/natsgrant/*'
               # dispatchbody is the one public door onto the Dispatch server's own block
               # splitter, which the daemon refuses a close reason or a READY packet the server
               # would refuse with (packages/daemon/internal/api): internal/dispatch/itemblocks
@@ -597,11 +598,12 @@ jobs:
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
-              # brokertoken's testdata too: the daemon's tests compile it through projectaccess.
-              - 'packages/envoy/internal/brokertoken/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/ctxlock/*'
+              # internal/bus presents a service's NATS credential through natscred.
+              - 'packages/envoy/natscred/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -626,10 +628,6 @@ jobs:
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
-              # natsgrant's testdata too: the daemon's race-tested packages compile it.
-              - 'packages/envoy/natsgrant/**'
-              # internal/bus presents a service's NATS credential through natscred.
-              - 'packages/envoy/natscred/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
               # daemon's notify path reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -661,12 +659,13 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               # The relayed shapes routes_shapes.go names (internal/dispatch/api).
               - 'packages/envoy/internal/broker/wire/*'
-              - 'packages/envoy/internal/brokertoken/**'
-              # natscred's token client, which internal/bus compiles in.
-              - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
-              - 'packages/envoy/natscred/*'
+              # internal/bus presents a service's NATS credential through natscred, whose session
+              # half trades through the token client.
+              - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -845,11 +844,13 @@ jobs:
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokertoken/**'
-              - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
-              - 'packages/envoy/natscred/*'
+              # internal/bus presents a service's NATS credential through natscred, whose session
+              # half trades through the token client.
+              - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
@@ -1712,6 +1713,7 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -1775,7 +1777,7 @@ jobs:
               - 'packages/envoy/internal/broker/store/*'
               - 'packages/envoy/internal/broker/store/migrations/**'
               - 'packages/envoy/internal/broker/wake/*'
-              # The NATS auth service cmd/broker runs.
+              # The NATS auth service cmd/broker runs, and the grants it answers.
               - 'packages/envoy/internal/broker/natscallout/*'
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/buildversion/*'
@@ -1938,12 +1940,11 @@ jobs:
               - 'packages/envoy/going/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/wire/*'
-              - 'packages/envoy/internal/brokertoken/**'
-              # natscred's token client, which internal/bus compiles in.
-              - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
-              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -2014,11 +2015,11 @@ jobs:
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokertoken/**'
-              - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
-              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
@@ -2065,13 +2066,13 @@ jobs:
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokertoken/**'
-              - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/bustest/*'
-              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
@@ -2121,22 +2122,6 @@ jobs:
               - *bun_install
               - *biome
               - 'scripts/conflicts/**'
-            # The session message-wait suite's own job: the suite, the script it spawns, and the
-            # Bun that runs both. No install: the two import node: builtins and bun alone, so no
-            # lockfile and no workspace manifest is an input of this job. The lint and the
-            # typecheck of the same directory stay in the test job, which the `test` filter below
-            # names scripts/sessions for.
-            sessions_script:
-              - *ci_router
-              - '.github/workflows/ci-job-sessions-script.yaml'
-              - 'scripts/sessions/**'
-              - '.bun-version'
-              - '.github/actions/setup-bun/**'
-              # setup-bun's third step reads this runner's bun row through that helper and
-              # fetches the npm copy when the release asset served no Bun of the pinned version,
-              # and its last step holds the bun on PATH to that row's digest.
-              - '.github/ci-tools.yaml'
-              - '.github/scripts/ci-tools.sh'
             # The secrets broker's TypeScript client: its own sources and tests, the one
             # first-party package its sources import, the fixtures its tests use, the Bun install
             # and the Bun it runs, and Biome.
@@ -2619,7 +2604,7 @@ jobs:
               - 'packages/envoy/infra/**'
               - *dispatch_server
               - *listener_command
-              - 'packages/envoy/natsgrant/**'
+              - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/dispatch/githubapp/**'
@@ -2641,6 +2626,8 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
+              - '!packages/envoy/natsgrant/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -2851,6 +2838,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -2883,6 +2871,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -2975,6 +2964,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3071,6 +3061,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3177,6 +3168,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3221,20 +3213,18 @@ jobs:
               - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/broker/wake/*'
               - 'packages/envoy/internal/broker/natscallout/*'
-              # The auth service's grants and its own connection to the hub.
-              - 'packages/envoy/natsgrant/**'
-              - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/bus/*'
-              - 'packages/envoy/internal/bus/testdata/*'
               # internal/bus refuses a nats-server below the floor this package holds.
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/internal/id/*'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/broker/wire/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
               - 'packages/envoy/internal/brokerclient/**'
               # internal/broker/judge/model.go mints the account token it reads Dispatch with
               # through brokertoken.
-              - 'packages/envoy/internal/brokertoken/**'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -3265,6 +3255,9 @@ jobs:
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
+              - '!packages/envoy/natsgrant/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               # END generated
             # The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
             # and the axiom print read the model's own project, and the two fuzz runs compile the
@@ -3335,6 +3328,8 @@ jobs:
               - 'packages/envoy/internal/**'
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/migrationid/**'
+              - 'packages/envoy/natscred/**'
+              - 'packages/envoy/natsgrant/**'
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/natsversion/**'
               - 'packages/envoy/docker/rds-global-bundle.pem'
@@ -3343,8 +3338,6 @@ jobs:
               - 'go.work.sum'
               - 'packages/daemon/go.mod'
               - 'packages/daemon/go.sum'
-              - 'packages/envoy/natsgrant/**'
-              - 'packages/envoy/natscred/*'
               # envoy-infra's host live tests and its plugin build, in packages/envoy/infra's own
               # workspace; the live tests compile internal/pulumitest, which holds the version
               # they pin the docker provider at, under infra/internal. The plugin build's step is
@@ -3422,6 +3415,8 @@ jobs:
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
+              - '!packages/envoy/natsgrant/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3447,7 +3442,6 @@ jobs:
               - 'packages/contracts/src/**'
               # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
               - *listener_command
-              # natsd -callout-keys writes testnats.CalloutConfig, so its build compiles the rig.
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
               # The job reads no Markdown file: the listener, the renderer and the contracts
@@ -3728,23 +3722,6 @@ jobs:
               # would start it for nothing.
               - '!**/*.md'
 
-            # The proof-sdk-offline job: a frozen install behind a proxy that answers 504
-            # for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
-            # What can send that install to one of those hosts again is every file the install
-            # reads, which is the shared group above, so the filter names it whole rather than
-            # the four sites of it this job is really about: bun.lock, which a reintroduced
-            # remote dependency necessarily moves, package.json, the root manifest the frozen
-            # install reads, packages/proof-editor/package.json, the manifest that names the
-            # tarball, and packages/proof-editor/proof-sdk-*.tgz, the file itself. Beside it:
-            # .github/scripts/ci-fault-proxy.py, the program that drives the install, and the
-            # two files that hold the job: ci.yaml, which carries its `if:`, and the called
-            # file its steps live in.
-            proof_sdk_offline:
-              - *bun_install
-              - '.github/scripts/ci-fault-proxy.py'
-              - *ci_router
-              - '.github/workflows/ci-job-proof-sdk-offline.yaml'
-
       # The third of the filter strings, for the reason the second's comment gives: the second
       # came within rule 18's margin again once envoy_go_race carried a generated block of its
       # own, when search_text_test.go's read narrowed from packages/envoy/** to the Markdown it
@@ -3752,8 +3729,11 @@ jobs:
       # race lane filters are here, and so is envoy_client, which the first step had no room for
       # once main's new test files grew its generated blocks, and so is private_names_port, whose
       # generated block names every migration test of the daemon's store and grows with each one
-      # main adds. They share no group with a filter of the other steps but ci_router,
-      # go_workspace, bun_install and legion_command, which this string writes again.
+      # main adds. So are sessions_script and proof_sdk_offline, moved here when the second came
+      # within that margin again once the NATS auth service's and natsgrant's entries joined it
+      # (dispatch://INFRA-3884): they name ci_router and bun_install alone. They share no group
+      # with a filter of the other steps but ci_router, go_workspace, bun_install and
+      # legion_command, which this string writes again.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter3
         if: github.event_name != 'workflow_dispatch'
@@ -3901,6 +3881,7 @@ jobs:
               - '!packages/envoy/cmd/dev-oidc-issuer/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/**/*_test.go'
               - '!packages/envoy/cmd/dispatch-seed/**/*_test.go'
+              - '!packages/envoy/cmd/natsprobe/**/*_test.go'
               - '!packages/envoy/cmd/natstail/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -3982,6 +3963,8 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
+              - '!packages/envoy/natsgrant/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -4019,6 +4002,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/policy/*'
               - 'packages/envoy/internal/broker/policy/policytest/*'
+              - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
@@ -4034,6 +4018,7 @@ jobs:
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/cputest/*'
               - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -4192,6 +4177,7 @@ jobs:
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -4419,6 +4405,39 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!**/*_test.go'
               # END generated
+            # The session message-wait suite's own job: the suite, the script it spawns, and the
+            # Bun that runs both. No install: the two import node: builtins and bun alone, so no
+            # lockfile and no workspace manifest is an input of this job. The lint and the
+            # typecheck of the same directory stay in the test job, which the `test` filter below
+            # names scripts/sessions for.
+            sessions_script:
+              - *ci_router
+              - '.github/workflows/ci-job-sessions-script.yaml'
+              - 'scripts/sessions/**'
+              - '.bun-version'
+              - '.github/actions/setup-bun/**'
+              # setup-bun's third step reads this runner's bun row through that helper and
+              # fetches the npm copy when the release asset served no Bun of the pinned version,
+              # and its last step holds the bun on PATH to that row's digest.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
+
+            # The proof-sdk-offline job: a frozen install behind a proxy that answers 504
+            # for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
+            # What can send that install to one of those hosts again is every file the install
+            # reads, which is the shared group above, so the filter names it whole rather than
+            # the four sites of it this job is really about: bun.lock, which a reintroduced
+            # remote dependency necessarily moves, package.json, the root manifest the frozen
+            # install reads, packages/proof-editor/package.json, the manifest that names the
+            # tarball, and packages/proof-editor/proof-sdk-*.tgz, the file itself. Beside it:
+            # .github/scripts/ci-fault-proxy.py, the program that drives the install, and the
+            # two files that hold the job: ci.yaml, which carries its `if:`, and the called
+            # file its steps live in.
+            proof_sdk_offline:
+              - *bun_install
+              - '.github/scripts/ci-fault-proxy.py'
+              - *ci_router
+              - '.github/workflows/ci-job-proof-sdk-offline.yaml'
 
       # filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq
       # reads. A GitHub expression can build no object from three, so jq merges them here. A

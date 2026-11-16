@@ -166,6 +166,9 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 // (server/accounts.go, buildPermissionsFromJwt), and the auth service writes these lists into the
 // JWT as they are. A daemon's grant held to no project keeps no publish entry, so it is refused
 // rather than answered as a grant that may publish to every subject.
+//
+// The deny lists are kept as they are handed in, entry for entry: a deny only narrows, so one a
+// grant carries holds within any scope, and dropping it would let through what it refuses.
 func WithinProjects(grant Permissions, scope Scope) (Permissions, error) {
 	held, err := newHeldScope(scope)
 	if err != nil {
@@ -179,7 +182,10 @@ func WithinProjects(grant Permissions, scope Scope) (Permissions, error) {
 	if err != nil {
 		return Permissions{}, err
 	}
-	narrowed := Permissions{Publish: publish, Subscribe: subscribe}
+	narrowed := Permissions{
+		Publish: publish, Subscribe: subscribe,
+		PublishDeny: slices.Clone(grant.PublishDeny), SubscribeDeny: slices.Clone(grant.SubscribeDeny),
+	}
 	if direction, open := OpenDirection(narrowed); open {
 		return Permissions{}, fmt.Errorf("natsgrant: grant held to scope keeps no %s entry, and a NATS user with no %s allow list may %s to every subject", direction, direction, direction)
 	}

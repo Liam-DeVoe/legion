@@ -15,5 +15,5 @@ func scopeGrant(_ context.Context, _ Deps, entry ServiceEntry, grant natsgrant.P
 	if entry.AllProjects {
 		return grant, nil
 	}
-	return natsgrant.Permissions{}, refuse(credentialService, "held to exchange projects, which this broker cannot read: service "+entry.name())
+	return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.name())
 }

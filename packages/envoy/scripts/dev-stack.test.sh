@@ -42,7 +42,10 @@
 # callout with a monitor port, two brokers that each run the auth service on it, and the listener
 # and Dispatch each with a NATS service token the issuer writes, exports what callout-check.sh
 # reads, and outlives its second broker being killed, while a run without --callout does none of
-# it.
+# it; and (k) every run gives each broker its database URL with pool_max_conns=10, production's
+# pool size, joined to the server URL's own query string or starting one where it has none (the
+# --callout run names a server URL with no query string), while Dispatch, which refuses that
+# parameter, gets the URL's query string alone.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -64,6 +67,11 @@ mkdir -p "$fake_bin_dir"
 # The Postgres server every instance below is told to use. Nothing connects to it: the fake psql
 # answers every call.
 readonly admin_url='postgres://tester:s3cret@127.0.0.1:5999/postgres?sslmode=disable'
+# The same server named with no query string, so the URL a run builds for a database of its own
+# has to start one: the --callout run (j) is given it. server_url is the server alone, which each
+# run's own database URL starts with.
+readonly admin_url_no_query=${admin_url%%\?*}
+readonly server_url=${admin_url%/postgres*}
 
 declare -a instance_pid=()
 cleanup() {
@@ -404,8 +412,10 @@ work_dir=""
 run_suffix=""
 kept_port=""
 declare -A process_port=()
+# The fifth argument is the query string of the server URL the run was given (with its "?"), by
+# default admin_url's.
 assert_instance_ready() {
-  local label="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4"
+  local label="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4" query="${5-?sslmode=disable}"
   if ! wait_for_ready "$log_file"; then
     cat "$log_file" >&2
     fail "$label never reached ready"
@@ -551,15 +561,17 @@ assert_instance_ready() {
   grep -qxF -e "-sf http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
     fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]}"
 
-  # Two databases of this run's own, named for it, and no other; each server pointed at its own.
-  local created
+  # Two databases of this run's own, named for it, and no other; each server pointed at its own,
+  # the broker with production's pool size (k), whole URL to whole URL.
+  local created broker_query="?pool_max_conns=10"
+  [[ -z "$query" ]] || broker_query="${query}&pool_max_conns=10"
   created="$(created_databases "$psql_call_file")"
   [[ "$created" == "dev_stack_broker_${run_suffix} dev_stack_dispatch_${run_suffix} " ]] ||
     fail "$label created '$created', not one broker and one Dispatch database of its own"
-  grep -q "database=postgres://tester:s3cret@127.0.0.1:5999/dev_stack_broker_${run_suffix}" "${work_dir}/logs/broker.log" ||
-    fail "$label did not point its broker at its own database"
-  grep -q "database=postgres://tester:s3cret@127.0.0.1:5999/dev_stack_dispatch_${run_suffix}" "${work_dir}/logs/dispatch.log" ||
-    fail "$label did not point Dispatch at its own database"
+  grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}${broker_query} issuer=" "${work_dir}/logs/broker.log" ||
+    fail "$label did not point its broker at its own database with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/broker.log")"
+  grep -qF "fake dispatch: database=${server_url}/dev_stack_dispatch_${run_suffix}${query} server-url=" "${work_dir}/logs/dispatch.log" ||
+    fail "$label did not point Dispatch at its own database with the URL's query string alone: $(grep 'fake dispatch: database' "${work_dir}/logs/dispatch.log")"
 }
 
 # Every process of the run is gone, by the PID each reported as its port, and the keeper with them.
@@ -831,9 +843,10 @@ printf 'PASS: a --binaries directory with two unusable binaries names each of th
 # (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
 # auth service on it with the listener and Dispatch listed under their machine ids, the issuer
 # writing each of those two a NATS-audience token, which each is started with, the exports
-# callout-check.sh reads, and a stack that outlives its second broker.
-run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --callout
-assert_instance_ready 'the --callout run' "$log1" "$psql_calls1" "$curl_calls1"
+# callout-check.sh reads, and a stack that outlives its second broker. Its server URL has no query
+# string, so the broker's pool_max_conns starts one (k).
+run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --callout --database-url "$admin_url_no_query"
+assert_instance_ready 'the --callout run' "$log1" "$psql_calls1" "$curl_calls1" ''
 callout_dir="${work_dir}/nats-callout"
 grep -q -- "fake natsd: args=-p -1 -store_dir ${work_dir}/nats-store -callout-keys ${callout_dir} -m -1$" "${work_dir}/logs/natsd.log" ||
   fail "the --callout run did not run natsd behind the callout with a monitor port: $(grep 'fake natsd' "${work_dir}/logs/natsd.log")"
@@ -845,6 +858,8 @@ want_services="listener/dev-stack-${run_suffix}/*=system:serviceaccount:example-
 for broker_log in broker.log broker-2.log; do
   grep -qF "fake broker: nats=nats://127.0.0.1:${process_port[natsd]} seeds=${callout_dir}/service.seed,${callout_dir}/issuer.seed,${callout_dir}/xkey.seed nats-audience=envoy-nats services=${want_services}" \
     "${work_dir}/logs/${broker_log}" || fail "the --callout run's ${broker_log} was not given the auth service's settings: $(grep 'fake broker: nats' "${work_dir}/logs/${broker_log}")"
+  grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}?pool_max_conns=10 issuer=" "${work_dir}/logs/${broker_log}" ||
+    fail "the --callout run's ${broker_log} was not given its database URL with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/${broker_log}")"
 done
 for token in listener-nats-token dispatch-nats-token; do
   [[ -s "${work_dir}/${token}" ]] || fail "the --callout run's issuer wrote no ${token}"
