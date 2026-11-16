@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 )
 
@@ -30,42 +29,17 @@ type RepoProject struct {
 }
 
 // RepoProjects is Dispatch's whole repository mapping, asked afresh on every call and never
-// cached: its one reader, the NATS auth service, asks it on a schedule of its own. It asks as get
-// does (projectaccess.go): a 401 or a 403 is ErrBrokerRefused, decided by the status before any
-// of the body is read, and every other failure, an answer past maxMappingBytes among them, is an
-// error naming what failed and never the token. It repeats get's request only for its larger
-// bound, since get reads at most maxAnswerBytes; once #4119 has landed, get can take the bound
-// and this repeat goes.
+// cached: its one reader, the NATS auth service, asks it on a schedule of its own. It is asked as
+// every route here is (ask), read to maxMappingBytes: a 401 or a 403 is ErrBrokerRefused, and every
+// other status but a 200, like every other failure, is an error naming what failed and never the
+// token.
 func (c *Client) RepoProjects(ctx context.Context) ([]RepoProject, error) {
-	bearer, err := c.account.Read()
+	status, body, err := c.ask(ctx, repoProjectsPath, nil, maxMappingBytes)
 	if err != nil {
-		return nil, fmt.Errorf("projectaccess: read the broker's account token: %w", err)
+		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+repoProjectsPath, nil)
-	if err != nil {
-		return nil, fmt.Errorf("projectaccess: build the request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+bearer)
-	request.Header.Set("Accept", "application/json")
-	response, err := c.http.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("projectaccess: ask dispatch: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, repoProjectsPath, response.StatusCode, refusalCode(response.Body))
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxMappingBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("projectaccess: read dispatch's answer: %w", err)
-	}
-	if len(body) > maxMappingBytes {
-		return nil, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", repoProjectsPath, maxMappingBytes)
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q, which is no repository mapping", repoProjectsPath, response.StatusCode, refusalCode(bytes.NewReader(body)))
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q, which is no repository mapping", repoProjectsPath, status, refusalCode(bytes.NewReader(body)))
 	}
 	var rows []RepoProject
 	if err := json.Unmarshal(body, &rows); err != nil {
