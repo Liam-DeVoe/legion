@@ -87,7 +87,8 @@ create index project_access_principal on project_access (principal_kind, princip
 
 create table access_groups (
   name text primary key check (name ~ '^[a-z0-9][a-z0-9._-]{0,62}$'),
-  -- The full member who made the group; only that person changes its members or deletes it.
+  -- The full member who made the group or was given it; only that person changes its members or
+  -- deletes it.
   owner text not null check (owner <> '' and owner = lower(owner)),
   created_at timestamptz not null default now()
 );

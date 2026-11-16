@@ -69,7 +69,9 @@ func PersonPrincipal(email string) (string, error) {
 }
 
 // MemberKind is the member kind of the person login names, MemberNone when no people row holds
-// them.
+// them. Its error names the read that failed and never the login: every caller knows whom it
+// asked, and a caller that logs the error would otherwise write a person's email
+// (TestAnAccessReadErrorNamesNoPerson).
 func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind, error) {
 	var kind string
 	err := q.QueryRow(ctx, `select member_kind from people where email = $1`, model.CanonicalLogin(login)).Scan(&kind)
@@ -77,7 +79,7 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 		return model.MemberNone, nil
 	}
 	if err != nil {
-		return model.MemberNone, fmt.Errorf("read the member kind of %s: %w", login, err)
+		return model.MemberNone, fmt.Errorf("read a person's member kind: %w", err)
 	}
 	return model.MemberKind(kind), nil
 }

@@ -2704,7 +2704,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The owner gives the project to another full member from its Access tab, and an operator gives any project to another full member with `envoy-dispatch project-owner <KEY> <email>`, at any time and whoever owned it before;
   the command runs `access.SetOwner` in one transaction that appends `project.access_changed` as the actor `{kind: "system", id: "envoy-dispatch project-owner"}`, and exits 2 for a key no project holds, an email that is not a full member's, or wrong arguments.
   A project `POST /api/v1/projects` creates for a person is that person's; an insert that names no owner takes its default assignee as owner (`projects_owner_from_default`), and no write clears an owner (`projects_owner_kept`).
-  A project the migration left with no owner, one whose default assignee had never signed in, stops the boot, which names each such project and both repairs (`store.EnsureProjectOwners`, right after the default project's check):
+  A project the migration left with no owner, one whose default assignee had never signed in, stops the boot, which names each such project by its key, and both repairs, and no person's email (`store.EnsureProjectOwners`, right after the default project's check):
   `DISPATCH_PROJECT_OWNER_FALLBACK`, a full member's lowercase email, whom the next boot makes their owner, or the command above (`cmd/dispatch/README.md`, "Giving a project to another owner").
 
 - `session_projects` holds which projects each session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).

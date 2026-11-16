@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // rawWhoami answers GET /auth/whoami's raw body for login.
@@ -74,5 +76,39 @@ func TestWhoamiRefusesWhenTheKindCannotBeRead(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(body), &refusal); err != nil || status != http.StatusServiceUnavailable || refusal.Code != "IDENTITY_UNAVAILABLE" {
 		t.Fatalf("whoami = %d %s, want 503 IDENTITY_UNAVAILABLE", status, body)
+	}
+}
+
+// The warning whoami logs when it cannot read the member kind names no part of the signed-in
+// person's email: the line is the operator's, and the email is the person's (CodeQL
+// go/clear-text-logging, alert #143). The request's own access-log line is another line, which
+// this test does not read.
+func TestWhoamisMemberKindWarningNamesNoPerson(t *testing.T) {
+	const local, domain = "zq.hidden.person", "zq-secret.example"
+	logged := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewJSONHandler(logged, nil))
+	database := storetest.Open(t)
+	database.Pool.Close()
+	people := newMemoryPeople()
+	ctx, err := BuildAppContext(AppContextOptions{
+		SigningKey: testSigningKey, People: people, Store: database, Lifetime: t.Context(),
+		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+	})
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	standInEventLog(ctx, 0)
+	handler, _ := New(ctx)
+	if status, body := rawWhoami(t, handler, local+"@"+domain); status != http.StatusServiceUnavailable {
+		t.Fatalf("whoami = %d %s, want 503 IDENTITY_UNAVAILABLE", status, body)
+	}
+	warning := logged.Lines("dispatch: whoami could not read the person's member kind")
+	if warning == "" {
+		t.Fatalf("whoami logged no member-kind warning, so this test reads nothing; the log:\n%s", logged.String())
+	}
+	for _, part := range []string{local + "@" + domain, local, domain} {
+		if strings.Contains(strings.ToLower(warning), part) {
+			t.Errorf("the whoami warning names %q of the signed-in person:\n%s", part, warning)
+		}
 	}
 }
