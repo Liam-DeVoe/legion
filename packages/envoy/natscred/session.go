@@ -47,35 +47,37 @@ const signTimeout = 10 * time.Second
 // lapsed while the broker was down connects again once a live one is traded.
 //
 // The Keeper runs the client's renewal loop (brokerclient.Client.Run) and reconnects the
-// connection on each token it lands after the first that is not the one the connection
-// presented. The loop trades on its first pass, just after the connection presented a live token,
-// so that first token is no renewal and the Keeper skips it; each after it is traded RenewBefore
-// ahead of the token in hand, and the service answers a session's user with its token's expiry,
-// so the connection moves to the next token before the server drops it.
+// connection on each token it lands that is not the one the connection presented, but for the
+// first when the presented token outlives that one's renewal. The loop trades on its first pass,
+// just after the connection presented a token the client held with more than RenewBefore left
+// (brokerclient.Client.Token), and renews RenewBefore ahead of each token it lands
+// (Client.RenewalAt). A presented token that lapses after the first token's renewal is kept until
+// the loop's second token, so the connection is not cut for nothing; one that lapses before it
+// moves to the first, since the server would drop the connection at its expiry before the second
+// landed. The service answers a session's user with its token's expiry, so either way the
+// connection moves to a later token before the server drops it.
 func Session(client *brokerclient.Client) (nats.Option, Keeper) {
 	credential := &sessionCredential{
-		key: client.Key(),
-		current: func(ctx context.Context) (string, error) {
-			token, err := client.Token(ctx)
-			if err != nil {
-				return "", err
-			}
-			return token.AccessToken, nil
-		},
-		run: client.Run,
+		key:     client.Key(),
+		current: client.Token,
+		run:     client.Run,
+		renewal: client.RenewalAt,
 	}
 	return credential.option(), credential
 }
 
 // sessionCredential is Session's state: where the session's token comes from, the key it is bound
-// to, and the token the CONNECT in progress presents.
+// to, the renewal loop and when it renews a token, and the token the CONNECT in progress presents
+// with that token's expiry.
 type sessionCredential struct {
 	key     *ecdsa.PrivateKey
-	current func(context.Context) (string, error)
+	current func(context.Context) (*brokerclient.Token, error)
 	run     func(context.Context, func(context.Context, *brokerclient.Token) error) error
+	renewal func(*brokerclient.Token) time.Time
 
 	mu        sync.Mutex
 	presented string
+	expiry    time.Time
 }
 
 func (c *sessionCredential) option() nats.Option {
@@ -87,7 +89,7 @@ func (c *sessionCredential) option() nats.Option {
 }
 
 // sign is the CONNECT's signature over nonce: the proof of the session's key for the token it
-// presents, which it takes here, once, and stores for token to answer.
+// presents, which it takes here, once, and stores with its expiry for token and Keep to read.
 func (c *sessionCredential) sign(nonce []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), signTimeout)
 	defer cancel()
@@ -95,37 +97,43 @@ func (c *sessionCredential) sign(nonce []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("natscred: no broker access token for this session: %w", err)
 	}
-	proof, err := brokerclient.ConnectionProof(c.key, token, string(nonce))
+	proof, err := brokerclient.ConnectionProof(c.key, token.AccessToken, string(nonce))
 	if err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
-	c.presented = token
+	c.presented, c.expiry = token.AccessToken, token.Expiry
 	c.mu.Unlock()
 	return []byte(proof), nil
 }
 
 // token is the CONNECT's token: the one sign signed for.
 func (c *sessionCredential) token() string {
+	token, _ := c.presentedToken()
+	return token
+}
+
+// presentedToken is the token the last CONNECT presented and when it lapses.
+func (c *sessionCredential) presentedToken() (string, time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.presented
+	return c.presented, c.expiry
 }
 
 // Keep runs the renewal loop until ctx ends or nc closes, reconnecting nc on each token it lands
-// after the first that nc did not present: the loop's first pass trades at once (Client.Run),
-// just after nc presented a live token, so the first is skipped. It returns too when the broker
-// refuses the session's identity in a way no retry cures (brokerclient.RefusedError.Permanent):
-// the connection then keeps the user it has until that expires, and each reconnect after asks the
-// broker again.
+// that nc did not present. The loop's first pass trades at once (Client.Run), just after nc
+// presented a token, so the first is skipped when the presented token outlives its renewal
+// (Client.RenewalAt): nc then moves at the second, before the presented one lapses. It returns too
+// when the broker refuses the session's identity in a way no retry cures
+// (brokerclient.RefusedError.Permanent): the connection then keeps the user it has until that
+// expires, and each reconnect after asks the broker again.
 func (c *sessionCredential) Keep(ctx context.Context, nc *nats.Conn) {
 	first := true
 	_ = c.run(ctx, func(_ context.Context, token *brokerclient.Token) error {
-		if first {
-			first = false
-			return nil
-		}
-		if token.AccessToken == c.token() {
+		presented, expiry := c.presentedToken()
+		outlives := first && expiry.After(c.renewal(token))
+		first = false
+		if outlives || token.AccessToken == presented {
 			return nil
 		}
 		if err := nc.ForceReconnect(); err != nil {

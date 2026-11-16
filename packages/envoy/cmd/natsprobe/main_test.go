@@ -168,3 +168,27 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 		})
 	}
 }
+
+// A hub with no auth service sends no nonce, so the probe cannot sign a session's proof for it: it
+// says so, names the credentials such a hub does take, and exits 1, since the hub refused
+// nothing. The control is the probe printing brokerclient's error without that hint.
+func TestNatsprobeNamesTheCredentialsAHubWithNoAuthServiceTakes(t *testing.T) {
+	_, url := testnats.Start(t)
+	stub := newBroker(t)
+	pod := filepath.Join(t.TempDir(), "pod-token")
+	require.NoError(t, os.WriteFile(pod, []byte("pod-token"), 0o600))
+	environment := map[string]string{
+		brokerclient.BrokerURLVar:        stub.server.URL,
+		brokerclient.IdentityVar:         brokerclient.IdentityKubernetes,
+		brokerclient.MachineTokenFileVar: pod,
+		brokerclient.SessionVar:          "ses_a",
+	}
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", url, "--wait", "1s", "--subscribe", "notifications.envoy.deliver.ses_a"},
+		func(name string) string { return environment[name] }, &stdout, &stderr)
+	require.Equal(t, exitFailed, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Empty(t, stdout.String(), "the probe reported an answer of a hub it never sent a CONNECT")
+	require.Contains(t, stderr.String(), "the NATS server sent no nonce to sign, so it runs no auth service and takes no session's broker token")
+	require.Contains(t, stderr.String(), "name the credential it does take: --no-credential, --service-token-file or --service-google-audience")
+	require.NotContains(t, stderr.String(), "tok-")
+}

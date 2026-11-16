@@ -104,20 +104,10 @@
 # cannot take: a run ended by SIGKILL, which no process can trap, leaves its two databases on the
 # server for someone to drop by hand, as does any other signal this script does not trap.
 #
-# With --callout the hub runs behind the NATS auth service (internal/broker/natscallout), as the
-# deployment's hub does once its static users are gone: natsd runs with -callout-keys, so every
-# client but the service's own user is sent to the service, and the service runs in two brokers
-# on the one database, in one queue group, as two replicas do. The brokers admit a session by its
-# broker access token and a proof of its key, and the listener and Dispatch by the platform token
-# the issuer writes each of them for the NATS audience (envoy-nats), listed in
-# BROKER_NATS_SERVICES under their own machine ids. Neither holds a seed. The banner then also
-# exports DEV_STACK_CALLOUT=1, NATS_AUTH=broker, DEV_STACK_NATS_SERVICE_TOKEN_FILE (the
-# listener's NATS token), DEV_STACK_EXCHANGE_SESSION (the session this run registered the pod for)
-# and DEV_STACK_BROKER_PIDS, the two brokers' pids. The second broker is the one replica the stack
-# outlives: killing it stops nothing else, which is how scripts/callout-check.sh proves a stopped
-# replica delays no connection. Without --callout natsd admits every client, as it always has.
-# Everything --callout adds is in scripts/lib/dev-stack-callout.sh, which this script sources, and
-# each of its steps does nothing without the option.
+# With --callout the hub runs behind the NATS auth service (internal/broker/natscallout), in two
+# brokers, and the banner exports what scripts/callout-check.sh reads to prove it: all of that is
+# scripts/lib/dev-stack-callout.sh, which this script sources with the option and only then, and
+# whose header says what it adds. Without --callout natsd admits every client, as it always has.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
@@ -284,10 +274,6 @@ DISPATCH_LOG="$LOG_DIR/dispatch.log"
 KEEPER_LOG="$LOG_DIR/dispatch-port-keeper.log"
 KEEPER_SOCKET="$WORK_DIR/dispatch-port.sock"
 KEEPER_PORT_FILE="$WORK_DIR/dispatch-port"
-# The --callout half (scripts/lib/dev-stack-callout.sh): its paths, under this work directory, and
-# the steps of the start below that add to the stack, each a no-op without --callout.
-# shellcheck source-path=SCRIPTDIR source=lib/dev-stack-callout.sh
-. "$SCRIPT_DIR/lib/dev-stack-callout.sh"
 
 # The issuer and what it mints for, as dev-broker.sh names them (internal/broker/brokertest's rig):
 # the audience every listed caller's and every enrolment's token carries, the exchange's own
@@ -372,6 +358,19 @@ BOX2_METADATA_PORT_FILE="$BOX2_DIR/metadata-port"
 BOX2_METADATA_LOG="$LOG_DIR/dev-metadata-box-two.log"
 BOX2_HELPER_LOG="$LOG_DIR/agent-secrets-helper-box-two.log"
 BOX2_SESSION="dev-stack-box-two"
+
+# --- What --callout adds (scripts/lib/dev-stack-callout.sh): arguments for the issuer and natsd,
+# variables for every broker, the listener and Dispatch, a step once natsd is up and one once the
+# first broker is, and the banner's lines. Without the option each is empty and each step does
+# nothing, so the run is the stack it always was; with it the lib, sourced here, replaces them. ---
+callout_issuer_args=() callout_natsd_args=() callout_broker_env=() callout_listener_env=() callout_dispatch_env=()
+callout_exports=""
+callout_after_natsd() { :; }
+callout_after_first_broker() { :; }
+if [ "$CALLOUT" = true ]; then
+  # shellcheck source-path=SCRIPTDIR source=lib/dev-stack-callout.sh
+  . "$SCRIPT_DIR/lib/dev-stack-callout.sh"
+fi
 
 BROKER_DB="dev_stack_broker_${RUN_SUFFIX}"
 DISPATCH_DB="dev_stack_dispatch_${RUN_SUFFIX}"
@@ -573,8 +572,7 @@ DISPATCH_URL="http://127.0.0.1:${DISPATCH_PORT}"
 echo "dev-stack: starting dev-oidc-issuer..." >&2
 : >"$ISSUER_LOG"
 # With --callout the issuer also writes the listener's and Dispatch's NATS tokens.
-callout_issuer_args
-env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_tokens[@]}" \
+env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$BROKER_AUDIENCE=$API_ACCOUNT=$ACCOUNT_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$LISTENER_ACCOUNT=$LISTENER_TOKEN_FILE" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
@@ -593,17 +591,16 @@ echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 # --- The bus: one nats-server in a process of this run's own (internal/testnats/cmd/natsd), with
 # JetStream in the work directory, since an agent's machine has no container runtime. -1 is
 # nats-server's own "choose a port". With --callout it runs behind the auth callout, whose seeds
-# it makes in CALLOUT_DIR before it serves, so it starts before the brokers that read them. ---
-callout_natsd_args
+# it makes before it serves, so it starts before the brokers that read them. ---
 echo "dev-stack: starting natsd..." >&2
 : >"$NATS_LOG"
-env -i PATH="$PATH" "$BIN_DIR/natsd" -p -1 -store_dir "$WORK_DIR/nats-store" "${natsd_callout_args[@]}" \
+env -i PATH="$PATH" "$BIN_DIR/natsd" -p -1 -store_dir "$WORK_DIR/nats-store" "${callout_natsd_args[@]}" \
   >"$NATS_LOG" 2>&1 &
 NATS_PID=$!
 await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client port' nats_port_in
 NATS_URL="nats://127.0.0.1:$awaited"
 echo "dev-stack: natsd $NATS_URL" >&2
-callout_natsd_monitor
+callout_after_natsd
 
 # --- The broker, on a fake Secrets Manager holding one agent-tier secret its owner's sessions get
 # without asking, one human-tier secret its owner approves — both owned by the person the issuer
@@ -630,8 +627,6 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
-# With --callout every broker also runs the NATS auth service on that natsd.
-callout_broker_env
 # start_broker starts one broker logging to $1 and sets started_pid. Every broker of a run is the
 # same process on the same database, as two replicas of one deployment are.
 started_pid=""
@@ -663,7 +658,7 @@ start_broker() {
     BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
     BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
     BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
-    "${broker_nats_env[@]}" \
+    "${callout_broker_env[@]}" \
     "$BIN_DIR/broker" >"$1" 2>&1 &
   started_pid=$!
 }
@@ -703,7 +698,6 @@ fi
 # (ENVOY_AGENT_SECRETS_URL) as the caller "listener", presenting the projected token the issuer
 # wrote for it. A session holding such a token is bound to the session the broker named: it may
 # subscribe, claim a role, send and publish as that session and as no other.
-callout_listener_env
 echo "dev-stack: starting listener..." >&2
 : >"$LISTENER_LOG"
 python3 "$HELD_PORT" exec --host 127.0.0.1 --fd-env ENVOY_LISTEN_FD -- \
@@ -716,7 +710,7 @@ python3 "$HELD_PORT" exec --host 127.0.0.1 --fd-env ENVOY_LISTEN_FD -- \
   ENVOY_AGENT_SECRETS_URL="$BROKER_URL" \
   ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE" \
   NATS_URLS="$NATS_URL" \
-  "${listener_nats_env[@]}" \
+  "${callout_listener_env[@]}" \
   "$BIN_DIR/listener" >"$LISTENER_LOG" 2>&1 &
 LISTENER_PID=$!
 await listener "$LISTENER_PID" "$LISTENER_LOG" "$LISTENER_LOG" 'its address' listener_addr_in
@@ -731,7 +725,6 @@ echo "dev-stack: listener $LISTENER_URL" >&2
 # deployment's. HOME and the XDG directories are this run's own, so the server reads no app.json
 # and writes no key where a developer keeps theirs. ---
 DISPATCH_TOKEN_VALUE="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
-callout_dispatch_env
 echo "dev-stack: starting dispatch at $DISPATCH_URL..." >&2
 : >"$DISPATCH_LOG"
 python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD -- \
@@ -753,7 +746,7 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
   DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist" \
   ENVOY_URL="$LISTENER_URL" \
   NATS_URLS="$NATS_URL" \
-  "${dispatch_nats_env[@]}" \
+  "${callout_dispatch_env[@]}" \
   "$BIN_DIR/dispatch" >"$DISPATCH_LOG" 2>&1 &
 DISPATCH_PID=$!
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
@@ -884,7 +877,6 @@ chmod 700 "$METADATA_SCRIPT"
 mkdir -p "$BOX2_HOME" "$BOX2_RUNTIME_DIR" "$BOX2_STATE_DIR" "$BOX2_KEY_DIR" "$BOX2_SIGNIN_DIR"
 chmod 700 "$BOX2_DIR" "$BOX2_HOME" "$BOX2_RUNTIME_DIR" "$BOX2_STATE_DIR" "$BOX2_KEY_DIR" "$BOX2_SIGNIN_DIR"
 echo "$APPROVER_LOGIN" >"$BOX2_OPERATOR_FILE"
-callout_banner_exports
 
 cat <<EOF
 
@@ -912,7 +904,7 @@ dev-stack: ready.
   export DEV_STACK_LISTENER_TOKEN_FILE=$LISTENER_TOKEN_FILE
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
-  export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$CALLOUT_EXPORTS
+  export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$callout_exports
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for

@@ -37,10 +37,11 @@ func TestConnectionProofIsTheOneTheServiceChecks(t *testing.T) {
 }
 
 // A server with no auth service sends no nonce, so a caller that chose a session's credential for
-// it is told what to present instead.
+// it is told that, as ErrNoNonce, which a caller that knows what else it could present tests for.
 func TestConnectionProofNamesAHubWithNoAuthService(t *testing.T) {
 	key, err := proof.NewKey()
 	require.NoError(t, err)
 	_, err = brokerclient.ConnectionProof(key, "the-access-token", "")
-	require.EqualError(t, err, "brokerclient: the NATS server sent no nonce to sign, so it runs no auth service and takes no session's broker token; connect to it with the credential it does take (natsprobe: --no-credential, --service-token-file or --service-google-audience)")
+	require.ErrorIs(t, err, brokerclient.ErrNoNonce)
+	require.EqualError(t, err, "brokerclient: the NATS server sent no nonce to sign, so it runs no auth service and takes no session's broker token")
 }
