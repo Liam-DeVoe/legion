@@ -128,11 +128,16 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 		Classify: func(table *memoryguard.Table) map[int]memoryguard.Class {
 			answer := classifier.classify(table)
 			// The hour's scan for the largest process runs beside the kill, and may read the
-			// pod once the holder is gone; the scan the kill was decided on reads it.
+			// holder after the kill went out: gone, or still being torn down, its exe, arguments
+			// and ns/pid no longer read. The scan the kill was decided on read the holder and
+			// asked this classifier before the kill, so the first scan to read the holder read it
+			// alive, and its read is the one kept.
 			if p, ok := table.Get(holder); ok {
 				mu.Lock()
 				defer mu.Unlock()
-				read, classes = p, answer
+				if read == nil {
+					read, classes = p, answer
+				}
 			}
 			return answer
 		},
