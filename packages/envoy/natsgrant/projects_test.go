@@ -408,7 +408,8 @@ func TestWithinProjectsLeavesTheGrantItNarrows(t *testing.T) {
 // notification subject, and each filter a create subject names, belongs to a project of the scope
 // (contracts.SubjectProject) or to a repository of it; each consumer is one the daemon opens under
 // a project of the scope; and the reply prefix is the identity's. The one subject of no project is
-// the wake lane every daemon shares (bus.LegionWakeTopic), which carries the listener's own start.
+// the wake lane every daemon shares (bus.LegionWakeTopic): a subject grant cannot narrow it, so
+// what it carries is the listener's to limit (WithinProjects' doc comment says when it may be granted).
 func TestWithinProjectsNamesOnlyItsScope(t *testing.T) {
 	every := natsgrant.Permissions{
 		Publish: []string{
