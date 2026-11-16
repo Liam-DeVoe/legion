@@ -97,6 +97,11 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection";
 import {
+  type BrokerNatsCredential,
+  followNatsCredential,
+  keepNatsCredential,
+} from "@legion/envoy-client/nats-credential";
+import {
   readSessionAnswers,
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers";
@@ -782,6 +787,9 @@ export default function envoyExtension(pi: PiApi): void {
   const passDeadlineMs = (): number => active?.settings.passDeadlineMs ?? MIN_PASS_DEADLINE_MS;
   const delivered = createDeliveryDedupe();
   let connection: NatsConnection | undefined;
+  // Stops the keeper of `connection`'s broker token (`keepNatsCredential`): one per connection,
+  // replaced with the connection and stopped at shutdown.
+  let stopNatsKeeper = (): void => {};
   let sessionDirectory = "";
   let sessionID = "";
   // The key this instance last published its session under, so a switch that changes the id or
@@ -1120,6 +1128,8 @@ export default function envoyExtension(pi: PiApi): void {
   // task was refused while the dial was in flight rather than leave it dangling.
   const dialNats = async (): Promise<NatsConnection> => {
     const { natsUrls, natsCredential } = requireInbound();
+    // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
+    if (natsCredential.kind === "broker") await natsCredential.broker.ready();
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
     return (natsConnectStore[NATS_CONNECT] ?? connect)(
       natsConnectionOptions({
@@ -1128,6 +1138,13 @@ export default function envoyExtension(pi: PiApi): void {
         credential: natsCredential,
       })
     );
+  };
+
+  // The session's broker token, where its NATS connection presents one (`NATS_AUTH=broker`).
+  const brokerNatsCredentialOf = (): BrokerNatsCredential | undefined => {
+    const inbound = active?.settings.inbound;
+    if (inbound === undefined || "off" in inbound) return undefined;
+    return inbound.natsCredential.kind === "broker" ? inbound.natsCredential.broker : undefined;
   };
 
   // The session's one NATS connection, dialled if it has none. A queued task reaches it through
@@ -1152,6 +1169,11 @@ export default function envoyExtension(pi: PiApi): void {
     }
     connection = dialled;
     void watchReconnects(dialled);
+    const broker = brokerNatsCredentialOf();
+    if (broker !== undefined) {
+      stopNatsKeeper();
+      stopNatsKeeper = keepNatsCredential(dialled, broker, (text) => logger.warn(`envoy: ${text}`));
+    }
     return connection;
   };
 
@@ -3580,7 +3602,12 @@ export default function envoyExtension(pi: PiApi): void {
     if (inbound && registrationState.inboundOpenSession() !== host) {
       try {
         handle.markAgentSessionOpen(host);
-        await handle.connect();
+        const connected = await handle.connect();
+        // The auth service grants a session's token that session's subjects alone, so a session
+        // the connection was not admitted as - one the host switched to - subscribes nothing
+        // until the connection is back, admitted with its token (`followNatsCredential`).
+        const broker = brokerNatsCredentialOf();
+        if (broker !== undefined) await followNatsCredential(connected, broker);
         await handle.subscribe(agentSubject(host));
         // The relay subject opens before any registration asks for consumer delivery, so the
         // listener's first relayed frame has a subscriber.
@@ -4086,6 +4113,7 @@ export default function envoyExtension(pi: PiApi): void {
       ]);
     } finally {
       clearTimeout(timer);
+      stopNatsKeeper();
       connection = undefined;
       activeSessionContext = undefined;
       followed.clear();

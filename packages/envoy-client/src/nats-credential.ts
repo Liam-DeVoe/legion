@@ -14,7 +14,9 @@
 // before then (`keepNatsCredential`).
 
 import type { BrokerEnvironment } from "@legion/broker-client/environment";
-import type { Auth, NatsConnection } from "nats";
+// Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
+// command's, each hook's — would otherwise carry nats.js whole.
+import type { Auth, Events, NatsConnection } from "nats";
 import { type BrokerSessionName, brokerTokenFor, type TradedToken } from "./broker-credential";
 import type { NatsSeed } from "./envoy-settings";
 import { messageFor } from "./errors";
@@ -198,4 +200,51 @@ export function keepNatsCredential(
   connection.closed().then(stop, stop);
   schedule(renewDelay(credential.expiresAt().getTime(), Date.now()));
   return stop;
+}
+
+/** How long a session switch waits for its connection to come back as the new session. */
+const FOLLOW_TIMEOUT_MS = 15_000;
+
+/** nats.js's status of a connection that is back (`Events.Reconnect`), written out so this module
+ *  imports nats.js's types alone; the type holds it to the enum's own value. */
+const RECONNECTED: `${Events.Reconnect}` = "reconnect";
+
+/**
+ * Moves `connection` to the token of the session `credential`'s name reads now — the session a
+ * host switched to — and returns once the connection has come back admitted with it. A caller
+ * subscribes the new session's subjects only after this returns: until then the connection is
+ * still the user the old session's token was admitted as, the auth service granted that user none
+ * of the new session's subjects, and the server refuses a subscribe to one, which nats.js answers
+ * by closing the subscription. Nothing happens where the token in hand is the one the connection
+ * presented. Throws where the connection does not come back within 15 s, or closes first.
+ */
+export async function followNatsCredential(
+  connection: Pick<NatsConnection, "reconnect" | "status">,
+  credential: BrokerNatsCredential
+): Promise<void> {
+  await credential.renew();
+  if (!credential.needsReconnect()) return;
+  const statuses = connection.status();
+  const back = (async () => {
+    for await (const status of statuses) {
+      if (status.type === RECONNECTED) return;
+    }
+    throw new Error("the NATS connection closed before it came back as the new session");
+  })();
+  const late = Promise.withResolvers<never>();
+  const timer = setTimeout(
+    () =>
+      late.reject(
+        new Error(
+          `the NATS connection did not come back as the new session within ${FOLLOW_TIMEOUT_MS / 1000} s`
+        )
+      ),
+    FOLLOW_TIMEOUT_MS
+  );
+  try {
+    await connection.reconnect();
+    await Promise.race([back, late.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

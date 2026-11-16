@@ -177,7 +177,12 @@ trade, where it holds no live token, and `renew()` takes the token again, the ne
 a switch. `keepNatsCredential(connection, credential, warn)` renews ahead of each token's expiry and
 reconnects the connection with each new token, before the server drops the user the old one was
 admitted as; a renewal that fails is retried at 2 s doubling to a minute and warned about once,
-then every 30 minutes, never naming the token.
+then every 30 minutes, never naming the token. `followNatsCredential(connection, credential)` is a
+session switch's: it takes the token of the session the name reads now and, where that is not the
+token the connection presented, reconnects and returns only once the connection is back admitted
+with it, so a caller subscribes the new session's subjects after it, never before (the server
+refuses a subscribe the old session's user was not granted, and nats.js closes that subscription).
+The module imports nats.js's types alone, since every bundle that reads `envoySettings` imports it.
 
 nats.js 2.29.3, the last 2.x release, leaves a redial's socket open when it gives up on that dial
 at its 20 s timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes

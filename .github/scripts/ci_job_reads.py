@@ -1580,7 +1580,7 @@ GATES = [
         script_run("packages/envoy-client/src/__tests__/nats-credential.test.ts",
                    'packages: ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"],',
                    f"the packages that test hands buildGoBinaries, run by "
-                   f"{at(STALL, 'Broker credential reconnect test')}",
+                   f"{at(STALL, 'Broker credential tests on a hub behind the auth service')}",
                    ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"], mode="build"),
         ceiling_run(STALL),
     ], reads=reads(

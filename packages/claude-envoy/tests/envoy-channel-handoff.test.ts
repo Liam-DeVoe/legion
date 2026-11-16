@@ -140,6 +140,45 @@ test("follows the session id its Claude process hands off: new subject first, th
   }
 })
 
+test("natsCredential follows a /clear: the connection is moved to the new id's token before the new relay subject opens", async () => {
+  // With a broker token the auth service grants a session's token that session's subjects alone,
+  // so a handoff closes the old id's relay, moves the connection to the new id's token and waits
+  // for it to come back, and only then subscribes the new id's relay subject.
+  const stateDirectory = scratchState()
+  const calls: string[] = []
+  const nats = new FakeNats(calls)
+  const identity = new SessionIdentity("ses_old", "/tmp")
+  const handoff = sessionHandoffFile(stateDirectory, 779)
+  await writeSessionHandoff(handoff, "ses_old")
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      connection: nats,
+      client: recordingClient(calls),
+      heartbeatMs: 25,
+      handoffPid: 779,
+      followSession: async () => {
+        calls.push(`follow ${identity.id}`)
+      },
+    }),
+  )
+  try {
+    calls.length = 0
+    await writeSessionHandoff(handoff, "ses_new")
+    await waitFor(
+      async () => calls.includes("nats.subscribe notifications.envoy.deliver.ses_new"),
+      "the new id's relay subscription",
+    )
+    const moved = calls.filter((call) => call.startsWith("nats.") || call.startsWith("follow "))
+    expect(moved.slice(0, 3)).toEqual([
+      "nats.unsubscribe notifications.envoy.deliver.ses_old",
+      "follow ses_new",
+      "nats.subscribe notifications.envoy.deliver.ses_new",
+    ])
+  } finally {
+    await session.shutdown()
+  }
+})
+
 test("registers the session's title, and a handoff re-registers under the new id's title", async () => {
   const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_old", "/tmp")

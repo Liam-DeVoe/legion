@@ -412,12 +412,15 @@ token beside it, and its token only beside its own server. An `envoy` section in
 file is not read, which the channel server's notice says, and a checkout's file that is not valid
 refuses Dispatch alone, only while `DISPATCH_URL` is unset. The chosen file's `dispatch` section
 (`enabled`, `serverUrl`, `token`) and `envoy` section (`enabled`, `url`, `natsUrls`, `token`,
-`natsSeed`) are resolved each on its own; `enabled: false` turns one off, a missing file
+`natsSeed`, `natsAuth`) are resolved each on its own; `enabled: false` turns one off, a missing file
 contributes nothing (each section is then on only when its variables name it), and a `token` or
 `natsSeed` starting with `!` is a command whose trimmed output is the value. `DISPATCH_URL`,
 `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`,
-`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE` and `NATS_NKEY_SEED` each override their own field; a file's
-token or seed goes with a variable's server only when it is the file's own. The `open-asks` hook
+`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED` and `NATS_AUTH` each override their own
+field; a file's token or seed goes with a variable's server only when it is the file's own. With
+`NATS_AUTH=broker` and no seed the NATS connection presents the session's own broker token, which
+a hub's NATS auth service admits to that session's subjects alone, and a `/clear` moves it to the
+new id's token before the new id's relay subject is subscribed. The `open-asks` hook
 hands the file on to the session's Bash as `ENVOY_CONFIG_FILE` beside `DISPATCH_HOST=claude`, and
 the `dispatch` command reads the file `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set; a
 Bash with neither, as a subagent's can be, has `CLAUDE_CODE_CHILD_SESSION=1` and takes this plugin's

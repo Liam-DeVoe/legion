@@ -6,7 +6,7 @@
 // before the old one lapses, and, on a real nats-server behind the real auth service, that a
 // connection whose token lapsed while the broker was away is admitted again once a token is live.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
@@ -26,7 +26,12 @@ import { forgetBrokerClients } from "../broker-credential";
 import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
 import { natsConnectionOptions } from "../nats-connection";
-import { brokerNatsCredential, keepNatsCredential, type NatsCredential } from "../nats-credential";
+import {
+  brokerNatsCredential,
+  followNatsCredential,
+  keepNatsCredential,
+  type NatsCredential,
+} from "../nats-credential";
 
 afterEach(forgetBrokerClients);
 
@@ -358,81 +363,98 @@ describe("keepNatsCredential", () => {
 
 const stackDirectory = useEnvoyStackDirectory();
 
+/** A natsd behind the real auth service, which asks `brokerUrl`'s introspection route about each
+ *  session token; `refusals` counts the connections the service has refused so far. */
+interface CalloutHub {
+  readonly natsUrl: string;
+  refusals(): number;
+  stop(): Promise<void>;
+}
+
+/** Starts a {@link CalloutHub} in its own directory under the stack directory, from the binaries
+ *  the describe's `beforeAll` built. */
+async function startCalloutHub(name: string, brokerUrl: string): Promise<CalloutHub> {
+  const work = path.join(stackDirectory, name);
+  const bin = path.join(stackDirectory, "bin");
+  const keys = path.join(work, "callout-keys");
+  mkdirSync(keys, { recursive: true });
+  const [natsPort, monitorPort] = await freePorts(2);
+  const { PATH = "" } = process.env;
+  const budget = { timeoutMs: 60_000, tailLines: 10 };
+  const processes: Subprocess[] = [];
+  const stop = async () => {
+    for (const child of processes.reverse()) await stopProcess(child, "SIGTERM");
+  };
+  try {
+    const natsLog = path.join(work, "natsd.log");
+    const natsOut = openSync(natsLog, "a");
+    const natsd = Bun.spawn(
+      [
+        path.join(bin, "natsd"),
+        ...["-p", String(natsPort), "-m", String(monitorPort)],
+        ...["-store_dir", path.join(work, "nats-store"), "-callout-keys", keys],
+      ],
+      { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
+    );
+    closeSync(natsOut);
+    processes.push(natsd);
+    await awaitReady("natsd", natsd, natsLog, budget, async () => {
+      const answer = await fetch(`http://127.0.0.1:${monitorPort}/healthz`);
+      return answer.ok;
+    });
+    const natsUrl = `nats://127.0.0.1:${natsPort}`;
+    const calloutLog = path.join(work, "calloutd.log");
+    const calloutOut = openSync(calloutLog, "a");
+    const calloutd = Bun.spawn(
+      [
+        path.join(bin, "calloutd"),
+        ...["-keys", keys, "-nats", natsUrl],
+        ...["-introspect", `${brokerUrl}/v1/oauth/introspect`],
+      ],
+      { env: { PATH, HOME: work }, stdout: calloutOut, stderr: calloutOut }
+    );
+    closeSync(calloutOut);
+    processes.push(calloutd);
+    await awaitReady("calloutd", calloutd, calloutLog, budget, async () =>
+      readFileSync(calloutLog, "utf8").includes("calloutd: ready")
+    );
+    const refusals = () =>
+      readFileSync(calloutLog, "utf8")
+        .split("\n")
+        .filter((line) => line.includes("refused a NATS connection")).length;
+    return { natsUrl, refusals, stop };
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+}
+
 describe.skipIf(!envoyStackEnabled)(
   "a session's connection to a hub behind the auth service",
   () => {
-    test("reconnects after two refusals once a token is live again", async () => {
-      const work = stackDirectory;
-      const bin = path.join(work, "bin");
+    beforeAll(async () => {
       await buildGoBinaries({
-        bin,
+        bin: path.join(stackDirectory, "bin"),
         packages: ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"],
         stack: "auth callout",
         binaries: "natsd and calloutd",
       });
-      const [natsPort, monitorPort] = await freePorts(2);
-      const keys = path.join(work, "callout-keys");
-      mkdirSync(keys);
-      const natsLog = path.join(work, "natsd.log");
-      const natsOut = openSync(natsLog, "a");
-      const { PATH = "" } = process.env;
-      const natsd = Bun.spawn(
-        [
-          path.join(bin, "natsd"),
-          "-p",
-          String(natsPort),
-          "-m",
-          String(monitorPort),
-          "-store_dir",
-          path.join(work, "nats-store"),
-          "-callout-keys",
-          keys,
-        ],
-        { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
-      );
-      closeSync(natsOut);
-      const budget = { timeoutMs: 60_000, tailLines: 10 };
+    }, 300_000);
+
+    test("reconnects after two refusals once a token is live again", async () => {
       // Tokens live three seconds, so the user the service admits a connection as lapses inside
-      // the test, as a 15-minute one does inside a session.
+      // the test, as a 15-minute one does inside a session; the server expires it on its own
+      // clock, so this runs on the wall clock.
       const broker = stubBroker(3);
-      const calloutLog = path.join(work, "calloutd.log");
-      const natsUrl = `nats://127.0.0.1:${natsPort}`;
-      let calloutd: Subprocess | undefined;
+      const hub = await startCalloutHub("reconnect", broker.url);
       let connection: NatsConnection | undefined;
       let stopKeeping = () => {};
       try {
-        await awaitReady("natsd", natsd, natsLog, budget, async () => {
-          const answer = await fetch(`http://127.0.0.1:${monitorPort}/healthz`);
-          return answer.ok;
-        });
-        const calloutOut = openSync(calloutLog, "a");
-        calloutd = Bun.spawn(
-          [
-            path.join(bin, "calloutd"),
-            "-keys",
-            keys,
-            "-nats",
-            natsUrl,
-            "-introspect",
-            `${broker.url}/v1/oauth/introspect`,
-          ],
-          { env: { PATH, HOME: work }, stdout: calloutOut, stderr: calloutOut }
-        );
-        closeSync(calloutOut);
-        const service = calloutd;
-        await awaitReady("calloutd", service, calloutLog, budget, async () =>
-          readFileSync(calloutLog, "utf8").includes("calloutd: ready")
-        );
-        const refusals = () =>
-          readFileSync(calloutLog, "utf8")
-            .split("\n")
-            .filter((line) => line.includes("refused a NATS connection")).length;
-
         const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_e2e");
         await credential.ready();
         const opened = await connect(
           natsConnectionOptions({
-            servers: [natsUrl],
+            servers: [hub.natsUrl],
             name: "nats-credential-e2e",
             credential: { kind: "broker", broker: credential },
           })
@@ -454,8 +476,8 @@ describe.skipIf(!envoyStackEnabled)(
         // drops the user it admitted, and each reconnect is refused.
         broker.state.down = true;
         const deadline = Date.now() + 20_000;
-        while (refusals() < 2 && Date.now() < deadline) await Bun.sleep(100);
-        expect(refusals()).toBeGreaterThanOrEqual(2);
+        while (hub.refusals() < 2 && Date.now() < deadline) await Bun.sleep(100);
+        expect(hub.refusals()).toBeGreaterThanOrEqual(2);
         expect(opened.isClosed()).toBe(false);
         expect(warnings.length).toBeGreaterThan(0);
         expect(warnings.join("\n")).not.toContain("session-access-");
@@ -471,8 +493,48 @@ describe.skipIf(!envoyStackEnabled)(
       } finally {
         stopKeeping();
         await connection?.close().catch(() => {});
-        if (calloutd !== undefined) await stopProcess(calloutd, "SIGTERM");
-        await stopProcess(natsd, "SIGTERM");
+        await hub.stop();
+      }
+    }, 120_000);
+
+    test("a session switch subscribes the new session only once the connection is admitted as it", async () => {
+      const broker = stubBroker(600);
+      const hub = await startCalloutHub("switch", broker.url);
+      let connection: NatsConnection | undefined;
+      try {
+        // The session name a plugin hands its credential: read at each trade, so a switch moves
+        // the credential to the new session's token.
+        let session = "ses_before";
+        const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+        await credential.ready();
+        const opened = await connect(
+          natsConnectionOptions({
+            servers: [hub.natsUrl],
+            name: "nats-credential-switch",
+            credential: { kind: "broker", broker: credential },
+          })
+        );
+        connection = opened;
+        const before = opened.subscribe("notifications.envoy.deliver.ses_before");
+        await opened.flush();
+        expect(before.isClosed()).toBe(false);
+
+        // The host switches: the old session's subject goes, and the new one's opens once the
+        // connection presents the new session's token.
+        before.unsubscribe();
+        session = "ses_after";
+        await followNatsCredential(opened, credential);
+        // A subscribe the server refuses closes the subscription (nats.js's permission error).
+        const after = opened.subscribe("notifications.envoy.deliver.ses_after");
+        await opened.flush();
+        expect(after.isClosed()).toBe(false);
+        expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_before", "ses_after"]);
+        // Nothing to move when the session has not changed.
+        await followNatsCredential(opened, credential);
+        expect(broker.state.minted.length).toBe(2);
+      } finally {
+        await connection?.close().catch(() => {});
+        await hub.stop();
       }
     }, 120_000);
   }

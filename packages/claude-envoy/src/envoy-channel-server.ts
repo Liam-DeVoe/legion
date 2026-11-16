@@ -46,6 +46,7 @@ import {
 import { messageFor } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -351,6 +352,14 @@ export interface ChannelSessionOptions {
   readonly configFile: SessionConfigFile
   /** How long a handoff waits for NATS to confirm the new direct subject before it retries. */
   readonly handoffFlushTimeoutMs?: number
+  /**
+   * Moves the NATS connection to the broker token of the id now bound and returns once the
+   * connection is back, admitted with it (`followNatsCredential`), where the connection presents
+   * the session's broker token; absent otherwise. A handoff runs it before the new id's relay
+   * subject is subscribed: the auth service grants a session's token that session's subjects
+   * alone.
+   */
+  readonly followSession?: () => Promise<void>
   /** How long a deregistration waits for a registration already on the wire (default
    *  `REGISTRATION_SETTLE_MS`), past which the DELETE goes out anyway. The shutdown path spends
    *  at most `SHUTDOWN_SETTLE_MS` of it, over both of its waits. */
@@ -1386,6 +1395,17 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     // process, which `/clear` would otherwise add one of per session.
     forgetBrokerSession(previous)
     directSubject = nextSubject
+    // The old id's relay closes before the connection moves to the new id's token, which the
+    // auth service grants nothing of the old id's; then the connection is back, admitted with
+    // that token, before the new relay subject is subscribed (`restoreDelivery`). A move that
+    // fails is said and does not stop the handoff: the connection keeps reconnecting with the
+    // credential it holds, and the relay is subscribed again at the next registration.
+    closeRelay()
+    await options.followSession?.().catch((error: unknown) => {
+      process.stderr.write(
+        `envoy-channel: could not move the NATS connection to ${next}'s broker token — ${messageFor(error)}\n`,
+      )
+    })
     // `unfollow` only takes the subject out of the topic list a registration carries: nothing is
     // subscribed per topic, so there is nothing to drain and nothing to wait for.
     followedTopics.unfollow([previousSubject])
@@ -2286,6 +2306,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
   }
 
   let connection: ChannelConnection | undefined
+  // Stops the keeper of the connection's broker token, where it presents one.
+  let stopNatsKeeper = (): void => {}
   try {
     const { inbound } = envoy
     if ("off" in inbound) {
@@ -2298,13 +2320,23 @@ export async function runEnvoyChannelServer(): Promise<void> {
       stampOnce(() => identity.id)
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
-      connection = await connect(
+      const { natsCredential } = inbound
+      const broker = natsCredential.kind === "broker" ? natsCredential.broker : undefined
+      // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
+      await broker?.ready()
+      const dialled = await connect(
         natsConnectionOptions({
           servers: inbound.natsUrls,
           name: `claude-envoy-channel-${identity.id}`,
-          credential: inbound.natsCredential,
+          credential: natsCredential,
         }),
       )
+      connection = dialled
+      if (broker !== undefined) {
+        stopNatsKeeper = keepNatsCredential(dialled, broker, (text) =>
+          process.stderr.write(`envoy-channel: ${text}\n`),
+        )
+      }
       session = await startChannelSession({
         identity,
         connection,
@@ -2321,6 +2353,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
+        ...(broker === undefined
+          ? {}
+          : { followSession: () => followNatsCredential(dialled, broker) }),
       })
       // INFRA-1026: the Agents page's live view, once this session's mod has a link to bind to.
       // It needs the bus as well as the link, so it starts here rather than beside the bind; a
@@ -2401,6 +2436,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
     if (stopping) await session.shutdown()
     await stopped.promise
   } finally {
+    stopNatsKeeper()
     await modLink?.close().catch(() => undefined)
     if (session === undefined && connection !== undefined) {
       await connection.drain().catch(() => undefined)

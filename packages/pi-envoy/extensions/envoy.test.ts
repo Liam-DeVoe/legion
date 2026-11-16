@@ -256,6 +256,11 @@ const natsState = {
   connectedNames: [] as string[],
   /** What each connect was given: its servers, and whether it carried an nkey authenticator. */
   connects: [] as { readonly servers: readonly string[]; readonly authenticated: boolean }[],
+  /** The token each CONNECT presented (`auth_token`), where its authenticator answers one: a
+   *  connect's and each reconnect's, in order. */
+  presented: [] as string[],
+  /** Each `subscribe` and `reconnect`, in order, for a row that holds the two to an order. */
+  timeline: [] as string[],
   /** Each connection `close()` was called on, by the name its dial carried: a dial nothing holds
    *  is never drained, and with `maxReconnectAttempts: -1` it outlives every session. */
   closedNames: [] as string[],
@@ -319,21 +324,42 @@ const natsStandInConnect = async (options: {
   }
   natsState.connectedNames.push(name);
   natsState.connects.push({ servers, authenticated: authenticator !== undefined });
+  // A CONNECT asks the authenticator for its credential over the server's nonce, as nats.js does
+  // at every connect and reconnect.
+  const connectWith = (nonce: string) => {
+    if (typeof authenticator !== "function") return;
+    const credential = (authenticator as (nonce: string) => unknown)(nonce);
+    if (typeof credential === "object" && credential !== null && "auth_token" in credential) {
+      natsState.presented.push(String(credential.auth_token));
+    }
+  };
+  connectWith("stand-in-nonce");
   // Parked only where a test asks for it: every other connect answers at once, as before.
   if (natsState.heldConnect !== undefined) await natsState.heldConnect;
   if (natsState.realConnect) {
     return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
   }
   let closed = false;
+  // nats.js's `closed()`: settles once the connection is closed for good.
+  const ended = Promise.withResolvers<void>();
   return {
     isClosed: () => closed || natsState.connectionsClosed,
+    closed: () => ended.promise,
     close: async () => {
       closed = true;
       natsState.closedNames.push(name);
+      ended.resolve();
     },
     drain: async () => {
       natsState.drainStarted = true;
       if (natsState.drainHangs) await Promise.withResolvers<never>().promise;
+    },
+    // nats.js's client-initiated reconnect: the connection drops and comes back with a CONNECT of
+    // its own, which every reader of its status hears of once it is back.
+    reconnect: async () => {
+      natsState.timeline.push("reconnect");
+      connectWith("stand-in-nonce-again");
+      setTimeout(() => pushNatsStatus("reconnect"), 0);
     },
     // An async iterable of the connection's status events, which a test feeds through
     // `pushNatsStatus`; it ends once the connection is closed.
@@ -385,6 +411,7 @@ const natsStandInConnect = async (options: {
       natsState.onPublish?.(subject);
     },
     subscribe: (topic: string) => {
+      natsState.timeline.push(`subscribe ${topic}`);
       if (natsState.failSubscribes > 0) {
         natsState.failSubscribes -= 1;
         throw new Error("SUBSCRIBE_FAILED");
@@ -588,6 +615,12 @@ const configVariables = [
   "ENVOY_TOKEN_FILE",
   "NATS_NKEY_SEED",
   "NATS_NKEY_SEED_FILE",
+  // A box's broker route and the NATS credential choice: a row that presents a broker token sets
+  // them, and every other row runs with none, whatever the box running the suite holds.
+  "NATS_AUTH",
+  "AGENT_SECRETS_URL",
+  "AGENT_SECRETS_MACHINE_IDENTITY",
+  "AGENT_SECRETS_MACHINE_TOKEN_FILE",
 ] as const;
 const originalConfigVariables = configVariables.map((name) => [name, process.env[name]] as const);
 /** The envoy.json every test starts with: no Dispatch or Envoy section, and AskGate off. */
@@ -716,6 +749,8 @@ afterEach(async () => {
   delete process.env.ENVOY_TMUX_PLACE_CACHE_MS;
   natsState.connectedNames.length = 0;
   natsState.connects.length = 0;
+  natsState.presented.length = 0;
+  natsState.timeline.length = 0;
   natsState.closedNames.length = 0;
   // A test aborted at Bun's own timeout never runs its `finally`: a connect left parked here
   // would park every later test's connect for the rest of the process.
@@ -19005,6 +19040,54 @@ console.log(JSON.stringify(args));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(natsState.connectedNames.length).toBe(connectionsAfterRecovery);
+  });
+
+  test("natsCredential follows a session switch", async () => {
+    // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
+    // alone, so after a switch the connection presents the new session's token, and is back,
+    // before anything of the new session's is subscribed.
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, "projected.service.account.token\n");
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    const traded: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.host !== "broker.test") return responseWithRegistration(input, init, []);
+      const session = new URLSearchParams(await request.text()).get("session") ?? "";
+      traded.push(session);
+      return Response.json({
+        access_token: `nats-access-of-${session}`,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      });
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-switch");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"));
+    expect(natsState.presented).toEqual(["nats-access-of-ses_switch_from"]);
+    expect(natsState.controls.get("notifications.agent.ses_switch_from")?.active()).toBe(true);
+
+    natsState.timeline.length = 0;
+    await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_switch_to"));
+    expect(natsState.presented).toEqual([
+      "nats-access-of-ses_switch_from",
+      "nats-access-of-ses_switch_to",
+    ]);
+    // The reconnect comes before every subscribe of the new session's subjects.
+    const moved = natsState.timeline.filter(
+      (entry) => entry === "reconnect" || entry.includes("ses_switch_to")
+    );
+    expect(moved[0]).toBe("reconnect");
+    expect(moved.length).toBeGreaterThan(1);
+    expect(natsState.controls.get("notifications.agent.ses_switch_to")?.active()).toBe(true);
+    expect(traded).toContain("ses_switch_to");
+    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_switch_to"));
   });
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
