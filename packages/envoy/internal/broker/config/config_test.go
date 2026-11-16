@@ -231,10 +231,10 @@ func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 }
 
 // TestLoadRefusesDispatchVariables pins that the removed Dispatch variables fail loudly rather
-// than being silently ignored: the broker asks and issues nothing in Dispatch, and the one
-// thing it does read there, whether an issue is open, is the judge's read under
-// BROKER_JUDGE_DISPATCH_URL, so a stale deployment env still setting one of the five must
-// refuse to start, naming the variable.
+// than being silently ignored: the broker asks and issues nothing in Dispatch, and the two things
+// it does read there, whether an issue is open and whether a person may see a project, are read
+// under settings of their own (BROKER_JUDGE_DISPATCH_URL, BROKER_PROJECT_ACCESS_URL), so a stale
+// deployment env still setting one of the five must refuse to start, naming the variable.
 func TestLoadRefusesDispatchVariables(t *testing.T) {
 	e := validEnv()
 	e["BROKER_DISPATCH_URL"] = "https://dispatch.internal.example"
@@ -892,10 +892,16 @@ func TestVMServicesRefuseInvalidDefaultOrDuplicateAccounts(t *testing.T) {
 // whitespace counts as none.
 func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	for _, audience := range []string{"", " \t"} {
-		for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES"} {
+		for setting, value := range map[string]string{
+			"BROKER_VM_SERVICES":            "example-service=" + exampleVMServiceAccount,
+			"BROKER_VM_PROJECTS":            exampleVMServiceAccount + "=example-project",
+			"BROKER_VM_INSTANCES":           exampleVMServiceAccount + "=example-vm-*",
+			"BROKER_VM_EXCHANGE_ACCOUNTS":   exampleVMServiceAccount + "=EXAMPLE=ada@example.com",
+			"BROKER_SIGNIN_DEVICE_AUDIENCE": "not-a-secret-device-client",
+		} {
 			e := validEnv()
 			e["BROKER_GOOGLE_OIDC_AUDIENCE"] = audience
-			e[setting] = validVMEnv()[setting]
+			e[setting] = value
 			_, err := Load(env(e))
 			if want := setting + " needs BROKER_GOOGLE_OIDC_AUDIENCE"; err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Errorf("Load with only %s and audience %q = %v, want a refusal starting %q", setting, audience, err, want)
@@ -904,14 +910,90 @@ func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	}
 }
 
-// TestAGoogleAudienceWithNoVMServicesIsRefused pins the other direction: an audience with no VM
-// service listed could accept no token, so it is refused naming both settings.
-func TestAGoogleAudienceWithNoVMServicesIsRefused(t *testing.T) {
-	e := validEnv()
-	e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "example-broker"
-	_, err := Load(env(e))
-	if want := "BROKER_GOOGLE_OIDC_AUDIENCE needs BROKER_VM_SERVICES"; err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Fatalf("Load with a Google audience and no VM service = %v, want a refusal starting %q", err, want)
+// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller, a
+// google: entry in BROKER_API_ACCOUNTS or a BROKER_VM_SERVICES entry, is enough for the Google
+// audience and needs it, and that an audience with neither, a Kubernetes API caller being no
+// Google caller, is refused at boot naming the audience and both ways to give it a caller.
+func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
+	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES"
+	for _, row := range []struct {
+		name                                string
+		api, kubernetes, audience, services bool
+		wantError                           string
+	}{
+		{name: "neither caller"},
+		{name: "audience only", audience: true, wantError: noGoogleCaller},
+		{name: "audience with only a Kubernetes API caller", kubernetes: true, audience: true, wantError: noGoogleCaller},
+		{name: "API caller without audience", api: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
+		{name: "VM caller without audience", services: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
+		{name: "both callers without audience", api: true, services: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
+		{name: "API caller only", api: true, audience: true},
+		{name: "VM caller only", audience: true, services: true},
+		{name: "both callers", api: true, audience: true, services: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			e := validEnv()
+			if row.kubernetes {
+				e = withK8sIssuer()
+				e["BROKER_API_ACCOUNTS"] = "dispatch=system:serviceaccount:example-ns:example-dispatch"
+			}
+			if row.api {
+				e["BROKER_API_ACCOUNTS"] = "listener=google:" + exampleListenerAccount
+			}
+			if row.audience {
+				e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "not-a-secret-broker"
+			}
+			if row.services {
+				e["BROKER_VM_SERVICES"] = "example-service=" + exampleVMServiceAccount
+			}
+			cfg, err := Load(env(e))
+			if row.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), row.wantError) {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, row.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.api {
+				caller, _ := api.AccountFor("listener")
+				if want := map[string]api.Account{exampleListenerAccount: caller}; !reflect.DeepEqual(cfg.GoogleAPIAccounts, want) {
+					t.Fatalf("GoogleAPIAccounts = %v, want %v", cfg.GoogleAPIAccounts, want)
+				}
+			}
+			if !row.services && (cfg.VMServicesByAccount != nil || cfg.ExchangeGoogleAccounts != nil) {
+				t.Fatalf("VM services = %v, exchange entries = %v; want neither without BROKER_VM_SERVICES", cfg.VMServicesByAccount, cfg.ExchangeGoogleAccounts)
+			}
+			if row.services && len(cfg.ExchangeGoogleAccounts) != 1 {
+				t.Fatalf("exchange entries = %v, want the listed VM service", cfg.ExchangeGoogleAccounts)
+			}
+		})
+	}
+}
+
+func TestVMCallerSettingsNeedVMServices(t *testing.T) {
+	for setting, value := range map[string]string{
+		"BROKER_VM_PROJECTS":            exampleVMServiceAccount + "=example-project",
+		"BROKER_VM_INSTANCES":           exampleVMServiceAccount + "=example-vm-*",
+		"BROKER_VM_EXCHANGE_ACCOUNTS":   exampleVMServiceAccount + "=EXAMPLE=ada@example.com",
+		"BROKER_SIGNIN_DEVICE_AUDIENCE": "not-a-secret-device-client",
+	} {
+		for _, apiCaller := range []string{"", "listener=google:" + exampleListenerAccount} {
+			for _, services := range []string{"", " \t\n"} {
+				t.Run(setting+"/API="+strconv.FormatBool(apiCaller != "")+"/services="+strconv.Quote(services), func(t *testing.T) {
+					e := validEnv()
+					e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "not-a-secret-broker"
+					e["BROKER_API_ACCOUNTS"] = apiCaller
+					e["BROKER_VM_SERVICES"] = services
+					e[setting] = value
+					_, err := Load(env(e))
+					if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "BROKER_VM_SERVICES") {
+						t.Fatalf("Load with %s but no VM services = %v, want a refusal naming both settings", setting, err)
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -1850,14 +1932,16 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 // takes the first issuer of BROKER_K8S_OIDC_ISSUER alone, one that names some takes those in its
 // order, and a Google entry takes none. An exchange entry gives its names in a fifth
 // "="-separated field, after its session field (empty for none), which the broker reads after the
-// entry's last "=", so its session is everything between its third and its last "=". Each setting
-// refuses, naming itself and the entry, a name the list does not hold, one name twice, an entry
-// ending in "=" with no name, a name on a google: entry, and any name while the list is one bare
-// URL. BROKER_EXCHANGE_ACCOUNTS refuses as well, naming BROKER_EXCHANGE_K8S_ISSUER, a name that
-// setting does not name, an entry naming none while that setting leaves out the list's first
-// issuer, and, saying where the issuer field goes, a fixed session holding "=" written with no
-// issuer field; and, naming the session it would read, an entry with no issuer field whose
-// session is only issuer names of the list, which beside one bare URL stays a session.
+// entry's last "=", so its session is everything between its third and its last "=", and an entry
+// naming no project names its issuers the same way, <service account>==<person>==<issuer names>.
+// Each setting refuses, naming itself and the entry, a name the list does not hold, one name
+// twice, an entry ending in "=" with no name, a name on a google: entry, and any name while the
+// list is one bare URL. BROKER_EXCHANGE_ACCOUNTS refuses as well, naming
+// BROKER_EXCHANGE_K8S_ISSUER, a name that setting does not name, an entry naming none while that
+// setting leaves out the list's first issuer, and, saying where the issuer field goes, a fixed
+// session holding "=" written with no issuer field; and, naming the session it would read, an
+// entry with no issuer field, whether it names a project or none, whose session is only issuer
+// names of the list, which beside one bare URL stays a session.
 // BROKER_SERVICES takes no names.
 func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 	const (
@@ -1960,6 +2044,19 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		}
 	})
 
+	t.Run("an exchange entry naming no project and no session names its issuers", func(t *testing.T) {
+		e := exchangeTaking("first,second")()
+		e["BROKER_EXCHANGE_ACCOUNTS"] = workerSubject + "==ada@example.com==first,second"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.AccountEntry{{Account: workerSubject, Project: "", Person: "ada@example.com", Issuers: []string{"first", "second"}}}
+		if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
+			t.Errorf("ExchangeAccounts = %+v, want %+v", cfg.ExchangeAccounts, want)
+		}
+	})
+
 	t.Run("beside one bare URL an exchange session of issuer-like names stays a session", func(t *testing.T) {
 		e := withExchange()
 		e["BROKER_EXCHANGE_ACCOUNTS"] = workerSubject + "=ACME=ada@example.com=first,second"
@@ -1999,6 +2096,7 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		{"BROKER_EXCHANGE_ACCOUNTS: a fixed session holding = with no issuer field", withExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=legion-daemon:EXAMPLE=1", []string{"<session>=<issuer name>"}},
 		{"BROKER_EXCHANGE_ACCOUNTS: issuer names as the session of an entry with no issuer field", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=first,second", []string{`reads "first,second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
 		{"BROKER_EXCHANGE_ACCOUNTS: one issuer name as the session of an entry with no issuer field", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=second", []string{`reads "second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: issuer names as the session of an entry naming no project", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "==ada@example.com=first,second", []string{`reads "first,second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := c.base()
@@ -2028,10 +2126,11 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
 // <account>=<project>=<person>[=<session>] entries in order, each taking the list's one issuer,
-// none when unset, a session that may itself carry "=" when the issuer field follows it, and
-// refusals naming the entry for one that is not of that form, has a blank field, names a
-// namespace's default account or lists an account twice. It needs the cluster issuer and the
-// exchange audience, whose tokens its pods present.
+// none when unset, a session that may itself carry "=" when the issuer field follows it, an empty
+// project (the shared public-session account's entry, whose named tokens name no project), and
+// refusals naming the entry for one that is not of that form, has a blank account or person,
+// names a namespace's default account or lists an account twice. It needs the cluster issuer and
+// the exchange audience, whose tokens its pods present.
 func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2042,7 +2141,8 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	}
 	e := withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com\n" +
-		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE "
+		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE " +
+		"system:serviceaccount:example-ns:example-public==ada@example.com"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
@@ -2051,6 +2151,7 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	want := []exchange.AccountEntry{
 		{Account: "system:serviceaccount:example-ns:example-worker", Project: "EXAMPLE", Person: "ada@example.com", Issuers: []string{""}},
 		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE", Issuers: []string{""}},
+		{Account: "system:serviceaccount:example-ns:example-public", Project: "", Person: "ada@example.com", Issuers: []string{""}},
 	}
 	if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
 		t.Fatalf("ExchangeAccounts = %v, want %v", cfg.ExchangeAccounts, want)
@@ -2071,7 +2172,7 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"system:serviceaccount:example-ns:example-worker", "system:serviceaccount:example-ns:example-worker=EXAMPLE",
-		"system:serviceaccount:example-ns:example-worker==ada@example.com", "=EXAMPLE=ada@example.com",
+		"system:serviceaccount:example-ns:example-worker=EXAMPLE=", "=EXAMPLE=ada@example.com",
 		"example-worker=EXAMPLE=ada@example.com", "system:serviceaccount:example-ns:default=EXAMPLE=ada@example.com",
 	} {
 		e := withExchange()
@@ -2493,6 +2594,53 @@ func TestTheJudgesURLsAreHeldToTheirForm(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "absolute http(s) URL") {
 				t.Errorf("Load(%s=%q) = %v; want a refusal naming the variable", setting, bad, err)
 			}
+		}
+	}
+}
+
+// TestProjectAccessSettingsComeTogether pins BROKER_PROJECT_ACCESS_URL and
+// BROKER_PROJECT_ACCESS_TOKEN_FILE: neither set is a broker that asks Dispatch nothing, which is
+// every deployment with no private project; both set are read as given, the URL without the
+// slashes it ends in; one alone refuses the start naming the other, as the judge's settings do;
+// and a URL that is no absolute http(s) URL refuses the start naming the setting.
+func TestProjectAccessSettingsComeTogether(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProjectAccessURL != "" || cfg.ProjectAccessTokenFile != "" {
+		t.Fatalf("with neither set the broker reads URL %q and token file %q; want both empty", cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	}
+
+	e := validEnv()
+	e["BROKER_PROJECT_ACCESS_URL"] = "http://dispatch.internal.example:8766//"
+	e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProjectAccessURL != "http://dispatch.internal.example:8766" || cfg.ProjectAccessTokenFile != "/var/run/secrets/dispatch-access/token" {
+		t.Fatalf("with both set the broker reads URL %q and token file %q; want the URL without its trailing slashes and the file as given", cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
+	}
+
+	for set, missing := range map[string]string{
+		"BROKER_PROJECT_ACCESS_URL":        "BROKER_PROJECT_ACCESS_TOKEN_FILE",
+		"BROKER_PROJECT_ACCESS_TOKEN_FILE": "BROKER_PROJECT_ACCESS_URL",
+	} {
+		alone := validEnv()
+		alone[set] = e[set]
+		_, err := Load(env(alone))
+		if err == nil || !strings.Contains(err.Error(), missing) {
+			t.Errorf("Load(%s alone) = %v; want a refusal naming %s", set, err, missing)
+		}
+	}
+
+	for _, bad := range []string{"dispatch.internal.example", "//dispatch.internal.example", "ftp://dispatch.internal.example", "http://", "http://%zz"} {
+		e := validEnv()
+		e["BROKER_PROJECT_ACCESS_URL"] = bad
+		e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
+			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
 	}
 }

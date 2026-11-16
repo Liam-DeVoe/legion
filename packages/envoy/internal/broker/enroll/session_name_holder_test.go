@@ -199,7 +199,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 	// The exchange as the cluster's deployment lists this account: the entry fixes no session
 	// name, so the name the pod asks under is the name it writes, which is the name it enrols.
 	// It names the cluster's one issuer, which, written as a bare URL, has the empty name.
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: "legion", Person: "ada@example.com", Issuers: []string{""}}}, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: "LEGION", Person: "ada@example.com", Issuers: []string{""}}}, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 		if err != nil {
 			t.Fatalf("the pod's enrolment: %v", err)
 		}
-		claims, err := set.Pod(podToken(uid), "", session)
+		claims, err := set.Pod(podToken(uid), "", session, nil)
 		if err != nil {
 			t.Fatalf("the exchange's reading of the same pod's token: %v", err)
 		}
@@ -237,7 +237,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 
 	t.Run("the pod enrols the name it has already traded under", func(t *testing.T) {
 		const session, uid = "implementer-g2", "pod-uid-traded-first"
-		claims, err := set.Pod(podToken(uid), "", session)
+		claims, err := set.Pod(podToken(uid), "", session, nil)
 		if err != nil {
 			t.Fatalf("the exchange's reading of the pod's token: %v", err)
 		}

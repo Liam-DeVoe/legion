@@ -41,4 +41,5 @@ body: |-
   refuses to start, too, on an entry with no issuer field whose session is only issuer names, such
   as `<service account>=<project>=<person>=first,second`, which would write under the session
   `first,second`: write those names after an empty session,
-  `<service account>=<project>=<person>==first,second`.
+  `<service account>=<project>=<person>==first,second`. An entry that names no project names its
+  issuers the same way, `<service account>==<person>==first,second`.
