@@ -37,13 +37,16 @@ const (
 // refuseSends is set it records each and refuses it as a listener with no daemon answering for
 // the agent does. It records every role publish's body too, and answers it as the publish route
 // answers a role no live session holds: 202 kept, or, while publishAnswer names it, 200 for a
-// live holder that claimed the role meanwhile or 404 for a publish it kept nothing of. Its role
+// live holder that claimed the role meanwhile or 404 for a publish it kept nothing of. While
+// storeSends is set it takes each send as main's listener takes a send to a session Envoy still
+// knows that no daemon answers for (#2643): 200, stored for that session, state stopped. Its role
 // lookup names roleHolder as the role's live holder while that is set, and does not answer while
 // rolesDown is set.
 type stoppedAgentListener struct {
 	*httptest.Server
 	registryDown  atomic.Bool
 	refuseSends   atomic.Bool
+	storeSends    atomic.Bool
 	roleRuns      atomic.Bool
 	released      atomic.Bool
 	rolesDown     atomic.Bool
@@ -130,6 +133,13 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 			if listener.refuseSends.Load() {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"error":"no live session ` + input.TargetSession + `"}`))
+				return
+			}
+			if listener.storeSends.Load() {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"event_id": "stored-" + strconv.Itoa(count), "recipient": input.TargetSession,
+					"recipient_state": "gone", "state": "stopped",
+				})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
