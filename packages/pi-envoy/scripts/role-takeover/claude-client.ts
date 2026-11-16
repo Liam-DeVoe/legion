@@ -17,7 +17,7 @@
  * Usage:
  *   bun claude-client.ts --server <bin/envoy-channel.ts> --session <id> --state-dir <dir>
  *                        --config-dir <dir> --heartbeat-ms <n> [--stderr <file>]
- *                        [--env-file <file>] [--inbox <socket path>]
+ *                        [--env-file <file>] [--inbox <socket path>] [--withhold-inbox-answers true]
  *
  * `--env-file` names a file of NAME=VALUE lines added to the server's environment, which is
  * otherwise only the variables below: a session that trades for a broker token is given the
@@ -26,6 +26,8 @@
  * `legion claude-bridge` (LEGION_CLAUDE_INBOX): this process serves that unix socket, takes each
  * delivery the server writes there (`{id, content}`) and answers it taken (`{id, ok: true}`), as
  * the bridge does once Claude Code took it, so the server writes every delivery there.
+ * `--withhold-inbox-answers true` takes each delivery and never answers it, so the server never
+ * tells the listener the delivery was taken and the listener acks nothing.
  *
  * Protocol: one JSON object per line on stdin, one answer per line on stdout, matched by `id`.
  *
@@ -48,6 +50,7 @@ interface Options {
   readonly stderr: string | undefined;
   readonly envFile: string | undefined;
   readonly inbox: string | undefined;
+  readonly withholdInboxAnswers: boolean;
 }
 
 interface Command {
@@ -87,6 +90,7 @@ function parseOptions(argv: readonly string[]): Options {
     stderr: values.get("stderr"),
     envFile: values.get("env-file"),
     inbox: values.get("inbox"),
+    withholdInboxAnswers: values.get("withhold-inbox-answers") === "true",
   };
 }
 
@@ -123,7 +127,11 @@ function serveInbox(path: string): Promise<void> {
         };
         buffered = buffered.slice(newline + 1);
         delivered.push(line.content);
-        connection.write(`${JSON.stringify({ id: line.id, ok: true })}\n`);
+        // Withheld, the server is never told the delivery was taken: it sends no `done`, and
+        // the listener acks nothing (nats-callout-sessions.sh's withhold-ack control).
+        if (!options.withholdInboxAnswers) {
+          connection.write(`${JSON.stringify({ id: line.id, ok: true })}\n`);
+        }
       }
     });
   });

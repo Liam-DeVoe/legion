@@ -101,6 +101,22 @@ const context = {
   },
 };
 
+// A host writes each card it is handed and then tells the extension so (`message_end`), which is
+// what settles the delivery and answers the listener `done`, so the session's consumer acks it; the
+// suite's host records the card alone, so this one writes it too, as the package's tests do.
+const recordCard = pi.sendMessage;
+// The host's own record of the API, through which the wrapper below replaces sendMessage.
+const host: { sendMessage: typeof recordCard } = pi;
+host.sendMessage = (message, options) => {
+  recordCard(message, options);
+  queueMicrotask(() => {
+    void handlers.get("message_end")?.(
+      { message: { role: "custom", ...message, timestamp: Date.now() } },
+      context
+    );
+  });
+};
+
 // The stand-in host is a subset of the real `PiApi`: the extension reads only what the suite's
 // host supplies, and the cast is that same narrowing.
 envoyExtension(pi as unknown as PiApi);

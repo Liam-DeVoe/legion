@@ -79,7 +79,7 @@
       "bun": true,
       "evidence_variable": "NATS_CALLOUT_SESSIONS_EVIDENCE_DIR",
       "timeout_minutes": 35,
-      "why_hosted": "Run it from a checkout on a Linux host with go, bun (and bun install), psql, curl, jq and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/nats-callout-sessions.sh; CI's service is the Postgres server dev-stack.sh --callout creates its two databases on, the two sessions are this checkout's plugins in processes of their own with no model, and the script starts no container",
+      "why_hosted": "Run it from a checkout on a Linux host with go, bun (and bun install), psql, curl, jq and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/nats-callout-sessions.sh; CI's service is the Postgres server dev-stack.sh --callout creates its two databases on, the two sessions are this checkout's plugins in processes of their own with no model, and the script starts no container. Its --real-hosts mode, the pinned Oh My Pi and Claude Code on a model route, is run by hand on a Legion pod or a box given the pins and a route",
       "jj": false
     },
     {
@@ -185,10 +185,6 @@
     {
       "script": "multi-repo-acceptance.sh",
       "needs": "a live multi-repository run on the production cluster: it is the operator's acceptance observer, reads that run's daemon, Dispatch, GitHub and kubectl, and starts nothing of its own"
-    },
-    {
-      "script": "nats-callout-sessions-real-hosts.sh",
-      "needs": "a model route for both hosts (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the omp binary (LEGION_E2E_OMP_PATH, default the omp on PATH), a Postgres server it may create two databases on (LEGION_TEST_PG_DSN), go and bun with this checkout's node_modules; it runs nats-callout-sessions.sh with the real Oh My Pi and the pinned Claude Code, and starts its own stack"
     },
     {
       "script": "parked-decision-devbox.sh",

@@ -5127,7 +5127,7 @@ Do not edit the script while a run is going: bash reads it as it runs.
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  bash scripts/e2e/nats-callout-sessions.sh [--binaries <dir>]     # → "nats-callout-sessions: 9 of 9 checks passed", exit 0
+  bash scripts/e2e/nats-callout-sessions.sh [--real-hosts] [--binaries <dir>]     # → "nats-callout-sessions: 9 of 9 checks passed (hosts: plugins)", exit 0
 ```
 
 The live proof of dispatch://INFRA-840's `r-kinds` and `r-refusal` with real sessions, its verification's check `c-callout-kinds`.
@@ -5136,52 +5136,43 @@ and a probe run in one session's own environment is refused the other session's 
 
 The stack is `packages/envoy/scripts/dev-stack.sh --callout`: the brokers, the listener, Dispatch and `nats-server` behind the NATS auth service, each the process production runs, built from this checkout.
 dev-stack.sh restarts natsd (SIGUSR1) and the listener (SIGUSR2) in place, on the ports they served, and natsd on the same JetStream store and callout keys.
-It runs its sessions two ways, which `NATS_CALLOUT_SESSIONS_HOSTS` chooses.
+It runs its sessions two ways.
 
-`plugins`, the default and what `e2e.yaml` runs on a hosted runner, is each plugin's own code under a stand-in host, in processes of their own and with no model:
+By default, what `e2e.yaml` runs on a hosted runner, they are each plugin's own code under a stand-in host, in processes of their own and with no model:
 the Oh My Pi extension under the stand-in host its own suite drives (`packages/pi-envoy/scripts/role-takeover/omp-client.ts`, whose heartbeat the script ticks before each message, as the host's timer would),
 and Claude Code's channel server under a stand-in `claude` that speaks MCP to it and plays the Legion inbox it writes each delivery to (`role-takeover/claude-client.ts --inbox`).
 
-`real`, which [`nats-callout-sessions-real-hosts.sh`](#nats-callout-sessions-real-hostssh) runs, is the hosts themselves:
+`--real-hosts`, run by hand on a Legion pod or any box given the pins and a model route, is the hosts themselves:
 the Oh My Pi binary in RPC mode with this checkout's pi-envoy packed as the release packs it, and the pinned Claude Code under `legion claude-bridge` (built from this checkout) with this checkout's claude-envoy.
-A delivery has reached a session when its transcript holds it: an envoy-message card or a user message in Oh My Pi's, a user message in Claude Code's, the turn the bridge made of it.
-It needs a model route (`LEGION_E2E_MODEL_BASE_URL`, `LEGION_E2E_MODEL_KEY_FILE`, `LEGION_E2E_MODEL_ID`, `LEGION_E2E_CLAUDE_MODEL`), the omp binary (`LEGION_E2E_OMP_PATH`) and the Claude Code pin (`LEGION_E2E_CLAUDE_CODE_PIN`, default `packages/daemon/docker/claude-code`), as [`envoy-session-states.sh`](#envoy-session-statessh) takes them, and runs every check but `receives-after-switch`, which drives each host's switch through its stand-in.
+It needs a model route (`LEGION_E2E_MODEL_BASE_URL`, `LEGION_E2E_MODEL_KEY_FILE`, `LEGION_E2E_MODEL_ID`, `LEGION_E2E_CLAUDE_MODEL`), the omp binary (`LEGION_E2E_OMP_PATH`, default the `omp` on `PATH`, else the worker image's `/opt/omp/bin/omp`), its `--version` held to `.omp-pin`, and the Claude Code pin (`LEGION_E2E_CLAUDE_CODE_PIN`, default the worker image's `/opt/legion/claude-code`), installed under `$TMPDIR` with `npm ci` and its `--version` held to the pin, as [`envoy-session-states.sh`](#envoy-session-statessh) takes them.
+It runs every check but `receives-after-switch`, which drives each host's switch through its stand-in.
 
 In both, the Oh My Pi session is told `NATS_AUTH=broker` in its environment and the Claude Code session `"natsAuth": "broker"` in its `envoy.json`, so both ways of naming the credential run.
 Each trades the stack's pod identity for a token naming its own session, which the script first registers for that pod, as a deployment's daemon does.
 
 | check | what it holds |
 | :--- | :--- |
-| `receives (omp)`, `receives (claude)` | a direct message (`POST /v1/messages/send`) reaches the session, whose connection the hub lists as admitted as `session/<id>` (`/connz?auth=true`) |
+| `receives (omp)`, `receives (claude)` | a direct message (`POST /v1/messages/send`) reaches the session: its own consumer (`s-<id>`, `/jsz`) acks the stream sequence it was delivered, which the listener does only on the host's `done`; the hub lists the connection as admitted as `session/<id>` (`/connz?auth=true`), and the host shows the message |
 | `receives-after-listener-restart (…)` | the same, after the listener was restarted on its port |
-| `receives-after-hub-restart (…)` | the same, after natsd was restarted on its port and store |
+| `receives-after-hub-restart (…)` | the same, after natsd was restarted on its port and store and the listener reconnected to it |
 | `receives-after-switch (…)` | the same for the session ids each host switched to: Oh My Pi's `/new` (`omp-client.ts` `switch`) and Claude Code's `/clear` (`claude-client.ts` `clear`, the handoff file the channel server adopts), each plugin moving its connection to the new id's token before it subscribes that id's subjects |
 | `probe-refused-other-session` | `natsprobe` in the Oh My Pi session's environment is served its own channel and refused the Claude Code session's: `Permissions Violation for Subscription to "notifications.envoy.deliver.<id>"` |
 
-A receive that fails says whether the session was admitted: `not admitted` when the hub lists no connection admitted as that session.
-The negative control, `NATS_CALLOUT_SESSIONS_CONTROL=seedless`, starts both sessions with no credential named, so the auth service admits neither connection and every receive FAILs `not admitted`; the run then exits 1.
+A receive that fails says where it stopped: `not admitted` when the hub lists no connection admitted as that session; `not acked` when the host shows the message but its consumer acked nothing new.
+Two negative controls, `NATS_CALLOUT_SESSIONS_CONTROL`:
+`seedless` starts both sessions with no credential named, so the auth service admits neither connection and every receive FAILs `not admitted`;
+`withhold-ack` (default mode) has the Claude Code stand-in take each delivery and never answer it, so the listener acks nothing: the first Claude Code receive FAILs `not acked` (the host shows it, its consumer acked nothing), the later ones FAIL held behind it, and the Oh My Pi ones pass.
+Either exits 1.
 
 | input | default | meaning |
 | :--- | :--- | :--- |
 | `LEGION_TEST_PG_DSN`, else `DATABASE_URL` | none: refused | the Postgres server dev-stack.sh creates its two databases on and drops on exit |
-| `NATS_CALLOUT_SESSIONS_CONTROL` | unset | `seedless`, the negative control |
-| `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: `dev-stack.log`, `stack-logs/` (every server's log, each restarted one's earlier log beside it), `client-logs/` (each client's output and the channel server's stderr) and `answers/` (each send's answer and the probe's output) |
+| `NATS_CALLOUT_SESSIONS_CONTROL` | unset | `seedless` or `withhold-ack`, the negative controls |
+| `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: `dev-stack.log`, `stack-logs/` (every server's log, each restarted one's earlier log beside it), `client-logs/` (each client's stdout and stderr and the channel server's stderr), `answers/` (each send's answer, each acking consumer's state and the probe's output) and, with `--real-hosts`, `sessions/` (each host's transcript and logs) |
 
-In `plugins` mode it needs `go` (unless `--binaries`, passed on to dev-stack.sh, names the stack's binaries), `bun` with this checkout's `node_modules`, `psql`, `curl`, `jq` and `python3`, and no model, container or credential, so `e2e.yaml` runs it on a hosted runner.
-No `AGENT_SECRETS_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `ANTHROPIC_*` or `CLAUDE_*` variable of the caller reaches anything the run starts; in `real` mode the model key reaches the two hosts' environments alone, never an argv.
-Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 refused (an input or tool is missing, or the stack or a client did not start).
-
-## nats-callout-sessions-real-hosts.sh
-
-```sh
-LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-LEGION_E2E_MODEL_BASE_URL=<endpoint> LEGION_E2E_MODEL_KEY_FILE=<key file> \
-LEGION_E2E_MODEL_ID=anthropic/<id> LEGION_E2E_CLAUDE_MODEL=<id> \
-  bash scripts/e2e/nats-callout-sessions-real-hosts.sh     # → "nats-callout-sessions: 7 of 7 checks passed (hosts: real)", exit 0
-```
-
-[`nats-callout-sessions.sh`](#nats-callout-sessionssh) in its `real` mode, and nothing else: its own entry point because `.github/e2e-scripts.json` lists a script once, and this mode needs a model route and the omp binary, so it is an `elsewhere` row.
-`NATS_CALLOUT_SESSIONS_CONTROL=seedless` is its negative control too.
+By default it needs `go` (unless `--binaries`, passed on to dev-stack.sh, names the stack's binaries), `bun` with this checkout's `node_modules`, `psql`, `curl`, `jq` and `python3`, and no model, container or credential, so `e2e.yaml` runs it on a hosted runner; `--real-hosts` needs `npm` too.
+No `AGENT_SECRETS_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `ANTHROPIC_*` or `CLAUDE_*` variable of the caller reaches anything the run starts; with `--real-hosts` the model key reaches the two hosts' environments alone, never an argv.
+Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 refused (an input or tool is missing, a pin does not match, or the stack or a client did not start).
 
 ## lib/loopback-dsn.py
 

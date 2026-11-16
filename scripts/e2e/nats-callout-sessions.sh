@@ -21,7 +21,7 @@
 # dev-stack.sh restarts natsd and the listener in place on SIGUSR1 and SIGUSR2.
 #
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-#     bash scripts/e2e/nats-callout-sessions.sh [--binaries <dir>]
+#     bash scripts/e2e/nats-callout-sessions.sh [--real-hosts] [--binaries <dir>]
 #
 # It needs a Postgres server it may create two databases on and drops them on exit
 # (LEGION_TEST_PG_DSN, else DATABASE_URL, as dev-stack.sh reads them), go (unless --binaries, passed
@@ -33,9 +33,12 @@
 #
 # Each check prints `PASS <name>` or `FAIL <name>: <reason>`, every check runs whatever the one
 # before it did, and the last line says how many passed; the run exits 0 only when all did. A
-# receive that fails says whether the session's connection was admitted: the hub's connection list
-# (/connz?auth=true) names an admitted session's connection by the user the auth service admitted it
-# as, `session/<id>`, and a session it names nowhere FAILs `not admitted`.
+# message has reached a session when the session's own consumer (`s-<id>`, read from the hub's
+# /jsz) acks the stream sequence it was delivered: the listener acks only on the host's `done`,
+# which a host sends once the message is in its turn, so no model reply is read. A receive that
+# fails says which step it stopped at: `not admitted` when the hub's connection list
+# (/connz?auth=true) names no connection by the user the auth service admits the session as,
+# `session/<id>`; `not acked` when the host shows the message but its consumer acked nothing new.
 #
 #   receives                           a direct message to each session reaches it
 #   receives-after-listener-restart    the listener restarted on its port; again
@@ -46,32 +49,40 @@
 #   probe-refused-other-session        natsprobe in the Oh My Pi session's environment is served its
 #                                      own channel and refused the Claude Code session's, by name
 #
-# Negative control: NATS_CALLOUT_SESSIONS_CONTROL=seedless starts both sessions with no credential
-# named (neither NATS_AUTH nor natsAuth), so the hub's auth service admits neither connection and
-# every receive FAILs `not admitted`; the run then exits 1.
+# Negative controls, NATS_CALLOUT_SESSIONS_CONTROL:
+#   seedless      both sessions start with no credential named (neither NATS_AUTH nor natsAuth),
+#                 so the hub's auth service admits neither connection and every receive FAILs
+#                 `not admitted`; the run then exits 1.
+#   withhold-ack  (default mode) the Claude Code stand-in takes each delivery into its inbox and
+#                 never answers it, so the channel server never sends `done` and the listener never
+#                 acks: the first Claude Code receive FAILs `not acked` (the host shows it, its
+#                 consumer acked nothing), the later ones FAIL held behind it, and the Oh My Pi ones
+#                 pass - the ack check failing for the one reason a transcript check is blind to.
 #
-# Two kinds of session, NATS_CALLOUT_SESSIONS_HOSTS says which (scripts/e2e/nats-callout-sessions-
-# real-hosts.sh sets `real`):
-#   plugins (the default, and the one e2e.yaml runs on a hosted runner): each plugin's own code
-#           under a stand-in host, as described above, with no model.
-#   real    the hosts themselves: the Oh My Pi binary in RPC mode (`omp --mode rpc`) with this
-#           checkout's pi-envoy packed as the release packs it (lib/pack-plugin.sh), and the pinned
-#           Claude Code under `legion claude-bridge` (built from this checkout) with this
-#           checkout's claude-envoy, which writes each delivery to the bridge's inbox, which hands
-#           it to Claude Code as a user turn. A delivery has reached a session when its transcript
-#           holds it: an envoy-message card or user message in Oh My Pi's, a user message in Claude
-#           Code's. Each delivery may start a model turn, so this mode needs a model route:
-#             LEGION_E2E_MODEL_BASE_URL  the Anthropic-compatible endpoint both hosts call
-#             LEGION_E2E_MODEL_KEY_FILE  a file holding that endpoint's key, preflighted
-#                                        (lib/model-endpoint.sh) before anything starts
-#             LEGION_E2E_MODEL_ID        the anthropic/<id> Oh My Pi runs
-#             LEGION_E2E_CLAUDE_MODEL    the model id Claude Code runs
-#             LEGION_E2E_OMP_PATH        the omp binary (default the omp on PATH)
-#             LEGION_E2E_CLAUDE_CODE_PIN the directory whose package.json pins
-#                                        @anthropic-ai/claude-code (default the worker image's
-#                                        pin, packages/daemon/docker/claude-code), run with bunx
-#           as envoy-session-states.sh and envoy-session-delivery.sh take them. The switch step
-#           runs in plugins mode alone: it drives each host's /new and /clear through the stand-in.
+# Two kinds of session:
+#   default       what e2e.yaml runs on a hosted runner: each plugin's own code under a stand-in
+#                 host, as described above, with no model.
+#   --real-hosts  the hosts themselves: the Oh My Pi binary in RPC mode (`omp --mode rpc`) with this
+#                 checkout's pi-envoy packed as the release packs it (lib/pack-plugin.sh), and the
+#                 pinned Claude Code under `legion claude-bridge` (built from this checkout) with
+#                 this checkout's claude-envoy, which writes each delivery to the bridge's inbox,
+#                 which hands it to Claude Code as a user turn. Each delivery may start a model
+#                 turn, so this mode needs a model route and the pins:
+#     LEGION_E2E_MODEL_BASE_URL   the Anthropic-compatible endpoint both hosts call
+#     LEGION_E2E_MODEL_KEY_FILE   a file holding that endpoint's key, preflighted
+#                                 (lib/model-endpoint.sh) before anything starts
+#     LEGION_E2E_MODEL_ID         the anthropic/<id> Oh My Pi runs
+#     LEGION_E2E_CLAUDE_MODEL     the model id Claude Code runs
+#     LEGION_E2E_OMP_PATH         the omp binary (default the omp on PATH, else the worker image's
+#                                 /opt/omp/bin/omp), its --version held to .omp-pin
+#     LEGION_E2E_CLAUDE_CODE_PIN  the directory holding the package.json and package-lock.json that
+#                                 pin @anthropic-ai/claude-code (default the worker image's
+#                                 /opt/legion/claude-code), installed under $TMPDIR with `npm ci`
+#                                 and its --version held to the pin
+#                 as envoy-session-states.sh takes them; a missing input refuses the run, naming
+#                 it. It runs on a Legion pod, which carries the pins and a model route, or any box
+#                 given them. The switch step runs in the default mode alone: it drives each host's
+#                 /new and /clear through the stand-in.
 #
 # NATS_CALLOUT_SESSIONS_EVIDENCE_DIR (default a fresh directory under TMPDIR, kept and printed)
 # keeps the stack's logs, each client's output and every answer the checks read.
@@ -80,7 +91,12 @@ set -Eeuo pipefail
 pg_dsn=${LEGION_TEST_PG_DSN:-${DATABASE_URL:-}}
 evidence=${NATS_CALLOUT_SESSIONS_EVIDENCE_DIR:-}
 control=${NATS_CALLOUT_SESSIONS_CONTROL:-}
-hosts=${NATS_CALLOUT_SESSIONS_HOSTS:-plugins}
+# --real-hosts is this script's own; every other argument is dev-stack.sh's.
+hosts=plugins
+stack_args=()
+for argument in "$@"; do
+  if [ "$argument" = --real-hosts ]; then hosts=real; else stack_args+=("$argument"); fi
+done
 for variable in $(compgen -e); do
   case $variable in
     AGENT_SECRETS_* | DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_* | DATABASE_URL | LEGION_TEST_PG_DSN) unset "$variable" ;;
@@ -96,11 +112,8 @@ refuse() {
 }
 case $control in
   "" | seedless) ;;
-  *) refuse "NATS_CALLOUT_SESSIONS_CONTROL is \"$control\"; the one control is seedless" ;;
-esac
-case $hosts in
-  plugins | real) ;;
-  *) refuse "NATS_CALLOUT_SESSIONS_HOSTS is \"$hosts\"; it takes plugins or real" ;;
+  withhold-ack) [ "$hosts" = plugins ] || refuse "the withhold-ack control runs in the default mode alone: a real host's inbox is the bridge's" ;;
+  *) refuse "NATS_CALLOUT_SESSIONS_CONTROL is \"$control\"; the controls are seedless and withhold-ack" ;;
 esac
 [ -n "$pg_dsn" ] || refuse "name a Postgres server it may create databases on: LEGION_TEST_PG_DSN or DATABASE_URL"
 for tool in bun psql curl jq python3; do
@@ -111,27 +124,36 @@ done
 note() { echo "   $*"; }
 fail() { refuse "$*"; }
 if [ "$hosts" = real ]; then
-  for tool in go setsid mkfifo; do
+  for tool in go npm setsid mkfifo; do
     command -v "$tool" >/dev/null || refuse "$tool is not on PATH"
   done
   model_base_url=${LEGION_E2E_MODEL_BASE_URL:-}
   model_key_file=${LEGION_E2E_MODEL_KEY_FILE:-}
   model_id=${LEGION_E2E_MODEL_ID:-}
   claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
-  omp_bin=${LEGION_E2E_OMP_PATH:-$(command -v omp || true)}
-  claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-$root/packages/daemon/docker/claude-code}
+  omp_bin=${LEGION_E2E_OMP_PATH:-$(command -v omp || echo /opt/omp/bin/omp)}
+  claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
   # shellcheck source=scripts/e2e/lib/model-endpoint.sh
   . "$root/scripts/e2e/lib/model-endpoint.sh"
-  [ -n "$model_base_url" ] || refuse "LEGION_E2E_MODEL_BASE_URL is required in real mode: the endpoint both hosts call"
+  [ -n "$model_base_url" ] || refuse "LEGION_E2E_MODEL_BASE_URL is required with --real-hosts: the endpoint both hosts call"
   if why=$(model_base_url_refusal "$model_base_url") && [ -n "$why" ]; then
     refuse "LEGION_E2E_MODEL_BASE_URL $why"
   fi
   [ -r "$model_key_file" ] || refuse "LEGION_E2E_MODEL_KEY_FILE names '$model_key_file', which cannot be read"
   [[ $model_id =~ ^anthropic/[^[:space:]]+$ ]] || refuse "LEGION_E2E_MODEL_ID is '$model_id'; it must be anthropic/<id>"
-  [ -n "$claude_model" ] || refuse "LEGION_E2E_CLAUDE_MODEL is required in real mode: the model id Claude Code runs"
+  [ -n "$claude_model" ] || refuse "LEGION_E2E_CLAUDE_MODEL is required with --real-hosts: the model id Claude Code runs"
   [[ -n "$omp_bin" && -x "$omp_bin" ]] || refuse "LEGION_E2E_OMP_PATH names '$omp_bin', which is no executable omp"
+  # .omp-pin names github:sjawhar/oh-my-pi@<version>-<build>; omp --version prints omp/<version>.
+  omp_pin=$(<"$root/.omp-pin")
+  omp_pinned=${omp_pin##*@}
+  omp_pinned=${omp_pinned%%-*}
+  omp_reported=$("$omp_bin" --version 2>/dev/null | head -n 1) || true
+  [ "$omp_reported" = "omp/$omp_pinned" ] ||
+    refuse "$omp_bin prints --version '$omp_reported'; .omp-pin names $omp_pin (omp/$omp_pinned)"
+  { [ -r "$claude_pin/package.json" ] && [ -r "$claude_pin/package-lock.json" ]; } ||
+    refuse "LEGION_E2E_CLAUDE_CODE_PIN names $claude_pin, which holds no package.json and package-lock.json pinning @anthropic-ai/claude-code"
   claude_version=$(jq -er '.dependencies["@anthropic-ai/claude-code"]' "$claude_pin/package.json") ||
-    refuse "LEGION_E2E_CLAUDE_CODE_PIN names $claude_pin, whose package.json pins no @anthropic-ai/claude-code"
+    refuse "$claude_pin/package.json pins no @anthropic-ai/claude-code"
   natives=$HOME/.omp/natives
 fi
 
@@ -176,6 +198,13 @@ cleanup() {
     wait "$stack_pid" 2>/dev/null
   fi
   cp -R "$work/logs" "$evidence/client-logs" 2>/dev/null
+  # The clients' answers, which the receive checks read beside the hub's consumer state.
+  for out in "$work"/*.out; do
+    [ -f "$out" ] && cp "$out" "$evidence/client-logs/"
+  done
+  if [ -n "${claude_home:-}" ] && declare -F claude_transcript >/dev/null; then
+    file=$(claude_transcript) && transcripts+=("$file")
+  fi
   if [ -d "$work/real" ]; then
     mkdir -p "$evidence/sessions"
     for log in "$work"/real/*/rpc.log "$work"/real/*/stderr.log; do
@@ -188,6 +217,9 @@ cleanup() {
   [ -z "${DEV_STACK_DIR:-}" ] || cp -R "$DEV_STACK_DIR/logs" "$evidence/stack-logs" 2>/dev/null
   case $scratch in
     "${TMPDIR:-/tmp}"/nats-callout-sessions.*) rm -rf -- "$scratch" ;;
+  esac
+  case ${claude_tmp:-} in
+    /tmp/ncs-claude.*) rm -rf -- "$claude_tmp" ;;
   esac
   echo "nats-callout-sessions: evidence kept in $evidence"
   exit "$status"
@@ -215,12 +247,20 @@ if [ "$hosts" = real ]; then
   (cd "$root" && bun packages/claude-envoy/scripts/build.ts --out "$claude_plugin") >"$work/logs/build-claude-envoy.log" 2>&1 ||
     refuse "claude-envoy did not build; see $work/logs/build-claude-envoy.log"
   [ -r "$claude_plugin/dist/envoy-channel.js" ] || refuse "$claude_plugin has no dist/envoy-channel.js"
-  # shellcheck disable=SC2016 # "$@" is the wrapper's own
-  printf '#!/bin/sh\nexec bunx --package @anthropic-ai/claude-code@%s claude "$@"\n' "$claude_version" >"$work/bin/claude"
-  chmod +x "$work/bin/claude"
-  claude_reported=$(BUN_INSTALL_CACHE_DIR=$work/bun-cache "$work/bin/claude" --version 2>"$work/logs/claude-version.log") ||
-    refuse "bunx could not run Claude Code $claude_version; see $work/logs/claude-version.log"
-  note "Claude Code $claude_reported from $claude_pin; omp $("$omp_bin" --version 2>/dev/null | head -n 1); pi-envoy packed, claude-envoy built, legion built"
+  # Claude Code itself: the pinned release, installed from the pin with `npm ci` into a directory
+  # of the run's own, held to the pin's version - the install a pod's launch makes.
+  mkdir -p "$work/claude-code" "$work/npm-cache"
+  cp "$claude_pin/package.json" "$claude_pin/package-lock.json" "$work/claude-code/" ||
+    refuse "could not copy the Claude Code pin out of $claude_pin"
+  (cd "$work/claude-code" && npm ci --ignore-scripts --omit=dev --no-audit --no-fund --cache "$work/npm-cache") \
+    >"$work/logs/npm-claude-code.log" 2>&1 ||
+    refuse "installing the Claude Code $claude_version that $claude_pin pins failed; see $work/logs/npm-claude-code.log"
+  claude_bin=$work/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+  [ -x "$claude_bin" ] || refuse "the install left no executable at $claude_bin"
+  claude_reported=$("$claude_bin" --version) || refuse "the installed Claude Code does not run"
+  [ "${claude_reported%% *}" = "$claude_version" ] ||
+    refuse "the installed Claude Code prints --version '$claude_reported'; $claude_pin pins $claude_version"
+  note "Claude Code $claude_reported from $claude_pin; $omp_reported as .omp-pin names; pi-envoy packed, claude-envoy built, legion built"
 fi
 
 # wait_for SECONDS COMMAND...: runs COMMAND every 0.2 s until it succeeds; 1 once SECONDS passed.
@@ -236,7 +276,7 @@ wait_for() {
 # ---- the stack ----------------------------------------------------------------------------------
 stack_log=$evidence/dev-stack.log
 echo "nats-callout-sessions: starting dev-stack.sh --callout (log $stack_log)"
-TMPDIR=$scratch bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --database-url "$pg_dsn" "$@" \
+TMPDIR=$scratch bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --database-url "$pg_dsn" "${stack_args[@]}" \
   >"$stack_log" 2>&1 &
 stack_pid=$!
 stack_ready() {
@@ -327,7 +367,9 @@ jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" \
   '{envoy: {url: $url, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
   >"$omp_home/envoy.json"
 client_fifo omp
-(cd -- "$root/packages/pi-envoy" &&
+# The child closes the fifo's end this shell holds, so it sees its input end when this shell
+# closes its own at teardown, and exits, keeping its notices.
+(omp_in=${client_fd[omp]} && exec {omp_in}>&- && cd -- "$root/packages/pi-envoy" &&
   exec env -i PATH="$PATH" HOME="$omp_home" TMPDIR="$scratch" ENVOY_CONFIG_FILE="$omp_home/envoy.json" \
     ENVOY_HEARTBEAT_MS="$heartbeat_ms" ROLE_TAKEOVER_CWD="$omp_home/cwd" \
     ROLE_TAKEOVER_CLIENT_LOG="$work/logs/omp-notices.log" "${broker_env[@]}" "${omp_auth[@]}" \
@@ -346,11 +388,14 @@ jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --arg control "$control" \
     dispatch: {enabled: false}}' >"$claude_config/envoy.json"
 printf '%s\n' "${broker_env[@]}" >"$work/claude.env"
 client_fifo claude
-(cd -- "$root/packages/claude-envoy" &&
+claude_flags=()
+[ "$control" != withhold-ack ] || claude_flags=(--withhold-inbox-answers true)
+(claude_in=${client_fd[claude]} && exec {claude_in}>&- && cd -- "$root/packages/claude-envoy" &&
   exec env -i PATH="$PATH" HOME="$work/bun-home" TMPDIR="$scratch" \
     bun "$drivers/claude-client.ts" --server "$channel_server" --session "$claude_session" \
     --state-dir "$claude_state" --config-dir "$claude_config" --heartbeat-ms "$heartbeat_ms" \
-    --stderr "$work/logs/claude-channel.err" --env-file "$work/claude.env" --inbox "$work/claude.inbox") \
+    --stderr "$work/logs/claude-channel.err" --env-file "$work/claude.env" --inbox "$work/claude.inbox" \
+    "${claude_flags[@]}") \
   <"$work/claude.stdin" >"${client_out[claude]}" 2>"$work/logs/claude.err" &
 scenario_pids+=($!)
 wait_for 120 client_ready claude ||
@@ -390,7 +435,10 @@ else
   # server and plugin, told `natsAuth: broker` in its envoy.json. The bridge's inbox takes each
   # delivery the channel server writes and hands it to Claude Code as a user turn.
   claude_home=$work/real/claude
-  mkdir -p "$claude_home/home" "$claude_home/config" "$claude_home/cwd" "$claude_home/tmp"
+  mkdir -p "$claude_home/home" "$claude_home/config" "$claude_home/cwd"
+  # The bridge's TMPDIR is short and of its own: it binds its inbox socket there, and a unix socket
+  # path past 107 bytes is refused, which a run's nested scratch directory can pass.
+  claude_tmp=$(mktemp -d /tmp/ncs-claude.XXXXXX)
   jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --arg control "$control" \
     '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $control == "seedless" then {} else {natsAuth: "broker"} end)),
       dispatch: {enabled: false}}' >"$claude_home/config/envoy.json"
@@ -403,12 +451,12 @@ else
   mkfifo "$claude_home/stdin"
   exec {claude_fd}<>"$claude_home/stdin"
   scenario_fds+=("$claude_fd")
-  (cd "$claude_home/cwd" && isolated PATH="$PATH" HOME="$claude_home/home" TMPDIR="$claude_home/tmp" \
-    CLAUDE_CONFIG_DIR="$claude_home/config" BUN_INSTALL_CACHE_DIR="$work/bun-cache" \
+  (cd "$claude_home/cwd" && isolated PATH="$PATH" HOME="$claude_home/home" TMPDIR="$claude_tmp" \
+    CLAUDE_CONFIG_DIR="$claude_home/config" \
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 CLAUDE_CODE_DISABLE_CRON=1 \
     LEGION_ROLE=implementer LEGION_ISSUE=NCS-1 ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
     ANTHROPIC_BASE_URL="$model_base_url" ANTHROPIC_API_KEY="$(<"$work/model-key")" "${broker_env[@]}" -- \
-    setsid "$work/bin/legion" claude-bridge -- "$work/bin/claude" -p --input-format stream-json \
+    setsid "$work/bin/legion" claude-bridge -- "$claude_bin" -p --input-format stream-json \
     --output-format stream-json --verbose --replay-user-messages --permission-mode bypassPermissions \
     --strict-mcp-config --mcp-config "$claude_home/config/mcp.json" "${plugin_dirs[@]}" \
     --session-id "$claude_session" --model "$claude_model") \
@@ -474,10 +522,33 @@ received() {
   fi
 }
 
-# message_each STEP: one direct message to each session, by the listener's own send route, then
-# a check per session that it arrived, naming whether its connection was admitted when it did not.
+# consumer SESSION: the hub's own record of the session's consumer (`s-<id>`, as the listener names
+# it), read from the monitor's /jsz; nothing where it has none yet.
+consumer() {
+  curl -sf --max-time 10 "$DEV_STACK_NATS_MONITOR_URL/jsz?accounts=true&streams=true&consumers=true" |
+    jq -c --arg c "s-$1" 'first(.account_details[]?.stream_detail[]?.consumer_detail[]? | select(.name == $c)) // empty'
+}
+# delivered_through SESSION: the last stream sequence the session's consumer delivered, 0 for none.
+delivered_through() {
+  local state
+  state=$(consumer "$1") || true
+  jq -r '.delivered.stream_seq // 0' <<<"${state:-{\}}"
+}
+# acked_past SESSION FLOOR: the session's consumer delivered a stream sequence past FLOOR and acked
+# every one it delivered, so the message sent after FLOOR was read was acked; it prints that
+# sequence.
+acked_past() {
+  local state
+  state=$(consumer "$1") && [ -n "$state" ] || return 1
+  jq -er --argjson floor "$2" \
+    'select(.delivered.stream_seq > $floor and .ack_floor.stream_seq >= .delivered.stream_seq and .num_ack_pending == 0) | .delivered.stream_seq' \
+    <<<"$state"
+}
+
+# message_each STEP: one direct message to each session, by the listener's own send route, then a
+# check per session that its own consumer acked it, naming where it stopped when it did not.
 message_each() {
-  local step=$1 label session marker code
+  local step=$1 label session marker code floor sequence
   # A stand-in Oh My Pi host's timer is this script's to tick: a pass, which registers the session
   # again, as it would by now. A real host ticks its own.
   [ "$hosts" = real ] || send omp '{"op":"heartbeat"}'
@@ -485,17 +556,24 @@ message_each() {
     session=$omp_session
     [ "$label" = omp ] || session=$claude_session
     marker="nats-callout-sessions $step $label $run"
+    floor=$(delivered_through "$session")
     code=$(curl -sS --max-time 20 -o "$evidence/answers/$step-$label-send.json" -w '%{http_code}' \
       -X POST "$ENVOY_URL/v1/messages/send" -H 'Content-Type: application/json' \
       -d "$(jq -cn --arg t "$session" --arg m "$marker" \
         '{source: "agent", source_session: "nats-callout-sessions", target_session: $t, message: $m}')") ||
       code="unreachable"
-    if wait_for 45 received "$label" "$marker"; then
-      if admitted_as "$session"; then
-        pass "$step ($label): $session took the message, admitted as session/$session"
+    if wait_for 45 acked_past "$session" "$floor" >/dev/null; then
+      sequence=$(acked_past "$session" "$floor")
+      consumer "$session" >"$evidence/answers/$step-$label-consumer.json" || true
+      if ! admitted_as "$session"; then
+        failed "$step ($label)" "s-$session acked stream sequence $sequence, but the hub lists no connection admitted as session/$session"
+      elif ! wait_for 15 received "$label" "$marker"; then
+        failed "$step ($label)" "s-$session acked stream sequence $sequence, but the host shows no message naming '$marker'"
       else
-        failed "$step ($label)" "$session took the message, but the hub lists no connection admitted as session/$session"
+        pass "$step ($label): s-$session acked stream sequence $sequence, admitted as session/$session"
       fi
+    elif received "$label" "$marker"; then
+      failed "$step ($label)" "not acked: the host shows the message, but s-$session acked nothing past stream sequence $floor within 45 s"
     elif admitted_as "$session"; then
       failed "$step ($label)" "admitted as session/$session, but the message (send answered $code) did not arrive within 45 s"
     else
@@ -505,14 +583,22 @@ message_each() {
 }
 
 # restart WHAT SIGNAL: dev-stack.sh restarts that process in place, and says so once it serves.
+# natsd serving again is not yet the listener back on it: its reconnect goes through the auth
+# service a moment later, and a send before then is refused, so a natsd restart also waits for
+# the listener's own `nats reconnected` line.
 restart() {
-  local what=$1 signal=$2 before
+  local what=$1 signal=$2 before reconnects
   before=$(grep -c "^dev-stack: $what restarted " "$stack_log" || true)
+  reconnects=$(grep -c 'nats reconnected' "$DEV_STACK_DIR/logs/listener.log" 2>/dev/null || true)
   # shellcheck disable=SC2153 # DEV_STACK_PID is the banner's, read above by name
   kill "-$signal" "$DEV_STACK_PID"
   restarted() { [ "$(grep -c "^dev-stack: $what restarted " "$stack_log" || true)" -gt "$before" ]; }
   wait_for 60 restarted || refuse "dev-stack.sh did not restart $what on SIG$signal; see $stack_log"
   echo "   $(grep "^dev-stack: $what restarted " "$stack_log" | tail -n 1)"
+  if [ "$what" = natsd ]; then
+    reconnected() { [ "$(grep -c 'nats reconnected' "$DEV_STACK_DIR/logs/listener.log" 2>/dev/null || true)" -gt "${reconnects:-0}" ]; }
+    wait_for 60 reconnected || refuse "the listener did not reconnect to the restarted natsd within 60 s; see $DEV_STACK_DIR/logs/listener.log"
+  fi
 }
 
 # Both sessions connect once their tokens are traded; the first message waits for that.
