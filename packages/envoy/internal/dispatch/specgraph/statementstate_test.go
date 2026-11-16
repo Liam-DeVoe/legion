@@ -6,11 +6,12 @@ import (
 	"time"
 )
 
-// The nodes of TestStatementState beside TestCheckState's. T is checkStateTop, and L1 is
-// checkStateLeaf under it, with its check C1, checkStateCheck. L2 is a second statement under T,
-// with its check C2. P is a top statement that supports T, with its check CP. Some rows add T's own
-// checks, a check of the code (CT) and a query of production, and Q, a top statement whose only
-// check reads production.
+// The nodes of TestStatementState beside TestCheckState's. T is checkStateTop, with its own check of
+// the code CT, and L1 is checkStateLeaf under it, with its check C1, checkStateCheck. L2 is a second
+// statement under T, with its check C2. P is a top statement that supports T, with its check CP: T
+// has a check of its own, since a statement that other statements support has one (R5). Some rows
+// give T a query of production as its only own check, and add Q, a top statement whose only check
+// reads production.
 var (
 	statementLeafTwo = Statement{ID: "a-late-session-gets-its-messages", Kind: KindBehavior, Parent: checkStateTop.ID,
 		Text: "A session that connects after a write gets the message of that write."}
@@ -49,8 +50,8 @@ var (
 )
 
 // The state of each statement at one subject (R10), and the end of a wait on a statement (R29).
-// The base is TestCheckState's at c1, subject the head c1 of branch b, with L2, P and their checks
-// added: each check passed at c1 and failed on a fault that author-b planted in the test of
+// The base is TestCheckState's at c1, subject the head c1 of branch b, with CT, L2, P and their
+// checks added: each check passed at c1 and failed on a fault that author-b planted in the test of
 // author-a, so every statement is met. Each row changes the base and names the whole state of each
 // statement it is about, and WaitEnds of each statement in waits.
 func TestStatementState(t *testing.T) {
@@ -65,10 +66,9 @@ func TestStatementState(t *testing.T) {
 	missing := func(id string) StatementState {
 		return StatementState{ID: id, State: "not_built", Reason: "not_built", Detail: id, Own: "not_built"}
 	}
-	// topCheckTrueAtMain is row v-work 8's change: T's own check CT passes at c1, C1 fails, and the
+	// mainWithL1False is row v-work 8's change: T's own check CT passes at c1, C1 fails, and the
 	// subject is the head c1 of main.
-	topCheckTrueAtMain := func(s *checkCase) {
-		s.addCheck(statementTopCheck)
+	mainWithL1False := func(s *checkCase) {
 		s.runOutcome(C1, OutcomeFail)
 		s.Subject.Branch = "main"
 	}
@@ -128,26 +128,30 @@ func TestStatementState(t *testing.T) {
 			s.partlyChecked(L1)
 			s.runOutcome(C1, OutcomeFail)
 		}, want: []StatementState{held(L1, "not_met", "check_false", C1, "not_met")}},
-		{name: "R29 (v-work 8): T's own check is true at main, and L1 is not met", change: topCheckTrueAtMain,
+		{name: "R29 (v-work 8): T's own check is true at main, and L1 is not met", change: mainWithL1False,
 			want: []StatementState{held(T, "not_met", "check_false", C1, "met")}, waits: map[string]bool{T: true, L1: false}},
 		{name: "R29 (v-work 8): T's own check is unknown at main", change: func(s *checkCase) {
-			topCheckTrueAtMain(s)
+			mainWithL1False(s)
 			s.runOutcome(CT, OutcomeCouldNotRun)
 		}, want: []StatementState{held(T, "not_met", "check_false", C1, "unknown")}, waits: map[string]bool{T: false}},
 		{name: "R29 (v-work 8): T is not in the files at main", change: func(s *checkCase) {
-			topCheckTrueAtMain(s)
+			mainWithL1False(s)
 			s.drop(T)
 		}, want: []StatementState{missing(T)}, waits: map[string]bool{T: false}},
-		{name: "note 4: T has no own check, and the files hold its text; subject the head of main", change: func(s *checkCase) {
+		{name: "note 4: T has no own check and no supporter, and the files hold its text; subject the head of main", change: func(s *checkCase) {
+			alone := statementSupporter
+			alone.Serves = nil
+			s.replace(alone)
+			s.remove(CT)
 			s.Subject.Branch = "main"
 		}, want: []StatementState{met(T)}, waits: map[string]bool{T: true, "a-statement-the-spec-never-held": false}},
 		{name: "T's only own check reads production; subject the head of main", change: func(s *checkCase) {
+			s.remove(CT)
 			s.addNodes(statementTopProduction)
 			s.Subject.Branch = "main"
 		}, want: []StatementState{held(T, "met", "checks_true", "", "unknown")}, waits: map[string]bool{T: false}},
-		{name: "R29 at another branch: T's own check is true; subject the head of branch b", change: func(s *checkCase) {
-			s.addCheck(statementTopCheck)
-		}, want: []StatementState{met(T)}, waits: map[string]bool{T: false}},
+		{name: "R29 at another branch: T's own check is true; subject the head of branch b", change: func(*checkCase) {},
+			want: []StatementState{met(T)}, waits: map[string]bool{T: false}},
 		{name: "L1's check is unknown", change: func(s *checkCase) { s.runOutcome(C1, OutcomeCouldNotRun) },
 			want: []StatementState{held(L1, "unknown", "check_unknown", C1, "unknown"), held(T, "unknown", "check_unknown", C1, "met")}},
 		{name: "P's check is unknown", change: func(s *checkCase) { s.runOutcome(CP, OutcomeCouldNotRun) },
@@ -161,7 +165,6 @@ func TestStatementState(t *testing.T) {
 			fast := statementFast
 			fast.Serves = []string{T}
 			s.addNodes(fast, statementFastCheck)
-			s.addCheck(statementTopCheck)
 			s.runOutcome(CT, OutcomeFail)
 		}, want: []StatementState{held(Q, "unknown", "supporter_unknown", T, "unknown"), held(T, "not_met", "check_false", CT, "not_met")}},
 	} {
@@ -227,11 +230,12 @@ func statementIDs(s State) []string {
 	return ids
 }
 
-// newStatementCase is the base of TestStatementState: TestCheckState's base with L2, P and their
-// checks, each with a pass at c1 and a caught failing example, and the tie of C.
+// newStatementCase is the base of TestStatementState: TestCheckState's base with CT, L2, P and
+// their checks, each with a pass at c1 and a caught failing example, and the tie of C.
 func newStatementCase(t *testing.T) *checkCase {
 	t.Helper()
 	s := newCheckCase(t)
+	s.addCheck(statementTopCheck)
 	s.addCheck(statementLeafTwoCheck, statementLeafTwo)
 	s.addCheck(statementSupporterCheck, statementSupporter)
 	if problems := Validate(s.parse(), Options{}); len(problems) != 0 {
@@ -275,6 +279,14 @@ func (s *checkCase) runOutcome(id string, outcome Outcome) {
 func (s *checkCase) drop(ids ...string) {
 	for name, nodes := range s.files {
 		s.files[name] = slices.DeleteFunc(slices.Clone(nodes), func(n specNode) bool { return slices.Contains(ids, specNodeID(n)) })
+	}
+}
+
+// remove takes the nodes with the ids out of the files and out of the approved spec.
+func (s *checkCase) remove(ids ...string) {
+	s.drop(ids...)
+	for _, id := range ids {
+		delete(s.Approved.Nodes, id)
 	}
 }
 
