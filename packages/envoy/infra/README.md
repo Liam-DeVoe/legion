@@ -929,8 +929,8 @@ With `natsAudience`, where the app Deployment rolls (`replicas` above one, so `R
 `maxUnavailable: 0`) and `natsInCluster` is set, `envoy-dispatch`'s start waits for its first NATS
 connect. Its startup probe runs
 `curl -fsS --max-time 8 http://127.0.0.1:8766/healthz | grep -qF '"nats":true'` under `/bin/sh -c`
-in place of the `/livez` one, in the same 30 minutes (180 tries 10 seconds apart), so it passes
-only once `/healthz` answers 200 with `"nats":true`. So a pod whose NATS credential the auth service
+in place of the `/livez` one, in the same 30 minutes (180 tries 10 seconds apart), and passes only
+once `/healthz` answers 200 with `"nats":true`: a pod whose NATS credential the auth service
 refuses never goes ready, and the rollout stalls while the old pods serve. A startup probe that
 has passed runs no more, so a later NATS outage does not unready a started pod: readiness stays
 `/healthz`, whose `ok` is the database alone, and liveness stays `/livez`. Everywhere else the

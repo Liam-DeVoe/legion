@@ -215,22 +215,20 @@ func readyProbe(port, periodSeconds, timeoutSeconds, failureThreshold int) *core
 	}
 }
 
-// natsConnectedCommand is the argv of envoy-dispatch's startup probe with natsAudience, against
-// the HTTP server on the container's loopback port: it exits 0 only once /healthz answers 200 and
-// reports "nats":true, the server's NATS client connected. curl -f fails on any other status and
-// then writes nothing, and grep finds nothing in a 200 that reports nats false or null, so the
-// pipeline, whose status is grep's, fails both; --max-time 8 makes curl give up inside the probe's
-// 9 s timeout. The envoy image (debian:bookworm-slim) carries /bin/sh and grep, both Essential.
-func natsConnectedCommand(port int) []string {
-	return []string{"/bin/sh", "-c", "curl -fsS --max-time 8 http://127.0.0.1:" + strconv.Itoa(port) + `/healthz | grep -qF '"nats":true'`}
-}
-
-// natsConnectedProbe is a startup probe that passes once the server's first NATS connect has
-// (natsConnectedCommand). A startup probe stops once it has passed, so a later NATS outage reaches
-// only readiness and liveness, and neither of those reads NATS on envoy-dispatch.
+// natsConnectedProbe is the startup probe envoy-dispatch gets where its start waits for NATS
+// (appStartup): curl -f of /healthz on the container's loopback port, piped into grep under
+// /bin/sh -c, which exits 0 only once /healthz answers 200 and reports "nats":true. curl -f fails
+// on any other status and then writes nothing, and grep finds nothing in a 200 that reports nats
+// false or null, so the pipeline, whose status is grep's, fails both; --max-time 8 makes curl give
+// up inside the probe's 9 s timeout. The envoy image (debian:bookworm-slim) carries /bin/sh and
+// grep, both Essential. A startup probe that has passed runs no more, so a later NATS outage
+// reaches only readiness and liveness, neither of which reads NATS on envoy-dispatch.
 func natsConnectedProbe(port, periodSeconds, failureThreshold int) *corev1.ProbeArgs {
 	return &corev1.ProbeArgs{
-		Exec:          &corev1.ExecActionArgs{Command: pulumi.ToStringArray(natsConnectedCommand(port))},
+		Exec: &corev1.ExecActionArgs{Command: pulumi.StringArray{
+			pulumi.String("/bin/sh"), pulumi.String("-c"),
+			pulumi.String("curl -fsS --max-time 8 http://127.0.0.1:" + strconv.Itoa(port) + `/healthz | grep -qF '"nats":true'`),
+		}},
 		PeriodSeconds: pulumi.Int(periodSeconds), TimeoutSeconds: pulumi.Int(9), FailureThreshold: pulumi.Int(failureThreshold),
 	}
 }
