@@ -33,13 +33,22 @@ function approvalLinkVersion(document: Artifact, asks: readonly Ask[]): number |
   const approval = document.approval;
   if (approval === undefined || approval.state === "draft") return undefined;
   if (approval.state !== "awaiting") return approvalVersion(approval);
-  const named = asks.flatMap((ask) => {
+  // The first open request that names the document decides; one that names it with no version
+  // leaves the document's own approval to say it, and no later request is read.
+  let named: number | undefined;
+  for (const ask of asks) {
     const request = ask.kind === "approval" && ask.state === "open" ? ask.approval : undefined;
-    if (request === undefined) return [];
+    if (request === undefined) continue;
     const listed = request.documents?.find((entry) => entry.artifact_id === document.id);
-    if (listed !== undefined) return [listed.version];
-    return request.artifact_id === document.id ? [request.version] : [];
-  })[0];
+    if (listed !== undefined) {
+      named = listed.version;
+      break;
+    }
+    if (request.artifact_id === document.id) {
+      named = request.version;
+      break;
+    }
+  }
   return (
     named ??
     approval.documents?.find((entry) => entry.artifact_id === document.id)?.version ??

@@ -1,29 +1,19 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
-import { act, type RenderResult, waitFor, within } from "@testing-library/react";
+import { type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { artifact as specDocument } from "../../__tests__/proof-document";
-import { renderWithQueries } from "../../__tests__/query-provider";
 import { ApiError, api } from "../../api/client";
 import type {
   Actor,
-  Agent,
   ArchitectureSource,
-  ArchitectureTree,
-  Artifact,
   ArtifactApproval,
-  Ask,
-  AskRead,
   ClaimHolderLiveness,
   IssueClaim,
   IssueComponents,
   IssueDetails,
-  Priorities,
-  PriorityRow,
   UserIssueState,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
@@ -31,10 +21,8 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { approvalPillClassName, LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
-import { pageHeaderControl, pageInkText, pageLabelChip } from "../../theme/classes";
+import { pageHeaderControl, pageInkText } from "../../theme/classes";
 import { ConnectionDot } from "../doc/ConnectionDot";
-import { ProofDocument } from "../doc/ProofDocument";
-import { DocumentRuntime } from "../doc/runtime";
 import { AskCard } from "../inbox/AskCard";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
@@ -52,48 +40,50 @@ import {
   UnresponsiveRouteMarker,
 } from "../issue/RouteReach";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
-import type { IssuePriorityWrite } from "../issue/useIssuePriority";
-import { MarginProvider } from "../margin/margin-context";
+import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
-import { NoTooltips } from "./NoTooltips";
 import { PROPERTY_LABELS } from "./page-structure";
 import { AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
+import {
+  architecture,
+  CLAIMED_AT,
+  classOf,
+  DECISIONS_ID,
+  doc,
+  draw,
+  GONE_SESSION,
+  idlePriorityWrite,
+  LIVE_SESSION,
+  listed,
+  minutesFromNow,
+  openAsk,
+  priorities,
+  proofDocument,
+  SPEC_ID,
+  STALLED_SESSION,
+  type Surface,
+  settleReads,
+  specRequest,
+  threadOf,
+  tokens,
+  undraw,
+} from "./shared-controls-fixture";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /**
  * The options the shared controls take (dispatch://INFRA-3935 R1, R3, R4, R5 and R10): each
  * option's default is `main`'s shape, the options of the new issue page's surface change nothing
  * outside `NoTooltips`, and each shape an option draws is the one R3 to R5 describe. Each case
- * draws the controls under a router and a query client of their own, every read answered by a
+ * draws the controls through `draw` (`shared-controls-fixture.tsx`), every read answered by a
  * stub on `api` below.
  */
 
-const SPEC_ID = "artifact-spec";
-const DECISIONS_ID = "artifact-decisions";
 const VERIFICATION_ID = "artifact-verification";
-
-function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
-  return {
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    id,
-    issue_key: "CORE-1",
-    kind: "doc",
-    name,
-    primary: id === SPEC_ID,
-    project: "CORE",
-    ref_key: `CORE-1/${name}`,
-    session_id: null,
-    slug: name.replace(".", "-"),
-    versions: [],
-    ...(approval === undefined ? {} : { approval }),
-  };
-}
 
 function specEntry(approval?: ArtifactApproval): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
@@ -119,96 +109,12 @@ function verificationEntry(approval?: ArtifactApproval): StepEntry {
 // What the controls read, each answered by a stub on `api`
 // ---------------------------------------------------------------------------------------------
 
-const LIVE_SESSION = "session-live-0001";
-const STALLED_SESSION = "session-stalled-02";
-const GONE_SESSION = "session-gone-00003";
 /** A session nothing names: the registry does not list it and no write stamped its title. Its
  *  short id, `main`'s name for it, is `session:01234567…`. */
 const NAMELESS_SESSION = "0123456789abcdef";
 
-/** One session as `GET /api/v1/agents` lists it (`AgentName.test.tsx`'s `listed`). */
-function listed(sessionId: string, title: string, state: Agent["state"] = "live"): Agent {
-  return {
-    capabilities: [],
-    dir: "/w",
-    host: "host",
-    last_activity: null,
-    last_seen: Date.now() - 3 * 60_000,
-    machine_id: "host",
-    open_asks: 0,
-    roles: [],
-    session_id: sessionId,
-    state,
-    title,
-  };
-}
-
-/** A priority as the priorities read answers it (`IssuePriorityLine.test.tsx`'s `priority`). */
-function priority(id: string, title: string): PriorityRow {
-  return {
-    description: "",
-    id,
-    made_at: "2026-11-01T00:00:00Z",
-    made_by: { id: "alice", kind: "user" },
-    owner: "INFRA controller",
-    rank: id,
-    state: "live",
-    title,
-    work: {
-      by_status: {},
-      claimed: 0,
-      closed_last_7_days: 0,
-      newest_event_at: null,
-      open_asks: 0,
-    },
-  };
-}
-
-const priorities: Priorities = {
-  priorities: [
-    priority("evals-now", "Evals collecting data now"),
-    priority("rocq-lean", "Rocq and Lean speed work restarted"),
-  ],
-  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-  work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-};
-
-/** The project's architecture, holding the one component the components line names
- *  (`IssueComponentsLine.test.tsx`'s `tree`). */
-const architecture: ArchitectureTree = {
-  components: [
-    {
-      depends_on: [],
-      done: 0,
-      external: false,
-      id: "dispatch-server",
-      issues: [],
-      own_done: 0,
-      own_total: 0,
-      parent: null,
-      paths: [],
-      prose: "",
-      source: "legion/legion",
-      title: "Dispatch server",
-      total: 0,
-    },
-  ],
-  not_architectural: [],
-  retired_links: [],
-  sources: [],
-  totals: {
-    components_without_work: 0,
-    issues_done: 0,
-    issues_total: 0,
-    not_architectural: 0,
-    retired_links: 0,
-    unassigned: 0,
-  },
-  unassigned: [],
-};
-
 /** The project's one architecture source, so the components line draws its picker
- *  (`IssueComponentsLine.test.tsx`'s `source`). */
+ *  (`IssueComponentsLine.test.tsx`'s `source`, counting the one component of `architecture`). */
 const source: ArchitectureSource = {
   branch: "main",
   components: 1,
@@ -320,53 +226,6 @@ afterEach(() => {
   for (const stub of Object.values(stubs)) stub.mockRestore();
 });
 
-/** An open question as the Inbox hands it (`AskCard.test.tsx`'s `answeredAsk`, still open). */
-function openAsk(overrides: Partial<Ask> = {}): Ask {
-  return {
-    anchor: null,
-    answer: null,
-    artifact_id: null,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    author: {
-      id: LIVE_SESSION,
-      kind: "session",
-      origin: { session_title: "Implementer", tmux: "legion:3" },
-    },
-    block_id: null,
-    created_at: "2026-10-08T00:00:00Z",
-    edited_at: null,
-    id: "ask-1",
-    issue_key: "CORE-1",
-    kind: "question",
-    multiple: false,
-    opened_event_id: 1,
-    options: [{ label: "Ship" }, { label: "Hold" }],
-    question: "Which release path?",
-    state: "open",
-    urgency: "blocking",
-    waiting_on: "human",
-    ...overrides,
-  };
-}
-
-/** The ask's read, as `GET /api/v1/asks/{id}` answers it (`AskCard.test.tsx`'s `thread`). */
-function threadOf(ask: Ask): AskRead {
-  return {
-    answers: [],
-    ask,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-  };
-}
-
 /** An open decision in the spec, its own block, which the document's navigator counts. */
 function blockAsk(id: string, blockId: string, question: string) {
   return {
@@ -381,60 +240,9 @@ function blockAsk(id: string, blockId: string, question: string) {
   };
 }
 
-/** The ProofDocument suites' page (`__tests__/proof-document.tsx`'s `renderProofDocument`): the
- *  issue's spec with a fake document runtime and the margin, on its own page. */
-function proofDocument(): ReactNode {
-  const fake = fakeDocumentRuntime({ text: "The live document" });
-  return (
-    <DocumentRuntime.Provider value={fake.runtime}>
-      <MarginProvider>
-        <ProofDocument
-          artifact={specDocument}
-          highlight={undefined}
-          isClosed={false}
-          onToolbarChange={() => undefined}
-          onVersionChange={() => undefined}
-          owner={{ key: "CORE-1", kind: "issue" }}
-          showDiff={false}
-          surface="page"
-          user={{ event_head: "0", kind: "user", login: "alice" }}
-          version={undefined}
-        />
-      </MarginProvider>
-    </DocumentRuntime.Provider>
-  );
-}
-
 // ---------------------------------------------------------------------------------------------
-// Drawing a control on either side of `NoTooltips`, and reading what it drew
+// Reading what a control drew
 // ---------------------------------------------------------------------------------------------
-
-/** Which side of `NoTooltips` a control is drawn on: `inside` is the new issue page's surface,
- *  `outside` every page of `main`. */
-type Surface = "inside" | "outside";
-
-function draw(node: ReactNode, surface: Surface): RenderResult {
-  return renderWithQueries(
-    <MemoryRouter>{surface === "inside" ? <NoTooltips>{node}</NoTooltips> : node}</MemoryRouter>
-  );
-}
-
-/** Takes a drawn control off the page, its container with it. */
-function undraw(view: RenderResult): void {
-  view.unmount();
-  view.container.remove();
-}
-
-/** Lets every read a control started answer and every render after it land. */
-async function settleReads(): Promise<void> {
-  for (let turn = 0; turn < 5; turn += 1) {
-    await act(async () => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, 0);
-      await promise;
-    });
-  }
-}
 
 /** What `node` draws on `surface` once its reads have landed. React numbers each `useId` from
  *  one counter for every root (`_r_<n>_`), so two mounts of one control differ by that number
@@ -447,14 +255,6 @@ async function markupOf(node: ReactNode, surface: Surface): Promise<string> {
   } finally {
     undraw(view);
   }
-}
-
-function tokens(className: string): string[] {
-  return className.split(/\s+/).filter(Boolean);
-}
-
-function classOf(element: Element): string[] {
-  return tokens(element.getAttribute("class") ?? "");
 }
 
 /** The element a control drew inside its `<div data-case>` of a mount, by selector. */
@@ -474,21 +274,19 @@ function optionsOf(select: HTMLElement): string[][] {
   return [...(select as HTMLSelectElement).options].map((option) => [option.value, option.text]);
 }
 
-/** The header's priority write, which no case presses. */
-const idlePriorityWrite: IssuePriorityWrite = {
-  failed: false,
-  pending: false,
-  retry: () => undefined,
-  submit: () => undefined,
-};
-
-const CLAIMED_AT = "2026-09-24T06:00:00Z";
-
 function sessionClaim(sessionId: string): IssueClaim {
   return { actor: { id: sessionId, kind: "session" }, at: CLAIMED_AT };
 }
 
-const minutesFromNow = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+/** A holder that missed its heartbeats ten minutes ago and keeps the claim twenty minutes more:
+ *  built on each call, since it reads the clock. */
+function waitingLiveness(): ClaimHolderLiveness {
+  return {
+    holder_state: "unresponsive",
+    last_seen: minutesFromNow(-10),
+    takeable_at: minutesFromNow(20),
+  };
+}
 
 function explicitComponents(ids: string[]): IssueComponents {
   return { ids, inherited_from: null, mode: "explicit", reason: null, unknown: [] };
@@ -505,17 +303,11 @@ function componentsIssue(components: IssueComponents, key = "CORE-1") {
 // dispatch://INFRA-1196 R19: the link to the version an approval request asks about, which the
 // panel's old card drew, is Details' approval entry's own: inside `NoTooltips` each entry links
 // its document at the version the request names - not the document's latest - or the version a
-// review approved, opened in place of the outline. The header's copy holds R13's list and
-// nothing else, so it links nothing. R4: `actions`, `reasons` and `testId` default to the
-// header's shape of `main`: both actions on the primary document, each reason under the list,
-// and `issue-approval-steps`.
+// review approved, opened in place of the outline. The header's copy holds that spec's R13 list
+// and nothing else, so it links nothing. dispatch://INFRA-3935 R1: `actions`, `reasons` and
+// `testId` default to the header's shape of `main`: both actions on the primary document, each
+// reason under the list, and `issue-approval-steps`.
 test("an approval entry links its document at the version the request asks about", () => {
-  const request = {
-    approval: { artifact_id: SPEC_ID, name: "spec.md", requested_version: 1, version: 1 },
-    id: "ask-1",
-    kind: "approval",
-    state: "open",
-  } as unknown as Ask;
   const entries = [
     specEntry({ latest_version: 2, state: "awaiting", waiting_on: "human" }),
     decisionsEntry({ latest_version: 3, state: "stale", version: 2 }),
@@ -527,16 +319,13 @@ test("an approval entry links its document at the version the request asks about
       version: 4,
     }),
   ];
-  const details = renderWithQueries(
-    <MemoryRouter>
-      <NoTooltips>
-        <ApprovalSteps
-          entries={entries}
-          primaryArtifactId={SPEC_ID}
-          versions={{ asks: [request], issueKey: "CORE-1" }}
-        />
-      </NoTooltips>
-    </MemoryRouter>
+  const details = draw(
+    <ApprovalSteps
+      entries={entries}
+      primaryArtifactId={SPEC_ID}
+      versions={{ asks: [specRequest], issueKey: "CORE-1" }}
+    />,
+    "inside"
   );
   try {
     const scope = within(details.container);
@@ -562,22 +351,19 @@ test("an approval entry links its document at the version the request asks about
       details.container.querySelector('[data-approval-step-reason="criteria"]')?.textContent
     ).toContain("The checks name no command.");
   } finally {
-    details.unmount();
+    undraw(details);
   }
 
-  const header = renderWithQueries(
-    <MemoryRouter>
-      <NoTooltips>
-        <ApprovalSteps
-          actions={false}
-          entries={entries}
-          primaryArtifactId={SPEC_ID}
-          reasons={false}
-          size="compact"
-          testId="issue-header-approval-steps"
-        />
-      </NoTooltips>
-    </MemoryRouter>
+  const header = draw(
+    <ApprovalSteps
+      actions={false}
+      entries={entries}
+      primaryArtifactId={SPEC_ID}
+      reasons={false}
+      size="compact"
+      testId="issue-header-approval-steps"
+    />,
+    "inside"
   );
   try {
     const scope = within(header.container);
@@ -596,26 +382,16 @@ test("an approval entry links its document at the version the request asks about
     expect(scope.queryByRole("button", { name: "Request changes" })).toBeNull();
     expect(header.container.querySelector("[data-approval-step-reason]")).toBeNull();
   } finally {
-    header.unmount();
+    undraw(header);
   }
 });
 
-// R1: outside `NoTooltips` the options of the new issue page's surface draw exactly what `main`
-// draws. Each pair draws a control without the option and with it; inside `NoTooltips` the same
-// pair differs, so a pass outside is no pair that draws nothing either way.
+// dispatch://INFRA-3935 R1: outside `NoTooltips` the options of the new issue page's surface draw
+// exactly what `main` draws. Each pair draws a control without the option and with it; inside
+// `NoTooltips` the same pair differs, so a pass outside is no pair that draws nothing either way.
 test("outside NoTooltips inRow, author, versions and exact change nothing", async () => {
-  const waiting: ClaimHolderLiveness = {
-    holder_state: "unresponsive",
-    last_seen: minutesFromNow(-10),
-    takeable_at: minutesFromNow(20),
-  };
+  const waiting = waitingLiveness();
   const throughAgent: Actor = { act: { session: LIVE_SESSION }, id: "alice", kind: "user" };
-  const versionRequest = {
-    approval: { artifact_id: SPEC_ID, name: "spec.md", requested_version: 1, version: 1 },
-    id: "ask-1",
-    kind: "approval",
-    state: "open",
-  } as unknown as Ask;
   const steps = () => [specEntry({ latest_version: 2, state: "awaiting", waiting_on: "human" })];
   const pairs: readonly (readonly [string, () => ReactNode, () => ReactNode])[] = [
     [
@@ -719,7 +495,7 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
         <ApprovalSteps
           entries={steps()}
           primaryArtifactId={SPEC_ID}
-          versions={{ asks: [versionRequest], issueKey: "CORE-1" }}
+          versions={{ asks: [specRequest], issueKey: "CORE-1" }}
         />
       ),
     ],
@@ -746,8 +522,9 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
   expect(sameInside).toEqual([]);
 });
 
-// R3: the header variant of the assignee and the priority is the prototype's `.person` and
-// `.prio`, drawn over the same native select as the badge, at the header line's 24 px.
+// dispatch://INFRA-3935 R3: the header variant of the assignee and the priority is the
+// prototype's `.person` and `.prio`, drawn over the same native select as the badge, at the
+// header line's 24 px.
 test("the header variant draws the person and the priority bars over the same select", async () => {
   const expectHeaderWrapper = (wrapper: HTMLElement) => {
     expect(classOf(wrapper)).toContain("min-h-6");
@@ -825,9 +602,9 @@ test("the header variant draws the person and the priority bars over the same se
   }
 });
 
-// R3: at the `compact` size the chip is the prototype's `.pill` and Request changes its `.hbtn`
-// (`pageHeaderControl`); Approve has that size, filled with the page's ink and never the
-// application's blue. `size` acts on every surface.
+// dispatch://INFRA-3935 R3: at the `compact` size the chip is the prototype's `.pill` and Request
+// changes its `.hbtn` (`pageHeaderControl`); Approve has that size, filled with the page's ink
+// and never the application's blue. `size` acts on every surface.
 test("the compact size draws the chip and both actions at the header's size, with Approve in the ink", () => {
   for (const surface of ["inside", "outside"] as const) {
     const view = draw(
@@ -842,6 +619,7 @@ test("the compact size draws the chip and both actions at the header's size, wit
     try {
       const scope = within(view.container);
       const approve = classOf(scope.getByRole("button", { name: "Approve" }));
+      expect(approve).toContain("min-h-6");
       expect(approve).toContain("bg-page-ink");
       expect(approve).not.toContain("bg-sky-700");
       expect(scope.getByRole("button", { name: "Request changes" }).getAttribute("class")).toBe(
@@ -856,14 +634,10 @@ test("the compact size draws the chip and both actions at the header's size, wit
   }
 });
 
-// R4: inside `NoTooltips` a control drawn as the value of a row of Details draws no label of its
-// own, since the row draws it, and says Details' words.
+// dispatch://INFRA-3935 R4: inside `NoTooltips` a control drawn as the value of a row of Details
+// draws no label of its own, since the row draws it, and says Details' words.
 test("inRow draws no label and the words of Details", async () => {
-  const waiting: ClaimHolderLiveness = {
-    holder_state: "unresponsive",
-    last_seen: minutesFromNow(-10),
-    takeable_at: minutesFromNow(20),
-  };
+  const waiting = waitingLiveness();
   const free: ClaimHolderLiveness = {
     holder_state: "unresponsive",
     last_seen: minutesFromNow(-90),
@@ -981,17 +755,14 @@ test("inRow draws no label and the words of Details", async () => {
   }
 });
 
-// R4: `chipClassName` is the chip's whole shape - only what holds a chip on its line is kept -
-// and the labels wrap. It acts on every surface; without it the labels keep `main`'s strings.
+// dispatch://INFRA-3935 R4: `chipClassName` is the chip's whole shape - only what holds a chip on
+// its line is kept - and the labels wrap. It acts on every surface; without it the labels keep
+// `main`'s strings.
 test("chipClassName replaces the chip's class and lets labels wrap", async () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
-  const kept = ["inline-flex", "shrink-0", "items-center", "whitespace-nowrap"];
   const mainChip =
     "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
   const mainRail = "relative flex shrink-0 flex-nowrap items-center gap-1";
-  const othersOfMain = [...tokens(mainChip), ...tokens(pageLabelChip)].filter(
-    (token) => !kept.includes(token)
-  );
   const labels = (chipClassName: string | undefined) => (
     <IssueLabels
       chipClassName={chipClassName}
@@ -1015,7 +786,6 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
         expect(chip.getAttribute("class")).toBe(
           `inline-flex shrink-0 items-center whitespace-nowrap ${given}`
         );
-        expect(classOf(chip).filter((token) => othersOfMain.includes(token))).toEqual([]);
       }
     } finally {
       undraw(view);
@@ -1053,10 +823,10 @@ function AuthorProbe({
   );
 }
 
-// R5: inside `NoTooltips`, an author is named by a title - the agent list's, else the one its
-// write was stamped with - else the page's word for an agent, and never by the short id that
-// tells no two sessions apart; a person's act made through an agent names the agent by what it
-// is. Outside, `author` names an actor as `label` does.
+// dispatch://INFRA-3935 R5: inside `NoTooltips`, an author is named by a title - the agent list's,
+// else the one its write was stamped with - else the page's word for an agent, and never by the
+// short id that tells no two sessions apart; a person's act made through an agent names the
+// agent by what it is. Outside, `author` names an actor as `label` does.
 test("author names a session by its title and never by its short id", async () => {
   // The page's words for an agent nothing names, for no actor, and for an act made through an
   // agent, as the Verification document reads them.
@@ -1124,17 +894,6 @@ test("author names a session by its title and never by its short id", async () =
     expect(named("through an agent")).toBe(`alice, acting through ${AUTHOR_KIND_WORDS.agent}`);
     // Without `author` the same session keeps `main`'s name, its short id.
     expect(named("nameless, not an author")).toBe("session:01234567…");
-    for (const name of [
-      "actor, listed",
-      "id, listed",
-      "actor, stamped",
-      "id, stamped",
-      "actor, nameless",
-      "id, nameless",
-      "through an agent",
-    ]) {
-      expect(named(name)).not.toContain("session:");
-    }
 
     expect(authored("listed")).toBe("Implementer");
     expect(authored("stamped")).toBe("Old planner");
@@ -1166,9 +925,9 @@ test("author names a session by its title and never by its short id", async () =
   }
 });
 
-// R4 and R1: the components line reads the architecture to name a component by its title only
-// inside `NoTooltips`, in a row of Details; everywhere else an explicit set names its ids, as on
-// `main`, and reads it only once the picker opens.
+// dispatch://INFRA-3935 R4 and R1: the components line reads the architecture to name a component
+// by its title only inside `NoTooltips`, in a row of Details; everywhere else an explicit set
+// names its ids, as on `main`, and reads it only once the picker opens.
 test("outside NoTooltips an explicit component set makes no architecture read", async () => {
   const reads = async (inRow: boolean, surface: Surface) => {
     stubs.getArchitecture.mockClear();
@@ -1195,9 +954,9 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
   expect(await reads(true, "inside")).toBe(1);
 });
 
-// R1: at its defaults each shared control draws `main`'s classes. Each string below is `main`'s
-// class, its theme's constants written out from `main`'s `theme/classes.ts`, for every class
-// the part builds from a template of its own.
+// dispatch://INFRA-3935 R1: at its defaults each shared control draws `main`'s classes. Each
+// string below is `main`'s class, its theme's constants written out from `main`'s
+// `theme/classes.ts`, for every class the part builds from a template of its own.
 test("the default shapes keep main's class strings", async () => {
   const want: Record<string, string> = {
     "approvalPillClassName approved":
@@ -1599,10 +1358,8 @@ test("the default shapes keep main's class strings", async () => {
     </>,
     "outside"
   );
-  const unknown = (() => {
-    stubs.listAgents.mockRejectedValueOnce(new Error("Envoy listener unreachable"));
-    return draw(<AgentName actor={{ id: LIVE_SESSION, kind: "session" }} />, "outside");
-  })();
+  stubs.listAgents.mockRejectedValueOnce(new Error("Envoy listener unreachable"));
+  const unknown = draw(<AgentName actor={{ id: LIVE_SESSION, kind: "session" }} />, "outside");
   try {
     const scope = within(view.container);
     await scope.findByRole("link", { name: /Rocq and Lean/ });
@@ -2146,9 +1903,9 @@ function pickerShown(view: RenderResult): boolean {
   );
 }
 
-// R1, and dispatch://INFRA-1196's ruling for this fix that focus handling may only improve: the
-// add control the form replaces leaves the page, so opening the form puts the focus in its first
-// field rather than leaving it on the body. On both sides of `NoTooltips`.
+// dispatch://INFRA-3935 R1, and dispatch://INFRA-1196's ruling that focus handling may only
+// improve: the add control the form replaces leaves the page, so opening the form puts the focus
+// in its first field rather than leaving it on the body. On both sides of `NoTooltips`.
 test("the priority's add control puts the focus in its form", async () => {
   const user = userEvent.setup();
   for (const surface of ["outside", "inside"] as const) {
@@ -2227,48 +1984,14 @@ test("Escape in the priority's form closes the form alone and returns the focus 
   }
 });
 
-/** An issue the identity block's typed editors edit (`shared-writes.test.ts`'s `issue`). */
+/** An issue the identity block's typed editors edit: the margin fixture's issue, with no
+ *  documents, as `shared-writes.test.ts` builds its own. */
 const fieldIssue: IssueDetails = {
-  route_status: null,
-  route_holder: null,
-  route_status_reason: null,
-  holder_state: null,
-  last_seen: null,
-  takeable_at: null,
-  advances: [],
-  advances_revision: 0,
+  ...marginIssue,
   artifacts: [],
-  children: [],
-  closed_at: null,
-  created_at: "2026-09-09T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  design_gates: [],
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
   last_seq: 250,
-  number: 1,
-  open_asks: [],
-  progress: { tasks: null, children: null },
-  parent: null,
-  blocked_by: [],
-  assignee: null,
-  claim: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  plan_artifact_id: "",
-  decisions_artifact_id: "",
   primary_artifact_id: "",
-  verification_artifact_id: "",
-  project: "CORE",
-  referenced_by_count: 0,
-  route: null,
-  repo: null,
-  resolved_repo: null,
   status: "todo",
-  priority: null,
-  rank: "U",
-  title: "Review the spec",
-  updated_at: "2026-09-09T00:00:00Z",
 };
 
 const fieldState: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };

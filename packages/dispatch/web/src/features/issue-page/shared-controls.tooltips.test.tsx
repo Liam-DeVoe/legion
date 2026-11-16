@@ -1,26 +1,20 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
-import { act, type RenderResult, waitFor, within } from "@testing-library/react";
+import { type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { artifact as specDocument } from "../../__tests__/proof-document";
-import { renderWithQueries } from "../../__tests__/query-provider";
+import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   Actor,
-  Agent,
-  ArchitectureTree,
   Artifact,
   ArtifactApproval,
   ArtifactReview,
   Ask,
-  AskRead,
   Priorities,
-  PriorityRow,
   Subscriber,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
@@ -32,17 +26,18 @@ import {
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
+  focusVisibleRing,
+  linkHoverText,
   linkText,
   PAGE_COLORS,
   pageInkText,
   pageStateText,
   pageWaitingChip,
+  secondaryButtonCompact,
   textMutedOnSurface,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
-import { ProofDocument } from "../doc/ProofDocument";
-import { DocumentRuntime } from "../doc/runtime";
 import { AskCard } from "../inbox/AskCard";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
@@ -59,38 +54,47 @@ import {
   UnresponsiveRouteMarker,
 } from "../issue/RouteReach";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
-import type { IssuePriorityWrite } from "../issue/useIssuePriority";
-import { MarginProvider } from "../margin/margin-context";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote } from "../refs/AgentName";
 import { relativeTimeLabel, Timestamp } from "../refs/Timestamp";
-import { NoTooltips } from "./NoTooltips";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS, STATE_LINES } from "./page-words";
+import {
+  architecture,
+  CLAIMED_AT,
+  classOf,
+  DECISIONS_ID,
+  doc,
+  draw,
+  GONE_SESSION,
+  idlePriorityWrite,
+  LIVE_SESSION,
+  listed,
+  minutesFromNow,
+  openAsk,
+  priorities,
+  proofDocument,
+  SPEC_ID,
+  STALLED_SESSION,
+  type Surface,
+  settleReads,
+  specRequest,
+  threadOf,
+  tokens,
+  undraw,
+} from "./shared-controls-fixture";
 
 /**
  * The shared controls on the new issue page's surface (dispatch://INFRA-3935 R2 and R6): inside
  * `NoTooltips` each file of R9 sets no `title`, draws what a `title` held, says the page's words
  * with their marks, and draws every colour in the page's palette; outside it, each draws what
- * `main` draws. Each case mounts the controls through `draw`, from the fixtures below, which the
- * controls' own test files on `main` build the same way.
+ * `main` draws. Each case mounts the controls through `draw` (`shared-controls-fixture.tsx`),
+ * from fixtures that the controls' own test files on `main` build the same way.
  */
 
 // ---------------------------------------------------------------------------------------------
 // Drawing a control on either side of `NoTooltips`
 // ---------------------------------------------------------------------------------------------
-
-/** Which side of `NoTooltips` a mount is drawn on: `inside` is the new issue page's surface,
- *  `outside` every page of `main`. */
-type Surface = "inside" | "outside";
-
-/** Draws `node` the way a page does: under a router and a query client of its own, inside
- *  `NoTooltips` or outside it. */
-function draw(node: ReactNode, surface: Surface): RenderResult {
-  return renderWithQueries(
-    <MemoryRouter>{surface === "inside" ? <NoTooltips>{node}</NoTooltips> : node}</MemoryRouter>
-  );
-}
 
 /** One control of R9, or a few of one file, in the state a case reads it in. */
 interface Mount {
@@ -130,13 +134,6 @@ async function drawMount(mount: Mount, surface: Surface): Promise<Drawn> {
   return { elements, view };
 }
 
-/** Takes a drawn mount off the page, its container with it, so the next mount's read of
- *  `document.body` holds that mount alone. */
-function undraw(view: RenderResult): void {
-  view.unmount();
-  view.container.remove();
-}
-
 // ---------------------------------------------------------------------------------------------
 // Reading a class for its colours
 // ---------------------------------------------------------------------------------------------
@@ -172,10 +169,10 @@ const RAW_COLOR_PATTERN = new RegExp(
   `\\b(?:text|bg|border|ring|placeholder|divide|outline|caret|accent|decoration|from|via|to)-(?:(?:${COLOR_FAMILIES.join("|")})-\\d{2,3}|white|black|transparent)\\b`
 );
 
-/** The variants of a focus indicator: departure 4 of the plan (decision 58 of
- *  dispatch://INFRA-1196/artifact/part-decisions-md) keeps `focusVisibleRing` and
- *  `hasFocusVisibleRing`, and `main`'s focus rule on a field, inside `NoTooltips`, since the
- *  page's palette holds no focus colour and the application has one focus indicator. */
+/** The variants of a focus indicator, kept inside `NoTooltips` (decision 58 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md): `focusVisibleRing`, `hasFocusVisibleRing`
+ *  and `main`'s focus rule on a field stay, since the page's palette holds no focus colour and
+ *  the application has one focus indicator. */
 const FOCUS_VARIANTS: readonly string[] = ["focus", "focus-visible", "has-focus-visible"];
 
 /** A token as its variants and the utility after them. A colon inside brackets or parentheses
@@ -255,104 +252,11 @@ function offPageColours(
   return { colours, offenders };
 }
 
-/** The tokens of a class string, for reading whether an element carries each. */
-function tokens(className: string): string[] {
-  return className.split(/\s+/).filter(Boolean);
-}
-
-function classOf(element: Element): string[] {
-  return tokens(element.getAttribute("class") ?? "");
-}
-
 // ---------------------------------------------------------------------------------------------
 // What the controls read, each answered by a stub on `api`
 // ---------------------------------------------------------------------------------------------
 
-const LIVE_SESSION = "session-live-0001";
-const STALLED_SESSION = "session-stalled-02";
-const GONE_SESSION = "session-gone-00003";
-
-/** One session as `GET /api/v1/agents` lists it (`AgentName.test.tsx`'s `listed`). */
-function listed(sessionId: string, title: string, state: Agent["state"] = "live"): Agent {
-  return {
-    capabilities: [],
-    dir: "/w",
-    host: "host",
-    last_activity: null,
-    last_seen: Date.now() - 3 * 60_000,
-    machine_id: "host",
-    open_asks: 0,
-    roles: [],
-    session_id: sessionId,
-    state,
-    title,
-  };
-}
-
-/** A priority as the priorities read answers it (`IssuePriorityLine.test.tsx`'s `priority`). */
-function priority(id: string, title: string): PriorityRow {
-  return {
-    description: "",
-    id,
-    made_at: "2026-11-01T00:00:00Z",
-    made_by: { id: "alice", kind: "user" },
-    owner: "INFRA controller",
-    rank: id,
-    state: "live",
-    title,
-    work: {
-      by_status: {},
-      claimed: 0,
-      closed_last_7_days: 0,
-      newest_event_at: null,
-      open_asks: 0,
-    },
-  };
-}
-
-const priorities: Priorities = {
-  priorities: [
-    priority("evals-now", "Evals collecting data now"),
-    priority("rocq-lean", "Rocq and Lean speed work restarted"),
-  ],
-  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-  work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-};
-
-/** The project's architecture, holding the one component the components line names. */
-const architecture: ArchitectureTree = {
-  components: [
-    {
-      depends_on: [],
-      done: 0,
-      external: false,
-      id: "dispatch-server",
-      issues: [],
-      own_done: 0,
-      own_total: 0,
-      parent: null,
-      paths: [],
-      prose: "",
-      source: "legion/legion",
-      title: "Dispatch server",
-      total: 0,
-    },
-  ],
-  not_architectural: [],
-  retired_links: [],
-  sources: [],
-  totals: {
-    components_without_work: 0,
-    issues_done: 0,
-    issues_total: 0,
-    not_architectural: 0,
-    retired_links: 0,
-    unassigned: 0,
-  },
-  unassigned: [],
-};
-
-/** The reviews the approval chip's dialog lists (`ApprovalChip.test.tsx`'s). */
+/** The reviews the approval chip's dialog lists (`ApprovalChip.test.tsx`'s, on `notes`). */
 const reviews: ArtifactReview[] = [
   {
     actor: { id: "alice", kind: "user" },
@@ -382,7 +286,7 @@ const reviews: ArtifactReview[] = [
   },
 ];
 
-/** A GitHub read's answer, as `api.githubRest` hands it (`IssuePage.test.tsx`'s). */
+/** A GitHub read's answer, as `api.githubRest` hands it. */
 function githubAnswer(body: unknown): Response {
   return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 }
@@ -518,57 +422,16 @@ function answerDefaults(): void {
   stubs.whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login: "alice" });
 }
 
-/** Lets every read a mount started answer and every render after it land. */
-async function settleReads(): Promise<void> {
-  for (let turn = 0; turn < 5; turn += 1) {
-    await act(async () => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, 0);
-      await promise;
-    });
-  }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------------------------
 
-const SPEC_ID = "artifact-spec";
-const DECISIONS_ID = "artifact-decisions";
-
-/** A document of the issue (`shared-controls.options.test.tsx`'s `doc`). */
-function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
-  return {
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    id,
-    issue_key: "CORE-1",
-    kind: "doc",
-    name,
-    primary: id === SPEC_ID,
-    project: "CORE",
-    ref_key: `CORE-1/${name}`,
-    session_id: null,
-    slug: name.replace(".", "-"),
-    versions: [],
-    ...(approval === undefined ? {} : { approval }),
-  };
-}
-
-/** The document the approval chips speak for (`ApprovalChip.test.tsx`'s `artifact`). */
+/** The document the approval chips speak for. */
 const notes = doc("artifact-notes", "notes.md");
 
 function notesWith(approval: ArtifactApproval): Artifact {
   return { ...notes, approval };
 }
-
-/** The open request the version link reads its version from. */
-const specRequest = {
-  approval: { artifact_id: SPEC_ID, name: "spec.md", requested_version: 1, version: 1 },
-  id: "ask-spec",
-  kind: "approval",
-  state: "open",
-} as unknown as Ask;
 
 /** The gate's steps as Details draws them: the spec waits on a request for its version 1, the
  *  decisions were sent back with a reason, and the verification has no document yet. */
@@ -598,38 +461,7 @@ function stepEntries(): StepEntry[] {
   ];
 }
 
-/** An open question as the Inbox hands it (`AskCard.test.tsx`'s `answeredAsk`, still open). */
-function openAsk(overrides: Partial<Ask> = {}): Ask {
-  return {
-    anchor: null,
-    answer: null,
-    artifact_id: null,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    author: {
-      id: LIVE_SESSION,
-      kind: "session",
-      origin: { session_title: "Implementer", tmux: "legion:3" },
-    },
-    block_id: null,
-    created_at: "2026-10-08T00:00:00Z",
-    edited_at: null,
-    id: "ask-1",
-    issue_key: "CORE-1",
-    kind: "question",
-    multiple: false,
-    opened_event_id: 1,
-    options: [{ label: "Ship" }, { label: "Hold" }],
-    question: "Which release path?",
-    state: "open",
-    urgency: "blocking",
-    waiting_on: "human",
-    ...overrides,
-  };
-}
-
-/** An open approval request (`AskCard.test.tsx`'s `approvalAsk`). */
+/** An open approval request (`AskCard.test.tsx`'s `approvalAsk`, as `ask-2` at high urgency). */
 function openApprovalAsk(): Ask {
   return openAsk({
     approval: {
@@ -648,22 +480,6 @@ function openApprovalAsk(): Ask {
   });
 }
 
-/** The ask's read, as `GET /api/v1/asks/{id}` answers it (`AskCard.test.tsx`'s `thread`). */
-function threadOf(ask: Ask): AskRead {
-  return {
-    answers: [],
-    ask,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-  };
-}
-
 /** Two open decisions in the spec, each its own block, which the page's navigator counts. */
 function blockAsk(id: string, blockId: string, question: string): Ask {
   return openAsk({
@@ -677,14 +493,6 @@ function blockAsk(id: string, blockId: string, question: string): Ask {
   });
 }
 
-/** The header's priority write, which no row of this file presses. */
-const idlePriorityWrite: IssuePriorityWrite = {
-  failed: false,
-  pending: false,
-  retry: () => undefined,
-  submit: () => undefined,
-};
-
 function subscriber(sessionId: string, title: string, removable: boolean): Subscriber {
   return {
     last_seen: Date.now(),
@@ -695,32 +503,6 @@ function subscriber(sessionId: string, title: string, removable: boolean): Subsc
     topics: [removable ? "notifications.dispatch.issue.CORE-1.>" : "notifications.dispatch.>"],
     via: removable ? "notifications.dispatch.issue.CORE-1.>" : "notifications.dispatch.>",
   };
-}
-
-const minutesFromNow = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
-
-/** The ProofDocument suites' page (`__tests__/proof-document.tsx`'s `renderProofDocument`): the
- *  issue's spec with a fake document runtime and the margin, on its own page. */
-function proofDocument(): ReactNode {
-  const fake = fakeDocumentRuntime({ text: "The live document" });
-  return (
-    <DocumentRuntime.Provider value={fake.runtime}>
-      <MarginProvider>
-        <ProofDocument
-          artifact={specDocument}
-          highlight={undefined}
-          isClosed={false}
-          onToolbarChange={() => undefined}
-          onVersionChange={() => undefined}
-          owner={{ key: "CORE-1", kind: "issue" }}
-          showDiff={false}
-          surface="page"
-          user={{ event_head: "0", kind: "user", login: "alice" }}
-          version={undefined}
-        />
-      </MarginProvider>
-    </DocumentRuntime.Provider>
-  );
 }
 
 /** Opens a popover or a dialog by the control a reader presses. */
@@ -972,9 +754,6 @@ const MOUNTS: readonly Mount[] = [
       );
     },
     outside: askCardChildren,
-    settle: async () => {
-      await settleReads();
-    },
   },
   {
     name: "IssuePriorityLine, its own priority and an inherited one",
@@ -1031,9 +810,6 @@ const MOUNTS: readonly Mount[] = [
         />
       </>
     ),
-    settle: async () => {
-      await settleReads();
-    },
   },
   {
     name: "AgentName, each state the registry reads and each shape",
@@ -1064,9 +840,7 @@ const MOUNTS: readonly Mount[] = [
       return (
         <>
           <AgentName actor={{ id: LIVE_SESSION, kind: "session" }} />
-          <ClaimChip
-            claim={{ actor: { id: LIVE_SESSION, kind: "session" }, at: "2026-09-24T06:00:00Z" }}
-          />
+          <ClaimChip claim={{ actor: { id: LIVE_SESSION, kind: "session" }, at: CLAIMED_AT }} />
         </>
       );
     },
@@ -1079,7 +853,7 @@ const MOUNTS: readonly Mount[] = [
   },
   {
     name: "Timestamp, exact",
-    node: () => <Timestamp at="2026-09-24T06:00:00Z" exact />,
+    node: () => <Timestamp at={CLAIMED_AT} exact />,
     colourless: true,
   },
   {
@@ -1091,9 +865,6 @@ const MOUNTS: readonly Mount[] = [
         versions={{ asks: [specRequest], issueKey: "CORE-1" }}
       />
     ),
-    settle: async () => {
-      await settleReads();
-    },
   },
   {
     name: "ApprovalSteps, the header's compact size",
@@ -1137,14 +908,10 @@ const MOUNTS: readonly Mount[] = [
     name: "ClaimChip, held, lapsed, unresponsive and in a row of Details",
     node: () => (
       <>
+        <ClaimChip claim={{ actor: { id: LIVE_SESSION, kind: "session" }, at: CLAIMED_AT }} />
+        <ClaimChip claim={{ actor: { id: GONE_SESSION, kind: "session" }, at: CLAIMED_AT }} />
         <ClaimChip
-          claim={{ actor: { id: LIVE_SESSION, kind: "session" }, at: "2026-09-24T06:00:00Z" }}
-        />
-        <ClaimChip
-          claim={{ actor: { id: GONE_SESSION, kind: "session" }, at: "2026-09-24T06:00:00Z" }}
-        />
-        <ClaimChip
-          claim={{ actor: { id: STALLED_SESSION, kind: "session" }, at: "2026-09-24T06:00:00Z" }}
+          claim={{ actor: { id: STALLED_SESSION, kind: "session" }, at: CLAIMED_AT }}
           liveness={{
             holder_state: "unresponsive",
             last_seen: minutesFromNow(-10),
@@ -1152,17 +919,14 @@ const MOUNTS: readonly Mount[] = [
           }}
         />
         <ClaimChip
-          claim={{ actor: { id: STALLED_SESSION, kind: "session" }, at: "2026-09-24T06:00:00Z" }}
+          claim={{ actor: { id: STALLED_SESSION, kind: "session" }, at: CLAIMED_AT }}
           liveness={{
             holder_state: "unresponsive",
             last_seen: minutesFromNow(-90),
             takeable_at: minutesFromNow(-30),
           }}
         />
-        <ClaimChip
-          claim={{ actor: { id: LIVE_SESSION, kind: "session" }, at: "2026-09-24T06:00:00Z" }}
-          inRow
-        />
+        <ClaimChip claim={{ actor: { id: LIVE_SESSION, kind: "session" }, at: CLAIMED_AT }} inRow />
       </>
     ),
     settle: async (view) => {
@@ -1250,9 +1014,6 @@ const MOUNTS: readonly Mount[] = [
         />
       </>
     ),
-    settle: async () => {
-      await settleReads();
-    },
   },
   {
     name: "IssueLabels, its chips and its picker open",
@@ -1276,9 +1037,6 @@ const MOUNTS: readonly Mount[] = [
         <RepoControl inRow issueKey="CORE-3" project="CORE" repo={null} resolvedRepo={null} />
       </>
     ),
-    settle: async () => {
-      await settleReads();
-    },
   },
   {
     name: "RouteReach, each marker",
@@ -1296,9 +1054,6 @@ const MOUNTS: readonly Mount[] = [
         ]}
       />
     ),
-    settle: async () => {
-      await settleReads();
-    },
   },
 ];
 
@@ -1345,9 +1100,8 @@ function routeMarkers(): ReactNode {
 // ---------------------------------------------------------------------------------------------
 
 /** Fixed instants for the mounts whose `title` or drawn text says one, so each reads the same on
- *  every run: a claim, the heartbeat its holder was last seen at, and the moment the claim comes
- *  free, already past (`FREED_AT`) or still ahead (`FREE_FROM`). */
-const CLAIMED_AT = "2026-09-24T06:00:00Z";
+ *  every run: beside the claim's `CLAIMED_AT`, the heartbeat its holder was last seen at, and the
+ *  moment the claim comes free, already past (`FREED_AT`) or still ahead (`FREE_FROM`). */
 const HEARD_AT = "2026-09-24T05:50:00Z";
 const FREED_AT = "2026-09-24T06:20:00Z";
 const FREE_FROM = "2099-09-24T06:00:00Z";
@@ -1480,9 +1234,6 @@ const githubUnread: Mount = {
       </>
     );
   },
-  settle: async () => {
-    await settleReads();
-  },
 };
 
 /** The priorities an issue at the cap advances, each its own, none of them named by a read. */
@@ -1570,9 +1321,6 @@ const labelsEmptyAndSaving: Mount = {
       />
     </>
   ),
-  settle: async () => {
-    await settleReads();
-  },
 };
 
 /** The components line's picker is drawn for a project with an architecture source alone. */
@@ -1645,9 +1393,6 @@ const subscribersAtHeartbeat: Mount = {
       ]}
     />
   ),
-  settle: async () => {
-    await settleReads();
-  },
 };
 
 /** Every mount of this file: `MOUNTS`, which the colour case reads, and the states above. */
@@ -1695,15 +1440,9 @@ const VACANCY =
 
 /**
  * Every `title` each mount carries on `main`, in document order, as `main`'s files write them
- * (read at the merge-base): `CopyButton`'s, `PinButton`'s and `RefusableButton`'s names and
- * refusal, `MultiSelect`'s option labels, the stale chip's versions, `ConnectionDot`'s state,
- * `ProofDocument`'s open decision, `AskCard`'s asker and submit, `IssuePriorityLine`'s
- * priorities and its add control, `AgentName`'s state marks, live link, short id and
- * unresponsive note, `Timestamp`'s instant, `ClaimChip`'s claim, `GitHubLink`'s reference,
- * address and unsafe link, `IssueComponentsLine`'s retired component, `RepoControl`'s inherited
- * repository, `RouteReach`'s three explanations and `SubscribedAgents`' session ids and wider
- * subscription; and none for a mount whose files set none. The three mounts of `MOUNTS` whose
- * instants move with the clock are read here through their twins at fixed instants.
+ * (read at the merge-base), and none for a mount whose files set none. The three mounts of
+ * `MOUNTS` whose instants move with the clock are read here through their twins at fixed
+ * instants.
  */
 const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [
@@ -1815,7 +1554,7 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       localTime(CLAIMED_AT),
     ],
   ],
-  [mountNamed("Timestamp, exact"), [localTime("2026-09-24T06:00:00Z")]],
+  [mountNamed("Timestamp, exact"), [localTime(CLAIMED_AT)]],
   [mountNamed("ApprovalSteps, Details' size with versions and reasons"), []],
   [mountNamed("ApprovalSteps, the header's compact size"), []],
   [mountNamed("AssigneeControl, both variants, assigned and not"), []],
@@ -1897,15 +1636,16 @@ const MOVING_INSTANTS: readonly Mount[] = [
   mountNamed("SubscribedAgents, one removable and one subscribed more widely"),
 ];
 
-/** Draws `mount` on `surface`, settled, hands its view to `read`, and takes it off the page. */
+/** Draws `mount` on `surface`, settled, hands its view and the elements its files of R9 draw to
+ *  `read`, and takes it off the page. */
 async function readDrawn(
   mount: Mount,
   surface: Surface,
-  read: (view: RenderResult) => void
+  read: (view: RenderResult, elements: readonly Element[]) => void
 ): Promise<void> {
-  const { view } = await drawMount(mount, surface);
+  const { elements, view } = await drawMount(mount, surface);
   try {
-    read(view);
+    read(view, elements);
   } finally {
     undraw(view);
   }
@@ -1965,22 +1705,19 @@ test("outside NoTooltips each shared control sets the title that main sets", asy
     if (MOVING_INSTANTS.includes(mount)) continue;
     const titles = MAIN_TITLES.get(mount);
     if (titles === undefined) throw new Error(`no titles of main recorded for ${mount.name}`);
-    const { elements, view } = await drawMount(mount, "outside");
-    try {
+    await readDrawn(mount, "outside", (_view, elements) => {
       expect({ mount: mount.name, titles: titlesOf(elements) }).toEqual({
         mount: mount.name,
         titles: [...titles],
       });
-    } finally {
-      undraw(view);
-    }
+    });
   }
 });
 
-// R2: inside `NoTooltips` no file of R9 sets a `title` it sets on `main`, the two the source kept
-// (the stale chip and `AgentUnresponsiveNote`) and an open `MultiSelect`'s options among them.
-// `AskCard`'s own elements are read, the asker's name and the submit among them, and its
-// children of other files are not (`askCardChildren`).
+// dispatch://INFRA-3935 R2: inside `NoTooltips` no file of R9 sets a `title` it sets on `main`,
+// the two the source kept (the stale chip and `AgentUnresponsiveNote`) and an open
+// `MultiSelect`'s options among them. `AskCard`'s own elements are read, the asker's name and the
+// submit among them, and its children of other files are not (`askCardChildren`).
 test("inside NoTooltips no shared control sets a title", async () => {
   const scope = (view: RenderResult) => within(view.baseElement);
   const named = new Map<Mount, (view: RenderResult) => readonly Element[]>([
@@ -2013,8 +1750,7 @@ test("inside NoTooltips no shared control sets a title", async () => {
   const titled: string[] = [];
   const unread: string[] = [];
   for (const mount of EVERY_MOUNT) {
-    const { elements, view } = await drawMount(mount, "inside");
-    try {
+    await readDrawn(mount, "inside", (view, elements) => {
       for (const element of elements) {
         const title = element.getAttribute("title");
         if (title !== null) {
@@ -2027,23 +1763,20 @@ test("inside NoTooltips no shared control sets a title", async () => {
       for (const element of read ?? []) {
         if (!elements.includes(element)) unread.push(`${mount.name}: ${element.outerHTML}`);
       }
-    } finally {
-      undraw(view);
-    }
+    });
   }
   expect(titled).toEqual([]);
   expect(unread).toEqual([]);
 });
 
-// R2: a `title` hides a missing name from axe, so with none left each control must be named by
-// its own words or its label.
+// dispatch://INFRA-3935 R2: a `title` hides a missing name from axe, so with none left each
+// control must be named by its own words or its label.
 test("inside NoTooltips every shared control keeps an accessible name", async () => {
   const roles = ["button", "link", "img", "status"] as const;
   const unnamed: string[] = [];
   const read = new Map<string, number>(roles.map((role) => [role, 0]));
   for (const mount of EVERY_MOUNT) {
-    const { elements, view } = await drawMount(mount, "inside");
-    try {
+    await readDrawn(mount, "inside", (view, elements) => {
       const drawn = new Set(elements);
       const scope = within(view.baseElement);
       for (const role of roles) {
@@ -2054,17 +1787,15 @@ test("inside NoTooltips every shared control keeps an accessible name", async ()
           if (!named.has(element)) unnamed.push(`${mount.name}: ${role} ${element.outerHTML}`);
         }
       }
-    } finally {
-      undraw(view);
-    }
+    });
   }
   expect(unnamed).toEqual([]);
   // A walk that met no element of a role would pass with nothing read.
   expect([...read].filter(([, count]) => count === 0)).toEqual([]);
 });
 
-// R2: inside `NoTooltips` each fact that only a `title` held on `main` is drawn, as text or as
-// the control's name, in B's words where B's list holds them.
+// dispatch://INFRA-3935 R2: inside `NoTooltips` each fact that only a `title` held on `main` is
+// drawn, as text or as the control's name, in B's words where B's list holds them.
 test("inside NoTooltips a fact that only a title held is drawn", async () => {
   const claimed = `${ageOf(CLAIMED_AT)} (${shortTime(CLAIMED_AT)})`;
   const heard = `${ageOf(HEARD_AT)} (${shortTime(HEARD_AT)})`;
@@ -2099,7 +1830,7 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
       "Not running",
       RUNNING_READING,
     ]);
-    expect(scope.getAllByRole("img", { name: "Running · seen 3 minutes ago" })).toHaveLength(2);
+    expect(scope.getAllByRole("img", { name: RUNNING_READING })).toHaveLength(2);
   });
 
   // `ConnectionDot` is named by its state.
@@ -2155,18 +1886,23 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
 
   // `GitHubLink` draws `<owner>/<repo>#<n>` and the title once read, the whole address while the
   // read is out or for a link GitHub does not hold, that an unsafe address is unsafe, and that
-  // Dispatch holds no token for the repository.
+  // Dispatch holds no token for the repository. The title wraps whole where `main` truncates it.
   await readDrawn(
     mountNamed("GitHubLink, a pull request, a plain link and an unsafe one"),
     "inside",
     (view) => {
       const root = view.container;
-      expect(childTexts(linkTo(root, "https://github.com/owner/repository/pull/7"))).toEqual([
+      const pullRequest = linkTo(root, "https://github.com/owner/repository/pull/7");
+      expect(childTexts(pullRequest)).toEqual([
         "owner/repository#7",
         "Ship it",
         "open",
         `${CONTROL_LABELS.github_checks}: success`,
       ]);
+      const title = classOf(within(pullRequest).getByText("Ship it"));
+      expect(title).toContain("[overflow-wrap:anywhere]");
+      expect(title).not.toContain("truncate");
+      expect(title).not.toContain("max-w-[18ch]");
       expect(linkTo(root, "https://example.com/notes").textContent).toBe(
         "https://example.com/notes"
       );
@@ -2215,14 +1951,13 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
   });
 });
 
-// R6: inside `NoTooltips` each word a file of R9 reads from B's list is B's word, found here by
-// B's own entry, and each element carries the mark the source gives it: the page's words
-// `data-page-chrome`, a person's or an agent's `data-author-text` (the four elements the plan
-// marks among them: `ApprovalSteps`' "Not requested" pill, `StepReason`'s line and its reason, a
-// person's name, and the page's "An agent" outside every name somebody was given), and each
-// approval chip `data-approval-artifact` with its document's id. No control draws
-// `CONTROL_LABELS.unknown_author` (`AgentText.author` alone says it) or, short of a write
-// refused with no answer of the server's, `ANSWER_LINES.priorities_not_saved`.
+// dispatch://INFRA-3935 R6: inside `NoTooltips` each word a file of R9 reads from B's list is B's
+// word, found here by B's own entry, and each element carries the mark the source gives it: the
+// page's words `data-page-chrome`, a person's or an agent's `data-author-text` (`ApprovalSteps`'
+// "Not requested" pill, `StepReason`'s line and its reason, a person's name, and the page's "An
+// agent" outside every name somebody was given among them), and each approval chip
+// `data-approval-artifact` with its document's id. No control draws
+// `CONTROL_LABELS.unknown_author`: `AgentText.author` alone says it.
 test("inside NoTooltips the words come from B's list and carry their marks", async () => {
   await readDrawn(
     mountNamed("ApprovalChip, each state, and the Request changes dialog"),
@@ -2422,6 +2157,37 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       ["priority-1", "author-text"],
     ]);
   });
+  // A save that failed with no answer of the server's says the page's own line, so the line
+  // carries the page's mark and not an author's.
+  const notSaved: Mount = {
+    name: "IssuePriorityLine, a save that failed with no answer of the server's",
+    node: () => {
+      answerIssuePatches().mockRejectedValue(new Error("the connection dropped"));
+      return (
+        <IssuePriorityLine
+          disabled={false}
+          issue={{
+            advances: [{ id: "rocq-lean", inherited: false }],
+            advances_revision: 1,
+            key: "CORE-1",
+          }}
+        />
+      );
+    },
+    settle: async (view, user) => {
+      await within(view.container).findByRole("link", { name: /Rocq and Lean/ });
+      await user.click(within(view.container).getByRole("button", { name: /^Remove / }));
+      await within(view.container).findByRole("alert");
+    },
+  };
+  await readDrawn(notSaved, "inside", (view) => {
+    const line = within(view.container).getByRole("alert");
+    expect(line.textContent).toBe(ANSWER_LINES.priorities_not_saved);
+    expect({
+      authorText: line.hasAttribute(AUTHOR_TEXT_ATTRIBUTE),
+      pageChrome: line.hasAttribute(PAGE_CHROME_ATTRIBUTE),
+    }).toEqual({ authorText: false, pageChrome: true });
+  });
 
   await readDrawn(
     mountNamed("AssigneeControl, both variants, assigned and not"),
@@ -2488,26 +2254,25 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
   );
 });
 
-// R1 and R6: outside `NoTooltips` no file of R9 marks anything, as on `main`.
+// dispatch://INFRA-3935 R1 and R6: outside `NoTooltips` no file of R9 marks anything, as on
+// `main`.
 test("outside NoTooltips no shared control carries a mark", async () => {
   const marked: string[] = [];
   for (const mount of EVERY_MOUNT) {
-    const { view } = await drawMount(mount, "outside");
-    try {
+    await readDrawn(mount, "outside", (view) => {
       for (const element of view.baseElement.querySelectorAll(
         `[${PAGE_CHROME_ATTRIBUTE}], [${AUTHOR_TEXT_ATTRIBUTE}], [data-approval-artifact]`
       )) {
         marked.push(`${mount.name}: ${element.outerHTML}`);
       }
-    } finally {
-      undraw(view);
-    }
+    });
   }
   expect(marked).toEqual([]);
 });
 
-// R6: inside `NoTooltips` a stale chip draws as text the latest version its `title` held, in a
-// list and at the header's size alike; outside, it keeps `main`'s words and `title`.
+// dispatch://INFRA-3935 R6: inside `NoTooltips` a stale chip draws as text the latest version its
+// `title` held, in a list and at the header's size alike; outside, it keeps `main`'s words and
+// `title`.
 test("inside NoTooltips a stale chip draws its latest version", async () => {
   const stale: Mount = {
     name: "ApprovalChip, stale, in a list and in the header",
@@ -2526,54 +2291,128 @@ test("inside NoTooltips a stale chip draws its latest version", async () => {
     ...view.container.querySelectorAll("button[aria-haspopup='dialog']"),
   ];
 
-  const inside = await drawMount(stale, "inside");
-  try {
-    expect(chips(inside.view).map((chip) => chip.textContent)).toEqual([
+  await readDrawn(stale, "inside", (view, elements) => {
+    expect(chips(view).map((chip) => chip.textContent)).toEqual([
       "Approved v3 · latest v5",
       "Approved v3 · latest v5",
     ]);
-    expect(titlesOf(inside.elements)).toEqual([]);
-  } finally {
-    undraw(inside.view);
-  }
+    expect(titlesOf(elements)).toEqual([]);
+  });
 
-  const outside = await drawMount(stale, "outside");
-  try {
-    expect(
-      chips(outside.view).map((chip) => [chip.textContent, chip.getAttribute("title")])
-    ).toEqual([
+  await readDrawn(stale, "outside", (view) => {
+    expect(chips(view).map((chip) => [chip.textContent, chip.getAttribute("title")])).toEqual([
       ["Approved v3 · changed since", "Approved at version 3; the latest version is 5"],
       ["Approved v3 · changed since", "Approved at version 3; the latest version is 5"],
     ]);
-    expect(within(outside.view.container).queryAllByText(/latest v5/)).toEqual([]);
-  } finally {
-    undraw(outside.view);
-  }
+    expect(within(view.container).queryAllByText(/latest v5/)).toEqual([]);
+  });
 });
 
-// R6 of dispatch://INFRA-3935 (decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md):
+// dispatch://INFRA-3935 R6 (decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md):
 // inside `NoTooltips` every colour a file of R9 draws is one of B's page colours, the focus
-// indicator excepted (departure 4, decision 58).
+// indicator excepted (decision 58 of the same artifact).
 test("inside NoTooltips every colour is one of B's page colours", async () => {
   const offenders: string[] = [];
   const colourless: string[] = [];
-  for (const mount of MOUNTS) {
-    const { elements, view } = await drawMount(mount, "inside");
-    try {
+  for (const mount of EVERY_MOUNT) {
+    await readDrawn(mount, "inside", (_view, elements) => {
       const read = offPageColours(mount.name, elements);
       offenders.push(...read.offenders);
       if (read.colours === 0 && mount.colourless !== true) colourless.push(mount.name);
-    } finally {
-      undraw(view);
-    }
+    });
   }
   expect(offenders).toEqual([]);
   // A mount that drew nothing would pass the walk above with nothing read.
   expect(colourless).toEqual([]);
 });
 
-// R6 names the version link: it is drawn inside `NoTooltips` alone, so it is the page's link, in
-// the ink with its underline, and never `main`'s link blue.
+// dispatch://INFRA-3935 R6 and R9: the components line's picker takes its trigger's class from
+// `ComponentPicker`, which hands it to `MultiSelect`. Inside `NoTooltips` that trigger, "+" or
+// "Set components", draws in B's page colours and keeps none of `secondaryButtonCompact`'s;
+// outside, its class is `main`'s `secondaryButtonCompact`.
+test("inside NoTooltips the components picker's trigger draws in B's page colours", async () => {
+  const triggers = (view: RenderResult) =>
+    ["Edit components of CORE-1", "Edit components of CORE-2"].map((name) =>
+      within(view.container).getByRole("button", { name })
+    );
+  const mainsColours = tokens(secondaryButtonCompact).filter(
+    (token) => colourOf(splitToken(token).utility) !== undefined
+  );
+
+  await readDrawn(componentsWithPicker, "inside", (view) => {
+    const drawn = triggers(view);
+    expect(drawn.map((trigger) => trigger.textContent)).toEqual([
+      "+",
+      CONTROL_LABELS.components_set,
+    ]);
+    const read = offPageColours(componentsWithPicker.name, drawn);
+    expect(read.offenders).toEqual([]);
+    expect(read.colours).toBeGreaterThan(0);
+    for (const trigger of drawn) {
+      expect(classOf(trigger).filter((token) => mainsColours.includes(token))).toEqual([]);
+    }
+  });
+
+  await readDrawn(componentsWithPicker, "outside", (view) => {
+    expect(triggers(view).map((trigger) => trigger.getAttribute("class"))).toEqual([
+      secondaryButtonCompact,
+      secondaryButtonCompact,
+    ]);
+  });
+});
+
+// dispatch://INFRA-3935 R6: inside `NoTooltips` `AgentName`'s link, in each of its forms and as
+// the claim chip's holder, is the page's link, in the ink with its underline, and keeps none of
+// `main`'s link blue; outside, each keeps `main`'s class.
+test("inside NoTooltips AgentName's link draws in the page's ink with its underline", async () => {
+  // `main`'s `LINK_CLASS`, as `main`'s `AgentName.tsx` builds it.
+  const mainLink = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
+  const mainsBlue = tokens(`${linkText} ${linkHoverText}`);
+  // In document order: the link, the inline link, the control's live link, the holder's link.
+  const links: Mount = {
+    name: "AgentName, as a link, inline and a control, and the claim chip's holder",
+    node: () => (
+      <>
+        <AgentName actor={{ id: LIVE_SESSION, kind: "session" }} />
+        <AgentName actor={{ id: LIVE_SESSION, kind: "session" }} inline />
+        <AgentName
+          actor={{ id: LIVE_SESSION, kind: "session" }}
+          control={(name) => <button type="button">{name}</button>}
+          kind="control"
+        />
+        <ClaimChip claim={{ actor: { id: LIVE_SESSION, kind: "session" }, at: CLAIMED_AT }} />
+      </>
+    ),
+    settle: async (view) => {
+      await waitFor(() =>
+        expect(view.container.querySelectorAll(`[data-agent-state="running"]`)).toHaveLength(4)
+      );
+    },
+  };
+
+  await readDrawn(links, "inside", (view) => {
+    const drawn = [...view.container.querySelectorAll("a")];
+    expect(drawn).toHaveLength(4);
+    for (const link of drawn) {
+      expect(classOf(link)).toEqual(expect.arrayContaining([...tokens(pageInkText), "underline"]));
+      expect(classOf(link).filter((token) => mainsBlue.includes(token))).toEqual([]);
+    }
+  });
+
+  await readDrawn(links, "outside", (view) => {
+    expect(
+      [...view.container.querySelectorAll("a")].map((link) => link.getAttribute("class"))
+    ).toEqual([
+      mainLink,
+      `${mainLink} dispatch-inline-link underline`,
+      `ml-1 px-1 ${mainLink}`,
+      `${mainLink} dispatch-inline-link underline`,
+    ]);
+  });
+});
+
+// dispatch://INFRA-3935 R6 names the version link: it is drawn inside `NoTooltips` alone, so it is
+// the page's link, in the ink with its underline, and never `main`'s link blue.
 test("inside NoTooltips ApprovalSteps' version link draws in B's page colours", async () => {
   const node = () => (
     <ApprovalSteps
@@ -2582,28 +2421,21 @@ test("inside NoTooltips ApprovalSteps' version link draws in B's page colours", 
       versions={{ asks: [specRequest], issueKey: "CORE-1" }}
     />
   );
-  const inside = await drawMount({ name: "ApprovalSteps", node }, "inside");
-  try {
-    const link = within(inside.view.container).getByRole("link", { name: "spec.md, version 1" });
+  await readDrawn({ name: "ApprovalSteps", node }, "inside", (view) => {
+    const link = within(view.container).getByRole("link", { name: "spec.md, version 1" });
     const drawn = classOf(link);
     expect(drawn).toEqual(expect.arrayContaining([...tokens(pageInkText), "underline"]));
     expect(drawn.filter((token) => tokens(linkText).includes(token))).toEqual([]);
-  } finally {
-    undraw(inside.view);
-  }
+  });
 
-  const outside = await drawMount({ name: "ApprovalSteps", node }, "outside");
-  try {
-    expect(
-      within(outside.view.container).queryByRole("link", { name: "spec.md, version 1" })
-    ).toBeNull();
-  } finally {
-    undraw(outside.view);
-  }
+  await readDrawn({ name: "ApprovalSteps", node }, "outside", (view) => {
+    expect(within(view.container).queryByRole("link", { name: "spec.md, version 1" })).toBeNull();
+  });
 });
 
-// R6 names RouteReach's markers: inside `NoTooltips` each is the page's warning, its waiting
-// orange, and none keeps `main`'s callout or muted grey; outside, each keeps `main`'s.
+// dispatch://INFRA-3935 R6 names RouteReach's markers: inside `NoTooltips` each is the page's
+// warning, its waiting orange, and none keeps `main`'s callout or muted grey; outside, each keeps
+// `main`'s.
 test("inside NoTooltips RouteReach's markers draw in B's page colours", async () => {
   const markers = (view: RenderResult) => {
     const scope = within(view.container);
@@ -2618,9 +2450,8 @@ test("inside NoTooltips RouteReach's markers draw in B's page colours", async ()
     `${calloutWarningBg} ${calloutWarningBorder} ${calloutWarningText} ${textMutedOnSurface}`
   );
 
-  const inside = await drawMount({ name: "RouteReach", node: routeMarkers }, "inside");
-  try {
-    const drawn = markers(inside.view);
+  await readDrawn({ name: "RouteReach", node: routeMarkers }, "inside", (view) => {
+    const drawn = markers(view);
     for (const chip of [drawn.nobody, drawn.notRunning]) {
       expect(classOf(chip)).toEqual(expect.arrayContaining(tokens(pageWaitingChip)));
     }
@@ -2630,13 +2461,10 @@ test("inside NoTooltips RouteReach's markers draw in B's page colours", async ()
     for (const marker of Object.values(drawn)) {
       expect(classOf(marker).filter((token) => mainsTokens.includes(token))).toEqual([]);
     }
-  } finally {
-    undraw(inside.view);
-  }
+  });
 
-  const outside = await drawMount({ name: "RouteReach", node: routeMarkers }, "outside");
-  try {
-    const drawn = markers(outside.view);
+  await readDrawn({ name: "RouteReach", node: routeMarkers }, "outside", (view) => {
+    const drawn = markers(view);
     for (const chip of [drawn.nobody, drawn.notRunning]) {
       expect(classOf(chip)).toEqual(
         expect.arrayContaining(
@@ -2650,7 +2478,5 @@ test("inside NoTooltips RouteReach's markers draw in B's page colours", async ()
     for (const marker of Object.values(drawn)) {
       expect(classOf(marker).filter((token) => token.includes("page-"))).toEqual([]);
     }
-  } finally {
-    undraw(outside.view);
-  }
+  });
 });

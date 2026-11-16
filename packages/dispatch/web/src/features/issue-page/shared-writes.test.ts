@@ -28,69 +28,17 @@ import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import type { StepEntry } from "../issue/gated-steps";
 import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { RepoControl, repoControlName } from "../issue/RepoControl";
+import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
 import { writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
 import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
-const issue: IssueDetails = {
-  route_status: null,
-  route_holder: null,
-  route_status_reason: null,
-  holder_state: null,
-  last_seen: null,
-  takeable_at: null,
-  advances: [],
-  advances_revision: 0,
-  artifacts: [
-    {
-      created_at: "2026-09-09T00:00:00Z",
-      created_by: { id: "alice", kind: "user" },
-      id: "artifact-1",
-      issue_key: "CORE-1",
-      project: "CORE",
-      kind: "doc",
-      name: "spec.md",
-      primary: true,
-      ref_key: "CORE-1/spec",
-      session_id: null,
-      slug: "spec",
-      versions: [],
-    },
-  ],
-  children: [],
-  closed_at: null,
-  created_at: "2026-09-09T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  design_gates: [],
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
-  last_seq: 250,
-  number: 1,
-  open_asks: [],
-  progress: { tasks: null, children: null },
-  parent: null,
-  blocked_by: [],
-  assignee: null,
-  claim: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  plan_artifact_id: "",
-  decisions_artifact_id: "",
-  primary_artifact_id: "artifact-1",
-  verification_artifact_id: "",
-  project: "CORE",
-  referenced_by_count: 0,
-  route: null,
-  repo: null,
-  resolved_repo: null,
-  status: "todo",
-  priority: null,
-  rank: "U",
-  title: "Review the spec",
-  updated_at: "2026-09-09T00:00:00Z",
-};
+/** What the new issue page's header and Details share (dispatch://INFRA-3935 R8 and R10). */
+
+/** The issue both callers write: the margin fixture's issue, at a later event and admitted. */
+const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 
@@ -230,8 +178,9 @@ test("a status pick is kept in the write store when the page that made it goes",
   }
 });
 
-// R8 (dispatch://INFRA-1196 R21): the shell's indicator names a header write by the page's own
-// name for each field it carries, never the schema's, and a status by the board's word for it.
+// dispatch://INFRA-3935 R8 (dispatch://INFRA-1196 R21): the shell's indicator names a header
+// write by the page's own name for each field it carries, never the schema's, and a status by the
+// board's word for it.
 test("issueUpdateLabel names each field by the page's word", () => {
   expect(issueUpdateLabel("CORE-1", { parent: "CORE-9" })).toBe("Parent of CORE-1 saved");
   expect(issueUpdateLabel("CORE-1", { status: "in_progress" })).toBe("CORE-1 set to In progress");
@@ -242,9 +191,9 @@ test("issueUpdateLabel names each field by the page's word", () => {
   expect(issueUpdateLabel("CORE-1", {})).toBe("CORE-1 saved");
 });
 
-// R8: the prototype's `.st-*` puts every status in one of three groups, each with its glyph and
-// its colour: done, the work that moves, and the rest, a status the board does not know among
-// them.
+// dispatch://INFRA-3935 R8: the prototype's `.st-*` puts every status in one of three groups,
+// each with its glyph and its colour: done, the work that moves, and the rest, a status the board
+// does not know among them.
 test("statusGlyph and statusTone give the prototype's three groups", () => {
   expect([statusGlyph("done"), statusTone("done")]).toEqual(["✓", pageStatusDoneText]);
   const moving = ["in_progress", "testing", "needs_review"];
@@ -270,7 +219,7 @@ test("statusGlyph and statusTone give the prototype's three groups", () => {
 });
 
 /** The project's one architecture source, so the components line draws its picker
- *  (`IssueComponentsLine.test.tsx`'s `source`). */
+ *  (`IssueComponentsLine.test.tsx`'s `source`, counting one component). */
 const architectureSource: ArchitectureSource = {
   branch: "main",
   components: 1,
@@ -284,8 +233,8 @@ const architectureSource: ArchitectureSource = {
   repo: "legion/legion",
 };
 
-// R8: the new issue page's add menu reaches four of `main`'s controls by name, so each name is
-// `main`'s, and each of `main`'s controls answers to it.
+// dispatch://INFRA-3935 R8: the new issue page's add menu reaches four of `main`'s controls by
+// name, so each name is `main`'s, and each of `main`'s controls answers to it.
 test("the four control names are main's", async () => {
   expect(assigneeControlName("CORE-1")).toBe("Assignee of CORE-1");
   expect(repoControlName("CORE-1")).toBe("Repository of CORE-1");
@@ -335,8 +284,8 @@ test("the four control names are main's", async () => {
   }
 });
 
-// R8: the header and Details are two callers of the hook on one page, and each reads the status
-// the other is saving, from the first moment of its write to its answer.
+// dispatch://INFRA-3935 R8: the header and Details are two callers of the hook on one page, and
+// each reads the status the other is saving, from the first moment of its write to its answer.
 test("two callers of useIssueHeaderWrites read the status either one is saving", async () => {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -375,9 +324,9 @@ test("two callers of useIssueHeaderWrites read the status either one is saving",
   }
 });
 
-// R8: a write of the issue's fields lands one way whichever row made it: its answer merged over
-// the cached details, or the issue read again when Dispatch took the write with no answer, and
-// the issue lists refreshed either way.
+// dispatch://INFRA-3935 R8: a write of the issue's fields lands one way whichever row made it:
+// its answer merged over the cached details, or the issue read again when Dispatch took the write
+// with no answer, and the issue lists refreshed either way.
 test("landIssueWrite merges an answer and reads the issue again when none came", () => {
   const land = (next: Issue | null) => {
     const client = new QueryClient();
@@ -406,8 +355,9 @@ test("landIssueWrite merges an answer and reads the issue again when none came",
   expect(unanswered.listsReadAgain).toBe(true);
 });
 
-// R8: only the Status pill's pick alone is a control's write, shown in the shell's indicator and
-// rolled back on a refusal; a write that carries any other field is the header's.
+// dispatch://INFRA-3935 R8: only the Status pill's pick alone is a control's write, shown in the
+// shell's indicator and rolled back on a refusal; a write that carries any other field is the
+// header's.
 test("statusPickOnly is true for a status alone", () => {
   expect(statusPickOnly({ status: "done" })).toBe(true);
   expect(statusPickOnly({ status: "done", title: "New title" })).toBe(false);
@@ -497,35 +447,38 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
       .queryAllByRole("button")
       .map((button) => button.textContent);
 
-  const waitingOnReader = drawSteps([VERIFICATION_ID]);
   try {
-    expect(buttonsOf(waitingOnReader, "criteria")).toEqual([
-      "Awaiting approval",
-      "Approve",
-      "Request changes",
-    ]);
-    expect(buttonsOf(waitingOnReader, "spec")).toEqual(["Changes requested"]);
+    const waitingOnReader = drawSteps([VERIFICATION_ID]);
+    try {
+      expect(buttonsOf(waitingOnReader, "criteria")).toEqual([
+        "Awaiting approval",
+        "Approve",
+        "Request changes",
+      ]);
+      expect(buttonsOf(waitingOnReader, "spec")).toEqual(["Changes requested"]);
 
-    await user.click(
-      within(entry(waitingOnReader, "criteria")).getByRole("button", { name: "Approve" })
-    );
-    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
-    expect(createArtifactReview.mock.calls[0]?.[0]).toBe(VERIFICATION_ID);
-    expect(createArtifactReview.mock.calls[0]?.[1]).toEqual({ state: "approved" });
-  } finally {
-    waitingOnReader.unmount();
-  }
+      await user.click(
+        within(entry(waitingOnReader, "criteria")).getByRole("button", { name: "Approve" })
+      );
+      await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+      expect(createArtifactReview.mock.calls[0]?.[0]).toBe(VERIFICATION_ID);
+      expect(createArtifactReview.mock.calls[0]?.[1]).toEqual({ state: "approved" });
+    } finally {
+      waitingOnReader.unmount();
+    }
 
-  const primaryAlone = drawSteps(undefined);
-  try {
-    expect(buttonsOf(primaryAlone, "spec")).toEqual([
-      "Changes requested",
-      "Approve",
-      "Request changes",
-    ]);
-    expect(buttonsOf(primaryAlone, "criteria")).toEqual(["Awaiting approval"]);
+    const primaryAlone = drawSteps(undefined);
+    try {
+      expect(buttonsOf(primaryAlone, "spec")).toEqual([
+        "Changes requested",
+        "Approve",
+        "Request changes",
+      ]);
+      expect(buttonsOf(primaryAlone, "criteria")).toEqual(["Awaiting approval"]);
+    } finally {
+      primaryAlone.unmount();
+    }
   } finally {
-    primaryAlone.unmount();
     createArtifactReview.mockRestore();
   }
 });

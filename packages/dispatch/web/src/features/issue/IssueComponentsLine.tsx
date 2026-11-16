@@ -109,7 +109,7 @@ export function IssueComponentsLine({
     >
       {inDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
-          {page === null ? "Components:" : `${page.PROPERTY_LABELS.components}:`}
+          {`${page?.PROPERTY_LABELS.components ?? "Components"}:`}
         </span>
       )}
       {components.mode === "inherit" ? (

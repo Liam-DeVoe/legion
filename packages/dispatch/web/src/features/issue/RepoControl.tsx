@@ -103,6 +103,12 @@ export function RepoControl({
   // shows a value its options lack.
   const options = repo === null || mapped.includes(repo) ? mapped : [repo, ...mapped];
   const tone = repo === null ? badgeLow : badgePrimary;
+  const description =
+    resolvedRepo === null
+      ? "No repository"
+      : repo === null
+        ? `${resolvedRepo}, inherited or the project's default`
+        : resolvedRepo;
   // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
   // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the issue's own repository
   // is the page's label chip, one it inherits or none is the quiet words on the same ground; the
@@ -115,15 +121,9 @@ export function RepoControl({
         ? `${pagePaneBg} ${pageQuietText}`
         : pageLabelChip;
   const lineText = page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText;
-  const description =
+  const shownDescription =
     page === null ? (
-      resolvedRepo === null ? (
-        "No repository"
-      ) : repo === null ? (
-        `${resolvedRepo}, inherited or the project's default`
-      ) : (
-        resolvedRepo
-      )
+      description
     ) : resolvedRepo === null ? (
       page.CONTROL_LABELS.no_repository
     ) : (
@@ -178,7 +178,7 @@ export function RepoControl({
           ))}
         </select>
         <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
-          {description}
+          {shownDescription}
         </span>
       </span>
     );
@@ -188,7 +188,7 @@ export function RepoControl({
     >
       {inDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
-          {page === null ? "Repository:" : `${page.PROPERTY_LABELS.repository}:`}
+          {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
         </span>
       )}
       {picker}

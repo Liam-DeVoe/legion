@@ -537,16 +537,13 @@ export function AskCard({
   const tooltips = useTooltips();
   const submitHintId = `${answerFieldId}-hint`;
   const agentText = useAgentText();
-  // The asker as its button's tooltip, on a surface that offers one (`components/tooltips.tsx`;
-  // the new issue page offers none, so the name alone is drawn there): a block ask the server
-  // indexed with no pending author has an empty label and reads as "asked". A session's tooltip
-  // also carries its full id, since the innermost title is the one a browser shows, and an
-  // untitled session's name is the short form `session:<8>…` that sessions started in the same
-  // minute share; its own name opens the copy handles that hold it either way.
+  // The asker as its button's tooltip: a block ask the server indexed with no pending author
+  // has an empty label and reads as "asked". A session's tooltip also carries its full id, since
+  // the innermost title is the one a browser shows, and an untitled session's name is the short
+  // form `session:<8>…` that sessions started in the same minute share.
   const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
-  const askerTitle = !tooltips
-    ? undefined
-    : displayedAsk.author.id === ""
+  const askerTitle =
+    displayedAsk.author.id === ""
       ? "asked"
       : sessionAuthor === undefined
         ? agentText.label(displayedAsk.author)
@@ -888,7 +885,7 @@ export function AskCard({
             )}
             <span className="flex min-w-0 items-center gap-x-1.5">
               {sessionAuthor === undefined ? (
-                <TruncatedText className="min-w-0" title={askerTitle}>
+                <TruncatedText className="min-w-0" title={tooltips ? askerTitle : undefined}>
                   {displayedAsk.author.id === "" ? (
                     "asked"
                   ) : (
@@ -909,7 +906,7 @@ export function AskCard({
                       onClick={() => setHandlesOpen((open) => !open)}
                       type="button"
                     >
-                      <TruncatedText className="min-w-0" title={askerTitle}>
+                      <TruncatedText className="min-w-0" title={tooltips ? askerTitle : undefined}>
                         {name}
                       </TruncatedText>
                       <ChevronIcon expanded={handlesOpen} />
