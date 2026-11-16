@@ -3054,15 +3054,16 @@ export default function envoyExtension(pi: PiApi): void {
   // delivers to it and Envoy inbound is unavailable. The session still starts and runs; the
   // reason is the listener's own, one of those `ErrorWireSchema.reason` lists
   // (`@legion/envoy-client`'s `transport.ts`), carried in the error's message, which
-  // `inboundUnavailableNoticeText` words for every host, and the heartbeat registers again
-  // every tick until one is accepted.
-  const inboundOutage = inboundUnavailable((why) => {
+  // `inboundUnavailableNoticeText` words for every host - as another process holding this
+  // session, where the listener refused this process as a superseded one - and the heartbeat
+  // registers again every tick until one is accepted.
+  const inboundOutage = inboundUnavailable((why, reason) => {
     logger.warn(`envoy: this session receives nothing: ${why}`);
     activeSessionContext?.ui.notify(
       `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
       "warning"
     );
-    unwritten.sendNotice(inboundUnavailableNoticeText(why));
+    unwritten.sendNotice(inboundUnavailableNoticeText(why, reason));
   });
 
   // Where this session's pane sits in tmux, so Dispatch can draw the machine's layout from what

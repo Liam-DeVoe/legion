@@ -10,6 +10,7 @@ import {
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
   inboundUnavailable,
+  inboundUnavailableNoticeText,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
   type RelayMessage,
@@ -17,7 +18,7 @@ import {
   registerWithRelay,
 } from "../consumer-delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
-import type { DeliveryAnswer } from "../transport";
+import { type DeliveryAnswer, EnvoyApiError, SUPERSEDED_INSTANCE_REASON } from "../transport";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
@@ -1090,13 +1091,16 @@ describe("one registration", () => {
   const UNCAPTURED = "notifications.team";
   const TEAM = "notifications.team.deploys";
 
-  /** A relay that records what a registration stamped on it. */
+  /** A relay that records what a registration stamped on it, and each superseded state it set. */
   function fakeRelay() {
     const followed: string[][] = [];
+    const superseded: boolean[] = [];
     return {
       followed,
+      superseded,
       setFollowed: (topics: Iterable<string>) => followed.push([...topics]),
       registration: () => ({ consumer: true, epoch: "epoch-1" }) as const,
+      setSuperseded: (value: boolean) => superseded.push(value),
     };
   }
 
@@ -1169,5 +1173,103 @@ describe("one registration", () => {
 
     expect(relay.followed).toEqual([[AGENT, TEAM]]);
     expect([answers, told]).toEqual([[], ["no_grant"]]);
+  });
+
+  test("a process another process superseded is told that process holds its session, once", async () => {
+    const relay = fakeRelay();
+    const told: { why: string; reason: string | undefined }[] = [];
+    const outage = inboundUnavailable((why, reason) => told.push({ why, reason }));
+    const refusal = new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 409,
+      responseBody: JSON.stringify({
+        error:
+          "another process holds session ses_a: client instance b registered it after this process (client instance a)",
+        reason: SUPERSEDED_INSTANCE_REASON,
+        client_instance_id: "b",
+      }),
+    });
+    const register = () =>
+      registerWithRelay({
+        relay,
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage,
+        send: () => Promise.reject(refusal),
+        answered: () => undefined,
+      });
+
+    await expect(register()).rejects.toBe(refusal);
+    await expect(register()).rejects.toBe(refusal);
+
+    expect(told).toEqual([{ why: refusal.message, reason: SUPERSEDED_INSTANCE_REASON }]);
+    const notice = inboundUnavailableNoticeText(told[0]?.why ?? "", told[0]?.reason);
+    expect(notice).toContain("Another process holds this session");
+    expect(notice).toContain("client instance b registered it after this process");
+    expect(notice).not.toContain("Envoy inbound unavailable");
+    expect(inboundUnavailableNoticeText("no_grant", "no_grant")).toContain(
+      "Envoy inbound unavailable"
+    );
+  });
+
+  test("a superseded process drops the relay until a registration of its own is accepted again", async () => {
+    const { delivery, replies, handed, settled } = setup();
+    const superseded = new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 409,
+      responseBody: JSON.stringify({
+        error: "another process holds session ses_a",
+        reason: SUPERSEDED_INSTANCE_REASON,
+        client_instance_id: "b",
+      }),
+    });
+    const grantless = new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error: "no grant", reason: "no_grant" }),
+    });
+    let answer: () => Promise<string> = () => Promise.reject(superseded);
+    const register = () =>
+      registerWithRelay({
+        relay: delivery,
+        ownAgentSubject: AGENT,
+        followed: [],
+        outage: inboundUnavailable(() => undefined),
+        send: () => answer(),
+        answered: () => undefined,
+      });
+
+    await expect(register()).rejects.toBe(superseded);
+    // A frame the listener relays for the newer process reaches this one too: it is dropped, and
+    // nothing this process says reaches the listener.
+    delivery.receive(relay({ seq: 1, reply: "_INBOX.while-superseded" }));
+    await settled();
+    expect([handed.length, repliesTo(replies, "_INBOX.while-superseded")]).toEqual([0, []]);
+    // The connection probe is still answered: it says only that a subscription is here.
+    delivery.receive({
+      data: new Uint8Array(),
+      headers: { get: (name) => (name === RelayHeader.probe ? "1" : "") },
+      reply: "_INBOX.probe",
+    });
+    expect(repliesTo(replies, "_INBOX.probe")).toEqual(["done"]);
+
+    // A refusal for another reason leaves the relay dropped.
+    answer = () => Promise.reject(grantless);
+    await expect(register()).rejects.toBe(grantless);
+    delivery.receive(relay({ seq: 1, delivered: 2, reply: "_INBOX.after-no-grant" }));
+    await settled();
+    expect([handed.length, repliesTo(replies, "_INBOX.after-no-grant")]).toEqual([0, []]);
+
+    // The newer process stopped answering, so this one's registration is accepted: the relay is
+    // this process's again, and the listener's restart at the ack floor sends the frame once more.
+    answer = () => Promise.resolve("registered");
+    await expect(register()).resolves.toBe("registered");
+    delivery.receive(relay({ seq: 1, delivered: 3, reply: "_INBOX.accepted" }));
+    await settled();
+    expect(seqs(handed)).toEqual([1]);
+    expect(repliesTo(replies, "_INBOX.accepted")).toContain("received");
   });
 });

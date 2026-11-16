@@ -226,6 +226,12 @@ const (
 	// field. It is a verdict of its own only so the route can log that takeover without
 	// restating the rule that reached it.
 	roleTakenFromUnidentifiedPredecessor
+	// roleTakenFromSupersededProcess is roleTakenFromHolder for the role held under the
+	// claimant's own session id by a process the claimant's own registration superseded
+	// (session.SessionRegistry.Supersedes): the listener refuses every registration of that
+	// process, so its claim's renewal says nothing and the role passes to the claimant at once
+	// (roleOwnSessionVerdict). It is a verdict of its own only so the route can log that takeover.
+	roleTakenFromSupersededProcess
 	// roleHeldByAnotherProcess: the role is held under the claimant's own session id by a
 	// process that still answers for its claim, so nothing is taken and
 	// store.Registry.SetRoleWithPrevious answers the 409 naming that session id
@@ -257,18 +263,28 @@ const (
 
 // roleOwnSessionVerdict decides a soft claim of role whose standing claim is held under the
 // claimant's own session id, which is no reason to hand the role over: a second process can
-// resume a live session's id, and the session record names whichever process registered that id
-// last, not the one holding the role. So this verdict is made on the standing claim alone -
-// claim, as the route read it - and reads no session record at all, which is what tells it apart
-// from roleSupersessionVerdict. claimantInstanceID is the client instance the claimant's request
-// stated, with no fallback to the registration: an absent instance names no process and matches
-// no claim, so a request that states none reaches the renewal test rather than a case of its own.
-// role is the role claimed: this listener's record of the renewals that failed is kept by role
-// and holder session, so the verdict reads it by the two.
+// resume a live session's id, and the session record names the newest process that registered
+// that id, not the one holding the role. So this verdict is made on the standing claim - claim,
+// as the route read it - and reads one thing alone of registration, the claimant's own session
+// record as the route read it: which processes a registration of the claimant superseded. That is
+// what tells it apart from roleSupersessionVerdict. claimantInstanceID is the client instance the
+// claimant's request stated, with no fallback to the registration: an absent instance names no
+// process and matches no claim, so a request that states none reaches the renewal test rather
+// than a case of its own. role is the role claimed: this listener's record of the renewals that
+// failed is kept by role and holder session, so the verdict reads it by the two.
 //
 // A claim naming the claimant's very process is the holder re-claiming its own role
 // (store.RoleClaim.HeldByProcess), granted at once however recently it was renewed: it rests on
 // no renewal, and refusing it would strand the holder's own process after a listener restart.
+//
+// A claim naming a process the claimant's own registration superseded passes to the claimant at
+// once, however recently it was renewed (roleTakenFromSupersededProcess): registration names the
+// claimant's instance and keeps the claim's instance as superseded
+// (session.SessionRegistry.Supersedes). The listener refuses every registration of that older
+// process while the claimant's entry is live (session.SessionRegistry.NewerInstance), so its
+// renewal was its last word, and a process that restarted after a crash with a new instance takes
+// its role back at once instead of waiting out the live window. It rests on no renewal either, so
+// the grant guard below does not weigh it.
 //
 // Otherwise the claim goes to the claimant only once nobody has answered for it inside liveWindow
 // (store.Registry.ClaimRenewedWithin, over the registry's own clock). A claim an earlier build
@@ -311,9 +327,12 @@ const (
 //     from subscribeHandler). The record is this listener's own and is lost at a restart, and a
 //     claim may reach another listener, so the repair's bound and not this record is what
 //     bounds the harm.
-func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.RoleClaim, claimantInstanceID string, liveWindow time.Duration) (roleSupersession, error) {
+func roleOwnSessionVerdict(registry *store.Registry, sessions *session.SessionRegistry, registration session.SessionEntry, role string, claim store.RoleClaim, claimantInstanceID string, liveWindow time.Duration) (roleSupersession, error) {
 	if claim.HeldByProcess(claimantInstanceID) {
 		return roleTakenFromHolder, nil
+	}
+	if registration.ClientInstanceID == claimantInstanceID && sessions.Supersedes(registration, claim.ClientInstanceID) {
+		return roleTakenFromSupersededProcess, nil
 	}
 	if registry.ClaimRenewedWithin(claim, liveWindow) {
 		return roleHeldByAnotherProcess, nil

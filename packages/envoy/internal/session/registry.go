@@ -91,6 +91,14 @@ type SessionEntry struct {
 	// held it, while another instance's live session keeps its role however it is named. Empty
 	// for a client that predates the field.
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
+	// SupersededInstances are the client instances a registration of a newer instance took this
+	// session from, the newest first, each with the moment it was taken (SupersededAfter). A
+	// registration of one of them is refused while this entry is live (NewerInstance), so two
+	// processes under one session id do not take its relay in turns. The list is kept in the
+	// record, not in one listener's memory, because every listener reads the same bucket. It
+	// holds at most SupersededInstanceLimit instances, each for SupersededInstanceMemory. An
+	// older listener ignores the field when it reads the record and drops it when it writes one.
+	SupersededInstances []SupersededInstance `json:"superseded_instances,omitempty"`
 }
 
 // TmuxPlace is a session's pane and the window and tmux session holding it, in the wire names
@@ -785,10 +793,11 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
 // handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
-	// Several live processes can hold the same session (shared on-disk state) - a harness can
-	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
-	// follows whichever wrote last, and this write stamps the entry with the moment it was made,
-	// so a reader weighing the route's freshness (ClaimStaleAfter) reads the latest heartbeat.
+	// Two live processes can register under one session id, each with a client instance of its
+	// own. The registration route refuses the older one while the newer one's entry is live
+	// (NewerInstance), so the entry names the newest instance. This write stamps the entry with
+	// the moment it was made, so a reader weighing the route's freshness (ClaimStaleAfter) reads
+	// the latest heartbeat.
 	entry.UpdatedAt = r.now().UnixMilli()
 	buf, err := json.Marshal(entry)
 	if err != nil {

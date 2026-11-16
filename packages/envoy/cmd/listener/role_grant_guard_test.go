@@ -23,7 +23,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/kvwatch/kvwatchtest"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -461,15 +460,18 @@ func answerFields(t *testing.T, recorder *httptest.ResponseRecorder) []string {
 	return slices.Sorted(maps.Keys(fields))
 }
 
-// A relaunched Legion pane is a process that resumes the session id of the one it replaced, with a
-// client instance of its own, while that process's claim still stands. The grant guard's refusal
-// of its claim is the answer it gets while the process before it still answers for that claim: a
-// 409 whose body, decoded as the client decodes it, names the role and the claimant's own session
-// as the holder, in the same three fields. So envoy-client's setRole reads it as a claim not
-// granted to a holder that is this very session, which both harnesses wait out, and not as a
-// failure that stops the pane. Only the error tells the two apart: the guard's opens with
-// grantGuardPrefix and names the arm. The route logs the guard's refusal once, with the role, the
-// session, both processes and the arm.
+// A second process that resumed a session id with a client instance of its own, and whose own
+// registration has not landed, claims the role the process before it holds while that process's
+// claim still stands. The session's record still names the process before it, so nothing says the
+// claimant is the newer process, and the claim is weighed on the standing claim's renewal. The
+// grant guard's refusal of its claim is the answer it gets while the process before it still
+// answers for that claim: a 409 whose body, decoded as the client decodes it, names the role and
+// the claimant's own session as the holder, in the same three fields. So envoy-client's setRole
+// reads it as a claim not granted to a holder that is this very session, which both harnesses wait
+// out, and not as a failure that stops the pane. Only the error tells the two apart: the guard's
+// opens with grantGuardPrefix and names the arm. The route logs the guard's refusal once, with the
+// role, the session, both processes and the arm. A process whose registration did land takes the
+// role at once instead (TestTheGrantGuardDoesNotHoldOffAProcessWhoseRegistrationSupersededTheHolder).
 func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *testing.T) {
 	const (
 		holder = "ses_relaunched_pane"
@@ -478,9 +480,6 @@ func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *
 	rig := newGrantGuardRig(t)
 	rig.seed(t, holder, role)
 	rig.failRenewal(t, holder, role)
-	// The pane is relaunched: the new process registers under the session id, stating its own
-	// instance, and claims the role the process before it holds.
-	rig.register(t, holder, secondProcess)
 
 	renewed := rig.claim(t, holder, role, secondProcess)
 	var held roleHeldAnswer
@@ -527,15 +526,15 @@ func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *
 	}
 }
 
-// A relaunched process's own registrations neither record a renewal failure of the claim the
-// process before it holds nor clear the one that process recorded: no renewal of a claim naming
-// another process is this process's to make. So the renewal-failure arm refuses the relaunched
-// process's claim, with the 409 naming its own session, until one live window after the stopped
-// process's last failure, and grants it from then on. The relaunched process registers a heartbeat
-// apart while the registry's clock moves, every read answering, and after each registration the
-// record is still the stopped process's failure at the moment it was recorded; the scheduled read
-// is fired at each step, so the repair's bound is never the arm that refuses.
-func TestTheGrantGuardRefusesARelaunchedProcessOnlyUntilItsPredecessorsLastFailureAges(t *testing.T) {
+// A relaunched process registers under the session id of the process it replaced, with a client
+// instance of its own, and so supersedes that process (session.SessionRegistry.SupersededAfter).
+// Its registration neither records a renewal failure of the claim the process before it holds nor
+// clears the one that process recorded: no renewal of a claim naming another process is this
+// process's to make. The grant guard does not hold it off for that record, nor for the claim's
+// fresh renewal: the listener refuses every registration of the superseded process, so neither
+// says that process still answers, and the role passes to the relaunched process at once
+// (roleTakenFromSupersededProcess).
+func TestTheGrantGuardDoesNotHoldOffAProcessWhoseRegistrationSupersededTheHolder(t *testing.T) {
 	const (
 		holder = "ses_relaunched_after_a_failure"
 		role   = "guard-predecessor-failed"
@@ -543,51 +542,20 @@ func TestTheGrantGuardRefusesARelaunchedProcessOnlyUntilItsPredecessorsLastFailu
 	rig := newGrantGuardRig(t)
 	rig.seed(t, holder, role)
 	failed := rig.failRenewal(t, holder, role).At
-	// The process that holds the claim stops: nothing renews the claim from here on.
-	ageRoleClaim(t, rig.deps, role, 2*rig.liveWindow())
-	window := rig.liveWindow()
-	ends := failed.Add(window)
-	arm := fmt.Sprintf("role %s's renewal for %s failed on this listener at %s", role, holder, failed.UTC().Format(time.RFC3339))
-
-	// registerAt moves the registry's clock to at, has the relaunched process register there and
-	// fires the scheduled read, then fails the test unless the record of the failure is still the
-	// stopped process's, recorded at failed, exactly when at is inside the window it opened.
-	registerAt := func(at time.Time) {
-		t.Helper()
-		rig.clock.Advance(at.Sub(rig.clock.Now()))
-		rig.register(t, holder, secondProcess)
-		report := rig.repair(t)
-		failure, recorded := rig.deps.registry.RenewalFailedWithin(role, holder, window)
-		t.Logf("at %s (%s after the failure) the relaunched process registered; the scheduled read completed at %s; the renewal failure recorded: %v at %s",
-			at.Format(time.RFC3339), at.Sub(failed), report.CompletedAt.Format(time.RFC3339), recorded, failure.At.Format(time.RFC3339Nano))
-		if inside := at.Before(ends); recorded != inside || (recorded && !failure.At.Equal(failed)) {
-			t.Fatalf("after the relaunched process registered at %s the record of %s's renewal for %s is %v at %s; want the stopped process's failure at %s recorded %v",
-				at.Format(time.RFC3339), role, holder, recorded, failure.At.Format(time.RFC3339Nano), failed.Format(time.RFC3339Nano), inside)
-		}
+	rig.register(t, holder, secondProcess)
+	if failure, recorded := rig.deps.registry.RenewalFailedWithin(role, holder, rig.liveWindow()); !recorded || !failure.At.Equal(failed) {
+		t.Fatalf("after the relaunched process registered the record of %s's renewal for %s is %v at %s; want the stopped process's failure at %s",
+			role, holder, recorded, failure.At.Format(time.RFC3339Nano), failed.Format(time.RFC3339Nano))
 	}
-
-	beats := 0
-	for at := failed.Add(contracts.SessionHeartbeat); at.Before(ends); at = at.Add(contracts.SessionHeartbeat) {
-		registerAt(at)
-		beats++
-		requireGuardState(t, rig.deps.registry, role, holder, window, true, true, true)
-
-		recorder := rig.claim(t, holder, role, secondProcess)
-
-		requireGuardRefusal(t, recorder, role, holder, arm)
-		rig.requireHeldBy(t, role, holdingProcess, "a claim refused writes nothing")
-	}
-	if beats < 2 {
-		t.Fatalf("the relaunched process registered %d times inside the %s window, want more than once", beats, window)
-	}
-
-	registerAt(ends.Add(time.Second))
-	requireGuardState(t, rig.deps.registry, role, holder, window, true, true, false)
+	requireGuardState(t, rig.deps.registry, role, holder, rig.liveWindow(), true, true, true)
 
 	recorder := rig.claim(t, holder, role, secondProcess)
 
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("the relaunched process's claim one live window after the stopped process's last failure: status %d %s, want 200", recorder.Code, recorder.Body.String())
+		t.Fatalf("the relaunched process's claim of the role the process it superseded holds: status %d %s, want 200 at once", recorder.Code, recorder.Body.String())
 	}
 	rig.requireHeldBy(t, role, secondProcess, "the role is given to the relaunched process")
+	if !strings.Contains(rig.logs.String(), "listener role claim taken from an older process of this session id") {
+		t.Fatalf("the route logged no takeover from the superseded process:\n%s", rig.logs.String())
+	}
 }

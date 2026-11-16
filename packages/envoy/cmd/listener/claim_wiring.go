@@ -46,10 +46,11 @@ type subscribeBody struct {
 	// ClientInstanceID is the id the client instance mints at its own start (one Oh My Pi Envoy
 	// extension instance, one Claude Code channel-server process) and sends on every
 	// registration, so a soft claim naming a predecessor session can tell that predecessor's
-	// own instance from another instance's live session (session.InstanceMatches). Empty for a
-	// client whose plugin predates the field, which keeps the old rule; absent here it is
-	// written empty, clearing any id a previous registration stored, since the entry is built
-	// fresh from this body.
+	// own instance from another instance's live session (session.InstanceMatches), and so the
+	// listener can tell an older instance of this session from a newer one
+	// (session.SessionRegistry.NewerInstance). Empty for a client whose plugin predates the
+	// field, which keeps the old rule; absent here it is written empty, clearing any id a
+	// previous registration stored, since the entry is built fresh from this body.
 	ClientInstanceID string `json:"client_instance_id"`
 	// Delivery asks for consumer delivery (subscribeDelivery). A registration that carries none,
 	// an older plugin's, is refused (sessionDelivery.register).
@@ -83,7 +84,8 @@ type subscribeResume struct {
 // registering listener's machine id, and, when delivery says the listener holds the session's
 // consumer for it, consumer delivery, the plugin's epoch and the sequence that consumer starts at.
 // The entry's Port is left 0: a registration naming one is refused before it reaches here
-// (subscribeHandler).
+// (subscribeHandler). The superseded instances come from the entry it replaces, not from the
+// body, so the caller sets them (listenerDeps.registerPass).
 func sessionEntryFromSubscribe(body subscribeBody, machineID string, delivery sessionDeliveryOutcome) session.SessionEntry {
 	entry := session.SessionEntry{
 		MachineID:        machineID,
