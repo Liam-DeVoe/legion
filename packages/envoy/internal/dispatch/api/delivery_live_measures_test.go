@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
 // TestAMeasuresViewIsMarkedByAMergeBeforeItsWindow: a measures view's deploys_with_prs counts each
@@ -40,12 +41,19 @@ func TestAMeasuresViewIsMarkedByAMergeBeforeItsWindow(t *testing.T) {
 // job lands late can ship a pull request a deploy of the window shipped until then. So a change of
 // a deploy run or of one of its jobs marks every measures view, whenever the run was created, as it
 // marks every timeline view. A pipeline view, which reads the deploy runs started in its shown days
-// alone, is not marked by a run created before them.
+// alone, is not marked by a run created before them. A pipeline view names no window, only an at,
+// and shows the seven UTC days ending on at's day; the one here is at the window's last second, so
+// its seven days are the window's and the run created inside the window falls in them.
 func TestAMeasuresViewIsMarkedByEveryDeployRunChange(t *testing.T) {
 	from, to := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
 	now := to.Add(48 * time.Hour)
 	measuresView := &deliveryView{spec: deliveryLiveSpec{kind: deliveryLiveMeasures, from: from, to: to}}
-	pipelineView := &deliveryView{spec: deliveryLiveSpec{kind: deliveryLivePipeline, from: from, to: to}}
+	at := to.Add(-time.Second)
+	pipelineView := &deliveryView{spec: deliveryLiveSpec{kind: deliveryLivePipeline, at: &at}}
+	if shown := measures.WindowStart(at); !shown.Equal(from) {
+		t.Fatalf("the pipeline view at %s shows the days from %s, want the window's from %s", at.Format(time.RFC3339),
+			shown.Format(time.DateOnly), from.Format(time.DateOnly))
+	}
 	marked := 0
 	for _, kind := range []string{delivery.ChangeKindRun, delivery.ChangeKindRunJob} {
 		for _, created := range []struct {
@@ -64,8 +72,8 @@ func TestAMeasuresViewIsMarkedByEveryDeployRunChange(t *testing.T) {
 				marked++
 			}
 			if inside := !created.at.Before(from); pipelineView.touchedBy(change, now) != inside {
-				t.Errorf("a %s change of a deploy run created %s marks the pipeline view of %s..%s: %t, want %t", kind, created.what,
-					from.Format(time.DateOnly), to.Format(time.DateOnly), !inside, inside)
+				t.Errorf("a %s change of a deploy run created %s marks the pipeline view at %s: %t, want %t", kind, created.what,
+					at.Format(time.RFC3339), !inside, inside)
 			}
 		}
 	}

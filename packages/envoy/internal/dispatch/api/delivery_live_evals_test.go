@@ -207,6 +207,9 @@ func TestAVersionOfAnEvalADeliveryViewReadsMarksIt(t *testing.T) {
 // write's version of pr-ci marks the view, and its delta lands on the GET route's body. Of six
 // PR-checks runs, all with a quick job and three with a slow one, no job ranks at the seeded 50,
 // both rank at 3, the slower first, and the quick one alone at 6, each body stating its min_n.
+// The view is pinned at the moment the runs are dated from, and each GET reads that at: the
+// Pipeline route reads at alone, and the hub's clock runs on with the wall clock, so a view of the
+// present would answer a later moment than any at the test could send.
 func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
@@ -237,7 +240,8 @@ func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
 		}
 	}
 	conn := newFakeLiveConn()
-	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(nil)))
+	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(&now)))
+	pinned := "at=" + now.Format(time.RFC3339Nano)
 	body := conn.snapshot(t, 5*time.Second, "p").Body
 	if names, minN := pipelineSlowestJobs(t, body); len(names) != 0 || minN != measures.SlowestMinResults {
 		t.Fatalf("the snapshot ranks %v by %d, want no job by the seeded %d", names, minN, measures.SlowestMinResults)
@@ -253,7 +257,7 @@ func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
 		if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
 			t.Fatalf("set HUB's pr-ci min_n to %d: status %d, body %s", step.minN, registered.Code, registered.Body.String())
 		}
-		body = requireLandsOnGET(t, rig.handler, deliveryLivePipeline, body, conn.delta(t, 5*time.Second, "p"), "")
+		body = requireLandsOnGET(t, rig.handler, deliveryLivePipeline, body, conn.delta(t, 5*time.Second, "p"), pinned)
 		if names, minN := pipelineSlowestJobs(t, body); !slices.Equal(names, step.want) || minN != step.minN {
 			t.Fatalf("with HUB's pr-ci min_n at %d the live Pipeline ranks %v by %d, want %v by %d", step.minN, names, minN, step.want, step.minN)
 		}

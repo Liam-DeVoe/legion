@@ -26,6 +26,12 @@
 -- ranges of each project: the rows whose writer sorts before the running build and those that
 -- sort after it. A settled deployment holds neither, so the read is two probes a project.
 --
+-- It drops issue_facts_open (20261111090000), the partial index over the open rows that served the
+-- half-minute sweep's read of them and nothing else. The columns above let a read give an open
+-- issue's facts at its own clock, so this change ends that sweep, no statement reads through the
+-- index any more, and keeping it would cost a write on every upsert of an open row. The drop takes
+-- the ACCESS EXCLUSIVE the alter already holds, and reads and rewrites no row.
+--
 -- The columns in one statement, so issue_facts is locked once. Each is nullable or carries a
 -- constant default, which Postgres records in the catalog and writes into no stored row. The
 -- index is a plain build in the runner's transaction, as 20261113082157's on the same table is:
@@ -47,3 +53,4 @@ alter table issue_facts
     add column growth jsonb not null default '{}'::jsonb,
     add column written_build text not null default '';
 create index issue_facts_written_build on issue_facts (project_key, written_build);
+drop index issue_facts_open;

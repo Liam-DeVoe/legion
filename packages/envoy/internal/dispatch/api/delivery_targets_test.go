@@ -140,7 +140,8 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 // TestATargetWriteMovesTheLiveDeliveryVerdicts: a register write of merge-to-production's target
 // in the project the deploy repository is mapped to reaches an open measures view and an open
 // Pipeline view: the write's version marks both, and each delta lands on its GET route's body,
-// which states the new target and its inclusiveness.
+// which states the new target and its inclusiveness. The Pipeline view is pinned at the test's
+// start, the at its GET route reads, since that route reads at alone and the hub's clock runs on.
 func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
@@ -152,7 +153,7 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	upsertPR(t, rig.database, hubPR(1, now.Add(-3*time.Hour)))
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("m", presetView(deliveryLiveMeasures, 7, "")))
-	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(nil)))
+	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(&now)))
 	snapshots := conn.firstSnapshots(t, 5*time.Second, "m", "p")
 	rig.settle(t)
 
@@ -163,6 +164,10 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	}
 	want := measures.Target{Value: 30, Inclusive: true}
 	kinds := map[string]string{"m": deliveryLiveMeasures, "p": deliveryLivePipeline}
+	// What each view's GET route reads besides what its body names: nothing for the measures view,
+	// whose body names its window, and for the pipeline view, whose body names no at, the at it was
+	// pinned at.
+	queries := map[string]string{"p": "at=" + now.Format(time.RFC3339Nano)}
 	for len(kinds) > 0 {
 		frame := conn.next(t, 5*time.Second, "a delta of each view")
 		delta, ok := frame.(DeliveryLiveDelta)
@@ -172,7 +177,7 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 		}
 		kind := kinds[delta.Sub]
 		delete(kinds, delta.Sub)
-		body := requireLandsOnGET(t, rig.handler, kind, snapshots[delta.Sub].Body, delta, "")
+		body := requireLandsOnGET(t, rig.handler, kind, snapshots[delta.Sub].Body, delta, queries[delta.Sub])
 		var shape struct {
 			Targets measures.Targets `json:"targets"`
 		}
