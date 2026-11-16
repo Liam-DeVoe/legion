@@ -146,7 +146,7 @@ func (r *liveRig) checkSetupNegative() error {
 	}
 	shared := r.rt.LauncherResolver()
 	second := rt.LauncherResolver()
-	r.ln.SetLauncherResolver(func(hello shimwire.LauncherHello) (stream.LauncherHandler, string) {
+	r.ln.SetLauncherResolver(func(hello shimwire.LauncherHello) (stream.LauncherHandler, shimwire.LauncherHelloAck, string) {
 		if hello.Sandbox == name {
 			return second(hello)
 		}

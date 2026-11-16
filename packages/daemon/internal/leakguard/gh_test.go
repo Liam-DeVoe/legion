@@ -2,15 +2,124 @@ package leakguard
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// theProgram is the public_leak_check.py of a stand-in check these tests count as proven: its
+// sha256 (hexSHA256) is the value a caller names in GhRequest.ProvenCheck.
+const theProgram = "# stands for the shared check a read rule was proven against\n"
+
+// A call its caller found writes nothing (GhRequest.WritesNothing), under the check its caller's
+// rule was proven against (GhRequest.ProvenCheck), runs the shared check and nothing more. A check
+// that clears it clears it with no visibility read and no private-name pass, though its argv
+// names a host the rules refuse: a read leaves no text in any repository. A check that refuses
+// it, one that cannot finish, and one its bound stops refuse it as they refuse any call. Under a
+// check that is not the proven one — its program another file, or no file — and as a write, the
+// same call reads the destination's visibility and is refused by the rules.
+func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
+	const repo = "invented-org/invented-repo"
+	args := []string{"search", "code", theHost}
+	proven := hexSHA256(theProgram)
+	// guardOf is a guard on clock (nil is wall time) whose shared check is check, with program as
+	// the public_leak_check.py beside it unless program is empty, and which counts the
+	// repositories it reads the visibility of in asked.
+	guardOf := func(t *testing.T, clock Clock, check, program string, asked *[]string) *Guard {
+		t.Helper()
+		script := leakguardtest.Write(t, t.TempDir(), check)
+		if program != "" {
+			if err := os.WriteFile(filepath.Join(filepath.Dir(script), checkProgram), []byte(program), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return New(Options{
+			Check:      script,
+			Visibility: answers(Public, asked),
+			Env:        fixtureenv.Isolated(t.TempDir()),
+			Clock:      clock,
+		})
+	}
+	request := func(writesNothing bool) GhRequest {
+		return GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven}
+	}
+	call := func(t *testing.T, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
+		t.Helper()
+		var asked []string
+		answer, err := guardOf(t, nil, check, program, &asked).GhCall(testwait.Context(t), request(writesNothing))
+		return asked, answer, err
+	}
+	t.Run("a read the check clears", func(t *testing.T) {
+		if asked, answer, err := call(t, passes, theProgram, true); err != nil || len(asked) != 0 || !answer.CheckedOnly {
+			t.Fatalf("GhCall = %+v, %v, visibility asked of %q; want the read cleared by the check alone", answer, err, asked)
+		}
+	})
+	t.Run("a read the check refuses", func(t *testing.T) {
+		asked, _, err := call(t, refuses, theProgram, true)
+		refusal(t, err)
+		if len(asked) != 0 {
+			t.Fatalf("visibility asked of %q for a read the check refused", asked)
+		}
+	})
+	t.Run("a read whose check cannot finish", func(t *testing.T) {
+		_, _, err := call(t, cannotFinish, theProgram, true)
+		setupFailure(t, err)
+	})
+	// The bound runs on the guard's clock, which the test moves to it once the check has read its
+	// input and started its sleep (stoppedAtItsBound), so the check ran exactly its bound. A stop
+	// that did not end the call would leave it to answer once the 30 s sleep ended, as a read the
+	// check cleared, which is no setup failure.
+	t.Run("a read whose check runs past its bound", func(t *testing.T) {
+		clock := clocktest.New(time.Now())
+		pidFile := filepath.Join(t.TempDir(), "sleep.pid")
+		var asked []string
+		guard := guardOf(t, clock, stopsAfterItsInput(pidFile), theProgram, &asked)
+		err := stoppedAtItsBound(t, clock, pidFile, func(ctx context.Context) error {
+			_, err := guard.GhCall(ctx, request(true))
+			return err
+		})
+		says(t, setupFailure(t, err), "the shared public leak check", "ran 2 s", "bound of 2 s")
+		if len(asked) != 0 {
+			t.Fatalf("visibility asked of %q for a read whose check was stopped", asked)
+		}
+	})
+	for _, tc := range []struct {
+		name          string
+		program       string
+		writesNothing bool
+	}{
+		{"a read under a check whose program is another file", theProgram + "# an edit\n", true},
+		{"a read under a check with no program beside it", "", true},
+		{"the same call as a write", theProgram, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asked, answer, err := call(t, passes, tc.program, tc.writesNothing)
+			if report := refusal(t, err); !strings.Contains(report.Error(), theClass) {
+				t.Fatalf("the refusal does not name the class: %v", report)
+			}
+			if !slices.Equal(asked, []string{repo}) || answer.CheckedOnly {
+				t.Fatalf("visibility asked of %q and checked only %v, want %q asked once and the whole guard", asked, answer.CheckedOnly, repo)
+			}
+		})
+	}
+}
+
+// hexSHA256 is the sha256 of text, in hex.
+func hexSHA256(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
 
 // A gh call that carries its body in a file publishes the file's text, not the file's name, and
 // this repository's own rules must read that text.
@@ -324,7 +433,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 // never a truncated buffer handed to gh as though the guard had read the whole.
 func TestStandardInputPastTheBoundIsASetupFailure(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
-	buffered, err := guard.GhCall(testwait.Context(t), GhRequest{
+	answer, err := guard.GhCall(testwait.Context(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: bytes.NewReader(bytes.Repeat([]byte("a"), maxGhFile+1)),
 		Repo:  "invented-org/invented-repo",
@@ -333,7 +442,7 @@ func TestStandardInputPastTheBoundIsASetupFailure(t *testing.T) {
 	if !strings.Contains(failed.Error(), "standard input is longer than") {
 		t.Fatalf("the failure is %q, want it to name the bound", failed)
 	}
-	if buffered != nil {
-		t.Errorf("the caller got %d bytes back of an input the guard never read whole", len(buffered))
+	if answer.Stdin != nil {
+		t.Errorf("the caller got %d bytes back of an input the guard never read whole", len(answer.Stdin))
 	}
 }
