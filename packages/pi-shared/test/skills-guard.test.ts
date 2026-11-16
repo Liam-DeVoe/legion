@@ -271,6 +271,14 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     ],
   ],
   [
+    'merge-gate.md\'s "never re-run a job for a `cancelled` row that a newer run of the same name has superseded"',
+    [
+      "  When the list holds more than one run of a required name, the newest run decides. An older run",
+      "  of that name, whatever its conclusion, is no result: never re-run a",
+      "  job for a `cancelled` row that a newer run of the same name has superseded.",
+    ],
+  ],
+  [
     'merge-gate.md\'s "No role re-runs a group build."',
     [
       "  as that page's *What becomes of the record* says. No role",
