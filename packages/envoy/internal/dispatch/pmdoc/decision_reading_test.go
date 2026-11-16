@@ -191,3 +191,60 @@ func TestAReadingStandsOnlyAfterTheContentOfItsParent(t *testing.T) {
 		t.Errorf("the reading is in the block group, want it in none")
 	}
 }
+
+// A live document keeps a decision and an ask whatever order their blocks and readings stand in,
+// as the browser editor builds them (proof-editor's relaxAskContentCheck): a person's paragraph
+// added at the end of a decision and an agent's first reading added there at once land in an
+// order the shared document decides, [paragraph, reading, paragraph] among them, and a tree the
+// server refused would leave the document unreadable while every browser keeps it. Its rendering
+// reads back as the tree it was rendered from. Markdown a caller writes in whole is still held to
+// the decision's rule, which names the reading, and a reading anywhere a parent does not admit
+// one is refused as before.
+func TestALiveDecisionKeepsItsReadingWhateverOrderItsBlocksStandIn(t *testing.T) {
+	paragraph := func(id, text string) *Node {
+		return &Node{Type: "paragraph", Attrs: Attrs{BlockIDAttr: id}, Children: []*Node{{Type: "text", Text: text}}}
+	}
+	reading := func() *Node {
+		return &Node{Type: "reading", Attrs: Attrs{BlockIDAttr: "r1"}, Children: []*Node{paragraph("rp", "The agent reads it as Friday.")}}
+	}
+	decision := &Node{Type: "decision", Attrs: Attrs{BlockIDAttr: "d1", "replaced": false}, Children: []*Node{
+		paragraph("p1", "We ship on Friday."), reading(), paragraph("p2", "And we say so."),
+	}}
+	doc := &Node{Type: "doc", Children: []*Node{decision}}
+	if err := doc.Validate(); err != nil {
+		t.Fatalf("a decision holding a paragraph after its reading is refused: %v", err)
+	}
+	list := &Node{Type: "bullet_list", Children: []*Node{{Type: "list_item", Children: []*Node{paragraph("o1", "Friday")}}}}
+	ask := &Node{Type: "ask", Attrs: Attrs{BlockIDAttr: "a1"}, Children: []*Node{
+		paragraph("q1", "Which day?"), list, reading(), paragraph("p3", "An afterthought."),
+	}}
+	if err := (&Node{Type: "doc", Children: []*Node{ask}}).Validate(); err != nil {
+		t.Fatalf("an ask holding a paragraph after its reading is refused: %v", err)
+	}
+
+	rendered, err := Render(doc)
+	if err != nil {
+		t.Fatalf("render the decision: %v", err)
+	}
+	back, err := ParseRendering(rendered)
+	if err != nil {
+		t.Fatalf("the decision's rendering %q does not read back: %v", rendered, err)
+	}
+	// A paragraph's id is not written in the markdown, so the read-back is compared without block
+	// ids, and the typed blocks' own ids, which are, one by one.
+	held := back.Children[0]
+	if !back.Equal(doc) || held.Attrs[BlockIDAttr] != "d1" || len(held.Children) != 3 || held.Children[1].Attrs[BlockIDAttr] != "r1" {
+		t.Fatalf("the decision's rendering %q reads back as %s, want the tree it was rendered from", rendered, BlockNames(held.Children))
+	}
+	_, err = ParseForWrite(rendered, nil)
+	if want := `typed block "reading" "r1" stands only at the end of a decision or an ask, after that block's own content`; !errors.Is(err, ErrSchema) || err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("markdown written in whole holding a paragraph after a decision's reading = %v, want it refused with %q", err, want)
+	}
+
+	callout := &Node{Type: "doc", Children: []*Node{{Type: "callout", Attrs: Attrs{BlockIDAttr: "k1", "kind": "note", "title": ""}, Children: []*Node{
+		paragraph("p4", "A note."), reading(),
+	}}}}
+	if err := callout.Validate(); err == nil || !strings.Contains(err.Error(), `typed block "reading" "r1" stands only`) {
+		t.Fatalf("a callout holding a reading = %v, want the reading refused", err)
+	}
+}

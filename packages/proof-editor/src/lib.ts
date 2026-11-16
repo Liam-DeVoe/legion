@@ -528,8 +528,8 @@ export async function createProofEditor(
   // mapping is populated.
   editor.action((ctx) => {
     const collabService = ctx.get(collabServiceCtx);
-    // Before the shared document renders: an ask two collaborators left off its content rule
-    // must not be deleted from it (see ./ask-content.ts).
+    // Before the shared document renders: an ask or a decision two collaborators left off its
+    // content rule must not be deleted from it (see ./ask-content.ts).
     relaxAskContentCheck(ctx.get(schemaCtx));
     collabService.bindDoc(opts.ydoc);
     collabService.mergeOptions({

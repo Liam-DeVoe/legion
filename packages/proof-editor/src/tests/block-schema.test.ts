@@ -590,10 +590,13 @@ await test('a reading stands only after the content of a decision or an ask, and
   for (const [name, build] of [
     ['a callout', () => schema.nodes.callout.createChecked({ blockId: 'k1' }, [paragraph('A note.'), reading()])],
     ['the document', () => schema.nodes.doc.createChecked(null, [reading()])],
-    ['a decision, before its content', () => schema.nodes.decision.createChecked({ blockId: 'd1' }, [reading(), paragraph('We ship.')])],
   ] as const) {
     assert(thrownBy(build) !== undefined, `a reading in ${name} was built`);
   }
+  // A decision is built from a shared document whatever order its blocks stand in (the next
+  // case), but its content rule still holds every local edit, paste and parse to it.
+  const misordered = schema.nodes.decision.create({ blockId: 'd1' }, [reading(), paragraph('We ship.')]).content;
+  assert(schema.nodes.decision.contentMatch.matchFragment(misordered)?.validEnd !== true, 'a decision opening with its reading keeps its content rule');
   const markdown = '::::decision{#d1}\nWe ship on Friday.\n\n:::reading{#r1}\nThe agent reads it so.\n:::\n::::\n';
   const parsed = proof.parseMarkdown(markdown);
   const decision = parsed.child(0);
@@ -601,15 +604,20 @@ await test('a reading stands only after the content of a decision or an ask, and
   assert(proof.serializeMarkdown(parsed) === markdown, `the decision did not round-trip: ${JSON.stringify(proof.serializeMarkdown(parsed))}`);
 });
 
-await test('an ask holding readings is built from a shared document whatever order they stand in', async () => {
+await test('an ask or a decision holding readings is built from a shared document whatever order they stand in', async () => {
   const proof = await createHeadlessProof({ blockSchema: readingSchema });
   const { schema } = proof;
   const paragraph = (text: string) => schema.nodes.paragraph.create(null, schema.text(text));
   const reading = schema.nodes.reading.create({ blockId: 'r1' }, paragraph('The agent reads it so.'));
-  // y-prosemirror deletes an element whose node createChecked refuses, so an ask a collaborator's
-  // edit left with a paragraph after its reading must still be built, its reading kept.
-  const ask = schema.nodes.ask.createChecked({ blockId: 'a1' }, [paragraph('Which day?'), reading, paragraph('An afterthought.')]);
-  assert(ask.childCount === 3 && ask.child(1).type.name === 'reading', `ask = ${ask.toString()}`);
+  // y-prosemirror deletes an element whose node createChecked refuses, so an ask or a decision a
+  // collaborator's edit left with a paragraph after its reading must still be built, its reading
+  // kept.
+  for (const name of ['ask', 'decision'] as const) {
+    const built = schema.nodes[name].createChecked({ blockId: 'b1' }, [paragraph('Which day?'), reading, paragraph('An afterthought.')]);
+    assert(built.childCount === 3 && built.child(1).type.name === 'reading', `${name} = ${built.toString()}`);
+  }
+  // What it may hold is still the block group and its readings, so no inline node.
+  assert(thrownBy(() => schema.nodes.decision.createChecked({ blockId: 'd1' }, [schema.text('loose')])) !== undefined, 'a decision holding text was built');
 });
 
 await test('a command and a paste refuse a shaped pointer or an ask of another issue than the document\'s', async () => {

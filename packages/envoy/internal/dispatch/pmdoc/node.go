@@ -282,49 +282,20 @@ func undeclaredAttributes(typeName string, attrs Attrs, declared BlockAttributes
 	return unknownElement(fmt.Errorf("%w: typed block %q does not declare attributes %s", ErrSchema, typeName, strings.Join(quoted, ", ")), names...)
 }
 
+// validateTypedBlock holds n, a block of typ, to its schema: what it holds and its attributes. A
+// block of a type the browser editor keeps in any order (keepsAnyOrder) is held to holding only
+// blocks it may hold, in any order; every other block to its content rule (typedContentError).
 func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
-	// The blocks of the types this one admits after its content (TypedContent) are no part of
-	// its own content rule, which reads the rest as it reads a block that holds none.
-	content, _ := TypedContent(n)
-	switch typ.Content {
-	case BlockContentParagraphs:
-		if len(content) == 0 || !childrenAre(content, "paragraph") {
-			if err := misplacedBlock(content); err != nil {
-				return err
-			}
-			return fmt.Errorf("%w: typed block %q content %q requires one or more paragraphs", ErrSchema, n.Type, typ.Content)
+	if keepsAnyOrder(n.Type) {
+		held := len(n.Children) > 0
+		for _, child := range n.Children {
+			held = held && child != nil && (isBlockNodeType(child.Type) || AdmitsAfterContent(n.Type, child.Type))
 		}
-	case BlockContentBlocks:
-		if len(content) == 0 || !childrenAreBlocks(content) {
-			if err := misplacedBlock(content); err != nil {
-				return err
-			}
-			return fmt.Errorf("%w: typed block %q content %q requires one or more blocks", ErrSchema, n.Type, typ.Content)
+		if !held {
+			return fmt.Errorf("%w: typed block %q requires block children", ErrSchema, n.Type)
 		}
-	case BlockContentParagraphsOptionalBulletList:
-		// Concurrent browser edits can leave an ask holding blocks off its content rule (two
-		// bullet lists, a paragraph after its list or after a reading), and the browser keeps it
-		// (proof-editor's relaxAskContentCheck). Retain that structurally valid body - blocks, and
-		// the readings an ask admits, in any order - so settlement can mark it `invalid`; uploads
-		// and edits refuse an ask they write that breaks the rule (AskContentError).
-		if n.Type == "ask" {
-			held := len(n.Children) > 0
-			for _, child := range n.Children {
-				held = held && child != nil && (isBlockNodeType(child.Type) || AdmitsAfterContent(n.Type, child.Type))
-			}
-			if !held {
-				return fmt.Errorf("%w: typed block %q requires block children", ErrSchema, n.Type)
-			}
-			break
-		}
-		if askContentBreak(content) != "" {
-			if err := misplacedBlock(content); err != nil {
-				return err
-			}
-			return fmt.Errorf("%w: typed block %q content %q requires paragraphs followed by an optional bullet list", ErrSchema, n.Type, typ.Content)
-		}
-	default:
-		return fmt.Errorf("%w: typed block %q has unsupported content rule %q", ErrSchema, n.Type, typ.Content)
+	} else if err := typedContentError(n, typ); err != nil {
+		return err
 	}
 	if err := undeclaredAttributes(n.Type, n.Attrs, typ.Attributes); err != nil {
 		return err
@@ -347,6 +318,75 @@ func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 	// A block an earlier build wrote may lack an attribute added since: it reads with the
 	// attribute's default (writtenDefault), so the attribute is not required here.
 	return nil
+}
+
+// keepsAnyOrder reports whether the browser editor keeps a block of type name holding its
+// children in any order (proof-editor's relaxAskContentCheck): an ask, and a block of a type that
+// admits blocks after its own content (TypedContent: a decision, which readings close).
+// Concurrent browser edits can leave one off its content rule - an ask with two bullet lists or a
+// paragraph after its list, a decision or an ask with a paragraph landing after a reading another
+// writer added at the same place - and a tree the browser cannot build is deleted from the shared
+// document, its text with it, so the browser builds it and the server keeps it: settlement marks
+// such an ask `invalid`. Markdown written in whole is held to the rule all the same, an ask by its
+// own written rule (AskWrittenContentError) and every other such block by its content rule
+// (writtenContentError).
+func keepsAnyOrder(name string) bool {
+	return name == "ask" || len(active.Load().admitted[name]) > 0
+}
+
+// typedContentError is the refusal of n, a block of typ, whose children break typ's content rule,
+// or nil. The blocks of the types it admits after its content (TypedContent) are no part of the
+// rule, which reads the rest as it reads a block that holds none; a block of such a type standing
+// anywhere else is refused by name (misplacedBlock).
+func typedContentError(n *Node, typ BlockTypeSchema) error {
+	content, _ := TypedContent(n)
+	switch typ.Content {
+	case BlockContentParagraphs:
+		if len(content) == 0 || !childrenAre(content, "paragraph") {
+			if err := misplacedBlock(content); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: typed block %q content %q requires one or more paragraphs", ErrSchema, n.Type, typ.Content)
+		}
+	case BlockContentBlocks:
+		if len(content) == 0 || !childrenAreBlocks(content) {
+			if err := misplacedBlock(content); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: typed block %q content %q requires one or more blocks", ErrSchema, n.Type, typ.Content)
+		}
+	case BlockContentParagraphsOptionalBulletList:
+		if askContentBreak(content) != "" {
+			if err := misplacedBlock(content); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: typed block %q content %q requires paragraphs followed by an optional bullet list", ErrSchema, n.Type, typ.Content)
+		}
+	default:
+		return fmt.Errorf("%w: typed block %q has unsupported content rule %q", ErrSchema, n.Type, typ.Content)
+	}
+	return nil
+}
+
+// writtenContentError holds each block of doc, a tree of markdown a caller wrote in whole, whose
+// type the browser editor keeps in any order (keepsAnyOrder) to its content rule
+// (typedContentError), naming the first that breaks it in document order, or is nil: such
+// markdown is written in one piece, so no concurrent edit left it off its rule. An ask is held to
+// its own written rule instead (AskWrittenContentError), which every write of the document
+// service runs and answers INVALID_ASK_BLOCK.
+func writtenContentError(doc *Node) error {
+	var found error
+	walk(doc, func(node *Node, _ []int, _, _ int) bool {
+		if found != nil {
+			return false
+		}
+		if node.Type != "ask" && keepsAnyOrder(node.Type) {
+			typ, _ := typedBlock(node.Type)
+			found = typedContentError(node, typ)
+		}
+		return found == nil
+	})
+	return found
 }
 
 // AskContentError reports the first ask block in node that breaks its content rule, paragraph+
