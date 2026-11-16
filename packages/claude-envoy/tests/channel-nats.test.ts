@@ -112,3 +112,30 @@ test("dialChannelNats runs no keeper and no follow for a connection with no brok
   expect(fake.reconnects()).toBe(0)
   opened.stop()
 })
+
+test("a failed dial names each server by scheme, host and port, never a credential its URL holds", async () => {
+  const refused = async (): Promise<NatsConnection> => {
+    throw new Error("CONNECTION_REFUSED")
+  }
+  // Each canary URL is built here from its parts, so no source line reads as a credential-bearing
+  // URL to the push leak check.
+  const userinfo = (...parts: string[]) => `${parts.join(":")}@`
+  const servers = [
+    `nats://${userinfo("E2_SENTINEL_TOKEN")}127.0.0.1:4222`,
+    `tls://${userinfo("operator", "E2_SENTINEL_PASSWORD")}nats.example:4443`,
+    "E2_SENTINEL_MALFORMED nats address",
+  ]
+  const failure = await dialChannelNats(
+    { natsUrls: servers, natsCredential: { kind: "none" } },
+    "claude-envoy-channel-ses_redact",
+    () => {},
+    refused,
+  ).then(
+    () => "dialled",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  expect(failure).toBe(
+    "could not connect to NATS at nats://127.0.0.1:4222, tls://nats.example:4443, a server address that does not parse presenting no credential: CONNECTION_REFUSED",
+  )
+  expect(failure).not.toContain("E2_SENTINEL")
+})

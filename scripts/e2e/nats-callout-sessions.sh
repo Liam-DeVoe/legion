@@ -243,6 +243,9 @@ cleanup() {
   case ${claude_tmp:-} in
     /tmp/ncs-claude.*) rm -rf -- "$claude_tmp" ;;
   esac
+  case ${stack_tmp:-} in
+    /tmp/ncs-stack.*) rm -rf -- "$stack_tmp" ;;
+  esac
   echo "nats-callout-sessions: evidence kept in $evidence"
   exit "$status"
 }
@@ -298,7 +301,11 @@ wait_for() {
 # ---- the stack ----------------------------------------------------------------------------------
 stack_log=$evidence/dev-stack.log
 echo "nats-callout-sessions: starting dev-stack.sh --callout (log $stack_log)"
-TMPDIR=$scratch bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --database-url "$pg_dsn" "${stack_args[@]}" \
+# The stack's TMPDIR is short and of its own: dev-stack.sh binds unix sockets in its work directory
+# (its port keepers'), and a socket path past 107 bytes is refused, which a caller's deep TMPDIR
+# with this run's scratch directory inside it can pass.
+stack_tmp=$(mktemp -d /tmp/ncs-stack.XXXXXX)
+TMPDIR=$stack_tmp bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --database-url "$pg_dsn" "${stack_args[@]}" \
   >"$stack_log" 2>&1 &
 stack_pid=$!
 stack_ready() {
@@ -419,6 +426,9 @@ jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --arg control "$control" \
   '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $control == "seedless" then {} else {natsAuth: "broker"} end)),
     dispatch: {enabled: false}}' >"$claude_config/envoy.json"
 printf '%s\n' "${broker_env[@]}" >"$work/claude.env"
+# The inbox socket goes in a short directory of its own: a unix socket path past 107 bytes is
+# refused, which a caller's deep TMPDIR with this run's scratch directory inside it can pass.
+claude_tmp=$(mktemp -d /tmp/ncs-claude.XXXXXX)
 client_fifo claude
 claude_flags=()
 [ "$control" != withhold-ack ] || claude_flags=(--withhold-inbox-answers true)
@@ -426,7 +436,7 @@ claude_flags=()
   exec env -i PATH="$PATH" HOME="$work/bun-home" TMPDIR="$scratch" \
     bun "$drivers/claude-client.ts" --server "$channel_server" --session "$claude_session" \
     --state-dir "$claude_state" --config-dir "$claude_config" --heartbeat-ms "$heartbeat_ms" \
-    --stderr "$work/logs/claude-channel.err" --env-file "$work/claude.env" --inbox "$work/claude.inbox" \
+    --stderr "$work/logs/claude-channel.err" --env-file "$work/claude.env" --inbox "$claude_tmp/inbox" \
     "${claude_flags[@]}") \
   <"$work/claude.stdin" >"${client_out[claude]}" 2>"$work/logs/claude.err" &
 scenario_pids+=($!)

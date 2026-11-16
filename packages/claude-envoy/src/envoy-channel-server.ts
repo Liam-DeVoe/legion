@@ -645,6 +645,18 @@ const CREDENTIAL_NAMES: Record<NatsCredential["kind"], string> = {
   none: "no credential",
 }
 
+/** A NATS server as a failed dial names it: scheme, host and port alone. A URL may carry a token or
+ * a user and password (`nats://token@host:port`), and a value that does not parse may be a
+ * credential pasted into the wrong setting, so neither reaches a log. */
+function serverForLog(server: string): string {
+  try {
+    const { protocol, host } = new URL(server)
+    return host === "" ? "a server address that does not parse" : `${protocol}//${host}`
+  } catch {
+    return "a server address that does not parse"
+  }
+}
+
 /**
  * Opens the session's NATS connection with the credential `inbound` resolved. A broker token is
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
@@ -668,7 +680,7 @@ export async function dialChannelNats(
     )
   } catch (error) {
     throw new Error(
-      `could not connect to NATS at ${inbound.natsUrls.join(", ")} presenting ${CREDENTIAL_NAMES[natsCredential.kind]}: ${messageFor(error)}`,
+      `could not connect to NATS at ${inbound.natsUrls.map(serverForLog).join(", ")} presenting ${CREDENTIAL_NAMES[natsCredential.kind]}: ${messageFor(error)}`,
       { cause: error },
     )
   }
