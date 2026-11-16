@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, readFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -230,6 +230,45 @@ describe.skipIf(!dispatchStackEnabled)(
       return (await running().results(commit)) as unknown as Row[];
     }
 
+    /** The job `run` writing a pass of `check` at its own commit itself, with the real CLI and
+     *  not through the step: the command's exit status and what it printed on both streams. */
+    async function writeItself(
+      run: JobRun,
+      check: string
+    ): Promise<{ code: number; printed: string }> {
+      const written = Bun.spawn(
+        [
+          process.execPath,
+          ENTRY,
+          "result",
+          "--project",
+          running().project,
+          "--check",
+          check,
+          "--verdict",
+          "pass",
+          "--commit",
+          run.sha,
+        ],
+        {
+          env: {
+            PATH: SHELL_PATH,
+            HOME: cliState,
+            DISPATCH_STATE_DIR: cliState,
+            ...running().jobEnv(run),
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        }
+      );
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(written.stdout).text(),
+        new Response(written.stderr).text(),
+        written.exited,
+      ]);
+      return { code, printed: `${stderr}${stdout}` };
+    }
+
     /** Each line as its check, outcome and exit. */
     function outcomes(reported: Reported): string[] {
       return reported.lines.map((line) => `${line.check} ${line.outcome} exit ${line.exit}`);
@@ -320,43 +359,58 @@ describe.skipIf(!dispatchStackEnabled)(
       });
       // The same job writing a result for the check anyway is refused by Dispatch, which reads
       // the files at the run's commit itself.
-      const written = Bun.spawn(
-        [
-          process.execPath,
-          ENTRY,
-          "result",
-          "--project",
-          running().project,
-          "--check",
-          SECOND,
-          "--verdict",
-          "pass",
-          "--commit",
-          checkout.sha,
-        ],
-        {
-          env: {
-            PATH: SHELL_PATH,
-            HOME: cliState,
-            DISPATCH_STATE_DIR: cliState,
-            ...running().jobEnv(run),
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-        }
+      const written = await writeItself(run, SECOND);
+      expect({ code: written.code, named: written.printed.includes("CHECK_NOT_IN_FILES") }).toEqual(
+        { code: 1, named: true }
       );
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(written.stdout).text(),
-        new Response(written.stderr).text(),
-        written.exited,
-      ]);
-      expect({ code, named: `${stderr}${stdout}`.includes("CHECK_NOT_IN_FILES") }).toEqual({
-        code: 1,
-        named: true,
-      });
       expect(described(await rowsAt(checkout.sha))).toEqual([
         `${PROBE} pass job ${JOB} leg - attempt 1 at ${checkout.sha}`,
       ]);
+    }, 120_000);
+
+    // The step reads the files at the commit as spec-check and Dispatch read them
+    // (specgraph.Judge), so one tree has one answer in both places: the step makes no call for a
+    // tree that the graph logic refuses, and Dispatch refuses a write of it, naming the same first
+    // problem. The first assertion holds both answers, so a failure shows which of them moved.
+    test("files at the commit that the graph logic refuses get no call and no result, and the step names the first problem that Dispatch names", async () => {
+      // Parse reads each block of these files, and Validate refuses the two statements that no
+      // check serves.
+      const spec = join(work, "specs", "statements-without-a-check");
+      cpSync(SPEC, spec, { recursive: true });
+      for (const [file, id] of [
+        ["lonely.md", "a-lonely-statement"],
+        ["z-lonely.md", "another-lonely-statement"],
+      ] as const) {
+        writeFileSync(
+          join(spec, file),
+          `:::requirement{#${id} kind="behavior"}\nThe probe keeps one claim.\n:::\n`
+        );
+      }
+      const leaf = "leaf-without-check: no statement is under it and no check serves it";
+      const first = `.dispatch/spec/lonely.md:1: a-lonely-statement: ${leaf}`;
+
+      const checkout = checkoutOf("refused-tree", spec);
+      const run = jobOf(checkout, 801);
+      const reported = await lastStep(checkout, run, "go-test-all-pass.jsonl");
+      const problems = reported.stderr
+        .split("\n")
+        .filter((line) => line.includes("/.dispatch/spec/"))
+        .map((line) => line.slice(line.indexOf(".dispatch/spec/")));
+      const written = await writeItself(run, PROBE);
+
+      expect({
+        step: { code: reported.code, lines: outcomes(reported), first: problems[0] },
+        dispatch: {
+          code: written.code,
+          first: /SPEC_FILES_REFUSED: .* The first: (.*)/.exec(written.printed)?.[1],
+        },
+      }).toEqual({ step: { code: 2, lines: [], first }, dispatch: { code: 1, first } });
+      expect(problems).toEqual([
+        first,
+        `.dispatch/spec/z-lonely.md:1: another-lonely-statement: ${leaf}`,
+      ]);
+      expect(reported.stderr).toContain("the tree is refused, so no result is written");
+      expect(await rowsAt(checkout.sha)).toEqual([]);
     }, 120_000);
 
     test("a second job runs the named test and it passes there, the named job fails it: the stored rows are the named job's, and the second job's write is refused", async () => {

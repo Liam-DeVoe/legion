@@ -8,24 +8,27 @@
 //	ci-report --dir <dir> --job <job> --report <file> --project <key> [--dispatch-cli <argv>]
 //
 // It reads the commit with `git rev-parse HEAD` in its working directory, the checkout, and never
-// from GITHUB_SHA, which it prints beside it. It reads the spec directory as spec-check does
-// (notes.ReadSet, then specgraph.Parse and specgraph.Validate), a directory that does not exist
-// being the empty tree, and the report with specgraph.ReadGoTestJSON. planReports decides the
-// outcome of each check of the job. For each pass, fail and could_not_run it runs
+// from GITHUB_SHA, which it prints beside it. It reads the spec directory as spec-check does:
+// notes.ReadSet, a directory that does not exist being the empty tree, then specgraph.Judge with
+// no retired list, the one reading that Dispatch's results route makes of the files at the commit
+// too, so a tree has one answer in both places. It reads the report with specgraph.ReadGoTestJSON.
+// planReports decides the outcome of each check of the job. For each pass, fail and could_not_run
+// it runs
 //
 //	<dispatch-cli> result --project <key> --check <id> --verdict <outcome> --commit <sha> --observed-file -
 //
 // with what the test wrote on the command's standard input, so no text of a test reaches the
-// argument list, where one that starts with "-" would read as a flag. <dispatch-cli> is split at
-// white space, with no quoting, and is "dispatch" when the flag is left out. A skip, a test the
-// report does not hold and a test that ran twice get no call.
+// argument list, where one that starts with "-" would read as a flag. The dispatch command cuts a
+// text longer than a result keeps, with a note that says so, and sends a NUL as U+FFFD.
+// <dispatch-cli> is split at white space, with no quoting, and is "dispatch" when the flag is left
+// out. A skip, a test the report does not hold and a test that ran twice get no call.
 //
 // It prints one JSON line on standard output for each check of the job, in the tree's order:
 // {"check","test","outcome","exit","result_id","why"}. exit is the command's exit status, -1 when
 // it could not start or a signal ended it, and null for a check with no call. result_id is the id
-// of the stored result, the one part of a stored call's output that it reads and prints: the
-// stored row also holds predicate.recorder.person, the address of a person. why says why a check
-// got no call, and holds what the command printed on both streams when a call failed, which stored
+// of the stored result, the one part of a stored call's output that it reads and prints, since
+// Dispatch answers the row itself (`dispatch results --project`). why says why a check got no
+// call, and holds what the command printed on both streams when a call failed, which stored
 // nothing: the command prints a refusal on standard output. The line holds no raw line break, as
 // encoding/json escapes each control character, and the "[" of each "##[" in it is written as
 // \u005b, which a JSON reader reads back as "[", so the line starts no workflow command of a
@@ -35,12 +38,13 @@
 //
 // It exits 0 when each call stored its result, 1 when a call failed, and 2, with no call, for
 // arguments it does not take, a commit it cannot read, a spec directory or a report it cannot
-// read, and a tree with any problem.
+// read, and a tree that Judge refuses or that holds a file over notes.MaxFileSize, which never
+// reaches Judge. For a refused tree it writes each problem with its file and line, the first
+// first, as Dispatch names that first one when it refuses a result of the tree.
 package main
 
 import (
 	"bytes"
-	"cmp"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -198,9 +202,10 @@ func headCommit() (string, error) {
 }
 
 // readTree reads dir as spec-check reads it, and answers its tree and whether it is one to report
-// on: a valid tree, or the empty tree of a directory that does not exist. It warns of each entry
-// that is not a spec file, and writes each problem of a refused tree, and why it could not read
-// one, on stderr.
+// on: a tree that specgraph.Judge takes, or the empty tree of a directory that does not exist. It
+// warns of each entry that is not a spec file, and writes each problem of a refused tree, in
+// Judge's order, and why it could not read one, on stderr. A file over the size bound refuses the
+// tree before Judge reads any file.
 func readTree(stderr io.Writer, dir string) (specgraph.Tree, bool) {
 	set, err := notes.ReadSet(os.DirFS(dir), dir)
 	for _, entry := range set.Rejected {
@@ -223,15 +228,10 @@ func readTree(stderr io.Writer, dir string) (specgraph.Tree, bool) {
 		say(stderr, "%s: %s", dir, err)
 		return specgraph.Tree{}, false
 	}
-	tree, problems := specgraph.Parse(set.Files)
-	problems = append(problems, specgraph.Validate(tree, specgraph.Options{})...)
+	tree, problems := specgraph.Judge(set.Files, specgraph.Options{})
 	if len(problems) == 0 {
 		return tree, true
 	}
-	slices.SortFunc(problems, func(a, b specgraph.Problem) int {
-		return cmp.Or(cmp.Compare(a.Pos.File, b.Pos.File), cmp.Compare(a.Pos.Line, b.Pos.Line), cmp.Compare(a.Node, b.Node),
-			cmp.Compare(a.Rule, b.Rule), cmp.Compare(a.Detail, b.Detail))
-	})
 	for _, p := range problems {
 		say(stderr, "%s:%d: %s: %s", filepath.Join(dir, p.Pos.File), p.Pos.Line, p.Node, p.Detail)
 	}

@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
+	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
 // stubDispatch is the stand-in for the dispatch command that the tests hand ci-report through
@@ -22,7 +24,7 @@ import (
 // on standard output and exits 1, as the real command prints every refusal of Dispatch or of the
 // broker (packages/envoy-client/src/dispatch-cli.ts, `print`, which writes to standard output).
 // Otherwise it prints a stored row as the real command prints it, whole and over many lines, with
-// the id row-<check> and the address of a person in predicate.recorder.person, and exits 0.
+// the id row-<check> and the run that recorded it, its session and principal, and exits 0.
 const stubDispatch = `#!/bin/sh
 calls="$CI_REPORT_STUB_DIR"
 n=0
@@ -50,9 +52,8 @@ cat <<EOF
       "project": "ACME",
       "check": "$check",
       "recorder": {
-        "session": "ci-results:example-org/example-repo/.github/workflows/ci-results.yaml",
-        "principal": "workflow-results:example-org/example-repo/.github/workflows/ci-results.yaml",
-        "person": "` + person + `"
+        "session": "` + recorderSession + `",
+        "principal": "workflow-results:example-org/example-repo/.github/workflows/ci-results.yaml"
       }
     }
   }
@@ -64,8 +65,9 @@ EOF
 // an exchange for a ref that no result entry admits.
 const brokerRefusal = "BROKER_EXCHANGE_REFUSED: the broker refused the exchange of the job's token: invalid_request: no result entry admits ref refs/heads/a/b/c/d"
 
-// person is the address of a person that every row the stub prints holds.
-const person = "ada@example.com"
+// recorderSession is the session of the run that recorded every row the stub prints: a part of
+// the row that is not its id.
+const recorderSession = "ci-results:example-org/example-repo/.github/workflows/ci-results.yaml"
 
 // otherSHA is a commit that is not the checkout's, set as GITHUB_SHA.
 const otherSHA = "0123456789abcdef0123456789abcdef01234567"
@@ -171,7 +173,7 @@ func TestTheBuiltBinary(t *testing.T) {
 		}
 	})
 
-	t.Run("no line holds the address of a person from the stored row, only the row's id", func(t *testing.T) {
+	t.Run("a line holds the id of the stored row and no other part of it", func(t *testing.T) {
 		t.Parallel()
 		dir, _ := checkout(t, filepath.Join("testdata", "spec"))
 		stub := newStub(t)
@@ -181,8 +183,8 @@ func TestTheBuiltBinary(t *testing.T) {
 		}
 		for name, stream := range map[string]string{"stdout": got.stdout, "stderr": got.stderr} {
 			for _, text := range strings.SplitAfter(stream, "\n") {
-				if strings.Contains(text, person) {
-					t.Errorf("a line of %s holds %s: %q", name, person, text)
+				if strings.Contains(text, recorderSession) {
+					t.Errorf("a line of %s holds the row's recorder %s: %q", name, recorderSession, text)
 				}
 			}
 		}
@@ -232,19 +234,66 @@ func TestTheBuiltBinary(t *testing.T) {
 		}
 	})
 
-	t.Run("a refused tree writes no result and exits 2", func(t *testing.T) {
+	t.Run("a refused tree writes no result, names each problem of Parse and of Validate in specgraph.Judge's order, and exits 2", func(t *testing.T) {
 		t.Parallel()
 		spec := copyOf(t, filepath.Join("testdata", "spec"))
 		writeFile(t, filepath.Join(spec, "lonely.md"), ":::requirement{#a-lonely-statement kind=\"behavior\"}\nThe daemon keeps one claim.\n:::\n")
+		writeFile(t, filepath.Join(spec, "loose.md"), "A line outside any block.\n")
 		dir, _ := checkout(t, spec)
 		stub := newStub(t)
 		got := runReporter(t, binary, dir, stub.env("store"), "--dir", ".dispatch/spec", "--job", job, "--report", report, "--project", "ACME", "--dispatch-cli", stub.path)
 		if got.code != 2 || got.stdout != "" {
 			t.Errorf("exit %d, stdout %q; want exit 2 and no line", got.code, got.stdout)
 		}
-		problem := "ci-report: " + filepath.Join(dir, ".dispatch", "spec", "lonely.md") + ":1: a-lonely-statement: leaf-without-check: no statement is under it and no check serves it\n"
+		specDir := filepath.Join(dir, ".dispatch", "spec")
+		problem := "ci-report: " + filepath.Join(specDir, "lonely.md") + ":1: a-lonely-statement: leaf-without-check: no statement is under it and no check serves it\n"
 		if !strings.Contains(got.stderr, problem) {
 			t.Errorf("stderr holds no line %q:\n%s", problem, got.stderr)
+		}
+		// Dispatch reads the files with specgraph.Judge too, so the lines are its problems in its
+		// order, the first first. The files show the case: Validate's problem is first in that
+		// order, and Parse's, which Parse finds first, is after it.
+		_, problems := specgraph.Judge(filesOf(t, spec), specgraph.Options{})
+		var want, rules []string
+		for _, p := range problems {
+			want = append(want, fmt.Sprintf("ci-report: %s:%d: %s: %s", filepath.Join(specDir, p.Pos.File), p.Pos.Line, p.Node, p.Detail))
+			rules = append(rules, p.Rule)
+		}
+		if !slices.Equal(rules, []string{"leaf-without-check", "text-outside-block"}) {
+			t.Fatalf("Judge finds %q in the files, want the problem of Validate, then the one of Parse", rules)
+		}
+		var printed []string
+		for _, text := range strings.Split(got.stderr, "\n") {
+			if strings.HasPrefix(text, "ci-report: "+specDir+string(filepath.Separator)) {
+				printed = append(printed, text)
+			}
+		}
+		if !slices.Equal(printed, want) {
+			t.Errorf("the problems on stderr are\n%s\nwant\n%s", strings.Join(printed, "\n"), strings.Join(want, "\n"))
+		}
+		if calls := stub.calls(t); len(calls) != 0 {
+			t.Errorf("the stub got %d calls, want none", len(calls))
+		}
+	})
+
+	t.Run("a spec file over the size bound refuses the tree before specgraph.Judge reads it, and no result is written", func(t *testing.T) {
+		t.Parallel()
+		spec := copyOf(t, filepath.Join("testdata", "spec"))
+		writeFile(t, filepath.Join(spec, "big.md"), strings.Repeat("\n", notes.MaxFileSize+1))
+		dir, _ := checkout(t, spec)
+		stub := newStub(t)
+		got := runReporter(t, binary, dir, stub.env("store"), "--dir", ".dispatch/spec", "--job", job, "--report", report, "--project", "ACME", "--dispatch-cli", stub.path)
+		if got.code != 2 || got.stdout != "" {
+			t.Errorf("exit %d, stdout %q; want exit 2 and no line", got.code, got.stdout)
+		}
+		specDir := filepath.Join(dir, ".dispatch", "spec")
+		for _, want := range []string{
+			fmt.Sprintf("ci-report: file too large: %s is %d bytes (limit %d)\n", filepath.Join(specDir, "big.md"), notes.MaxFileSize+1, notes.MaxFileSize),
+			"ci-report: " + specDir + ": the tree is refused, so no result is written\n",
+		} {
+			if !strings.Contains(got.stderr, want) {
+				t.Errorf("stderr holds no line %q:\n%s", want, got.stderr)
+			}
 		}
 		if calls := stub.calls(t); len(calls) != 0 {
 			t.Errorf("the stub got %d calls, want none", len(calls))

@@ -3205,15 +3205,17 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `cmd/ci-report` is the last step of a CI job: it writes one result to Dispatch for each check of the spec files whose test part names the job and whose test ran in the job's go test report (`cmd/ci-report/main.go`).
   `ci-report --dir <dir> --job <job> --report <file> --project <key> [--dispatch-cli <argv>]` reads the commit with `git rev-parse HEAD` in the checkout, never from `GITHUB_SHA`, and prints both on stderr.
-  It reads the directory as `cmd/spec-check` does, a directory that does not exist being the empty tree, and the report with `specgraph.ReadGoTestJSON`.
+  It reads the directory as `cmd/spec-check` does, a directory that does not exist being the empty tree, through `specgraph.Judge` with no retired list, the one reading that the results route makes of the files at the commit too, so a tree has one answer in both places;
+  it reads the report with `specgraph.ReadGoTestJSON`.
   `planReports` (`report.go`) decides each check with `specgraph.MatchTests`: one run of the test gives its `pass`, `fail`, `skip` or `could_not_run`, no run is `absent`, a runner other than `go` is `absent` with a reason that names the runner, and two or more runs are `two_tests`.
   A test that go test stopped at its time limit, or whose report the end of the job cut, is `could_not_run` and never `fail`.
-  For each `pass`, `fail` and `could_not_run` it runs `<dispatch-cli> result --project <key> --check <id> --verdict <outcome> --commit <sha> --observed-file -`, with the test's output on standard input, so a `--- FAIL` line never reads as a flag;
+  For each `pass`, `fail` and `could_not_run` it runs `<dispatch-cli> result --project <key> --check <id> --verdict <outcome> --commit <sha> --observed-file -`, with the test's output on standard input, so a `--- FAIL` line never reads as a flag, and the command cuts a longer text to the `contracts.SpecCheckObservedMax` runes that a result keeps, the note that says so among them;
   a skip, a test that did not run and a test that ran twice get no call.
   It prints one JSON line on stdout for each check of the job, `{"check","test","outcome","exit","result_id","why"}`, `exit` being `null` for a check with no call and `-1` for a command that could not start.
-  Of the output of a call that stored its result it reads only the row's `id`, since the row's `predicate.recorder.person` is the address of a person.
+  Of the output of a call that stored its result it reads only the row's `id`, since Dispatch answers the row itself (`dispatch results --project`).
   A call that failed stored nothing, and `why` carries what it printed on both streams: the command prints a refusal of Dispatch or of the broker on stdout and its warnings on stderr.
-  It exits 0 when each call stored its result, 1 when a call failed, and 2, with no call, for a tree with any problem, a report that holds anything but events, a commit it cannot read and arguments it does not take.
+  It exits 0 when each call stored its result, 1 when a call failed, and 2, with no call, for a tree that `Judge` refuses or that holds a file over `notes.MaxFileSize`, which never reaches `Judge`, a report that holds anything but events, a commit it cannot read and arguments it does not take.
+  For a refused tree it writes each problem with its file and line on stderr, in `Judge`'s order, so the first of those lines names the problem that the route's `409 SPEC_FILES_REFUSED` names.
   Its tests run it with a stub `dispatch` command of their own, and `ci.yaml`'s `envoy-go-checks` runs them with the spec-file ones.
 
 - The composite action `.github/actions/dispatch-results` runs `cmd/ci-report` in a job of this repository:

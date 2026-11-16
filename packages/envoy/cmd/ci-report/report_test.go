@@ -146,26 +146,32 @@ func TestATestTheJobsEndKilledCouldNotRun(t *testing.T) {
 	}
 }
 
-// specTree is the tree of testdata/spec, which must have no problem.
+// specTree is the tree of testdata/spec, which specgraph.Judge must take with no problem.
 func specTree(t *testing.T) specgraph.Tree {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join("testdata", "spec"))
+	tree, problems := specgraph.Judge(filesOf(t, filepath.Join("testdata", "spec")), specgraph.Options{})
+	if len(problems) > 0 {
+		t.Fatalf("testdata/spec has problems: %+v", problems)
+	}
+	return tree
+}
+
+// filesOf is each file directly in dir by its name, with its content.
+func filesOf(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	files := map[string][]byte{}
 	for _, entry := range entries {
-		content, err := os.ReadFile(filepath.Join("testdata", "spec", entry.Name()))
+		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
 		files[entry.Name()] = content
 	}
-	tree, problems := specgraph.Parse(files)
-	if problems = append(problems, specgraph.Validate(tree, specgraph.Options{})...); len(problems) > 0 {
-		t.Fatalf("testdata/spec has problems: %+v", problems)
-	}
-	return tree
+	return files
 }
 
 // readReport is testdata/<name> read with specgraph.ReadGoTestJSON.
