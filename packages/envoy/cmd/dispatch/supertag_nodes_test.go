@@ -31,6 +31,7 @@ var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
+	"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql",
 }
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
@@ -243,8 +244,8 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 
 // requireAttributeNodesMatchTheFile holds every typed block type's attribute nodes to the file,
 // field by field and in both directions: an attribute only in the file, or only in the store,
-// fails, and so does one whose kind, choices, default, server flag, targets, scope or element
-// versions differ.
+// fails, and so does one whose kind, choices, default, server flag, markdown flag, targets, scope
+// or element versions differ.
 // The file names an attribute as a document writes it, and its node is the one
 // schemanodes.StoreName names, `<type>/<store name>`, so ask's `state` is the node
 // ask/answer_state. Each type and attribute it fails on is recorded in drift.
@@ -381,8 +382,8 @@ func (d *schemaDrift) add(name string) {
 
 // compare records what the schema the store's nodes build and the file's differ on beyond their
 // attributes: the version, and each type only one of them declares, or whose content rule,
-// renderer or place among the types differs. The attributes are the attribute nodes' own, which
-// requireAttributeNodesMatchTheFile has recorded field by field.
+// renderer, parents or place among the types differs. The attributes are the attribute nodes'
+// own, which requireAttributeNodesMatchTheFile has recorded field by field.
 func (d *schemaDrift) compare(built, file pmdoc.BlockSchema) {
 	if built.Version != file.Version {
 		d.fileVersion, d.storeVersion = file.Version, built.Version
@@ -395,7 +396,8 @@ func (d *schemaDrift) compare(built, file pmdoc.BlockSchema) {
 	}
 	for _, want := range file.Types {
 		index := slices.IndexFunc(built.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == want.Name })
-		if index < 0 || built.Types[index].Content != want.Content || built.Types[index].Render != want.Render {
+		if index < 0 || built.Types[index].Content != want.Content || built.Types[index].Render != want.Render ||
+			!slices.Equal(built.Types[index].Parents, want.Parents) {
 			d.add(want.Name)
 		}
 	}

@@ -196,6 +196,9 @@ func validateNode(n *Node, depth int) error {
 	switch n.Type {
 	case "doc", "blockquote", "footnote_definition":
 		if len(n.Children) == 0 || !childrenAreBlocks(n.Children) {
+			if err := misplacedBlock(n.Children); err != nil {
+				return err
+			}
 			return fmt.Errorf("%w: %s requires block children", ErrSchema, n.Type)
 		}
 	case "paragraph", "heading":
@@ -208,6 +211,9 @@ func validateNode(n *Node, depth int) error {
 		}
 	case "list_item":
 		if len(n.Children) == 0 || n.Children[0].Type != "paragraph" || !childrenAreBlocks(n.Children[1:]) {
+			if err := misplacedBlock(n.Children); err != nil {
+				return err
+			}
 			return fmt.Errorf("%w: list item requires a paragraph followed by blocks", ErrSchema)
 		}
 	case "code_block":
@@ -277,27 +283,44 @@ func undeclaredAttributes(typeName string, attrs Attrs, declared BlockAttributes
 }
 
 func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
+	// The blocks of the types this one admits after its content (TypedContent) are no part of
+	// its own content rule, which reads the rest as it reads a block that holds none.
+	content, _ := TypedContent(n)
 	switch typ.Content {
 	case BlockContentParagraphs:
-		if len(n.Children) == 0 || !childrenAre(n.Children, "paragraph") {
+		if len(content) == 0 || !childrenAre(content, "paragraph") {
+			if err := misplacedBlock(content); err != nil {
+				return err
+			}
 			return fmt.Errorf("%w: typed block %q content %q requires one or more paragraphs", ErrSchema, n.Type, typ.Content)
 		}
 	case BlockContentBlocks:
-		if len(n.Children) == 0 || !childrenAreBlocks(n.Children) {
+		if len(content) == 0 || !childrenAreBlocks(content) {
+			if err := misplacedBlock(content); err != nil {
+				return err
+			}
 			return fmt.Errorf("%w: typed block %q content %q requires one or more blocks", ErrSchema, n.Type, typ.Content)
 		}
 	case BlockContentParagraphsOptionalBulletList:
 		// Concurrent browser edits can leave an ask holding blocks off its content rule (two
-		// bullet lists, a paragraph after its list), and the browser keeps it. Retain that
-		// structurally valid body so settlement can mark it `invalid`; uploads and edits refuse
-		// an ask they write that breaks the rule (AskContentError).
+		// bullet lists, a paragraph after its list or after a reading), and the browser keeps it
+		// (proof-editor's relaxAskContentCheck). Retain that structurally valid body - blocks, and
+		// the readings an ask admits, in any order - so settlement can mark it `invalid`; uploads
+		// and edits refuse an ask they write that breaks the rule (AskContentError).
 		if n.Type == "ask" {
-			if len(n.Children) == 0 || !childrenAreBlocks(n.Children) {
+			held := len(n.Children) > 0
+			for _, child := range n.Children {
+				held = held && child != nil && (isBlockNodeType(child.Type) || AdmitsAfterContent(n.Type, child.Type))
+			}
+			if !held {
 				return fmt.Errorf("%w: typed block %q requires block children", ErrSchema, n.Type)
 			}
 			break
 		}
-		if askContentBreak(n.Children) != "" {
+		if askContentBreak(content) != "" {
+			if err := misplacedBlock(content); err != nil {
+				return err
+			}
 			return fmt.Errorf("%w: typed block %q content %q requires paragraphs followed by an optional bullet list", ErrSchema, n.Type, typ.Content)
 		}
 	default:
@@ -327,10 +350,11 @@ func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 }
 
 // AskContentError reports the first ask block in node that breaks its content rule, paragraph+
-// bullet_list? - one or more paragraphs, then at most one bullet list, last - or nil. Validate
-// lets an ask hold other blocks, since concurrent browser edits can leave one there, the browser
-// keeps it, and settlement marks the ask `invalid`; markdown written in whole is held to the rule,
-// as the browser editor's parser holds it.
+// bullet_list? - one or more paragraphs, then at most one bullet list, last - or nil. The readings
+// an ask admits after that content (TypedContent) are no part of it. Validate lets an ask hold
+// other blocks, since concurrent browser edits can leave one there, the browser keeps it, and
+// settlement marks the ask `invalid`; markdown written in whole is held to the rule, as the
+// browser editor's parser holds it.
 //
 // An ask whose question a person's edit emptied keeps the rule, options and all: the document
 // service keeps such a block and repairs it through its question (refuseEmptyQuestionEdit,
@@ -359,9 +383,10 @@ func askContentError(node *Node, written bool) error {
 		if ask.Type != "ask" {
 			return true
 		}
-		broken := askContentBreak(ask.Children)
+		content, _ := TypedContent(ask)
+		broken := askContentBreak(content)
 		if broken == "" {
-			if written && askWritesNoQuestion(ask.Children) {
+			if written && askWritesNoQuestion(content) {
 				id, _ := ask.Attrs[BlockIDAttr].(string)
 				found = fmt.Errorf("ask block %q holds its options and no question, which no one can answer, where its content rule, %s, reads the question as the paragraph before them; write it on the line under the block's opening fence, above its options", id, BlockContentParagraphsOptionalBulletList)
 				return false
@@ -537,12 +562,57 @@ var blockNodeTypes = func() map[string]struct{} {
 	return set
 }()
 
+// isBlockNodeType reports whether typeName is in the block group: a block node of the Proof
+// schema, or a typed block that names no parents (BlockTypeSchema.Parents), since one that does
+// stands only where a parent admits it (TypedContent).
 func isBlockNodeType(typeName string) bool {
 	if _, ok := blockNodeTypes[typeName]; ok {
 		return true
 	}
-	_, typed := typedBlock(typeName)
-	return typed
+	manifest := active.Load()
+	_, typed := manifest.types[typeName]
+	return typed && !manifest.placed[typeName]
+}
+
+// TypedContent splits a typed block's children in two: the content its own content rule holds,
+// and the trailing run of blocks of the types it admits after that content (the types whose
+// parents name it, BlockTypeSchema.Parents), such as the readings a decision or an ask closes
+// with. A block of such a type anywhere before the last block of another type is content, which
+// the rule then refuses. A block of no type, or of one that admits none, holds content alone.
+func TypedContent(node *Node) (content, admitted []*Node) {
+	admits := active.Load().admitted[node.Type]
+	end := len(node.Children)
+	for end > 0 && node.Children[end-1] != nil && admits[node.Children[end-1].Type] {
+		end--
+	}
+	return node.Children[:end], node.Children[end:]
+}
+
+// AdmitsAfterContent reports whether a block of type parent admits one of type child after its
+// own content (TypedContent).
+func AdmitsAfterContent(parent, child string) bool {
+	return active.Load().admitted[parent][child]
+}
+
+// misplacedBlock is the refusal of the first of children whose type names parents, which stands
+// where none of them admits it (TypedContent leaves such a block in a parent's content), or nil.
+// The browser editor holds such a type in no node group, so its parser would drop the block
+// there, text and all.
+func misplacedBlock(children []*Node) error {
+	manifest := active.Load()
+	for _, child := range children {
+		if child == nil || !manifest.placed[child.Type] {
+			continue
+		}
+		parents := manifest.types[child.Type].Parents
+		named := make([]string, len(parents))
+		for index, parent := range parents {
+			named[index] = blockName(parent)
+		}
+		id, _ := child.Attrs[BlockIDAttr].(string)
+		return fmt.Errorf("%w: typed block %q %q stands only at the end of %s, after that block's own content", ErrSchema, child.Type, id, strings.Join(named, " or "))
+	}
+	return nil
 }
 
 func isInlineNodeType(typeName string) bool {

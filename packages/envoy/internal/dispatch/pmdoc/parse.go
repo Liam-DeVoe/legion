@@ -894,12 +894,15 @@ func parseTypedDirective(directive *typedDirective, source []byte, footnotes map
 	}
 	// A typed block whose schema content opens with a paragraph is read holding one ahead of what
 	// the markdown wrote (opensWithAParagraph), and the display read marks the blocks it keeps
-	// whose content rule wants one for the same reason (displayFillAttr, displayContentFit).
+	// whose content rule wants one for the same reason (displayFillAttr, displayContentFit). So is
+	// one whose markdown opens with a block it admits after its content (a decision holding its
+	// readings alone): ProseMirror fills the content its rule wants ahead of them with a paragraph.
 	_, fill := directive.Attribute(displayFillAttr)
+	opensAdmitted := len(children) > 0 && AdmitsAfterContent(directive.Name, children[0].Type)
 	return &Node{
 		Type:     directive.Name,
 		Attrs:    directive.values,
-		Children: emptyParagraphFirst(children, fill || opensWithAParagraph(directive.Name)),
+		Children: emptyParagraphFirst(children, fill || opensAdmitted || opensWithAParagraph(directive.Name)),
 	}, nil
 }
 

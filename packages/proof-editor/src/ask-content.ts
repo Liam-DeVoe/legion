@@ -8,18 +8,20 @@ import { ySyncPluginKey } from "y-prosemirror";
 
 /**
  * Makes `schema`'s `ask` node (when it has one) accept, as a node's content, what the document
- * service accepts in it: at least one child of the schema's `block` group (the server's block
- * node types, pmdoc's `isBlockNodeType`, and the block schema's typed blocks), and no mark the
- * ask disallows.
+ * service accepts in it: at least one child, each of the schema's `block` group (the server's
+ * block node types, pmdoc's `isBlockNodeType`, and the block schema's typed blocks that name no
+ * parents) or of a type an ask admits after its own content (a reading, whose `parents` name
+ * `ask`: pmdoc's `TypedContent`), and no mark the ask disallows.
  *
- * An ask's content rule is `paragraph+ bullet_list?`, but two collaborators' concurrent edits
- * (two lists, a paragraph after the list) can leave a shared document holding an ask that rule
- * refuses. y-prosemirror builds each node through `createChecked`, and when that throws it deletes
- * the whole element from the shared Yjs document, so every editor and the server lose the ask's
- * text (sjawhar/legion#2433). Only `validContent` changes, which is what `createChecked`, a step's own
- * check and `Node.check` read; content matching (`contentMatch`, `canReplace`, `createAndFill`)
- * keeps the rule, so every command, input rule, paste and markdown parse still holds a local edit
- * to it, and the typed-block drawing's fit check is untouched.
+ * An ask's content rule is `paragraph+ bullet_list? reading*`, but two collaborators' concurrent
+ * edits (two lists, a paragraph after the list, a paragraph after a reading) can leave a shared
+ * document holding an ask that rule refuses. y-prosemirror builds each node through
+ * `createChecked`, and when that throws it deletes the whole element from the shared Yjs document,
+ * so every editor and the server lose the ask's text, its readings with it (sjawhar/legion#2433).
+ * Only `validContent` changes, which is what `createChecked`, a step's own check and `Node.check`
+ * read; content matching (`contentMatch`, `canReplace`, `createAndFill`) keeps the rule, so every
+ * command, input rule, paste and markdown parse still holds a local edit to it, and the
+ * typed-block drawing's fit check is untouched.
  */
 export function relaxAskContentCheck(schema: Schema): void {
   const ask = schema.nodes.ask;
@@ -28,7 +30,9 @@ export function relaxAskContentCheck(schema: Schema): void {
     if (content.childCount === 0) return false;
     for (let index = 0; index < content.childCount; index++) {
       const child = content.child(index);
-      if (!child.type.isInGroup("block")) return false;
+      const closesAnAsk =
+        (child.type.spec.parents as readonly string[] | undefined)?.includes("ask") === true;
+      if (!child.type.isInGroup("block") && !closesAnAsk) return false;
       if (!ask.allowsMarks(child.marks)) return false;
     }
     return true;

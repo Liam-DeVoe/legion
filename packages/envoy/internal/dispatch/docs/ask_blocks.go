@@ -353,6 +353,13 @@ func (s *Service) reconcileAskBlocks(
 		readable = append(readable, block)
 	}
 	blocks = readable
+	// A reading stands only in an ask a person answered. Every write that takes markdown refuses
+	// one in any other ask (refuseReadingsWithoutAnswers); a browser's write is never refused, so
+	// settlement flags such an ask block with that reason, as it flags one the strict read refuses.
+	blocks, invalidBlocks, err = flagReadingsWithoutAnswers(ctx, tx, artifactID, blocks, invalidBlocks)
+	if err != nil {
+		return settlementReconciliation{}, err
+	}
 	rows, err := loadAskBlocks(ctx, tx, artifactID)
 	if err != nil {
 		return settlementReconciliation{}, err
@@ -863,7 +870,9 @@ func readWrittenAskBlockStrictly(node *pmdoc.Node) error {
 }
 
 // parseAskBlock is the ask settlement reads in node, or why it cannot be read: a block no
-// paragraph of which holds text asks nothing, and settlement leaves its row as it was.
+// paragraph of which holds text asks nothing, and settlement leaves its row as it was. The
+// readings an ask closes with (pmdoc.TypedContent) are no part of what it asks, and the parse
+// passes over them.
 func parseAskBlock(node *pmdoc.Node) (askBlock, error) {
 	block, err := parseAskBlockLeniently(node)
 	if err != nil {
@@ -891,7 +900,8 @@ func parseAskBlockLeniently(node *pmdoc.Node) (askBlock, error) {
 	// An ask block without a bullet list is a free-text decision; its options are an empty
 	// list on the wire (never JSON null), the same shape every other ask carries.
 	options := []model.AskOption{}
-	for _, child := range node.Children {
+	content, _ := pmdoc.TypedContent(node)
+	for _, child := range content {
 		switch child.Type {
 		case "paragraph":
 			questionParts = append(questionParts, strings.TrimSpace(pmdoc.TextContent(child)))
