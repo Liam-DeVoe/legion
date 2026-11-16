@@ -87,6 +87,8 @@ function newPageHeading(page: Page): Locator {
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
+  await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
   // The part that fills a slot changes these two: each slot drawn so far adds no text or control.
   await expect(newPage).toHaveText(`${issue.key} ${issue.title}`, { useInnerText: true });
@@ -142,7 +144,8 @@ test("a reader turns the new issue page on in Settings and off again, by links a
     const label = await preview.locator("label", { has: page.getByRole("checkbox") }).boundingBox();
     expect(label?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
-  // Settings is read once every section has drawn what it read.
+  // Settings is read once no section shows a loading line. The Preview section, the only text this
+  // part adds to Settings, is drawn by then.
   const main = page.getByRole("main");
   await expect(main.getByText(/^Loading/)).toHaveCount(0);
   expect(await main.innerText()).not.toMatch(/\b(outline|tabs)\b/i);
@@ -178,6 +181,7 @@ test("a reader turns the new issue page on in Settings and off again, by links a
   await signIn(page.context(), "alice");
   await page.goto(`/issues/${issue.key}`);
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
 
   await setMarker(page);
   await openSettings(page);
@@ -214,6 +218,7 @@ test("a second tab of the same login follows the setting with no reload @phone",
     .getByRole("checkbox", { exact: true, name: "New issue page" });
   await checkbox.check();
   await expect(newPageHeading(second)).toHaveText(issue.title);
+  await expect(second.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   expect(await marked(second)).toBe(true);
   if (isPhone) await assertPageFits(second);
 
@@ -239,6 +244,7 @@ test("withIssuePage turns the new issue page on at the first load of the default
   if (!isPhone) await page.setViewportSize(desktop);
   await page.goto(`/issues/${issue.key}`);
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   if (isPhone) await assertPageFits(page);
 
   await withAlice(browser, async (alice) => {
@@ -246,6 +252,7 @@ test("withIssuePage turns the new issue page on at the first load of the default
     if (!isPhone) await alice.setViewportSize(desktop);
     await alice.goto(`/issues/${issue.key}`);
     await expect(newPageHeading(alice)).toHaveText(issue.title);
+    await expect(alice.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
     if (isPhone) await assertPageFits(alice);
   });
 });
