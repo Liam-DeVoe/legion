@@ -14,7 +14,7 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorQuote } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -276,7 +276,9 @@ function ChangeComposer({
     // A send Dispatch refused, or one the reader stopped, gives the words back to the draft: the
     // form keeps them while it is drawn, and a body that closed before the refusal, or closes
     // after it, opens again with the Change and its words. The mutation runs this after the form
-    // has gone too, as it runs `onSuccess`.
+    // has gone too, as it runs `onSuccess`. The form says so in the page's own words, never in
+    // the server's: a refusal's text names what the reader cannot act on, such as a quote that
+    // matches two places and the field that would say which (decision 92).
     onError: (_error, input) => {
       drafts?.set(decision.ref, input.body);
     },
@@ -330,7 +332,7 @@ function ChangeComposer({
       />
       {send.error === null ? null : (
         <p className={`text-xs ${dangerText}`} role="alert" {...pageChrome}>
-          {send.error.message}
+          {ANSWER_LINES.change_not_sent}
         </p>
       )}
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
