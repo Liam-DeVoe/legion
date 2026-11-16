@@ -319,8 +319,8 @@ connection reach: `check c-callout-live` of dispatch://INFRA-840's verification.
 `dev-stack.sh --callout` is that stack: natsd behind the auth callout, the service in two
 brokers on one database, and the listener and Dispatch connecting as services with the
 NATS-audience tokens the issuer writes them. All of what `--callout` adds is in
-`lib/dev-stack-callout.sh`, which `dev-stack.sh` sources; without the option each of its
-steps does nothing. The check prints one line per property:
+`lib/dev-stack-callout.sh`, which `dev-stack.sh` sources with the option and only then;
+without it each addition is empty. The check prints one line per property:
 a session subscribes its own delivery channel; it is refused another session's, in
 nats-server's own words (`Permissions Violation for Subscription to "..."`); a connection
 with no credential is refused; a token neither broker issued is refused (a stand-in token

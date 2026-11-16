@@ -17,7 +17,9 @@
 // (session/<id>) and the account its token names for a service, then one of: `served <subject>`,
 // exit 0; `refused: <the server's text>`, exit 3, when the hub refused the subscribe or publish;
 // `not admitted: <the server's text>`, exit 4, when the hub refused the connection. A usage error
-// exits 2 and any other failure 1. It prints no token.
+// exits 2 and any other failure 1; a session's credential tried on a hub with no auth service,
+// which sends no nonce to sign, is such a failure, and names the flags of the credentials that hub
+// takes. It prints no token.
 package main
 
 import (
@@ -97,6 +99,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			}
 		}))
 	if err != nil {
+		// nats.go wraps the signature callback's error ("error signing nonce: %w", nats.go:3087-3090)
+		// and Connect returns it: the probe never sent a CONNECT, so the hub refused nothing, and
+		// which credential such a hub takes is the probe's to say, by its flags.
+		if errors.Is(err, brokerclient.ErrNoNonce) {
+			fmt.Fprintf(stderr, "natsprobe: %v; name the credential it does take: --no-credential, --service-token-file or --service-google-audience\n", err)
+			return exitFailed
+		}
 		fmt.Fprintf(stdout, "not admitted: %s\n", serverText(err))
 		return exitNotAdmitted
 	}

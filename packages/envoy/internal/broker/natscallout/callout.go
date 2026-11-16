@@ -39,22 +39,47 @@ const (
 var concurrentDecisions = 64
 
 // maxWaiting bounds the requests one replica holds waiting for a decision slot; the one past it is
-// refused at once (waitingRefusal). Each waiting request holds a goroutine, its sealed request and
-// a deadline until a slot frees or its budget ends, and a client holding no credential can send one
-// per TCP connect, so with no bound what a replica holds grows with whatever such a client sends.
-// The bound is sixteen times the slots: at the slowest decision this package's storm measured
-// (146 ms), concurrentDecisions slots decide about 64 x 1.5 s / 146 ms = 650 requests inside one
-// budget, so a request behind 1024 others would be refused at its budget anyway. At faster
-// decisions the bound refuses some that could have waited; their clients retry a refusal
-// (IgnoreAuthErrorAbort) and hear it at once rather than after their budget. It is a var so a test
-// can fill it with a handful of requests (queue_test.go).
+// refused without a decision (waitingRefusal), on a goroutine of its own (maxRefusing). Each
+// waiting request holds a goroutine, its sealed request and a deadline until a slot frees or its
+// budget ends, and a client holding no credential can send one per TCP connect, so with no bound
+// what a replica holds grows with whatever such a client sends. The bound is sixteen times the
+// slots: at the slowest decision this package's storm measured (146 ms), concurrentDecisions slots
+// decide about 64 x 1.5 s / 146 ms = 650 requests inside one budget, so a request behind 1024
+// others would be refused at its budget anyway. At faster decisions the bound refuses some that
+// could have waited; their clients retry a refusal (IgnoreAuthErrorAbort) and hear it at once
+// rather than after their budget. It is a var so a test can fill it with a handful of requests
+// (queue_test.go, storm_test.go).
 var maxWaiting = 1024
+
+// maxRefusing bounds the requests one replica refuses at once past maxWaiting, each on a goroutine
+// of its own; the one past it is dropped unanswered (deliver), and the hub refuses that client
+// itself at its authorization timeout.
+//
+// A request past maxWaiting is refused rather than dropped because a refusal takes no broker call
+// and about 0.3 ms of CPU (the request opened and its JWT verified, the answer signed and sealed;
+// 3.6 ms under -race), so its client hears at once, and why, and retries on its own schedule, where
+// a dropped one is held by the hub for its whole two-second authorization timeout and then refused
+// with no reason. It is refused off the delivery goroutine because nats.go delivers every request
+// on that one goroutine: refused there, each refusal held back the delivery of every request
+// behind it, and in a storm the last were delivered after the hub had refused their clients
+// (storm_test.go). And it is bounded because a client that holds no credential can send a request
+// per TCP connect: 1024 refusals at once are about 0.3 s of CPU, answered well inside a budget by a
+// replica of a few cores, and a replica sent more past both bounds than that is sent more than it
+// can refuse, where a goroutine each would only grow. It is a var so a test can make a replica drop
+// (queue_test.go).
+var maxRefusing = 1024
 
 // waitingRefusal is what a request that arrives with maxWaiting others already waiting is refused
 // with. Its label in the decision counter is labelWaitingBound.
 func waitingRefusal() *Refusal {
 	return refuse(labelWaitingBound, fmt.Sprintf("%d requests already wait for a decision slot on this replica, the most it holds", maxWaiting))
 }
+
+// pendingBytes bounds in bytes the requests nats.go holds for the subscription that its callback
+// has not taken yet, beside the count start sets (Subscription.SetPendingLimits). The count binds
+// first: 64 MiB over the 2,049 requests the deployed bounds allow is 32 KiB a request, where a
+// session's sealed request measures 2.3 KB and one that holds no credential 1.2 KB.
+const pendingBytes = 64 << 20
 
 // decideBudget is how long one decision may take. A Go client fails its connect when the server's
 // answer arrives later than two seconds: nats.go sets one deadline of Opts.Timeout, 2 s by
@@ -76,8 +101,10 @@ func budgetRefusal(step string) *Refusal {
 }
 
 // drainBound bounds how long Close waits for the subscription to finish draining the requests the
-// hub had already routed to this replica. Each one past its budget is refused at once without a
-// decision (answer), so a long queue drains in far less than this.
+// hub had already routed to this replica, and then for the subscription's delivery goroutine to
+// finish (close). Each request past its budget is refused at once without a decision (answer), so
+// a long queue drains in far less than this, and the delivery goroutine takes a request in
+// microseconds (deliver).
 const drainBound = 5 * time.Second
 
 // minimumDecision is the least of its budget a request must have left when it gets a decision
@@ -89,7 +116,10 @@ const minimumDecision = 100 * time.Millisecond
 // holdDelivery, when a test sets it, runs at the start of every delivery of a request to replica
 // s, before the request's budget starts; a test that blocks in it holds the hub's requests in that
 // replica's subscription, which is where a replica that drops rather than drains them on Close
-// loses them (queue_test.go). Nil outside tests.
+// loses them (queue_test.go). Nil outside tests, where reading it costs every delivery one load of
+// a nil variable and a branch that always goes the same way, against the context and goroutine a
+// delivery makes; a test sets it before any replica starts and clears it once every replica it
+// started has closed, when no delivery is left to read it (holdDeliveries).
 var holdDelivery func(s *Service)
 
 // Settings is where the service connects and the keys it holds.
@@ -109,16 +139,33 @@ type Settings struct {
 // Service is the running auth service: one connection to the hub, subscribed to the authorization
 // subject in the replicas' queue group.
 type Service struct {
-	conn  *nats.Conn
-	sub   *nats.Subscription
-	slots chan struct{}
-	wait  sync.WaitGroup
-	// waiting counts the requests waiting for a decision slot, which maxWaiting bounds.
-	waiting atomic.Int64
-	// beat is when the heartbeat last took a decision slot, in Unix nanoseconds, and done ends
-	// the heartbeat at Close.
+	conn   *nats.Conn
+	sub    *nats.Subscription
+	answer *answerer
+	slots  chan struct{}
+	// wait counts the requests deliver started on goroutines of their own, waiting for a slot,
+	// deciding or being refused, which Close waits out.
+	wait sync.WaitGroup
+	// waiting counts the requests waiting for a decision slot, which maxWaiting bounds, and
+	// refusing the requests being refused past it, which maxRefusing bounds. Each is counted on
+	// the delivery goroutine before the request's own goroutine starts, so it includes requests
+	// whose goroutine the scheduler has not run yet: counted any later, a bound would not bound
+	// the goroutines, which are what it holds.
+	waiting, refusing atomic.Int64
+	// dropped counts the requests deliver dropped past both bounds since they were last reported
+	// (reportDropped).
+	dropped atomic.Int64
+	// delivered is closed once the subscription's delivery goroutine has returned from its last
+	// callback and ended (Subscription.SetClosedHandler, which nats.go runs on that goroutine as
+	// it ends, nats.go:3778-3784), after which deliver adds nothing more to wait.
+	delivered chan struct{}
+	// beat is when the heartbeat last took a decision slot, in Unix nanoseconds; done ends the
+	// heartbeat at Close, and beaten is closed once it has ended, which Close waits for, so nothing
+	// the heartbeat reads (livenessTick, and maxWaiting and maxRefusing in reportDropped) is read
+	// by a replica Close has returned from.
 	beat      atomic.Int64
 	done      chan struct{}
+	beaten    chan struct{}
 	closeOnce sync.Once
 }
 
@@ -135,8 +182,10 @@ var (
 // the beat stays fresh; when every slot is held by a decision that never ends, no request can be
 // decided and the beat goes stale, which Livez reports. A process stopped outright never answers
 // the probe at all, which a liveness probe also reads as a failure. Start stores the first beat
-// itself, before anything can read it.
+// itself, before anything can read it. Each tick it also reports the requests dropped since the
+// last (reportDropped), before it waits for a slot, so a stall does not hold the report back.
 func (s *Service) beatWhileTurning() {
+	defer close(s.beaten)
 	ticker := time.NewTicker(livenessTick)
 	defer ticker.Stop()
 	for {
@@ -145,6 +194,7 @@ func (s *Service) beatWhileTurning() {
 			return
 		case <-ticker.C:
 		}
+		s.reportDropped()
 		select {
 		case s.slots <- struct{}{}:
 			<-s.slots
@@ -152,6 +202,16 @@ func (s *Service) beatWhileTurning() {
 		case <-s.done:
 			return
 		}
+	}
+}
+
+// reportDropped logs how many requests deliver has dropped past both bounds since the last report,
+// when it has dropped any. The heartbeat runs it every tick and Close once more at the end, so a
+// flood of drops is a line a tick, where a line a request would be a flood of its own.
+func (s *Service) reportDropped() {
+	if dropped := s.dropped.Swap(0); dropped > 0 {
+		s.answer.log("natscallout: dropped authorization requests unanswered, past both bounds of this replica; the hub refuses each client at its authorization timeout",
+			"dropped", dropped, "waiting_bound", maxWaiting, "refusing_bound", maxRefusing)
 	}
 }
 
@@ -220,31 +280,58 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
-	s := &Service{conn: conn, slots: make(chan struct{}, concurrentDecisions), done: make(chan struct{})}
+	s := &Service{
+		conn:      conn,
+		answer:    &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide},
+		slots:     make(chan struct{}, concurrentDecisions),
+		delivered: make(chan struct{}),
+		done:      make(chan struct{}),
+		beaten:    make(chan struct{}),
+	}
 	s.beat.Store(time.Now().UnixNano())
-	answer := &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide}
-	s.sub, err = conn.QueueSubscribe(authSubject, queueGroup, func(msg *nats.Msg) {
-		if holdDelivery != nil {
-			holdDelivery(s)
-		}
-		// The budget counts from here, and it is one clock: the deadline below bounds both the
-		// wait for a decision slot and the decision itself. The callback never blocks: nats.go
-		// delivers one message at a time on this goroutine, so a callback that waited here for a
-		// slot would hold back the next request's arrival too, and that request's budget would
-		// start late. Each request waits for its slot on a goroutine of its own, and one still
-		// waiting when its budget is spent is answered with a refusal without one (answer).
-		received := time.Now()
-		// Past maxWaiting the request is refused here, on the delivery goroutine, with no
-		// goroutine of its own: opening, signing and sealing a refusal takes no broker call, and
-		// what a flood of them costs then is this one goroutine's time, which nats.go's pending
-		// limits bound, rather than a goroutine each.
-		if s.waiting.Add(1) > int64(maxWaiting) {
-			s.waiting.Add(-1)
-			answer.answer(context.Background(), msg, received, waitingRefusal())
-			return
-		}
+	s.sub, err = conn.QueueSubscribe(authSubject, queueGroup, s.deliver)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("natscallout: subscribe %s: %w", authSubject, err)
+	}
+	s.sub.SetClosedHandler(func(string) { close(s.delivered) })
+	// nats.go holds the requests its callback has not taken yet in a list of its own, of 500,000
+	// messages or 64 MiB unless told otherwise (nats.go:5765-5767), and past its bound drops each
+	// new one and reports a slow consumer, which the bus logs. The callback takes a request in
+	// microseconds, so the list grows only while the callback cannot run at all, and once it runs
+	// again it places no more of what the list holds than maxWaiting to wait and maxRefusing to be
+	// refused, and drops the rest itself. So the list holds those and the one being delivered,
+	// which nats.go counts until its callback returns (nats.go:3707-3709); a request past them,
+	// which the callback would drop all the same a moment later, is dropped on arrival without
+	// holding its memory meanwhile.
+	if err := s.sub.SetPendingLimits(maxWaiting+maxRefusing+1, pendingBytes); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("natscallout: bound the requests held for %s: %w", authSubject, err)
+	}
+	go s.beatWhileTurning()
+	return s, nil
+}
+
+// deliver is the subscription's callback, which nats.go runs for each request in turn on the one
+// goroutine it delivers the subscription's messages on (nats.go:3696-3765, waitForMsgs). So it
+// never blocks, on any branch: it counts the request against a bound, starts a goroutine for it or
+// drops it, and returns, and the request is opened, settled and answered on its own goroutine.
+// Anything slower here would hold back the delivery of every request behind it, each unseen in
+// nats.go's list while the hub's timeout on it runs, and each given its whole budget late once
+// delivered.
+//
+// The request's budget counts from here, and it is one clock: the deadline set here bounds both
+// the wait for a decision slot and the decision itself (decideWithin reads it). Every Add to wait
+// happens on this goroutine, before the subscription's closed handler runs on it as it ends
+// (delivered), and Close waits for that handler before it waits on wait, for drainBound at most,
+// which a callback that takes microseconds never comes near: so every Add happens before its Wait.
+func (s *Service) deliver(msg *nats.Msg) {
+	if holdDelivery != nil {
+		holdDelivery(s)
+	}
+	received := time.Now()
+	if s.waiting.Add(1) <= int64(maxWaiting) {
 		ctx, cancel := context.WithDeadline(context.Background(), received.Add(decideBudget))
-		// Added on the delivery goroutine Close waits out, so every Add happens before its Wait.
 		s.wait.Add(1)
 		go func() {
 			defer s.wait.Done()
@@ -256,15 +343,24 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 			case <-ctx.Done():
 				s.waiting.Add(-1)
 			}
-			answer.answer(ctx, msg, received, nil)
+			s.answer.answer(msg, received, s.answer.decideWithin(ctx))
 		}()
-	})
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("natscallout: subscribe %s: %w", authSubject, err)
+		return
 	}
-	go s.beatWhileTurning()
-	return s, nil
+	s.waiting.Add(-1)
+	if s.refusing.Add(1) <= int64(maxRefusing) {
+		s.wait.Add(1)
+		go func() {
+			defer s.wait.Done()
+			defer s.refusing.Add(-1)
+			s.answer.answer(msg, received, refuseWith(waitingRefusal()))
+		}()
+		return
+	}
+	s.refusing.Add(-1)
+	// Dropped: the hub refuses its client at its authorization timeout. Not logged here, since a
+	// log line is a write, which can block, and past both bounds it would be a line a request.
+	s.dropped.Add(1)
 }
 
 // Close stops answering.
@@ -272,15 +368,29 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 // Connected, it drains the subscription: that leaves the queue group at once, so the hub sends the
 // next request to another replica, and still delivers every request the hub had already routed
 // here, which an unsubscribe would drop and leave each of those clients waiting out the hub's
-// whole authorization timeout. The subscription reports itself closed once the last of them has
-// reached the callback, so the wait that follows covers every decision started.
+// whole authorization timeout.
 //
 // Reconnecting, it unsubscribes instead. A drain then would leave the subscription among the
-// connection's own, which nats.go sends again on the reconnect (nats.go v1.53.1,
+// connection's own, which nats.go sends again on the reconnect (nats.go:5997-6033,
 // resendSubscriptions, which does not check draining), putting this closing replica back in the
-// queue group; the drain's end then removes it on the client's side only, and every request the
-// hub routes here after that has no subscriber. An unsubscribe removes it from the connection, so
-// the reconnect never sends it, and while the connection is down the hub can route nothing here.
+// queue group; the drain's end then removes it on the client's side only (nats.go:5366-5370,
+// checkDrained), and every request the hub routes here after that has no subscriber. An
+// unsubscribe removes it from the connection (nats.go:5444, removeSub), so the reconnect never
+// sends it, and while the connection is down the hub can route nothing here.
+//
+// A drain can meet that reconnect all the same: the connection drops while the drain still has
+// requests to deliver and comes back before the drain ends. So Close counts the connection's
+// reconnects across the drain, and when one came it closes the connection before it waits out its
+// decisions, which takes the replica out of the group at once. The answers of the decisions it
+// cuts short are lost, and their clients are refused at the hub's timeout; left open, the
+// connection would have the hub route requests to no subscriber for as long as those decisions
+// run. A reconnect cannot send the subscription once the drain's end or the unsubscribe has removed
+// it, and both take the connection's lock, as the reconnect's count and its resend do in one hold
+// of it (nats.go:3458-3504), so a reconnect that sent it is counted by then.
+//
+// Either way it then waits for the subscription's delivery goroutine to end, which may still be
+// delivering a request when an unsubscribe ends the subscription, and then for every request that
+// goroutine started.
 func (s *Service) Close() {
 	s.closeOnce.Do(s.close)
 }
@@ -289,20 +399,34 @@ func (s *Service) Close() {
 // a replica early and a cleanup that stops it at the end may both call Close.
 func (s *Service) close() {
 	close(s.done)
+	<-s.beaten
 	if s.conn.IsConnected() {
-		closed := s.sub.StatusChanged(nats.SubscriptionClosed)
+		reconnects := s.conn.Stats().Reconnects
 		if s.sub.Drain() == nil {
-			select {
-			case <-closed:
-			case <-time.After(drainBound):
-			}
+			s.awaitDelivered()
 		}
+		// After a drain this removes nothing; after a drain that outran drainBound it is what
+		// keeps the subscription from being sent again.
+		_ = s.sub.Unsubscribe()
+		if s.conn.Stats().Reconnects != reconnects {
+			s.conn.Close()
+		}
+	} else {
+		_ = s.sub.Unsubscribe()
 	}
-	// After a drain this removes nothing; without one, or after a drain that outran drainBound, it
-	// is what keeps the subscription from being sent again.
-	_ = s.sub.Unsubscribe()
+	s.awaitDelivered()
 	s.wait.Wait()
+	s.reportDropped()
 	s.conn.Close()
+}
+
+// awaitDelivered waits, for drainBound at most, for the subscription's delivery goroutine to end
+// (delivered), which it does once the subscription has ended and its last callback has returned.
+func (s *Service) awaitDelivered() {
+	select {
+	case <-s.delivered:
+	case <-time.After(drainBound):
+	}
 }
 
 // readyPoll is how often Ready asks whether the service's subscription has reached the hub, and
@@ -341,16 +465,54 @@ type answerer struct {
 	decide       decideFunc
 }
 
-// answer opens msg, decides it and answers it, sealed to the server's key. ctx carries the
-// request's budget, which counts from received, when the request reached the subscription, so the
-// time it waited for a decision slot is spent from it; a request past its deadline before its
-// decision starts is refused at once, without asking the broker anything. The request's own expiry
-// is not used: the server writes it in whole seconds (server/auth_callout.go, claim.Expires), so it
-// can name a moment up to a second before the server actually gives up, and would cut a budget of
-// 1.5 s by as much. A request it cannot open or read is not answered: the server refuses that
-// connection at its authorization timeout, and the broker's log says why. refusal, when it is not
-// nil, is the answer already settled before any decision (waitingRefusal), and nothing is decided.
-func (a *answerer) answer(ctx context.Context, msg *nats.Msg, received time.Time, refusal *Refusal) {
+// settle is how answer reaches the verdict on a request it has opened and read: the decision it
+// answers, or the refusal. A request that waited for a decision slot is decided under its budget
+// (decideWithin); one past maxWaiting is refused with no decision (refuseWith).
+type settle func(req Request) (Decision, *Refusal)
+
+// decideWithin settles a request under ctx, which carries its budget from when it reached the
+// subscription (deliver), so the time it waited for a decision slot is spent from it: a request
+// left less than minimumDecision of it is refused naming the wait, without asking the broker
+// anything, and one whose decision ran past it is refused naming the answer.
+func (a *answerer) decideWithin(ctx context.Context) settle {
+	return func(req Request) (Decision, *Refusal) {
+		if deadline, _ := ctx.Deadline(); time.Until(deadline) < minimumDecision {
+			return Decision{}, budgetRefusal("the wait for a decision slot")
+		}
+		decision, err := a.decide(ctx, a.deps, a.services, req)
+		refused := asRefusal(err)
+		// A decision that ran past the deadline is refused, whatever it decided: the client is at
+		// or past the point its connect gives up, and admitting it there would hand the server a
+		// user for a connection that is no longer waiting.
+		if refused == nil && ctx.Err() != nil {
+			refused = budgetRefusal("the answer")
+		}
+		return decision, refused
+	}
+}
+
+// refuseWith settles a request with refused, and decides nothing.
+func refuseWith(refused *Refusal) settle {
+	return func(Request) (Decision, *Refusal) { return Decision{}, refused }
+}
+
+// answer opens msg, settles it and answers it, sealed to the server's key; received is when the
+// request reached the subscription, from which the answer is timed. A request it cannot open or
+// read is not answered: the server refuses that connection at its authorization timeout, and the
+// broker's log says why.
+//
+// Nor is a request the server has already given up on, which is dropped without a decision or a
+// broker call: nobody waits for its answer. The server writes a request's expiry as the moment it
+// sent it plus its authorization timeout, truncated to whole seconds (nats-server
+// server/auth_callout.go:386-387), and gives up at that timeout itself (:462-463). The drop's test
+// is jwt's own for an expired claim (jwt/v2 claims.go:287, the Unix second now later than the
+// expiry), which holds from a second past the expiry on, and the truncation puts that after the
+// moment the server gave up. So on one clock the drop discards no request the server still waits
+// for; with this broker's clock ahead of the hub's by a skew, it can discard one with less than
+// the skew of the server's timeout left, too little to decide it in. The same truncation is why
+// the expiry does not set the budget: it can name a moment up to a second before the server gives
+// up, and would cut a budget of 1.5 s by as much.
+func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	serverXKey := msg.Header.Get(serverXKeyHeader)
 	data := msg.Data
 	if serverXKey != "" {
@@ -366,6 +528,11 @@ func (a *answerer) answer(ctx context.Context, msg *nats.Msg, received time.Time
 		a.log("natscallout: an authorization request is no authorization request JWT", "error", err.Error())
 		return
 	}
+	if claims.Expires > 0 && a.deps.now().Unix() > claims.Expires {
+		a.log("natscallout: dropped an authorization request unanswered: the hub had already given up on it",
+			"host", claims.ClientInformation.Host, "expired", time.Unix(claims.Expires, 0).UTC(), "waited_here", time.Since(received))
+		return
+	}
 	req := Request{
 		UserNkey: claims.UserNkey, ServerID: claims.Server.ID, ServerXKey: serverXKey,
 		Nonce: claims.ClientInformation.Nonce, Token: claims.ConnectOptions.Token, Sig: claims.ConnectOptions.SignedNonce,
@@ -374,8 +541,7 @@ func (a *answerer) answer(ctx context.Context, msg *nats.Msg, received time.Time
 	kind := credentialKind(req)
 	var decision Decision
 	var refused *Refusal
-	switch {
-	case serverXKey == "":
+	if serverXKey == "" {
 		// The service always holds a curve key, and a hub configured with it seals every request,
 		// so a request in the clear means the hub's callout lost its xkey and every token and proof
 		// is crossing the wire unencrypted. Refused, and said loudly.
@@ -383,19 +549,8 @@ func (a *answerer) answer(ctx context.Context, msg *nats.Msg, received time.Time
 		if a.deps.Log != nil {
 			a.deps.Log.Error("natscallout: an authorization request arrived in the clear; the hub's auth_callout names no xkey, so every token and proof crosses the wire unencrypted", "host", req.Host)
 		}
-	case refusal != nil:
-		refused = refusal
-	case time.Since(received) > decideBudget-minimumDecision:
-		refused = budgetRefusal("the wait for a decision slot")
-	default:
-		decision, err = a.decide(ctx, a.deps, a.services, req)
-		refused = asRefusal(err)
-		// A decision that ran past the deadline is refused, whatever it decided: the client is at
-		// or past the point its connect gives up, and admitting it there would hand the server a
-		// user for a connection that is no longer waiting.
-		if refused == nil && ctx.Err() != nil {
-			refused = budgetRefusal("the answer")
-		}
+	} else {
+		decision, refused = settle(req)
 	}
 	user, refused := admit(req, decision, refused)
 	if refused != nil {
@@ -482,12 +637,4 @@ func sign(issuer nkeys.KeyPair, req Request, user *jwt.UserClaims, refused *Refu
 	}
 	response.Jwt = userJWT
 	return response.Encode(issuer)
-}
-
-// encodeAnswer is the authorization response the server reads for req, signed by issuer: the
-// verdict admit settles, signed. It is admit and sign as answer runs them, for a caller that holds
-// a decision and no answerer.
-func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal error) (string, error) {
-	user, refused := admit(req, decision, asRefusal(refusal))
-	return sign(issuer, req, user, refused)
 }

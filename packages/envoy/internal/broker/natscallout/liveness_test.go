@@ -64,3 +64,17 @@ func TestTheLivenessHandlerFailsWhileTheCalloutLoopIsStalled(t *testing.T) {
 		return livenessStatus(stalled) == http.StatusServiceUnavailable
 	})
 }
+
+// Close ends the heartbeat before it returns, so nothing of a closed replica reads the settings a
+// later test changes: the heartbeat reads livenessTick as it starts, and maxWaiting and maxRefusing
+// when it reports a drop (reportDropped). A heartbeat that Close only signalled, and did not wait
+// for, is still running, or ended unseen, when the next test writes those; the race detector reads
+// that as a data race, which is what this test fails with, under -race only, without the wait.
+func TestCloseEndsTheHeartbeatBeforeItReturns(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	service := startService(t, url, keys, Deps{}, Decide)
+	service.Close()
+	withLiveness(t, 20*time.Millisecond, time.Second)
+	withWaitingBound(t, 3)
+}

@@ -1322,10 +1322,12 @@ class RaceJob(NamedTuple):
 
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
-            "Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch",
+            "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
+            "NATS credentials and the NATS auth service",
             "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
-                    RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
+                    RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
+                    RacePackage("natscred"), RacePackage("internal/broker/natscallout"))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "30m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
@@ -2613,10 +2615,10 @@ GATES = [
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
         # test of internal/bus that needs a real server image, and the auth service's check that
         # the deployed server lets an empty allow list through, which its guard refuses. The rest
-        # of internal/testnats and internal/broker/natscallout runs in the unit step; the rest of
-        # internal/bus runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the race lane's
-        # packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry per step,
-        # checks the testnats half alone.
+        # of internal/testnats runs in the unit step; the rest of internal/bus and
+        # internal/broker/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
+        # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
+        # per step, checks the testnats half alone.
         pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
