@@ -7,12 +7,14 @@ import (
 )
 
 // Point is the subject that states are derived at (R10): the head of a branch, with Branch set and
-// Deploy "", or the commit that production runs, with Deploy set and Branch "". It is not named
-// Subject, which is what a check reads.
+// Deploy and GraphTx "", or the commit that production runs, with Deploy set and Branch "", and
+// GraphTx the transaction of the graph that it reads, "" for none (R13: a query "reads the graph at
+// one transaction"). It is not named Subject, which is what a check reads.
 type Point struct {
-	Commit string `json:"commit"`
-	Branch string `json:"branch"`
-	Deploy string `json:"deploy"`
+	Commit  string `json:"commit"`
+	Branch  string `json:"branch"`
+	Deploy  string `json:"deploy"`
+	GraphTx string `json:"graph_tx"`
 }
 
 // Input is what the states at one subject are derived from: the spec files at Subject.Commit, the
@@ -73,8 +75,10 @@ const (
 )
 
 // CheckStates is the state at in.Subject of each check that the approved spec holds a current text
-// of, sorted by id. A check that reads production or the graph has no state at the head of a
-// branch (R10: "A check whose subject is production decides nothing for the head of a branch").
+// of, sorted by id. A check of production has no state at a subject that names no deploy, such as
+// the head of a branch, and a check of the graph none at a subject that names no transaction of the
+// graph (R10: "Only the checks that read the subject count. A check whose subject is production
+// decides nothing for the head of a branch").
 //
 // The state of a check C at subject S comes from the first of these steps that decides; no later
 // step overrides an earlier one, and a failure decides only at step 8, after every unknown case of
@@ -99,7 +103,8 @@ const (
 //  4. The runs that count at S. For a code check, a run at S.Commit, or at a commit whose tree
 //     differs from S.Commit's in no file of C's tie (R8), every such commit, and with a tie that is
 //     not known only runs at S.Commit. For a production check, the runs under S.Deploy; for a graph
-//     check, the runs of the newest transaction. For a program check of production or the graph,
+//     check, the runs at S.GraphTx (R7: "A result counts only for the procedure that ran it and for
+//     the subject that it read"). For a program check of production or the graph,
 //     only a run whose TestCommit differs from S.Commit in no file of C's tie, as for its failing
 //     example (R7: "The procedure is the text of the check and the code that runs it, so a change
 //     to either ends the standing of earlier results"); a run that names no TestCommit counts
@@ -108,9 +113,9 @@ const (
 //     production or the graph, whose job ended at S.Commit in a leg with no run that counts:
 //     unknown, ci_fault (R7: "silence is not a pass"; R12: "Each leg of a matrix reports its own
 //     result, and no leg replaces the result of another").
-//  5. For a code check, at one commit, and for a graph check, at its one transaction (R13: a query
-//     "reads the graph at one transaction"): a pass and a failure that count, or a pass recorded
-//     after a failure that counts (both read the same code of C's tie): unknown, disagree (R7: "A
+//  5. For a code check, at one commit, and for a graph check, at S.GraphTx (R13: a query "reads the
+//     graph at one transaction"): a pass and a failure that count, or a pass recorded after a
+//     failure that counts (both read the same code of C's tie): unknown, disagree (R7: "A
 //     pass and a failure on one such subject and one procedure make the state unknown", "a later
 //     pass does not end the report"). For each check, newest runs of two legs that disagree:
 //     unknown, disagree. A production check skips the first test: in each leg its newest run under
@@ -148,7 +153,7 @@ func newCheckJudge(in Input) *checkJudge {
 func (j *checkJudge) states() []CheckState {
 	var states []CheckState
 	for _, c := range j.current.Checks {
-		if readsProduction(c) && j.in.Subject.Deploy == "" {
+		if c.Subject != SubjectCode && readOf(c, j.in.Subject.Commit, j.in.Subject.Deploy, j.in.Subject.GraphTx) == "" {
 			continue
 		}
 		state := j.state(c)
@@ -331,7 +336,7 @@ func (j *checkJudge) state(c Check) CheckState {
 			return unknownCheck(reasonCIFault, leg)
 		}
 	}
-	if c.Subject != SubjectProduction && answersDisagree(counting) || legsDisagree(newest) {
+	if c.Subject != SubjectProduction && answersDisagree(c, counting) || legsDisagree(newest) {
 		state := unknownCheck(reasonDisagree, "")
 		state.Disagree = true
 		return state
@@ -357,13 +362,7 @@ func (j *checkJudge) state(c Check) CheckState {
 	}
 
 	// After step 5 the newest run of each leg has latest's outcome: latest is the newest of its leg.
-	from := latest.Commit
-	switch c.Subject {
-	case SubjectProduction:
-		from = latest.Deploy
-	case SubjectGraph:
-		from = latest.GraphTx
-	}
+	from := readOf(c, latest.Commit, latest.Deploy, latest.GraphTx)
 	if latest.Outcome == OutcomePass {
 		return CheckState{State: checkTrue, Reason: reasonPassed, From: from}
 	}
@@ -404,14 +403,26 @@ func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
 	if readsProduction(c) && c.Procedure == ProcedureProgram {
 		runs = resultsWhere(runs, func(r Result) bool { return j.carries(c.ID, r.TestCommit) })
 	}
+	if c.Subject == SubjectCode {
+		return resultsWhere(runs, func(r Result) bool { return j.carries(c.ID, r.Commit) })
+	}
+	s := j.in.Subject
+	subject := readOf(c, s.Commit, s.Deploy, s.GraphTx)
+	return resultsWhere(runs, func(r Result) bool { return readOf(c, r.Commit, r.Deploy, r.GraphTx) == subject })
+}
+
+// readOf is, of a commit, a deploy and a transaction of the graph, the subject that a check like c
+// reads (R7: "A result counts only for the procedure that ran it and for the subject that it
+// read"): the commit for a check of the code, the deploy for one of production, the transaction
+// for one of the graph. It reads the subject of the derivation and the subject of a result alike.
+func readOf(c Check, commit, deploy, graphTx string) string {
 	switch c.Subject {
 	case SubjectProduction:
-		return resultsWhere(runs, func(r Result) bool { return r.Deploy == j.in.Subject.Deploy })
+		return deploy
 	case SubjectGraph:
-		latest, held := newestResult(resultsWhere(runs, func(r Result) bool { return r.GraphTx != "" }))
-		return resultsWhere(runs, func(r Result) bool { return held && r.GraphTx == latest.GraphTx })
+		return graphTx
 	}
-	return resultsWhere(runs, func(r Result) bool { return j.carries(c.ID, r.Commit) })
+	return commit
 }
 
 // countingFaults is the failing examples of c that count at the subject (step 7).
@@ -468,17 +479,16 @@ func (j *checkJudge) silentLeg(job string, newest map[string]Result) (string, bo
 	return slices.Min(silent), true
 }
 
-// answersDisagree is whether the runs that count, which read subjects that cannot change (commits
-// of the same code of the check's tie, or one transaction of the graph), give two answers (step 5):
-// a pass and a failure at one commit or one transaction, or a pass recorded after a failure. Only a
-// failure recorded after every pass is a later answer, which cancels them (R7).
-func answersDisagree(counting []Result) bool {
-	type subject struct{ commit, graphTx string }
+// answersDisagree is whether the runs of c that count, which read subjects that cannot change
+// (commits of the same code of the check's tie, or the transaction of the subject), give two answers
+// (step 5): a pass and a failure at one subject, or a pass recorded after a failure. Only a failure
+// recorded after every pass is a later answer, which cancels them (R7).
+func answersDisagree(c Check, counting []Result) bool {
 	type answers struct{ passed, failed bool }
-	bySubject := map[subject]answers{}
+	bySubject := map[string]answers{}
 	failed := false
 	for _, r := range slices.SortedFunc(slices.Values(counting), byRecord) {
-		at := subject{r.Commit, r.GraphTx}
+		at := readOf(c, r.Commit, r.Deploy, r.GraphTx)
 		a := bySubject[at]
 		switch r.Outcome {
 		case OutcomePass:
@@ -509,7 +519,8 @@ func legsDisagree(newest map[string]Result) bool {
 	return passed && failed
 }
 
-// readsProduction is whether c reads production or the graph rather than the code.
+// readsProduction is whether c reads production or the graph rather than the code, so that the
+// commit of its test is no subject of it, and a result of it names that commit as TestCommit.
 func readsProduction(c Check) bool {
 	return c.Subject == SubjectProduction || c.Subject == SubjectGraph
 }

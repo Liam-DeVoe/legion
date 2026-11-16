@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +168,11 @@ func TestScenarioRefusals(t *testing.T) {
 			"subjects.json", "subject 1: it sets both branch and deploy; a subject sets exactly one of them"},
 		{"a subject with no branch and no deploy", "carry", write("subjects.json", `[{"commit":"c2","now":"2026-11-14T00:00:00Z"}]`),
 			"subjects.json", "subject 1: it sets neither branch nor deploy; a subject sets exactly one of them"},
+		// The head of a branch reads no graph: a subject names the transaction of the graph only
+		// with a deploy.
+		{"a subject of a branch with a transaction of the graph", "carry",
+			write("subjects.json", `[{"commit":"c2","branch":"listener-restart","graph_tx":"tx1","now":"2026-11-14T00:00:00Z"}]`),
+			"subjects.json", "subject 1: it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"},
 		{"a subject with no time", "carry", write("subjects.json", `[{"commit":"c2","branch":"listener-restart"}]`),
 			"subjects.json", "subject 1: it sets no now"},
 		{"no subject", "carry", write("subjects.json", `[]`), "subjects.json", "it holds no subject"},
@@ -189,6 +195,10 @@ func TestScenarioRefusals(t *testing.T) {
 			"results.json", `result 1: kind "rerun" is not run or failing_example`},
 		{"a result of another outcome", "carry", result1("1", "run", "skip"),
 			"results.json", `result 1: outcome "skip" is not pass, fail or could_not_run`},
+		// A result names the one subject that it read: a commit, a deploy or a transaction of the graph.
+		{"a result that names two subjects", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","graph_tx":"tx1"}]`),
+			"results.json", "result 1: it names the subjects commit and graph_tx; a result reads one subject"},
 		{"a wait on no statement", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":["no-such-statement"]}]`),
 			"units.json", `unit "u-a": waits_on names "no-such-statement", which is no current statement of the approved spec`},
 		{"a need of no unit", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":["u-x"],"waits_on":[]}]`),
@@ -332,6 +342,77 @@ func TestAWaitReadsTheOwnChecksThatReadTheSubject(t *testing.T) {
 				if !slices.Contains(lines, want) {
 					t.Errorf("no line %q in:\n%s", want, got.stdout)
 				}
+			}
+		})
+	}
+}
+
+// R13: a query "reads the graph at one transaction". R7: "A result counts only for the procedure
+// that ran it and for the subject that it read." Through the command, a check of the graph is judged
+// at the graph_tx of the subject, which the subject line names, whichever transaction is newer or
+// was recorded last, and has no state at a subject that names none. Each row: carry at m2 alone, as
+// the commit that production runs at deploy d1, with a query of the graph under its leaf: a failure
+// at tx2, then a pass at tx1 recorded later, and a caught failing example.
+func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	graph := specgraph.Check{ID: "the-graph-holds-a-delivery-of-each-message", Serves: "a-stored-message-survives-a-restart",
+		Subject: specgraph.SubjectGraph, Procedure: specgraph.ProcedureQuery,
+		Claim:          "Each message record of the graph has a delivery record.",
+		ProcedureText:  "The query reads each message record of the graph.\nIt returns each message record that has no delivery record.",
+		FailingExample: "A copy of the graph with one message record that has no delivery record."}
+	for _, row := range []struct{ graphTx, subjectLine, checkLine string }{
+		{"tx2", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx2",
+			"  check " + graph.ID + ": false (failed, counted from tx2)"},
+		{"tx1", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx1",
+			"  check " + graph.ID + ": true (passed, counted from tx1)"},
+		{"tx3", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx3",
+			"  check " + graph.ID + ": unknown (subject_moved)"},
+		{"", "spec-check: subject m2, the commit that production runs at deploy d1", ""},
+	} {
+		t.Run("graph_tx "+strconv.Quote(row.graphTx), func(t *testing.T) {
+			t.Parallel()
+			dir := copyScenario(t, "carry")
+			for _, commit := range []string{"c2", "c3", "c4"} {
+				removeAll(t, filepath.Join(dir, "files", commit))
+			}
+			subject := map[string]any{"commit": "m2", "deploy": "d1", "now": "2026-11-14T00:00:00Z"}
+			if row.graphTx != "" {
+				subject["graph_tx"] = row.graphTx
+			}
+			writeJSONFile(t, filepath.Join(dir, "subjects.json"), []any{subject})
+			addApproved(t, dir, graph.ID, graph)
+			block, err := graph.Print()
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := filepath.Join(dir, "files", "m2", "spec.md")
+			content, err := os.ReadFile(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, spec, append(append(content, '\n'), block...))
+			var results []any
+			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
+			results = append(results,
+				map[string]any{"check": graph.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "at": "2026-11-13T11:00:00Z", "seq": 20},
+				map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": "fail", "graph_tx": "tx2", "at": "2026-11-13T12:00:00Z", "seq": 21},
+				map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": "pass", "graph_tx": "tx1", "at": "2026-11-13T13:00:00Z", "seq": 22})
+			writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+			got := runBinary(t, binary, "", "state", "--scenario", dir)
+			if got.code != 0 || got.stderr != "" {
+				t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+			}
+			lines := strings.Split(got.stdout, "\n")
+			if lines[0] != row.subjectLine {
+				t.Errorf("the subject line %q, want %q", lines[0], row.subjectLine)
+			}
+			judged := slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "  check "+graph.ID+":") })
+			switch {
+			case row.checkLine == "" && judged:
+				t.Errorf("a subject with no graph_tx judged the check of the graph:\n%s", got.stdout)
+			case row.checkLine != "" && !slices.Contains(lines, row.checkLine):
+				t.Errorf("no line %q in:\n%s", row.checkLine, got.stdout)
 			}
 		})
 	}

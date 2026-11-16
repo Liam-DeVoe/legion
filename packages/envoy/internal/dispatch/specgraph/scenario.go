@@ -90,8 +90,10 @@ type scenarioResult struct {
 //     among the current statements (R5: "Dispatch refuses a change that makes one"). The rules of
 //     the files are not run on it: the person approves a level before the checks of its
 //     statements exist, so an approved leaf can have no check, and the files then do not hold it;
-//   - subjects.json, [{"commit","branch","deploy","now"}]: at least one subject, each with a commit,
-//     a now, and exactly one of branch and deploy;
+//   - subjects.json, [{"commit","branch","deploy","graph_tx","now"}]: at least one subject, each
+//     with a commit, a now, and exactly one of branch and deploy; graph_tx, the transaction of the
+//     graph that the subject reads, only with a deploy, and a subject that names none judges no
+//     check of the graph;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
@@ -101,7 +103,8 @@ type scenarioResult struct {
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
 //     names an approved version of the check, whose Digest the result carries; kind is run or
-//     failing_example, and outcome pass, fail or could_not_run;
+//     failing_example, and outcome pass, fail or could_not_run; a result names at most one of the
+//     subjects commit, deploy and graph_tx, the one that it read;
 //   - jobs.json, [{"job","leg","commit","ended"}];
 //   - uncited.json (optional), {"<commit>":{"<check id>":"<R48 rule>"}};
 //   - units.json (optional), [{"id","serves","needs","waits_on"}]: each id once, serves and
@@ -190,6 +193,8 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 			fault = "it sets both branch and deploy; a subject sets exactly one of them"
 		case sub.Branch == "" && sub.Deploy == "":
 			fault = "it sets neither branch nor deploy; a subject sets exactly one of them"
+		case sub.GraphTx != "" && sub.Deploy == "":
+			fault = "it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"
 		}
 		if fault != "" {
 			return nil, scenarioFault("subjects.json", "subject %d: %s", i+1, fault)
@@ -311,6 +316,8 @@ func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
 			fault = fmt.Sprintf("kind %q is not run or failing_example", r.Kind)
 		case r.Outcome != OutcomePass && r.Outcome != OutcomeFail && r.Outcome != OutcomeCouldNotRun:
 			fault = fmt.Sprintf("outcome %q is not pass, fail or could_not_run", r.Outcome)
+		case len(namedSubjects(r)) > 1:
+			fault = fmt.Sprintf("it names the subjects %s; a result reads one subject", strings.Join(namedSubjects(r), " and "))
 		default:
 			if digest, held = checkVersionDigest(approved, r.Check, r.CheckVersion); !held {
 				fault = fmt.Sprintf("the approved spec holds no version %d of check %q", r.CheckVersion, r.Check)
@@ -324,6 +331,18 @@ func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
 			FaultAuthor: r.FaultAuthor, TestAuthors: r.TestAuthors, TestCommit: r.TestCommit}
 	}
 	return results, nil
+}
+
+// namedSubjects is the name of each subject that the result r names, of commit, deploy and
+// graph_tx, in that order.
+func namedSubjects(r scenarioResult) []string {
+	var named []string
+	for _, s := range []struct{ name, value string }{{"commit", r.Commit}, {"deploy", r.Deploy}, {"graph_tx", r.GraphTx}} {
+		if s.value != "" {
+			named = append(named, s.name)
+		}
+	}
+	return named
 }
 
 // checkVersionDigest is the Digest of version v of the check id in the approved spec, and whether

@@ -89,9 +89,12 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 
 	for i, state := range states {
 		subject := scenario.Subjects[i]
-		if subject.Branch != "" {
+		switch {
+		case subject.Branch != "":
 			say(stdout, "subject %s, the head of %s", subject.Commit, subject.Branch)
-		} else {
+		case subject.GraphTx != "":
+			say(stdout, "subject %s, the commit that production runs at deploy %s, and the graph at transaction %s", subject.Commit, subject.Deploy, subject.GraphTx)
+		default:
 			say(stdout, "subject %s, the commit that production runs at deploy %s", subject.Commit, subject.Deploy)
 		}
 		checks := make(map[string]specgraph.CheckState, len(state.Checks))

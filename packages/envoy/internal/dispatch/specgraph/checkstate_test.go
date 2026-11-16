@@ -390,9 +390,9 @@ func TestCheckState(t *testing.T) {
 				productionRun(checkStateProduction, "d2", OutcomePass, checkStateRun.Add(2*time.Hour)),
 				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
 		}, want: CheckState{ID: checkStateProduction.ID}, absent: true},
-		{name: "graph: the newest transaction decides", change: func(c *checkCase) {
+		{name: "graph: the transaction of the subject decides", change: func(c *checkCase) {
 			c.add(checkStateGraph)
-			c.Subject = Point{Commit: "c9", Deploy: "d2"}
+			c.Subject = Point{Commit: "c9", Deploy: "d2", GraphTx: "tx2"}
 			c.Results = append(c.Results,
 				Result{Check: checkStateGraph.ID, Kind: ResultRun, Outcome: OutcomePass, GraphTx: "tx1", At: checkStateRun.Add(time.Hour)},
 				Result{Check: checkStateGraph.ID, Kind: ResultRun, Outcome: OutcomeFail, GraphTx: "tx2", At: checkStateRun.Add(2 * time.Hour)},
@@ -444,7 +444,7 @@ func TestCheckStatesJudgesTheApprovedChecks(t *testing.T) {
 	s := newCheckCase(t)
 	s.add(checkStateGraph)
 	s.files["spec.md"] = append(s.files["spec.md"], checkStateProduction) // in the files, never approved
-	s.Subject = Point{Commit: "c1", Deploy: "d1"}
+	s.Subject = Point{Commit: "c1", Deploy: "d1", GraphTx: "tx1"}
 	earlier := checkStateCheck
 	earlier.Claim = "A message that the listener stores before a restart reaches its session."
 	s.approveEarlier(checkStateApproved.Add(-48*time.Hour), earlier)
@@ -538,7 +538,7 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 			s.add(row.check)
 			s.Ties[row.check.ID] = s.Ties[s.check]
 			s.commit("c2", "c1", row.changed)
-			s.Subject = Point{Commit: "c2", Deploy: "d2"}
+			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
 			run := Result{Check: row.check.ID, Kind: ResultRun, Outcome: OutcomePass, Job: row.check.Test.Job, TestCommit: row.runCommit, At: checkStateRun.Add(time.Hour)}
 			if row.check.Subject == SubjectGraph {
 				run.GraphTx = "tx1"
@@ -606,8 +606,8 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 // such subject and one procedure make the state unknown." R13: a query "reads the graph at one
 // transaction", and one transaction is such a subject. A pass and a failure at one transaction read
 // unknown in either order, and a later pass does not end the report, while a newer transaction
-// starts a new answer. Each row: G at subject c1 under deploy d2, the row's runs, and a caught
-// failing example; C taken out.
+// starts a new answer. Each row: G at subject c1 under deploy d2 and at the transaction of the row's
+// last run, the row's runs, and a caught failing example; C taken out.
 func TestOneTransactionOfTheGraphHoldsOneAnswer(t *testing.T) {
 	t.Parallel()
 	g := checkStateGraph
@@ -633,11 +633,79 @@ func TestOneTransactionOfTheGraphHoldsOneAnswer(t *testing.T) {
 			t.Parallel()
 			s := newCheckCase(t)
 			s.add(g)
-			s.Subject = Point{Commit: "c1", Deploy: "d2"}
+			s.Subject = Point{Commit: "c1", Deploy: "d2", GraphTx: row.runs[len(row.runs)-1].GraphTx}
 			s.Results = append(append(s.Results, row.runs...),
 				Result{Check: g.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(5 * time.Minute)})
 			want := row.want
 			want.ID = g.ID
+			deriveAlone(t, s, want, row.statements)
+		})
+	}
+}
+
+// R13: a query "reads the graph at one transaction". R7: "A result counts only for the procedure
+// that ran it and for the subject that it read." The subject names its transaction of the graph, as
+// it names its deploy, and a result of a graph check counts only at that transaction: a result at
+// another one is of a subject that moved, whichever transaction is newer or was recorded last. A
+// subject that names no transaction judges no check of the graph (R10: "Only the checks that read
+// the subject count"). Each row: the row's check of the graph, its runs and a failing example that
+// the test at c2 caught, at subject c2 under deploy d2 and the row's transaction, where c2 differs
+// from c1 in the test of the program check G2; C taken out.
+func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
+	t.Parallel()
+	g, g2 := checkStateGraph, checkStateGraphProgram
+	run := func(c Check, tx, testCommit string, outcome Outcome, after time.Duration) Result {
+		r := Result{Check: c.ID, Kind: ResultRun, Outcome: outcome, GraphTx: tx, TestCommit: testCommit, At: checkStateRun.Add(after)}
+		if c.Test != nil {
+			r.Job = c.Test.Job
+		}
+		return r
+	}
+	for _, row := range []struct {
+		name       string
+		check      Check
+		tx         string // the transaction of the subject
+		runs       []Result
+		want       CheckState // ID "" is the row's check
+		statements string
+		absent     bool // the check has no state at the subject
+	}{
+		{name: "control: a pass at tx1, the transaction of the subject", check: g, tx: "tx1",
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)},
+			want: CheckState{State: "true", Reason: "passed", From: "tx1"}, statements: "met"},
+		{name: "a failure at tx2, the transaction of the subject, then a pass at tx1 recorded later", check: g, tx: "tx2",
+			runs: []Result{run(g, "tx2", "", OutcomeFail, time.Hour), run(g, "tx1", "", OutcomePass, 2*time.Hour)},
+			want: CheckState{State: "false", Reason: "failed", From: "tx2"}, statements: "not_met"},
+		{name: "the same runs at subject tx3, which no result read", check: g, tx: "tx3",
+			runs: []Result{run(g, "tx2", "", OutcomeFail, time.Hour), run(g, "tx1", "", OutcomePass, 2*time.Hour)},
+			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
+		{name: "the test of c2 passes at tx1, then the test of c1 fails at tx2, the transaction of the subject", check: g2, tx: "tx2",
+			runs: []Result{run(g2, "tx1", "c2", OutcomePass, time.Hour), run(g2, "tx2", "c1", OutcomeFail, 2*time.Hour)},
+			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
+		{name: "control: the test of c2 passes at tx1, then fails at tx2, the transaction of the subject", check: g2, tx: "tx2",
+			runs: []Result{run(g2, "tx1", "c2", OutcomePass, time.Hour), run(g2, "tx2", "c2", OutcomeFail, 2*time.Hour)},
+			want: CheckState{State: "false", Reason: "failed", From: "tx2"}, statements: "not_met"},
+		{name: "a subject that names no transaction judges no check of the graph", check: g, tx: "",
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)}, absent: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			s.add(row.check)
+			s.Ties[row.check.ID] = s.Ties[s.check]
+			s.commit("c2", "c1", "packages/envoy/cmd/listener/restart_test.go")
+			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: row.tx}
+			s.Results = append(append(s.Results, row.runs...), Result{Check: row.check.ID, Kind: ResultFailingExample, Outcome: OutcomeFail,
+				TestCommit: "c2", At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+			if row.absent {
+				s.remove(checkStateCheck.ID)
+				if states := Derive(s.input()).Checks; slices.ContainsFunc(states, func(c CheckState) bool { return c.ID == row.check.ID }) {
+					t.Errorf("the checks: %+v, want no state of %s", states, row.check.ID)
+				}
+				return
+			}
+			want := row.want
+			want.ID = row.check.ID
 			deriveAlone(t, s, want, row.statements)
 		})
 	}
