@@ -159,40 +159,11 @@ func (p *guardPod) writeWhole(path, content string) {
 	}
 }
 
-// guardClock hands each wait the guard asks for to the test, which fires it: a reading is then a
-// step of the test.
-type guardClock struct {
-	mu    sync.Mutex
-	now   time.Time
-	waits chan guardWait
-}
-
-type guardWait struct {
-	d    time.Duration
-	fire chan time.Time
-}
-
-func newGuardClock() *guardClock {
-	return &guardClock{now: time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC), waits: make(chan guardWait, 16)}
-}
-
-func (c *guardClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *guardClock) After(d time.Duration) <-chan time.Time {
-	w := guardWait{d: d, fire: make(chan time.Time, 1)}
-	c.waits <- w
-	return w.fire
-}
-
-func (c *guardClock) advance(d time.Duration) time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-	return c.now
+// newGuardClock is the module's fake clock at the moment every guard of these tests starts: a
+// timer the guard arms on it fires only when the test moves it, so a reading is a step of the
+// test.
+func newGuardClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC))
 }
 
 // guardSignal is a kill that ends nothing of the machine's: it records each process the guard
@@ -240,17 +211,18 @@ func (h *guardHandle) Exited() bool {
 
 func (h *guardHandle) Close() error { return nil }
 
-// guardRig is the guard a launcher builds, pointed at a guardPod with a guardClock and a
-// guardSignal, one reading at a time.
+// guardRig is the guard a launcher builds, pointed at a guardPod with the module's fake clock
+// (newGuardClock) and a guardSignal, one reading at a time.
 type guardRig struct {
-	t       *testing.T
-	pod     *guardPod
-	clock   *guardClock
-	signal  *guardSignal
-	mu      sync.Mutex
-	guard   *memoryguard.Guard
-	lines   []string
-	pending guardWait
+	t      *testing.T
+	pod    *guardPod
+	clock  *clocktest.Fake
+	signal *guardSignal
+	mu     sync.Mutex
+	guard  *memoryguard.Guard
+	lines  []string
+	// pending is the deadline of the guard's next wait.
+	pending time.Time
 }
 
 // useGuardPod has every launcher this test starts run a memory guard, as the container's first
@@ -318,27 +290,26 @@ func (r *guardRig) started() {
 	r.pending = r.nextWait()
 }
 
-func (r *guardRig) nextWait() guardWait {
+// nextWait is the deadline of the guard's next wait: the guard arms it again only once a reading,
+// and all it led to, is done.
+func (r *guardRig) nextWait() time.Time {
 	r.t.Helper()
-	var w guardWait
+	var at time.Time
 	testwait.Until(r.t, "the guard's next wait for a reading (the reading is its log)", func() (string, bool) {
-		select {
-		case got := <-r.clock.waits:
-			w = got
+		if armed := r.clock.Armed(); len(armed) > 0 {
+			at = armed[0]
 			return "", true
-		default:
-			return r.log(), false
 		}
+		return r.log(), false
 	})
-	return w
+	return at
 }
 
 // tick lets the guard take its next reading, and returns once that reading and all it led to,
 // a kill and its report to the role's manager among them, are done.
 func (r *guardRig) tick() {
 	r.t.Helper()
-	w := r.pending
-	w.fire <- r.clock.advance(w.d)
+	r.clock.Set(r.pending)
 	r.pending = r.nextWait()
 }
 
