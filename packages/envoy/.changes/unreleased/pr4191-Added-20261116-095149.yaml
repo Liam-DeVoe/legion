@@ -1,0 +1,5 @@
+kind: Added
+body: spec-check state derives the state of each check and each statement of a scenario of The Spec at each of its subjects, says whether each wait on a statement ends at the head of main, and names the cycle of waits; --json prints the states as JSON.
+time: 2026-11-16T09:51:49.296448907Z
+custom:
+    Issue: pr4191
