@@ -29,8 +29,10 @@ import {
   IPHONE_13,
   identityBand,
   issueHeader,
+  labelsCutAsTheLineNarrows,
   labelsLeft,
   MEASURED_TITLE,
+  propertiesLine,
   seedHeader,
   shortControls,
   stickyReading,
@@ -197,6 +199,34 @@ test("the header holds R13's list and its limits at every width @phone", async (
         `+${20 - drawn} ${20 - drawn === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}`
       );
 
+      // The frame after the line narrows, drawn before the labels are read again on the next
+      // frame, draws each label whole or not at all: one that no longer fits wraps onto a line
+      // the labels' box clips away. The line then takes its width back, and the labels are read
+      // again before the next step.
+      if (width === DESKTOP.width || width === IPHONE_13.width) {
+        expect(
+          await labelsCutAsTheLineNarrows(page, 60),
+          `a label is cut in the frame after the line narrowed at ${width} px`
+        ).toEqual([]);
+        await propertiesLine(page).evaluate((line) => line.style.removeProperty("max-width"));
+        let before = -1;
+        await expect
+          .poll(
+            async () => {
+              const now = await headerLabels(page).count();
+              const words = ((await labelsLeft(page).textContent()) ?? "").replace(/\s+/g, " ");
+              const settled =
+                now === before &&
+                words.trim() ===
+                  `+${20 - now} ${20 - now === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}`;
+              before = now;
+              return settled;
+            },
+            { message: `the labels were not read again once the line widened at ${width} px` }
+          )
+          .toBe(true);
+      }
+
       await expectHeaderWithinItsLimit(page, width, true, TYPEFACE);
       if (width === IPHONE_13.width) {
         expect(
@@ -209,6 +239,32 @@ test("the header holds R13's list and its limits at every width @phone", async (
         ).toEqual([]);
       }
       await assertPageFits(page);
+      if (width === IPHONE_13.width) {
+        // A dialog a header control opens keeps the page's floors at 390 px: 16 px type in its
+        // fields, so a phone does not zoom into them, and 44 px buttons (`web/src/styles.css`).
+        await header.getByRole("button", { exact: true, name: "Request changes" }).click();
+        const requestChanges = page.getByRole("dialog", { name: "Request changes" });
+        await expect(requestChanges, "Request changes opened no dialog at 390 px").toBeVisible();
+        expect(
+          await requestChanges
+            .locator("textarea")
+            .evaluate((reason) => getComputedStyle(reason).fontSize),
+          "the Request changes dialog's reason box is under 16 px at 390 px"
+        ).toBe("16px");
+        const heights = await requestChanges
+          .locator("button")
+          .evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height));
+        expect(
+          heights.length,
+          "the Request changes dialog draws no button at 390 px"
+        ).toBeGreaterThan(0);
+        expect(
+          heights.filter((height) => height < 44),
+          "a button of the Request changes dialog is under 44 px at 390 px"
+        ).toEqual([]);
+        await page.keyboard.press("Escape");
+        await expect(requestChanges, "Escape left the Request changes dialog open").toHaveCount(0);
+      }
 
       // The labels' count and Details' control each open Details.
       await labelsLeft(page).click();
@@ -779,6 +835,58 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect(actions.getByRole("option", { name: "Set priority P2" })).toBeVisible();
     await expect(actions.getByRole("option", { name: "Reopen issue" })).toHaveCount(0);
     await page.keyboard.press("Escape");
+    const palette = page.getByRole("dialog", { name: "Search" });
+    await expect(palette, "Escape did not close the palette").toHaveCount(0);
+
+    // A status picked while its write is held in flight leaves the priority taking input, and
+    // the palette offers Set priority with it, as the issue's line sends that write after the
+    // status's. Escape closes the palette before the status's write is let go.
+    const held = `**/api/v1/issues/${key}`;
+    const release = Promise.withResolvers<void>();
+    let holding = 0;
+    await page.route(held, async (route) => {
+      if (route.request().method() === "PATCH") {
+        holding += 1;
+        await release.promise;
+      }
+      await route.continue();
+    });
+    await status.selectOption("todo");
+    await expect.poll(() => holding, { message: "the status's write was not sent" }).toBe(1);
+    await expect(priority, "the priority refuses input while the status is saved").toBeEnabled();
+    await leaveFocus(page);
+    await page.keyboard.press("Control+k");
+    await expect(
+      actions.getByRole("option", { name: "Set priority P2" }),
+      "the palette hides Set priority while the priority takes input"
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(palette, "Escape did not close the palette").toHaveCount(0);
+    release.resolve();
+    await expect.poll(() => getIssue(key).then((read) => read.status)).toBe("todo");
+    await expect(status, "the status's write did not settle").toBeEnabled();
+    await page.unroute(held);
+
+    // The palette's Close issue closes the issue, which then offers Reopen issue and neither
+    // Close issue nor a priority, as the header offers Reopen and refuses a priority; Reopen
+    // gives the issue back to the backlog. The rows are taken when the palette opens, so it
+    // opens once the page has taken in the close and has no write in flight.
+    await leaveFocus(page);
+    await page.keyboard.press("Control+k");
+    await actions.getByRole("option", { name: "Close issue" }).click();
+    await expect(palette, "Close issue did not close the palette").toHaveCount(0);
+    await expect.poll(() => getIssue(key).then((read) => read.status)).toBe("done");
+    await expect(priority, "the closed issue's priority takes input").toBeDisabled();
+    await expect(header.getByRole("status"), "the close is still being saved").toHaveCount(0);
+    await leaveFocus(page);
+    await page.keyboard.press("Control+k");
+    const reopen = actions.getByRole("option", { name: "Reopen issue" });
+    await expect(reopen, "the closed issue's palette offers no Reopen issue").toBeVisible();
+    await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(0);
+    await expect(actions.getByRole("option", { name: "Set priority P2" })).toHaveCount(0);
+    await reopen.click();
+    await expect(palette, "Reopen issue did not close the palette").toHaveCount(0);
+    await expect.poll(() => getIssue(key).then((read) => read.status)).toBe("backlog");
   });
 });
 

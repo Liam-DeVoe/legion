@@ -175,6 +175,45 @@ export function labelsLeft(page: Page): Locator {
   return issueHeader(page).getByTestId("issue-labels-left");
 }
 
+/**
+ * The label chips the frame after the properties line narrows by `by` px draws cut. In one task,
+ * so before any frame is drawn and before the labels are read again on the next one, the line
+ * takes an inline `max-width` that much under its width, and each chip's box is read against the
+ * labels' box: a chip wholly inside it is drawn whole, one wholly outside it is not drawn, and
+ * each other one is returned as `<label>: <its box> in <the labels' box>`. The line keeps the
+ * inline width; the row takes it off.
+ */
+export function labelsCutAsTheLineNarrows(page: Page, by: number): Promise<string[]> {
+  return page.evaluate((by) => {
+    const header = document.querySelector("[data-issue-page] header[data-issue-header]");
+    const line = header?.querySelector<HTMLElement>('[data-testid="issue-state-actions"]');
+    const box = header?.querySelector('[data-testid="issue-header-labels"]');
+    if (line === null || line === undefined || box === null || box === undefined) {
+      return ["the header draws no properties line or no labels"];
+    }
+    line.style.maxWidth = `${line.getBoundingClientRect().width - by}px`;
+    const outer = box.getBoundingClientRect();
+    const edges = (rect: DOMRect) =>
+      `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
+    return [...box.querySelectorAll("[data-header-label]")].flatMap((chip) => {
+      const rect = chip.getBoundingClientRect();
+      const inside =
+        rect.left >= outer.left - 0.5 &&
+        rect.right <= outer.right + 0.5 &&
+        rect.top >= outer.top - 0.5 &&
+        rect.bottom <= outer.bottom + 0.5;
+      const outside =
+        rect.right <= outer.left + 0.5 ||
+        rect.left >= outer.right - 0.5 ||
+        rect.bottom <= outer.top + 0.5 ||
+        rect.top >= outer.bottom - 0.5;
+      return inside || outside
+        ? []
+        : [`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`];
+    });
+  }, by);
+}
+
 /** The count of what waits on the reader, or whose turn it is when nothing waits. */
 export function waitingCount(page: Page): Locator {
   return issueHeader(page).getByTestId("issue-whose-turn");

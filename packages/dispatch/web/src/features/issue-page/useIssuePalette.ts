@@ -21,7 +21,8 @@ export function useIssuePalette({
   drafts: Pick<IssueDrafts, "requestStatusSubmit">;
   isClosed: boolean;
   priorityWrite: IssuePriorityWrite;
-  /** Whether a field write is in flight: a row offered while one is would submit a second. */
+  /** Whether a write of the issue's own fields (`updateIssue`) is in flight: Close issue and
+   *  Reopen issue, offered while one is, would submit a second, so their menu items refuse it. */
   saving: boolean;
 }): void {
   useKeymap("issue", [
@@ -46,8 +47,11 @@ export function useIssuePalette({
       keys: [],
       label: `Set priority P${level}`,
       run: () => priorityWrite.submit(level as IssuePriority),
-      // The same condition as `PriorityEditor`'s `disabled`.
-      when: () => !(isClosed || saving),
+      // `PriorityEditor`'s `disabled` (`IssuePropertiesRow.tsx`), so the row is offered while
+      // the priority takes input. The write goes in the issue's line of the keyed store
+      // (`target: issue:<key>`, `useIssueFieldWrite.ts`), so a row run while another write of
+      // the issue is in flight is sent after it rather than beside it.
+      when: () => !isClosed,
     })),
   ]);
 }

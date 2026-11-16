@@ -312,11 +312,16 @@ html:has([data-issue-page]) {
     font-size: 1rem;
   }
   /* The new issue page's header draws its status and its title's editor in its own type at
-     every width, as the prototype does: the status at 12 px, sized to its value, and the title's
-     editor at the heading's own size, which it must match so ending an edit moves nothing
+     every width, as the prototype does: the status at 12 px, sized to its value, so the header
+     at 390 px holds to eight lines and 250 px, nine lines and 280 px while an approval request
+     waits (ruling 8 of dispatch://INFRA-1196/artifact/build-rulings-md), and the title's editor
+     at the heading's own size, which it must match so ending an edit moves nothing
      (dispatch://INFRA-1196 R13). This file's rules are in no cascade layer and Tailwind's are, so
-     `revert-layer` gives back the size the control's own classes set. */
-  html:has([data-issue-page]) [data-issue-page] [data-issue-header] :is(select, textarea) {
+     `revert-layer` gives back the size the control's own classes set. A menu or a dialog a
+     header control opens keeps the 1rem floor above, so a phone does not zoom into its fields. */
+  html:has([data-issue-page]) [data-issue-page]
+    [data-issue-header]
+    :is(select, textarea):not([role="menu"] *):not([role="dialog"] *) {
     font-size: revert-layer;
   }
 }
@@ -354,12 +359,13 @@ html:has([data-issue-page]) {
   /* The new issue page's header, `[data-issue-header]`, draws its controls at the prototype's
      size: each at least 24 by 24 px, or spaced so that a 24 px circle on it meets no other
      target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
-     nine and 280 px while an approval request waits (ruling 8 of
+     nine lines and 280 px while an approval request waits (ruling 8 of
      dispatch://INFRA-1196/artifact/build-rulings-md). `revert-layer` takes the floor above off
-     and gives back the size the control's own classes set. */
+     and gives back the size the control's own classes set. A menu or a dialog a header control
+     opens keeps the 44 px floor. */
   html:has([data-issue-page]) [data-issue-page]
     [data-issue-header]
-    :is(button, a, select, textarea) {
+    :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *) {
     min-width: revert-layer;
     min-height: revert-layer;
   }

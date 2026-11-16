@@ -345,13 +345,17 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
  * The labels, in Dispatch's order, as many as fit on what is left of the line once every other
  * property is drawn, and then the count of those left over, which opens Details at its Labels
  * row, where every label is listed with its control (R13, the ruling of 2026-11-15). An issue
- * whose labels fit draws them all and no count.
+ * whose labels fit draws them all and no count. Where what is left of a line holds no label and
+ * the count has gone on to the next line anyway, the labels go on with it.
  *
  * What fits is read off the page, never guessed at a width the typeface decides: every chip is
- * laid out once, with the count drawn at its widest, and the chips past the line's end are then
- * left out, so the line holds no word it hides. That reading is taken again whenever the labels
- * change or the line's width does, inside one commit, so no frame draws the chips that do not
- * fit.
+ * laid out once, with the count drawn at its widest, and the chips past the end of the box's
+ * first line are then left out, so the line holds no word it hides. That reading is taken in
+ * the commit that lays the chips out whenever the labels change, and again on the next frame
+ * whenever the line's width does. The frame between draws the last reading's chips at the new
+ * width: the box wraps and draws its first line only, so a chip that no longer fits goes onto a
+ * line the box clips away rather than past its edge, and each frame draws a chip whole or not
+ * at all.
  */
 function HeaderLabels({
   labels,
@@ -361,14 +365,33 @@ function HeaderLabels({
   onOpenAll: () => void;
 }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
+  const count = useRef<HTMLButtonElement>(null);
   const key = labels.join("\n");
   const [fit, setFit] = useState<{ readonly key: string; readonly shown: number } | null>(null);
   // Null while the line is being read: every chip laid out, and the count at its widest.
   const shown = fit?.key === key ? fit.shown : null;
   useLayoutEffect(() => {
-    if (shown === null && box.current !== null) {
-      setFit({ key, shown: labelsThatFit(box.current) });
+    const element = box.current;
+    if (shown !== null || element === null) return;
+    element.style.minWidth = "";
+    let fits = labelsThatFit(element);
+    // Where what is left of a line holds not even the first chip and the count has gone on to
+    // the next line anyway, the box takes that chip's width, or the line's where the chip is
+    // wider, and so goes on with the count: that costs the header no line and draws the labels
+    // the next line has room for (R13: a property with a value is drawn). Both readings are
+    // taken before the commit is drawn.
+    const first = element.querySelector<HTMLElement>("[data-header-label]");
+    const countTop = count.current?.getBoundingClientRect().top;
+    if (
+      fits === 0 &&
+      first !== null &&
+      countTop !== undefined &&
+      countTop >= element.getBoundingClientRect().bottom
+    ) {
+      element.style.minWidth = `min(${Math.ceil(first.getBoundingClientRect().width)}px, 100%)`;
+      fits = labelsThatFit(element);
     }
+    setFit({ key, shown: fits });
   });
   // A width the line changes to is read again on the next frame, so the reading is a commit
   // of its own rather than one inside the observer's notification.
@@ -394,12 +417,17 @@ function HeaderLabels({
   const left = labels.length - (shown ?? 0);
   return (
     <>
-      {/* `relative`: the chips' offsets are read against this box (`labelsThatFit`). */}
+      {/* `relative`: the chips' offsets are read against this box (`labelsThatFit`). One chip
+          high - 20 px, the chip's 18 px line and its two borders, at any root size - wrapping
+          and clipped: a chip that does not fit goes onto a line that is not drawn. A line always
+          holds its first item, so that item is an empty one the height of a chip, which takes no
+          width and, by its margin, no gap: the first chip wraps too when it does not fit. */}
       <div
-        className="relative flex min-w-0 flex-[1_1_0] gap-1.5 overflow-hidden"
+        className="relative flex h-[20px] min-w-0 flex-[1_1_0] flex-wrap gap-1.5 overflow-hidden"
         data-testid="issue-header-labels"
         ref={box}
       >
+        <span aria-hidden="true" className="-mr-1.5 h-[20px] w-0 shrink-0" />
         {labels.slice(0, shown ?? labels.length).map((label) => (
           <span
             className={`inline-flex shrink-0 items-center rounded-md border px-[7px] text-xs leading-[18px] font-medium whitespace-nowrap ${pageLabelChip}`}
@@ -418,6 +446,7 @@ function HeaderLabels({
           className={`inline-flex min-h-6 shrink-0 items-center text-xs leading-5 font-semibold tabular-nums underline underline-offset-[3px] ${pageInkText} ${focusVisibleRing}`}
           data-testid="issue-labels-left"
           onClick={onOpenAll}
+          ref={count}
           type="button"
           {...pageChrome}
         >
@@ -429,13 +458,14 @@ function HeaderLabels({
   );
 }
 
-/** How many of the header's label chips stand wholly inside `box`, in order: the first that
- *  reaches past its end ends the run, as the line reads left to right. */
+/** How many of the header's label chips stand on the box's first line and wholly inside it, in
+ *  order: the first that wrapped below it or reaches past its end ends the run, as the line
+ *  reads left to right. The box is the chips' offset parent, so its top is 0. */
 function labelsThatFit(box: HTMLElement): number {
   const width = box.clientWidth;
   let fit = 0;
   for (const chip of box.querySelectorAll<HTMLElement>("[data-header-label]")) {
-    if (chip.offsetLeft + chip.offsetWidth > width + 0.5) break;
+    if (chip.offsetTop > 0 || chip.offsetLeft + chip.offsetWidth > width + 0.5) break;
     fit += 1;
   }
   return fit;
