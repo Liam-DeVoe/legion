@@ -744,7 +744,7 @@ func main() {
 			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
 		}, natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
-			Exchange: exchangePolicy.ProjectsForAccount, Access: projectAccess,
+			Exchange: exchangePolicy.MappedForAccount, Access: projectAccess,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
 		})
 		fatal(err)
