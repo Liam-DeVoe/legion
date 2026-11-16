@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
   dismissButtonText,
@@ -34,6 +35,13 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
   return new Map(rows.map((row, index) => [row.id, `${orderLabel(index)} ${row.title}`]));
 }
 
+/** The name of the control that places `issueKey` under a priority, in the words it has on
+ *  every page, which the new issue page's one add control finds it by while the issue advances
+ *  none. */
+export function addPriorityControlName(issueKey: string): string {
+  return `Add a priority to ${issueKey}`;
+}
+
 /**
  * The `Advances` item of the issue header's metadata rail (INFRA-2947, R16 and R3): each
  * priority this issue advances, named by its order and title and linking to that priority's own
@@ -53,14 +61,26 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
  * the issue is read again so the next press carries the revision it holds now. The list of
  * priorities to choose from is read only once the line has an entry to name or the control is
  * open, as the components line reads the architecture tree only while its picker is open.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
+ * marks and carries no `title`; there `inRow` draws it as the value of a row of Details, which
+ * draws the label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a
+ * priority" on its add control while the issue advances none (dispatch://INFRA-1196 R13, R19).
  */
 export function IssuePriorityLine({
   disabled,
+  inRow = false,
   issue,
 }: {
   disabled: boolean;
+  /** Whether the line is the value of a row of the new issue page's Details. It acts inside
+   *  `NoTooltips` alone. */
+  inRow?: boolean;
   issue: Pick<Issue, "advances" | "advances_revision" | "key">;
 }): ReactNode {
+  const tooltips = useTooltips();
+  const page = usePageWords();
+  const inDetails = page !== null && inRow;
   const advances = issue.advances ?? [];
   const own = advances.filter((entry) => !entry.inherited).map((entry) => entry.id);
   const [adding, setAdding] = useState(false);
@@ -110,23 +130,35 @@ export function IssuePriorityLine({
 
   return (
     <div
-      className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}
-      data-testid="issue-advances"
+      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${textSecondaryOnSurface}`}
+      data-testid={inDetails ? undefined : "issue-advances"}
     >
-      {advances.length === 0 ? null : <span className="font-medium">Advances</span>}
+      {advances.length === 0 || inDetails ? null : (
+        <span className="font-medium" {...page?.pageChrome}>
+          {page?.PROPERTY_LABELS.advances ?? "Advances"}
+        </span>
+      )}
       {advances.map((entry) => {
         const label = labels.get(entry.id) ?? entry.id;
         return (
-          <span className="flex shrink-0 items-center gap-1" key={entry.id}>
+          <span
+            className={`flex ${inDetails ? "min-w-0" : "shrink-0"} items-center gap-1`}
+            key={entry.id}
+          >
+            {/* In a row of Details the priority's title wraps inside the panel rather than
+                widening it (dispatch://INFRA-1196 R17); its words are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link shrink-0 whitespace-nowrap underline ${linkText} ${linkHoverText}`}
-              title={label}
+              className={`dispatch-inline-link ${inDetails ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${linkText} ${linkHoverText}`}
+              title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
+              {...page?.authorText}
             >
               {label}
             </Link>
             {entry.inherited ? (
-              <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>inherited</span>
+              <span className={`shrink-0 text-xs ${textMutedOnSurface}`} {...page?.pageChrome}>
+                {page?.CONTROL_LABELS.advances_inherited ?? "inherited"}
+              </span>
             ) : (
               <button
                 aria-label={`Remove ${label} from ${issue.key}`}
@@ -134,6 +166,7 @@ export function IssuePriorityLine({
                 disabled={busy}
                 onClick={() => writeOwn(own.filter((id) => id !== entry.id))}
                 type="button"
+                {...page?.pageChrome}
               >
                 ✕
               </button>
@@ -142,13 +175,23 @@ export function IssuePriorityLine({
         );
       })}
       {atCap ? (
-        <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>
-          An issue advances at most {MAX_ISSUE_ADVANCES} priorities.
+        <span
+          className={`${inDetails ? "" : "shrink-0 "}text-xs ${textMutedOnSurface}`}
+          {...page?.pageChrome}
+        >
+          {page === null ? (
+            <>An issue advances at most {MAX_ISSUE_ADVANCES} priorities.</>
+          ) : (
+            page.STATE_LINES.advances_at_cap
+          )}
         </span>
       ) : adding ? (
-        <form className="flex shrink-0 items-center gap-2" onSubmit={add}>
-          <label className="sr-only" htmlFor={selectId}>
-            Priority to advance
+        <form
+          className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
+          onSubmit={add}
+        >
+          <label className="sr-only" htmlFor={selectId} {...page?.pageChrome}>
+            {page?.CONTROL_LABELS.priority_to_advance ?? "Priority to advance"}
           </label>
           <select
             className={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 ${inputClasses(true)}`}
@@ -157,7 +200,9 @@ export function IssuePriorityLine({
             value={picked}
           >
             <option value="">
-              {priorities.data === undefined ? "Loading priorities…" : "Choose a priority"}
+              {priorities.data === undefined
+                ? (page?.ANSWER_LINES.loading_priorities ?? "Loading priorities…")
+                : (page?.CONTROL_LABELS.choose_priority ?? "Choose a priority")}
             </option>
             {choices.map((row) => (
               <option key={row.id} value={row.id}>
@@ -169,8 +214,9 @@ export function IssuePriorityLine({
             className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
             disabled={busy || picked === ""}
             type="submit"
+            {...page?.pageChrome}
           >
-            Add
+            {page?.CONTROL_LABELS.add ?? "Add"}
           </button>
           <button
             className={`min-h-11 rounded px-2 py-1 text-sm font-medium md:min-h-8 ${textMutedHoverToSecondary}`}
@@ -179,8 +225,9 @@ export function IssuePriorityLine({
               setAdding(false);
             }}
             type="button"
+            {...page?.pageChrome}
           >
-            Cancel
+            {page?.CONTROL_LABELS.cancel ?? "Cancel"}
           </button>
         </form>
       ) : (
@@ -193,24 +240,39 @@ export function IssuePriorityLine({
           // is an icon carries no visible text for WCAG 2.5.3 to match. The character is a
           // plain "+" (U+002B): the fullwidth "＋" this line held draws as an empty box where
           // no CJK font is installed, which is this pod's Chromium and some readers' browsers.
-          aria-label={`Add a priority to ${issue.key}`}
+          // In a row of Details, with no priority to stand beside, it says what it does in the
+          // words its name begins with, because that panel raises no tooltip that could say it
+          // instead (dispatch://INFRA-1196 R19).
+          aria-label={addPriorityControlName(issue.key)}
           className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
           disabled={busy}
           onClick={() => setAdding(true)}
-          title={`Add a priority to ${issue.key}`}
+          title={tooltips ? addPriorityControlName(issue.key) : undefined}
           type="button"
+          {...page?.pageChrome}
         >
-          +
+          {page !== null && inRow && advances.length === 0 ? page.CONTROL_LABELS.add_priority : "+"}
         </button>
       )}
       {priorities.isError ? (
-        <span className={`shrink-0 text-xs ${dangerText}`} role="alert">
-          Could not load the priorities.
+        <span
+          className={`${inDetails ? "" : "shrink-0 "}text-xs ${dangerText}`}
+          role="alert"
+          {...page?.pageChrome}
+        >
+          {page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities."}
         </span>
       ) : null}
       {write.error === null ? null : (
-        <span className={`shrink-0 text-xs ${dangerText}`} role="alert">
-          {apiErrorMessage(write.error, "Could not save what this issue advances.")}
+        <span
+          className={`${inDetails ? "" : "shrink-0 "}text-xs ${dangerText}`}
+          role="alert"
+          {...page?.authorText}
+        >
+          {apiErrorMessage(
+            write.error,
+            page?.ANSWER_LINES.priorities_not_saved ?? "Could not save what this issue advances."
+          )}
         </span>
       )}
     </div>
