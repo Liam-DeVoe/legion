@@ -296,11 +296,14 @@ FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
 # and binds in BROKER_SERVICE_LOGINS alone, as the service legion-priv, so the pod can log in
 # with its own token to enrol itself (agent-secrets enroll --pod). It is not in BROKER_SERVICES:
 # the pod reads no service-owned secret, and its project comes from its exchange entry through
-# its verified subject. Its two token files are one pod, as EXCHANGE_ACCOUNT's are.
+# its verified subject. Its two token files are one pod, as EXCHANGE_ACCOUNT's are. The entry fixes
+# the session the pod's tokens write under, as a long-running service's entry does, so its trade
+# needs no registration of a session name.
 PRIV_PROJECT="PRIV"
 PRIV_OWNER="carol@example.com"
 PRIV_SERVICE="legion-priv"
 PRIV_ACCOUNT="system:serviceaccount:legion-priv:legion-priv-worker"
+PRIV_SESSION="legion-priv-worker-session"
 PRIV_EXCHANGE_TOKEN_FILE="$WORK_DIR/priv-exchange-token"
 PRIV_POD_TOKEN_FILE="$WORK_DIR/priv-pod-token"
 # The broker's own account for Dispatch's access routes, and Dispatch's audience, as production
@@ -632,7 +635,7 @@ env -i PATH="$PATH" \
   BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
   BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
   BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
-  BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN $PRIV_ACCOUNT=$PRIV_PROJECT=$PRIV_OWNER" \
+  BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN $PRIV_ACCOUNT=$PRIV_PROJECT=$PRIV_OWNER=$PRIV_SESSION" \
   BROKER_GOOGLE_OIDC_ISSUER="$ISSUER_URL" \
   BROKER_GOOGLE_OIDC_AUDIENCE="$MACHINE_CLIENT_ID" \
   BROKER_VM_SERVICES="$FLEET_SERVICE=$FLEET_ACCOUNT $PERSON_FLEET_SERVICE=$PERSON_FLEET_ACCOUNT" \
@@ -903,6 +906,7 @@ dev-stack: ready.
   export DEV_STACK_PRIV_OWNER=$PRIV_OWNER
   export DEV_STACK_PRIV_SERVICE=$PRIV_SERVICE
   export DEV_STACK_PRIV_ACCOUNT=$PRIV_ACCOUNT
+  export DEV_STACK_PRIV_SESSION=$PRIV_SESSION
   export DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE=$PRIV_EXCHANGE_TOKEN_FILE
   export DEV_STACK_PRIV_POD_TOKEN_FILE=$PRIV_POD_TOKEN_FILE
   export DEV_STACK_PROJECT_ACCESS=$PROJECT_ACCESS

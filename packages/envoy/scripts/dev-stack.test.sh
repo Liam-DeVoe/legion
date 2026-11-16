@@ -579,8 +579,8 @@ assert_project_access() {
     fail "$label: priv-exchange-token is not PRIV's pod's token"
   grep -q "fake-token-for-${access_account}" "${work_dir}/broker-access-token" ||
     fail "$label: broker-access-token is not the broker's own access account's token"
-  grep -q "exchange=.* ${priv_account}=PRIV=carol@example.com " "$broker_log" ||
-    fail "$label: the broker's BROKER_EXCHANGE_ACCOUNTS does not map PRIV's pod to PRIV for carol"
+  grep -q "exchange=.* ${priv_account}=PRIV=carol@example.com=legion-priv-worker-session " "$broker_log" ||
+    fail "$label: the broker's BROKER_EXCHANGE_ACCOUNTS does not map PRIV's pod to PRIV for carol under its fixed session"
   grep -q "service-logins=.* legion-priv=${priv_account} " "$broker_log" ||
     fail "$label: the broker's BROKER_SERVICE_LOGINS does not bind PRIV's pod as legion-priv"
   [[ "$(exported "$log_file" DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE)" == "${work_dir}/priv-exchange-token" ]] ||
