@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  Every `slack_post` error that says nothing was posted ends with "do not send this reply with
+  another Slack tool: it would post as the person whose Slack login that tool holds": the secrets
+  broker's refusals of `LEGION_SLACK_BOT_TOKEN`, Slack's own refusals (which now also say "nothing
+  was posted"), and the refusal of a reply linking an address inside the cluster or of a
+  `SLACK_POST_API_URL` that is not allowed. A denial also says that only a Legion pod's session may
+  post as the Legion app, and the tool's description says both before the call.
