@@ -112,10 +112,17 @@ func requirePrivateProjectsRefusal(t *testing.T, row privateProjectsRefusal, err
 // authCallout and the service's user alone, it registers. aws:NatsService's rows are in
 // aws/natsservice_callout_test.go, under the same name.
 //
-// Negative controls, each run on its own in core/nats_callout.go's validateCallout: delete the
-// refusal of a noAuthUser, and the session-user rows fail naming "example-sessions"; delete the
-// refusal of any user but the service's, and the seed rows fail naming "example-host-a"; delete the
-// refusal of privateProjects without a callout, and the authCallout rows fail naming no callout.
+// Negative controls, each run on its own in core/nats_callout.go's validateCallout, and each making
+// the component take the configuration R12 forbids rather than refuse it in other words:
+//   - Let the session user through: delete the noAuthUser refusal, and make the users loop skip
+//     a.NoAuthUser beside the service user. The session-user rows of all three components fail
+//     with "privateProjects was taken beside the session user …", naming it.
+//   - Let a client user with a seed through: delete the users loop. The seed rows fail with
+//     "privateProjects was taken beside the user …", naming "example-host-a" ("example-listener"
+//     on aws:NatsService).
+//   - Let privateProjects through without a callout: make the a.Callout == nil branch return nil
+//     (deleting it would dereference the nil callout in the users loop). The callout rows fail
+//     with "privateProjects was taken beside no callout".
 func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		for _, row := range privateProjectsRefusals() {
