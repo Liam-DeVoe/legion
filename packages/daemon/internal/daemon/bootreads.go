@@ -297,17 +297,29 @@ func checkRoleConfigFiles(cfg config.Config) error {
 	return nil
 }
 
+// CheckedNATS is who the daemon's NATS credentials authenticate as, as CheckStart read them: the
+// pane seed's user and the daemon seed's user by public key, and the account the daemon's service
+// token names (nats_daemon_service_token_file), each "" when the daemon has no such credential;
+// never a seed or a token.
+type CheckedNATS struct {
+	PaneUser, DaemonUser, DaemonServiceAccount string
+}
+
 // CheckStart is `legion start --check-config`'s reading of what boot reads before it writes
 // anything (readBoot), over the daemon's environment (lookup, and the process's for the OMP
-// invocation): nil when boot would get past every such refusal, and the public keys of the pane
-// seed's user and the daemon seed's user, each "" when the daemon has no such seed, never a seed.
-func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
+// invocation): nil when boot would get past every such refusal, and who the daemon's NATS
+// credentials authenticate as (CheckedNATS).
+func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (CheckedNATS, error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
-		return "", "", err
+		return CheckedNATS{}, err
 	}
-	if r.nats.source == natsSeedDaemon {
-		daemonNatsUser = r.nats.user
+	checked := CheckedNATS{PaneUser: r.paneNatsUser}
+	switch r.nats.source {
+	case natsSeedDaemon:
+		checked.DaemonUser = r.nats.user
+	case natsServiceToken:
+		checked.DaemonServiceAccount = r.nats.user
 	}
-	return r.paneNatsUser, daemonNatsUser, nil
+	return checked, nil
 }
