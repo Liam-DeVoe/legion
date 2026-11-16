@@ -68,7 +68,8 @@ type Cache interface {
 	Apply(entry Entry, read Read)
 	// BeginRead says a new read of the whole bucket starts. The cache keeps every entry through it.
 	// A read whose Recreated is set reads a bucket that was deleted and created again, whose
-	// revisions number from 1 again, so the cache drops its revision fence (and keeps its entries).
+	// revisions number from 1 again, so the cache drops the deleted bucket's revision fence, takes
+	// the new bucket's in its place (Copy.BeginRead), and keeps its entries.
 	BeginRead(read Read)
 	// CompleteRead says the read delivered every record of its bucket: the cache removes the entries
 	// the read found no evidence of (Copy.CompleteRead). A read that times out or ends before its
@@ -81,7 +82,8 @@ type Read struct {
 	// Epoch counts the bucket's incarnations the watcher has read: it moves only when a watch
 	// installs onto a stream other than the one the watcher read before (the bucket was recreated),
 	// and a Rewatch onto the same stream keeps it. A write a store made through a handle of an
-	// earlier epoch (Handle) is not applied to the cache.
+	// earlier epoch (Handle) is not applied to the cache. A recreated read's epoch is given when its
+	// watch reads the new stream, and Handle names it from then on (Watcher.ahead).
 	Epoch uint64
 	// Recreated says this read is the first of a new epoch.
 	Recreated bool
@@ -209,6 +211,14 @@ type Watcher struct {
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
 	bound time.Duration
+	// ahead is the epoch of aheadStream, a stream other than the current watcher's that a watch has
+	// read and whose read has not installed yet: the bucket deleted and created again. From that
+	// read on, a write through the handle lands in that stream, so Handle names ahead, and the
+	// read installs with it (installEpoch). aheadStream is zero when no such read is pending.
+	// epochs is the highest epoch given so far, to epoch or to ahead.
+	ahead       uint64
+	aheadStream time.Time
+	epochs      uint64
 
 	// completedOnce is set by the first read that completed, and following while the copy follows
 	// the bucket: from a read's completion until the next stop (stopFollowing, watch). staleSince is
@@ -367,14 +377,18 @@ func (w *Watcher) KV() bus.KeyValue {
 	return w.kv
 }
 
-// Handle is the bucket handle the store reads and writes through and the epoch of the bucket it is
-// a handle on, read together: a store captures both before a KV call and applies the call's result
-// to its cache only while Epoch is still that epoch, so a result from a bucket since recreated
-// never fences out the new bucket's revisions.
+// Handle is the bucket handle the store reads and writes through and the epoch of the bucket a call
+// through it reaches, read together: a store captures both before a KV call and applies the call's
+// result to its cache only while that epoch is still one the copy takes (Copy.Put, Apply, Evict),
+// so a result from a bucket since recreated never fences out the new bucket's revisions. The epoch
+// is the current read's, or, once a watch has read the bucket's stream as another one - the bucket
+// deleted and created again - the epoch that stream's read will install with (ahead): every call
+// made from then on reaches that stream, and the copy keeps what it took through that epoch for the
+// new bucket's read.
 func (w *Watcher) Handle() (bus.KeyValue, uint64) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.kv, w.epoch
+	return w.kv, w.handleEpoch()
 }
 
 // Epoch is the current read's Read.Epoch: it moves only when a watch installs onto a recreated
@@ -383,6 +397,47 @@ func (w *Watcher) Epoch() uint64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.epoch
+}
+
+// takes reports whether a result through a handle of epoch (Handle) may reach the copy: it is of the
+// current read's epoch, or of the one a watch has read ahead of its install. Callers hold no lock of
+// the watcher's.
+func (w *Watcher) takes(epoch uint64) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return epoch == w.epoch || epoch == w.handleEpoch()
+}
+
+// handleEpoch is the epoch Handle names, under mu.
+func (w *Watcher) handleEpoch() uint64 {
+	if w.aheadStream.IsZero() {
+		return w.epoch
+	}
+	return w.ahead
+}
+
+// readAhead records, under mu, that a watch read the bucket's stream as stream. A stream other than
+// the current watcher's, and other than one already read ahead, is the bucket deleted and created
+// again: it is given the next epoch, which Handle names from here on (ahead).
+func (w *Watcher) readAhead(stream time.Time) {
+	if w.stream.IsZero() || stream.Equal(w.stream) || stream.Equal(w.aheadStream) {
+		return
+	}
+	w.epochs++
+	w.ahead, w.aheadStream = w.epochs, stream
+}
+
+// installEpoch is the epoch a watch that installs onto stream, a recreated bucket, gives its read,
+// under mu: the one stream was read ahead with, which Handle has named since, or the next one when
+// another stream was read ahead since (readAhead).
+func (w *Watcher) installEpoch(stream time.Time) uint64 {
+	if !w.aheadStream.IsZero() && stream.Equal(w.aheadStream) {
+		epoch := w.ahead
+		w.ahead, w.aheadStream = 0, time.Time{}
+		return epoch
+	}
+	w.epochs++
+	return w.epochs
 }
 
 // Err is the current watcher's terminal error, or nil while it runs.
@@ -460,6 +515,9 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 		return err
 	}
 	stream := state.Created
+	w.mu.Lock()
+	w.readAhead(stream)
+	w.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	watcher, err := kv.WatchKeys(ctx, jetstream.AllKeys)
 	if err != nil {
@@ -510,7 +568,7 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	previous := w.watcher
 	recreated := !w.stream.IsZero() && !stream.Equal(w.stream)
 	if recreated {
-		w.epoch++
+		w.epoch = w.installEpoch(stream)
 	}
 	w.generation++
 	generation := w.generation

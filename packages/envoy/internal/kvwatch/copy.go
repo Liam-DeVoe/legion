@@ -10,8 +10,9 @@ import (
 // began in. It is the whole of the read protocol (Cache) and of the write sites, so a cache keeps
 // none of that state itself: the hooks it hands its watcher call BeginRead, Delivered and
 // CompleteRead, and each result of a KV call it makes reaches the copy through Put, Apply or
-// Evict, which drop a result of an earlier epoch and mark the key of every other before they
-// compare the fence. No write site can take a result without marking it, or mark one it drops.
+// Evict, which drop a result of an epoch the watcher no longer takes and mark the key of every
+// other before they compare the fence. No write site can take a result without marking it, or mark
+// one it drops.
 //
 // A Copy has no lock of its own: the cache calls every method under the mutex that guards
 // whatever else it keeps per key (a session's last heartbeat, its expiry), and its hooks take that
@@ -23,6 +24,13 @@ type Copy[V any] struct {
 	revisions map[string]uint64
 	marks     marks
 	readEpoch uint64
+	// ahead is the fence of aheadEpoch, an epoch whose read has not begun: the revisions of the
+	// results the copy took through a handle of that epoch, the bucket deleted and created again
+	// (Watcher.Handle). They number in the new bucket's stream, so they are fenced against each
+	// other and never against revisions, the fence of the bucket that was deleted; that epoch's
+	// read takes ahead as its fence (BeginRead).
+	ahead      map[string]uint64
+	aheadEpoch uint64
 }
 
 // Rows is how one copy turns a record into its entry, and what the cache that keeps it records
@@ -86,25 +94,32 @@ func (c *Copy[V]) Remove(key string) {
 	delete(c.entries, key)
 }
 
-// BeginRead starts a read of the bucket (Cache.BeginRead): a fresh set of marks, the read's epoch
-// as the one the fence belongs to, and, for a recreated bucket whose revisions number from 1
-// again, no fence. Every entry stays.
+// BeginRead starts a read of the bucket (Cache.BeginRead): a fresh set of marks, and the read's
+// epoch as the one the fence belongs to. A recreated bucket's read drops the fence of the bucket
+// that was deleted, whose revisions say nothing of the new stream's sequence, and takes in its
+// place the fence of what the copy took through a handle of its own epoch before it began
+// (ahead): those are the new bucket's revisions. Every entry stays.
 //
 // The read's watch read the stream (Read.LastSeq) before it made its consumer, and the read begins
 // only once that consumer is made: a record that landed in between is past the read's scan, which
 // delivers it only after its end. So every key the copy took at a revision past LastSeq - a
 // write-through, a read-through, a delete, or a record the watcher this read replaces delivered -
 // is marked for the read here, and its completion keeps the entry and its fence. The read cannot
-// vouch that the bucket no longer holds it; the records that follow its scan say. A recreated
-// bucket's fence holds another stream's revisions, which say nothing of this stream's sequence,
-// and is dropped instead: its read delivers what the new bucket holds (Dropped).
+// vouch that the bucket no longer holds it; the records that follow its scan say. A result of the
+// deleted bucket's epoch, a call made before the watch read the new stream, is in no fence the
+// recreated read keeps: it could have reached either bucket, and the new bucket's read delivers
+// what that bucket holds for the key.
 func (c *Copy[V]) BeginRead(read Read) {
 	c.marks.begin()
-	c.readEpoch = read.Epoch
 	if read.Recreated {
-		clear(c.revisions)
-		return
+		if c.ahead != nil && c.aheadEpoch == read.Epoch {
+			c.revisions = c.ahead
+		} else {
+			clear(c.revisions)
+		}
+		c.ahead, c.aheadEpoch = nil, 0
 	}
+	c.readEpoch = read.Epoch
 	for key, revision := range c.revisions {
 		if revision > read.LastSeq {
 			c.marks.mark(key)
@@ -117,7 +132,7 @@ func (c *Copy[V]) BeginRead(read Read) {
 // through the sweep. The error is a value Rows.Decode could not decode, for the caller to log.
 func (c *Copy[V]) Delivered(entry Entry) error {
 	c.marks.mark(entry.Key)
-	_, err := c.apply(entry)
+	_, err := c.apply(c.readFence(), entry)
 	return err
 }
 
@@ -133,13 +148,14 @@ func (c *Copy[V]) CompleteRead() {
 // Put takes value, written for key at revision through a handle of epoch (Watcher.Handle): a
 // write-through, or a read-through the cache decoded itself.
 func (c *Copy[V]) Put(w *Watcher, epoch uint64, key string, value V, revision uint64) Outcome {
-	if !c.current(w, epoch, key) {
+	fence, ok := c.fence(w, epoch, key)
+	if !ok {
 		return Dropped
 	}
-	if c.fenced(key, revision) {
+	if revision < fence[key] {
 		return Fenced
 	}
-	c.store(key, value, revision)
+	c.store(fence, key, value, revision)
 	return Applied
 }
 
@@ -148,95 +164,104 @@ func (c *Copy[V]) Put(w *Watcher, epoch uint64, key string, value V, revision ui
 // value Rows.Decode could not decode, for the caller to log; a record the fence drops is not
 // decoded.
 func (c *Copy[V]) Apply(w *Watcher, epoch uint64, entry Entry) (Outcome, error) {
-	if !c.current(w, epoch, entry.Key) {
+	fence, ok := c.fence(w, epoch, entry.Key)
+	if !ok {
 		return Dropped, nil
 	}
-	return c.apply(entry)
+	return c.apply(fence, entry)
 }
 
 // Evict removes key at revision for a delete made through a handle of epoch whose own record the
 // cache could not read back.
 func (c *Copy[V]) Evict(w *Watcher, epoch uint64, key string, revision uint64) Outcome {
-	if !c.current(w, epoch, key) {
+	fence, ok := c.fence(w, epoch, key)
+	if !ok {
 		return Dropped
 	}
-	if c.fenced(key, revision) {
+	if revision < fence[key] {
 		return Fenced
 	}
-	c.evict(key, revision)
+	c.evict(fence, key, revision)
 	return Applied
 }
 
-// FenceFor is the revision the fence holds for key, for a delete about to be made through a handle
-// of epoch, and 0 when the read under way did not begin in epoch: between a watch moving the epoch
-// and that read beginning, the fence still holds the recreated bucket's revisions.
+// FenceFor is the revision the fence of epoch holds for key, for a delete about to be made through
+// a handle of epoch: the current read's fence, or the one the copy keeps for an epoch whose read
+// has not begun (ahead). Any other epoch's is 0.
 func (c *Copy[V]) FenceFor(epoch uint64, key string) uint64 {
-	if c.readEpoch != epoch {
-		return 0
+	switch epoch {
+	case c.readEpoch:
+		return c.revisions[key]
+	case c.aheadEpoch:
+		return c.ahead[key]
 	}
-	return c.revisions[key]
+	return 0
 }
 
-// current reports whether a result through a handle of epoch may reach the copy, and marks key
-// for the read under way when it may.
-func (c *Copy[V]) current(w *Watcher, epoch uint64, key string) bool {
-	if w.Epoch() != epoch {
-		return false
+// fence reports whether a result through a handle of epoch may reach the copy (Watcher.takes),
+// marks key for the read under way when it may, and returns the fence the result is compared
+// against and recorded in: the current read's for a result of its epoch, and for a result of a
+// later one - a bucket deleted and created again whose read has not begun - that epoch's own
+// (ahead), made afresh when the epoch it held is another.
+func (c *Copy[V]) fence(w *Watcher, epoch uint64, key string) (map[string]uint64, bool) {
+	if !w.takes(epoch) {
+		return nil, false
 	}
 	c.marks.mark(key)
-	return true
+	if epoch == c.readEpoch {
+		return c.readFence(), true
+	}
+	if c.ahead == nil || c.aheadEpoch != epoch {
+		c.ahead, c.aheadEpoch = map[string]uint64{}, epoch
+	}
+	return c.ahead, true
 }
 
-// fenced reports whether the fence drops a result for key at revision: the copy already took a
-// higher revision of it in the current epoch.
-func (c *Copy[V]) fenced(key string, revision uint64) bool {
-	return revision < c.revisions[key]
+// readFence is the current read's fence, made on first use.
+func (c *Copy[V]) readFence() map[string]uint64 {
+	if c.revisions == nil {
+		c.revisions = map[string]uint64{}
+	}
+	return c.revisions
 }
 
-// apply takes one record whose key is already marked: one the fence drops leaves the copy as it
-// is, undecoded; a put the cache keeps is stored; and a delete or purge marker, a put the cache
-// does not keep and one it cannot decode remove the key.
-func (c *Copy[V]) apply(entry Entry) (Outcome, error) {
-	if c.fenced(entry.Key, entry.Revision) {
+// apply takes one record whose key is already marked, against fence: one the fence drops leaves
+// the copy as it is, undecoded; a put the cache keeps is stored; and a delete or purge marker, a
+// put the cache does not keep and one it cannot decode remove the key.
+func (c *Copy[V]) apply(fence map[string]uint64, entry Entry) (Outcome, error) {
+	if entry.Revision < fence[entry.Key] {
 		return Fenced, nil
 	}
 	if entry.Op != OpPut {
-		c.evict(entry.Key, entry.Revision)
+		c.evict(fence, entry.Key, entry.Revision)
 		return Applied, nil
 	}
 	value, keep, err := c.rows.Decode(entry)
 	if err != nil || !keep {
-		c.evict(entry.Key, entry.Revision)
+		c.evict(fence, entry.Key, entry.Revision)
 		return Applied, err
 	}
-	c.store(entry.Key, value, entry.Revision)
+	c.store(fence, entry.Key, value, entry.Revision)
 	return Applied, nil
 }
 
-func (c *Copy[V]) store(key string, value V, revision uint64) {
+func (c *Copy[V]) store(fence map[string]uint64, key string, value V, revision uint64) {
 	if c.entries == nil {
 		c.entries = map[string]V{}
 	}
 	c.entries[key] = value
-	c.setRevision(key, revision)
+	fence[key] = revision
 	if c.rows.Stored != nil {
 		c.rows.Stored(key, value)
 	}
 }
 
-func (c *Copy[V]) evict(key string, revision uint64) {
+func (c *Copy[V]) evict(fence map[string]uint64, key string, revision uint64) {
 	if value, ok := c.entries[key]; ok {
 		delete(c.entries, key)
 		if c.rows.Removed != nil {
 			c.rows.Removed(key, value)
 		}
 	}
-	c.setRevision(key, revision)
-}
-
-func (c *Copy[V]) setRevision(key string, revision uint64) {
-	if c.revisions == nil {
-		c.revisions = map[string]uint64{}
-	}
-	c.revisions[key] = revision
+	fence[key] = revision
 }
