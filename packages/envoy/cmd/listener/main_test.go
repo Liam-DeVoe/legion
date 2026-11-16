@@ -5197,22 +5197,14 @@ func TestTheDefaultSessionReapIntervalMeetsTheTwoMinuteAdoption(t *testing.T) {
 }
 
 // The role claim reaper runs on a period of its own, and its default is the five minutes the
-// fixed pass this change replaces ran at, which is also the age the session bucket ships with
-// (session.BucketMaxAge): a stalled session's key is expired by that age, and a holder whose
-// key is gone reads gone, so a pass more often than that frees a stalled holder's role sooner
-// than the fixed pass did - the harm this whole change exists to end. Two passes still fit well
-// inside the gone horizon, so a holder that really is gone loses its role promptly.
-//
-// The floor the bucket's age sets holds only while that age is below the gone horizon, as the
-// shipping age is: once dispatch://INFRA-887 raises it past the horizon, the session reaper
-// deletes a record at the horizon and the bucket expires none before it, so the floor is the
-// horizon's and a period as long as the raised age would keep a gone holder's role for hours.
-func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucketsShippingAge(t *testing.T) {
+// fixed pass this change replaces ran at. A session bucket an older build created keeps a record
+// five minutes until ENVOY_SESSION_MAX_AGE raises it, and there a holder whose key expired reads
+// gone, so a shorter pass would free a stalled holder's role sooner than the fixed pass did. Two
+// passes still fit well inside the gone horizon, so a holder that really is gone loses its role
+// promptly.
+func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndTwoPassesFitInsideTheGoneHorizon(t *testing.T) {
 	if defaultRoleClaimReapInterval != 5*time.Minute {
 		t.Fatalf("the default role claim reap interval is %s, want the 5m fixed pass this change replaced: the deployment keeps that period, and a change to it is a change to how long a gone holder keeps its role", defaultRoleClaimReapInterval)
-	}
-	if session.BucketMaxAge < session.GoneHorizon && defaultRoleClaimReapInterval < session.BucketMaxAge {
-		t.Fatalf("the default role claim reap interval is %s, want at least the %s the session bucket keeps a record for: a stalled holder reads gone when its key expires, and a shorter pass takes its role sooner than the five-minute pass this change replaced", defaultRoleClaimReapInterval, session.BucketMaxAge)
 	}
 	if got := 2 * defaultRoleClaimReapInterval; got > session.GoneHorizon {
 		t.Fatalf("two passes at the default role claim reap interval take %s, want them inside the %s gone horizon, so a gone holder's role is free well before an operator waits out another horizon", got, session.GoneHorizon)

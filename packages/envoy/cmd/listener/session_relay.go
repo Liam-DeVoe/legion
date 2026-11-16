@@ -279,14 +279,15 @@ const (
 	// nak being a publish the server answers nothing to. A record that lapsed out of the bucket
 	// instead leaves the consumer standing with those messages on it for as long as it stands:
 	// the reaper judges the records the cache holds, and a record whose bucket age is under the
-	// gone horizon - five minutes against an hour where the deployment sets no
-	// ENVOY_SESSION_MAX_AGE (session.BucketMaxAge, session.GoneHorizon) - leaves that cache
-	// before a pass of it judges the session gone. The sweep is what ends such a consumer, one
-	// pass after the record left the bucket (sessionConsumerSweep), and the stream's inactive
-	// threshold (bus.SessionConsumerInactiveThreshold) is the backstop behind the sweep; until
-	// one of them takes it, the session is delivered those messages when it registers again,
-	// which is what a laptop that slept through its heartbeats does. The cache reports a record
-	// deleted and one lapsed the same way, so the hand-over line names both (relayHandOverLines).
+	// gone horizon leaves that cache before a pass of it judges the session gone. A bucket this
+	// listener creates outlives the horizon (session.BucketMaxAge, session.GoneHorizon), but one
+	// an older build created keeps a record five minutes until ENVOY_SESSION_MAX_AGE raises it.
+	// The sweep is what ends such a consumer, one pass after the record left the bucket
+	// (sessionConsumerSweep), and the stream's inactive threshold
+	// (bus.SessionConsumerInactiveThreshold) is the backstop behind the sweep; until one of them
+	// takes it, the session is delivered those messages when it registers again, which is what a
+	// laptop that slept through its heartbeats does. The cache reports a record deleted and one
+	// lapsed the same way, so the hand-over line names both (relayHandOverLines).
 	relayCancelSessionGone
 	// relayCancelNewEpoch: the session registered with a new epoch, so a run starting at the ack
 	// floor replaced this one.

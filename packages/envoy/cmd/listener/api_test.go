@@ -1555,7 +1555,7 @@ func TestRoleSetHandlerSoftClaim(t *testing.T) {
 	})
 
 	t.Run("dead holder is superseded", func(t *testing.T) {
-		// ses_live's session entry ages out (5m TTL in production); here it is
+		// ses_live's session entry ages out at the session bucket's maximum age; here it is
 		// deleted, which is what the listener observes either way.
 		if err := sessions.Delete(context.Background(), "ses_live"); err != nil {
 			t.Fatalf("expire holder session: %v", err)
@@ -1705,7 +1705,7 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 
 	t.Run("a predecessor with no registry entry gives up the role", func(t *testing.T) {
 		// The predecessor's process is gone: its entry has left the session bucket (aged out at
-		// the 5m TTL in production, deleted here), and its role is the resumed session's to take
+		// the bucket's maximum age, deleted here), and its role is the resumed session's to take
 		// whatever instance that predecessor ran in.
 		registry, sessions, _, post := setup(t)
 		registerInstance(t, sessions, "ses_pred", otherInstance)

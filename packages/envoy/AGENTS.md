@@ -3856,7 +3856,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 
 - A role claim view whose copy no read of the bucket has made servable yet is neither of those:
   nothing is wrong with the bucket or the watcher, and `/healthz` reports it as `200` with `"status":"degraded"` and `"error":"role claim view unavailable: the role claim view cannot be served: ..."` (`store.Registry.RoleViewErr`, the state `RolesHeldBy` itself reads, so the report and the routes cannot disagree) while `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer their 503.
-  That check runs last, after every check that can answer `unhealthy`, so it hides none of them, and its answer keeps the healthy answer's fields (`session_cache_*`, `ci_cache`, `num_pending`, `num_ack_pending`);
+  That check runs last, after every check that can answer `unhealthy`, so it hides none of them, and its answer keeps the healthy answer's fields (`session_cache_*`, `session_max_age`, `session_gone_horizon`, `ci_cache`, `num_pending`, `num_ack_pending`);
   a transient KV or durable info failure's `degraded` answer carries `status` and `error` alone and returns before the checks after it.
   It is `degraded` and no part of `Ping` or `WatchErr` on purpose:
   the view fills itself through that watcher's own re-read, so neither the load balancer nor the self-health monitor, which restarts the listener over a terminal failure its rebuilds do not clear, is to act on a state no rebuild completes a read for.
@@ -4465,7 +4465,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   It keeps nothing, since keeping is the answer of the two give-up branches above, which answer 202.
   There is no `receipt_timeout` reason any more: no holder answers a receipt (`startRoleForward`), so every failed forward is `delivery_failed`.
   `holder` is the holder last resolved, empty when none was, and `attempts` counts the forwards, every one the same envelope.
-  A session that stopped without unregistering stays registered until its registration lapses, 5 minutes after its last heartbeat, and a role send to it in that time is answered 200 all the same:
+  A session that stopped without unregistering still reads `live` for the live window after its last heartbeat (5 minutes by default), and a role send to it in that time is answered 200 all the same:
   the forward the stream stored waits in that session's consumer.
 
 - A publish or forward the bus denies.

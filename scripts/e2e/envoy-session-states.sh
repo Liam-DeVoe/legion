@@ -71,13 +71,14 @@
 # thing that check measures is the latency from a SIGKILL to `gone`, and ten minutes of waiting
 # would measure the same boundary no better.
 #
-# The session bucket's maximum age is 2h for the whole run but check 8. At the shipping five
-# minutes JetStream removes a stalled session's key at five minutes — before the gone horizon can
-# be reached — so no stalled session could ever read `unresponsive` and nothing above could be
+# The session bucket's maximum age is 2h for the whole run but check 8. At the 5 minutes of a
+# bucket an older listener created, which the live bucket keeps until ENVOY_SESSION_MAX_AGE raises
+# it, JetStream removes a stalled session's key at five minutes — before the gone horizon can be
+# reached — so no stalled session could ever read `unresponsive` and nothing above could be
 # proved at all. Raising it is the rollout this issue's sibling carries (dispatch://INFRA-887), and
 # check 8 is its proof: the two running listeners leave ENVOY_SESSION_MAX_AGE unset, so neither
 # writes the bucket's age and both adopt what the bucket carries (applyMaxAge, on every reaper
-# pass), and a listener of the run's own writes it — 2h at setup, then in check 8 the shipping 5m,
+# pass), and a listener of the run's own writes it — 2h at setup, then in check 8 the older 5m,
 # the raise back to 2h, and the rollback to 5m.
 #
 # ---- the named checks ---------------------------------------------------------------------------
@@ -294,6 +295,8 @@ role_reap_interval=20s
 heartbeat_ms=5000
 max_age=2h
 max_age_shown=2h0m0s
+# shipping_max_age is the 5m of a bucket an older listener created, which the live bucket keeps
+# until ENVOY_SESSION_MAX_AGE raises it; a listener of this build creates a bucket at 2h.
 shipping_max_age=5m
 shipping_max_age_shown=5m0s
 

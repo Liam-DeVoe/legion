@@ -41,7 +41,7 @@ Agent messages  --/       |
 - Session consumers: a session that asks at registration (`delivery`) gets a durable pull consumer `s-<session id>` on the stream, filtered on its agent subject and its stored followed topics; the listener that owns the session relays it on `notifications.envoy.deliver.<session id>` (core NATS, not stored) and acks a message only on the session's `done`. The one exception is a stored message whose frame (its bytes with the relay's headers) is past the server's max payload: the listener acks it with one WARN naming the session and the event, and the session does not receive it, so that message does not hold back the messages after it. The consumer is deleted when the session's registration ends (`DELETE /v1/sessions/<id>`) and by the listener's periodic sweep over the sessions the registry judges gone (`ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL`, 5m by default, at most 256 a pass); before each delete the consumer's ack floor is recorded on `notifications.envoy.resume.<session id>`, a lane of the stream no consumer filter takes, so a session that comes back with no resume point of its own is created again there. The inactive threshold, which each listener derives at start from its own windows so that it stands above that sweep bound (`bus.InactiveThresholdFor`; 1h floor), is only the server's backstop for a consumer neither delete reached (`packages/envoy/AGENTS.md`, "Session consumers").
 - The stream and every KV bucket hold the deployment's replica count, `ENVOY_NATS_REPLICAS` (1 to 5, default 1; more than 1 needs a clustered NATS), and the stream at least the byte limit `ENVOY_STREAM_MAX_BYTES` when set: a start creates them at that count and limit, raises one found with fewer copies or a smaller limit (or none), and never lowers either, and every program that owns the stream (each listener, the Dispatch server) runs a keeper that every 30 seconds raises the stream's copies and byte limit back to its settings, puts back the discard policy and `envoy_stream_id`, and raises its own buckets' copies. An operator's raise of the limit stands, and programs with different settings do not fight: the largest stands. JetStream's stream update has no compare-and-swap, so a start with other or no settings can put back what it read until the next keeper pass; a clustered deployment sets the same `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES` in every program
 - JetStream KV bucket `envoy_interests` for session subscriptions
-- JetStream KV bucket `envoy_sessions` for session host data, plus the `plugin` and `plugin_version` each registration names (the npm package the session registers through and that plugin's build; absent for a session whose plugin predates them). `ENVOY_SESSION_MAX_AGE` sets the bucket's `MaxAge` at start; unset, the listener leaves the bucket as it is. That age bounds how long a record survives, not how long a session is alive: liveness is computed from each record's `UpdatedAt` (see “Session state”), never from the presence of a key
+- JetStream KV bucket `envoy_sessions` for session host data, plus the `plugin` and `plugin_version` each registration names (the npm package the session registers through and that plugin's build; absent for a session whose plugin predates them). A listener that finds no bucket creates it with a `MaxAge` of 2h, the default gone horizon plus one hour (`session.BucketMaxAge`). `ENVOY_SESSION_MAX_AGE` sets the bucket's `MaxAge` at start; unset, the listener leaves an existing bucket as it is. That age bounds how long a record survives, not how long a session is alive: liveness is computed from each record's `UpdatedAt` (see “Session state”), never from the presence of a key
 - JetStream KV bucket `legion_agents`, no TTL and never deleted, for the Legion agent registry: one entry per Legion session the daemon ran, under `session.<id>` and the same entry under `issue.<ISSUE>.<id>` and `role.<role_token>.<id>` (`project.*` is the daemon's own and no listener read reaches it)
 - Each listener serves both buckets from an in-memory copy its watcher keeps (`internal/kvwatch`), and the role claims of `envoy_roles` too. A watcher reads its bucket again on a reconnect, a recreated bucket or a failed watch without emptying the copy: every row stays until the new read completes, each delivered record replaces its row as it arrives, and only the completed read removes the rows it did not find. An incomplete read removes nothing, and the listener reads again itself. The role claim watcher also reads its bucket in full one minute after each read that completed, by the same rules, so a claim the copy lost is put back and one the bucket no longer holds is taken out within 2 minutes. No act decides from that copy: each reads the role's claim record from the bucket when it acts.
 
@@ -139,22 +139,27 @@ session, each renewed as its own claim record says, whatever topics the registra
 that states no process renews the claims of its own session that name none and adopts none, so
 nothing standing at a deploy ages out. The reaper runs on a period of its own,
 `ENVOY_ROLE_CLAIM_REAP_INTERVAL` (a Go duration, default 5m), and not on the session reaper's:
-while the session bucket's maximum age is below the gone horizon, as the 5m it ships with is, a
-record the bucket expires reads `gone` too, so a period shorter than that age takes a merely
-stalled holder's role that much sooner. Once the maximum age covers the horizon no record goes
-early, and the period decides only how long past the horizon a gone holder keeps its role, so it
-belongs well inside the horizon. A Legion role whose agent process exits is `gone` at once rather
-than at the end of the live window, so its successor's soft claim takes the role without waiting
-the window out; a soft claim replaces the holder, it does not release the claim.
+while the session bucket's maximum age is below the gone horizon, as the 5m of a bucket an older
+build created is, a record the bucket expires reads `gone` too, so a period shorter than that age
+takes a merely stalled holder's role that much sooner. Once the maximum age covers the horizon, as
+the 2h of a bucket the listener creates covers the default 1h, no record goes early, and the period
+decides only how long past the horizon a gone holder keeps its role, so it belongs well inside the
+horizon. A Legion role whose agent process exits is `gone` at once rather than at the end of the
+live window, so its successor's soft claim takes the role without waiting the window out; a soft
+claim replaces the holder, it does not release the claim.
 
 Dispatch reads `ENVOY_SESSION_LIVE_WINDOW` and `ENVOY_SESSION_GONE_HORIZON` too and judges a role
 route's holder by them (`roles.Windows`, `cmd/dispatch`'s `roleHolderWindows`), so a deployment
 gives its listeners and its Dispatch server the same two values.
 
 `ENVOY_SESSION_MAX_AGE` sets the `envoy_sessions` bucket's `MaxAge`; unset, the listener leaves the
-bucket's own. A gone horizon longer than that age reads a record the bucket expired as `gone`
-before the horizon, so the operator raises the bucket to cover the horizon. `/healthz` reports the
-age in use as `session_max_age`, a Go duration string such as `"5m0s"`.
+bucket's own. A bucket the listener creates gets 2h, an hour past the default gone horizon
+(`session.BucketMaxAge`); a bucket an older build created keeps its 5m until this setting raises
+it. A gone horizon longer than that age reads a record the bucket expired as `gone` before the
+horizon, so the operator raises the bucket past the horizon. A listener whose bucket's age is at
+or below the gone horizon logs one warning at its start that names both values and
+`ENVOY_SESSION_MAX_AGE`. `/healthz` reports the age in use as `session_max_age` and the horizon as
+`session_gone_horizon`, each a Go duration string such as `"2h0m0s"`.
 
 ## Send and publish answers
 

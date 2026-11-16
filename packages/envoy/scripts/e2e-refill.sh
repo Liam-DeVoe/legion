@@ -156,8 +156,9 @@ readonly live_stop_seconds=4
 readonly live_pads=2
 readonly outage_count=300
 readonly outage_api_count=3
-# The listener's stale bound: 2 minutes, or half a bucket's MaxAge when that is shorter (the session
-# bucket's is 5 minutes). The listener has no setting for it.
+# The listener's stale bound: 2 minutes, or half a bucket's MaxAge when that is shorter (a session
+# bucket the listener creates keeps 2 hours, session.BucketMaxAge). The listener has no setting
+# for it.
 readonly stale_bound_seconds=120
 readonly refill_role="refill-rig"
 readonly refill_holder="ses_refill_api_0"
