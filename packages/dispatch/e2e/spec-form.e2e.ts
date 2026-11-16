@@ -197,17 +197,23 @@ test("the person's Approve on the header of a broken statement under the root sh
   await withHome(async (home) => {
     const tree = await seedTree(home);
     await page.goto(`/issues/${tree.header.key}`);
-    await page.getByRole("button", { exact: true, name: "Approve" }).click();
+    const approve = page.getByRole("button", { exact: true, name: "Approve" });
+    await approve.click();
     const refusal = page.getByRole("alert").filter({ hasText: "Dispatch refused this approval" });
     await expect(refusal).toContainText(findingLine);
     await expect(refusal).toContainText(
       "To send these findings to the author, choose Request changes."
     );
     await expect(page.getByRole("button", { name: /^Approved/ })).toHaveCount(0);
+    // The refusal is an answer, which the header shows: the press keeps the focus, and the
+    // shell's corner lists no Retry that Dispatch can only refuse again.
+    await expect(approve).toBeFocused();
+    await expect(page.getByTestId("pending-writes")).toHaveCount(0);
 
     await page.getByRole("button", { exact: true, name: "Request changes" }).click();
     const dialog = page.getByRole("dialog", { name: "Request changes" });
-    await expect(dialog.getByLabel("Reason")).toHaveValue(changesReason);
+    const reason = dialog.getByLabel("Reason");
+    await expect(reason).toHaveValue(changesReason);
     await expect(dialog.getByRole("alert")).toHaveCount(0);
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).click();
     await expect(page.getByRole("button", { name: "Changes requested" })).toBeVisible();
