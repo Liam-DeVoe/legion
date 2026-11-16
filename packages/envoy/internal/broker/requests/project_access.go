@@ -137,6 +137,13 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 		return projectFacts{}, nil
 	}
 	if m.Projects == nil {
+		// A broker with no project-access client loads no dispatch-project secret (the loader
+		// refuses one project-unchecked) and cannot know any project is private, so a
+		// project-channels name is unlimited here, as at the merge base (R9), whatever projects
+		// the credential names. A tagged name cannot reach this point, and fails closed if it does.
+		if len(tagged) == 0 {
+			return projectFacts{}, nil
+		}
 		return projectFacts{}, fmt.Errorf("%w: this broker holds no client of Dispatch's project access", ErrProjectAccessUnavailable)
 	}
 	asking := tagged

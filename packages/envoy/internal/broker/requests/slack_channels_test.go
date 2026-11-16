@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 )
 
@@ -121,4 +122,30 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 			t.Fatalf("a session naming no project made %d calls to Dispatch for %s; want none", calls, slackToken)
 		}
 	})
+}
+
+// TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore is R9 for the Slack limit,
+// the same class as the judge's (TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore):
+// a broker with no project-access client loads no dispatch-project secret and cannot know any
+// project is private, so a project-channels secret asked for by a pod whose exchange entry names a
+// project is granted and released exactly as the merge base released it: no refusal, no limit and
+// no ten-minute bound, though every pod's entry names a project.
+func TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore(t *testing.T) {
+	rules := airlock.Rules{Secrets: []airlock.SecretRule{rule(slackToken, "")}}
+	m, _, _, _ := newProjectFixture(t, rules, publicTeam)
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+	m.Projects = nil
+	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-team-"+t.Name())
+	_, grantID := grantOf(t, m, pod, podKey, "post the release notes", slackToken)
+	values, _, err := m.AirlockValues(t.Context(), grantID)
+	if err != nil {
+		t.Fatalf("AirlockValues(%s) for a pod mapped to TEAM on a broker with no project access = %v; want it released as before", slackToken, err)
+	}
+	if got := values[slackToken]; got.Limited || got.Channels != nil || !got.Expires.IsZero() {
+		t.Fatalf("%s for that pod = Limited %v Channels %#v Expires %v; want unlimited and unbounded, as before", slackToken, got.Limited, got.Channels, got.Expires)
+	}
 }
