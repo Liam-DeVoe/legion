@@ -140,7 +140,8 @@ function startServer(
   const out = openSync(start.log, "a");
   try {
     return Bun.spawn([...start.command], {
-      cwd: start.cwd,
+      // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.
+      ...(start.cwd === undefined ? {} : { cwd: start.cwd }),
       // stdio entry 3 is the server's descriptor 3.
       env: held === undefined ? { ...start.env } : { ...start.env, [held.fdEnv]: "3" },
       stdio: held === undefined ? ["ignore", out, out] : ["ignore", out, out, held.fd],
@@ -368,14 +369,16 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
 }
 
 /**
- * The client and monitoring addresses natsd reports in `log` once it has bound them, each as
- * `127.0.0.1:<port>`, or undefined while it has not reported both. It logs the ports it bound,
- * which are the kernel's choice: "Starting http monitor on 127.0.0.1:<port>" and "Listening for
- * client connections on 127.0.0.1:<port>".
+ * The client and monitoring addresses natsd reports in `log` once it has bound them and is ready,
+ * each as `127.0.0.1:<port>`, or undefined before then. It logs the ports it bound, which are the
+ * kernel's choice, "Starting http monitor on 127.0.0.1:<port>" and "Listening for client
+ * connections on 127.0.0.1:<port>", and then "Server is ready", so a log that holds that last line
+ * holds both addresses whole.
  */
 function natsdAddresses(log: string): { client: string; monitor: string } | undefined {
   // startServer creates the log before natsd starts, so it is there to read.
   const text = readFileSync(log, "utf8");
+  if (!text.includes("Server is ready")) return undefined;
   const client = /Listening for client connections on (\S+:\d+)/.exec(text)?.[1];
   const monitor = /Starting http monitor on (\S+:\d+)/.exec(text)?.[1];
   return client === undefined || monitor === undefined ? undefined : { client, monitor };

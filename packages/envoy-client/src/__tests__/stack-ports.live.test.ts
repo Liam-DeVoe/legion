@@ -126,6 +126,25 @@ function ownDescriptorsOf(inode: string): string[] {
   });
 }
 
+/** The pids of the processes that hold the socket with `inode`, from their /proc fd links. */
+function holdersOf(inode: string): number[] {
+  const holders: number[] = [];
+  for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
+    try {
+      if (
+        readdirSync(`/proc/${pid}/fd`).some(
+          (fd) => readlinkSync(`/proc/${pid}/fd/${fd}`) === `socket:[${inode}]`
+        )
+      ) {
+        holders.push(Number(pid));
+      }
+    } catch {
+      // Another user's process, or one that exited during the walk: not a holder of this test's.
+    }
+  }
+  return holders;
+}
+
 /** The server serves on `port`, and the stack, which is this process, keeps no copy of it. */
 function expectServedByTheServerAlone(port: number): void {
   const inode = listeningInode(port);
@@ -187,8 +206,15 @@ describe.skipIf(!envoyStackEnabled)("the Envoy stack's ports", () => {
     // The listener's port is the one port the stack chooses, and it holds it: natsd's two ports
     // are the kernel's choice, made as natsd binds them.
     expect(outcomes(rivals)).toEqual(["listener EADDRINUSE"]);
-    // natsd serves its client port and its monitoring port.
-    expect(stack.natsHostPort).toBe(new URL(stack.natsUrl).host);
+    // natsd chose its client port itself: the one process that holds the socket listening on it
+    // was started with -p -1 -m -1, nats-server's RANDOM_PORT, and with no port number of the
+    // stack's. A stack that chose a number and handed it over would fail here, rival or not.
+    const natsInode = listeningInode(portOf(stack.natsUrl.replace(/^nats:/, "http:")));
+    expect(natsInode).toBeDefined();
+    const natsHolders = holdersOf(natsInode ?? "");
+    expect(natsHolders).toHaveLength(1);
+    const natsArgv = readFileSync(`/proc/${natsHolders[0]}/cmdline`, "utf8").split("\0");
+    expect(natsArgv.slice(1, 5)).toEqual(["-p", "-1", "-m", "-1"]);
     const monitor = await fetch(`${stack.monitorUrl}/healthz`, {
       signal: AbortSignal.timeout(10_000),
     });
