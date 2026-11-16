@@ -645,6 +645,9 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
 		fmt.Fprintln(stdout, wakes)
 	}
+	for _, line := range repositoryLines(state) {
+		fmt.Fprintln(stdout, line)
+	}
 	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
 		fmt.Fprintln(stdout, line)
 	}
@@ -1424,6 +1427,41 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 		return nil
 	}
 	return api.SuspendersOfOperatorClaims(list.Claims)
+}
+
+// repositoryLines are the lines an operator reads for the project's repository mapping as the
+// daemon serves it (api.RepositoriesView): one line naming each served repository, the default
+// marked, and how many mapped ones it leaves out, then one line per left-out repository with why,
+// in the state's order. A mapping that names no repository at all is one line saying so and where
+// in Dispatch a repository is mapped (api.NoRepositoryMapped), since the daemon then serves none
+// and admits nothing. A daemon with no workflow (no dispatch_url) reads no mapping and gets none.
+func repositoryLines(state api.State) []string {
+	if state.Settings.DispatchURL == "" {
+		return nil
+	}
+	view := state.Repositories
+	if len(view.Mapped) == 0 && len(view.Refused) == 0 {
+		return []string{"repositories: " + api.NoRepositoryMapped(state.Daemon.Project) + ", so the daemon serves none and admits nothing"}
+	}
+	served := make([]string, len(view.Mapped))
+	for i, mapped := range view.Mapped {
+		served[i] = mapped.Repo
+		if mapped.Default {
+			served[i] += " (default)"
+		}
+	}
+	line := "repositories: serving none"
+	if len(served) > 0 {
+		line = "repositories: serving " + strings.Join(served, ", ")
+	}
+	if len(view.Refused) > 0 {
+		line += fmt.Sprintf("; %d left out", len(view.Refused))
+	}
+	lines := []string{line}
+	for _, refused := range view.Refused {
+		lines = append(lines, "repository left out: "+refused.Repo+": "+refused.Reason)
+	}
+	return lines
 }
 
 // webhookAppLines are the lines an operator reads for the served repositories Dispatch's GitHub App

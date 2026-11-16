@@ -2522,6 +2522,63 @@ func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	}
 }
 
+// An operator reading plain `legion state` is told which repositories the daemon serves, its
+// default marked, and each mapped one it leaves out with why, one line each; and, when the project
+// maps no repository at all, that it has none and where in Dispatch one is mapped. A daemon with
+// no workflow (no dispatch_url) reads no mapping, and the lines are not printed.
+func TestPlainStateNamesTheRepositoriesTheDaemonServes(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	workflow := `,"settings":{"dispatch_url":"http://dispatch.internal.example"}`
+	leftOut := `[{"repo":"acme/gadgets","reason":"the review App is not installed on acme/gadgets"}]`
+	for _, tc := range []struct {
+		name, settings, mapped, refused, want string
+	}{
+		{
+			name: "no repository mapped", settings: workflow, mapped: `[]`, refused: `[]`,
+			want: "repositories: project LEGION has no repository mapped in Dispatch (Settings → Repositories → Projects), so the daemon serves none and admits nothing\n",
+		},
+		{
+			name: "served and left out", settings: workflow, mapped: `[{"repo":"acme/widgets","default":true},{"repo":"zeta/tools","default":false}]`, refused: leftOut,
+			want: "repositories: serving acme/widgets (default), zeta/tools; 1 left out\n" +
+				"repository left out: acme/gadgets: the review App is not installed on acme/gadgets\n",
+		},
+		{
+			name: "every repository left out", settings: workflow, mapped: `[]`, refused: leftOut,
+			want: "repositories: serving none; 1 left out\n" +
+				"repository left out: acme/gadgets: the review App is not installed on acme/gadgets\n",
+		},
+		{name: "every repository served", settings: workflow, mapped: `[{"repo":"acme/widgets","default":true}]`, refused: `[]`, want: "repositories: serving acme/widgets (default)\n"},
+		{name: "no workflow", mapped: `[]`, refused: `[]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + tc.settings + `,"repositories":{"owners":[],"mapped":` + tc.mapped + `,"refused":` + tc.refused + `,"withoutWebhookApp":[],"caches":[]}}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if tc.want == "" {
+				if strings.Contains(out.String(), "repositories:") || strings.Contains(out.String(), "repository left out") {
+					t.Fatalf("legion state printed %q, want no repository lines from a daemon with no workflow", out.String())
+				}
+				return
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the lines %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // An operator reading plain `legion state` is told, one line per durable consumer, how many
 // messages wait for it and how old the oldest is; when it is stalled, how long it has handled none
 // and since when — its last handled message, or the daemon's start before the first; and what NATS

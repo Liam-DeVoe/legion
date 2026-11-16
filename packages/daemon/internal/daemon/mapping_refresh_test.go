@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -828,13 +829,13 @@ func (g *failingGitHub) start(t *testing.T) string {
 	}})
 }
 
-// quickInstallReads shortens installReadRetry for a test, restoring it once the rig the test
+// quickMappingRechecks shortens mappingRecheckRetry for a test, restoring it once the rig the test
 // opens after it has stopped reading it.
-func quickInstallReads(t *testing.T) {
+func quickMappingRechecks(t *testing.T) {
 	t.Helper()
-	retry := installReadRetry
-	installReadRetry.Initial, installReadRetry.Max = 20*time.Millisecond, 40*time.Millisecond
-	t.Cleanup(func() { installReadRetry = retry })
+	retry := mappingRecheckRetry
+	mappingRecheckRetry.Initial, mappingRecheckRetry.Max = 20*time.Millisecond, 40*time.Millisecond
+	t.Cleanup(func() { mappingRecheckRetry = retry })
 }
 
 // served is whether w serves repo now.
@@ -871,7 +872,7 @@ func repositoryNotes(t *testing.T, w *workflowRuntime, key string) []string {
 // reading again.
 func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *testing.T) {
 	ctx := context.Background()
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("read whether the implement App is installed on zeta/tools failed (403)"), "implement zeta/tools")
 	w, client, installs, stream := mappingRigWith(t, installs)
@@ -929,7 +930,7 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	installs.setFailing(nil, "review acme/widgets")
 	testwait.Eventually(t, "acme/widgets read again", func() bool { return len(w.repositories.awaitingRead()) == 0 })
 	reads := installs.reads("review acme/widgets")
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * mappingRecheckRetry.Max)
 	if got := installs.reads("review acme/widgets"); got != reads {
 		t.Fatalf("acme/widgets read %d times more once GitHub answered, want the reads again to stop", got-reads)
 	}
@@ -939,7 +940,7 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 // while another repository's failed read is: once that one is served, nothing is read again until
 // a mapping change or an issue held for one asks.
 func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{missing: map[string]bool{"review acme/widgets": true}}
 	installs.setFailing(&appauth.TransientError{Err: errors.New("GitHub answered 502")}, "review zeta/tools")
 	w, _, installs, _ := mappingRigWith(t, installs)
@@ -952,7 +953,7 @@ func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
 		t.Fatalf("acme/widgets refusal = %q (left out %v), want the App it lacks", refusal, leftOut)
 	}
 	reads := installs.reads("review acme/widgets")
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * mappingRecheckRetry.Max)
 	if got := installs.reads("review acme/widgets"); got != reads {
 		t.Fatalf("acme/widgets read %d times more with only its 404 left, want no read again", got-reads)
 	}
@@ -964,7 +965,7 @@ func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
 // repository GitHub says lacks an App is refused at boot with its note, as before.
 func TestABootListingsRootOnARepositoryWhoseReadFailedIsAdmittedOnceItIsServed(t *testing.T) {
 	ctx := context.Background()
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{missing: map[string]bool{"review acme/widgets": true}}
 	installs.setFailing(errors.New("read whether the implement App is installed on zeta/tools failed (403)"), "implement zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
@@ -1021,7 +1022,7 @@ func within(bound time.Duration, condition func() bool) bool {
 // admitted on any repository until the failing one healed.
 func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *testing.T) {
 	ctx := context.Background()
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("read whether the implement App is installed on zeta/tools failed (403)"), "implement zeta/tools")
 	w, client, installs, _, js := mappingRigJS(t, installs)
@@ -1077,7 +1078,7 @@ func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *
 // it holds is old, fails no read of the mapping, so another repository whose installation read
 // fails at boot is still served once GitHub answers for it.
 func TestAServedRepositoryKeptOnItsLastAnswerHoldsNoOtherRepositoryBack(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	github := &failingGitHub{named: map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"}, only: "/acme/widgets"}
@@ -1114,7 +1115,7 @@ func TestAServedRepositoryKeptOnItsLastAnswerHoldsNoOtherRepositoryBack(t *testi
 // the listing's: the workflow records a child only under a recorded parent.
 func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 	ctx := context.Background()
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
@@ -1168,7 +1169,7 @@ func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 // installReadAttempt is a failed read. A refresh bounded as a whole by appMintAttempt cut such a
 // check off, so a repository whose read failed once was never served.
 func TestASlowButAnsweringGitHubIsServedOnARefresh(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	attempt, read := appMintAttempt, installReadAttempt
 	appMintAttempt, installReadAttempt = 500*time.Millisecond, 2*time.Second
 	t.Cleanup(func() { appMintAttempt, installReadAttempt = attempt, read })
@@ -1280,7 +1281,7 @@ func serveAndRecover(t *testing.T, w *workflowRuntime, installs *installations) 
 // read of the mapping.
 func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 	ctx := context.Background()
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
@@ -1324,7 +1325,7 @@ func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 	}
 	listings, reads := client.listingCount(), installs.reads("implement zeta/tools")
 	facts := rowCount(t, w, "select count(*) from processed_events")
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * mappingRecheckRetry.Max)
 	if got := client.listingCount(); got != listings {
 		t.Fatalf("Dispatch listed %d times more once recovered, want none", got-listings)
 	}
@@ -1345,7 +1346,7 @@ func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 // move to todo admits it once; one whose event was prepared while GitHub said an App was missing
 // and applied after the read failed is admitted too.
 func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{missing: map[string]bool{"review zeta/tools": true}}
 	w, client, installs, _ := mappingRigWith(t, installs)
 	rigHandlers(w)
@@ -1402,7 +1403,7 @@ func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 // parent then unrecorded, and the recovery records both, parent first. The per-issue hold held
 // only the parent, and the child, already todo in Dispatch, was never recorded.
 func TestAChildOnAServedRepositoryUnderAnUnreadParentIsRecovered(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
@@ -1427,7 +1428,7 @@ func TestAChildOnAServedRepositoryUnderAnUnreadParentIsRecovered(t *testing.T) {
 // A recovery whose read of Dispatch's listing fails stays to recover, and is tried again on the
 // refresher's backoff: the next listing records the issue, and none is read after it.
 func TestARecoveryWhoseListingFailsIsTriedAgain(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
@@ -1441,7 +1442,7 @@ func TestARecoveryWhoseListingFailsIsTriedAgain(t *testing.T) {
 	if recordedIssue(t, w, key) == nil {
 		t.Fatalf("%s not admitted by the recovery's second listing", key)
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * mappingRecheckRetry.Max)
 	if got := client.listingCount(); got != 2 {
 		t.Fatalf("Dispatch listed %d times, want two: the failed listing and the one that recovered", got)
 	}
@@ -1452,7 +1453,7 @@ func TestARecoveryWhoseListingFailsIsTriedAgain(t *testing.T) {
 // stream the consumer has caught up with, admits at once.
 func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 	ctx := context.Background()
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _, js := mappingRigJS(t, installs)
@@ -1549,6 +1550,199 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 	}
 }
 
+// withNoRepositoryMapped is a mapping rig option: Dispatch maps no repository to the project when
+// the rig's boot reads the mapping, nor to any other.
+func withNoRepositoryMapped(w *workflowRuntime) {
+	w.dispatch.(*mappingDispatch).set()
+}
+
+// recheckWaits is a refresher's wait before each read of its own (workflowRuntime.recheckAfter),
+// recorded: the wait asked for, in order. While spin is set each wait passes at once; after it,
+// each wait is tick, which the test sends on, and ticking counts the waits handed it.
+type recheckWaits struct {
+	mu      sync.Mutex
+	waits   []time.Duration
+	spin    atomic.Bool
+	tick    chan time.Time
+	ticking atomic.Int64
+}
+
+func newRecheckWaits() *recheckWaits {
+	r := &recheckWaits{tick: make(chan time.Time)}
+	r.spin.Store(true)
+	return r
+}
+
+func (r *recheckWaits) after(d time.Duration) <-chan time.Time {
+	r.mu.Lock()
+	r.waits = append(r.waits, d)
+	r.mu.Unlock()
+	if r.spin.Load() {
+		passed := make(chan time.Time, 1)
+		passed <- time.Now()
+		return passed
+	}
+	r.ticking.Add(1)
+	return r.tick
+}
+
+func (r *recheckWaits) recorded() []time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.waits)
+}
+
+// A project that maps no repository at boot serves one as soon as Dispatch maps it: Dispatch's
+// settings.repo_project.updated, through the daemon's own Dispatch consumer, has the mapping read
+// again, and the repository is served, GitHub intake hearing it, with no restart. Before that, an
+// issue handed to Legion is not admitted, and the daemon says why on it. The refresher's reads of
+// its own are held here, so the event alone is what serves the repository.
+func TestARepositoryMappedAfterAnEmptyBootIsServedOnItsMappingChange(t *testing.T) {
+	ctx := context.Background()
+	w, client, _, stream, js := mappingRigJS(t, &installations{}, withNoRepositoryMapped, func(w *workflowRuntime) {
+		w.recheckAfter = func(time.Duration) <-chan time.Time { return nil }
+	})
+	if accepted, refused := w.repositories.Accepted(), w.repositories.Refused(); len(accepted) != 0 || len(refused) != 0 {
+		t.Fatalf("the boot serves %v and leaves out %#v, want neither: the project maps no repository", accepted, refused)
+	}
+	engine, admission := rigHandlers(w)
+	// apply delivers issue's todo event as the Dispatch consumer does, Dispatch showing the issue
+	// as the event does, since an admission event is prepared from Dispatch's own view of it.
+	apply := func(issue dispatch.Issue) {
+		t.Helper()
+		client.mu.Lock()
+		if client.issues == nil {
+			client.issues = map[string]dispatch.Issue{}
+		}
+		client.issues[issue.Key] = issue
+		client.mu.Unlock()
+		fact := intake.DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo}
+		prepared, err := prepareAsDelivered(t, w, fact)
+		if err != nil {
+			t.Fatalf("prepare %s = %v", fact.Key, err)
+		}
+		if _, err := intake.ApplyFact(ctx, w.pool, "test", fmt.Sprintf("%s-%d", fact.Key, fact.Seq), prepared, engine, admission); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply(dispatch.Issue{Key: "LEGION-301", Status: "todo", Title: "before", Rank: "A", HandedOver: true, LastSeq: 1})
+	if got := recordedIssue(t, w, "LEGION-301"); got != nil {
+		t.Fatalf("LEGION-301 recorded as %+v while the project maps no repository", got)
+	}
+	if notes := repositoryNotes(t, w, "LEGION-301"); len(notes) != 1 || !strings.Contains(notes[0], "its repository resolves to none") {
+		t.Fatalf("notes on LEGION-301 = %q, want the one saying its repository resolves to none", notes)
+	}
+
+	running, stop := context.WithCancel(ctx)
+	consumed := make(chan error, 1)
+	go func() { consumed <- w.consumers.Run(running) }()
+	t.Cleanup(func() { stop(); <-consumed })
+	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+	publishMappingChange(t, js, 71, "LEGION", "acme/widgets")
+	testwait.Eventually(t, "acme/widgets served and heard on its mapping change", func() bool {
+		return served(w, "acme/widgets") && slices.Contains(githubFilterSubjects(t, stream), "notifications.github.acme.widgets.>")
+	})
+	apply(dispatch.Issue{Key: "LEGION-302", Status: "todo", Title: "after", Rank: "A", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 1})
+	if got := recordedIssue(t, w, "LEGION-302"); got == nil || got.Repo != "acme/widgets" {
+		t.Fatalf("LEGION-302 = %+v, want it admitted on acme/widgets once the mapping serves it", got)
+	}
+}
+
+// While the project maps no repository, the refresher reads the mapping again of its own, 30 s
+// doubling to 10 min, with no mapping change asking: a repository Dispatch maps with no event the
+// daemon hears (a transient empty answer at boot, an event that never arrived) is served at its
+// next read, with no restart. Its reads of its own stop once a repository is served.
+func TestARepositoryMappedWithNoEventIsServedByTheReadAgainWhileNoneIsMapped(t *testing.T) {
+	clock := newRecheckWaits()
+	w, client, _, _ := mappingRigWith(t, &installations{}, withNoRepositoryMapped, func(w *workflowRuntime) { w.recheckAfter = clock.after })
+	testwait.Eventually(t, "eight waits", func() bool { return len(clock.recorded()) >= 8 })
+	want := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute}
+	if got := clock.recorded()[:8]; !slices.Equal(got, want) {
+		t.Fatalf("waits = %v, want %v", got, want)
+	}
+	clock.spin.Store(false)
+	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
+	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+	if served(w, "acme/widgets") {
+		t.Fatal("acme/widgets served before any read of the mapping found it")
+	}
+	clock.tick <- time.Now()
+	testwait.Eventually(t, "acme/widgets served by the read again", func() bool { return served(w, "acme/widgets") })
+	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
+		t.Fatalf("awaiting a read = %q once acme/widgets is served, want none", waiting)
+	}
+	waits := len(clock.recorded())
+	time.Sleep(100 * time.Millisecond)
+	if got := len(clock.recorded()); got != waits {
+		t.Fatalf("the refresher waited %d more times once acme/widgets was served, want its reads of its own to stop", got-waits)
+	}
+}
+
+// A project whose every mapped repository lacks an App serves none, and the refresher reads the
+// mapping again of its own, 30 s doubling to 10 min, with no mapping change asking: an
+// organization maps its repository first and installs the App after, and no event of Dispatch's
+// tells the daemon of the installation, so the read again is what finds it and serves the
+// repository, with no restart. Its reads of its own stop once the repository is served.
+func TestARepositoryWhoseAppIsInstalledAfterItIsMappedIsServedByTheReadAgain(t *testing.T) {
+	clock := newRecheckWaits()
+	installs := &installations{missing: map[string]bool{"review acme/widgets": true}}
+	w, _, installs, _ := mappingRigWith(t, installs, func(w *workflowRuntime) {
+		w.dispatch.(*mappingDispatch).set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+		w.recheckAfter = clock.after
+	})
+	if _, refusal, leftOut, unread := w.repositories.lookup("acme/widgets"); !leftOut || unread || refusal != "the review App is not installed on acme/widgets" {
+		t.Fatalf("acme/widgets refusal = %q (left out %t, unread %t), want it left out for the App it lacks", refusal, leftOut, unread)
+	}
+	testwait.Eventually(t, "eight waits", func() bool { return len(clock.recorded()) >= 8 })
+	want := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute}
+	if got := clock.recorded()[:8]; !slices.Equal(got, want) {
+		t.Fatalf("waits = %v, want %v", got, want)
+	}
+	clock.spin.Store(false)
+	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
+	installs.setMissing(false, "review acme/widgets")
+	if served(w, "acme/widgets") {
+		t.Fatal("acme/widgets served before any read of the mapping found its App")
+	}
+	clock.tick <- time.Now()
+	testwait.Eventually(t, "acme/widgets served by the read again", func() bool { return served(w, "acme/widgets") })
+	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
+		t.Fatalf("awaiting a read = %q once acme/widgets is served, want none", waiting)
+	}
+	waits := len(clock.recorded())
+	time.Sleep(100 * time.Millisecond)
+	if got := len(clock.recorded()); got != waits {
+		t.Fatalf("the refresher waited %d more times once acme/widgets was served, want its reads of its own to stop", got-waits)
+	}
+}
+
+// A project that maps a repository boots as it always did: it serves the mapping, logs no ERROR,
+// and waits for no read of its own, so the read again while none is mapped never runs for it. A
+// mapping change still reads the mapping.
+func TestAMappedProjectBootsAsBeforeAndReadsNothingOfItsOwn(t *testing.T) {
+	var logged syncBuffer
+	clock := newRecheckWaits()
+	w, client, _, _ := mappingRigWith(t, &installations{}, func(w *workflowRuntime) {
+		w.log, w.recheckAfter = slog.New(slog.NewTextHandler(&logged, nil)), clock.after
+	})
+	if got := repositoryNames(w.repositories.Accepted()); !slices.Equal(got, []string{"acme/widgets", "zeta/tools"}) {
+		t.Fatalf("the boot serves %v, want acme/widgets and zeta/tools", got)
+	}
+	if strings.Contains(logged.String(), "level=ERROR") {
+		t.Fatalf("the boot logged an ERROR for a mapped project:\n%s", logged.String())
+	}
+	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
+		t.Fatalf("awaiting a read = %q, want none for a mapped project", waiting)
+	}
+	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+	w.requestMappingRead()
+	testwait.Eventually(t, "zeta/tools unmapped by the mapping change", func() bool { return !served(w, "zeta/tools") })
+	time.Sleep(100 * time.Millisecond)
+	if got := clock.recorded(); len(got) != 0 {
+		t.Fatalf("the refresher waited %v for reads of its own, want none while the project maps a repository", got)
+	}
+}
+
 // treeNotices is the reason of every notice queued on tree, in queue order.
 func treeNotices(t *testing.T, w *workflowRuntime, tree string) []string {
 	t.Helper()
@@ -1575,7 +1769,7 @@ func treeNotices(t *testing.T, w *workflowRuntime, tree string) []string {
 // repository's recovery takes the issue in whatever it resolves to. Scoped by its resolution at
 // the recovery alone, it waited for the next boot.
 func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
@@ -1599,7 +1793,7 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 // under a backlog parent P, which the recovery records no child under. A child the recovery
 // recorded, E, is not named. Before, such a child stranded silently.
 func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
@@ -1621,7 +1815,7 @@ func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 		!strings.Contains(notices[0], c+" (its parent "+p+" is not recorded: release "+p+" first, then "+c+")") || strings.Contains(notices[0], e) {
 		t.Fatalf("notices to %s's architect after the recovery = %q, want one naming %s and %s, not %s", tree, notices, c, p, e)
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * mappingRecheckRetry.Max)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
 		t.Fatalf("notices after the recovery = %d, want the one only", len(got))
 	}
@@ -1632,7 +1826,7 @@ func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 // own event records the parent, the recovery records the child, and the architect is told
 // nothing, since nothing is left unrecorded.
 func TestARecoveryTellsNothingOnceAChildUnderALaggingTodoParentIsRecorded(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
@@ -1648,7 +1842,7 @@ func TestARecoveryTellsNothingOnceAChildUnderALaggingTodoParentIsRecorded(t *tes
 			t.Fatalf("%s = %+v once zeta/tools is recovered, want it recorded in %s's tree", key, got, tree)
 		}
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * mappingRecheckRetry.Max)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 0 {
 		t.Fatalf("notices after the recovery = %q, want none: nothing is left unrecorded", got)
 	}
@@ -1740,13 +1934,13 @@ func (s noticeFailingStore) Enqueue(ctx context.Context, tx pgx.Tx, row record.O
 
 const heldTree, heldParent, heldChild = "LEGION-1900", "LEGION-1901", "LEGION-1902"
 
-// newHeldRecovery opens the rig with installReadRetry at backoff (initial and cap) and
+// newHeldRecovery opens the rig with mappingRecheckRetry at backoff (initial and cap) and
 // recoveryHoldBound at bound, the consumer paused. The hold poller reads the consumer's position,
 // or reader's when one is given.
 func newHeldRecovery(t *testing.T, backoff, bound time.Duration, reader ...positionReader) *heldRecovery {
 	t.Helper()
-	quickInstallReads(t)
-	installReadRetry.Initial, installReadRetry.Max = backoff, backoff
+	quickMappingRechecks(t)
+	mappingRecheckRetry.Initial, mappingRecheckRetry.Max = backoff, backoff
 	was := recoveryHoldBound
 	recoveryHoldBound = bound
 	t.Cleanup(func() { recoveryHoldBound = was })

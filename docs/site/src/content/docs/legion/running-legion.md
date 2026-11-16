@@ -73,11 +73,19 @@ meanwhile: a hold that lasts or keeps coming back (an event that fails at every 
 the notice then, once, and the recovery still runs in full when the hold releases. If that read
 fails, the daemon tries again on its usual backoff.
 A served repository whose read fails stays served on its last answer and is read again the same
-way. A project with no repository mapped does not boot; one whose every repository lacks an App
-boots serving none and admits nothing until an App is installed, and one whose every repository's
-installation read fails boots serving none, logs one ERROR line with the first failure, and heals
-once GitHub answers. The boot's own reads of the Apps (their logins and tokens) still refuse the
-boot when they fail. A
+way. A project with no repository mapped boots serving none and admits nothing, saying why on each
+issue handed to it. It logs one ERROR line naming the project, plain `legion state` prints a
+`repositories:` line saying the project has no repository mapped in Dispatch (Settings →
+Repositories → Projects), and `legion state --json` maps and refuses no repository. It reads the
+mapping again on each mapping change and, until one is mapped, of its own, 30 s doubling to 10 min,
+so a repository mapped later is served with no restart even when the daemon heard no event of it.
+One whose every repository lacks an App boots serving none and admits nothing until an App is
+installed. While it serves none it reads the mapping again of its own on the same backoff, so an
+App installed after its repository was mapped, which changes nothing in Dispatch, is found and the
+repository served with no restart; the reads stop once any repository is served. One whose every
+repository's installation read fails boots serving none, logs one ERROR line with the first
+failure, and heals once GitHub answers. The boot's own reads of the Apps (their logins and tokens)
+still refuse the boot when they fail. A
 Dispatch that does not answer the boot's read of the mapping delays the boot rather than ending it:
 the daemon reads it again, one second doubling to one minute between reads, for as long as Dispatch
 stays unreachable, logs each wait, and serves nothing until the read passes.

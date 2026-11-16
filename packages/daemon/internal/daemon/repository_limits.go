@@ -186,7 +186,7 @@ func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbr
 // does on the first read (answeredRefusal). One it does not answer — the limit again, a 5xx, a
 // failed mint of the token, a transport failure, or no answer within appMintAttempt — is left out
 // for now (unread), as a repository whose installation read failed is, and read again on
-// installReadRetry until GitHub answers, so the limit costs that repository and not the project's
+// mappingRecheckRetry until GitHub answers, so the limit costs that repository and not the project's
 // boot. The waits overlap, each for its own limit, so the boot waits as long as the longest of them
 // asks, and the reads after them run mappingReads at a time, as the first reads did.
 func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRead) (named []mappedRepository, unread []refusedRepository, _ error) {
@@ -238,7 +238,7 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 			continue
 		}
 		w.log.Warn("workflow: GitHub did not answer the read of a repository's default branch after its rate limit, so the daemon boots leaving it out and reads it again",
-			"repo", read.mapped.Repo.String(), "retryIn", installReadRetry.Initial.String(), "error", failed[index])
+			"repo", read.mapped.Repo.String(), "retryIn", mappingRecheckRetry.Initial.String(), "error", failed[index])
 		unread = append(unread, unreadDefaultBranch(read.mapped, failed[index]))
 	}
 	return named, unread, nil
@@ -246,7 +246,7 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 
 // unreadDefaultBranch is mapped left out for now because GitHub did not answer the read of its
 // default branch with err: a refusal carrying err as its readErr, which is what the refresher reads
-// the mapping again for (awaitingRead, installReadRetry), and admission reads as a repository
+// the mapping again for (awaitingRead, mappingRecheckRetry), and admission reads as a repository
 // GitHub is being read again for (lookup's unread).
 func unreadDefaultBranch(mapped mappedRepository, err error) refusedRepository {
 	return refusedRepository{Repo: mapped.Repo.String(), Reason: fmt.Sprintf("GitHub did not answer the read of its default branch: %v; Legion reads it again", err),

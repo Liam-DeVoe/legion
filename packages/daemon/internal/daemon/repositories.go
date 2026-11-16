@@ -314,18 +314,38 @@ func (r *repositories) WithoutWebhookApp() []webhookAppGap {
 	return slices.Clone(r.withoutWebhookApp)
 }
 
-// awaitingRead is every repository a read GitHub did not answer left as it stands, by reason: each
-// left out for its failed installation read or its default-branch read past GitHub's rate limit,
-// and each served one kept on its last answer. While any is, the
-// mapping is read again of the daemon's own (refreshOnMappingChange).
+// awaitingRead is every reason the mapping as last read gives for a read of it again of the
+// daemon's own (refreshOnMappingChange): the project serving no repository, whether it maps none
+// (api.NoRepositoryMapped) or every one it maps is left out (noRepositoryServed), since a Dispatch
+// that answered an empty mapping for a moment, a mapping change whose event never arrived, or an
+// App installed on a repository after it was mapped, which no event of Dispatch's tells the
+// daemon, would otherwise leave the daemon serving none until the next change; and each repository
+// a read GitHub did not answer left as it stands, by reason: each left out for its failed
+// installation read or its default-branch read past GitHub's rate limit, and each served one kept
+// on its last answer. A mapping that serves a repository gives no reason for the ones it leaves
+// out for good (an App they lack, a name that is no repository): those wait for the next mapping
+// change or an issue held for one (requestMappingRead).
 func (r *repositories) awaitingRead() []string {
 	waiting := refusalReasons(readFailures(r.Refused()))
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	switch {
+	case len(r.accepted) == 0 && len(r.refused) == 0:
+		waiting = append(waiting, api.NoRepositoryMapped(r.project))
+	case len(r.accepted) == 0 && len(waiting) == 0:
+		waiting = append(waiting, noRepositoryServed(r.project))
+	}
 	for _, name := range r.unverified {
 		waiting = append(waiting, name+": served on its last answer, its installation read having failed")
 	}
 	return waiting
+}
+
+// noRepositoryServed is the reason the refresher reads the mapping again, as it logs it, while
+// project maps a repository and leaves out every one it maps, none for a read GitHub did not
+// answer (an App it lacks, a name that is no repository): legion state names each and why.
+func noRepositoryServed(project string) string {
+	return "project " + project + " serves no repository: every repository it maps is left out (legion state names why)"
 }
 
 // view is the mapping as the daemon's state shows it, with caches, the Kubernetes runtime's
@@ -419,7 +439,7 @@ func listMapping(ctx context.Context, client dispatch.Client) ([]dispatch.RepoPr
 // A repository neither name answers for is refused, naming each App that is not installed on each
 // name read and each read that failed, under Dispatch's own spelling of the mapped name, which is
 // what a refusal is keyed on. The refusal is for now, read again by refreshOnMappingChange on
-// installReadRetry (refusedRepository.readErr), whenever any read of either name failed to answer
+// mappingRecheckRetry (refusedRepository.readErr), whenever any read of either name failed to answer
 // (any failure, a read longer than installReadAttempt among them), and for good only when every
 // read of both names answered and at least one said not installed. The older rule, where an App
 // answering not installed made the refusal permanent whatever else failed, cannot survive a
@@ -523,7 +543,7 @@ func checkMapping(ctx context.Context, client dispatch.Client, mappings []dispat
 		// operator never mapped on the strength of a missing installation, and switch a project
 		// onto the repository a pair names before any transfer has happened; that entry is left
 		// out naming the App that is missing. A read that failed is no answer at all — that
-		// entry is read again instead (installReadRetry) — so an entry one of whose reads failed
+		// entry is read again instead (mappingRecheckRetry) — so an entry one of whose reads failed
 		// asks for no partner either, and neither does one every App is installed on.
 		noAppInstalled := true
 		for index := range appauth.Roles {
@@ -604,7 +624,7 @@ func checkMapping(ctx context.Context, client dispatch.Client, mappings []dispat
 			continue
 		}
 		// readErr is set exactly when a read of either name failed to answer, and keeping it is
-		// the refusal's kind: Legion reads this entry again (installReadRetry) until GitHub has
+		// the refusal's kind: Legion reads this entry again (mappingRecheckRetry) until GitHub has
 		// answered every read of both names, and leaves it out for good only once it has and an
 		// App is not installed. Clearing it on a "not installed" answer, as the check did while
 		// it read one name, would make a transient failure on the pair's other name permanent —
@@ -677,11 +697,13 @@ func (r *repositories) servedGaps(gaps []webhookAppGap, refused []refusedReposit
 	return served
 }
 
-// installReadRetry is how long refreshOnMappingChange waits before it reads the mapping again of
-// its own while a read GitHub did not answer, an installation read or a default-branch read past
-// GitHub's rate limit, leaves a repository as it stands (awaitingRead): 30 s doubling to 10 min,
-// without limit (Attempts is unused), back to 30 s once none is left.
-var installReadRetry = bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time.Minute}
+// mappingRecheckRetry paces the reads of the mapping refreshOnMappingChange makes of its own, with
+// no mapping change asking, while the mapping as last read gives a reason to (awaitingRead): the
+// project serves no repository, mapping none or leaving out every one it maps, or a read GitHub did
+// not answer, an installation read or a default-branch read past GitHub's rate limit, leaves a
+// repository as it stands. 30 s doubling to 10 min, without limit (Attempts is unused), back to
+// 30 s once no reason is left.
+var mappingRecheckRetry = bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time.Minute}
 
 // recoveryHoldBound is how long a recovery's release waits stay untold while its listing is held
 // for the Dispatch consumer (recoverRepositories): the hold watchdog's warning interval
@@ -759,17 +781,23 @@ func nameAccepted(ctx context.Context, accepted []mappedRepository, named *defau
 // straight back into the same refusal, and the API does not listen until the read passes, so the
 // daemon serves nothing meanwhile; any other failure of it refuses the boot. The installation
 // check (checkMapping) never refuses the boot: a repository whose read fails is left out for now
-// and read again by refreshOnMappingChange, on installReadRetry, until GitHub answers, and served
+// and read again by refreshOnMappingChange, on mappingRecheckRetry, until GitHub answers, and served
 // then with no restart. A boot whose every repository's read fails comes up serving none and logs
 // so at ERROR with the first failure, since a daemon that exits instead restarts straight into
 // GitHub's same refusal with its API and its recovery down, while one that runs heals once GitHub
-// answers. A project with no repository mapped refuses the boot. One whose every mapped
-// repository lacks an App boots serving none, each left out and reported: it admits nothing,
-// saying why on each issue, until an App is installed and a read of the mapping finds it, one the
-// next mapping change or an issue held for it asks for (requestMappingRead). It gives the check
-// the deployment's configured renames, so a mapped repository GitHub holds under the other name
-// of its pair is served under that name from this load onward, and nameMapping's read of GitHub
-// is made for an owner whose App installations exist. The webhook App check
+// answers. A project with no repository mapped boots serving none as well, and logs so at ERROR
+// naming the project: it admits nothing, saying why on each issue, and the mapping is read again
+// on the next mapping change and, until one is mapped, of the daemon's own on mappingRecheckRetry
+// (awaitingRead), so a repository mapped later, or a Dispatch that answered empty for a moment, is
+// served with no restart, where a refused boot restarted straight into the same refusal. One whose
+// every mapped repository lacks an App boots serving none, each left out and reported: it admits
+// nothing, saying why on each issue, until an App is installed and a read of the mapping finds it,
+// one the next mapping change or an issue held for it asks for (requestMappingRead), or, while it
+// serves none, the daemon's own on mappingRecheckRetry (awaitingRead), since an App installed after
+// its repository was mapped changes nothing in Dispatch that the daemon hears. It gives the
+// check the deployment's configured renames, so a mapped repository GitHub holds under the other
+// name of its pair is served under that name from this load onward, and nameMapping's read of
+// GitHub is made for an owner whose App installations exist. The webhook App check
 // neither refuses the boot nor is read again of its own: each served repository it finds Dispatch's
 // App not known to be on is kept for legion state (setWithoutWebhookApp), and every later read of
 // the mapping checks it again. nameMapping, once the Apps' tokens are minted, reads GitHub's
@@ -788,17 +816,17 @@ func (w *workflowRuntime) loadMapping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(accepted) == 0 && len(refused) == 0 {
-		return fmt.Errorf("project %s has no repository mapped in Dispatch (Settings → Repositories → Projects)", w.dispatchProject)
-	}
 	switch failed := readFailures(refused); {
+	case len(accepted) == 0 && len(refused) == 0:
+		w.log.Error("workflow: the project has no repository mapped in Dispatch (Settings → Repositories → Projects), so the daemon boots serving none, admits nothing, and reads the mapping again",
+			"project", w.dispatchProject, "retryIn", mappingRecheckRetry.Initial.String())
 	case len(failed) == 0:
 	case len(accepted) == 0 && len(failed) == len(refused):
 		w.log.Error("workflow: every mapped repository's GitHub App installation read failed, so the daemon boots serving none and reads them again",
-			"repositories", len(failed), "retryIn", installReadRetry.Initial.String(), "error", failed[0].readErr)
+			"repositories", len(failed), "retryIn", mappingRecheckRetry.Initial.String(), "error", failed[0].readErr)
 	default:
 		w.log.Warn("workflow: a mapped repository's GitHub App installation read failed, so the daemon boots leaving it out and reads it again",
-			"refused", refusalReasons(failed), "retryIn", installReadRetry.Initial.String())
+			"refused", refusalReasons(failed), "retryIn", mappingRecheckRetry.Initial.String())
 	}
 	w.repositories.set(accepted, refused)
 	w.repositories.setWithoutWebhookApp(w.repositories.servedGaps(gaps, refused))
@@ -880,13 +908,14 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 }
 
 // refreshMapping reads the repository mapping again: refreshOnMappingChange's read, which a
-// mapping change in Dispatch, an admission held for it (requestMappingRead) or a read GitHub did
-// not answer (installReadRetry) asks for. A repository the daemon serves whose
-// installation read fails stays served on its last answer, with the name GitHub last gave it and
-// no read of GitHub, recorded as unverified so it is read again: GitHub's failure to answer is no
-// reason to stop serving a repository it answered for, and no reason either to hold back the rest
-// of the mapping. One left out whose read fails stays left out, with the new failure. A
-// repository whose default-branch read GitHub's rate limit refuses is served on the default
+// mapping change in Dispatch, an admission held for it (requestMappingRead), a mapping that served
+// no repository of the project or a read GitHub did not answer (mappingRecheckRetry) asks for. A
+// repository the daemon serves whose installation read fails stays served on its last answer, with
+// the name GitHub last gave it and no read of GitHub, recorded as unverified so it is read again:
+// GitHub's failure to answer is no reason to stop serving a repository it answered for, and no
+// reason either to hold back the rest of the mapping. One left out whose read fails stays left out,
+// with the new failure.
+// A repository whose default-branch read GitHub's rate limit refuses is served on the default
 // branch the daemon holds for it and read again after the limit's reset (holdLimited), or, when
 // it holds none, left out for now and read again as a failed installation read is. Dispatch's
 // read, and the naming and publication after the check, are each bounded by appMintAttempt; the
@@ -943,7 +972,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	ctx, cancel = context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	// A read GitHub's rate limit refuses is served on the default branch the daemon holds, or
-	// left out for now and read again on installReadRetry when it holds none: the refresher never
+	// left out for now and read again on mappingRecheckRetry when it holds none: the refresher never
 	// waits a limit out, since it holds mappingMu, which every later read of the mapping waits on.
 	var limited []limitedRead
 	if accepted, limited, err = nameAccepted(ctx, accepted, w.defaultBranches); err != nil {
@@ -955,7 +984,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	}
 	for _, read := range unheld {
 		w.log.Warn("workflow: GitHub's rate limit refused the read of a mapped repository's default branch and the daemon holds none for it, so it leaves the repository out and reads it again",
-			append([]any{"repo", read.mapped.Repo.String(), "retryIn", installReadRetry.Initial.String()}, limitAttributes(read)...)...)
+			append([]any{"repo", read.mapped.Repo.String(), "retryIn", mappingRecheckRetry.Initial.String()}, limitAttributes(read)...)...)
 		refused = append(refused, unreadDefaultBranch(read.mapped, read.err))
 	}
 	accepted = append(append(accepted, held...), kept...)
@@ -1124,12 +1153,15 @@ func (w *workflowRuntime) requestMappingRead() uint64 {
 // with no limit, until it applies: a read takes the whole mapping, so retrying loses no request,
 // and a daemon stopped before one applies reads the mapping at boot. A finished read covers every
 // request made before it started, and then recovers each repository the read stopped leaving out
-// for a read GitHub did not answer (recoverRepositories). While such a read leaves a repository as
-// it stands (awaitingRead: left out for now, for its installation read or its default-branch read
-// past GitHub's rate limit, or served on its last answer, its installation read having failed), or
-// a recovery has not committed yet, it reads the mapping again of its own on installReadRetry's
-// backoff, 30 s doubling to 10 min, reset once nothing waits, so the repository is served, or
-// confirmed, and its issues recovered, once GitHub answers, with no restart and no mapping change.
+// for a read GitHub did not answer (recoverRepositories). While the mapping as last read gives a
+// reason to read it again (awaitingRead: the project serves no repository, mapping none or leaving
+// out every one it maps; or a repository left out for now, for its installation read or its
+// default-branch read past GitHub's rate limit, or served on its last answer, its installation read
+// having failed), or a recovery has not committed yet, it reads the mapping again of its own on
+// mappingRecheckRetry's backoff, 30 s doubling to 10 min, reset once nothing waits, so a repository
+// mapped with no event the daemon heard, or one whose App was installed after it was mapped, is
+// served, and one GitHub did not answer for is served, or confirmed, and its issues recovered, once
+// GitHub answers, with no restart and no mapping change.
 // While a held recovery has release waits to tell and time left to recoveryHoldBound
 // (recoveryHoldLeft), the next wait is cut to that time, so the bound is checked when it falls, not
 // up to a backoff later; such a cut wait does not move the backoff on. Once the bound has passed,
@@ -1140,13 +1172,13 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 	if after == nil {
 		after = time.After
 	}
-	recheckIn := installReadRetry.Initial
+	recheckIn := mappingRecheckRetry.Initial
 	for {
 		var recheck <-chan time.Time
 		waiting := append(w.repositories.awaitingRead(), w.recoveringReasons()...)
 		wait, cut := recheckIn, false
 		if len(waiting) == 0 {
-			recheckIn = installReadRetry.Initial
+			recheckIn = mappingRecheckRetry.Initial
 		} else {
 			if left, held := w.recoveryHoldLeft(); held && left > 0 && left < wait {
 				wait, cut = left, true
@@ -1158,10 +1190,10 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 			return
 		case <-w.mappingChanged:
 		case <-recheck:
-			w.log.Info("workflow: reading the repository mapping again for what a read GitHub did not answer (an installation read, or a default-branch read past GitHub's rate limit) left as it stands",
+			w.log.Info("workflow: reading the repository mapping again for what the last read left waiting (no repository served, none being mapped or every one left out, or a read GitHub did not answer: an installation read, or a default-branch read past GitHub's rate limit)",
 				"waiting", waiting, "waited", wait.String())
 			if !cut {
-				recheckIn = min(2*recheckIn, installReadRetry.Max)
+				recheckIn = min(2*recheckIn, mappingRecheckRetry.Max)
 			}
 		}
 		retry := appMintRetry.Initial

@@ -316,19 +316,18 @@ func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 	}
 }
 
-// The boot refuses only a project with no repository mapped. A mapping whose every repository
-// lacks an App boots serving none, each left out and reported; a mapping with one served
-// repository and one left out boots serving the one.
-func TestTheBootRefusesOnlyAnEmptyMapping(t *testing.T) {
+// The boot refuses no mapping. A project with no repository mapped boots serving none, and so does
+// a mapping whose every repository lacks an App, each left out and reported; a mapping with one
+// served repository and one left out boots serving the one.
+func TestTheBootServesWhateverTheMappingHolds(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		mappings        []dispatch.RepoProject
 		missing         map[string]bool
-		want            string
 		served, leftOut int
 	}{
-		{name: "no repository mapped", mappings: []dispatch.RepoProject{{Repo: "other/thing", Project: "OTHER"}},
-			want: "project LEGION has no repository mapped in Dispatch (Settings → Repositories → Projects)"},
+		{name: "no repository mapped", mappings: []dispatch.RepoProject{{Repo: "other/thing", Project: "OTHER"}}},
+		{name: "no repository mapped to any project"},
 		{name: "no repository with both Apps", mappings: []dispatch.RepoProject{{Repo: "acme/gadgets", Project: "LEGION"}},
 			missing: map[string]bool{"review acme/gadgets": true}, leftOut: 1},
 		{name: "one served, one left out", mappings: []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION"}, {Repo: "acme/gadgets", Project: "LEGION"}},
@@ -337,18 +336,42 @@ func TestTheBootRefusesOnlyAnEmptyMapping(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &workflowRuntime{dispatch: &mappingDispatch{mappings: tc.mappings}, dispatchProject: "LEGION", installs: &installations{missing: tc.missing},
 				repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
-			err := w.loadMapping(context.Background())
-			if tc.want != "" {
-				if err == nil || err.Error() != tc.want {
-					t.Fatalf("loadMapping = %v, want %q", err, tc.want)
-				}
-				return
-			}
-			if err != nil || len(w.repositories.Accepted()) != tc.served || len(w.repositories.Refused()) != tc.leftOut {
+			if err := w.loadMapping(context.Background()); err != nil || len(w.repositories.Accepted()) != tc.served || len(w.repositories.Refused()) != tc.leftOut {
 				t.Fatalf("loadMapping = %v, served %v, left out %v; want it to boot serving %d with %d left out",
 					err, w.repositories.Accepted(), w.repositories.Refused(), tc.served, tc.leftOut)
 			}
 		})
+	}
+}
+
+// A project with no repository mapped boots serving none, as one whose every repository lacks an
+// App does, where it refused the boot and its supervisor restarted it straight back into the same
+// refusal: one ERROR line names the project and where to map a repository, and the mapping is
+// waited on for a read of the daemon's own (awaitingRead), so a transient empty answer from
+// Dispatch cannot leave it serving none.
+func TestABootWithNoRepositoryMappedServesNoneAndLogsOneError(t *testing.T) {
+	var logged bytes.Buffer
+	w := &workflowRuntime{dispatch: &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "other/thing", Project: "OTHER"}}}, dispatchProject: "LEGION",
+		installs: &installations{}, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewTextHandler(&logged, nil))}
+	if err := w.loadMapping(context.Background()); err != nil {
+		t.Fatalf("loadMapping with no repository mapped = %v, want a boot serving none", err)
+	}
+	if accepted, refused := w.repositories.Accepted(), w.repositories.Refused(); len(accepted) != 0 || len(refused) != 0 {
+		t.Fatalf("served %v, left out %#v; want neither: the project maps no repository", accepted, refused)
+	}
+	var errorLines []string
+	for line := range strings.SplitSeq(logged.String(), "\n") {
+		if strings.Contains(line, "level=ERROR") {
+			errorLines = append(errorLines, line)
+		}
+	}
+	if len(errorLines) != 1 || !strings.Contains(errorLines[0], "has no repository mapped in Dispatch (Settings → Repositories → Projects)") ||
+		!strings.Contains(errorLines[0], "project=LEGION") {
+		t.Fatalf("ERROR lines = %q, want one naming project LEGION and where its repositories are mapped", errorLines)
+	}
+	want := []string{"project LEGION has no repository mapped in Dispatch (Settings → Repositories → Projects)"}
+	if got := w.repositories.awaitingRead(); !slices.Equal(got, want) {
+		t.Fatalf("awaiting a read = %q, want %q: the mapping is read again of the daemon's own while it names no repository", got, want)
 	}
 }
 
@@ -614,7 +637,7 @@ func TestARepositoryWithoutTheWebhookAppIsServedAndNamed(t *testing.T) {
 // A webhook App check Dispatch fails is no answer: the state names the repository with the
 // failure, and the repository is served, never left out for it nor read again of the daemon's own.
 func TestAFailedWebhookAppCheckIsNamedAndTheRepositoryKeepsBeingServed(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	standIn := newWebhookDispatch(t, true, map[string]bool{"zeta/tools": true})
 	message := "read the GitHub App's installation on acme/widgets: GET https://api.github.com/repos/acme/widgets/installation: status 500: Server Error"
 	standIn.fail("acme/widgets", `{"code":"GITHUB_UNREADABLE","error":"`+message+`"}`)
@@ -629,9 +652,9 @@ func TestAFailedWebhookAppCheckIsNamedAndTheRepositoryKeepsBeingServed(t *testin
 	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
 		t.Fatalf("awaiting a read again = %q, want none: a failed webhook App check asks for none", waiting)
 	}
-	// The refresher reads again within installReadRetry.Max of a failed installation read; ten
+	// The refresher reads again within mappingRecheckRetry.Max of a failed installation read; ten
 	// of them pass with no read.
-	time.Sleep(10 * installReadRetry.Max)
+	time.Sleep(10 * mappingRecheckRetry.Max)
 	if got := standIn.checks("acme/widgets"); got != 1 {
 		t.Fatalf("Dispatch was asked the webhook App check of acme/widgets %d times, want once", got)
 	}

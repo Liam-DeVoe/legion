@@ -1251,6 +1251,91 @@ func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T
 	}
 }
 
+// A project with no repository mapped in Dispatch boots all the same, serving none, as one whose
+// every mapped repository lacks an App does: its API answers, its state maps and leaves out no
+// repository, it mints no App token and admits nothing, and one ERROR line names the project and
+// where its repositories are mapped, where the boot used to refuse into its supervisor's restart and
+// the same refusal.
+func TestWorkflowBootWithNoRepositoryMappedAnswersItsState(t *testing.T) {
+	cfg := workflowConfig(t, workflowNATS(t))
+	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[{"repo":"other/thing","project":"OTHER","default":true}]`)
+		case servedBootCall(t, w, r, cfg.Project):
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[]`)
+		default:
+			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(dispatchServer.Close)
+	cfg.DispatchURL = dispatchServer.URL
+	tokens := &workflowTokenRecorder{}
+	var logged syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logged, nil)), overrides{
+			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
+			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("run: %v", err)
+			}
+		case <-time.After(15 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+	var state api.State
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
+			err = json.NewDecoder(response.Body).Decode(&state)
+			response.Body.Close()
+			if err == nil && response.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the daemon stopped instead of booting: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the daemon never answered its state")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := state.Repositories; len(got.Owners) != 0 || len(got.Mapped) != 0 || len(got.Refused) != 0 {
+		t.Fatalf("state's repositories = %+v, want none served and none left out: the project maps no repository", got)
+	}
+	if len(state.Admission.Active) != 0 || len(state.Admission.Waiting) != 0 {
+		t.Fatalf("state's admission = %+v, want nothing admitted", state.Admission)
+	}
+	if roles := tokens.Roles(); len(roles) != 0 {
+		t.Fatalf("the boot minted %v with no repository to mint for", roles)
+	}
+	// Every ERROR line the booting daemon writes, counted whole, as the boot above counts them.
+	var errorLines []string
+	for line := range strings.SplitSeq(logged.String(), "\n") {
+		if strings.Contains(line, `"level":"ERROR"`) {
+			errorLines = append(errorLines, line)
+		}
+	}
+	if len(errorLines) != 1 || !strings.Contains(errorLines[0], "has no repository mapped in Dispatch (Settings → Repositories → Projects)") ||
+		!strings.Contains(errorLines[0], `"project":"`+cfg.Project+`"`) {
+		t.Fatalf("ERROR lines = %q, want one naming project %s and where its repositories are mapped", errorLines, cfg.Project)
+	}
+}
+
 // The workflow has to assemble every integration boundary before opening its API. The order in
 // this log is the boot sequence operators rely on when an external dependency refuses.
 func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {

@@ -169,13 +169,22 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 // Refused, WithoutWebhookApp and Caches are sorted, and never null. Caches are the repository
 // caches of repositories the mapping no longer names, each kept until its RetainedUntil (contract
 // 32). WithoutWebhookApp is each served repository Dispatch's GitHub App is not known to be
-// installed on, with why (contract 43).
+// installed on, with why (contract 43). A daemon running the workflow whose Mapped and Refused
+// are both empty has read a mapping that names no repository of the project (NoRepositoryMapped):
+// it serves none, admits nothing and reads the mapping again until one is mapped.
 type RepositoriesView struct {
 	Owners            []string                `json:"owners"`
 	Mapped            []MappedRepositoryView  `json:"mapped"`
 	Refused           []RefusedRepositoryView `json:"refused"`
 	WithoutWebhookApp []WebhookAppGapView     `json:"withoutWebhookApp"`
 	Caches            []CacheView             `json:"caches"`
+}
+
+// NoRepositoryMapped is what the daemon says of project while Dispatch maps no repository to it:
+// the reason it reads the mapping again, which its refresher logs, and `legion state`'s line, so
+// both name the condition, and where it is fixed, in one form.
+func NoRepositoryMapped(project string) string {
+	return "project " + project + " has no repository mapped in Dispatch (Settings → Repositories → Projects)"
 }
 
 // MappedRepositoryView is a repository the daemon serves, as GitHub names it, whether it is the

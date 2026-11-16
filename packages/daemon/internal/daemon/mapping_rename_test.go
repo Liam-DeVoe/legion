@@ -564,7 +564,9 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 // The rule before the partner read, where an App answering not installed settled the entry
 // whatever else failed, cannot survive it: after a transfer the mapped name's "not installed" is
 // the honest answer, so a transient failure on the name the repository moved to would leave the
-// entry out for good behind that reason, and no read again would ever revisit it.
+// entry out for good behind that reason, and no read again would ever revisit it. A refusal for
+// good gives no reason of its own to read again; the one entry here being the project's only
+// repository, the project serves none, and that alone is what the mapping is read again for.
 func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T) {
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	failure := errors.New("GitHub answered 502")
@@ -617,8 +619,8 @@ func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T
 				t.Fatalf("the refusal's read failure = %v, want the failed read of %s", refused[0].readErr, moved)
 			case tc.forNow && !slices.Equal(waiting, []string{tc.reason}):
 				t.Fatalf("awaiting a read again = %q, want the entry, which Legion reads again until GitHub answers every read of both names", waiting)
-			case !tc.forNow && len(waiting) != 0:
-				t.Fatalf("awaiting a read again = %q, want none: every read of both names answered and an App is not installed", waiting)
+			case !tc.forNow && !slices.Equal(waiting, []string{noRepositoryServed("LEGION")}):
+				t.Fatalf("awaiting a read again = %q, want the project serving none alone: every read of both names answered and an App is not installed, so the entry asks for no read of its own", waiting)
 			}
 		})
 	}

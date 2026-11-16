@@ -3,9 +3,11 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -111,20 +113,7 @@ func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
 	installs.mu.Lock()
 	installs.missing["review acme/thing"] = true
 	installs.mu.Unlock()
-	payload, err := json.Marshal(map[string]any{"id": 70, "issue_key": nil, "project": "CAPTURE", "seq": 0, "type": "settings.repo_project.updated",
-		"actor": map[string]string{"kind": "user", "id": "smoke"}, "notify": true, "created_at": "2026-10-16T18:00:00Z",
-		"payload": map[string]any{"mapping": map[string]any{"repo": "zeta/tools", "project": "CAPTURE", "default": false}, "deleted": false}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := json.Marshal(map[string]any{"event_id": "dispatch-70", "source": "dispatch", "source_event_id": "70", "topic": "test", "dedupe_key": "dispatch-70",
-		"issued_at": 1, "payload_summary": "mapping updated", "payload": string(payload), "trace_id": "dispatch-70"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := js.Publish(context.Background(), "notifications.dispatch.project.CAPTURE.settings.repo_project.updated", envelope); err != nil {
-		t.Fatalf("publish the mapping change: %v", err)
-	}
+	publishMappingChange(t, js, 70, "CAPTURE", "zeta/tools")
 
 	// The refresh sets the GitHub consumer's filters first and publishes what the daemon serves only
 	// once they took, so the test waits for both.
@@ -148,5 +137,26 @@ func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
 	}
 	if accepted := w.repositories.Accepted(); slices.Contains(accepted, ghrepo.MustParse("orbit/gadgets")) {
 		t.Fatalf("Accepted = %v still serves orbit/gadgets, unmapped from the project", accepted)
+	}
+}
+
+// publishMappingChange publishes Dispatch's settings.repo_project.updated of project, the event
+// numbered id, mapping repo to it, on the subject Envoy carries it on, as Dispatch writes it.
+func publishMappingChange(t *testing.T, js jetstream.JetStream, id int, project, repo string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"id": id, "issue_key": nil, "project": project, "seq": 0, "type": "settings.repo_project.updated",
+		"actor": map[string]string{"kind": "user", "id": "smoke"}, "notify": true, "created_at": "2026-10-16T18:00:00Z",
+		"payload": map[string]any{"mapping": map[string]any{"repo": repo, "project": project, "default": false}, "deleted": false}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := fmt.Sprintf("dispatch-%d", id)
+	envelope, err := json.Marshal(map[string]any{"event_id": event, "source": "dispatch", "source_event_id": strconv.Itoa(id), "topic": "test", "dedupe_key": event,
+		"issued_at": 1, "payload_summary": "mapping updated", "payload": string(payload), "trace_id": event})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := js.Publish(context.Background(), "notifications.dispatch.project."+project+".settings.repo_project.updated", envelope); err != nil {
+		t.Fatalf("publish the mapping change: %v", err)
 	}
 }

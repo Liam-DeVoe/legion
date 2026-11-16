@@ -264,9 +264,9 @@ func TestABootWithNoDefaultBranchHeldWaitsOutARateLimitAndReadsOnceMore(t *testi
 // A repository GitHub still refuses for its rate limit once the boot has waited the limit out is
 // left out for now, as one whose installation read GitHub did not answer is, rather than
 // refusing the boot: the other repository is served, and the refresher reads the mapping again
-// on installReadRetry until GitHub answers, then serves it, with no restart.
+// on mappingRecheckRetry until GitHub answers, then serves it, with no restart.
 func TestABootLeavesOutARepositoryGitHubStillRateLimitsAndServesItOnceGitHubAnswers(t *testing.T) {
-	quickInstallReads(t)
+	quickMappingRechecks(t)
 	var limiting atomic.Bool
 	limiting.Store(true)
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, _ int) bool {
