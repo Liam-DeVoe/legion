@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // startService runs the auth service against the server at url with keys' seeds, deps and decide,
@@ -136,7 +135,8 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 
 // Each authorization request the hub sends is sealed to the service's curve key: a second client
 // holding the service's NATS user, but not that key, reads bytes that are no JWT. The control is a
-// hub configured with no curve key, whose requests that client reads in the clear.
+// hub configured with no curve key, whose requests that client reads in the clear, and which the
+// service refuses: a request in the clear means every token and proof crossed the wire unsealed.
 func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -160,7 +160,11 @@ func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 			require.NoError(t, eavesdropper.Flush())
 
 			_, err = connectSession(t, url, a, nil)
-			require.NoError(t, err, "the service did not admit the session")
+			if row.sealed {
+				require.NoError(t, err, "the service did not admit the session")
+			} else {
+				require.ErrorIs(t, err, nats.ErrAuthorization, "the service admitted a session whose request reached it in the clear")
+			}
 			request, err := seen.NextMsg(5 * time.Second)
 			require.NoError(t, err)
 			clear := strings.HasPrefix(string(request.Data), "eyJ")
@@ -175,31 +179,27 @@ func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 }
 
 // A session's own grant refuses it the authorization subject, and the guard that makes that so is
-// the service's: the control starts the service deciding without the guard, with a grant naming
-// $SYS.>, and the same subscribe is served and receives the next client's request.
+// the service's, at both of its places (decide and admit): the control is a stand-in holding the
+// service's keys that answers with a grant naming $SYS.>, past both, and the same subscribe is
+// served and receives the next client's request.
 func TestASessionCannotSubscribeTheAuthSubject(t *testing.T) {
 	for _, row := range []struct {
 		name   string
-		decide decideFunc
 		served bool
 	}{
-		{"the service's decision", Decide, false},
-		{"control: a decision without the guard, granting $SYS.>", func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
-			return decideCredential(ctx, deps, services, req, grantSource{
-				session: func(id string) (natsgrant.Permissions, error) {
-					grant, err := natsgrant.Session(id)
-					grant.Subscribe = append(grant.Subscribe, "$SYS.>")
-					return grant, err
-				},
-				service: serviceGrant,
-			})
-		}, true},
+		{"the service's decision", false},
+		{"control: a stand-in granting $SYS.>, past the guard", true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			keys := testnats.NewCalloutKeys(t)
 			url := testnats.StartWithCallout(t, keys)
 			a, b := newSession(t, "ses_a", 15*time.Minute), newSession(t, "ses_b", 15*time.Minute)
-			startService(t, url, keys, Deps{Introspect: introspector(a, b)}, row.decide)
+			if row.served {
+				standIn := standInGranting(t, url, keys, []string{"_INBOX.>"}, []string{bus.DeliverSubject(a.id), "$SYS.>"})
+				defer standIn.Close()
+			} else {
+				startService(t, url, keys, Deps{Introspect: introspector(a, b)}, Decide)
+			}
 
 			errs := make(chan error, 16)
 			nc, err := connectSession(t, url, a, errs)

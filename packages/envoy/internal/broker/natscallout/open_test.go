@@ -22,6 +22,32 @@ var emptyDirections = map[string]natsgrant.Permissions{
 	"subscribe": {Publish: []string{"_INBOX.>"}},
 }
 
+// A grant whose list holds only a blank entry is the same fault by another road: jwt drops a blank
+// entry when it adds it to a user (StringList.Add), so the encoded allow list is empty. It is
+// refused naming the direction, and no user is encoded for it.
+func TestAGrantOfBlankEntriesIsRefused(t *testing.T) {
+	issuer, err := nkeys.CreateAccount()
+	require.NoError(t, err)
+	user, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	userKey, err := user.PublicKey()
+	require.NoError(t, err)
+	for direction, grant := range map[string]natsgrant.Permissions{
+		"publish":   {Publish: []string{""}, Subscribe: []string{"_INBOX.>"}},
+		"subscribe": {Publish: []string{"_INBOX.>"}, Subscribe: []string{" "}},
+	} {
+		t.Run(direction, func(t *testing.T) {
+			encoded, err := encodeAnswer(issuer, Request{UserNkey: userKey, ServerID: "NSERVER"},
+				Decision{Name: "session/ses_a", Grant: grant, Expires: time.Now().Add(time.Hour)}, nil)
+			require.NoError(t, err)
+			response, err := jwt.DecodeAuthorizationResponseClaims(encoded)
+			require.NoError(t, err)
+			require.Equal(t, "grant opens every subject: its "+direction+" allow list is empty", response.Error)
+			require.Empty(t, response.Jwt, "a user was encoded whose %s allow list is empty", direction)
+		})
+	}
+}
+
 // A grant with an empty allow list in either direction is refused at both guards, naming the
 // direction: decide's, whatever produced the grant, and encodeAnswer's, which every answer
 // passes, so a producer that bypassed decide could not reach the server with it either.
@@ -93,7 +119,7 @@ func requireAnEmptyPublishListRefused(t *testing.T, start func(testnats.CalloutK
 	require.NoError(t, reader.Flush())
 
 	t.Run("control: the server lets an empty publish list publish anywhere", func(t *testing.T) {
-		standIn := openPublishService(t, url, keys)
+		standIn := standInGranting(t, url, keys, nil, []string{"_INBOX.>"})
 		defer standIn.Close()
 		nc, err := nats.Connect(url, nats.Token("anything"), nats.NoReconnect(), nats.Timeout(5*time.Second))
 		require.NoError(t, err, "the stand-in's empty-publish user was not admitted")
@@ -123,10 +149,10 @@ func requireAnEmptyPublishListRefused(t *testing.T, start func(testnats.CalloutK
 	})
 }
 
-// openPublishService answers every authorization request with a user whose publish allow list is
-// empty and whose subscribe allow list is its reply inboxes, signed with the service's own keys,
-// so the server reads it as the service's answer: the grant the guard refuses, delivered past it.
-func openPublishService(t *testing.T, url string, keys testnats.CalloutKeys) *nats.Conn {
+// standInGranting answers every authorization request with a user whose allow lists are publish
+// and subscribe, as given and unchecked, signed with the service's own keys, so the server reads
+// it as the service's answer: a grant the service's guard refuses, delivered past it.
+func standInGranting(t *testing.T, url string, keys testnats.CalloutKeys, publish, subscribe []string) *nats.Conn {
 	t.Helper()
 	issuer, err := nkeys.FromSeed([]byte(keys.IssuerSeed))
 	require.NoError(t, err)
@@ -150,7 +176,8 @@ func openPublishService(t *testing.T, url string, keys testnats.CalloutKeys) *na
 		}
 		user := jwt.NewUserClaims(claims.UserNkey)
 		user.Audience = globalAccount
-		user.Sub.Allow.Add("_INBOX.>")
+		user.Pub.Allow.Add(publish...)
+		user.Sub.Allow.Add(subscribe...)
 		userJWT, err := user.Encode(issuer)
 		if err != nil {
 			return

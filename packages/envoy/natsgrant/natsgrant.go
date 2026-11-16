@@ -398,11 +398,15 @@ func NamesSystemSubject(p Permissions) (string, bool) {
 // publish, or subscribe, to every subject. Permissions carries no deny list, so no grant of this
 // package can close a direction any other way, and the auth service refuses every grant this
 // names (internal/broker/natscallout).
+// A blank entry counts as the same fault: jwt drops it when it adds it to a user
+// (StringList.Add), so a list of blank entries encodes as an empty one, and no grant of this
+// package means a blank subject.
 func OpenDirection(p Permissions) (string, bool) {
+	blank := func(entry string) bool { return strings.TrimSpace(entry) == "" }
 	switch {
-	case len(p.Publish) == 0:
+	case len(p.Publish) == 0 || slices.ContainsFunc(p.Publish, blank):
 		return "publish", true
-	case len(p.Subscribe) == 0:
+	case len(p.Subscribe) == 0 || slices.ContainsFunc(p.Subscribe, blank):
 		return "subscribe", true
 	}
 	return "", false
