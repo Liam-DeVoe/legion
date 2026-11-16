@@ -86,7 +86,9 @@ type specs struct {
 	// `runtime.kubernetes.plugins`, or the binary's linked pair when the file names none — with
 	// Contract already set to api.DaemonAPIVersion, so a change of the pair reaches the next such
 	// relaunch; nil when the configuration names none (LEGION-164's degraded mode). Never read
-	// under any other runtime.
+	// under any other runtime. These specs are the pair's one holder (config.Classes): no pod's
+	// own launch reads it, so the runtime records it in no pod's launch settings, and a change of
+	// it builds these specs again and drifts no pod.
 	plugins *runtime.PluginInstall
 	// backend is the backend a role runs on (config.Config.BackendFor); nil runs every role on Oh
 	// My Pi.

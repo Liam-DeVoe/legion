@@ -91,7 +91,10 @@ func launchFixture() *config.Config {
 // The path of the daemon's own token at the secrets broker
 // (`runtime.kubernetes.agent_secrets.token_file`) is recorded not even as a digest: the daemon's
 // login alone reads it, a pod being handed a projected token of its own, so it is no launch key
-// (config.Classes' row) and a change of it is drift of no pod.
+// (config.Classes' row) and a change of it is drift of no pod. Nor is the plugin pair
+// (`runtime.kubernetes.plugins`), which the fixture sets with a password in its URL: no pod's own
+// launch reads it, and the launch specs hand it to a stale-plugin relaunch into the pod that
+// launch keeps.
 func TestLaunchSettingsHoldEveryLaunchKeyOfTheClassTable(t *testing.T) {
 	fixture := launchFixture()
 	recorded := LaunchSettings(fixture)
@@ -106,7 +109,6 @@ func TestLaunchSettingsHoldEveryLaunchKeyOfTheClassTable(t *testing.T) {
 		"runtime.kubernetes.agent_secrets.audience", "runtime.kubernetes.agent_secrets.token_expiry_seconds",
 		"runtime.kubernetes.agent_secrets.url",
 		"runtime.kubernetes.image", "runtime.kubernetes.issue_volume",
-		"runtime.kubernetes.plugins.pi_envoy", "runtime.kubernetes.plugins.pi_legion",
 		"runtime.kubernetes.pod.env", "runtime.kubernetes.pod.service_account",
 		"runtime.kubernetes.pod.volume_mounts", "runtime.kubernetes.pod.volumes",
 		"runtime.kubernetes.resources.controller", "runtime.kubernetes.resources.issue",
@@ -243,6 +245,12 @@ func TestPodDriftReadsAPodThatRecordsNoLaunchSettingsAsUndrifted(t *testing.T) {
 // (`token_file`) is read by the daemon's login alone, so its change drifts no pod and opens no
 // round — where every pod of the fleet would otherwise be asked to push and be replaced, its
 // disk deleted, for a value nothing in it reads.
+//
+// The plugin pair (`runtime.kubernetes.plugins`) is the same case as `token_file`: no pod's own
+// launch reads it, since a fresh pod loads the image's own copies (Spawn and a replacing launch
+// clear spec.Plugins), and the one launch that installs a pin is a stale-plugin relaunch into
+// the pod it keeps, which the launch specs hand the pair. So its change drifts no pod and opens
+// no round either.
 func TestPodDriftNamesTheLaunchKeyThatMoved(t *testing.T) {
 	for name, tc := range map[string]struct {
 		move func(*config.Config)
@@ -276,6 +284,12 @@ func TestPodDriftNamesTheLaunchKeyThatMoved(t *testing.T) {
 		"the path of the daemon's own broker token": {
 			func(cfg *config.Config) {
 				cfg.Runtime.Kubernetes.AgentSecrets.TokenFile = "/var/run/secrets/agent-secrets/fixture-token-2"
+			},
+			"",
+		},
+		"the plugin pair a stale-plugin relaunch installs": {
+			func(cfg *config.Config) {
+				cfg.Runtime.Kubernetes.Plugins = &config.PluginsConfig{PiLegion: "10.5.0", PiEnvoy: "10.5.1"}
 			},
 			"",
 		},

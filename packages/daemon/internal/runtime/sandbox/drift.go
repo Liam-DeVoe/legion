@@ -229,8 +229,12 @@ const (
 // `instructions`, `provider_keys`, `daemon_url`, `advertise_host`, `role_config_files`,
 // `worker_backends`, `omp_invocation`, `omp_launch_prefix`, the `runtime.kubernetes` launch keys
 // — the image, the storage class, the issue volume, the session store, the setup command, the
-// test Postgres, the scheduling, the reservations, the operator's pod, the secrets broker and the
-// plugin pair — and the project's `commit_issue_trailer_repos` and `memory.config_files`.
+// test Postgres, the scheduling, the reservations, the operator's pod and the secrets broker's
+// `url`, `audience` and `token_expiry_seconds` — and the project's `commit_issue_trailer_repos`
+// and `memory.config_files`. The plugin pair (`runtime.kubernetes.plugins`) is not among them:
+// no pod's own launch reads it, a fresh pod loading the image's own copies, and the launch specs
+// hand it to the one launch that installs it, a stale-plugin relaunch into the pod it keeps
+// (config.Classes' row), so a pin change drifts no pod.
 //
 // A secret row's value is recorded as the digest of what it renders as (sha256:…) and never as
 // itself: a pod annotation is readable by everything that may read a pod, and a rotation must be

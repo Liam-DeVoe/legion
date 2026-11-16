@@ -1699,10 +1699,11 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// API's tree releaser — holds the holder.
 	rt := newRuntimeHolder(built, stopBuilt, log, buildRuntime)
 	// The launch specs behind theirs: everything a launch reads that the claim does not carry,
-	// built again from the configuration a `launch` change settled, read by the next launch.
-	// The instructions and the plugin pair a stale-plugin relaunch installs are each read from
-	// the configuration the build is given, so a change of either, a removal included, reaches
-	// the next launch.
+	// built again from the configuration a change of a key they hold settled, read by the next
+	// launch. The instructions and the plugin pair a stale-plugin relaunch installs are each read
+	// from the configuration the build is given, so a change of either, a removal included,
+	// reaches the next launch that reads it: the instructions every launch, and the pair the next
+	// stale-plugin relaunch alone, these specs being its one holder (config.Classes).
 	buildSpecs := func(c config.Config) (specs, error) {
 		secrets, err := readLaunchSecrets(c, environLookup(p.environ))
 		if err != nil {

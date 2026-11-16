@@ -854,23 +854,30 @@ var Classes = []Row{
 	{Field: "AgentSecretsConfig.TokenExpirySeconds", Path: "runtime.kubernetes.agent_secrets.token_expiry_seconds", Class: ClassLaunch, Holder: HolderRuntime},
 	{Field: "AgentSecretsConfig.TokenFile", Path: "runtime.kubernetes.agent_secrets.token_file", Class: ClassRebuild, Holder: HolderSecretsLogin, Secret: true,
 		Credential: CredentialLocator},
-	// The plugin pair a stale-plugin relaunch installs into a kept pod, which two things read:
-	// the launch specs, which hand the pair to the launch of a claim on another plugin contract
-	// (internal/daemon's stalePluginInstall), and the Sandbox runtime, which records it in each
-	// pod's launch-settings annotation. The operator is told the launch specs were rebuilt, and
-	// the runtime is built again with them, so the next stale-plugin relaunch installs the pair
-	// the change names.
+	// The plugin pair a stale-plugin relaunch installs into a kept pod. One reader holds it: the
+	// launch specs, which resolve the pair from the configuration each build of them is given and
+	// hand it to the launch of a claim on another plugin contract (internal/daemon's
+	// stalePluginInstall), and which answer from it whether such a claim can be relaunched at all
+	// (specs' pluginRelaunchable). No pod's own launch reads it: a pod launched fresh loads the
+	// image's own copies, which the boot gate holds to the daemon's contract, and so does a pod a
+	// launch replaces for any other reason (runtime/sandbox's Spawn and relaunch clear
+	// spec.Plugins). The relaunch that installs the pair keeps the pod it installs into, so no pod
+	// is ever replaced to carry another pair. So it is a rebuild of the launch specs, with no
+	// runtime beside them and no place in any pod's launch-settings annotation, as
+	// `agent_secrets.token_file` above is the login's: a change of it builds the launch specs again,
+	// the next stale-plugin relaunch installs the pair it names, and it drifts no pod, where a
+	// launch key would open an update round over every pod whose launch reads it, each pod's disk
+	// deleted with the pod.
 	//
 	// A pin is a version, a tarball's path, or an http(s) URL, and a private or pre-signed
 	// tarball's URL carries its credential in its userinfo or in its query: `X-Amz-Signature` is
 	// the one parameter the daemon's own reading of a pin names (api.pluginSourceOf, which drops
 	// the query from the state). No key of the file holds that credential apart from the URL.
-	{Field: "Kubernetes.Plugins", Path: "runtime.kubernetes.plugins", Class: ClassLaunch, Holder: HolderLaunchSpecs,
-		Also: []string{HolderRuntime}, Block: true},
-	{Field: "PluginsConfig.PiLegion", Path: "runtime.kubernetes.plugins.pi_legion", Class: ClassLaunch, Holder: HolderLaunchSpecs,
-		Also: []string{HolderRuntime}, Secret: true, Credential: CredentialAddress, SecretQuery: []string{"X-Amz-Signature"}},
-	{Field: "PluginsConfig.PiEnvoy", Path: "runtime.kubernetes.plugins.pi_envoy", Class: ClassLaunch, Holder: HolderLaunchSpecs,
-		Also: []string{HolderRuntime}, Secret: true, Credential: CredentialAddress, SecretQuery: []string{"X-Amz-Signature"}},
+	{Field: "Kubernetes.Plugins", Path: "runtime.kubernetes.plugins", Class: ClassRebuild, Holder: HolderLaunchSpecs, Block: true},
+	{Field: "PluginsConfig.PiLegion", Path: "runtime.kubernetes.plugins.pi_legion", Class: ClassRebuild, Holder: HolderLaunchSpecs,
+		Secret: true, Credential: CredentialAddress, SecretQuery: []string{"X-Amz-Signature"}},
+	{Field: "PluginsConfig.PiEnvoy", Path: "runtime.kubernetes.plugins.pi_envoy", Class: ClassRebuild, Holder: HolderLaunchSpecs,
+		Secret: true, Credential: CredentialAddress, SecretQuery: []string{"X-Amz-Signature"}},
 	// The daemon's own cluster credential, and the repository caches it keeps: pods of the
 	// runtime's own, replaced when the runtime is built again, never role launches. The
 	// kubeconfig's path and the name of a context in it are where that credential lives.

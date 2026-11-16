@@ -289,6 +289,55 @@ func TestAChangedInstructionsPathRebuildsTheRuntimeThatRecordsEachPodsLaunch(t *
 	}
 }
 
+// The plugin pair (`runtime.kubernetes.plugins`) is read by one launch, a stale-plugin relaunch
+// into the pod it keeps, and the launch specs hand the pair there (specs.stalePluginInstall): no
+// pod's own launch reads it, since a fresh pod loads the image's own copies. So its rows name the
+// launch specs alone (config.Classes), the route answers a change of it `rebuilt` naming them, and
+// the change builds no runtime. Nor does the runtime record the pair when some other change builds
+// it from a configuration that names one: the record of each pod's launch it holds
+// (sandbox.Options.LaunchSettings) carries no key of the pair. Held by the runtime as well, the
+// change built the runtime again on a record naming the new pair, and every pod of the fleet read
+// as drifted: an update round over each one, each pod replaced and its disk deleted, for a value
+// no pod of it reads.
+func TestAChangedPluginPairBuildsNoRuntimeAndIsRecordedForNoPod(t *testing.T) {
+	rig := newSandboxRebuildRig(t, kubeconfigOf(unreachedCluster, "", "kube-bearer"), true)
+
+	changes := apply(t, rig.live, map[string]any{"runtime.kubernetes.plugins": map[string]any{"pi_legion": "9.8.0", "pi_envoy": "9.7.2"}})
+
+	if builds := rig.builds(); builds != 1 {
+		t.Fatalf("after a route change of the plugin pair the runtime was built %d times, want once: every rebuild records the pods' launch settings again", builds)
+	}
+	answered := 0
+	for _, change := range changes {
+		if !strings.HasPrefix(change.Path, "runtime.kubernetes.plugins") {
+			continue
+		}
+		answered++
+		if change.Outcome != config.OutcomeRebuilt || change.Holder != config.HolderLaunchSpecs {
+			t.Errorf("the route answers %s %s naming %q, want rebuilt naming the launch specs, the one holder a stale-plugin relaunch reads the pair from",
+				change.Path, change.Outcome, change.Holder)
+		}
+	}
+	if answered == 0 {
+		t.Fatalf("the route answered %+v, none of it the plugin pair", changes)
+	}
+
+	// A key the runtime does hold builds it again, now from a configuration naming the pair.
+	apply(t, rig.live, map[string]any{"dispatch_url": "https://dispatch-2.internal.example"})
+	if builds := rig.builds(); builds != 2 {
+		t.Fatalf("after a route change of dispatch_url the runtime was built %d times, want twice", builds)
+	}
+	var recorded map[string]string
+	if err := json.Unmarshal([]byte(rig.last().opts.LaunchSettings), &recorded); err != nil {
+		t.Fatalf("decode the launch settings the rebuilt runtime records: %v", err)
+	}
+	for path := range recorded {
+		if strings.HasPrefix(path, "runtime.kubernetes.plugins") {
+			t.Errorf("the runtime records %s in every pod's launch settings, which no pod's launch reads", path)
+		}
+	}
+}
+
 // Whether a Kubernetes daemon has a pane NATS seed decides where every pod reads it: a daemon
 // with one names NATS_NKEY_SEED among the launch secrets and among the providers Secret's keys,
 // so each pod mounts the deployment's copy and is pointed at it (NATS_NKEY_SEED_FILE); a daemon

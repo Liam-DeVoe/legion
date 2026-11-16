@@ -101,9 +101,9 @@ func podKindOf(labels map[string]string) (podKind, error) {
 // claim and the claim template the controller's Sandbox owns alike (diskSpec, issuePod.disk,
 // controllerPod.disk); the session store; `runtime.kubernetes.setup`, which wraps the start of
 // every role's agent, the controller's included (launcherCommand, startArgv); the scheduling; the
-// operator's `runtime.kubernetes.pod` block; the secrets broker; the plugin pair; and
-// `instructions`, `role_config_files` (which names the controller as well as every issue role),
-// `provider_keys`, `daemon_url`, `advertise_host`, `omp_invocation` and `omp_launch_prefix`.
+// operator's `runtime.kubernetes.pod` block; the secrets broker; and `instructions`,
+// `role_config_files` (which names the controller as well as every issue role), `provider_keys`,
+// `daemon_url`, `advertise_host`, `omp_invocation` and `omp_launch_prefix`.
 //
 // Each is named by the class table's own path (config.Row.Path), which is what readsLaunchPath
 // compares a recorded key's row by (launchKeyOf): a key inside the `projects` map is recorded at

@@ -105,7 +105,10 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 // does a change of the path of the daemon's own broker token
 // (`runtime.kubernetes.agent_secrets.token_file`): the daemon's login alone reads it, the
 // controller's pod being handed a projected token of its own, so it is no launch key of this pod
-// and its next launch keeps the pod.
+// and its next launch keeps the pod. Nor does a change of the plugin pair
+// (`runtime.kubernetes.plugins`): the controller's pod loads the image's own copies, and the
+// pair reaches it only through a stale-plugin relaunch into the pod that launch keeps, so a
+// launch that installs nothing keeps the pod after a pin change too.
 func TestALaunchReplacesTheControllersPodWhoseLaunchKeysMoved(t *testing.T) {
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
@@ -120,6 +123,11 @@ func TestALaunchReplacesTheControllersPodWhoseLaunchKeysMoved(t *testing.T) {
 		"another path of the daemon's own broker token": {
 			func(cfg *config.Config) {
 				cfg.Runtime.Kubernetes.AgentSecrets.TokenFile = "/var/run/secrets/agent-secrets/fixture-token-2"
+			}, nil, false,
+		},
+		"another plugin pair": {
+			func(cfg *config.Config) {
+				cfg.Runtime.Kubernetes.Plugins = &config.PluginsConfig{PiLegion: "10.5.0", PiEnvoy: "10.5.1"}
 			}, nil, false,
 		},
 		"an installing launch into a pod whose instructions moved": {
@@ -162,6 +170,56 @@ func TestALaunchReplacesTheControllersPodWhoseLaunchKeysMoved(t *testing.T) {
 				t.Errorf("the kept pod's template records %s, want the launch keys its pod was built with, %s", recorded, built)
 			}
 		})
+	}
+}
+
+// A pin change reaches a running issue pod at its next stale-plugin relaunch, which installs the
+// new pair into the pod it keeps — the one launch that reads the pair. A pod launched after the
+// change loads the image's own copies, as does a pod replaced for any other reason (Spawn and a
+// replacing launch clear spec.Plugins), so the image the boot gate holds to the daemon's contract
+// is what a fresh pod runs and the pin is no launch key of any pod.
+//
+// The test plays the daemon's part in the order the daemon plays it. The runtime it launches on
+// holds the record of the configuration after the change, as every build of the runtime from
+// then on does. The orphan sweep reads the pod's drift (PodDrift) and opens an update round over
+// a pod it names any for, and the round ends by replacing the pod (ReplacePod), which is the
+// branch below: it is taken only where the pin is drift, and the stale-plugin lane passes over
+// every claim in such a round (internal/daemon's staleForTheLane), so a stale claim the lane had
+// not reached when the round opened is carried by the round rather than relaunched. Its relaunch
+// is then a launch into a suspended Sandbox, which comes up in a fresh pod, installs nothing and
+// never runs the pair the change named. Recorded in each pod's launch settings, the pin did
+// exactly that to every pod of the fleet; recorded in none, the round is never opened, the branch
+// is not taken and the relaunch installs the pair into the pod it keeps.
+func TestAStaleRelaunchAfterAPinChangeInstallsTheNewPairIntoThePodItKeeps(t *testing.T) {
+	g := newRig(t, nil, withOptions(func(o *Options) { o.LaunchSettings = LaunchSettings(launchFixture()) }))
+	loc := g.spawn(workerSpec(t))
+	moved := launchFixture()
+	moved.Runtime.Kubernetes.Plugins = &config.PluginsConfig{PiLegion: "10.5.0", PiEnvoy: "10.5.1"}
+	r2 := restartedOver(t, g, loc, func(o *Options) { o.LaunchSettings = LaunchSettings(moved) })
+
+	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) > 0 {
+		t.Logf("PodDrift after the pin change = %q: the sweep opens an update round over the pod, and the round replaces it", drifted)
+		if err := r2.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
+			t.Fatalf("ReplacePod: %v", err)
+		}
+	}
+
+	spec := workerSpec(t)
+	pair := &runtime.PluginInstall{PiLegion: moved.Runtime.Kubernetes.Plugins.PiLegion, PiEnvoy: moved.Runtime.Kubernetes.Plugins.PiEnvoy, Contract: 24}
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile, spec.Plugins = 2, "boot-tester-g2", resumeSession, pair
+	next, err := r2.Resume(g.ctx, &loc, spec)
+	if err != nil {
+		t.Fatalf("the stale-plugin relaunch: %v", err)
+	}
+	if next.Sandbox.PodUID != loc.Sandbox.PodUID {
+		t.Errorf("the stale-plugin relaunch after the pin change came up in pod %s, want the pod %s kept: a fresh pod loads the image's copies and installs no pin",
+			next.Sandbox.PodUID, loc.Sandbox.PodUID)
+	}
+	argv := strings.Join(startSent(t, g, 2).Argv, " ")
+	for _, installed := range []string{"@sjawhar/pi-legion@" + pair.PiLegion, "@sjawhar/pi-envoy@" + pair.PiEnvoy} {
+		if !strings.Contains(argv, installed) {
+			t.Errorf("the stale-plugin relaunch after the pin change installs no %s; its start is %q", installed, argv)
+		}
 	}
 }
 
