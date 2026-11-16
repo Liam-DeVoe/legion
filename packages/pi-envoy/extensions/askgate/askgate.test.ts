@@ -1769,8 +1769,8 @@ describe("deadline and abandonment", () => {
     // not complete on a host starved that far, so the handler returns before the grace writes its
     // entry and `g.entries` reaches the assertion above empty. One run in 20 went that way,
     // charged 8822.15 ms against this guard, so no per-test limit guards it. This row's
-    // acceptance rung is therefore 96 busy loops, 48 per CPU, the rung the here-document and
-    // markdown-upload rows of this file take for their own production ceiling.
+    // acceptance rung is therefore 96 busy loops, 48 per CPU, the rung the here-document row of
+    // this file takes for its own production ceiling.
   }, 30_000);
 });
 
@@ -1936,9 +1936,9 @@ console.log(JSON.stringify(args, null, 2));
     // charged 39109.57 / 58636.93 / 63615.03 / 69845.21 ms for them, and the 16 green there
     // cost 54 s to 136 s of wall each; no per-test limit can guard it, because what fires is
     // the production budget and not this row running long. So this row's acceptance rung is 96
-    // busy loops, 48 per CPU — 20 runs of 20 green there, 6 s to 23 s of wall each — the rung
-    // the markdown-upload row takes for the same ceiling ("a reviewed markdown upload by
-    // --path posts the bytes the model reviewed, once"), where 40 runs of 40 are green.
+    // busy loops, 48 per CPU — 20 runs of 20 green there, 6 s to 23 s of wall each, and 20 of 20
+    // again on the slower pod of 2026-11-16. The markdown-upload row meets the same ceiling and
+    // takes 80 on that pod ("a reviewed markdown upload by --path posts the bytes ..., once").
   }, 120_000);
   // The literal one-line grammar: one `dispatch ask`, its question a quoted word.
   const ONE_LINE_ASK = "dispatch ask --issue X-1 --question 'Ship the release today?'";
@@ -4204,8 +4204,8 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       // reads' half, and that second `g.dryRuns` entry carries a smaller `timeoutMs`, which fails
       // the `every` above — 2 runs in 20 went that way, charged 43534.88 ms and 53192.69 ms
       // against this 120_000 guard, so no per-test limit guards it. So this row's acceptance rung
-      // is 96 busy loops, 48 per CPU, the rung the here-document and markdown-upload rows take
-      // for the same ceiling.
+      // is 96 busy loops, 48 per CPU, the rung the here-document row takes for the same ceiling,
+      // where this row is 20 of 20 on the slower pod of 2026-11-16 as well.
     }, 120_000);
     // The second final review of #2159: Oh My Pi at its pin takes a leading `cd X &&` into the
     // call's directory with no CDPATH (`extractLeadingCdTarget`, then `resolveToCwd`), and its
@@ -6202,23 +6202,23 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     // idle runs), and 3331.80 / 10469.35 / 20906.97 ms over 20 runs under 96 busy loops, 48 per
     // CPU. The 30_000 it replaces sat inside that loaded cost and failed a correct run 7 times
     // in 10, at 30011.27 ms to 30723.57 ms. Six times the worst of those 20 runs is 125_442 ms,
-    // past this file's 120_000 ceiling (the rule above `DryRunner`), so this takes that ceiling:
-    // 5.7 times that worst, and 5.4 times the worst of the 20 further runs at that load this
-    // limit was then soaked over, 20 of them green at 22378.01 ms and under. It is well inside
-    // the pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run or a post
-    // that never returns reddens with this test named instead of cancelling the job, which names
-    // nothing. The row's remaining load ceiling is the gate's own, not this one: at 120 busy
-    // loops per CPU the row fails inside the gate's own DRY_RUN_TIMEOUT_MS, because a real
-    // `dispatch` subprocess cannot finish in 20 s on a host that starved — 12 of 20 runs there,
-    // charged 47494.61 ms to 52948.38 ms — which no per-test limit can guard. What the row
-    // receives when that ceiling fires was read at 240 busy loops with this call's result
-    // printed: 3 of 10 runs red, each with a second `g.dryRuns` entry and the result an
-    // `outcome="error"` block reading `dispatch artifact --dry-run did not finish within 20000 ms,
-    // nor within 23325 ms when run again`, charged 47312.38 / 47714.23 / 56601.36 ms. At the rung
-    // itself the row is 40 of 40, charged 5991.04 / 11642.48 / 23338.86 ms (min/median/max),
-    // re-measured after a testing round found 19 of 20 there; that round's one red charged
-    // 46444.05 ms, twice this worst, so the ceiling reaches 96 only on a host carrying load past
-    // the 96 loops.
+    // past this file's 120_000 ceiling (the rule above `DryRunner`), so this takes that ceiling,
+    // well inside the pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry
+    // run or a post that never returns reddens with this test named instead of cancelling the
+    // job. The row's remaining load ceiling is the gate's own, not this one: at 120 busy loops
+    // per CPU a real `dispatch` subprocess cannot finish inside the gate's DRY_RUN_TIMEOUT_MS of
+    // 20 s on a host that starved, the gate runs it again, and the row receives an
+    // `outcome="error"` block (`dispatch artifact --dry-run did not finish within 20000 ms, nor
+    // within 23325 ms when run again`) where it asserts undefined — 12 of 20 runs there, charged
+    // 47494.61 ms to 52948.38 ms — which no per-test limit can guard. On the pod of 2026-11-16,
+    // 1.6 times slower than the one these readings came from (another row's 20 runs took 49.3 s
+    // each against 30.5 s), that ceiling reached 96 busy loops: two campaigns of 20 there were
+    // 19 of 20 each, both reds that same block, charged 47391.11 and 46540.80 ms. So this row's
+    // acceptance rung is 80 busy loops, 40 per CPU: 40 of 40 there on that same pod, charged
+    // 3637.88 / 11990.81 / 37554.08 ms (min/median/max), 120_000 being 3.2 times that worst,
+    // and at 80 the base fails the row 1 run in 10, at its own 30_000. The here-document and
+    // `(c) … relative --path` rows meet the same ceiling and stay at 96, where each is 20 of 20
+    // on that pod, because at 80 their worst cost (4.52 s, 4.37 s) is under the base's 5 s default.
   }, 120_000);
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
