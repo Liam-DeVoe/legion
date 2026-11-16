@@ -1,5 +1,6 @@
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
+import { openRail } from "./rail";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser, signIn, withAlice } from "./users";
@@ -34,25 +35,23 @@ async function seedIssue(): Promise<Seeded> {
   return createIssue({ project, title: "Ship the release notes" });
 }
 
-/** The navigation the reader follows a link of: the sidebar at 1440 px, the drawer behind
- *  "Open navigation" at 390 px. */
-async function navigation(page: Page, isPhone: boolean): Promise<Locator> {
-  if (isPhone) {
-    await page.getByRole("button", { name: "Open navigation" }).click();
-  }
+/** The navigation the reader follows a link of, opened through `openRail`: the sheet behind
+ *  "Open navigation" at 390 px, the page's own column at 1440 px. */
+async function navigation(page: Page): Promise<Locator> {
+  await openRail(page);
   return page.getByRole("navigation", { name: "Navigation" });
 }
 
-async function openSettings(page: Page, isPhone: boolean): Promise<void> {
-  const links = await navigation(page, isPhone);
+async function openSettings(page: Page): Promise<void> {
+  const links = await navigation(page);
   await links.getByRole("link", { exact: true, name: "Settings" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
 }
 
 /** Opens the issue as a reader does: the project's link in the navigation, then the issue's link
  *  on the project's page. */
-async function openIssue(page: Page, isPhone: boolean, key: string): Promise<void> {
-  const links = await navigation(page, isPhone);
+async function openIssue(page: Page, key: string): Promise<void> {
+  const links = await navigation(page);
   await links.locator(`a[href="/projects/${project}"]`).click();
   await page.locator(`a[data-issue-link][href="/issues/${key}"]`).click();
   await expect(page).toHaveURL(`/issues/${key}`);
@@ -79,7 +78,7 @@ async function expectTodaysPage(page: Page): Promise<void> {
   await expect(page.locator("[data-issue-page]")).toHaveCount(0);
 }
 
-function newPageTitle(page: Page): Locator {
+function newPageHeading(page: Page): Locator {
   return page.locator("[data-issue-page]").getByRole("heading", { level: 1 });
 }
 
@@ -87,7 +86,7 @@ function newPageTitle(page: Page): Locator {
  *  nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
-  await expect(newPageTitle(page)).toHaveText(issue.title);
+  await expect(newPageHeading(page)).toHaveText(issue.title);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
   // The part that fills a slot changes these two: each slot drawn so far adds no text or control.
   await expect(newPage).toHaveText(`${issue.key} ${issue.title}`, { useInnerText: true });
@@ -133,7 +132,7 @@ test("a reader turns the new issue page on in Settings and off again, by links a
   expect(outlineChunks).toEqual([]);
 
   await setMarker(page);
-  await openSettings(page, isPhone);
+  await openSettings(page);
   const preview = page.getByRole("region", { name: "Preview" });
   const checkbox = preview.getByRole("checkbox", { exact: true, name: "New issue page" });
   await expect(checkbox).not.toBeChecked();
@@ -151,7 +150,7 @@ test("a reader turns the new issue page on in Settings and off again, by links a
 
   await checkbox.check();
   expect(await storedChoice(page, "alice")).toBe("outline");
-  await openIssue(page, isPhone, issue.key);
+  await openIssue(page, issue.key);
   await expectNewPageAlone(page, issue);
   expect(await marked(page)).toBe(true);
   // The chunk the setting turned on was asked for, so the two readings of none above are of it.
@@ -178,14 +177,14 @@ test("a reader turns the new issue page on in Settings and off again, by links a
   }
   await signIn(page.context(), "alice");
   await page.goto(`/issues/${issue.key}`);
-  await expect(newPageTitle(page)).toHaveText(issue.title);
+  await expect(newPageHeading(page)).toHaveText(issue.title);
 
   await setMarker(page);
-  await openSettings(page, isPhone);
+  await openSettings(page);
   await expect(checkbox).toBeChecked();
   await checkbox.uncheck();
   expect(await storedChoice(page, "alice")).toBe("tabs");
-  await openIssue(page, isPhone, issue.key);
+  await openIssue(page, issue.key);
   await expectTodaysPage(page);
   expect(await marked(page)).toBe(true);
   if (isPhone) await assertPageFits(page);
@@ -209,12 +208,12 @@ test("a second tab of the same login follows the setting with no reload @phone",
   }
   await setMarker(second);
 
-  await openSettings(page, isPhone);
+  await openSettings(page);
   const checkbox = page
     .getByRole("region", { name: "Preview" })
     .getByRole("checkbox", { exact: true, name: "New issue page" });
   await checkbox.check();
-  await expect(newPageTitle(second)).toHaveText(issue.title);
+  await expect(newPageHeading(second)).toHaveText(issue.title);
   expect(await marked(second)).toBe(true);
   if (isPhone) await assertPageFits(second);
 
@@ -239,14 +238,14 @@ test("withIssuePage turns the new issue page on at the first load of the default
   await withIssuePage(context, "alice");
   if (!isPhone) await page.setViewportSize(desktop);
   await page.goto(`/issues/${issue.key}`);
-  await expect(newPageTitle(page)).toHaveText(issue.title);
+  await expect(newPageHeading(page)).toHaveText(issue.title);
   if (isPhone) await assertPageFits(page);
 
   await withAlice(browser, async (alice) => {
     await withIssuePage(alice.context(), "alice");
     if (!isPhone) await alice.setViewportSize(desktop);
     await alice.goto(`/issues/${issue.key}`);
-    await expect(newPageTitle(alice)).toHaveText(issue.title);
+    await expect(newPageHeading(alice)).toHaveText(issue.title);
     if (isPhone) await assertPageFits(alice);
   });
 });
@@ -262,47 +261,42 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
   await withIssuePage(context, "alice");
   if (!isPhone) await page.setViewportSize(desktop);
   const newPage = page.locator("[data-issue-page]");
+  const heading = newPageHeading(page);
 
-  // The issue's own read, and no other read under its path, is held, refused or passed on as
-  // `read` says when it arrives.
-  let read: "hold" | "fail" | "pass" = "hold";
+  // The issue's own read, and no other read under its path, is held until released, then passed
+  // on, or refused while `failing` is set.
+  let failing = false;
   const held = Promise.withResolvers<void>();
   const issueRead = (url: URL) => url.pathname === `/api/v1/issues/${issue.key}`;
   await page.route(issueRead, async (route) => {
-    if (read === "hold") {
-      await held.promise;
-      return route.fallback();
-    }
-    if (read === "fail") {
-      return route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
-    }
+    if (failing) return route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
+    await held.promise;
     return route.fallback();
   });
 
   // Each state below is the first draw of an address the reader opens, so each is a load.
   await page.goto(`/issues/${issue.key}`);
   await expect(newPage.getByText("Loading issue…", { exact: true })).toBeVisible();
-  read = "pass";
   held.resolve();
-  await expect(newPage.getByRole("heading", { level: 1 })).toHaveText(issue.title);
+  await expect(heading).toHaveText(issue.title);
   await expect(page).toHaveTitle(`${issue.key} · ${issue.title} · Dispatch`);
   if (isPhone) await assertPageFits(page);
 
   // A refused read is asked again twice, `QUERY_RETRY_DELAY_MS` apart
   // (web/src/api/query-client.ts), before the page says it failed.
-  read = "fail";
+  failing = true;
   await page.goto(`/issues/${issue.key}`);
-  await expect(newPage.getByRole("heading", { level: 1 })).toHaveText("Couldn't load this issue");
+  await expect(heading).toHaveText("Couldn't load this issue");
   const failure = newPage.getByRole("alert").filter({ hasText: "Couldn't load this issue." });
   await expect(failure).toBeVisible();
   if (isPhone) await assertPageFits(page);
   await page.unroute(issueRead);
   await failure.getByRole("button", { name: "Retry" }).click();
-  await expect(newPage.getByRole("heading", { level: 1 })).toHaveText(issue.title);
+  await expect(heading).toHaveText(issue.title);
 
   const missing = `${project}-999`;
   await page.goto(`/issues/${missing}`);
-  await expect(newPage.getByRole("heading", { level: 1 })).toHaveText("Issue not found");
+  await expect(heading).toHaveText("Issue not found");
   await expect(
     newPage.getByText(`${missing} doesn't exist, or you don't have access to it.`, { exact: true })
   ).toBeVisible();
@@ -310,6 +304,6 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
   if (isPhone) await assertPageFits(page);
 
   await page.goto(`/issues/${issue.key}/no-such-tab`);
-  await expect(newPage.getByRole("heading", { level: 1 })).toHaveText("Page not found");
+  await expect(heading).toHaveText("Page not found");
   if (isPhone) await assertPageFits(page);
 });
