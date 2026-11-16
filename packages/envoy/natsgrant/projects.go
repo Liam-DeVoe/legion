@@ -46,23 +46,31 @@ func InboxPrefix(identity string) string {
 }
 
 // GitHubConsumerName is the name of the durable consumer through which a Legion daemon of project
-// hears repository's GitHub events: legion-go-<project>-github- and repository ("owner/name")
-// spelled as InboxPrefix spells an identity, so two repositories never share a consumer and the
-// name is one token whatever the repository holds. t-c-10's daemon is to name its consumer with it
-// and WithinProjects grants it, so the two cannot drift apart.
+// hears repository's GitHub events: legion-go-<project>-github- and repository ("owner/name") in
+// lower case, spelled as InboxPrefix spells an identity, so two repositories never share a
+// consumer and the name is one token whatever the repository holds. It lower-cases first because
+// the daemon keeps a repository in GitHub's spelling (Acme/Widgets) and Dispatch, whose list the
+// grant is built from, in lower case, and both must name one consumer. t-c-10's daemon is to name
+// its consumer with it and WithinProjects grants it, so the two cannot drift apart.
 func GitHubConsumerName(project, repository string) string {
-	return token(daemonConsumerPrefix+project+"-github-", repository)
+	return token(daemonConsumerPrefix+project+"-github-", strings.ToLower(repository))
 }
 
-// GitHubFilter is the filter of repository's GitHub consumer (GitHubConsumerName): every subject
-// Envoy's listener publishes that repository's events under, notifications.github.<owner>.<name>.>
-// with each segment spelled by contracts.SanitizeSubjectSegment (a dot written "_"). repository is
-// "owner/name". t-c-10's daemon is to name it in its consumer create, as WithinProjects' grant
-// does, and nats-server refuses a create whose body's filter is not the one its subject names, so
-// the two must be built by this one function.
-func GitHubFilter(repository string) string {
+// GitHubPrefix is what every subject Envoy's listener publishes repository's GitHub events under
+// begins with: notifications.github.<owner>.<name>, each segment spelled by
+// contracts.SanitizeSubjectSegment (a dot written "_") in the case it is given. repository is
+// "owner/name". Lower-casing the subject is t-c-21's, at that one source.
+func GitHubPrefix(repository string) string {
 	owner, name, _ := strings.Cut(repository, "/")
-	return contracts.GithubRepositoryPrefix(owner, name) + ".>"
+	return contracts.GithubRepositoryPrefix(owner, name)
+}
+
+// GitHubFilter is the filter of repository's GitHub consumer (GitHubConsumerName): its prefix
+// (GitHubPrefix) and ".>". t-c-10's daemon is to name it in its consumer create, as
+// WithinProjects' grant does, and nats-server refuses a create whose body's filter is not the one
+// its subject names, so the two must be built by this one function.
+func GitHubFilter(repository string) string {
+	return GitHubPrefix(repository) + ".>"
 }
 
 // token is prefix followed by s with each byte outside [A-Za-z0-9-], '_' included, written '_'
