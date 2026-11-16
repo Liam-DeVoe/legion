@@ -177,20 +177,20 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 		}
 		return nil, err
 	}
-	if !k.openMissWindow() {
-		switch {
-		case inflight != nil:
-			fresh, err := k.await(ctx, inflight)
-			if err != nil {
-				return nil, err
-			}
-			return selectKey(fresh, kid, alg)
-		case failure != nil:
-			return nil, failure
-		}
+	// The miss reads the set again when its window opens; inside the window it waits on the read in
+	// flight, or answers the last read's failure, and only after a read that succeeded ErrNoKey.
+	var read *keysFetch
+	switch {
+	case k.openMissWindow():
+		read = k.begin(ctx)
+	case inflight != nil:
+		read = inflight
+	case failure != nil:
+		return nil, failure
+	default:
 		return nil, err
 	}
-	fresh, err := k.fetch(ctx)
+	fresh, err := k.await(ctx, read)
 	if err != nil {
 		return nil, err
 	}
