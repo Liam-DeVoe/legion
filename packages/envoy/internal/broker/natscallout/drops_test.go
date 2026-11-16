@@ -12,11 +12,14 @@ import (
 func TestADropAsksForItsDetailOnlyWhenNoneWaitsToBeLogged(t *testing.T) {
 	d := &drops{}
 	require.True(t, d.add(dropHubGaveUp), "the first drop was not asked for its detail")
-	d.note("the first")
+	d.note(dropHubGaveUp, "the first")
 	for range 3 {
 		require.False(t, d.add(dropHubGaveUp), "a drop was asked for its detail while one waited to be logged")
 	}
+	require.True(t, d.add(dropUnopened), "another reason's first drop was not asked for its detail")
+	d.note(dropUnopened, "another reason's first")
 	require.EqualValues(t, 4, d.pending[dropHubGaveUp].Load(), "a drop was not counted")
-	require.Equal(t, "the first", *d.first.Swap(nil), "the detail logged is not the first drop's")
-	require.True(t, d.add(dropUnopened), "the first drop after a log line was not asked for its detail")
+	require.Equal(t, "the first", *d.first[dropHubGaveUp].Swap(nil), "the detail logged is not the first drop's")
+	require.Equal(t, "another reason's first", *d.first[dropUnopened].Swap(nil), "a reason's first detail was lost behind another reason's")
+	require.True(t, d.add(dropHubGaveUp), "the first drop after a log line was not asked for its detail")
 }

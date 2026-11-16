@@ -29,7 +29,8 @@ func NewMetrics(registry *metrics.Registry) *Metrics {
 		drops: registry.NewCounter("broker_nats_callout_dropped_total",
 			"Authorization requests the auth service dropped unanswered, whose clients the hub refuses at its own timeout, by reason: "+
 				"past_bounds (the replica already held all it bounds), hub_gave_up (the hub had stopped waiting, by its own clock), "+
-				"unopened (not sealed to the service's curve key) and not_a_request (no authorization request JWT)."),
+				"unopened (not sealed to the service's curve key), not_a_request (no authorization request JWT) and pending_limit "+
+				"(dropped by the NATS client on arrival, past the subscription's pending limits)."),
 	}
 }
 

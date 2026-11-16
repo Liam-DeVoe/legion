@@ -57,14 +57,15 @@ func requireRefusedAtOnce(t *testing.T, url, which string) {
 // A refused client hears its refusal at once even while the broker's log cannot be written. The
 // waiting bound refuses rather than drops so that "its client hears at once, and why"
 // (maxRefusing), and refusals left the delivery goroutine because a log line is a write that can
-// block (deliver). But answer writes the refusal's line before it sends the answer, so while the
-// log is stalled a refusal waits on its line and its client hears nothing until the hub refuses it
-// at its own two-second timeout; and the refusing bound then counts refusals stuck on the log, so
-// once maxRefusing of them are stuck every request past the waiting bound is dropped, from a
-// replica with nothing else to do. On the real stack (a broker whose stdout reader takes 5 KB/s,
-// 3000 session connections at once) 1401 of the 3000, and 47 of 78 connections holding no
-// credential beside them, waited out the client's 2 s, and 471 were dropped past_bounds; the same
-// run against the refusal on the delivery goroutine (8ed6996826's) answered all but none late.
+// block (deliver). At c24391bbc6 answer wrote the refusal's line before it sent the
+// answer, so while the log was stalled a refusal waited on its line and its client heard nothing
+// until the hub refused it at its own two-second timeout; and the refusing bound then counted
+// refusals stuck on the log, so once maxRefusing of them were stuck every request past the
+// waiting bound was dropped, from a replica with nothing else to do. On the real stack (a broker
+// whose stdout reader took 5 KB/s, 3000 session connections at once) 1401 of the 3000, and 47 of 78
+// connections holding no credential beside them, waited out the client's 2 s, and 471 were dropped
+// past_bounds; the same run against the refusal on the delivery goroutine (8ed6996826's) answered
+// all but none late. Now the answer goes out first and the refusal is only counted (answer).
 //
 // Each row stalls the log and then connects with no credential. The last row's bound is one
 // refusal, and its second connection comes after the first refusal's line is stuck.
@@ -94,11 +95,12 @@ func TestARefusalIsAnsweredWhileTheLogCannotBeWritten(t *testing.T) {
 }
 
 // A refusal whose log line cannot be written does not keep its decision slot from the callers
-// behind it. Refused in a slot, a request still holds the slot while answer writes its line
-// (deliver releases it only once answer returns), so while the log is stalled every refusal made
-// in a slot takes that slot out of the replica for good, and once the slots are gone no caller,
-// however live its credential, is decided. With one slot: a connection holding no credential is
-// refused in it, and a live session connecting after it must be admitted inside half a second.
+// behind it. When answer wrote the refusal's line itself, a request refused in a slot still held
+// the slot while that line waited (deliver releases it only once answer returns), so while the log
+// was stalled every refusal made in a slot took that slot out of the replica for good, and once the
+// slots were gone no caller, however live its credential, was decided. With one slot: a connection
+// holding no credential is refused in it, and a live session connecting after it must be admitted
+// inside half a second.
 func TestARefusalStuckOnTheLogHoldsNoDecisionSlot(t *testing.T) {
 	withDecisionSlots(t, 1)
 	keys := testnats.NewCalloutKeys(t)

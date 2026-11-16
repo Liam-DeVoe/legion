@@ -255,7 +255,7 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 // A request past both bounds, the requests waiting for a decision slot and the requests being
 // refused, is dropped unanswered, the hub refuses its client itself at its authorization timeout,
 // and the replica counts each drop under its reason and logs the first in a minute: not from the
-// delivery goroutine, which writes no log line (deliver), but at the heartbeat's next tick, so a
+// delivery goroutine, which writes no log line (deliver), but at the reporter's next tick, so a
 // flood of drops is a counter and a line a minute rather than a line a request. Both bounds are
 // zero here, so the replica drops every request it is sent; of two, both are counted and the
 // first alone is logged.
@@ -616,8 +616,8 @@ func TestARequestTheHubHasGivenUpOnIsDroppedWhateverTheBrokersClockReads(t *test
 			// hub writing whole seconds (hubClock.gaveUp), with a second to spare.
 			time.Sleep(7 * time.Second)
 			release()
-			// The heartbeat moves the count into the metric and then writes the line, so both are
-			// waited for.
+			// The counter moves the count into the metric and the reporter writes the line, each
+			// on its own tick, so both are waited for.
 			testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the drop counted under its reason and logged", func() bool {
 				return strings.Contains(scrape(t, registry), `broker_nats_callout_dropped_total{reason="hub_gave_up"} 1`) &&
 					strings.Contains(log.String(), "hub_gave_up=1")

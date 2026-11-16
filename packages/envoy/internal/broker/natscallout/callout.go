@@ -93,13 +93,15 @@ const pendingBytes = 64 << 20
 // step it was in, never with a late answer.
 //
 // It is a var so a test can raise it: at 2.5 s the same blocking stub makes a client fail its
-// connect, which is the control this budget exists for (deadline_test.go).
+// connect, which is the control this budget exists for (deadline_test.go). A replica reads it once,
+// as it starts (replicaSettings).
 var decideBudget = 1500 * time.Millisecond
 
-// budgetRefusal is what a decision that ran past decideBudget is refused with, naming the step it
-// was in. Its label in the decision counter is labelBudget.
+// budgetRefusal is what a decision that ran past its budget is refused with, naming the step it
+// was in. Its label in the decision counter is labelBudget. It names no duration: the budget is
+// the replica's (replicaSettings), and the step is what an operator acts on.
 func budgetRefusal(step string) *Refusal {
-	return refuse(labelBudget, fmt.Sprintf("decision exceeded its %s budget at %s", decideBudget, step))
+	return refuse(labelBudget, "decision exceeded its budget at "+step)
 }
 
 // drainBound bounds how long Close waits for the subscription to finish draining the requests the
@@ -159,24 +161,25 @@ type Service struct {
 	// it ends, nats.go:3778-3784), after which deliver adds nothing more to wait.
 	delivered chan struct{}
 	// beat is when the heartbeat last took a decision slot, in Unix nanoseconds; done ends the
-	// heartbeat at Close, and beaten is closed once it has ended, which Close waits for.
-	beat   atomic.Int64
-	done   chan struct{}
-	beaten chan struct{}
+	// heartbeat and the counter at Close, and beaten and counted are closed once each has ended,
+	// which Close waits for.
+	beat            atomic.Int64
+	done            chan struct{}
+	beaten, counted chan struct{}
 	// stopReport stops the reporter, which Close does once every request has been answered, and
 	// reported is closed once its last report is written (reportWhileRunning).
 	stopReport, reported chan struct{}
 	closeOnce            sync.Once
-	// settings are livenessTick, livenessBound, maxWaiting and maxRefusing as start read them. The
-	// heartbeat, the delivery goroutine and Livez read these, never the package's variables, which
-	// a test sets and restores while replicas run: read from those goroutines, each write would
-	// race with them.
+	// settings are livenessTick, livenessBound, decideBudget, maxWaiting and maxRefusing as start
+	// read them. The heartbeat, the counter, the reporter, the delivery goroutine and Livez read
+	// these, never the package's variables, which a test sets and restores while replicas run:
+	// read from those goroutines, each write would race with them.
 	settings replicaSettings
 }
 
 // replicaSettings are the settings a replica reads once, as it starts.
 type replicaSettings struct {
-	tick, bound             time.Duration
+	tick, bound, budget     time.Duration
 	maxWaiting, maxRefusing int
 }
 
@@ -283,14 +286,16 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	s := &Service{
 		conn: conn,
 		answer: &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide,
-			drops: &drops{}, hub: newHubClock(), refusals: &tally{}, failures: &tally{}},
+			drops: &drops{}, hub: newHubClock(), dropped: &tally{}, refusals: &tally{}, failures: &tally{}},
 		slots:      make(chan struct{}, concurrentDecisions),
 		delivered:  make(chan struct{}),
 		done:       make(chan struct{}),
 		beaten:     make(chan struct{}),
+		counted:    make(chan struct{}),
 		stopReport: make(chan struct{}),
 		reported:   make(chan struct{}),
-		settings:   replicaSettings{tick: livenessTick, bound: livenessBound, maxWaiting: maxWaiting, maxRefusing: maxRefusing},
+		settings: replicaSettings{tick: livenessTick, bound: livenessBound, budget: decideBudget,
+			maxWaiting: maxWaiting, maxRefusing: maxRefusing},
 	}
 	s.beat.Store(time.Now().UnixNano())
 	s.sub, err = conn.QueueSubscribe(authSubject, queueGroup, s.deliver)
@@ -313,6 +318,7 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		return nil, fmt.Errorf("natscallout: bound the requests held for %s: %w", authSubject, err)
 	}
 	go s.beatWhileTurning()
+	go s.countWhileRunning()
 	go s.reportWhileRunning()
 	return s, nil
 }
@@ -336,7 +342,7 @@ func (s *Service) deliver(msg *nats.Msg) {
 	}
 	received := time.Now()
 	if s.waiting.Add(1) <= int64(s.settings.maxWaiting) {
-		ctx, cancel := context.WithDeadline(context.Background(), received.Add(decideBudget))
+		ctx, cancel := context.WithDeadline(context.Background(), received.Add(s.settings.budget))
 		s.wait.Add(1)
 		go func() {
 			defer s.wait.Done()
@@ -364,10 +370,10 @@ func (s *Service) deliver(msg *nats.Msg) {
 	}
 	s.refusing.Add(-1)
 	// Dropped: the hub refuses its client at its authorization timeout. Counted, and logged by the
-	// heartbeat (reportDropped), not here: a log line is a write, which can block, and past both
+	// reporter (reportWhileRunning), not here: a log line is a write, which can block, and past both
 	// bounds it would be a line a request.
 	if s.answer.drops.add(dropPastBounds) {
-		s.answer.drops.note(pastBoundsDetail)
+		s.answer.drops.note(dropPastBounds, pastBoundsDetail)
 	}
 }
 
@@ -408,6 +414,12 @@ func (s *Service) Close() {
 func (s *Service) close() {
 	close(s.done)
 	<-s.beaten
+	<-s.counted
+	// nats.go's count of the requests it dropped past the pending limits is read while the
+	// subscription still answers it: once the subscription has closed, Dropped answers
+	// ErrBadSubscription (nats.go v1.53.1, nats.go:5832), and what it dropped since the counter's
+	// last tick would never reach the metric.
+	s.countDrops()
 	if s.conn.IsConnected() {
 		reconnects := s.conn.Stats().Reconnects
 		if s.sub.Drain() == nil {
@@ -424,6 +436,9 @@ func (s *Service) close() {
 	}
 	s.awaitDelivered()
 	s.wait.Wait()
+	// The drops counted while the last requests were answered, which the reporter's last report
+	// then logs.
+	s.countDrops()
 	close(s.stopReport)
 	select {
 	case <-s.reported:
@@ -475,12 +490,13 @@ type answerer struct {
 	deps         Deps
 	services     []ServiceEntry
 	decide       decideFunc
-	// drops counts what the service drops unanswered, refusals the connections it refuses by
-	// label and failures the answers it could not send, by step, each for the reporter to log
-	// (reportWhileRunning); hub reads each hub server's clock for the requests it has given up on.
-	drops              *drops
-	refusals, failures *tally
-	hub                *hubClock
+	// drops is the hand-off of what the service drops unanswered, which the counter moves into
+	// dropped (countDrops); dropped, refusals by label and failures, the answers it could not send,
+	// by step, are the tallies the reporter logs (reportWhileRunning). hub reads each hub server's
+	// clock for the requests it has given up on.
+	drops                       *drops
+	dropped, refusals, failures *tally
+	hub                         *hubClock
 }
 
 // refusalWork, when a test sets it, runs in every refusal before it is answered: a stand-in,
@@ -545,15 +561,16 @@ func (a *answerer) hubGaveUp(claims *jwt.AuthorizationRequestClaims, received ti
 // answer opens msg, settles it and answers it, sealed to the server's key; received is when the
 // request reached the subscription, from which the answer is timed. A request it cannot open or
 // read is dropped unanswered: the server refuses that connection at its authorization timeout, and
-// the drop is counted and logged (drops).
+// the drop is counted (drops) and reported (reportWhileRunning).
 //
 // So is a request the server has already given up on, without a decision or a broker call: nobody
 // waits for its answer. Whether it has is read from the server's own clock (hubClock), so no skew
 // between the server's clock and this broker's drops a request the server still waits for. A
-// request in the clear is refused under its own label and logged at error before that, whatever
-// else is true of it: the line is how an operator learns the hub lost its curve key, which a drop
-// would hide. The expiry does not set the budget either: written in whole seconds, it can name a
-// moment up to a second before the server gives up, and would cut a budget of 1.5 s by as much.
+// request in the clear is refused under its own label before that, whatever else is true of it,
+// and the reporter writes its refusals at error: that line is how an operator learns the hub lost
+// its curve key, which a drop would hide. The expiry does not set the budget either: written in
+// whole seconds, it can name a moment up to a second before the server gives up, and would cut a
+// budget of 1.5 s by as much.
 func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	serverXKey := msg.Header.Get(serverXKeyHeader)
 	data := msg.Data
@@ -561,7 +578,7 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 		opened, err := a.xkey.Open(data, serverXKey)
 		if err != nil {
 			if a.drops.add(dropUnopened) {
-				a.drops.note("did not open with the service's curve key: " + err.Error())
+				a.drops.note(dropUnopened, "did not open with the service's curve key: "+err.Error())
 			}
 			return
 		}
@@ -570,7 +587,7 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	claims, err := jwt.DecodeAuthorizationRequestClaims(string(data))
 	if err != nil {
 		if a.drops.add(dropUnreadable) {
-			a.drops.note("no authorization request JWT: " + err.Error())
+			a.drops.note(dropUnreadable, "no authorization request JWT: "+err.Error())
 		}
 		return
 	}
@@ -591,7 +608,7 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 		refused = refuse(labelUnsealed, "the authorization request was not sealed to the service's key")
 	case a.hubGaveUp(claims, received):
 		if a.drops.add(dropHubGaveUp) {
-			a.drops.note(fmt.Sprintf("the hub %s had given up on a request from %s, expiring at %s on its clock",
+			a.drops.note(dropHubGaveUp, fmt.Sprintf("the hub %s had given up on a request from %s, expiring at %s on its clock",
 				claims.Server.ID, req.Host, time.Unix(claims.Expires, 0).UTC().Format(time.RFC3339)))
 		}
 		return

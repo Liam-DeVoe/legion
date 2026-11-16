@@ -114,8 +114,8 @@ func TestConnectionProofVerifiesWithBrokertoken(t *testing.T) {
 			nats.UserJWT(func() (string, error) { return natscred.PlaceholderJWT, nil }, sign),
 			nats.TokenHandler(func() string { token, _ := current(context.Background()); return token }))
 		require.ErrorIs(t, err, nats.ErrAuthorization)
-		require.Eventually(t, func() bool { return strings.Contains(rig.log.String(), `reason="proof invalid: ath"`) },
-			5*time.Second, 50*time.Millisecond, "the service did not refuse the rotated token for its proof's 'ath':\n%s", rig.log.String())
+		require.Eventually(t, func() bool { return rig.refused(t, "proof_invalid") >= 1 },
+			5*time.Second, 50*time.Millisecond, "the service did not refuse the rotated token for its proof:\n%s", rig.log.String())
 	})
 }
 

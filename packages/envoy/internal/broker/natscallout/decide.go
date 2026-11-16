@@ -47,8 +47,9 @@ type Deps struct {
 	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
-	// Log records each refusal with the connection's host, never its credential. Nil logs
-	// nothing.
+	// Log is where the service's reporter writes, at most once a minute for each kind, the
+	// refusals, failed answers and drops it counted, each kind's first with the connection's host,
+	// never its credential (reportWhileRunning). Nil logs nothing.
 	Log *slog.Logger
 	// Metrics is the registry the service's decisions are counted on (NewMetrics); nil counts
 	// nothing.
@@ -98,12 +99,12 @@ const (
 	credentialNone    = "none"
 )
 
-// Refusal is a connection the service refuses. Reason is the one line the server is answered with
-// and the broker logs, and names nothing of the credential. Label is the decision counter's reason
-// label, one fixed word per kind of refusal, so a reworded Reason changes no series. Cause, when a
-// step on the broker's side failed, is why: it is logged as a field of its own and never answered.
-// The credential the connection presented is the request's own (credentialKind), which the answer
-// reads where it logs and counts.
+// Refusal is a connection the service refuses. Reason is the one line the server is answered with,
+// and names nothing of the credential. Label is the decision counter's reason label, one fixed
+// word per kind of refusal, so a reworded Reason changes no series. Cause, when a step on the
+// broker's side failed, is why: it is never answered, and the reporter's line carries it in the
+// label's first detail (answer). The credential the connection presented is the request's own
+// (credentialKind), which the answer reads where it counts.
 type Refusal struct {
 	Label, Reason string
 	Cause         error
@@ -115,7 +116,7 @@ func refuse(label, reason string) *Refusal {
 	return &Refusal{Label: label, Reason: reason}
 }
 
-// because records cause as r's Cause, for the log line.
+// because records cause as r's Cause, for the reporter's line.
 func (r *Refusal) because(cause error) *Refusal {
 	r.Cause = cause
 	return r

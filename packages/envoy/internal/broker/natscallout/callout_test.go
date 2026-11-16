@@ -191,7 +191,9 @@ func TestRequestsAreEncryptedToTheServiceKey(t *testing.T) {
 // of it, a request the hub has already given up on included: the label is how an operator learns
 // the hub's callout lost its curve key, which a drop would hide. A hub with no curve key sends two
 // requests; the second is held past its lifetime, after the first has shown the replica the hub's
-// clock, and both are refused as unsealed, none dropped.
+// clock, and both are refused as unsealed, none dropped. The first is in the reporter's first
+// line; the late one, inside the same minute, is in the line the replica writes as it closes, at
+// error too.
 func TestAnUnsealedRequestIsRefusedEvenWhenTheHubHasGivenUpOnIt(t *testing.T) {
 	target, entered, release := holdDeliveries(t)
 	keys := testnats.NewCalloutKeys(t)
@@ -218,10 +220,14 @@ func TestAnUnsealedRequestIsRefusedEvenWhenTheHubHasGivenUpOnIt(t *testing.T) {
 	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "both requests refused as unsealed", func() bool {
 		return strings.Contains(scrape(t, registry), `outcome="refused",reason="unsealed"} 2`)
 	})
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the requests in the clear logged at error", func() bool {
-		return strings.Contains(log.String(), "level=ERROR") && strings.Contains(log.String(), "arrived in the clear")
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the first request in the clear logged at error", func() bool {
+		return strings.Contains(log.String(), "arrived in the clear")
 	})
 	require.NotContains(t, scrape(t, registry), `reason="hub_gave_up"`, "the request in the clear was dropped")
+	service.Close()
+	lines := log.Lines("arrived in the clear")
+	require.Equal(t, 2, strings.Count(lines, "level=ERROR"), "each request in the clear was not logged at error:\n%s", lines)
+	require.Equal(t, 2, strings.Count(lines, "unsealed=1"), "the late request in the clear was not in the closing line:\n%s", lines)
 }
 
 // A session's own grant refuses it the authorization subject, and the guard that makes that so is
