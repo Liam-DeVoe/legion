@@ -73,7 +73,7 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 	documents := make([]string, 0, backfilledDocuments)
 	for index := range backfilledDocuments {
 		slug := fmt.Sprintf("spec%02d", index)
-		id := createOwedDocument(t, database, service, "", slug, nestedSpec(slug), "")
+		id := createOwedDocument(t, database, service, "CORE-1", "", slug, nestedSpec(slug), "")
 		settle(t, database, id)
 		documents = append(documents, id)
 	}
