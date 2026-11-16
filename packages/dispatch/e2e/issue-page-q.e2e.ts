@@ -703,15 +703,18 @@ test("under Decisions a row draws the outline's layout, short names and the six-
         // words held back, and the long one that waits on the reader is drawn whole.
         const cutOf = async (question: string) =>
           (await rowLayouts(page)).find((row) => row.id === question);
+        // The control that opens a cut text, in the page's own words: "more · N words".
+        const more = new RegExp(
+          `^${CONTROL_LABELS.read_more} · ([\\d,]+) ${CONTROL_LABELS.read_more_words}$`,
+          "u"
+        );
         await expect
           .poll(async () => (await cutOf(seeded.answered))?.more ?? null, {
             message: `${where} does not cut the long answered question`,
           })
-          .toMatch(/^more · [\d,]+ words$/u);
+          .toMatch(more);
         const hidden = Number(
-          /^more · ([\d,]+) words$/u
-            .exec((await cutOf(seeded.answered))?.more ?? "")?.[1]
-            ?.replace(/,/gu, "")
+          more.exec((await cutOf(seeded.answered))?.more ?? "")?.[1]?.replace(/,/gu, "")
         );
         expect(
           hidden,
