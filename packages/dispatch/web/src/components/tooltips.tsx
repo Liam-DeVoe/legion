@@ -49,7 +49,7 @@ export interface PageWords {
   readonly PROPERTY_LABELS: Words<
     "advances" | "claim" | "components" | "labels" | "priority" | "repository"
   >;
-  readonly STATE_LINES: Words<"advances_at_cap" | "subscription_wider">;
+  readonly STATE_LINES: Words<"advances_at_cap" | "github_unreadable" | "subscription_wider">;
   /** The mark of an element whose text is the page's own words (`data-page-chrome`). */
   readonly pageChrome: Readonly<Record<string, string>>;
   /** The mark of an element whose text a person or an agent wrote (`data-author-text`). */
