@@ -1558,6 +1558,22 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
   expect(refreshesCollaborators(reprioritised)).toBe(false);
 });
 
+// The new issue page names every node from one batched read (`referenceTargetsQuery`), keyed by
+// the set of addresses it asked for and by no issue (dispatch://INFRA-1196 part G, R12). A write
+// that renames a node the page names marks it stale, so the page draws the new name without a
+// reload; a write that renames nothing leaves it alone, because the set can be a long request.
+test("an issue's new title marks the batched names stale, and a write that renames nothing does not", () => {
+  const namesStale = (incoming: DispatchEvent): boolean => {
+    const client = new QueryClient();
+    const names: QueryKey = ["reference-targets", ["dispatch://CORE-1", "dispatch://CORE-2"]];
+    client.setQueryData(names, { targets: [] });
+    refreshQueries(client, eventRefreshTargets(incoming, "alice"));
+    return client.getQueryState(names)?.isInvalidated === true;
+  };
+  expect(namesStale(event("issue.updated", issue({ changed: ["title"] })))).toBe(true);
+  expect(namesStale(event("issue.updated", issue({ changed: ["priority"] })))).toBe(false);
+});
+
 /** One write of priority linkage-closure by bob, as the server appends it: ownerless and quiet. */
 function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent {
   return event(
