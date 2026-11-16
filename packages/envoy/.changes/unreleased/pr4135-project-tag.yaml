@@ -13,3 +13,6 @@ body: |-
   from a private project's. A secret with no tag reads as before, and its line of the policy
   version is unchanged, so no deployed version moves; tagging a secret moves the version and ends
   the grants decided before it.
+time: 2026-11-16T02:09:14Z
+custom:
+    Issue: pr4135
