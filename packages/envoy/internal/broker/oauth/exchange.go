@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // tokenTypeAccessToken is RFC 8693's own name for an access token: the only kind this provider's
@@ -105,7 +106,9 @@ const (
 )
 
 // KeySource answers the public key a token's header names, which is what the library's
-// jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set.
+// jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set. An error that
+// wraps oidc.ErrKeySet is an issuer whose set could not be read, which the exchange answers 503
+// temporarily_unavailable (keySetUnavailable) rather than as a token it refused.
 type KeySource interface {
 	// Key is the public key a token naming kid and signed with alg is checked against.
 	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
@@ -406,6 +409,18 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 	}
 }
 
+// keySetUnavailable reports whether err, the library's refusal of an exchange request, is a subject
+// or actor token whose issuer's key set could not be read: keyFunc's oidc.ErrKeySet, no verdict on
+// the token at all. The exchange answers it 503 temporarily_unavailable, never the 400
+// invalid_request a token that does not verify gets: brokerclient, which every pod and daemon
+// trades with, stops for good on a 4xx refusal (RefusedError.Permanent) and trades again after a
+// 5xx. The library keeps keyFunc's error as a jwt.ValidationError's Inner, which errors.Is does
+// not reach, so it is read from there.
+func keySetUnavailable(err error) bool {
+	var invalid *jwt.ValidationError
+	return errors.As(err, &invalid) && errors.Is(invalid.Inner, oidc.ErrKeySet)
+}
+
 // exchangeGrant is the token endpoint's RFC 8693 branch: a caller's platform identity for a
 // Dispatch access token, bound to the key its DPoP proof names.
 //
@@ -445,6 +460,9 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	request, err := p.oauth.NewAccessRequest(ctx, r, oauthstore.NewExchangeSession())
 	noteClient(ctx, request)
+	if keySetUnavailable(err) {
+		err = oauth2.ErrTemporarilyUnavailable.WithHint("The issuer of the presented token cannot be reached, so the token could not be checked; try again shortly.").WithWrap(err).WithDebugError(err)
+	}
 	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return

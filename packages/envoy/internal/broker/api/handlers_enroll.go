@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // createEnrollmentBody is POST /v1/enrollments's body (the shared broker contract's
@@ -132,6 +133,9 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 	case errors.Is(err, enroll.ErrPodIdentity):
 		writeError(w, http.StatusForbidden, "POD_IDENTITY_MISMATCH", err.Error())
 		return
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w, "verify the pod's token", err)
+		return
 	case errors.Is(err, enroll.ErrPodSelfEnrollOnly):
 		writeError(w, http.StatusForbidden, "POD_SELF_ENROLL_ONLY", err.Error())
 		return
@@ -233,6 +237,9 @@ func (s *server) renewEnrollment(w http.ResponseWriter, r *http.Request, id stri
 		return
 	case errors.Is(err, enroll.ErrPodIdentity):
 		writeError(w, http.StatusForbidden, "POD_IDENTITY_MISMATCH", err.Error())
+		return
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w, "verify the pod's token", err)
 		return
 	case errors.Is(err, enroll.ErrPodTokenRequired):
 		slog.Warn("broker: pod enrollment renewal refused: projected token required", "enrollment", id)

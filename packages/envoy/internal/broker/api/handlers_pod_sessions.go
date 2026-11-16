@@ -47,7 +47,8 @@ type podSessionResponse struct {
 //
 // The body's token is verified with the verifier an enrolling pod's token is verified with
 // (Deps.Enroll.Pod), which the serviceAuth class has already proved the broker has: an expired
-// token is 401 POD_TOKEN_EXPIRED and one that does not verify 401 POD_TOKEN_INVALID. The pod it
+// token is 401 POD_TOKEN_EXPIRED, one that does not verify 401 POD_TOKEN_INVALID, and one whose
+// issuer cannot be reached 503 ISSUER_UNAVAILABLE (writeIssuerUnavailable). The pod it
 // names must not be the caller's own: a token naming the account the caller logs in as and the
 // very pod the caller's own token names is 403 POD_CALLER_IS_THE_POD. A registrar records which
 // pod may write under which name, and a pod that wrote its own row would pick the name it
@@ -72,6 +73,9 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 	switch {
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_EXPIRED", "the pod's ServiceAccount token has expired")
+		return
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w, "verify the pod's ServiceAccount token", err)
 		return
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_INVALID", "the pod's ServiceAccount token does not verify")
