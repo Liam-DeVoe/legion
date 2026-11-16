@@ -2,16 +2,17 @@ package going
 
 // repeats.go holds the statistics of a bake-off run that asks each case more than once: how a
 // model's right count spreads over the repeats, and the paired test of two models over the same
-// cases and the same repeats, which says whether the difference in their right choices is real
-// or the noise of the calls themselves.
+// cases and the same repeats, which says how far a difference in their right choices can be
+// trusted beyond the noise of the calls themselves. The test is evidence beside R7's choice and
+// names no model: Choose ranks by the right choices alone.
 
 import (
 	"math"
 	"math/big"
 )
 
-// PairedAlpha is the paired test's two-sided level: a difference whose p-value is under it is
-// real, and any other is noise.
+// PairedAlpha is the paired test's two-sided level, which PairedTest.Real reads the p-value
+// against. It is the test's own reading, reported beside the choice, and no choice reads it.
 const PairedAlpha = 0.05
 
 // Spread is how a count varied over a run's repeats: its mean, its least and greatest value, and
@@ -56,8 +57,10 @@ type PairedTest struct {
 	Pairs  int `json:"pairs"`
 	Better int `json:"better"`
 	Worse  int `json:"worse"`
-	// PValue is McNemar's exact two-sided p-value on Better and Worse, and Real whether it is
-	// under PairedAlpha.
+	// PValue is McNemar's exact two-sided p-value on Better and Worse: the chance that two
+	// models answering equally well split their discordant pairs at least this unevenly. Real
+	// is whether it is under PairedAlpha. Both say how far a lead can be trusted, and neither
+	// names a model.
 	PValue float64 `json:"p_value"`
 	Real   bool    `json:"real"`
 	// MeanDifference is this model's right count less the other's in one repeat, averaged over

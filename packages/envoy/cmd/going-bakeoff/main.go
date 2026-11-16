@@ -7,29 +7,35 @@
 // so a drift of the endpoint over the run reaches every model alike, and the accuracies, the
 // latencies, the display rates and both fits pool every answer of every repeat.
 //
-// It prints a markdown table and writes going/decision_models.json, which the server reads its
-// thresholds from (R11). Beside the pooled table it prints each repeat's right choices, their
-// spread, the cases a model chose right in some repeats and wrong in others, and the paired test
-// of each two models over the same cases and repeats (going.ComparePaired), which says whether
-// the difference in their right choices is real or noise; R7's rule names the model by it
-// (choose), and the table says which branch of the rule did. --choose names the model to record
-// as chosen in place of the rule's, for a choice a person made on more than the measurement; it
-// must be a measured model that meets R7's floors, and the table prints the rule's choice beside
-// it.
+// It prints a markdown table and writes going/decision_models.json (going.EncodeRecords), which
+// the server reads its thresholds from (R11). Beside the pooled table it prints each repeat's
+// right choices, their spread, the cases a model chose right in some repeats and wrong in others,
+// and the paired test of each two models over the same cases and repeats (going.ComparePaired).
 //
-//	going-bakeoff --models jev-latest,jev-preview --endpoint https://api.typesafe.ai --key-file <file> [--repeats <n>] [--choose <model>]
+// R7's rule names the chosen model (going.Choose): of the models that meet R7's floors with an
+// action fit that holds, the one with the most right choices pooled over every repeat. Where the
+// most right choices are level, a display fit breaks the tie, and nothing else does. Where that
+// leaves models level, the rule names none: the run writes its record with no model chosen, says
+// so and exits non-zero, and the architect names one of the level models with --tie-break and
+// says why with --tie-reason, which the record keeps. A tie-break on a run the rule decides is
+// refused, and so is one with no reason. The paired test is printed and recorded beside the
+// choice as evidence of how far the lead in right choices can be trusted; it names no model.
+//
+//	going-bakeoff --models jev-latest,jev-preview --endpoint https://api.typesafe.ai --key-file <file> [--repeats <n>] [--tie-break <model> --tie-reason <why>]
+//	going-bakeoff --from-record going/decision_models.json [--tie-break <model> --tie-reason <why>]
+//
+// --from-record measures nothing: it puts R7's rule to a record a run wrote, prints the run's
+// table with what the rule names, and writes the record to --out, which is how an architect's
+// tie-break reaches the run that tied.
 //
 // Run it from inside the envoy module: the case file and the record default to their committed
 // paths under the module's root. It never prints the key. With no key it says so, writes no fit
 // and exits non-zero; with fewer than 80 cases or fewer than 20 chart-worthy cases run, the run is
-// void and writes nothing. The record it writes is Go's indented JSON; run
-// `bunx biome format --write going/decision_models.json` from the module after a run, since the
-// repository's lint job holds every JSON file to Biome's layout.
+// void and writes nothing.
 package main
 
 import (
 	"bufio"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -93,20 +99,6 @@ type measured struct {
 	// right, which the paired test pairs.
 	repeats [][]answer
 	rights  [][]bool
-	// meetsFloors is whether the model reaches R7's floors and its action fit holds, and
-	// right the count of right choices over every repeat, which ranks the models that do.
-	meetsFloors bool
-	right       int
-}
-
-// decision is what R7's rule names: named is the rule's model and branch the branch of the rule
-// that named it (going.ChosenOnly, ChosenReal or ChosenNoise); test is the paired test of named
-// against runnerUp, the two leading models that meet the floors, nil where fewer than two do.
-// chosen is the model the record marks chosen: named, or the model --choose names.
-type decision struct {
-	named, runnerUp, chosen *measured
-	branch                  string
-	test                    *going.PairedTest
 }
 
 func main() {
@@ -119,15 +111,40 @@ func main() {
 func run() error {
 	root, rootErr := moduleRoot()
 	var (
-		models    = flag.String("models", "", "comma-separated model ids to measure; empty measures every model the endpoint serves")
-		endpoint  = flag.String("endpoint", "https://api.typesafe.ai", "the System One endpoint's base URL")
-		keyFile   = flag.String("key-file", "", "a file holding the endpoint's key")
-		casesArg  = flag.String("cases", filepath.Join(root, "going", "bakeoff", "cases.json"), "the case set")
-		outArg    = flag.String("out", filepath.Join(root, "going", "decision_models.json"), "the record to write")
-		repeats   = flag.Int("repeats", 1, "how many times each model is asked every case; the accuracies, the fits and the choice pool every repeat")
-		chooseArg = flag.String("choose", "", "the measured model to record as chosen in place of the rule's; it must meet R7's floors")
+		models     = flag.String("models", "", "comma-separated model ids to measure; empty measures every model the endpoint serves")
+		endpoint   = flag.String("endpoint", "https://api.typesafe.ai", "the System One endpoint's base URL")
+		keyFile    = flag.String("key-file", "", "a file holding the endpoint's key")
+		casesArg   = flag.String("cases", filepath.Join(root, "going", "bakeoff", "cases.json"), "the case set")
+		outArg     = flag.String("out", filepath.Join(root, "going", "decision_models.json"), "the record to write")
+		repeats    = flag.Int("repeats", 1, "how many times each model is asked every case; the accuracies, the fits and the choice pool every repeat")
+		fromRecord = flag.String("from-record", "", "a record a run wrote: put R7's rule to it, print its table and write it to --out, measuring nothing")
+		tieBreak   = flag.String("tie-break", "", "the model the architect names where the run is level on right choices and on the display fit; refused on any other run")
+		tieReason  = flag.String("tie-reason", "", "why the architect named the --tie-break model, which the record keeps")
 	)
 	flag.Parse()
+	if (*tieBreak == "") != (strings.TrimSpace(*tieReason) == "") {
+		return errors.New("--tie-break and --tie-reason go together: a person names a model only with a reason the record keeps")
+	}
+	if *fromRecord != "" {
+		for _, name := range []string{"models", "endpoint", "key-file", "cases", "repeats"} {
+			if isSet(name) {
+				return fmt.Errorf("--from-record measures nothing, so it takes no --%s", name)
+			}
+		}
+		if rootErr != nil && !isSet("out") {
+			return fmt.Errorf("finding the envoy module for the default --out: %w; run from inside packages/envoy or pass --out", rootErr)
+		}
+		records, err := readRecords(*fromRecord)
+		if err != nil {
+			return err
+		}
+		source := fmt.Sprintf("Read from %s, which a run wrote; nothing was measured again", *fromRecord)
+		if err := conclude(os.Stdout, records, source, *tieBreak, *tieReason, *outArg); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "wrote %s\n", *outArg)
+		return nil
+	}
 	if rootErr != nil && (!isSet("cases") || !isSet("out")) {
 		return fmt.Errorf("finding the envoy module for the default paths: %w; run from inside packages/envoy or pass --cases and --out", rootErr)
 	}
@@ -230,46 +247,84 @@ func run() error {
 		}
 	}
 
-	ruled := choose(results)
-	ruled.chosen = ruled.named
-	if *chooseArg != "" && ruled.named != nil {
-		ruled.chosen = nil
-		for _, m := range results {
-			if m.record.Model == *chooseArg {
-				ruled.chosen = m
-			}
-		}
-		if ruled.chosen == nil || !ruled.chosen.meetsFloors {
-			return fmt.Errorf("--choose %q names no measured model that meets R7's floors", *chooseArg)
-		}
+	records := make([]going.Record, 0, len(results))
+	for _, m := range results {
+		records = append(records, m.record)
 	}
-	fmt.Print(render(results, ruled, len(served), unmeasured))
+	source := fmt.Sprintf("The endpoint serves %d model(s)", len(served))
+	if len(unmeasured) > 0 {
+		source += "; not measured: " + strings.Join(unmeasured, ", ")
+	}
+	err = conclude(os.Stdout, records, source, *tieBreak, *tieReason, *outArg)
 	for _, m := range results {
 		printMisses(os.Stderr, m)
 	}
-	if ruled.chosen == nil {
-		return errors.New("no model meets R7's floors with an action fit that holds, so no record is written")
-	}
-	records := make([]going.Record, 0, len(results))
-	for _, m := range results {
-		m.record.Chosen = m == ruled.chosen
-		switch {
-		case !m.record.Chosen:
-		case m == ruled.named:
-			m.record.ChosenBy = ruled.branch
-		default:
-			m.record.ChosenBy = going.ChosenByPerson
-		}
-		records = append(records, m.record)
-	}
-	raw, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(*outArg, append(raw, '\n'), 0o644); err != nil {
+	fmt.Fprintf(os.Stderr, "wrote %s\n", *outArg)
+	return nil
+}
+
+// readRecords is the record a run wrote, each entry holding one count of right choices for each
+// of the run's repeats.
+func readRecords(path string) ([]going.Record, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("the record: %w", err)
+	}
+	var records []going.Record
+	if err := json.Unmarshal(raw, &records); err != nil {
+		return nil, fmt.Errorf("the record %s: %w", path, err)
+	}
+	if len(records) == 0 {
+		return nil, fmt.Errorf("the record %s holds no measured model", path)
+	}
+	for _, r := range records {
+		if r.Repeats < 1 || r.Repeats != records[0].Repeats || len(r.RepeatRights) != r.Repeats {
+			return nil, fmt.Errorf("the record %s holds %s with %d repeats and %d repeat counts, against %d repeats for %s", path, r.Model, r.Repeats, len(r.RepeatRights), records[0].Repeats, records[0].Model)
+		}
+	}
+	return records, nil
+}
+
+// conclude puts R7's rule to the run's records, with the architect's tie-break where one is
+// given, prints the run's table and what the rule names to w, and writes the record to out. It
+// writes nothing where a tie-break is refused or no model meets the floors, and where the run is
+// a full tie that no tie-break breaks it writes the record with no model chosen; each of those is
+// an error, so the tool exits non-zero.
+func conclude(w io.Writer, records []going.Record, source, tieBreak, tieReason, out string) error {
+	choice := going.Choose(records)
+	var refused error
+	if tieBreak != "" {
+		choice, refused = choice.Break(tieBreak, tieReason)
+	}
+	fmt.Fprint(w, render(records, choice, source))
+	switch {
+	case refused != nil:
+		return fmt.Errorf("--tie-break %s is refused: %w; no record is written", tieBreak, refused)
+	case len(choice.Level) == 0:
+		return errors.New("no model meets R7's floors with an action fit that holds, so no record is written")
+	}
+	for i := range records {
+		r := &records[i]
+		r.Chosen = r.Model == choice.Model
+		r.ChosenBy, r.ChosenReason = "", ""
+		if r.Chosen {
+			r.ChosenBy, r.ChosenReason = choice.By, choice.Reason
+		}
+	}
+	raw, err := going.EncodeRecords(records)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "wrote %s\n", *outArg)
+	if err := os.WriteFile(out, raw, 0o644); err != nil {
+		return err
+	}
+	if choice.Model == "" {
+		return fmt.Errorf("wrote %s with no model chosen: %s are level on right choices and on the display fit, so R7's rule names none, and the architect names one: going-bakeoff --from-record %s --tie-break <model> --tie-reason <why>",
+			out, modelList(choice.Level), out)
+	}
 	return nil
 }
 
@@ -453,7 +508,6 @@ func score(m *measured) {
 			latencies = append(latencies, float64(a.latency.Microseconds())/1000)
 		}
 		counted.Total = counted.Named + counted.Other
-		m.right += counted.Total
 		m.rights = append(m.rights, rights)
 		r.RepeatRights = append(r.RepeatRights, counted)
 		totals = append(totals, counted.Total)
@@ -491,7 +545,6 @@ func score(m *measured) {
 		r.ChartThreshold = &chart.Threshold
 	}
 	r.DisplayRates = displayRates(m.repeats)
-	m.meetsFloors = action.Holds && r.NamedAccuracy >= going.NamedFloor && r.OtherAccuracy >= going.OtherFloor && r.P95MS < going.P95CeilingMS
 }
 
 // percentile is the nearest-rank percentile of sorted values, zero for none.
@@ -543,167 +596,176 @@ func paired(a, b *measured) going.PairedTest {
 	return test
 }
 
-// choose is R7's rule. Only the models that meet the floors with an action fit count, and where
-// one does, it is named. Where more do, they are ranked (ranking) and the paired test is put to
-// the first two: where it finds their difference real, the rule names the better-answering of
-// them; where it finds it noise, the ranking names the model. The ranking puts the most right
-// choices first and a real difference is never a tie, so the better-answering model of a real
-// difference is the first too: the branch says whether its lead was measured to be real or the
-// ranking's keys named it. A display fit is a tiebreak only and never names a worse-answering
-// model. The decision is empty where no model meets the floors.
-func choose(results []*measured) decision {
-	var candidates []*measured
-	for _, m := range results {
-		if m.meetsFloors {
-			candidates = append(candidates, m)
-		}
-	}
-	switch len(candidates) {
-	case 0:
-		return decision{}
-	case 1:
-		return decision{named: candidates[0], branch: going.ChosenOnly}
-	}
-	slices.SortStableFunc(candidates, ranking)
-	first, second := candidates[0], candidates[1]
-	test := paired(first, second)
-	d := decision{named: first, runnerUp: second, test: &test, branch: going.ChosenNoise}
-	if test.Real {
-		d.branch = going.ChosenReal
-	}
-	return d
-}
-
-// ranking orders the models that meet the floors as R7 ranks them: the most right choices over
-// every repeat first; a display fit breaks a tie and never outranks a better answer, and a lower
-// p95 breaks what is left.
-func ranking(a, b *measured) int {
-	if a.right != b.right {
-		return cmp.Compare(b.right, a.right)
-	}
-	if fitA, fitB := a.record.ChartThreshold != nil, b.record.ChartThreshold != nil; fitA != fitB {
-		if fitA {
-			return -1
-		}
-		return 1
-	}
-	return cmp.Compare(a.record.P95MS, b.record.P95MS)
-}
-
-// render is the markdown table of the run.
-func render(results []*measured, ruled decision, served int, unmeasured []string) string {
+// render is the markdown table of the run, and what R7's rule names on it.
+func render(records []going.Record, choice going.Choice, source string) string {
 	var b strings.Builder
-	first := results[0].record
+	first := records[0]
 	fmt.Fprintf(&b, "## Decision model bake-off\n\n")
-	fmt.Fprintf(&b, "%d case(s) per model, each asked %d time(s), one `systemone` call each time, run one at a time. The endpoint serves %d model(s)", first.Cases, first.Repeats, served)
-	if len(unmeasured) > 0 {
-		fmt.Fprintf(&b, "; not measured: %s", strings.Join(unmeasured, ", "))
-	}
-	fmt.Fprintf(&b, ". Floors (R7): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. A threshold holds where at least 60%% of its cases are at or above it (R5). Every accuracy, latency, threshold and display rate pools every answer of every repeat.\n\n", going.NamedFloor*100, going.OtherFloor*100, going.P95CeilingMS)
-	b.WriteString("| Model | Released | Named accuracy | Rest accuracy | p50 ms | p95 ms | Action threshold | Cases at or above | Chart threshold | Chart-worthy at or above | Chart-worthy cases used | Unanswered | Floors met |\n")
+	fmt.Fprintf(&b, "%d case(s) per model, each asked %d time(s), one `systemone` call each time, run one at a time. %s. Floors (R7): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. A threshold holds where at least 60%% of the answers it counts are at or above it (R5). Every accuracy, latency, threshold, share and display rate pools every answer of every repeat.\n\n",
+		first.Cases, first.Repeats, source, going.NamedFloor*100, going.OtherFloor*100, going.P95CeilingMS)
+	b.WriteString("| Model | Released | Named accuracy | Rest accuracy | p50 ms | p95 ms | Action threshold | Answers at or above | Chart threshold | Chart-worthy answers at or above | Chart-worthy cases used | Unanswered | Floors met |\n")
 	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
-	for _, m := range results {
-		r := m.record
+	for i := range records {
+		r := &records[i]
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %.0f | %.0f | %s | %.1f%% | %s | %.1f%% | %d | %d | %s |\n",
 			r.Model, r.ReleaseDate,
 			share(r.NamedAccuracy, r.NamedCases*r.Repeats), share(r.OtherAccuracy, r.OtherCases*r.Repeats),
 			r.P50MS, r.P95MS,
 			threshold(r.ActionThreshold), r.ActionShare*100,
 			threshold(r.ChartThreshold), r.ChartShare*100,
-			r.ChartWorthyCases, r.Unanswered, yesNo(m.meetsFloors))
+			r.ChartWorthyCases, r.Unanswered, yesNo(r.MeetsFloors()))
 	}
 	b.WriteString("\n### Display rates\n\n| Model | Label | Answered | Answers | Rate |\n| --- | --- | --- | --- | --- |\n")
-	for _, m := range results {
-		for _, rate := range m.record.DisplayRates {
-			fmt.Fprintf(&b, "| %s | %s | %s | %d of %d | %.1f%% |\n", m.record.Model, rate.Label, rate.Answered, rate.Count, rate.Of, rate.Rate*100)
+	for i := range records {
+		for _, rate := range records[i].DisplayRates {
+			fmt.Fprintf(&b, "| %s | %s | %s | %d of %d | %.1f%% |\n", records[i].Model, rate.Label, rate.Answered, rate.Count, rate.Of, rate.Rate*100)
 		}
 	}
 
 	b.WriteString("\n### Right choices in each repeat\n\nEach cell is the right choices on the cases that name their action, plus those on the rest, and their total, in the order the repeats ran.\n\n| Repeat |")
-	for _, m := range results {
-		fmt.Fprintf(&b, " %s |", m.record.Model)
+	for i := range records {
+		fmt.Fprintf(&b, " %s |", records[i].Model)
 	}
-	b.WriteString("\n| --- |" + strings.Repeat(" --- |", len(results)) + "\n")
+	b.WriteString("\n| --- |" + strings.Repeat(" --- |", len(records)) + "\n")
 	for repeat := range first.Repeats {
 		fmt.Fprintf(&b, "| %d |", repeat+1)
-		for _, m := range results {
-			counted := m.record.RepeatRights[repeat]
+		for i := range records {
+			counted := records[i].RepeatRights[repeat]
 			fmt.Fprintf(&b, " %d + %d = %d |", counted.Named, counted.Other, counted.Total)
 		}
 		b.WriteString("\n")
 	}
 	b.WriteString("\n### Spread of the total over the repeats\n\n| Model | Mean | Min | Max | SD | Right over every repeat | Cases right in some repeats and wrong in others |\n| --- | --- | --- | --- | --- | --- | --- |\n")
-	for _, m := range results {
-		r := m.record
+	for i := range records {
+		r := &records[i]
 		s := r.TotalSpread
 		fmt.Fprintf(&b, "| %s | %.2f of %d | %d | %d | %.2f | %d of %d | %d |\n",
-			r.Model, s.Mean, r.Cases, s.Min, s.Max, s.SD, m.right, r.Cases*r.Repeats, len(r.InconsistentCases))
+			r.Model, s.Mean, r.Cases, s.Min, s.Max, s.SD, r.Right(), r.Cases*r.Repeats, len(r.InconsistentCases))
 	}
 	b.WriteString("\n### Cases right in some repeats and wrong in others\n\n| Model | Case | Right in |\n| --- | --- | --- |\n")
-	for _, m := range results {
-		if len(m.record.InconsistentCases) == 0 {
-			fmt.Fprintf(&b, "| %s | none | |\n", m.record.Model)
+	for i := range records {
+		r := &records[i]
+		if len(r.InconsistentCases) == 0 {
+			fmt.Fprintf(&b, "| %s | none | |\n", r.Model)
 		}
-		for _, c := range m.record.InconsistentCases {
-			fmt.Fprintf(&b, "| %s | %s | %d of %d |\n", m.record.Model, strings.ReplaceAll(c.Words, "|", `\|`), c.Right, c.Of)
+		for _, c := range r.InconsistentCases {
+			fmt.Fprintf(&b, "| %s | %s | %d of %d |\n", r.Model, strings.ReplaceAll(c.Words, "|", `\|`), c.Right, c.Of)
 		}
 	}
-	if len(results) > 1 {
-		fmt.Fprintf(&b, "\n### Paired test\n\nMcNemar's exact test, two-sided at %.2f, on the (case, repeat) pairs: each case's answer from one model in one repeat against the same case's answer from the other in the same repeat. Only the discordant pairs, one model right and the other wrong, tell the two apart. The mean difference is the first model's right choices less the second's in one repeat, averaged over the repeats, with its 95%% interval by Student's t over the repeats. The verdict is the exact test's alone: the t interval leans on a normal approximation, which a handful of repeats that differ at all does not bear out.\n\n", going.PairedAlpha)
-		b.WriteString("| First | Second | Pairs | First right, second wrong | First wrong, second right | p | Mean difference per repeat | 95% interval | Verdict |\n")
+	if len(records) > 1 {
+		b.WriteString("\n### Paired test\n\nMcNemar's exact test, two-sided, on the (case, repeat) pairs: each case's answer from one model in one repeat against the same case's answer from the other in the same repeat. Only the discordant pairs, one model right and the other wrong, tell the two apart, and p is the chance that two models answering equally well split them at least as unevenly. The test names no model: it says how far a lead in right choices can be trusted, and R7's rule does not read it. The mean difference is the first model's right choices less the second's in one repeat, averaged over the repeats, with its 95% interval by Student's t over the repeats, which leans on a normal approximation that a handful of repeats that differ at all does not bear out.\n\n")
+		fmt.Fprintf(&b, "| First | Second | Pairs | First right, second wrong | First wrong, second right | p | p under %.2f | Mean difference per repeat | 95%% interval |\n", going.PairedAlpha)
 		b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
-		for i, m := range results {
-			for _, other := range results[i+1:] {
-				test := paired(m, other)
-				fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %.4g | %+.3f | %s | %s |\n",
-					m.record.Model, other.record.Model, test.Pairs, test.Better, test.Worse, test.PValue,
-					test.MeanDifference, interval(test.Interval), verdict(test.Real))
+		for i := range records {
+			for j := i + 1; j < len(records); j++ {
+				one, other := records[i].Model, records[j].Model
+				test, held := records[i].PairedAgainst(other)
+				if !held {
+					fmt.Fprintf(&b, "| %s | %s | none recorded | | | | | | |\n", one, other)
+					continue
+				}
+				fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %.4g | %s | %+.3f | %s |\n",
+					one, other, test.Pairs, test.Better, test.Worse, test.PValue,
+					yesNo(test.Real), test.MeanDifference, interval(test.Interval))
 			}
 		}
 	}
 	b.WriteString("\n")
-	switch {
-	case ruled.named == nil:
-		b.WriteString("**Choice:** none. No model meets R7's floors with an action threshold that holds.\n")
-	case ruled.chosen != ruled.named:
-		fmt.Fprintf(&b, "**Choice:** `%s`, named by --choose among the models meeting the floors. R7's rule names `%s`. %s\n", ruled.chosen.record.Model, ruled.named.record.Model, ruled.why(len(results)))
+	b.WriteString(says(records, choice))
+	return b.String()
+}
+
+// says is what R7's rule names on the run, or the architect where the rule names none, with the
+// numbers that decided it, and beside a named model its paired tests against the other models
+// that meet the floors.
+func says(records []going.Record, choice going.Choice) string {
+	var candidates []*going.Record
+	most := 0
+	for i := range records {
+		if records[i].MeetsFloors() {
+			candidates = append(candidates, &records[i])
+			most = max(most, records[i].Right())
+		}
+	}
+	if len(candidates) == 0 {
+		return "**Choice:** none. No model meets R7's floors with an action threshold that holds.\n"
+	}
+	answers := candidates[0].Cases * candidates[0].Repeats
+	var b strings.Builder
+	switch choice.By {
+	case going.ChosenByRightChoices:
+		fmt.Fprintf(&b, "**Choice:** `%s`, by the most right choices pooled over every repeat: %d of %d", choice.Model, most, answers)
+		var others []string
+		for _, c := range candidates {
+			if c.Model != choice.Model {
+				others = append(others, fmt.Sprintf("`%s`'s %d", c.Model, c.Right()))
+			}
+		}
+		switch {
+		case len(others) > 0:
+			fmt.Fprintf(&b, ", against %s.", strings.Join(others, ", "))
+		case len(records) == 1:
+			b.WriteString(". It is the one model measured, and it meets R7's floors with an action threshold that holds.")
+		default:
+			b.WriteString(". It is the one model that meets R7's floors with an action threshold that holds.")
+		}
+	case going.ChosenByDisplayFit:
+		var level []string
+		for _, c := range candidates {
+			if c.Right() == most {
+				level = append(level, c.Model)
+			}
+		}
+		fmt.Fprintf(&b, "**Choice:** `%s`, by R7's tiebreak: %s are level at %d of %d right choices pooled over every repeat, and `%s` alone of them has a display fit.",
+			choice.Model, modelList(level), most, answers, choice.Model)
 	default:
-		fmt.Fprintf(&b, "**Choice:** `%s`. %s\n", ruled.named.record.Model, ruled.why(len(results)))
+		fits := "none of them has a display fit"
+		for _, c := range candidates {
+			if c.Model == choice.Level[0] && c.DisplayFit() {
+				fits = "each has a display fit"
+			}
+		}
+		tie := fmt.Sprintf("%s are level at %d of %d right choices pooled over every repeat and %s, so R7's rule names none", modelList(choice.Level), most, answers, fits)
+		if choice.By == going.ChosenByPerson {
+			fmt.Fprintf(&b, "**Choice:** `%s`, named by the architect: %s. The reason recorded: %s", choice.Model, tie, choice.Reason)
+		} else {
+			fmt.Fprintf(&b, "**Choice:** none. %s; the architect names one with `--tie-break <model> --tie-reason <why>`.", tie)
+		}
+	}
+	b.WriteString("\n")
+	var chosen *going.Record
+	for _, c := range candidates {
+		if c.Model == choice.Model {
+			chosen = c
+		}
+	}
+	if chosen == nil || len(candidates) == 1 {
+		return b.String()
+	}
+	fmt.Fprintf(&b, "\nBeside the choice, the paired test of `%s` against each other model that meets the floors. It says how far a lead in right choices can be trusted, and it names no model.\n\n", chosen.Model)
+	for _, c := range candidates {
+		if c == chosen {
+			continue
+		}
+		if test, held := chosen.PairedAgainst(c.Model); held {
+			fmt.Fprintf(&b, "- against `%s`: %d pairs it chose right and the other wrong, %d the other way, p = %.4g\n", c.Model, test.Better, test.Worse, test.PValue)
+		} else {
+			fmt.Fprintf(&b, "- against `%s`: none recorded\n", c.Model)
+		}
 	}
 	return b.String()
 }
 
-// why is the sentence saying which branch of R7's rule named the model, with the numbers that
-// decided it.
-func (d decision) why(measuredModels int) string {
-	switch d.branch {
-	case going.ChosenOnly:
-		s := "**Branch: only.** It is the one model that meets R7's floors with an action threshold that holds"
-		if measuredModels == 1 {
-			s += "; it is the one model measured"
-		}
-		return s + ", so no paired test decides between models."
-	case going.ChosenReal:
-		return fmt.Sprintf("**Branch: real.** McNemar's exact test finds its difference from `%s` real (%d pairs against %d, p = %.4g, under %.2f), so the rule names the better-answering model: %d right choices over the repeats against %d.",
-			d.runnerUp.record.Model, d.test.Better, d.test.Worse, d.test.PValue, going.PairedAlpha, d.named.right, d.runnerUp.right)
-	default:
-		return fmt.Sprintf("**Branch: noise.** McNemar's exact test finds its difference from `%s` noise (%d pairs against %d, p = %.4g, not under %.2f), so the rule's ranking names the model, by %s.",
-			d.runnerUp.record.Model, d.test.Better, d.test.Worse, d.test.PValue, going.PairedAlpha, decidedBy(d.named, d.runnerUp))
+// modelList is the model names, each as code, joined as a sentence lists them.
+func modelList(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = "`" + name + "`"
 	}
-}
-
-// decidedBy names the key of the ranking that puts a before b, with its values.
-func decidedBy(a, b *measured) string {
-	switch fitA, fitB := a.record.ChartThreshold != nil, b.record.ChartThreshold != nil; {
-	case a.right != b.right:
-		return fmt.Sprintf("the most right choices over the repeats, %d against %d", a.right, b.right)
-	case fitA != fitB:
-		return fmt.Sprintf("a display fit, which `%s` lacks, the right choices being equal at %d", b.record.Model, a.right)
-	case a.record.P95MS != b.record.P95MS:
-		return fmt.Sprintf("the lower p95, %.0f ms against %.0f ms, the right choices (%d) and the display fits being alike", a.record.P95MS, b.record.P95MS, a.right)
-	default:
-		return "the order the models were named in, every key of the ranking being equal"
+	if len(quoted) < 2 {
+		return strings.Join(quoted, "")
 	}
+	return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
 }
 
 func share(rate float64, n int) string {
@@ -722,13 +784,6 @@ func interval(v *[2]float64) string {
 		return "none: one repeat"
 	}
 	return fmt.Sprintf("%+.3f to %+.3f", v[0], v[1])
-}
-
-func verdict(isReal bool) string {
-	if isReal {
-		return going.ChosenReal
-	}
-	return going.ChosenNoise
 }
 
 func yesNo(ok bool) string {
