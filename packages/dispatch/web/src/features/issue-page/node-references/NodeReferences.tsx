@@ -1,7 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useState } from "react";
+import { skipToken, useQuery } from "@tanstack/react-query";
+import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { api } from "../../../api/client";
 import { pageHeaderControl, pageInkText, pageQuietText } from "../../../theme/classes";
 import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
@@ -13,10 +14,48 @@ import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
 import { ROW_LINK } from "../row-references";
-import { referenceRows } from "./references-list";
+import { issueItemWords, referenceRows } from "./references-list";
 
 const EDGE_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.edges;
 const KIND_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.kinds;
+
+/** The words of no item, while the list is shut. */
+const NO_ITEM_WORDS: ReadonlyMap<string, string> = new Map();
+
+/**
+ * The words of the comments, messages and questions of the focused row's own issue, by their
+ * ids (`issueItemWords`), while the list is open. They come from the reads the outline is drawn
+ * from, under their own keys and with their own functions (`useIssueTree.ts`), watched and never
+ * asked for, so they cost no request (R21); while a read has no answer its items have no words
+ * here. A row whose address names no issue has no items to read.
+ */
+function useIssueItemWords(
+  issueKey: string | undefined,
+  open: boolean
+): ReadonlyMap<string, string> {
+  const asks = useQuery({
+    enabled: false,
+    queryFn: issueKey === undefined ? skipToken : () => api.listIssueAsks(issueKey, "all"),
+    queryKey: ["asks", issueKey],
+  });
+  const comments = useQuery({
+    enabled: false,
+    queryFn: issueKey === undefined ? skipToken : () => api.listComments(issueKey),
+    queryKey: ["comments", issueKey],
+  });
+  const messages = useQuery({
+    enabled: false,
+    queryFn: issueKey === undefined ? skipToken : () => api.listIssueMessages(issueKey),
+    queryKey: ["issue-messages", issueKey],
+  });
+  return useMemo(
+    () =>
+      open
+        ? issueItemWords({ asks: asks.data, comments: comments.data, messages: messages.data })
+        : NO_ITEM_WORDS,
+    [asks.data, comments.data, messages.data, open]
+  );
+}
 
 /**
  * What references the row the reader is on, in Details (dispatch://INFRA-1196 R14: the panel
@@ -30,13 +69,20 @@ const KIND_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.kinds
  * spine and what needs it is a chip - and nothing on the page points back from a node to what
  * mentions it, so this is where a reader reads that.
  *
+ * Each row names the citing node by words the page already holds for it: a comment, a message
+ * or a question of this issue by the first line of its words, beside its word, and any other
+ * node by the word of its tie or of its kind alone, with its issue and its time (D4 of
+ * dispatch://INFRA-3948/artifact/plan-md). The read's excerpt is the node's stored text, the
+ * markdown its author typed with every address it cites, and is drawn nowhere (R22).
+ *
  * It costs no request on the first load and none per node (R21). Two gates hold that: the
  * reader opens the list, and Details is open around it, which on the issue page it is not when
  * the page loads. The list closes again when the focus moves to another row, so a reader
  * walking the outline with Details open reads one node's references and not every node's. The
  * read is `referencesQuery`, under the key every other Referenced-by panel reads
  * (`["references", "to", <address>]`), so a node read here and opened elsewhere is read once
- * and an event that changes it refreshes both (`api/event-refresh.ts`).
+ * and an event that changes it refreshes both (`api/event-refresh.ts`). The items' words are
+ * the outline's reads, which this list never asks for (`useIssueItemWords`).
  */
 export function NodeReferences({
   node,
@@ -60,14 +106,16 @@ export function NodeReferences({
   // the Details drawer, which opens shut.
   const reading = open && (drawer === undefined || drawer.open);
   const query = useQuery({ ...referencesQuery(addressed), enabled: reading });
+  // The issue the focused row is of: a citing node of another issue, or of a project, says
+  // which, as the old panel's "Comment · LAY-9" did (R19); a citing item of this issue is named
+  // by its words.
+  const here = addressed === undefined ? undefined : parseNodeReference(addressed);
+  const issueKey = here !== undefined && "key" in here ? here.key : undefined;
+  const itemWords = useIssueItemWords(issueKey, open);
   // An edge a newer build answers with, of a kind or to a node this page does not know, is left
   // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
   // the node kind's, which says it was only named.
-  const rows = referenceRows((query.data?.edges ?? []).filter(drawsEdge));
-  // The issue the focused row is of: a citing node of another issue, or of a project, says
-  // which, as the old panel's "Comment · LAY-9" did (R19).
-  const here = addressed === undefined ? undefined : parseNodeReference(addressed);
-  const issueKey = here !== undefined && "key" in here ? here.key : undefined;
+  const rows = referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge));
   if (addressed === undefined) {
     return null;
   }
@@ -116,8 +164,10 @@ export function NodeReferences({
                 // The edge's own word where the model gives the tuple one, and the kind of
                 // node where it does not, which is every mention: the old panel's own rule.
                 const word = EDGE_WORDS[row.kind] ?? KIND_WORDS[row.nodeKind];
-                // A node the read carries no words of is named by its word alone, which is
-                // then the link: an address, a slug or an id is no name (R22, ruling 5).
+                // A comment, a message or a question of this issue is named by its first line;
+                // every other node, and an item whose read has not answered, by its word alone,
+                // which is then the link: its stored text is markup, and an address, a slug or
+                // an id is no name (R22, ruling 5).
                 const named = row.line !== "";
                 const elsewhere = row.source !== undefined && row.source !== issueKey;
                 const text = named ? row.line : (word ?? "");

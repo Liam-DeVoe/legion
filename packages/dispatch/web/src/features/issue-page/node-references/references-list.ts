@@ -1,7 +1,13 @@
-import type { GraphEdge } from "../../../api/types";
+import type {
+  CommentWithTrees,
+  DisplayTree,
+  GraphEdge,
+  IssueAskRow,
+  MessageWithTrees,
+} from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
-import { firstLineOf } from "../issue-tree";
-import { blockWords } from "../tree-drafts";
+import { wordsOf } from "../../refs/tree-fragment";
+import { drawnLine, firstLineOf } from "../issue-tree";
 
 /**
  * What references one node, as Details draws it (dispatch://INFRA-1196 R14, R19): one row per
@@ -15,7 +21,15 @@ import { blockWords } from "../tree-drafts";
  * (`tree-drafts.ts`'s `servePlacements`), so those two reach the reader from the outline; a
  * mention of a node reaches them nowhere else, which is what this list is for.
  *
- * Pure, so the rows are read without a browser: the component draws them and holds the read.
+ * A row is named by words the page already holds for the citing node, and never by the read's
+ * own text: the read's excerpt is the stored text, the markdown its author typed with every
+ * `dispatch://` address of it, where the page draws a node by the words of the server's reading
+ * of it (R20, R22). The page holds those words for the comments, messages and questions of the
+ * focused node's own issue, which the outline reads (`issueItemWords`); every other node is
+ * named by the word of its tie or of its kind, with its issue and its time (D4 of
+ * dispatch://INFRA-3948/artifact/plan-md).
+ *
+ * Pure, so the rows are read without a browser: the component draws them and holds the reads.
  */
 
 /** The edge kind that is no tuple of the model: one node's text names another. */
@@ -30,8 +44,10 @@ export interface ReferenceRow {
    *  `serves`, `needs`, `answers`, `mentions` and the rest. The component draws the page's
    *  word for it, never this token (R22). */
   readonly kind: string;
-  /** The citing node's own first line, as every place that draws one line for a node cuts it
-   *  (R1, `firstLineOf`); `""` where the read carries no words of it. */
+  /** The first line of the citing item's words, where it is a comment, a message or a question
+   *  of the focused node's own issue and the page holds its words (`issueItemWords`), as every
+   *  place that draws one line for a node draws it (R1, `firstLineOf`, `drawnLine`); `""` for
+   *  every other node, which the component names by its word. Never the read's own text. */
   readonly line: string;
   /** What kind of node cites, as the graph names it: `block`, `comment`, `ask`, `message`,
    *  `artifact`, `issue`, `component`, `session`. A comment, a message or a question whose block
@@ -49,16 +65,38 @@ export interface ReferenceRow {
   readonly source: string | undefined;
 }
 
+/** The reads of an issue that hold its comments, messages and questions, as the outline reads
+ *  them (`useIssueTree.ts`); each `undefined` while it has no answer. */
+export interface IssueItemReads {
+  readonly asks: readonly Pick<IssueAskRow, "id" | "question_tree">[] | undefined;
+  readonly comments: readonly Pick<CommentWithTrees, "body_tree" | "id">[] | undefined;
+  readonly messages:
+    | readonly {
+        readonly message: Pick<MessageWithTrees, "body_tree" | "id">;
+        readonly replies: readonly Pick<MessageWithTrees, "body_tree" | "id">[] | null;
+      }[]
+    | undefined;
+}
+
 /**
- * The words the read carries for the citing node: the excerpt the server sends for a node that
- * has text of its own, which for a block of a document is that block's stored excerpt
- * (`packages/envoy/internal/dispatch/refs/graph.go:250-258`), else the node's own text, with a
- * typed block's directive line and closing fence taken off as every chip's target is named
- * (`tree-drafts.ts`'s `blockWords`): both are markup and hold a block id and a slug, which the
- * page draws nowhere a word belongs (R22).
+ * The words of each comment, message and question of an issue, by its id: the words of the
+ * server's reading of its text (`wordsOf`), which its row in the outline draws, so the list
+ * names the item as the outline does and with none of the symbols its author typed. An item
+ * whose read sent no reading has no words here and is named by its word, as any node the page
+ * holds no words of is: its stored text is markup.
  */
-export function nodeWordsOf(edge: GraphEdge): string {
-  return blockWords(edge.excerpt?.text ?? edge.node.text ?? "");
+export function issueItemWords(reads: IssueItemReads): ReadonlyMap<string, string> {
+  const words = new Map<string, string>();
+  const add = (id: string, tree: DisplayTree | undefined): void => {
+    if (tree !== undefined) words.set(id, wordsOf(tree));
+  };
+  for (const ask of reads.asks ?? []) add(ask.id, ask.question_tree);
+  for (const comment of reads.comments ?? []) add(comment.id, comment.body_tree);
+  for (const thread of reads.messages ?? []) {
+    add(thread.message.id, thread.message.body_tree);
+    for (const reply of thread.replies ?? []) add(reply.id, reply.body_tree);
+  }
+  return words;
 }
 
 /**
@@ -88,21 +126,29 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  * most: a tuple of the model over a mention, since "served by" tells the reader what the node
  * does and a mention tells them only that it was named. The row keeps the place of the first
  * edge either way, so the list stays in the order the read answered.
+ *
+ * `itemWords` holds the words of the comments, messages and questions of the focused node's own
+ * issue by their ids (`issueItemWords`). A citing item among them carries the first line of its
+ * words; every other node, and an item whose words the page does not hold yet, carries none.
  */
-export function referenceRows(edges: readonly GraphEdge[]): ReferenceRow[] {
+export function referenceRows(
+  itemWords: ReadonlyMap<string, string>,
+  edges: readonly GraphEdge[]
+): ReferenceRow[] {
   const rows = new Map<string, ReferenceRow>();
   for (const edge of edges) {
     const item = blockItem(edge.node);
     const nodeKind = item?.kind ?? edge.node.kind;
-    const key = `${nodeKind}:${item?.id ?? edge.node.id}`;
+    const id = item?.id ?? edge.node.id;
+    const key = `${nodeKind}:${id}`;
     const held = rows.get(key);
     if (held !== undefined && (held.kind !== MENTIONS || edge.kind === MENTIONS)) continue;
-    const words = nodeWordsOf(edge);
+    const words = isBlockItemKind(nodeKind) ? itemWords.get(id) : undefined;
     rows.set(key, {
       at: held?.at ?? edge.created_at,
       key,
       kind: edge.kind,
-      line: words === "" ? "" : firstLineOf(words).line,
+      line: words === undefined ? "" : drawnLine(firstLineOf(words)),
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
