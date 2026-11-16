@@ -510,9 +510,10 @@ test("every prompt and agent that may write says to make its own scratch and del
 // pinned sentences cannot drift; the prompt also carries text of its own that no pin here holds,
 // and the pins below hold what only the prompt carries and the skill points at. The carve-out
 // that names the step's reads as the one sleep the "never sleep in a loop" rule allows is a
-// second wording, held across the pr-body reference and the implementer's prompt part. The three
+// second wording, held across the pr-body reference and the implementer's prompt part. The
 // members the step added to lists elsewhere in these texts are pinned too, since a list no test
-// reads loses its member silently. This shows the text ships, never that a role follows it.
+// reads loses its member silently, and so is the reviewer's rule that it pushes nothing, which
+// keeps the step from falling to it. This shows the text ships, never that a role follows it.
 test("the worker skill tells a role to read the pull request's head after its own push", () => {
   const sharedWithTheWorkerPrompt = [
     "skills/legion-worker/SKILL.md",
@@ -557,6 +558,9 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "the empty commit that carries a pull request onto a pushed commit is never yours to make either",
     ["packages/daemon/internal/prompts/roles/reviewer.md"]
   );
+  countedOncePerFile("A review round pushes nothing at all, a prose fix included", [
+    "packages/daemon/internal/prompts/roles/reviewer.md",
+  ]);
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
     "When the last read still is not your commit, carry the pull request with a commit of its own, an empty one when your work is complete and an empty one just as much when `@` holds work of yours, since a push of a commit the branch already holds moves no ref; the push section of your role prompt gives the one `jj` recipe, which leaves `@` and everything in it where it is."
   );
@@ -666,7 +670,7 @@ test("every text stating a gate a carried result meets points at the one carry r
     `A pass stands for every \`before_merge\` check of the issue at the approved head, from the implementer and from the tester alike, or is carried to it across one push whose diff changes no code that runs, as the reviewer's approval of that head states and ${rule},`
   );
   expect(retro).toContain(
-    "When a check has neither a pass standing at that head nor one carried to it as above, or"
+    "When any other check has neither a pass standing at that head nor one carried to it as above, or"
   );
 });
 
