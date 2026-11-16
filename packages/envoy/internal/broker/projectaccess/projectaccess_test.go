@@ -489,3 +489,21 @@ func TestARefusalOfTheBrokersOwnTokenIsErrBrokerRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestARefusalIsErrBrokerRefusedWhateverItsBody: the status is the refusal. A 401 or a 403 whose
+// body runs past what the client reads of an answer, or ends before the length its header
+// declares, is ErrBrokerRefused from both routes all the same: never a failure to ask Dispatch,
+// which a caller mints through.
+func TestARefusalIsErrBrokerRefusedWhateverItsBody(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		for _, body := range projectaccesstest.RefusalBodies {
+			client := projectaccess.New(projectaccesstest.NewRefusing(t, status, body), projectaccesstest.StaticAccount("token"), nil)
+			if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+				t.Errorf("Access answered %d with a body %s = %v, want ErrBrokerRefused", status, body, err)
+			}
+			if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+				t.Errorf("MemberKind answered %d with a body %s = %v, want ErrBrokerRefused", status, body, err)
+			}
+		}
+	}
+}
