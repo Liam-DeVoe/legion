@@ -1081,6 +1081,31 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
         })
         .toBeLessThanOrEqual(1);
     }
+
+    // R11 of dispatch://INFRA-1196: the focused row is never under a sticky header, and the
+    // view's column heads stay at the top as one (R4). Each move up the statements scrolls the
+    // one it reaches into view, which must leave it below the heads, not behind them. Found by
+    // the tester on a running build at 8caa4357, where each statement the arrows moved up to
+    // stood with its top at the screen's edge and its first line under the 31 px of heads.
+    const upward = await statements.evaluateAll((rows) =>
+      rows.map((one) => one.getAttribute("data-node-id") ?? "")
+    );
+    await nodeRow(page, upward.at(-1) ?? "")
+      .first()
+      .focus();
+    for (let step = upward.length - 2; step >= 0; step -= 1) {
+      const id = upward[step] ?? "";
+      await page.keyboard.press("ArrowUp");
+      await expect
+        .poll(() => focusedNodeId(page), { message: `ArrowUp does not move the focus to ${id}` })
+        .toBe(id);
+      const below = await heads.boundingBox();
+      const top = (await nodeRow(page, id).first().boundingBox())?.y ?? Number.NaN;
+      expect(
+        top,
+        `the focused statement ${id} stands under the view's sticky heads at ${at}`
+      ).toBeGreaterThanOrEqual((below?.y ?? 0) + (below?.height ?? 0) - 1);
+    }
   });
 });
 
