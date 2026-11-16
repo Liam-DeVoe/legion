@@ -614,10 +614,16 @@ proving that enrollment's key.
 The session name, with the principal beside it, is what decides which enrollment that is.
 The principal is what the enrolling box proved, never anything its launcher states: the person, for
 a box of theirs and for their sign-in on a machine; the fleet's Google account, for a machine's own
-session; the service account its projected token proved, for a pod
+session; for a pod, the service account its projected token proved, paired with the account the
+token login that enrolled it proved
 (`packages/envoy/internal/broker/enroll/enroll.go`, `carryPrincipal`).
+A pod's grants follow that pair because the pods of several daemons can run as one account, and each
+daemon logs in as an account of its own: a pod one daemon enrolled under another daemon's session
+name takes none of that session's grants. A pod enrolled under a login that proved no account
+carries nothing.
 The broker records which principal holds a name, on the row the token exchange binds every token's
-name in, so the name is one principal's whichever of the two claimed it first.
+name in, so the name is one principal's whichever of the two claimed it first; a pod's name is held
+under its service account alone, the principal its own token exchange claims it under.
 An enrollment that names no session belongs to no principal at all.
 
 Enrolling the same session name again under the same principal takes what every earlier enrollment
