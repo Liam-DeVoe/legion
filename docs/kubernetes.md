@@ -6166,13 +6166,13 @@ each issue's pod (every role of it alike) and the image probe's.
   an enrollment another credential made (a service login a person approved through a code before token logins) is refused `NOT_ENROLLING_CREDENTIAL`, and the daemon logs `supervise: agent-secrets: enrollment revocation refused; its lease ends it once its pod stops renewing`:
   it ends one lease after its pod's renewer stops, or at once when someone revokes that login on Dispatch's machine-login page by its **Credential** id (the broker's operate page, "The renew token check", gives the query that finds it), never by its machine name.
 
-- The session a pod is enrolled under is the one its agent registered, and the daemon holds each session id to the first claim that recorded it, whatever that claim's state since: live, suspended, failed or retired (dispatch://INFRA-840).
+- The session a pod is enrolled under is the one its agent registered, and the daemon holds each session id to the first claim of its project that recorded it, whatever that claim's state since: live, suspended, failed or retired (dispatch://INFRA-840).
   A registration of an id another claim recorded is refused `409` (`session <id> is recorded for another claim of this daemon; …`) before anything of it is recorded or enrolled, and the daemon's log names the claim that holds it;
   a claim's own earlier id and an id no claim has recorded register as before.
-  The record is the `claim_sessions` table, which the migration that made it filled from every claim's session and the session it last abandoned.
-  An id two claims already recorded then is held for neither: at each boot the daemon logs it at Error with both claims and suspends each of them with the operator's suspend.
-  An operator records the rightful holder (`update claim_sessions set claim = '<token>' where session = '<id>'`) and resumes that claim with `legion claims resume`.
-  The broker holds a pod's grants to the pair of its account and the daemon that enrolled it, so a pod of another project's daemon enrolled under the same session id takes nothing either.
+  The record is the `claim_sessions` table, one row per project and id, which the migration that made it filled from every claim's session and the session it last abandoned.
+  An id two claims already recorded then is held for neither: at each boot the daemon logs it at Error with both claims and the statement that settles it, and suspends each of them with the operator's suspend.
+  An operator records the rightful holder (`update claim_sessions set claim = '<token>' where project = '<project>' and session = '<id>'`) and resumes that claim with `legion claims resume`.
+  Another project's daemon is not held to this project's ids; the broker holds a pod's grants to the pair of its account and the daemon that enrolled it, so a pod of another project's daemon enrolled under the same session id takes nothing.
 
 - The daemon logs in as the service `legion-daemon`, and its pods run as the ServiceAccount `runtime.kubernetes.pod.service_account` names (`default` when unset, above).
   A broker configured with that account for `legion-daemon`, such as `BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:<the account the pods run as>`, gives a secret tagged `owner=legion-daemon` to every such pod at once and to no other session (the broker's concepts page, "Owner and tier").

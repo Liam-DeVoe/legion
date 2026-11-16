@@ -2,14 +2,15 @@ kind: Fixed
 body: |-
   A claim can no longer register another claim's session id and be enrolled with the secrets
   broker under it, which took that session's secret grants. The daemon holds each session id to
-  the first claim that recorded it, whatever that claim's state since (live, suspended, failed or
-  retired), in a new `claim_sessions` table, and refuses any other claim's registration of it with
-  `409 session <id> is recorded for another claim of this daemon; …` before anything is recorded
-  or enrolled; a claim's own earlier id and an id no claim has recorded register as before. The
-  migration holds every claim's session and the session it last abandoned for that claim, and an
-  id two claims already recorded for neither: at boot the daemon logs each such id at Error and
-  suspends both claims with the operator's suspend, for an operator to record the rightful holder
-  (`update claim_sessions set claim = '<token>' where session = '<id>'`) and resume it.
+  the first claim of its project that recorded it, whatever that claim's state since (live,
+  suspended, failed or retired), in a new `claim_sessions` table, and refuses any other claim's
+  registration of it with `409 session <id> is recorded for another claim of this daemon; …`
+  before anything is recorded or enrolled; a claim's own earlier id and an id no claim has
+  recorded register as before. The migration holds every claim's session and the session it last
+  abandoned for that claim, and an id two claims already recorded for neither: at boot the daemon
+  logs each such id at Error and suspends its claims with the operator's suspend, for an operator
+  to record the rightful holder (`update claim_sessions set claim = '<token>' where project =
+  '<project>' and session = '<id>'`) and resume it.
 time: 2026-11-16T15:28:23Z
 custom:
     Issue: INFRA-840
