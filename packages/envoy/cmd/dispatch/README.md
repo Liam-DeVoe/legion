@@ -2835,7 +2835,6 @@ An argument `envoy-dispatch` does not know is refused with exit 2, never served,
 `envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
 It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
 It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
-Before that transaction it installs, in its own process, the block schema the store's type nodes build (`schemanodes.InstallFromStore`), as `erase` does, so the pointer kinds it holds `block_refs` to are the store's and not those of the file the binary embeds.
 
 For each projected kind it counts every node whose `state` is not `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at.
 A node at `proposed`, `settled` or `overtaken` is a node a row projects as one at `live` is (dispatch://INFRA-1950), so a move between those values reads as no lost node.
@@ -2849,8 +2848,9 @@ The kinds are:
 
 - `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
   A block of a lens's finding, a block node whose id begins `lens/`, is in neither block kind: no document holds it and no table projects it.
-  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every block node not `gone` that states a link now of a kind `refs.IndexBlocks` writes into `block_refs` (`refs.BlockRefKinds`: `mentions` and each pointer kind of the installed block schema), whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
-  A tuple of any other kind out of a block — its `in_document` and `part_of`, or one another writer states of it — is in neither side of `block_ref`.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every block node not `gone` that states a link now of a kind `refs.IndexBlocks` writes into `block_refs`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
+  Those kinds are `mentions` and the name of every `block[]` attribute node the store holds, at any state (`refs.BlockRefKindsSQL`), read inside the census's own snapshot rather than from the schema the process installed: a build older than the store installs no attribute above its version, and an attribute node stated `gone` is installed by none, while the `block_refs` rows of that kind stand until their documents are indexed again.
+  A tuple of any other kind out of a block — its `in_document` and `part_of`, or one another writer states of it, such as a requirement's `constrained_by` — is in neither side of `block_ref`.
   A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
 
 - `person`, `session`, `role` and a role's page, which no table projects.

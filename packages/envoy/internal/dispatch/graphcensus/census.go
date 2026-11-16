@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -49,10 +48,6 @@ type projection struct {
 	// addressed says rows reads the roles addressedRoles names as $1, which the census reads once
 	// for the run (readAddressedRoles) rather than once in every statement that reads the rows.
 	addressed bool
-	// blockRefKinds says nodes reads as $1 the tuple kinds refs.IndexBlocks writes into
-	// block_refs (refs.BlockRefKinds), taken once for the run: the pointer kinds among them are
-	// the installed block schema's, which no constant here can name.
-	blockRefKinds bool
 	// pastBound counts the addresses this kind's row side names that are past the store's bound
 	// (graphstore.MaxAddressBytes), which the writers left unprojected on purpose: it is a full
 	// `select count(*)`, reads $1 where addressed, and is empty for a kind no address of which can
@@ -177,7 +172,8 @@ func (r *StoreReport) Refused() bool {
 // it and neither block kind reads it. And a tuple another writer states out of a block - a
 // requirement's constrained_by, a changed_by_run, a finding's authored_by - is no link a
 // block_refs row names, so the block_ref kind reads only the kinds that writer projects into
-// block_refs (refs.BlockRefKinds) and the block kind only a block's placement.
+// block_refs (refs.BlockRefKindsSQL, read from the store inside the census's own snapshot) and
+// the block kind only a block's placement.
 var projections = []projection{{
 	name:     "comment",
 	nodeKind: "comment",
@@ -238,9 +234,9 @@ var projections = []projection{{
 	table:    "block_refs",
 	note: "a row is one link out of a block and its node is that block's, so several rows share one node:" +
 		" the node side is every block node not gone, a lens's finding aside, that states a link now of a kind" +
-		" refs.IndexBlocks writes into block_refs (a mention, or a pointer of the installed block schema)," +
-		" whether a row names it or not, and the digest is every link the rows of that block name against" +
-		" every such link its node states now",
+		" refs.IndexBlocks writes into block_refs (a mention, or a pointer of a block[] attribute the store's" +
+		" type nodes declare, at any state), whether a row names it or not, and the digest is every link the" +
+		" rows of that block name against every such link its node states now",
 	rows: `
 		select 'block_ref ' || r.from_node || ' ' || r.kind || ' -> ' || r.to_kind || ' ' || r.to_id,
 		       r.node_kind, r.node_address, md5(r.from_node || '|' || named.links)
@@ -262,11 +258,10 @@ var projections = []projection{{
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any($1::text[])`) + ` as links
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+refs.BlockRefKindsSQL+`)`) + ` as links
 			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + `
 		) held
 		where held.links <> ''`,
-	blockRefKinds: true,
 	pastBound: `
 		select count(*) from block_refs r
 		where octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound,
@@ -561,9 +556,7 @@ func readAddressedRoles(ctx context.Context, tx pgx.Tx) ([]string, error) {
 
 // StoreCensus reads the node and tuple store against the tables that project it, in one
 // read-only repeatable-read transaction on a connection of its own. It writes nothing: the
-// transaction is read only, and every statement it runs is a select. Before that transaction it
-// installs, in this process, the block schema the store's type nodes build
-// (schemanodes.InstallFromStore), which reads the store and writes nothing either.
+// transaction is read only, and every statement it runs is a select.
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
@@ -594,29 +587,17 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	report := &StoreReport{}
-	// The store is looked up before anything reads it, so a database the store does not exist in
-	// answers that rather than failing at the first statement that names graph_nodes.
-	if err := conn.QueryRow(ctx, `select to_regclass('graph_nodes') is null`).Scan(&report.Absent); err != nil {
-		return nil, fmt.Errorf("look up the store: %w", err)
-	}
-	// The block_refs kinds the census digests (refs.BlockRefKinds) are the pointer kinds of the
-	// block schema this process has installed, so the census installs the one the store's type
-	// nodes build, as the server reads them, and not the file this binary embeds: a type the store
-	// holds and the file does not would otherwise read every link of its pointers as a difference,
-	// as grapherase.Erase holds a document to the store's types for the same reason. The read runs
-	// a read-only transaction of its own (schemanodes.Read), so it goes on the census's connection
-	// before the snapshot opens. A database with no store has no type nodes and installs nothing.
-	if !report.Absent {
-		if err := schemanodes.InstallFromStore(ctx, conn); err != nil {
-			return nil, fmt.Errorf("install the block schema from the store: %w", err)
-		}
-	}
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("open the census snapshot: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	report := &StoreReport{}
+	// The store is looked up before any kind is read, so a database the store does not exist in
+	// answers that rather than failing at the first statement that names graph_nodes.
+	if err := tx.QueryRow(ctx, `select to_regclass('graph_nodes') is null`).Scan(&report.Absent); err != nil {
+		return nil, fmt.Errorf("look up the store: %w", err)
+	}
 	if !report.Absent {
 		if report.Kinds, err = censusOfKinds(ctx, tx, afterKind); err != nil {
 			return nil, err
@@ -649,8 +630,7 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 	var addressed []string
 	for _, held := range projections {
 		var args []any
-		switch {
-		case held.addressed:
+		if held.addressed {
 			if addressed == nil {
 				var err error
 				if addressed, err = readAddressedRoles(ctx, tx); err != nil {
@@ -658,8 +638,6 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 				}
 			}
 			args = []any{addressed}
-		case held.blockRefKinds:
-			args = []any{refs.BlockRefKinds()}
 		}
 		kind, err := censusOfKind(ctx, tx, held, args)
 		if err != nil {
@@ -676,9 +654,8 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 }
 
 // censusOfKind reads one kind: how many rows and present nodes there are, and the differences in
-// each direction with the first reportedDifferences of them. args are what the kind's rows and
-// nodes bind: the addressed roles for a kind that reads them, the block_refs tuple kinds for the
-// kind that reads those, and none for any other.
+// each direction with the first reportedDifferences of them. args are what the kind's rows bind,
+// none but for a kind that reads the addressed roles.
 //
 // The four counts are four scalar subqueries of one statement rather than four round trips, so
 // a census of seven kinds costs seven reads here and not twenty-eight. Each subquery is the

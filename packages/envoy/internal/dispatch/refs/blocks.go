@@ -47,16 +47,22 @@ const (
 // block holds.
 const TupleInDocument = "in_document"
 
-// BlockRefKinds is every tuple kind IndexBlocks writes into block_refs, so every kind of tuple out
-// of a block that a block_refs row is the projection of: a block's mention (blockPairs) and each
-// pointer kind the installed block schema declares (pointerPairs, pmdoc.LinkKinds), the two kinds
-// migration 20261109215947 names. A tuple of any other kind out of a block - its placement,
-// in_document and part_of, or one another writer states of it - is no part of that projection,
-// and the store census holds the block_refs rows to the tuples of these kinds alone
+// BlockRefKindsSQL is a select of every tuple kind IndexBlocks writes into block_refs, one row
+// each, so of every kind of tuple out of a block that a block_refs row is the projection of: a
+// block's mention (blockPairs) and the name of every `block[]` attribute the store's type nodes
+// declare, the kind of each pointer that attribute makes (pointerPairs: a pointer's kind is its
+// attribute's name as a document writes it, pmdoc.BlockPointer's Attribute, and never its
+// store_name). It reads the store's attribute nodes rather than the schema a process installed,
+// so it answers the same for every build reading one store: a build older than the store installs
+// no attribute whose `since` is above it (pmdoc.Install), and an attribute node stated gone is
+// installed by none, while the block_refs rows of its kind stand until a version re-indexes their
+// documents. So an attribute node is read at any state. A tuple of any other kind out of a block -
+// its placement, in_document and part_of, or one another writer states of it - is no part of that
+// projection, and the store census holds the block_refs rows to the tuples of these kinds alone
 // (graphcensus).
-func BlockRefKinds() []string {
-	return append([]string{"mentions"}, pmdoc.LinkKinds()...)
-}
+const BlockRefKindsSQL = `select 'mentions'
+		union select attribute.attributes->>'name' from graph_nodes attribute
+		where attribute.kind = 'attribute' and attribute.attributes->>'kind' = '` + string(pmdoc.BlockAttributeBlockList) + `'`
 
 // IndexBlocks records version `version` (written at versionAt) of document artifactID's blocks as
 // graph nodes, and each mention written inside a block as an edge out of the innermost block
