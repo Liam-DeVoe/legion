@@ -51,7 +51,7 @@ import (
 // than parseStepsPerCharacter steps for each of its characters: a count linear in the body, which
 // a parse whose steps grew with the square of a body's length passes by thousands of times at
 // these lengths.
-func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime(t *testing.T) {
+func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter(t *testing.T) {
 	// The shapes spell their refusals with heavybodies.MaxNesting, which is this package's own
 	// maxNesting copied: heavybodies may not import pmdoc, since this test is in-package, so the
 	// two are held to each other here rather than by the compiler.
@@ -99,7 +99,7 @@ const parseStepsPerCharacter = 2 * maxNesting
 // what the shape grows and then at the whole of it: a shape whose cost grew with the square of
 // its length would grow growthStep² times where a linear one may grow linearSlack*growthStep
 // (growthStep, linear_test.go).
-func TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength(t *testing.T) {
+func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing.T) {
 	for _, shape := range heavybodies.Shapes() {
 		if shape.Refusal != "" {
 			continue
@@ -131,7 +131,7 @@ func TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength(t *testing
 //
 // Each size gets a document of its own, since a write changes the document it writes into, and
 // the body it writes is built before the count starts.
-func TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength(t *testing.T) {
+func TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength(t *testing.T) {
 	for _, shape := range heavybodies.Shapes() {
 		if shape.Refusal != "" {
 			continue

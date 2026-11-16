@@ -5829,7 +5829,7 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 
 ## lib/rig.sh
 
-The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
+The host-side helpers a stage proof sources for its rig: the proof's guard and its one wait, the bounded waits of the proofs a person runs, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
 Eight of the ten proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those helpers, which this file sources for them.
 `envoy-session-delivery.sh` is the ninth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
@@ -5840,18 +5840,48 @@ Eight of the ten proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s 
 ```
 
 The caller sets `root` (the checkout), `work` (the run's scratch directory:
-every process whose working directory or command line names it is the run's), `evidence` (each service started by `start_process` logs to `$evidence/logs/<name>.log`) and `timeout_hook` (empty, or a function a timed-out wait runs before it fails), and defines `note` and `fail`, which exits.
-Stage 1 calls `real_bin_path`, `keep_port`, `start_kept` and `held_only_by`.
+every process whose working directory or command line names it is the run's, and `wait_for` keeps its last poll's output there), `evidence` (each service started by `start_process` logs to `$evidence/logs/<name>.log`) and `timeout_hook` (empty, or a function a timed-out wait runs before it fails), and defines `note` and `fail`, which exits.
+Stage 1 calls `proof_guard`, `wait_for` with `serving`, `real_bin_path`, `keep_port`, `start_kept` and `held_only_by`.
+
+A proof a workflow runs (the `hosted` list of `.github/e2e-scripts.json`, and `ci.yaml`'s Stage 1 step) sets its one guard with `proof_guard`, at its head, with the reading of it beside the number, and waits through `wait_for` alone.
+`until_true` and `await_start` are the bounded waits of the proofs only a person runs, which set no guard, and no proof that sets one calls them.
 
 Each item below names a function, then what it does.
 
+- `proof_guard SECONDS`
+
+  sets the proof's one guard: the run may take SECONDS from the call.
+  It exports `LEGION_PROOF_DEADLINE_MS`, the moment in epoch milliseconds by which every wait of the proof gives up, `proof_margin_seconds` (30 s) before the guard's deadline, so a wait's own failure and the cleanup after it print before anything stops the run.
+  The proof's Bun drivers read it too (`@legion/test-fixtures/wait`).
+  It arms nothing: what stops a run that hangs outside a wait is the `timeout-minutes` of the CI job that runs the proof, which is at least the guard plus the job's setup.
+  SECONDS is at least twice the longest green run on record, and the call carries that reading in a comment beside it.
+  A second call fails
+
+- `proof_seconds_left`
+
+  prints the whole seconds left before the guard's deadline, and at least 1: the `-test.timeout` of a Go driver, whose `testwait` then gives up `proof_margin_seconds` before that deadline, as `wait_for` does
+
+- `wait_for WHAT CMD…`
+
+  is the one wait of a proof that set its guard, and fails at once in a proof that set none.
+  It runs CMD in the calling shell every half second until it succeeds, and keeps CMD's output in `$work/wait-for.out`.
+  It gives up `proof_margin_seconds` before the guard's deadline: it runs `timeout_hook`, then fails naming WHAT and the last lines CMD printed.
+  A wait that starts past that moment runs CMD once and then fails, so the cleanup keeps the margin to run in.
+  It takes no bound and no pace, so a step that is only slow never fails the run, and it says how long it has waited every 60 s.
+  A CMD that finds the fact can no longer happen sets `wait_impossible` to why, and the wait fails at once saying so
+
+- `serving NAME PID CMD…`
+
+  runs CMD for a `wait_for` on the service NAME, started as PID (`start_process`), and once PID has exited sets `wait_impossible`, naming NAME's log, so the wait ends at once
+
 - `until_true SECONDS WHAT CMD…`
 
-  runs CMD every half second until it succeeds.
+  is the bounded wait of a proof that sets no guard, one that only a person runs.
+  It runs CMD every half second until it succeeds.
   After SECONDS of wall time, each poll's own run included, it runs `timeout_hook` and fails naming WHAT.
   It says what it waits for on entry and every 60 s.
   A poll that never returns would hold the wait, so callers bound their remote calls.
-  A guard that writes `$evidence/pane-endpoint-violation.txt` makes the next wait abort, naming the violation
+  A production guard that writes `$evidence/pane-endpoint-violation.txt` makes the next `until_true` abort, naming the violation
 
 - `start_process NAME CMD…`
 
@@ -5862,7 +5892,7 @@ Each item below names a function, then what it does.
   starts CMD as the service NAME through [`lib/held-port.py`](#libheld-portpy) `exec`:
   a socket listening on a port the kernel chose, held from that choice until CMD serves on it, handed over as descriptor 3 with `FD_ENV=3`;
   `{port}` in an `--env` value or in CMD is its port.
-  It waits, bounded, for the helper's port file and sets PORT_VAR before CMD runs; `NAME_pid` is CMD's own pid.
+  It waits for the helper's port file, through `wait_for` in a proof that set its guard and within `read_port_file`'s own bound in one that set none, and sets PORT_VAR before CMD runs; `NAME_pid` is CMD's own pid.
   A CMD that clears its environment (`env -i`) names `FD_ENV=3` itself
 
 - `keep_port NAME PORT_VAR`
@@ -5901,7 +5931,8 @@ Each item below names a function, then what it does.
 
 - `await_start NAME PID SECONDS WHAT CMD…`
 
-  waits, bounded, for CMD to succeed while PID lives, and fails naming NAME's log the moment PID exits
+  waits, bounded, for CMD to succeed while PID lives, and fails naming NAME's log the moment PID exits.
+  A proof that set its guard waits with `wait_for WHAT serving NAME PID CMD…` instead
 
 - `stop_pid PID`
 
