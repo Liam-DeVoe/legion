@@ -24,7 +24,7 @@ import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useTooltips } from "../../components/tooltips";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -37,10 +37,22 @@ import {
   borderDefault,
   card,
   cardHoverBorder,
+  focusBorder,
   inlineWarningText,
   inputClasses,
   linkHoverText,
   linkText,
+  pageFailedText,
+  pageHairBorder,
+  pageInkFill,
+  pageInkText,
+  pageLabelChip,
+  pageLineBorder,
+  pageMutedText,
+  pagePaneBg,
+  pagePaperBg,
+  pageQuietText,
+  pageStateText,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -161,6 +173,57 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: badgeMed.text,
 };
 
+/**
+ * Each colour the card's own elements draw inside `NoTooltips`, the new issue page's
+ * (dispatch://INFRA-3935 R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md), by
+ * the role `main`'s colour has: the card is the page's paper inside its hairline rule; the
+ * question is the ink, what a reader acts on the muted grey, what qualifies it the quiet grey,
+ * a link the ink, and a question that changed under the reader the page's warning, its waiting
+ * orange; the answer box is the page's field, which keeps `main`'s focus rule, the application's
+ * one focus indicator (decision 58 of the same artifact); Answer and Ask back instead are
+ * filled with the ink, as the page's one filled control is, and the other actions are its
+ * header control's rule and muted words. What the card's children draw - the recipients, the
+ * thread, the options, the earlier approval - is theirs.
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
+ * registers for the page.
+ */
+const ON_PAGE = {
+  action: `${pageLineBorder} ${pageMutedText}`,
+  field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+  frame: `${pageHairBorder} ${pagePaperBg}`,
+  ink: pageInkText,
+  link: pageInkText,
+  muted: pageMutedText,
+  notch: pagePaperBg,
+  quiet: pageQuietText,
+  quietAct: `${pageQuietText} hover:text-page-muted`,
+  rule: pageLineBorder,
+  warning: pageStateText.waiting,
+} as const;
+
+/** The card's urgency accent inside `NoTooltips`, in the new issue page's colours (R6): blocking
+ *  the failed red, high the waiting orange, med the questions' blue, low the hairline grey. */
+const PAGE_URGENCY_ACCENT: Record<AskUrgency, string> = {
+  blocking: "border-l-page-failed",
+  high: "border-l-page-waiting",
+  low: "border-l-page-hair",
+  med: "border-l-page-question",
+};
+
+/** The urgency notch's words inside `NoTooltips`, matching `PAGE_URGENCY_ACCENT` on the page's
+ *  paper (R6). */
+const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
+  blocking: pageFailedText,
+  high: pageStateText.waiting,
+  low: pageQuietText,
+  med: "text-page-question",
+};
+
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
  *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
 function handOffFocus(form: HTMLElement): void {
@@ -233,6 +296,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
   const write = useAskHandOn(ask);
+  const page = usePageWords();
   const onLive = useContext(AskHandOnLiveContext);
   const live = write.pending || write.failed;
   useEffect(() => {
@@ -258,12 +322,21 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   const handedOnBy = ask.asked_of_by ?? "";
   const handedOnAt = ask.asked_of_at ?? null;
   const tone = waitingOn === "" ? badgeLow : badgePrimary;
+  // Inside `NoTooltips` each colour is one of the new issue page's (R6, decision 56): the line is
+  // its quiet words, and the badge its label chip, or the quiet words on the same ground while
+  // the ask is asked of nobody, as the assignee's badge is drawn there.
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : waitingOn === ""
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
   return (
     <div
-      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
+      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${page === null ? textMutedOnSurface : pageQuietText}`}
     >
       <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+        <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeTone}`}>
           {write.pending
             ? "Handing on…"
             : waitingOn === ""
@@ -464,16 +537,13 @@ export function AskCard({
   const tooltips = useTooltips();
   const submitHintId = `${answerFieldId}-hint`;
   const agentText = useAgentText();
-  // The asker as its button's tooltip, on a surface that offers one (`components/tooltips.tsx`;
-  // the new issue page offers none, so the name alone is drawn there): a block ask the server
-  // indexed with no pending author has an empty label and reads as "asked". A session's tooltip
-  // also carries its full id, since the innermost title is the one a browser shows, and an
-  // untitled session's name is the short form `session:<8>…` that sessions started in the same
-  // minute share; its own name opens the copy handles that hold it either way.
+  // The asker as its button's tooltip: a block ask the server indexed with no pending author
+  // has an empty label and reads as "asked". A session's tooltip also carries its full id, since
+  // the innermost title is the one a browser shows, and an untitled session's name is the short
+  // form `session:<8>…` that sessions started in the same minute share.
   const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
-  const askerTitle = !tooltips
-    ? undefined
-    : displayedAsk.author.id === ""
+  const askerTitle =
+    displayedAsk.author.id === ""
       ? "asked"
       : sessionAuthor === undefined
         ? agentText.label(displayedAsk.author)
@@ -566,18 +636,28 @@ export function AskCard({
       />
     );
 
+  // Inside `NoTooltips` the actions are the page's (`ON_PAGE`): filled with the ink, or its
+  // header control's rule and muted words.
+  const filledLook = tooltips
+    ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
+    : ON_PAGE.filled;
+  const secondaryLook = tooltips
+    ? `${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`
+    : ON_PAGE.action;
   const answerField = (
     <>
       <label className="block" htmlFor={answerFieldId}>
         <span
           className={
-            reasonRequired ? `mb-1 block text-sm font-medium ${textSecondaryOnSurface}` : "sr-only"
+            reasonRequired
+              ? `mb-1 block text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`
+              : "sr-only"
           }
         >
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
         <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
+          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
           data-ask-answer=""
           disabled={isSubmitting}
           id={answerFieldId}
@@ -604,7 +684,7 @@ export function AskCard({
   const submitButton = (
     <button
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
-      className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+      className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
       disabled={!canAnswer || isSubmitting || uploading}
       title={tooltips ? submitHint : undefined}
       type="submit"
@@ -620,14 +700,14 @@ export function AskCard({
   );
   const submitHintNode =
     submitHint === undefined ? null : (
-      <p className={`text-xs ${textMutedOnSurface}`} id={submitHintId}>
+      <p className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`} id={submitHintId}>
         {submitHint}
       </p>
     );
   const answerActions = questionChoice ? (
     <fieldset aria-label="Question-shaped answer" className="flex gap-2">
       <button
-        className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+        className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
         disabled={isSubmitting}
         onClick={sendClarification}
         ref={(node) => node?.focus()}
@@ -636,7 +716,7 @@ export function AskCard({
         {clarification.isPending ? "Sending…" : "Ask back instead"}
       </button>
       <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
         disabled={isSubmitting}
         onClick={() => sendAnswer(answerText)}
         type="button"
@@ -650,7 +730,7 @@ export function AskCard({
         {submitButton}
         {changing ? (
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
             disabled={isSubmitting}
             onClick={cancelChanging}
             type="button"
@@ -659,7 +739,7 @@ export function AskCard({
           </button>
         ) : (
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
             disabled={trimmedAnswer === "" || isSubmitting || uploading}
             onClick={sendClarification}
             type="button"
@@ -687,14 +767,16 @@ export function AskCard({
         />
         {unsentAnswer === "" ? null : (
           <div
-            className={`mt-3 rounded-xl border p-3 ${borderDefault}`}
+            className={`mt-3 rounded-xl border p-3 ${tooltips ? borderDefault : ON_PAGE.rule}`}
             data-testid="ask-unsent-answer"
           >
-            <p className={`text-xs ${textMutedOnSurface}`}>
+            <p className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}>
               This question closed before you sent your answer, so it was not sent. Your text is
               here to copy.
             </p>
-            <p className={`mt-1 text-sm whitespace-pre-wrap ${textPrimaryOnSurface}`}>
+            <p
+              className={`mt-1 text-sm whitespace-pre-wrap ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
+            >
               {unsentAnswer}
             </p>
           </div>
@@ -712,7 +794,7 @@ export function AskCard({
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
+          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${tooltips ? `${card} ${askUrgencyAccent[urgency]}` : `${ON_PAGE.frame} ${PAGE_URGENCY_ACCENT[urgency]}`}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -725,7 +807,7 @@ export function AskCard({
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"
-          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}`}
+          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${tooltips ? `${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}` : `${ON_PAGE.notch} ${PAGE_URGENCY_NOTCH_TEXT[urgency]}`}`}
         >
           {URGENCY_LABELS[urgency].toUpperCase()}
         </span>
@@ -736,23 +818,27 @@ export function AskCard({
       displayedAsk.block_id === undefined ||
       displayedAsk.block_id === null ||
       displayedAsk.block_artifact === undefined ? null : (
-        <p className={`mt-2 text-sm ${linkText} ${linkHoverText}`}>
+        <p className={`mt-2 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}>
           <AskBlockLink ask={displayedAsk} />
         </p>
       )}
       <div>
         {isApproval ? (
-          <p className={`text-[10px] font-semibold uppercase tracking-wide ${textMutedOnSurface}`}>
+          <p
+            className={`text-[10px] font-semibold uppercase tracking-wide ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
+          >
             Approval requested
           </p>
         ) : null}
         {isApproval && documentLink ? (
-          <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
+          <p className={`mt-1 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}>
             <AskApprovalLink ask={displayedAsk} />
           </p>
         ) : null}
         {inBlock ? null : (
-          <div className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface}`}>
+          <div
+            className={`text-[15px] leading-relaxed font-medium ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
+          >
             <MarkdownBody
               markdown={displayedAsk.question}
               source={source}
@@ -774,7 +860,7 @@ export function AskCard({
             280 px margin, where a single row could not hold five copy controls without pushing
             the reference out of reach. */}
         <div
-          className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}
+          className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
         >
           {/* Turn, author and time are one group whose names truncate: a separator that wrapped
               left a line opening - or ending - on a bare "·", and the agents are the only parts
@@ -786,7 +872,7 @@ export function AskCard({
           <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap">
             {turnHolder === null ? null : (
               <span
-                className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${textSecondaryOnSurface}`}
+                className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
                 data-testid={`turn-${displayedAsk.id}`}
               >
                 Waiting on {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
@@ -799,7 +885,7 @@ export function AskCard({
             )}
             <span className="flex min-w-0 items-center gap-x-1.5">
               {sessionAuthor === undefined ? (
-                <TruncatedText className="min-w-0" title={askerTitle}>
+                <TruncatedText className="min-w-0" title={tooltips ? askerTitle : undefined}>
                   {displayedAsk.author.id === "" ? (
                     "asked"
                   ) : (
@@ -816,11 +902,11 @@ export function AskCard({
                   control={(name) => (
                     <button
                       aria-expanded={handlesOpen}
-                      className={`flex min-w-0 items-center gap-1 ${textMutedHoverToSecondary}`}
+                      className={`flex min-w-0 items-center gap-1 ${tooltips ? textMutedHoverToSecondary : ON_PAGE.quietAct}`}
                       onClick={() => setHandlesOpen((open) => !open)}
                       type="button"
                     >
-                      <TruncatedText className="min-w-0" title={askerTitle}>
+                      <TruncatedText className="min-w-0" title={tooltips ? askerTitle : undefined}>
                         {name}
                       </TruncatedText>
                       <ChevronIcon expanded={handlesOpen} />
@@ -869,7 +955,7 @@ export function AskCard({
         {referencedByNode}
       </div>
       {askChanged ? (
-        <p className={`mt-3 text-sm font-medium ${inlineWarningText}`}>
+        <p className={`mt-3 text-sm font-medium ${tooltips ? inlineWarningText : ON_PAGE.warning}`}>
           This question changed while you were answering. Review the latest wording and confirm your
           answer again; your draft text is still here.
         </p>
@@ -924,7 +1010,7 @@ export function AskCard({
               <button
                 aria-controls={`${answerFieldId}-disclosure`}
                 aria-expanded={ownWordsOpen}
-                className={`min-h-11 text-sm font-medium ${textSecondaryOnSurface}`}
+                className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
                 // The Inbox's Enter opens this disclosure to reach the answer box behind it,
                 // and finds the control by this handle, as it finds the box by
                 // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).

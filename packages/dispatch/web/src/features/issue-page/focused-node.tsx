@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useCallback, useContext, useState } from "react";
+import { createContext, type ReactNode, useContext, useState } from "react";
 
 import type { Actor } from "../../api/types";
 import type { NodeType } from "./page-words";
@@ -42,9 +42,8 @@ const SetFocusedNodeContext = createContext<(node: FocusedNode | undefined) => v
  */
 export function FocusedNodeProvider({ children }: { children: ReactNode }): ReactNode {
   const [focused, setFocused] = useState<FocusedNode | undefined>(undefined);
-  const set = useCallback((next: FocusedNode | undefined) => setFocused(next), []);
   return (
-    <SetFocusedNodeContext.Provider value={set}>
+    <SetFocusedNodeContext.Provider value={setFocused}>
       <FocusedNodeContext.Provider value={focused}>{children}</FocusedNodeContext.Provider>
     </SetFocusedNodeContext.Provider>
   );

@@ -9,9 +9,12 @@
  *  attach to, the notice the build lists the typeface under, and the way back to a page in the
  *  root's own stack without a reload.
  *
- *  Every family name here is compared whole and whatever its case. A part of a name never counts:
- *  `Inter` is inside `Inter fallback` and `Dispatch Inter`, and the root's own stack names
- *  `Inter`, which is a face the reader's machine may hold and not one the font set declares. */
+ *  Every family name the rows compare in Node is compared whole and whatever its case; the two
+ *  helpers copied from the source, `typefaceAddress` and `typefaceStatuses`
+ *  (`issue-page-typeface.ts`), compare the declared name exactly, in the page. A part of a name
+ *  never counts: `Inter` is inside `Inter fallback` and `Dispatch Inter`, and the root's own stack
+ *  names `Inter`, which is a face the reader's machine may hold and not one the font set
+ *  declares. */
 
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
