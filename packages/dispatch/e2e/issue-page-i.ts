@@ -34,6 +34,9 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  *   which no address draws now.
  * - **What stays at the top of the screen**: the header's band `[data-identity-block]` from
  *   761 px up, and the view row's band at 760 px and below.
+ * - **What stays at the foot of the screen**: part L's box, whose height the page publishes on
+ *   the document element as `--issue-composer-height` (`FOOT_HEIGHT_PROPERTY` of
+ *   `identity-block.ts`). Until L draws it, `standInFootBox` draws a box in its place.
  */
 
 /** The selectors the readers pass into the browser. */
@@ -53,6 +56,11 @@ const SELECTORS = {
   stage: '[data-testid="issue-column"]',
   tree: '[role="tree"]',
 } as const;
+
+/** The custom property the page publishes the height of the box at its foot under, on the
+ *  document element (`FOOT_HEIGHT_PROPERTY` of `identity-block.ts`). Unset while no box is
+ *  drawn. */
+const FOOT_HEIGHT = "--issue-composer-height";
 
 /** A `"` inside an attribute value would end the selector's string, and no id, slug or kind the
  *  page draws holds one; a value that did would otherwise match nothing silently. */
@@ -314,39 +322,50 @@ export async function focusInside(scope: Locator): Promise<boolean> {
 }
 
 /**
- * Whether every pixel of `scope` is inside the viewport and clear of what stays at the top of
- * the screen, which is what "on screen" is read as, and what the page's own `bringOnScreen`
- * (`web/src/features/issue-page/identity-block.ts`) places a target by. Details' drawer is a
- * layer over the page, so a target inside it needs only the viewport.
+ * Whether every pixel of `scope` is inside the viewport, clear of what stays at the top of the
+ * screen and above the box that stays at its foot, which is what "on screen" is read as, and what
+ * the page's own `bringOnScreen` (`web/src/features/issue-page/identity-block.ts`) places a target
+ * by. Details' drawer is a layer over the page, so a target inside it needs only the viewport.
  *
  * A scope taller than the screen can satisfy neither, by construction, so a caller reads the
  * control the page leaves the reader on rather than the whole part around it.
  */
 export async function onScreen(scope: Locator): Promise<boolean> {
   if ((await scope.count()) === 0) return false;
-  return await scope.first().evaluate((element, selectors) => {
-    const rect = element.getBoundingClientRect();
-    // What stays at the top of the screen: the header's band from 761 px up, and the view
-    // row's band at 760 px and below - whichever is `position: sticky` and at the top now.
-    let sticky = 0;
-    if (element.closest('[data-testid="desktop-margin-shell"]') === null) {
-      for (const start of [selectors.identityBand, selectors.presetRow]) {
-        for (let at = document.querySelector(start); at !== null; at = at.parentElement) {
-          if (getComputedStyle(at).position !== "sticky") continue;
-          const band = at.getBoundingClientRect();
-          if (band.top <= 1) sticky = Math.max(sticky, band.bottom);
-          break;
+  return await scope.first().evaluate(
+    (element, { footHeight, selectors }) => {
+      const rect = element.getBoundingClientRect();
+      // What stays at the top of the screen: the header's band from 761 px up, and the view
+      // row's band at 760 px and below - whichever is `position: sticky` and at the top now.
+      // What stays at the foot: the box whose height the page publishes on the document element,
+      // as `bringOnScreen` reads it, unset while no box is drawn, which bounds the scope by the
+      // window alone.
+      let sticky = 0;
+      let foot = 0;
+      if (element.closest('[data-testid="desktop-margin-shell"]') === null) {
+        for (const start of [selectors.identityBand, selectors.presetRow]) {
+          for (let at = document.querySelector(start); at !== null; at = at.parentElement) {
+            if (getComputedStyle(at).position !== "sticky") continue;
+            const band = at.getBoundingClientRect();
+            if (band.top <= 1) sticky = Math.max(sticky, band.bottom);
+            break;
+          }
         }
+        foot =
+          Number.parseFloat(
+            getComputedStyle(document.documentElement).getPropertyValue(footHeight)
+          ) || 0;
       }
-    }
-    return (
-      rect.height > 0 &&
-      rect.top >= sticky - 1 &&
-      rect.bottom <= window.innerHeight + 1 &&
-      rect.left >= -1 &&
-      rect.right <= window.innerWidth + 1
-    );
-  }, SELECTORS);
+      return (
+        rect.height > 0 &&
+        rect.top >= sticky - 1 &&
+        rect.bottom <= window.innerHeight - foot + 1 &&
+        rect.left >= -1 &&
+        rect.right <= window.innerWidth + 1
+      );
+    },
+    { footHeight: FOOT_HEIGHT, selectors: SELECTORS }
+  );
 }
 
 /** Whether the caret is in a node's own text: the focus is inside an editable inside a row,
@@ -435,6 +454,37 @@ export function activePreset(page: Page): Promise<string | null> {
 /** Opens the view `preset` on `key` at its own address. */
 export async function openPreset(page: Page, key: string, preset: Preset): Promise<void> {
   await gotoIssue(page, presetPath(key, preset));
+}
+
+/**
+ * Draws a stand-in for the box part L draws at the foot of the screen (`slots/foot.tsx`),
+ * `height` px tall, until L draws it: the column's last part, staying at the screen's foot, with
+ * its height published on the document element as L's box publishes it, which is how the page's
+ * `bringOnScreen` and this file's `onScreen` know it is there. It takes its height at the
+ * column's end as a box at the foot does, so the outline's last row can be scrolled above it.
+ * Answers what takes it away again.
+ */
+export async function standInFootBox(page: Page, height: number): Promise<() => Promise<void>> {
+  const drawn = await page.evaluate(
+    ({ footHeight, height, stage }) => {
+      const column = document.querySelector(stage);
+      if (column === null) return false;
+      const box = document.createElement("div");
+      box.setAttribute("data-foot-stand-in", "");
+      box.style.cssText = `position: sticky; bottom: 0; flex: none; height: ${height}px;`;
+      column.append(box);
+      document.documentElement.style.setProperty(footHeight, `${height}px`);
+      return true;
+    },
+    { footHeight: FOOT_HEIGHT, height, stage: SELECTORS.stage }
+  );
+  expect(drawn, "the page draws no stage column to stand a box at the foot of").toBe(true);
+  return async () => {
+    await page.evaluate((footHeight) => {
+      document.querySelector("[data-foot-stand-in]")?.remove();
+      document.documentElement.style.removeProperty(footHeight);
+    }, FOOT_HEIGHT);
+  };
 }
 
 /** How many presses `openEveryDeeperBranch` makes before it gives up: well past the branches any

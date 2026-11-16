@@ -37,7 +37,7 @@ import {
   listMyReplies,
   patchIssue,
 } from "./api";
-import { countDocumentSockets } from "./editor";
+import { countDocumentSockets, cursorLabel } from "./editor";
 import {
   seedNoChildren,
   seedReplyNesting,
@@ -104,6 +104,7 @@ import {
   rowGaps,
   rowReference,
   rowTags,
+  standInFootBox,
   tabStopRow,
   tooltipTexts,
   treeActiveDescendant,
@@ -151,13 +152,14 @@ async function openTree(browser: Browser): Promise<OpenedTree> {
 }
 
 /** The redesigned page and its tree are on the screen, which every row asserts after its own
- *  subject: a page that answers a key but draws no tree fails here. */
+ *  subject: a page that answers a key but draws no tree fails here. It waits for both, so a row
+ *  that reads it straight after a load or a reload reads the page the app has drawn. */
 async function expectTreeDrawn(page: Page): Promise<void> {
-  expect(
-    await issuePage(page).count(),
+  await expect(
+    issuePage(page),
     "the page draws no [data-issue-page] root, so this is not the redesigned issue page"
-  ).toBe(1);
-  expect(await tree(page).count(), 'the page draws no role="tree" named "Issue tree"').toBe(1);
+  ).toHaveCount(1);
+  await expect(tree(page), 'the page draws no role="tree" named "Issue tree"').toHaveCount(1);
 }
 
 /** The ids of the rows a reader can see, in the order the keys move through them. */
@@ -188,6 +190,18 @@ async function expectFocusedRowClear(page: Page, after: string): Promise<void> {
     (box?.y ?? 0) + (box?.height ?? 0),
     `after ${after} the focused row is below the viewport`
   ).toBeLessThanOrEqual(900);
+}
+
+/** The focused row is whole on screen and above the box at the foot, read with `onScreen`, which
+ *  bounds a row by the height the page publishes for that box. */
+async function expectFocusedRowAboveFoot(page: Page, after: string): Promise<void> {
+  const id = await focusedRow(page);
+  expect(id, `${after} left the focus on no row`).not.toBeNull();
+  await expect
+    .poll(() => onScreen(nodeRow(page, id ?? "").first()), {
+      message: `${after} left the focused row under the box at the foot`,
+    })
+    .toBe(true);
 }
 
 /** The slug of the issue's own spec, which is how its blocks are addressed. */
@@ -1745,24 +1759,30 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     ).toEqual([]);
 
     // No link opens a card on hover either, a link in an open body included: the issue page is
-    // worked from the keyboard (R6). A decision's words name the requirements it shaped as
-    // links, and its row is pinned open, so the pointer crosses every reference the page draws -
-    // the children's, the panel's and that row's - with the keyboard focus elsewhere.
+    // worked from the keyboard (R6 of the root spec). A decision's words name the requirements
+    // it shaped, each as a chip in place and again as a chip at the end of its words, and its
+    // row is pinned open, so the pointer rests on every link the page draws - the children's,
+    // the panel's and that row's - with the keyboard focus elsewhere. No link of the outline is
+    // a preview's trigger at this head: G's links in a node's words and its chips carry no
+    // `data-dispatch-ref` or `data-dispatch-href` (`row-references.ts`, `NodeRow.tsx`'s `Chip`),
+    // so a focused one opens no card either, and the card a focused link opens is not part I's
+    // to read.
     const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
     const decision = nodeRow(page, blockNodeId(decisionsSlug, seeded.decisions[0] ?? "")).first();
     await decision.focus();
     await page.keyboard.press("o");
     await focusThePage(page);
-    const bodyLinks = rowWords(decision).locator("[data-dispatch-ref]");
     await expect
-      .poll(() => bodyLinks.count(), { message: "the pinned decision's words draw no link" })
+      .poll(() => rowWords(decision).locator("a[href]:visible").count(), {
+        message: "the pinned decision's words draw no link",
+      })
       .toBeGreaterThan(0);
-    const references = issuePage(page).locator(
-      "[data-dispatch-ref]:visible, [data-dispatch-href]:visible"
+    const links = issuePage(page).locator(
+      "a[href]:visible, [data-dispatch-ref]:visible, [data-dispatch-href]:visible"
     );
-    const referenceCount = await references.count();
-    for (let index = 0; index < referenceCount; index += 1) {
-      await references.nth(index).hover();
+    const linkCount = await links.count();
+    for (let index = 0; index < linkCount; index += 1) {
+      await links.nth(index).hover();
       // A pointer resting on the link past the delay a card opens after on every other page:
       // the absence is the claim, so the wait is the span the card would have taken to open.
       await page.waitForTimeout(REF_PREVIEW_OPEN_DELAY_MS + 200);
@@ -1771,16 +1791,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
         `the pointer resting on link ${index} of the issue page opened a card`
       ).toBe(0);
     }
-    // The preview a link offers opens from the keyboard on the focused link.
     await page.mouse.move(0, 0);
-    await page.keyboard.press("Tab");
-    await bodyLinks.first().focus();
-    await expect(
-      page.getByRole("tooltip"),
-      "the keyboard focus on a link of the issue page opened no card"
-    ).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("tooltip")).toHaveCount(0);
     await decision.focus();
     await page.keyboard.press("o");
     await focusThePage(page);
@@ -2019,6 +2030,21 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     await expectFocusedRowClear(page, "End");
     await page.keyboard.press("Home");
     await expectFocusedRowClear(page, "Home");
+
+    // The box at the foot of the screen: part L draws one and publishes its height on the
+    // document element (`FOOT_HEIGHT_PROPERTY` of `identity-block.ts`), and the page brings the
+    // focused row clear of it as it does of the band at the top. A 200 px stand-in for that box:
+    // every move keeps the focused row whole above it. Measured at this part's head with only
+    // the height published and no box: the moves from the seventh on lift the row to 8 px above
+    // it, and End leaves the last row under it, with the page scrolled as far as it goes.
+    const takeFootAway = await standInFootBox(page, 200);
+    for (let step = 0; step < Math.min(order.length - 1, 12); step += 1) {
+      await page.keyboard.press("j");
+      await expectFocusedRowAboveFoot(page, `move ${step + 1} with j`);
+    }
+    await page.keyboard.press("End");
+    await expectFocusedRowAboveFoot(page, "End");
+    await takeFootAway();
   } finally {
     await context.close();
   }
@@ -2213,9 +2239,11 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
 
 // Editing in a node (part I's R10). Enter on a row whose node is a block of one of the issue's
 // documents puts the caret at the start of its words, in that document's one room: the row takes
-// the page's one editor of the document, so the room gets no second connection. What is typed
-// is stored. Escape gives the same row the focus, and a second Escape leaves the outline. A
-// comment's row holds no document's text, and the key says so at the row.
+// the page's one editor of the document, so the room gets no second connection. A second reader
+// who does the same on their own page is in that room too, and the first one's row draws the
+// second one's caret. What is typed is stored. Escape gives the same row the focus, and a second
+// Escape leaves the outline. A comment's row holds no document's text, and the key says so at
+// the row.
 test("Enter puts the caret in a node, and Escape gives the row back", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page, seeded } = await openTree(browser);
@@ -2236,6 +2264,37 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
       .poll(sockets, { message: "the spec's room took other than one connection" })
       .toBe(1);
     await page.keyboard.type(typed);
+
+    // A second reader, bob, presses Enter on the same statement on his own page: alice's row
+    // draws his caret, and neither page's room takes a second connection. A peer's caret on the
+    // very spot of a focused editor's own is not drawn (`collab-cursor-plugin.ts`), so he comes
+    // in after alice has typed, which moved hers past the start of the words his lands on. Both
+    // pages are 1280 px wide, the narrowest at which an editor takes part in the room's carets
+    // (`ProofDocument.tsx`).
+    const bob = await asUser(browser, "bob");
+    try {
+      await withIssuePage(bob, "bob");
+      const bobPage = await bob.newPage();
+      await bobPage.setViewportSize({ height: 900, width: 1280 });
+      const bobSockets = countDocumentSockets(bobPage, seeded.specArtifactId);
+      await gotoIssue(bobPage, `/issues/${seeded.key}`);
+      await expectTreeDrawn(bobPage);
+      await focusRow(bobPage, statement);
+      await bobPage.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInNode(bobPage), { message: "Enter did not put bob's caret in the row" })
+        .toBe(true);
+      await expect(
+        nodeRow(page, statement).first().locator(cursorLabel(page, "bob")),
+        "alice's row draws no caret of bob's, who is editing the same statement"
+      ).toBeVisible();
+      await expect
+        .poll(bobSockets, { message: "bob's room took other than one connection" })
+        .toBe(1);
+      expect(sockets(), "alice's room took a second connection when bob came in").toBe(1);
+    } finally {
+      await bob.close();
+    }
 
     // Escape leaves the caret on that row, and a second Escape leaves the outline.
     await page.keyboard.press("Escape");
