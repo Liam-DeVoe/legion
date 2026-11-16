@@ -59,6 +59,9 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		"narrowed-pub":  within(t, pubScope),
 		"narrowed-priv": within(t, privScope),
 		"largest":       within(t, largest),
+		// What WithinProjects never answers: a grant with no publish entry, which the server
+		// reads as a user who may publish to every subject.
+		"empty-publish": {Subscribe: []string{natsgrant.InboxPrefix("empty-publish") + ".>"}},
 	}
 
 	keys := testnats.NewCalloutKeys(t)
@@ -173,7 +176,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		}
 		require.NoError(t, batch.Error(), name)
 	}
-	github := openConsumer(ctx, t, pubJS, "legion-go-PUB-github-0", "notifications.github.acme.widgets.>")
+	github := openConsumer(ctx, t, pubJS, natsgrant.GitHubConsumerName("PUB", "acme/widgets"), "notifications.github.acme.widgets.>")
 	batch, err := github.Fetch(2, jetstream.FetchMaxWait(2*time.Second))
 	require.NoError(t, err)
 	var repository []string
@@ -204,8 +207,9 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		jetstream.ConsumerConfig{Durable: "legion-go-PUB-dispatch", FilterSubject: "notifications.dispatch.issue.PRIV.>", AckPolicy: jetstream.AckExplicitPolicy})
 	refusedCreate(create+"legion-go-PUB-dispatch",
 		jetstream.ConsumerConfig{Durable: "legion-go-PUB-dispatch", FilterSubjects: []string{"notifications.dispatch.issue.PUB.>", "notifications.dispatch.issue.PRIV.>"}, AckPolicy: jetstream.AckExplicitPolicy})
-	refusedCreate(create+"legion-go-PUB-github-0.notifications.github.acme.secret.>",
-		jetstream.ConsumerConfig{Durable: "legion-go-PUB-github-0", FilterSubject: "notifications.github.acme.secret.>", AckPolicy: jetstream.AckExplicitPolicy})
+	widgets := natsgrant.GitHubConsumerName("PUB", "acme/widgets")
+	refusedCreate(create+widgets+".notifications.github.acme.secret.>",
+		jetstream.ConsumerConfig{Durable: widgets, FilterSubject: "notifications.github.acme.secret.>", AckPolicy: jetstream.AckExplicitPolicy})
 	refused("$JS.API.STREAM.INFO."+bus.Stream, func(ctx context.Context) error {
 		_, err := pubJS.Stream(ctx, bus.Stream)
 		return err
@@ -260,15 +264,27 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	t.Logf("narrowed: a PUB daemon on WithinProjects(Daemon(), PUB) received 0 of 10 PRIV messages pulled while it observed; the control received %d", controlSeen.count())
 
 	// The largest project's grant fits in the answer the server takes: the connection is admitted
-	// and its last GitHub consumer opens on the first repository.
+	// and the GitHub consumer of its last repository opens on that repository's lane.
 	largestConn := connectAs(t, url, "largest", natsgo.CustomInboxPrefix(natsgrant.InboxPrefix(largest.Identity)))
 	largestJS, err := jetstream.New(largestConn.conn)
 	require.NoError(t, err)
-	openConsumer(ctx, t, largestJS, fmt.Sprintf("legion-go-INFRA-github-%d", largestRepositories-1), "notifications.github.example-owner.repository-00.>")
+	last := fmt.Sprintf("repository-%02d", largestRepositories-1)
+	openConsumer(ctx, t, largestJS, natsgrant.GitHubConsumerName("INFRA", "example-owner/"+last), "notifications.github.example-owner."+last+".>")
 	for _, name := range []string{"today-pub", "narrowed-pub", "largest"} {
 		grant := grants[name]
 		t.Logf("auth response for %s: %d bytes, %d publish and %d subscribe entries", name, answers.size(name), len(grant.Publish), len(grant.Subscribe))
 	}
+
+	// Why WithinProjects refuses a grant that keeps no publish entry: the server reads a user JWT
+	// with no publish allow list as a user who may publish anything, the stream's info among it.
+	_, err = natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Identity: "empty-publish"})
+	require.ErrorContains(t, err, "no publish entry")
+	emptyConn := connectAs(t, url, "empty-publish", natsgo.CustomInboxPrefix(natsgrant.InboxPrefix("empty-publish")))
+	emptyJS, err := jetstream.New(emptyConn.conn)
+	require.NoError(t, err)
+	stream, err := emptyJS.Stream(ctx, bus.Stream)
+	require.NoError(t, err, "a grant with no publish entry was refused the stream's info; the server now restricts it")
+	t.Logf("a user JWT with no publish allow list read the stream's info: %d messages stored", stream.CachedInfo().State.Msgs)
 }
 
 // within is WithinProjects(Daemon(), scope), which must not refuse.
