@@ -198,6 +198,10 @@ export function ClaimChip({
         registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
       }`;
   const inDetails = page !== null && inRow;
+  // In a row of Details nothing of the claim stops its line from wrapping (dispatch://INFRA-3935
+  // R4): each part may shrink, and a long one breaks inside itself only where no break between
+  // words is left. Everywhere else each part stays whole, as on `main`.
+  const part = inDetails ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
   return (
     <span
       className={
@@ -226,26 +230,26 @@ export function ClaimChip({
         className={inDetails ? undefined : "min-w-0 truncate"}
         inline
       />
-      <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
+      <span aria-hidden="true" className={part} {...page?.pageChrome}>
         ·
       </span>
-      <Timestamp at={claim.at} className="shrink-0" exact />
+      <Timestamp at={claim.at} className={part} exact />
       {lapsed ? (
         <>
-          <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
+          <span aria-hidden="true" className={part} {...page?.pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-lapsed" {...page?.pageChrome}>
+          <span className={part} data-testid="issue-claim-lapsed" {...page?.pageChrome}>
             {page?.CONTROL_LABELS.not_running ?? "not running"}
           </span>
         </>
       ) : null}
       {unresponsive ? (
         <>
-          <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
+          <span aria-hidden="true" className={part} {...page?.pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-unresponsive" {...page?.pageChrome}>
+          <span className={part} data-testid="issue-claim-unresponsive" {...page?.pageChrome}>
             {page?.CONTROL_LABELS.unresponsive ?? "unresponsive"}
             {heardAt === null ? null : (
               <span data-testid="issue-claim-unresponsive-since">
@@ -290,10 +294,10 @@ export function ClaimChip({
           phone or on the keyboard has no other way to that. */}
       {unchecked && page !== null ? (
         <>
-          <span aria-hidden="true" className="shrink-0" {...page.pageChrome}>
+          <span aria-hidden="true" className={part} {...page.pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-unchecked" {...page.pageChrome}>
+          <span className={part} data-testid="issue-claim-unchecked" {...page.pageChrome}>
             {page.CONTROL_LABELS.unchecked}
           </span>
         </>

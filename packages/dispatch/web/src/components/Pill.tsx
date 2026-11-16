@@ -91,12 +91,14 @@ function approvalTone(state: string): keyof typeof approvalPill {
  * are settled by the generated CSS's order, not the attribute's.
  *
  * `compact` is the new issue page header's: the prototype's `.pill`, 12 px type on an 18 px
- * line inside its rule, 20 px tall, the size of every other pill on that line
- * (dispatch://INFRA-1196 R13). `default` is every other host's. */
+ * line inside its rule, and 24 px tall at every width, the height of every other control on
+ * that line: the chip is a button, and a 24 px target holds at every width (WCAG 2.5.8;
+ * dispatch://INFRA-1196 R13, decision 43 of its part-decisions-md). `default` is every other
+ * host's. */
 export function approvalPillClassName(
   state: ArtifactApproval["state"],
   size: "compact" | "default" = "default"
 ): string {
-  const height = size === "compact" ? "py-0 leading-[18px]" : "py-1";
+  const height = size === "compact" ? "min-h-6 py-0 leading-[18px]" : "py-1";
   return `inline-flex min-w-0 items-center rounded-full border px-2 ${height} text-center text-xs font-medium [overflow-wrap:anywhere] ${approvalPill[approvalTone(state)]}`;
 }

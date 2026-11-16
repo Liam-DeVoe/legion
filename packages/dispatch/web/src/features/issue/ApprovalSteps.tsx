@@ -77,12 +77,14 @@ function ApprovalVersionLink({
  *  open, so the pill is a span rather than a button. */
 function StepState({
   actions,
+  actionsOn,
   entry,
   primaryArtifactId,
   size,
   versions,
 }: {
   actions: boolean;
+  actionsOn: readonly string[] | undefined;
   entry: StepEntry;
   primaryArtifactId: string;
   size: "compact" | "default";
@@ -92,7 +94,7 @@ function StepState({
   const { document } = entry;
   if (document?.approval === undefined || document.approval.state === "draft") {
     return (
-      <span className={approvalPillClassName("draft", size)}>
+      <span className={approvalPillClassName("draft", size)} {...page?.pageChrome}>
         {page?.CONTROL_LABELS.not_requested ?? "Not requested"}
       </span>
     );
@@ -108,11 +110,19 @@ function StepState({
     // approval `ApprovalChip` draws anything for - so the only thing left to decide here is whether
     // this is the issue's primary document, where the actions have always sat. A gate that
     // names no step for that document reaches none of this: the header's own chip carries it.
+    // Given `actionsOn`, it is instead whether this document's approval request waits on the
+    // reader, so each such entry carries its own two actions, and a press on them reviews this
+    // entry's document, the one its chip is drawn for (dispatch://INFRA-3935 R10).
     <>
       <ApprovalChip
         artifact={document}
         layout="contents"
-        showActions={actions && document.id === primaryArtifactId}
+        showActions={
+          actions &&
+          (actionsOn === undefined
+            ? document.id === primaryArtifactId
+            : actionsOn.includes(document.id))
+        }
         size={size}
         variant="header"
       />
@@ -130,8 +140,11 @@ function StepState({
 
 /** Why a step's reviewer sent its document back, as one wrapping line: the chip says only
  *  `Changes requested`, and the reason is the whole of what the writer must act on. It is given
- *  no width, no clamp and no tooltip, so a phone reads all of it. */
+ *  no width, no clamp and no tooltip, so a phone reads all of it. Inside `NoTooltips` the line
+ *  is the page's own words and the reason is the reviewer's, each with its mark
+ *  (dispatch://INFRA-3935 R6); the reviewer's name carries its own (`AgentName`). */
 function StepReason({ entry }: { entry: StepEntry }): ReactNode {
+  const page = usePageWords();
   const approval = entry.document?.approval;
   if (approval === undefined || approval.state !== "changes_requested") {
     return null;
@@ -142,6 +155,7 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
     <p
       className={`min-w-0 text-xs [overflow-wrap:anywhere] ${textSecondaryOnSurface}`}
       data-approval-step-reason={entry.step}
+      {...page?.pageChrome}
     >
       {`${entry.label}: `}
       {approval.by === undefined ? (
@@ -152,7 +166,14 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
           {` requested changes on v${version}`}
         </>
       )}
-      {reason === null ? null : ` · ${reason}`}
+      {reason === null ? null : page === null ? (
+        ` · ${reason}`
+      ) : (
+        <>
+          {" · "}
+          <span {...page.authorText}>{reason}</span>
+        </>
+      )}
     </p>
   );
 }
@@ -174,6 +195,7 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
  */
 export function ApprovalSteps({
   actions = true,
+  actionsOn,
   entries,
   primaryArtifactId,
   reasons = true,
@@ -181,8 +203,15 @@ export function ApprovalSteps({
   testId = "issue-approval-steps",
   versions,
 }: {
-  /** Whether the primary document's entry carries Approve and Request changes. */
+  /** Whether any entry carries Approve and Request changes: the primary document's, or each
+   *  entry of `actionsOn`. */
   actions?: boolean;
+  /** The ids of the documents whose approval request waits on the reader. Given, each of those
+   *  documents' entries carries its own Approve and Request changes, which review that entry's
+   *  document, and every other entry carries none; not given, the primary document's entry
+   *  alone carries them, as on `main`. Part P's header passes it, from the asks that wait on
+   *  the reader (dispatch://INFRA-3935 R10). */
+  actionsOn?: readonly string[];
   entries: StepEntry[];
   primaryArtifactId: string;
   /** Whether each step a reviewer sent back says why, under the list. */
@@ -221,6 +250,7 @@ export function ApprovalSteps({
             <span className={`text-xs font-medium ${textMutedOnSurface}`}>{entry.label}</span>
             <StepState
               actions={actions}
+              actionsOn={actionsOn}
               entry={entry}
               primaryArtifactId={primaryArtifactId}
               size={size}

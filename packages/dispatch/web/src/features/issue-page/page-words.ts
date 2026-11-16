@@ -593,6 +593,13 @@ export const PROGRESS_NOUNS = freeze({
 export const STATE_LINES = freeze({
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
   closed: "This issue is closed.",
+  /** What Details says of a GitHub link whose issue or pull request Dispatch cannot read, since
+   *  it holds no GitHub token for the link's repository, which today's pages say in the link's
+   *  tooltip (`features/issue/GitHubLink.tsx`, dispatch://INFRA-1196 R19). It is that tooltip's
+   *  sentence without "GitHub", whose capital inside the word reads as a code name to this
+   *  list's rule on internal words (`INTERNAL_WORD` in `page-words.test.ts`); the link's own
+   *  address, drawn before it, already says where the link points. */
+  github_unreadable: "Details are unavailable for this repository.",
   /** How a subscribed agent stands whose subscription is wider than this issue, which Details
    *  draws where today's pages draw "via" and its topic with the reason as a tooltip
    *  (`features/issue/SubscribedAgents.tsx`, dispatch://INFRA-1196 R19). */

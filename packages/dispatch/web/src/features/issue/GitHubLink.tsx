@@ -96,9 +96,13 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
  * phone; the title is truncated and carried in full by the link's tooltip.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) no link carries a
- * `title`, so what the tooltip said is drawn instead (dispatch://INFRA-1196 R19): the title
- * whole and wrapping, a link with no GitHub reading as its whole address, and an unsafe link
- * says so in words.
+ * `title`, so what the tooltip said is drawn instead (dispatch://INFRA-1196 R19): a GitHub
+ * issue or pull request reads as `<owner>/<repo>#<n>` and its title, whole; while the title
+ * loads, or when it could not be read, as its whole address; and when Dispatch holds no GitHub
+ * token for the repository, as `<owner>/<repo>#<n>` and the sentence saying so. A link with no
+ * GitHub reading is its whole address, and an unsafe link says so in words. Every text there
+ * wraps with `[overflow-wrap:anywhere]`, not `break-all`, so a line breaks between words where
+ * it can and cuts a word only where it cannot.
  */
 export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   const page = usePageWords();
@@ -161,7 +165,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       </span>
     ) : (
       <span className={`inline-block text-sm ${textMutedOnSurface}`} {...page.pageChrome}>
-        <span className="break-all" {...page.authorText}>
+        <span className="[overflow-wrap:anywhere]" {...page.authorText}>
           {link.url}
         </span>
         <span className="ml-1">({page.CONTROL_LABELS.external_link_unsafe})</span>
@@ -179,7 +183,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       </a>
     ) : (
       <a
-        className={`inline-block max-w-full break-all text-sm underline ${linkText} ${linkHoverText}`}
+        className={`inline-block max-w-full text-sm underline [overflow-wrap:anywhere] ${linkText} ${linkHoverText}`}
         href={href}
         {...page.authorText}
       >
@@ -216,17 +220,32 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
               : `${repository}${number}: ${reference.title}`
       }
     >
-      <span className="shrink-0 font-medium" {...page?.authorText}>
-        {number}
-      </span>
       {page === null ? (
-        <TruncatedText className="max-w-[18ch] sm:max-w-[32ch]">
-          {reference === undefined ? repository : reference.title}
-        </TruncatedText>
-      ) : (
-        <span className="min-w-0 break-all" {...page.authorText}>
-          {reference === undefined ? repository : reference.title}
+        <>
+          <span className="shrink-0 font-medium">{number}</span>
+          <TruncatedText className="max-w-[18ch] sm:max-w-[32ch]">
+            {reference === undefined ? repository : reference.title}
+          </TruncatedText>
+        </>
+      ) : reference === undefined && !unavailable ? (
+        <span className="min-w-0 [overflow-wrap:anywhere]" {...page.authorText}>
+          {link.url}
         </span>
+      ) : (
+        <>
+          <span className="min-w-0 font-medium [overflow-wrap:anywhere]" {...page.authorText}>
+            {`${repository}${number}`}
+          </span>
+          {reference === undefined ? (
+            <span className="min-w-0 [overflow-wrap:anywhere]" {...page.pageChrome}>
+              {page.STATE_LINES.github_unreadable}
+            </span>
+          ) : (
+            <span className="min-w-0 [overflow-wrap:anywhere]" {...page.authorText}>
+              {reference.title}
+            </span>
+          )}
+        </>
       )}
       {state === undefined ? null : (
         <span
