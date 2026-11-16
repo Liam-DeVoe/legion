@@ -37,9 +37,10 @@ func readyClaimOf(t *testing.T, sup *supervisor, token claim.Token, role claim.R
 	readyClaimAs(t, sup, token, role, "ses-"+string(role))
 }
 
-// readyClaimAs is readyClaimOf on session. The daemon holds a session id to the first claim of the
-// project that recorded it (supervise's holdSession), so a test with two claims of one role names
-// the second's session itself.
+// readyClaimAs is readyClaimOf on session, whose file is named for it: the daemon holds a session's
+// id and its file's path and name to the first claim of the project that recorded them
+// (supervise's holdRecorded), so a test with two claims of one role names the second's session
+// itself, and so its file.
 func readyClaimAs(t *testing.T, sup *supervisor, token claim.Token, role claim.Role, session string) {
 	t.Helper()
 	machine, ok := sup.Machine(token)
@@ -47,9 +48,10 @@ func readyClaimAs(t *testing.T, sup *supervisor, token claim.Token, role claim.R
 		t.Fatalf("no machine for %s", token)
 	}
 	generation := machine.Claim().Generation
+	file := "/tmp/" + strings.TrimPrefix(session, "ses-") + ".jsonl"
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
-		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: "/tmp/" + string(role) + ".jsonl"},
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: file},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: session},
 	} {
 		if err := machine.Handle(context.Background(), ev); err != nil {

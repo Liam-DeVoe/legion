@@ -1,47 +1,86 @@
--- 20261116144907_claim_sessions.up.sql — every session id a claim has recorded, held to the
+-- 20261116144907_claim_sessions.up.sql — every name of a session a claim has recorded, held to the
 -- first claim of its project that recorded it.
 --
--- A claim's agent reports its own session id when it registers, and the daemon records that id on
--- the claim and enrolls it with the secrets broker, whose enrollment takes over the grants and
--- pending requests of every other enrollment of the same pod account and session
--- (packages/envoy/internal/broker/enroll's adopt). Every pod of a project enrolls under that
--- project's one account, so a role that reported a sibling's session id, or the id of another
--- claim of its project, live or ended, took that session's secret grants (dispatch://INFRA-840,
--- plan E's t-e-54). The claims row keeps only the session a claim resumes now and the one it last
--- abandoned, so nothing recorded which ids the other claims had recorded before: this table does,
--- one row per project and id, written when a claim first records it (supervise's holdSession,
--- through Store.HoldSession), and never deleted, so a retired, failed or suspended claim keeps every
--- id it recorded. A registration or an enrollment of an id another claim of the project holds is
--- refused.
+-- A claim's agent reports its own session when it registers: an id and the session's file. The
+-- daemon records both on the claim, enrolls the id with the secrets broker, whose enrollment takes
+-- over the grants and pending requests of every other enrollment of the same pod account and
+-- session (packages/envoy/internal/broker/enroll's adopt), and resumes the session at every
+-- relaunch. Every pod of a project enrolls under that project's one account, so a role that
+-- reported a sibling's session, or the session of another claim of its project, live or ended,
+-- took that session's secret grants and could be relaunched into it (dispatch://INFRA-840, plan
+-- E's t-e-54). The claims row keeps only the session a claim resumes now and the one it last
+-- abandoned, so nothing recorded which names the other claims had recorded before: this table
+-- does, one row per project, kind and name, written when a claim first records the name
+-- (supervise's holdRecorded, through Store.HoldSessions), and never deleted, so a retired, failed or
+-- suspended claim keeps every name it recorded. A registration, a resume or an enrollment under a
+-- name another claim of the project holds is refused.
+--
+-- A name is each key a resume path or the broker finds a session by (supervise.HoldKind):
+--   session    the session id, which the broker enrolls and a Claude Code launch resumes, and the
+--              id a file named `<uuid>.jsonl` gives, which a Claude Code relaunch resumes;
+--   file       the session file's path, which an Oh My Pi launch resumes (`--resume=<file>`) and the
+--              launcher finds the session's row by;
+--   file-name  the file's base name, which the tmux runtime resumes one folder below a sessions
+--              directory when the recorded path is missing;
+--   file-id    the id after the first `_` of an Oh My Pi name `<timestamp>_<id>.jsonl`, by which the
+--              tmux runtime resumes any `*_<id>.jsonl` there.
+-- supervise.RecordedHolds is the same rule in Go, and the migration's test holds the two to one
+-- answer.
 --
 -- A hold is a project's, as a daemon is: the daemon serves one project, and a claim of another
 -- project is another daemon's. A role of one daemon that names another daemon's session takes
 -- nothing of it at the broker, whose grants follow the daemon that enrolled a pod
--- (exchange.PodLaunchPrincipal), so the daemon need not, and cannot, know another daemon's ids.
+-- (exchange.PodLaunchPrincipal).
 --
 -- No foreign key to claims: a hold outlives anything that becomes of its claim's row.
 --
--- Every id the claims table records already is held for the claim that records it: its session,
--- and the session it last abandoned, which it recorded too. No two claims of a project are meant to
--- record one id, since every launch starts its agent on an id of its own
--- (claudelaunch.NewSessionID for Claude Code, Oh My Pi's own otherwise), so an id two claims record
--- is this hole already used, or a bug, and nothing recorded which claim took it first. Such an id is
--- held for neither: its claim is the empty string, which no claim's token is, so every claim is
--- refused its registration and its enrollment of it. The daemon logs each such id at boot at Error,
--- naming every claim whose row records it, and suspends them (internal/daemon's
+-- Every name the claims table records already is held for the claim that records it: of its
+-- session, and of the session it last abandoned, which it recorded too. No two claims of a project
+-- are meant to record one name, since every launch starts its agent on a session of its own
+-- (claudelaunch.NewSessionID for Claude Code, Oh My Pi's own otherwise), so a name two claims record
+-- is this hole already used, or a bug, and nothing recorded which claim took it first. Such a name
+-- is held for neither: its claim is the empty string, which no claim's token is, so every claim is
+-- refused every registration, resume and enrollment under it. The daemon logs each such name at boot
+-- at Error, naming every claim whose row records it, and suspends them (internal/daemon's
 -- suspendSessionsHeldForNone), and an operator records the rightful holder by hand:
---   update claim_sessions set claim = '<token>' where project = '<project>' and session = '<id>';
+--   update claim_sessions set claim = '<token>'
+--     where project = '<project>' and kind = '<kind>' and name = '<name>';
 create table claim_sessions (
   project text not null,
-  session text not null check (session <> ''),
+  kind text not null check (kind in ('session', 'file', 'file-name', 'file-id')),
+  name text not null check (name <> ''),
   claim text not null,
   recorded_at timestamptz not null default now(),
-  primary key (project, session));
+  primary key (project, kind, name));
 
-insert into claim_sessions (project, session, claim)
-select project, session, case when count(distinct token) = 1 then min(token) else '' end from (
-  select project, session, token from claims where session <> ''
+with recorded as (
+  select project, token, session, session_file as file from claims
   union all
-  select project, abandoned_session ->> 'session', token from claims
-    where coalesce(abandoned_session ->> 'session', '') <> '') recorded
-group by project, session;
+  select project, token, abandoned_session ->> 'session', abandoned_session ->> 'sessionFile'
+    from claims where abandoned_session is not null
+), files as (
+  -- base is filepath.Base: trailing separators removed, then what follows the last one; a path of
+  -- separators alone is one separator. stem is base without `.jsonl`, null for any other name.
+  select project, token, session, file, base,
+    case when right(base, 6) = '.jsonl' then left(base, length(base) - 6) end as stem
+  from (
+    select project, token, session, file,
+      case when rtrim(file, '/') = '' then '/' else regexp_replace(rtrim(file, '/'), '^.*/', '') end as base
+    from recorded where coalesce(file, '') <> '') named
+), names as (
+  select project, token, 'session' as kind, session as name from recorded where coalesce(session, '') <> ''
+  union all
+  select project, token, 'file', file from files
+  union all
+  select project, token, 'file-name', base from files
+  union all
+  select project, token, 'file-id', substr(stem, strpos(stem, '_') + 1) from files
+    where strpos(stem, '_') > 0 and substr(stem, strpos(stem, '_') + 1) <> ''
+  union all
+  select project, token, 'session', stem from files
+    where stem ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+)
+insert into claim_sessions (project, kind, name, claim)
+select project, kind, name, case when count(distinct token) = 1 then min(token) else '' end
+from names
+group by project, kind, name;

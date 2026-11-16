@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -2657,8 +2658,9 @@ type outboxClaimStore struct {
 	mu         sync.Mutex
 	claims     map[claim.Token]supervise.Claim
 	deliveries map[claim.Token]supervise.Delivery
-	// holds is the claim each session is held for (HoldSession).
-	holds map[string]claim.Token
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
 	// refused is the error every claim write answers while it is set, which is how a case drives
 	// a decision the store would not take (the stall backstop's own relaunch).
 	refused error
@@ -2729,21 +2731,6 @@ func (s *outboxClaimStore) PutClaimStep(_ context.Context, token claim.Token, st
 	c.Step = step
 	s.claims[token] = c
 	return true, nil
-}
-
-// HoldSession holds each session for the first claim that records it, as the store's
-// claim_sessions table does.
-func (s *outboxClaimStore) HoldSession(_ context.Context, _ string, token claim.Token, session string) (claim.Token, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if holder, held := s.holds[session]; held {
-		return holder, nil
-	}
-	if s.holds == nil {
-		s.holds = map[string]claim.Token{}
-	}
-	s.holds[session] = token
-	return token, nil
 }
 
 func newOutboxSupervisor(t *testing.T, project, stateDir string) (*supervisor, *fake.Runtime) {

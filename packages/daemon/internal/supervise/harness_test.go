@@ -152,9 +152,9 @@ type memStore struct {
 	failures map[string]error
 	// onPut, when set, runs on every PutClaim before it is recorded.
 	onPut func(Claim)
-	// holds is the claim each session is held for, as the store's claim_sessions table keeps it
-	// (HoldSession).
-	holds map[string]claim.Token
+	// holds is the claim each name of a session is held for, as the store's claim_sessions table
+	// keeps it (HoldSessions); every claim of a harness is of one project.
+	holds map[Hold]claim.Token
 }
 
 func newMemStore() *memStore {
@@ -162,35 +162,57 @@ func newMemStore() *memStore {
 		claims:     map[claim.Token]Claim{},
 		deliveries: map[claim.Token]Delivery{},
 		failures:   map[string]error{},
-		holds:      map[string]claim.Token{},
+		holds:      map[Hold]claim.Token{},
 	}
 }
 
-// HoldSession is the store's: the first claim to record a session holds it, and the answer about
-// it never changes after.
-func (s *memStore) HoldSession(_ context.Context, _ string, token claim.Token, session string) (claim.Token, error) {
+// HoldSessions is the store's: the first claim to record a name holds it, all of one call's names
+// or none, and the answer about a name never changes after.
+func (s *memStore) HoldSessions(_ context.Context, _ string, token claim.Token, holds []Hold) ([]claim.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.failures["HoldSession"]; err != nil {
-		return "", err
+	if err := s.failures["HoldSessions"]; err != nil {
+		return nil, err
 	}
-	if session == "" {
-		return "", errors.New("hold session: no session")
+	holders := make([]claim.Token, len(holds))
+	mine := true
+	for i, h := range holds {
+		if h.Name == "" {
+			return nil, errors.New("hold session: an empty name")
+		}
+		holder, held := s.holds[h]
+		if !held {
+			holder = token
+		}
+		holders[i] = holder
+		mine = mine && holder == token
 	}
-	if holder, held := s.holds[session]; held {
-		return holder, nil
+	if mine {
+		for _, h := range holds {
+			s.holds[h] = token
+		}
 	}
-	s.holds[session] = token
-	return token, nil
+	return holders, nil
 }
 
-// setHold records holder as session's, as an operator settling a held-for-none id or a migration
+// setHold records holder as h's, as an operator settling a held-for-none name or a migration
 // does, under the store's lock so it may run while a machine does.
-func (s *memStore) setHold(session string, holder claim.Token) {
+func (s *memStore) setHold(h Hold, holder claim.Token) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.holds[session] = holder
+	s.holds[h] = holder
 }
+
+// holdOf is the claim h is held for, and whether any is.
+func (s *memStore) holdOf(h Hold) (claim.Token, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	holder, held := s.holds[h]
+	return holder, held
+}
+
+// sessionID is the hold of a session id.
+func sessionID(id string) Hold { return Hold{Kind: HoldSessionID, Name: id} }
 
 func (s *memStore) PutClaim(_ context.Context, c Claim) error {
 	s.mu.Lock()

@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -72,8 +73,9 @@ type memoryClaims struct {
 
 	rowsMu sync.Mutex
 	rows   map[legionclaim.Token]supervise.Claim
-	// holds is the claim each session is held for (HoldSession).
-	holds map[string]legionclaim.Token
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
 }
 
 func (s *memoryClaims) Machine(token legionclaim.Token) (*supervise.Machine, bool) {
@@ -154,21 +156,6 @@ func (s *memoryClaims) PutClaimStep(_ context.Context, token legionclaim.Token, 
 	row.Step = step
 	s.rows[token] = row
 	return true, nil
-}
-
-// HoldSession holds each session for the first claim that records it, as the store's
-// claim_sessions table does.
-func (s *memoryClaims) HoldSession(_ context.Context, _ string, token legionclaim.Token, session string) (legionclaim.Token, error) {
-	s.rowsMu.Lock()
-	defer s.rowsMu.Unlock()
-	if holder, held := s.holds[session]; held {
-		return holder, nil
-	}
-	if s.holds == nil {
-		s.holds = map[string]legionclaim.Token{}
-	}
-	s.holds[session] = token
-	return token, nil
 }
 
 func (s *memoryClaims) ClaimByBootTokenHash(_ context.Context, hash []byte) (supervise.Claim, bool, error) {

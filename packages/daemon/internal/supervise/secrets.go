@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -73,83 +72,17 @@ type heldIdentity struct {
 	AgentSecretsIdentity
 }
 
-// sessionHold is a session and the claim the store holds it for (Machine.sessionHold).
-type sessionHold struct {
-	session string
-	holder  claim.Token
-}
-
-// holdSession keeps each session id to the first claim that recorded it, whatever that claim's
-// state since: queued, working, idle, suspended, failed or retired (dispatch://INFRA-840, plan E's
-// t-e-54). The session an agent reports is the one the daemon records on its claim and enrolls
-// with the secrets broker (ensureEnrolled), and the broker's enrollment takes over the grants and
-// pending requests of every other enrollment of the same pod account and session, while every pod
-// of a project enrolls under that project's one account. So a session is held before anything
-// records or enrolls it: a claim may take only a session it recorded before or one no claim has
-// recorded, and the store keeps which claim recorded each first (Store.HoldSession). Any other is
-// refused with claim.SessionHeldRefusal, which names no other claim; the log names the holder.
-// An empty id is not held, and answers nil.
-//
-// The store's answer is kept for the last session asked about when it names a claim, since a
-// claim's hold never changes once made: the enrollment that follows a registration asks nothing
-// more. An id held for no claim (the empty holder) is asked about again every time, because an
-// operator settles one by recording its rightful holder, and that claim's next registration on
-// this same machine must see it. A store that does not answer refuses nothing and is asked again
-// by the next decision.
-func (m *Machine) holdSession(ctx context.Context, session string) error {
-	if session == "" {
-		return nil
-	}
-	holder := claim.Token("")
-	if held := m.sessionHold; held != nil && held.session == session {
-		holder = held.holder
-	} else {
-		if err := m.write(ctx, func(ctx context.Context) error {
-			var err error
-			holder, err = m.deps.Store.HoldSession(ctx, m.claim.Project, m.claim.Token, session)
-			return err
-		}); err != nil {
-			return fmt.Errorf("hold session %s for %s: %w", session, m.claim.Token, err)
-		}
-		if holder != "" {
-			m.sessionHold = &sessionHold{session: session, holder: holder}
-		}
-	}
-	if holder != m.claim.Token {
-		m.log.Warn("supervise: refused a session another claim recorded first", "session", session, "claim", m.claim.Token, "holder", holder)
-		return fmt.Errorf("%s as session %s: %w", m.claim.Token, session, claim.SessionHeldRefusal(session))
-	}
-	return nil
-}
-
-// holdRecorded holds every session id a claim's record names to the claim (holdSession): its
-// session, and the Claude Code session its transcript's name gives (claudelaunch.Transcript),
-// which is the session a Claude Code launch resumes (claudelaunch.ResumeSession) whatever the
-// recorded session says. claude-envoy registers a session and that session's own transcript, so
-// the two are one id and one hold; a record whose transcript names another claim's session is
-// refused as that session would be, so no claim registers, or relaunches into, another claim's
-// Claude session. An Oh My Pi session file names no Claude session, and holds nothing more.
-func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
-	if err := m.holdSession(ctx, session); err != nil {
-		return err
-	}
-	if resumed, ok := claudelaunch.Transcript(sessionFile); ok && resumed != session {
-		return m.holdSession(ctx, resumed)
-	}
-	return nil
-}
-
 // ensureEnrolled enrolls the claim's current process once the machine holds both halves of its
 // identity: the hello's thumbprint and token for this incarnation, and the agent's session id,
-// the broker's wake address. It enrolls only a session the claim holds (holdSession): a
-// registration holds its session before it records it, so this asks nothing more then, and the
-// session a resumed claim enrolls on its hello was held by an earlier registration, or recorded
-// before the daemon held sessions, when the migration that made the hold gave it to the claim
-// recording it, or to no claim where two did. It never fails a transition: a refusal is logged
-// with its code, a transient one retried on the next Alive observation, a permanent one on the
-// shim's next hello. An expired token is dropped and the key kept, and the next attempt reads a
-// fresh one (freshToken). Once enrolled, the id is handed to the shim over the claim's
-// connection, once per connection.
+// the broker's wake address. It enrolls only a session every name of which the claim holds
+// (holdRecorded): a registration holds its names before it records them, so this asks nothing
+// more then, and the names a resumed claim enrolls under on its hello were held by an earlier
+// registration, or recorded before the daemon held sessions, when the migration that made the
+// hold gave each to the claim recording it, or to no claim where two did. It never fails a
+// transition: a refusal is logged with its code, a transient one retried on the next Alive
+// observation, a permanent one on the shim's next hello. An expired token is dropped and the key
+// kept, and the next attempt reads a fresh one (freshToken). Once enrolled, the id is handed to
+// the shim over the claim's connection, once per connection.
 func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	if m.deps.Secrets == nil || m.claim.Locator == nil {
 		return nil
@@ -164,7 +97,7 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 		if m.identity == nil || m.identity.incarnation != incarnation || m.claim.Session == "" {
 			return nil
 		}
-		if err := m.holdSession(ctx, m.claim.Session); err != nil {
+		if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
 			var refusal claim.Refusal
 			if errors.As(err, &refusal) {
 				m.log.Error("supervise: agent-secrets: not enrolling a session another claim holds; waiting for the shim's next hello", "incarnation", incarnation, "error", err)

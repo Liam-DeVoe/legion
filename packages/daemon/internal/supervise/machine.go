@@ -654,12 +654,13 @@ type Store interface {
 	// write would erase every step recorded since that machine read its claim. It answers
 	// whether the store holds the claim at all.
 	PutClaimStep(ctx context.Context, token claim.Token, step StepRecord) (bool, error)
-	// HoldSession records session as token's claim's within project when no claim of the project
-	// has recorded it, and answers the claim that holds it: token itself when it recorded the
-	// session before or none had, another claim when that one recorded it first, and the empty
-	// token for an id held for no claim. A hold is never released, whatever becomes of the claim
-	// holding it (holdSession).
-	HoldSession(ctx context.Context, project string, token claim.Token, session string) (claim.Token, error)
+	// HoldSessions records every one of holds as token's claim's within project when no claim of
+	// the project has recorded it, and answers, in holds' order, the claim that holds each: token
+	// itself when it recorded the name before or none had, another claim when that one recorded it
+	// first, and the empty token for a name held for no claim. It records all of holds or none: a
+	// name another claim holds leaves every other name unrecorded. A hold is never released,
+	// whatever becomes of the claim holding it (holdRecorded).
+	HoldSessions(ctx context.Context, project string, token claim.Token, holds []Hold) ([]claim.Token, error)
 }
 
 // Specs builds the part of a launch the claim does not carry — the pane's environment, its
@@ -1296,10 +1297,10 @@ type Machine struct {
 	// to the shim over the claim's current connection.
 	identity       *heldIdentity
 	enrollmentSent bool
-	// sessionHold is the store's answer about the last session this machine asked it to hold
-	// (holdSession): a hold never changes once made, so the answer is kept, and asked again only
-	// for another session. Memory only: a restarted machine asks once more.
-	sessionHold *sessionHold
+	// heldNames is every name of a session the store answered as this claim's (holdRecorded): a
+	// hold never changes once made, so such a name is not asked again. Memory only: a restarted
+	// machine asks once more.
+	heldNames map[Hold]bool
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool
 	// goroutines counts sends whose outcome has not been handled yet; idle wakes Wait.
@@ -2490,11 +2491,13 @@ func (m *Machine) backOff(ctx context.Context) error {
 // refusal of a Resume is a launch failure the caller charges, and the claim keeps its session: a
 // fresh agent on a claim that had one is what the same-agent refusal exists to catch.
 //
-// A resume runs under every session its record names, so each is held to the claim before
-// anything starts (holdRecorded, dispatch://INFRA-840): a Claude Code launch continues the session
-// its transcript's name gives (claudelaunch.ResumeSession), which a claim recorded before the
-// hold could name for another claim's session. One another claim holds is refused here, as a
-// launch failure the caller charges, and nothing starts under it.
+// A resume runs under every name its record gives the session, so each is held to the claim
+// before anything starts (holdRecorded, dispatch://INFRA-840): an Oh My Pi launch continues the
+// recorded file (`--resume=<file>`), the tmux runtime one of the file's name or id where that path
+// is missing (sessionFileOf), and a Claude Code launch the session the transcript's name gives
+// (claudelaunch.ResumeSession), any of which a claim recorded before the hold could name for
+// another claim's session. One another claim holds is refused here, as a launch failure the caller
+// charges, and nothing starts under it.
 func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, error) {
 	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {

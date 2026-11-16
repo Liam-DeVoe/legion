@@ -71,8 +71,8 @@ func pacedHarness(t *testing.T, rate int, tune ...func(*Deps)) *harness {
 }
 
 // wakeClaim is another claim of the same daemon in state, with the session a resume relaunches: a
-// session of its own, since the daemon holds each session id to the first claim that recorded it
-// (holdSession), and a resume of another claim's session is refused.
+// session of its own, since the daemon holds each session's id and file to the first claim that
+// recorded them (holdRecorded), and a resume of another claim's session is refused.
 func wakeClaim(token claim.Token, state ClaimState) Claim {
 	c := queuedClaim()
 	c.Token, c.State = token, state
@@ -494,7 +494,7 @@ func waveToken(n int) claim.Token {
 // stalePluginClaim is c as a live worker of an earlier release, which is what a plugin wave finds:
 // ready, recording the process the stale-plugin lane decides and the session a relaunch resumes,
 // at the plugin contract its registration declared. The session is the claim's own (wakeClaim's),
-// since a resume of another claim's session is refused (holdSession).
+// since a resume of another claim's session is refused (holdRecorded).
 func stalePluginClaim(c Claim, contract int) Claim {
 	c.State = StateReady
 	c.Generation = 1

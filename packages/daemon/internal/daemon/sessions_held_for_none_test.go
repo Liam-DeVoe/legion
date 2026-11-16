@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"log/slog"
-	"slices"
 	"strconv"
 	"testing"
 
@@ -15,15 +14,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// An id two claims recorded before the daemon held sessions is held for neither (the
-// claim_sessions migration), so each is refused its registration of it; relaunched, either would
-// resume that id, be refused 409 and exit, again and again. So the boot suspends each through the
-// operator's suspend, before anything relaunches them, and names the id, its claims and the
-// statement that settles it at Error; a claim of the same boot holding its own session is left as
-// it was, and no launch is made for any claim of the id. A claim in a turn holds the suspension
-// for that turn's end (it stops the process at the operator's stop timeout), which is no failure
-// of the boot. The id is an agent's own text, so the statement carries it as a SQL literal, its
-// quotes doubled.
+// A session name two claims recorded before the daemon held sessions is held for neither (the
+// claim_sessions migration), so each is refused its registration, its resume and its enrollment
+// under it; relaunched, either would be refused again and again. So the boot suspends each through
+// the operator's suspend, once whatever number of names it shares, before anything relaunches
+// them, and names each name, its claims and the statement that settles it at Error; a claim of the
+// same boot holding its own session is left as it was, and no launch is made for any claim of the
+// names. A claim in a turn holds the suspension for that turn's end (it stops the process at the
+// operator's stop timeout), which is no failure of the boot. A name is an agent's own text, so the
+// statement carries it as a SQL literal, its quotes doubled.
 //
 // The control: drop the boot step (start's call of suspendSessionsHeldForNone); the claims are
 // re-adopted live, each a relaunch away from the refusal, and the test fails naming them (the pull
@@ -55,21 +54,26 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, row := range []struct {
-		token          claim.Token
-		issue, session string
-		state          supervise.ClaimState
+		token                claim.Token
+		issue, session, file string
+		state                supervise.ClaimState
 	}{
-		{first, "LEGION-901", twice, supervise.StateIdle},
-		{second, "LEGION-902", twice, supervise.StateIdle},
-		{busy, "LEGION-903", twice, supervise.StateWorking},
-		{own, "LEGION-901", "ses_own", supervise.StateIdle},
+		// first and second share two names, the session id and the file's base name.
+		{first, "LEGION-901", twice, "/sessions/a/shared.jsonl", supervise.StateIdle},
+		{second, "LEGION-902", twice, "/sessions/b/shared.jsonl", supervise.StateIdle},
+		{busy, "LEGION-903", twice, "/sessions/3.jsonl", supervise.StateWorking},
+		{own, "LEGION-901", "ses_own", "/sessions/4.jsonl", supervise.StateIdle},
 	} {
-		if err := st.PutClaim(ctx, earlierBootClaim(project, row.token, row.issue, row.session, row.state, i+1)); err != nil {
+		c := earlierBootClaim(project, row.token, row.issue, row.session, row.state, i+1)
+		c.SessionFile = row.file
+		if err := st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("record %s: %v", row.token, err)
 		}
 	}
-	// What the migration leaves of the rows recording one id, and of the one recording its own.
-	if _, err := st.Pool().Exec(ctx, `insert into claim_sessions (project, session, claim) values ($1, $2, ''), ($1, 'ses_own', $3)`, project, twice, string(own)); err != nil {
+	// What the migration leaves of the names two claims record, and of the one recording its own.
+	if _, err := st.Pool().Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values
+		($1, 'session', $2, ''), ($1, 'file-name', 'shared.jsonl', ''), ($1, 'session', 'ses_own', $3)`,
+		project, twice, string(own)); err != nil {
 		t.Fatalf("record the holds: %v", err)
 	}
 	st.Close()
@@ -96,24 +100,33 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 			t.Errorf("the boot launched %s (%s), whose session is held for no claim", call.Spec.Claim, call.Method)
 		}
 	}
-	suspended := []claim.Token{}
+	stops := map[claim.Token]int{}
 	for _, call := range rt.CallsOf("Suspend") {
-		suspended = append(suspended, call.Locator.Claim)
+		stops[call.Locator.Claim]++
 	}
-	if !slices.Contains(suspended, first) || !slices.Contains(suspended, second) || slices.Contains(suspended, own) {
-		t.Errorf("the boot stopped the processes of %v, want %s's and %s's and not %s's", suspended, first, second, own)
+	if stops[first] != 1 || stops[second] != 1 || stops[own] != 0 {
+		t.Errorf("the boot stopped the processes %v, want %s's and %s's once each, though they share two names, and not %s's", stops, first, second, own)
 	}
 
 	lines := loggedLines(t, logs.String(), "held for none of them")
-	if len(lines) != 1 {
-		t.Fatalf("the boot logged %d lines naming the id held twice, want 1: %v", len(lines), lines)
+	if len(lines) != 2 {
+		t.Fatalf("the boot logged %d lines naming a name held twice, want 2: %v", len(lines), lines)
 	}
-	line := lines[0]
+	byName := map[string]map[string]any{}
+	for _, line := range lines {
+		name, _ := line["name"].(string)
+		byName[name] = line
+	}
+	line := byName[twice]
 	claims, _ := line["claims"].([]any)
-	settle := "update claim_sessions set claim = '<token>' where project = '" + project + "' and session = 'ses_twice''; update claim_sessions set claim = ''x''; --'"
-	if line["level"] != "ERROR" || line["session"] != twice || len(claims) != 3 ||
+	settle := "update claim_sessions set claim = '<token>' where project = '" + project +
+		"' and kind = 'session' and name = 'ses_twice''; update claim_sessions set claim = ''x''; --'"
+	if line["level"] != "ERROR" || line["kind"] != "session" || len(claims) != 3 ||
 		claims[0] != string(first) || claims[1] != string(second) || claims[2] != string(busy) || line["settle"] != settle {
-		t.Errorf("the boot logged %v, want an error naming %q, %s, %s and %s, and the statement that settles it, %q", line, twice, first, second, busy, settle)
+		t.Errorf("the boot logged %v, want an error naming the session %q, %s, %s and %s, and the statement that settles it, %q", line, twice, first, second, busy, settle)
+	}
+	if line := byName["shared.jsonl"]; line["kind"] != "file-name" || len(line["claims"].([]any)) != 2 {
+		t.Errorf("the boot logged %v for the shared file name, want the file-name kind and %s and %s", line, first, second)
 	}
 }
 

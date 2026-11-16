@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -203,23 +204,9 @@ type relaunchingStore struct {
 	mu          sync.Mutex
 	currentHash []byte
 	current     supervise.Claim
-	// holds is the claim each session is held for (HoldSession).
-	holds map[string]claim.Token
-}
-
-// HoldSession holds each session for the first claim that records it, as the store's
-// claim_sessions table does.
-func (s *relaunchingStore) HoldSession(_ context.Context, _ string, token claim.Token, session string) (claim.Token, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if holder, held := s.holds[session]; held {
-		return holder, nil
-	}
-	if s.holds == nil {
-		s.holds = map[string]claim.Token{}
-	}
-	s.holds[session] = token
-	return token, nil
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
 }
 
 func (s *relaunchingStore) ClaimByBootTokenHash(_ context.Context, hash []byte) (supervise.Claim, bool, error) {

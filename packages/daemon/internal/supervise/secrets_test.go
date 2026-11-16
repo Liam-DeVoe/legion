@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -143,7 +144,7 @@ func TestTheRegistrationDeadlineRevokesAnUnregisteredPodsEnrollment(t *testing.T
 }
 
 // A session is held to the first claim that recorded it before anything records, launches or
-// enrolls it (holdSession, dispatch://INFRA-840): the broker's enrollment takes over the grants of
+// enrolls it (holdRecorded, dispatch://INFRA-840): the broker's enrollment takes over the grants of
 // every other enrollment of the pod's account and session, so an enrollment of another claim's
 // session is that claim's secrets. A registration the hold refuses is answered with the refusal
 // and leads to no Enroll call, and records nothing; one it admits leads to exactly one. A claim a
@@ -158,7 +159,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 	t.Run("a registration of another claim's session", func(t *testing.T) {
 		h := newHarness(t)
 		broker := h.withSecrets()
-		h.store.holds[session] = "legion-legion-LEGION-209-tester"
+		h.store.setHold(sessionID(session), "legion-legion-LEGION-209-tester")
 		h.launch()
 		h.helloWithIdentity()
 		err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
@@ -179,7 +180,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		if enrolled := broker.enrolled(); len(enrolled) != 1 || enrolled[0].Session != "ses_fresh" {
 			t.Fatalf("the admitted registration enrolled %+v, want one enrollment of ses_fresh", enrolled)
 		}
-		if holder := h.store.holds["ses_fresh"]; holder != h.token {
+		if holder, _ := h.store.holdOf(sessionID("ses_fresh")); holder != h.token {
 			t.Fatalf("ses_fresh is held for %q, want %s", holder, h.token)
 		}
 	})
@@ -192,7 +193,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		h := newHarness(t)
 		broker := h.withSecrets()
 		h.reach(StateReady)
-		h.store.setHold(session, "legion-legion-LEGION-209-tester")
+		h.store.setHold(sessionID(session), "legion-legion-LEGION-209-tester")
 		h.restart()
 		before := h.claim()
 		err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
@@ -218,7 +219,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		h.reach(StateReady)
 		// Two claims recorded the session before the daemon held sessions: the migration holds it
 		// for neither, and a daemon restarted onto it re-adopts the claim recording it.
-		h.store.setHold(session, "")
+		h.store.setHold(sessionID(session), "")
 		h.restart()
 		h.helloWithIdentity()
 		if enrolled := broker.enrolled(); len(enrolled) != 0 {
@@ -237,7 +238,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		h.register()
 		h.ready()
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		h.store.setHold(session, "")
+		h.store.setHold(sessionID(session), "")
 		h.deps.Limits.LaunchFailures = 1
 		h.restart()
 		resumes := len(h.calls("Resume"))
@@ -263,7 +264,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 	t.Run("an id held for no claim, once an operator records this claim as its holder", func(t *testing.T) {
 		h := newHarness(t)
 		broker := h.withSecrets()
-		h.store.holds[session] = ""
+		h.store.setHold(sessionID(session), "")
 		h.launch()
 		h.helloWithIdentity()
 		registration := RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
@@ -272,7 +273,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		if err := h.handle(registration); !errors.As(err, &refusal) {
 			t.Fatalf("registering a session held for no claim = %v, want the refusal", err)
 		}
-		h.store.setHold(session, h.token)
+		h.store.setHold(sessionID(session), h.token)
 		h.must(registration)
 		if enrolled := broker.enrolled(); len(enrolled) != 1 || enrolled[0].Session != session {
 			t.Fatalf("the settled registration enrolled %+v, want one enrollment of %s", enrolled, session)
@@ -299,7 +300,7 @@ func TestAClaudeLaunchIsHeldToItsClaim(t *testing.T) {
 	t.Run("a registration whose transcript names another claim's Claude session", func(t *testing.T) {
 		h := newHarness(t)
 		broker := h.withSecrets()
-		h.store.holds[stolen] = holder
+		h.store.setHold(sessionID(stolen), holder)
 		h.launch()
 		h.helloWithIdentity()
 		err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: "22222222-3333-4444-8555-666666666666",
@@ -327,7 +328,7 @@ func TestAClaudeLaunchIsHeldToItsClaim(t *testing.T) {
 		if err := h.store.PutClaim(h.ctx, stored); err != nil {
 			t.Fatal(err)
 		}
-		h.store.setHold(stolen, holder)
+		h.store.setHold(sessionID(stolen), holder)
 		h.deps.Limits.LaunchFailures = 1
 		h.restart()
 		resumes := len(h.calls("Resume"))
@@ -342,6 +343,117 @@ func TestAClaudeLaunchIsHeldToItsClaim(t *testing.T) {
 		}
 		if c := h.claim(); c.State != StateFailed {
 			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under %s", c.State, stolen)
+		}
+	})
+}
+
+// Where a claim's recorded session file is missing, the tmux runtime resumes a file of the same
+// name, or an Oh My Pi file of any timestamp with the same session id, one folder below a sessions
+// directory (runtime/tmux's sessionFileOf and newestSession). So a session file's base name and the
+// id its Oh My Pi name gives are held to the claim as its path is (holdRecorded,
+// dispatch://INFRA-840): a registration of another claim's file under another folder, or of another
+// timestamp of its id, is refused, recording and enrolling nothing; a claim recorded before the
+// hold under such a file is never relaunched into it; and a claim's own file, carried to another
+// folder, is still its own.
+//
+// The controls (the pull request records each run): RecordedHolds without the file-name kind
+// admits the registration under another folder; without the file-id kind, the one of another
+// timestamp; start resuming without holdRecorded calls the runtime's Resume on the shared name.
+func TestATmuxResumeByNameIsHeldToItsClaim(t *testing.T) {
+	const holder = claim.Token("legion-legion-LEGION-209-tester")
+	const holderFile = "/legion/state/sessions/--legion-workspaces-legion-209--/2026-11-16T10-00-00-000Z_ses_holder.jsonl"
+	holdFor := func(h *harness) {
+		h.t.Helper()
+		if holders, err := h.store.HoldSessions(h.ctx, "legion", holder, RecordedHolds("ses_holder", holderFile)); err != nil || slices.ContainsFunc(holders, func(c claim.Token) bool { return c != holder }) {
+			h.t.Fatalf("hold the tester's session: %v, %v", holders, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name, file string
+		refused    Hold
+	}{
+		{
+			name:    "another claim's file under another folder",
+			file:    "/legion/state/home/.omp/agent/sessions/--pod-workspace--/2026-11-16T10-00-00-000Z_ses_holder.jsonl",
+			refused: Hold{Kind: HoldFileName, Name: "2026-11-16T10-00-00-000Z_ses_holder.jsonl"},
+		},
+		{
+			name:    "another timestamp of another claim's session id",
+			file:    "/legion/state/sessions/--legion-workspaces-legion-209--/2026-11-16T11-00-00-000Z_ses_holder.jsonl",
+			refused: Hold{Kind: HoldFileID, Name: "ses_holder"},
+		},
+	} {
+		t.Run("a registration of "+tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			broker := h.withSecrets()
+			holdFor(h)
+			h.launch()
+			h.helloWithIdentity()
+			err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: "ses_fresh",
+				SessionFile: tc.file, CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+			var refusal claim.Refusal
+			if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(tc.refused.Name) {
+				t.Fatalf("registering %s = %v, want %v", tc.file, err, claim.SessionHeldRefusal(tc.refused.Name))
+			}
+			if c := h.claim(); c.Session != "" || c.SessionFile != "" || c.CapabilityHash != nil {
+				t.Fatalf("the refused registration left the claim recording %q, %q and capability %x", c.Session, c.SessionFile, c.CapabilityHash)
+			}
+			if enrolled := broker.enrolled(); len(enrolled) != 0 {
+				t.Fatalf("the refused registration enrolled %+v", enrolled)
+			}
+			for _, h2 := range RecordedHolds("ses_fresh", tc.file) {
+				if got, held := h.store.holdOf(h2); held && got == h.token {
+					t.Fatalf("the refused registration left %s %s held for the claim: a call records all of its names or none", h2.Kind, h2.Name)
+				}
+			}
+		})
+	}
+
+	t.Run("a relaunch resuming another claim's file by its name", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+		// A claim a daemon before the hold recorded: its own session, and a file of the tester's
+		// name under another folder, which a resume finds the tester's session by.
+		stored := h.store.load(h.token)
+		stored.SessionFile = "/legion/state/home/.omp/agent/sessions/--pod-workspace--/2026-11-16T10-00-00-000Z_ses_holder.jsonl"
+		if err := h.store.PutClaim(h.ctx, stored); err != nil {
+			t.Fatal(err)
+		}
+		holdFor(h)
+		h.deps.Limits.LaunchFailures = 1
+		h.restart()
+		resumes := len(h.calls("Resume"))
+
+		err := h.handle(RequestResume{Claim: h.token})
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal("2026-11-16T10-00-00-000Z_ses_holder.jsonl") {
+			t.Fatalf("resuming a file of the tester's name = %v, want the refusal of its name", err)
+		}
+		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+			t.Fatalf("the runtime was asked to resume the tester's session: %+v", calls)
+		}
+		if c := h.claim(); c.State != StateFailed {
+			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under the tester's session", c.State)
+		}
+	})
+
+	// What the hold leaves as it was (R9): a pod's session carried onto a tmux host sits in another
+	// folder under the same name (sessionFileOf), and the claim that recorded it registers it there.
+	t.Run("this claim's own file, carried to another folder", func(t *testing.T) {
+		h := newHarness(t)
+		h.launch()
+		h.connect()
+		h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: "ses_own",
+			SessionFile:    "/pod/home/.omp/agent/sessions/--w--/2026-11-16T10-00-00-000Z_ses_own.jsonl",
+			CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: "ses_own"})
+		h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: "ses_own",
+			SessionFile:    "/legion/state/sessions/--w--/2026-11-16T10-00-00-000Z_ses_own.jsonl",
+			CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		if c := h.claim(); c.SessionFile != "/legion/state/sessions/--w--/2026-11-16T10-00-00-000Z_ses_own.jsonl" {
+			t.Fatalf("the claim records %q, want its carried file", c.SessionFile)
 		}
 	})
 }
