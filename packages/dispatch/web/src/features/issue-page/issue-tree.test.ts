@@ -229,7 +229,11 @@ function checkedResults(
 
 /** One decision of `decisions.md` whose blocks link `shaped`, which is the `shaped` edge as
  *  today's read carries it: a link from the decision's block to a block of the spec. */
-function decision(blockId: string, text: string, shaped: readonly string[]): Decision {
+function decision(
+  blockId: string,
+  text: string,
+  shaped: readonly string[]
+): Decision & { readonly links: NonNullable<Decision["links"]> } {
   return {
     asks: [],
     block_id: blockId,
@@ -574,8 +578,9 @@ test("a typed block's row and a chip naming it carry its words, not its directiv
 
 // R1, R21: a chip names a block by the first line a row draws for it, read from the server's
 // reading of the block's words and never from its stored source, whose directive and markdown
-// are markup: where the read sent no reading, the chip draws no words of it. A chip naming a
-// whole document names it by the page's word for it, never by its file name.
+// are markup: where the read sent no reading, the chip draws no words of it, only the page's
+// word for its kind (R22). A chip naming a whole document names it by the page's word for it,
+// never by its file name.
 test("a chip of a block draws the first line of its reading, and a document's chip its role word", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
@@ -656,10 +661,63 @@ test("a chip of a block draws the first line of its reading, and a document's ch
   expect(line).not.toContain("**");
   expect(line).not.toContain(":::");
   expect(line).toBe("R2. The second statement.");
-  expect(otherPlacement(build(statement()))).toBe("");
+  expect(otherPlacement(build(statement()))).toBe(NODE_TYPE_NAMES.requirement);
   expect(
     nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips.map(({ name, ref }) => ({ name, ref }))
   ).toEqual([{ name: PRESET_NAMES.spec, ref: whole }]);
+});
+
+// R22: an id is no name a reader reads, and a chip that draws nothing names nothing. A block of
+// this issue the batched read answered for with no reading, or with one that holds no words, is
+// named by the page's word for its kind, which the blocks the tree read give. Another issue's
+// block is of no kind this page read, and a block the read has not answered for yet has no name
+// until it does (`answered: false`).
+test("a needs chip of a block the read sent no words for is named by its kind's word", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const bare = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const ruled = `dispatch://${KEY}/artifact/plan-md#b-t2`;
+  const unread = `dispatch://${KEY}/artifact/plan-md#b-t3`;
+  const foreign = "dispatch://CORE-2/artifact/plan-md#b-t9";
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [
+          block("t0", "plan_task"),
+          block("t1", "plan_task", { needs: `${bare} ${ruled} ${foreign} ${unread}` }),
+          block("t2", "plan_task"),
+          block("t3", "plan_task"),
+        ],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      { gone: false, kind: "block", name: ":::plan_task{#t0}\nAdd the routes.\n:::", ref: bare },
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#t1}\nDraw the panel.\n:::",
+        ref: `dispatch://${KEY}/artifact/plan-md#b-t1`,
+        text_tree: readingOf("Draw the panel."),
+      },
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#t2}\n---\n:::",
+        ref: ruled,
+        text_tree: { content: [{ type: "horizontal_rule" }], type: "doc" },
+      },
+      { gone: false, kind: "block", name: ":::plan_task{#t9}\nShip it.\n:::", ref: foreign },
+    ],
+  });
+
+  expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips).toEqual([
+    { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: bare },
+    { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: ruled },
+    { answered: true, gone: false, label: "needs", name: "", ref: foreign },
+    { answered: false, gone: false, label: "needs", name: "", ref: unread },
+  ]);
 });
 
 // R4, R20: the model takes any depth. Today's data reaches two levels below the issue, because
@@ -835,6 +893,67 @@ test("a node's one line is cut from its first block, so a heading is never run i
   // A chip naming a block is cut from the first block of the block's reading the same way.
   expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(({ name }) => name)).toEqual([
     "Keep it",
+  ]);
+});
+
+// The reviewer's Minor at a5714d85: a reading may open with a block that holds no words - a
+// horizontal rule, a paragraph that is only an image - and a line cut from that block is empty,
+// so a parent with words drew an empty line and a chip an empty name. A node's one line is cut
+// from its first block that holds words, and so is the line of a stored text with no reading.
+test("a node's one line is cut from its first block that holds words, past a rule or an image", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const paragraph = (words: string): DisplayTree => ({
+    content: [{ text: words, type: "text" }],
+    type: "paragraph",
+  });
+  const ruled: DisplayTree = {
+    content: [{ type: "horizontal_rule" }, paragraph("Keep the model pure.")],
+    type: "doc",
+  };
+  const pictured: DisplayTree = {
+    content: [
+      {
+        content: [{ attrs: { alt: "diagram", src: "shot.png" }, type: "image" }],
+        type: "paragraph",
+      },
+      paragraph("Draw it once."),
+    ],
+    type: "doc",
+  };
+  const needs = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const root = buildIssueTree({
+    decisions: decisions([
+      { ...decision("d1", "---\n\nKeep the model pure.", []), text_tree: ruled },
+      { ...decision("d2", "![diagram](shot.png)\n\nDraw it once.", []), text_tree: pictured },
+      decision("d3", "---\n\nKeep the model pure.", []),
+      decision("d4", "![diagram](shot.png)\n\nDraw it once.", []),
+    ]),
+    documents: [{ artifactId: plan.id, blocks: [block("t1", "plan_task", { needs })] }],
+    issue: issueDetails([spec, made, plan]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#t0}\n---\n\nKeep the model pure.\n:::",
+        ref: needs,
+        text_tree: ruled,
+      },
+    ],
+  });
+  const line = (id: string): string => {
+    const node = nodeOf(root, blockNodeId("decisions-md", id));
+    return node === undefined ? "" : lineWords(node);
+  };
+
+  expect(line("d1")).toBe("Keep the model pure.");
+  expect(line("d2")).toBe("Draw it once.");
+  // Where the read sent no reading, a stored rule or image is passed over the same way.
+  expect(line("d3")).toBe("Keep the model pure.");
+  expect(line("d4")).toBe("Draw it once.");
+  expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(({ name }) => name)).toEqual([
+    "Keep the model pure.",
   ]);
 });
 
@@ -1590,6 +1709,72 @@ test("every Change newer than a decision's words is drawn under it", () => {
   expect(placementsOf(root, "c-second").map((one) => one.parent)).toEqual([id]);
   expect(placementsOf(root, "c-older").map((one) => one.parent)).toEqual([KEY]);
   expect(nodeOf(root, id)).toMatchObject({ state: "change_requested", waiting: false });
+});
+
+// R3 and R7: a Change sits under the decision it was written in. The anchor names the block the
+// person wrote it in (`Anchor.block_id`), here the second decision's paragraph, and its quote is
+// words that decision holds; the first decision holds the same words too. So the quote alone
+// cannot say which decision was changed, and the Change must not land on the first decision
+// that holds them: that decision would read Change requested and leave the review list, while
+// the one the person changed would still wait on them.
+test("a Change anchored in one decision is drawn under it, though another decision holds its words", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const waiting = (id: string, text: string): Decision => {
+    const one = decision(id, text, ["r1"]);
+    return {
+      ...one,
+      changed_at: "2026-11-05T00:00:00Z",
+      // The tie comes from the decision's paragraph, as the server stores it.
+      links: one.links.map((link) => ({ ...link, from_block: `${id}-words` })),
+      waiting_review: true,
+    };
+  };
+  const first = waiting("d1", "## Keep the model pure\n\nKeep the model pure. Draw it once.");
+  const second = waiting("d2", "## Draw it once\n\nDraw it once.");
+  const change: Comment = {
+    ...comment("c-change", "2026-11-06T00:00:00Z"),
+    anchor: {
+      artifact_id: made.id,
+      block_id: "d2-words",
+      mark_id: "c-change",
+      orphaned: false,
+      quote: "Draw it once.",
+      version: 1,
+    },
+  };
+  // The decisions document's blocks in their order, as the blocks read answers them: each
+  // decision's heading, then its paragraph.
+  const placed = (id: string, type: string, from: number, to: number): ArtifactBlock => ({
+    ...block(id, type),
+    from,
+    to,
+  });
+  const root = buildIssueTree({
+    comments: [change],
+    coverage: coverage([requirement("r1", "The first.")]),
+    decisions: decisions([first, second]),
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+      {
+        artifactId: made.id,
+        blocks: [
+          placed("d1", "heading", 0, 24),
+          placed("d1-words", "paragraph", 26, 62),
+          placed("d2", "heading", 64, 80),
+          placed("d2-words", "paragraph", 82, 96),
+        ],
+      },
+    ],
+    issue: issueDetails([spec, made]),
+    viewer: "alice",
+  });
+  const changed = blockNodeId("decisions-md", "d2");
+  const other = blockNodeId("decisions-md", "d1");
+
+  expect(placementsOf(root, "c-change").map((one) => one.parent)).toEqual([changed]);
+  expect(nodeOf(root, changed)).toMatchObject({ state: "change_requested", waiting: false });
+  expect(nodeOf(root, other)).toMatchObject({ state: "waiting_review", waiting: true });
 });
 
 // R14: a reply is drawn under the entry it answers. The write climbs `reply_to` to the head of

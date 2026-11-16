@@ -1,6 +1,7 @@
 import type { IssueDecisions, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { type ChangeComment, decisionChanges, inReviewList } from "./decision-review";
+import type { DocumentBlocks } from "./issue-tree";
 
 /**
  * What waits on the reader, as the header's count counts it (dispatch://INFRA-1196 R13): each
@@ -15,6 +16,11 @@ import { type ChangeComment, decisionChanges, inReviewList } from "./decision-re
  * reader asked of somebody else does not raise the count, and handing the issue to another
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
+ *
+ * A decision the reader asked to change waits on its agent and is not counted
+ * (`decisionChanges`): `comments` are the issue's comments, and `documents` the blocks of its
+ * documents the page has read (`undefined` where it has read none), which name the decision a
+ * Change was written under, as the tree reads them.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -34,7 +40,8 @@ export function waitingOnReader(
   viewer: string | undefined,
   decisions: IssueDecisions | undefined,
   isStatement: (reference: string) => boolean,
-  comments: readonly ChangeComment[] | undefined
+  comments: readonly ChangeComment[] | undefined,
+  documents: readonly DocumentBlocks[] | undefined
 ): WaitingOnReader {
   const open =
     viewer === undefined
@@ -51,7 +58,7 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
-  const changes = decisionChanges(decisions, comments, issue.artifacts);
+  const changes = decisionChanges(decisions, comments, issue.artifacts, documents);
   const reviewing =
     viewer === undefined
       ? 0
