@@ -134,9 +134,19 @@ func (s *server) relatedAllowance() time.Duration {
 // it going away (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a
 // decision block's per-check context inherits the edit's allowance with that same cause. The
 // caller cancels, and names the allowance in what it answers.
+//
+// An allowance already spent (zero or less, which only a test sets - server.suggestionTimeout)
+// ends the context here, before this returns, so the check reads nothing at all. A timer of zero
+// or less runs its function on a goroutine of its own, on the real clock as on the fake, and
+// waiting for that goroutine to end the context would leave the first read of a check that was
+// meant to be stopped racing it, which is the machine deciding the outcome.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
 	bounded, end := context.WithCancelCause(ctx)
+	if allowance <= 0 {
+		end(errRelatedAllowanceEnded)
+		return bounded, func() { end(context.Canceled) }, allowance
+	}
 	timer := s.clock.AfterFunc(allowance, func() { end(errRelatedAllowanceEnded) })
 	return bounded, func() {
 		timer.Stop()

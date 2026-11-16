@@ -472,7 +472,11 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 		record: true,
 	})
 	awaitLockWait(t, database, "search_term_stats")
-	clock.Advance(srv.suggestionTimeout)
+	// The check's own allowance, read from the fake as the deadline it armed, and the move that
+	// reaches it: no real time decides whether the check ran out of its allowance.
+	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
 	suggestions := testwait.Receive(t, "the check's answer once its allowance ran out", answered)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
@@ -588,7 +592,11 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 		done <- srv.decisionBlockChecks(context.Background(), artifact, blocks, model.Actor{Kind: "user", ID: "alice"}, false)
 	}()
 	awaitLockWait(t, database, "search_term_stats")
-	clock.Advance(srv.suggestionTimeout)
+	// The edit's one allowance, read from the fake as the deadline it armed, and the move that
+	// reaches it: no real time decides whether the blocks' checks ran out of it.
+	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
+	awaitArmedAt(t, clock, "the edit's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
 	checks := testwait.Receive(t, "the blocks' checks once the edit's allowance ran out", done)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
@@ -655,7 +663,11 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 		record: true,
 	})
 	awaitLockWait(t, database, "asks")
-	clock.Advance(srv.suggestionTimeout)
+	// The check's own allowance, read from the fake as the deadline it armed, and the move that
+	// reaches it: no real time decides whether the check ran out of its allowance.
+	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
 	suggestions := testwait.Receive(t, "the check's answer once its allowance ran out", checked)
 	if suggestions.Outcome != "not_made" || suggestions.Missing != "the search behind it did not answer within 500ms" {
 		t.Fatalf("suggestions = %+v, want not made, the search not having answered within the allowance", suggestions)
@@ -733,7 +745,11 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 		record: true,
 	})
 	awaitLockWait(t, database, "asks")
-	clock.Advance(srv.suggestionTimeout)
+	// The check's own allowance, read from the fake as the deadline it armed, and the move that
+	// reaches it: no real time decides whether the check ran out of its allowance.
+	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
 	testwait.Receive(t, "the check's answer once its allowance ran out", answered)
 	if got := srv.relatedRecordRetrying.Load(); got != 1 {
 		t.Fatalf("records being retried after the check answered = %d, want 1 (its first attempt held up by the lock)", got)
@@ -783,7 +799,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 	const title = "Archive search drops rows past offset fifty"
 	existing := createSuggestionIssue(t, handler, map[string]any{"project": "FORCE", "title": title})
 
-	served.suggestionTimeout = time.Nanosecond
+	served.suggestionTimeout = spentRelatedAllowance
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "FORCE", "title": title, "force": true,
 	}, "alice")
@@ -793,7 +809,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 	created := decodeBody[testIssueWithSuggestions](t, response)
 	suggestions := issueSuggestions(t, "the forced create", response)
 	if suggestions.Outcome != "not_made" || suggestions.Missing == "" {
-		t.Fatalf("suggestions = %+v, want the check not made while asks is locked", suggestions)
+		t.Fatalf("suggestions = %+v, want the check not made, its allowance spent before its first read", suggestions)
 	}
 	if len(suggestions.TitleMatches) == 0 || suggestions.TitleMatches[0].Key != existing {
 		t.Fatalf("title_matches = %+v, want %s, whose title the create forced past", suggestions.TitleMatches, existing)

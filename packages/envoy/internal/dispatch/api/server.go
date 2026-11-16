@@ -381,7 +381,12 @@ type server struct {
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
-	// rather than its machine's speed.
+	// rather than its machine's speed. A case whose check must not run at all sets an allowance
+	// already spent (spentRelatedAllowance, a negative one): relatedBounds ends such a check's
+	// context before it returns, on the real clock as on a fake, so the check reads nothing
+	// whatever the machine does. A case whose check must be stopped while it reads sets a
+	// positive allowance and runs the server on a fake clock it moves to the deadline the check
+	// armed, so no real time decides the outcome.
 	suggestionTimeout time.Duration
 	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
 	// error stands in for the read failing. Only a test sets it: it is how a case holds that one

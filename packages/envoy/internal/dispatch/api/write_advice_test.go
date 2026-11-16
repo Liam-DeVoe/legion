@@ -14,7 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -924,6 +924,12 @@ func TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails(t *testing.T) {
 	}
 }
 
+// newFailingAdviceHandler builds a handler whose write-advice read of query is held past the
+// bound the advice runs under, so every write through it answers advice of the suggestions-only
+// shape. Its server runs on a fake clock nothing moves, so the related-item check's allowance
+// ends only where the caller spent it (spentRelatedAllowance) and never because the machine was
+// slow; suggestionTimeout is the allowance that check runs under, zero being the deployment's own
+// (relatedCheckAllowance).
 func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.Duration) (http.Handler, *store.Store) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -951,7 +957,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 	s := &server{
 		deps:              deps,
 		lifetime:          t.Context(),
-		clock:             clock.Real(),
+		clock:             clocktest.Held(),
 		suggestionTimeout: suggestionTimeout,
 		adviceQueryHook: func(ctx context.Context, tx pgx.Tx, got string) error {
 			if got != query {
