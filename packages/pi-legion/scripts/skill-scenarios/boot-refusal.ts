@@ -1,15 +1,16 @@
 // The one reader of a claim boot refusal: whether an agent's claim boot was refused, and whether
-// before its first turn. Two programs read it: rig.sh's boot_agent, through `health.ts
-// --boot-refusal` (or this module's own command line, which answers the same), inside every run's
-// boot, to decide whether to launch the agent once more; and health.ts's "claim boot" rule, which
-// holds the run to the same record. score.ts reads a half's own claim boot sentence through it
-// too (`claimBootFailure`).
+// before its first turn. Two programs read it: rig.sh's boot_agent, through this module's own
+// command line, inside every run's boot, to decide whether to launch the agent once more; and
+// health.ts's "claim boot" rule, which holds the run to the same record. score.ts reads a half's
+// own claim boot sentence through it too (`claimBootFailure`). `health.ts --boot-refusal`, the
+// entry boot_agent asked through before the names left the world, answers the same.
 //
 // It is on the world's path, so it imports neither health.ts nor score.ts, whose readers of a
 // whole run change with every rule: only the leaf modules a run's record needs, and
 // boot-refusal.test.ts walks the graph. That graph is completion-answers.ts (the daemon
-// stand-in's log, and run-records.ts's opening line under it), daemon-pane.ts (`labelCheckout`,
-// the checkout a run's built-from names) and transcript.ts (an attempt's transcripts).
+// stand-in's log, run-records.ts's opening line under it, and run-names.ts's record of the run's
+// label), daemon-pane.ts (`labelCheckout`, the checkout a run's built-from names) and
+// transcript.ts (an attempt's transcripts).
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { answerOf, type DaemonLine, daemonLines } from "./completion-answers";

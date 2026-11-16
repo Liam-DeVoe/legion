@@ -4,13 +4,16 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { WORLD_PROJECT } from "./run-names";
 import { spawnChecked } from "./test-programs";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
@@ -33,7 +36,9 @@ setDefaultTimeout(120_000);
 const withoutPython = skipWithout("python3");
 
 const root = path.resolve(import.meta.dir, "../../../..");
-const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
+// A name of no measurement: every path a run's agent reads is built on it, and the rig starts no
+// agent whose world names the rig (run-names.ts's guard).
+const scratch = temporaryDirectory("isolation", { real: true });
 
 // Every row whose run starts an agent needs the namespace each agent runs in (rig.sh's launch),
 // and a host that refuses it refuses every run (require_namespace): rig.sh's own probe, read
@@ -75,13 +80,26 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins, and
+// the programs of the rig's directory a run runs itself: run-names.ts, which reads a run's case
+// and guards its world before its agent starts, and the gh stand-in and its modules, which a
+// run bundles into its own directory (rig.sh's standins), with the root's node_modules for zod.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
+  for (const program of [
+    "run-names.ts",
+    "gh-standin.ts",
+    "gh-call.ts",
+    "gh-threads.ts",
+    "gh-routes.ts",
+    "run-records.ts",
+  ])
+    copyFileSync(path.join(import.meta.dir, program), path.join(path.dirname(rig), program));
+  symlinkSync(path.join(root, "node_modules"), path.join(co, "node_modules"));
   for (const lib of [
     "rig.sh",
     "loopback-dsn.sh",
@@ -139,7 +157,7 @@ put(
     'if (command === "askgate")',
     "  writeFileSync(",
     '    file ?? "",',
-    '    JSON.stringify({ issue: "LWEVAL-2", comment: "c1", comment_ref: "dispatch://LWEVAL-2/comment/c1" })',
+    `    JSON.stringify({ issue: "${WORLD_PROJECT}-2", comment: "c1", comment_ref: "dispatch://${WORLD_PROJECT}-2/comment/c1" })`,
     "  );",
     'if (command === "capture-askgate")',
     '  for (const name of ["asks.json", "artifacts.json"]) writeFileSync(path.join(runDir ?? "", name), "[]\\n");',
@@ -186,28 +204,30 @@ put(
 );
 put(
   path.join(bin, "pin", "bin", "omp"),
-  [
-    "#!/usr/bin/env bash",
-    'env | grep "^DISPATCH_" | sort >"$SKILL_SCENARIO_RUN/agent-env.txt"',
-    "",
-  ].join("\n"),
+  ["#!/usr/bin/env bash", 'env | grep "^DISPATCH_" | sort >"$HOME/../agent-env.txt"', ""].join(
+    "\n"
+  ),
   0o755
 );
 
-// The work directory: the label's profile, the batch's services file and provenance for it, its
-// Dispatch token, and the Dispatch server the batch built from the label's checkout, which is the
-// rig's own here (rig.sh's go_binary, under build_dir), which the run-server.sh stand-in is given
-// and does not run.
+// The work directory: the label's profile, installed under an id of its own (rig.sh's
+// cmd_profile), the batch's services file and provenance for it, its Dispatch token, and the
+// Dispatch server the batch built from the label's checkout, which is the rig's own here
+// (rig.sh's go_binary, under build_dir), which the run-server.sh stand-in is given and does not
+// run.
 const work = path.join(scratch, "work");
 /** A label's built profile, with its Oh My Pi settings `settings` (the model route installers'). */
 function label(name: string, settings: string) {
   const dir = path.join(work, "profiles", name);
-  put(path.join(dir, `home/.omp/profiles/skills-${name}/agent/config.yml`), settings);
+  const install = new Bun.CryptoHasher("sha256").update(name).digest("hex").slice(0, 12);
+  put(path.join(work, "installs", install, "home/.omp/profiles/legion/agent/config.yml"), settings);
   stagings.push(() => {
+    mkdirSync(dir, { recursive: true });
     for (const [file, text] of [
       ["checkout", co],
       ["pin", "omp@stub"],
-      ["profile", `skills-${name}`],
+      ["profile", "legion"],
+      ["install", install],
       ["built-from", `checkout ${co}`],
       ["ready", ""],
     ])
@@ -222,7 +242,7 @@ label(
 label("stale", "modelRoles:\n  default: anthropic/m\n");
 put(path.join(work, "services/env-on"), "ENVOY_URL=http://127.0.0.1:1\n");
 put(path.join(work, "services/services-from-on"), `envoy-listener label ${co} sha256:00\n`);
-put(path.join(work, "services/dispatch-token"), "e2e-token\n");
+put(path.join(work, "services/tokens/dispatch-token"), "e2e-token\n");
 put(
   path.join(
     work,
@@ -234,7 +254,21 @@ put(
   0o755
 );
 /** The tag rig.sh names the work directory's containers with. */
-const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
+const tag = `legion-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
+
+/** The directory of the run whose record names it `name` (rig.sh's cmd_run), live or archived,
+ * or undefined for none: a run's directory is named by an id, and its record beside it says
+ * which run it is. */
+function namedRun(name: string): string | undefined {
+  for (const runs of [path.join(work, "runs"), path.join(work, "archive", "runs")])
+    for (const file of existsSync(runs) ? readdirSync(runs) : [])
+      if (
+        file.endsWith(".json") &&
+        JSON.parse(readFileSync(path.join(runs, file), "utf8")).name === name
+      )
+        return path.join(runs, file.slice(0, -".json".length));
+  return undefined;
+}
 
 /** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
  * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
@@ -340,8 +374,8 @@ beforeAll(async () => {
   runs = await Promise.all(
     [1, 2].map(async (n) => {
       const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
-      // A run that has ended is in the archive (rig.sh's archive_run).
-      return { n, code, stderr, dir: path.join(work, "archive", "runs", `askgate-facts-on-${n}`) };
+      // A run that has ended is in the archive (rig.sh's archive_run), under its id.
+      return { n, code, stderr, dir: namedRun(`askgate-facts-on-${n}`) ?? "" };
     })
   );
   servers = lines(path.join(stub, "servers.log")).map((line) => {
@@ -353,6 +387,31 @@ beforeAll(async () => {
 test.skipIf(withoutRuns)("both runs finish", () => {
   for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
 });
+
+// Catches: a run's directory named for its scenario, case or label, which every path its agent
+// reads is built on (16 of the 36 runs of the batch at c273084d reasoned from it), a run with no
+// record of what it is, a record that says another run, and the case left in the run's directory.
+test.skipIf(withoutRuns)(
+  "each run's directory is an id of no meaning, and its record beside it says what the run is",
+  () => {
+    for (const { n, dir } of runs) {
+      const id = path.basename(dir);
+      expect(id).toMatch(/^[0-9a-f]{12}$/);
+      expect(path.dirname(dir)).toBe(path.join(work, "archive", "runs"));
+      expect(JSON.parse(readFileSync(`${dir}.json`, "utf8"))).toEqual({
+        run: id,
+        scenario: "askgate",
+        case: "facts",
+        label: "on",
+        n,
+        name: `askgate-facts-on-${n}`,
+        batch: `${tag}-${start}`,
+        ran: path.join(work, "runs", id),
+      });
+      expect(existsSync(path.join(dir, "case.txt"))).toBe(false);
+    }
+  }
+);
 
 // Catches: a run that carries no record of what its services came from, which health refuses.
 test.skipIf(withoutRuns)("each run carries its label's service provenance", () => {
@@ -367,19 +426,17 @@ test.skipIf(withoutRuns)("each run makes a database of its own in the batch's Po
     line.includes("CREATE DATABASE")
   );
   for (const line of made) expect(line).toStartWith(`exec ${tag}-pg psql `);
-  expect(made.map((line) => /CREATE DATABASE (\w+)/.exec(line)?.[1]).sort()).toEqual([
-    "run_askgate_facts_on_1",
-    "run_askgate_facts_on_2",
-  ]);
+  expect(made.map((line) => /CREATE DATABASE (\w+)/.exec(line)?.[1]).sort()).toEqual(
+    runs.map(({ dir }) => `run_${path.basename(dir)}`).sort()
+  );
 });
 
 test.skipIf(withoutRuns)(
   "each run starts a Dispatch server of its own, on its own database and port",
   () => {
-    expect(servers.map((server) => server.database).sort()).toEqual([
-      "run_askgate_facts_on_1",
-      "run_askgate_facts_on_2",
-    ]);
+    expect(servers.map((server) => server.database).sort()).toEqual(
+      runs.map(({ dir }) => `run_${path.basename(dir)}`).sort()
+    );
     expect(new Set(servers.map((server) => server.port)).size).toBe(2);
   }
 );
@@ -389,8 +446,8 @@ test.skipIf(withoutRuns)(
   () => {
     const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
     const urls = new Set<string>();
-    for (const { n, dir } of runs) {
-      const database = `run_askgate_facts_on_${n}`;
+    for (const { dir } of runs) {
+      const database = `run_${path.basename(dir)}`;
       const server = servers.find((s) => s.database === database);
       const url = `http://127.0.0.1:${server?.port}`;
       urls.add(url);
@@ -432,12 +489,16 @@ test.skipIf(withoutRuns)("each run stops its Dispatch server when it ends", () =
 test.skipIf(withoutPython)(
   "a run on a profile whose settings leave the handler limit at its default is refused, naming the key",
   async () => {
+    const databases = lines(path.join(stub, "docker.log")).filter((line) =>
+      line.includes("CREATE DATABASE")
+    ).length;
     const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
     expect(code).toBe(1);
     expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
-    for (const runs of [["runs"], ["archive", "runs"]])
-      expect(existsSync(path.join(work, ...runs, "askgate-facts-stale-1"))).toBe(false);
-    expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
+    expect(namedRun("askgate-facts-stale-1")).toBeUndefined();
+    expect(
+      lines(path.join(stub, "docker.log")).filter((line) => line.includes("CREATE DATABASE"))
+    ).toHaveLength(databases);
   }
 );
 
@@ -454,6 +515,9 @@ test.skipIf(withoutPython)(
     writeFileSync(path.join(refusing, "unshare"), `#!/bin/sh\necho "${refusal}" >&2\nexit 1\n`);
     chmodSync(path.join(refusing, "unshare"), 0o755);
     const servers = lines(path.join(stub, "servers.log")).length;
+    const databases = lines(path.join(stub, "docker.log")).filter((line) =>
+      line.includes("CREATE DATABASE")
+    ).length;
     const { code, stderr } = await runRig(["run", "askgate", "on", "7", "7", start], {
       PATH: `${refusing}:${env.PATH}`,
     });
@@ -461,9 +525,10 @@ test.skipIf(withoutPython)(
     expect(stderr).toContain(
       `this host refuses the namespace every agent of a run starts in (unshare -Urm -p --fork --mount-proc), so nothing starts: ${refusal}`
     );
-    for (const runs of [["runs"], ["archive", "runs"]])
-      expect(existsSync(path.join(work, ...runs, "askgate-facts-on-7"))).toBe(false);
-    expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("on_7");
+    expect(namedRun("askgate-facts-on-7")).toBeUndefined();
+    expect(
+      lines(path.join(stub, "docker.log")).filter((line) => line.includes("CREATE DATABASE"))
+    ).toHaveLength(databases);
     expect(lines(path.join(stub, "servers.log"))).toHaveLength(servers);
   }
 );
@@ -478,7 +543,7 @@ test.skipIf(withoutRuns)(
       SKILL_SCENARIOS_ASKGATE_CASE: "link",
     });
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-    const dir = path.join(work, "archive", "runs", "askgate-link-on-1");
+    const dir = namedRun("askgate-link-on-1") ?? "";
     const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
     const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
     const [, line = "", text = ""] = quoted ?? [];

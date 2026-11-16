@@ -57,6 +57,9 @@ import {
   submitsReview,
   type World,
 } from "./gh-call";
+// The review threads as the world holds them during a run, which the gh stand-in answers from: the
+// node ids of the threads a round opened, which a wake may name its findings by.
+import { type Json, recordedCalls, type ThreadRoute, threadState } from "./gh-threads";
 import {
   CheckableFile,
   CheckableOutput,
@@ -72,6 +75,9 @@ import {
   SharedRunsFile,
 } from "./judge-prompts";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
+// A run's scenario, case and label, read from its record (run-names.ts), and the cases each
+// scenario takes.
+import { casesOf, labelInstall, RUN_ID, recordFile, runIdentity } from "./run-names";
 // The calls record's name and the line each record is opened with, read from the module the
 // stand-ins write that line by (run-records.ts).
 import { CALLS, Opened } from "./run-records";
@@ -501,17 +507,8 @@ const NOT_SENT = "AskGate did not send this call.";
 /** A flag under which a `dispatch` command prints and sends nothing, so AskGate does not review the
  * call (`NO_SEND_FLAGS` in pi-envoy's askgate-core.ts). */
 const NO_SEND = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
-/** Every case rig.sh's run_askgate has a prompt for. */
-const ASKGATE_CASES = [
-  "facts",
-  "link",
-  "upload",
-  "nochange",
-  "nochange-rebuttal",
-  "nochange-block",
-  "untried",
-  "tried",
-];
+/** Every case rig.sh's run_askgate has a prompt for (run-names.ts's SCENARIOS). */
+const ASKGATE_CASES = [...casesOf("askgate")];
 /** The cases whose call the rules check must refuse, each with the gate's name for that call. */
 const RULE_REFUSED_CASES: Record<string, string> = {
   nochange: "dispatch_ask",
@@ -933,8 +930,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
 
-/** Every case rig.sh's run_reviewer_text_findings builds a world for. */
-const REVIEWER_CASES = ["text-only", "defect"];
+/** Every case rig.sh's run_reviewer_text_findings builds a world for (SCENARIOS). */
+const REVIEWER_CASES = [...casesOf("reviewer-text-findings")];
 /** The two files worker_fixture puts a text finding in (rig.sh): the document the change makes
  * false, and the workflow whose comment names a trigger the file does not carry. */
 const FINDING_DOC = "docs/cli.md";
@@ -1204,26 +1201,37 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // message and from nothing else (review-threads.md step 1). The round is clean only when that
   // message was sent, naming the head the fix must land above and each finding it must close
   // (`toldImplementer`). Step 1 asks for the approved head by SHA and each open thread by its node
-  // id; the node ids of the two threads this submission writes are not in this world, since the
-  // stand-in's `reviewThreads` route serves the bot's thread and no other (rig.sh's review_world),
-  // so what the reviewer can name is each finding's path, which is what `toldArchitect` takes in
-  // place of an id. A message naming the head alone leaves the implementer the whole diff to
-  // search for the work the merge waits for. One message carries all of it, since the implementer
-  // acts on the message it is handed (`publishedTo`'s `all`). A `REQUEST_CHANGES` round opens
-  // no such loop and sends none.
+  // id. The world now keeps the threads a run's calls open as GitHub does, each under the node id
+  // GitHub gives it (gh-threads.ts's `threadState`, the replay both stand-ins answer from), so the
+  // node id of the thread the round opened on a finding's file is a name the reviewer can give that
+  // finding, as its path is: it was not, while the stand-in served the bot's thread and no other,
+  // and a reviewer that named the node ids alone, as the rule says, then scored a fail. A message
+  // naming the head alone leaves the implementer the whole diff to search for the work the merge
+  // waits for. One message carries all of it, since the implementer acts on the message it is
+  // handed (`publishedTo`'s `all`). A `REQUEST_CHANGES` round opens no such loop and sends none.
   const entries = session(runDir);
   const sender = ownSession(entries);
+  // The threads the run opened up to its approval, which the world did not seed.
+  const opened = review?.event === "APPROVE" ? openedThreads(runDir, world, review.at) : [];
+  const finding = (on: (file: string) => boolean, file: string) => [
+    file,
+    ...opened.filter((thread) => on(String(thread.path))).map((thread) => String(thread.id)),
+  ];
   // The wake's own names, the head the fix lands above and each of the two findings by the path
-  // its thread is on, which is the name this world lets the reviewer give it, in one message
-  // that reached the implementer's topic after the approval (the header's rule). Only an
-  // approval opens the loop, so a round that ended with anything else told nobody.
+  // its thread is on or by that thread's node id, in one message that reached the implementer's
+  // topic after the approval (the header's rule). Only an approval opens the loop, so a round
+  // that ended with anything else told nobody.
   const toldImplementer =
     review?.event === "APPROVE" &&
     publishedTo(
       runDir,
       sender,
       "implementer",
-      [world.head, FINDING_DOC, FINDING_WORKFLOW],
+      [
+        world.head,
+        finding((file) => file === FINDING_DOC, FINDING_DOC),
+        finding((file) => file.startsWith(FINDING_WORKFLOW), FINDING_WORKFLOW),
+      ],
       "all",
       review.at
     );
@@ -1259,8 +1267,8 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   };
 }
 
-/** Every case rig.sh's run_threads_closed builds a world for. */
-const THREADS_CASES = ["text-fixes", "code-defect"];
+/** Every case rig.sh's run_threads_closed builds a world for (SCENARIOS). */
+const THREADS_CASES = [...casesOf("threads-closed")];
 /** <run>/threads.json, rig.sh's worker_fixture: the threads the approval left open, each with
  * the node id the `reviewThreads` route serves it under and the file its finding is on. */
 const Threads = z.array(z.looseObject({ id: z.string(), path: z.string() }));
@@ -1280,7 +1288,7 @@ const REPLY = /addPullRequestReviewThreadReply|\/replies\b/;
 /** The role a message of this loop is addressed to, which its topic ends with: a role topic is
  * `notifications.role.legion-<project>-<issue>-<role>` (contracts' roleToken, rig.sh's
  * run_project). One word names the role twice over, since it is also the role rig.sh booted an
- * agent as, which every gh call that agent made carries (SKILL_SCENARIO_AGENT, gh-standin.ts's
+ * agent as, which every gh call that agent made carries (its pane's LEGION_ROLE, gh-standin.ts's
  * `by`). */
 const ROLES = ["implementer", "reviewer", "architect"] as const;
 type Role = (typeof ROLES)[number];
@@ -1472,9 +1480,11 @@ type Match = "any" | "all";
  * *After an approval that leaves text threads open*). The role is read from the topic the
  * message reached and from nothing else: a message to the architect that says "the reviewer can
  * resolve these" is no wake of the reviewer. `names` are the strings the rule says the message
- * must carry, matched against the body alone for the same reason, and a commit is named by any
- * prefix of seven hexadecimal digits or more, as a reply names one (namesCommit). A message that
- * names none of them is no wake, since the next role cannot act on it, and a caller with nothing
+ * must carry, each a string or a list of the strings any one of which names that fact (a
+ * finding's path or its thread's node id), matched against the body alone for the same reason,
+ * and a commit is named by any prefix of seven hexadecimal digits or more, as a reply names one
+ * (namesCommit). A message that names none of them is no wake, since the next role cannot act on
+ * it, and a caller with nothing
  * to require passes an empty list, which no message satisfies under either match rather than
  * every message satisfying it. `after` is a time Envoy's own record is ordered against, so a
  * message that reached the topic before it is no answer to what happened then; both times are
@@ -1485,11 +1495,15 @@ function publishedTo(
   runDir: string,
   sender: string,
   role: Role,
-  names: string[],
+  names: readonly (string | readonly string[])[],
   match: Match,
   after?: string
 ): boolean {
   const from = after === undefined ? undefined : instant(after, "the time a message must follow");
+  const carries = (message: string, name: string | readonly string[]) =>
+    typeof name === "string"
+      ? bodyNames(message, name)
+      : name.some((one) => bodyNames(message, one));
   return (
     names.length > 0 &&
     publishes(runDir, sender).some(
@@ -1497,8 +1511,8 @@ function publishedTo(
         sent.topic.endsWith(`-${role}`) &&
         (from === undefined || instant(sent.at, "a message's time") > from) &&
         (match === "all"
-          ? names.every((name) => bodyNames(sent.message, name))
-          : names.some((name) => bodyNames(sent.message, name)))
+          ? names.every((name) => carries(sent.message, name))
+          : names.some((name) => carries(sent.message, name)))
     )
   );
 }
@@ -1508,6 +1522,22 @@ function publishedTo(
  * rather than everything of none. */
 function bodyNames(message: string, name: string): boolean {
   return name !== "" && (message.includes(name) || namesCommit(message, [name]));
+}
+/** The review threads the run's gh calls opened up to `until` (a recorded call's time), as the
+ * world holds them: the replay both stand-ins answer every thread read from (gh-threads.ts's
+ * `threadState`), over the world's own routes (<run>/fixtures.json) and the record's calls made
+ * by then, less the threads the world seeded. Each carries the node id GitHub gives it and the
+ * path it is on. */
+function openedThreads(runDir: string, world: World, until: string): Json[] {
+  const fixtures = JSON.parse(readFileSync(path.join(runDir, "fixtures.json"), "utf8")) as {
+    routes?: ThreadRoute[];
+  };
+  const at = { routes: fixtures.routes ?? [], world };
+  const seeded = new Set(threadState(at, []).list.map((thread) => thread.id));
+  const calls = recordedCalls(path.join(runDir, CALLS)).filter(
+    (call) => call.at !== undefined && call.at <= until
+  );
+  return threadState(at, calls).list.filter((thread) => !seeded.has(thread.id));
 }
 /** Whether every message this agent sent went to `role`'s topic. The rule sends the
  * implementer's message to the reviewer's topic **and to that topic alone** (review-threads.md
@@ -2086,7 +2116,7 @@ export function workOfRuns(runsDir: string): string {
  * run its archive/runs/ holds: rig.sh's archive_run moves a run there once it has ended, so a
  * batch's runs are in the archive by the time it is scored. A name in both is a run cmd_run made
  * again after its archived one, and the one in runs/ stands. An archive read on its own is the
- * archive alone. */
+ * archive alone. A run's record beside its directory (run-names.ts's `recordFile`) is no run. */
 function runsOf(runsDir: string): Map<string, string> {
   const dirs =
     path.basename(path.dirname(path.resolve(runsDir))) === "archive"
@@ -2094,7 +2124,8 @@ function runsOf(runsDir: string): Map<string, string> {
       : [path.join(workOfRuns(runsDir), "archive", "runs"), runsDir];
   const runs = new Map<string, string>();
   for (const dir of dirs)
-    for (const run of existsSync(dir) ? readdirSync(dir) : []) runs.set(run, path.join(dir, run));
+    for (const run of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : [])
+      if (run.isDirectory()) runs.set(run.name, path.join(dir, run.name));
   return runs;
 }
 
@@ -4733,11 +4764,13 @@ function flagOf(name: string, reaches: Reach[], note: string): { inline: string;
   };
 }
 
-/** The directory a run had when it ran. rig.sh starts every agent in `<run dir>/cwd`, and its
- * session's header records that cwd, so a run scored from a copy (another work directory) still
- * reads its own paths as its own. A header whose cwd is not `…/runs/<this run's name>/cwd`, or no
- * header, gives `dir` itself. */
-function ranAt(dir: string, entries: SessionEntry[]): string {
+/** The directory a run had when it ran: the one its record names (run-names.ts's `ran`). A run
+ * recorded before the names left the world has no record: rig.sh started every agent in
+ * `<run dir>/cwd`, and its session's header records that cwd, so a run scored from a copy
+ * (another work directory) still reads its own paths as its own. A header whose cwd is not
+ * `…/runs/<this run's name>/cwd`, or no header, gives `dir` itself. */
+function ranAt(dir: string, entries: SessionEntry[], recorded: string | undefined): string {
+  if (recorded !== undefined) return recorded;
   const cwd = entries.find((entry) => entry.type === "session")?.cwd;
   return typeof cwd === "string" && cwd.endsWith(`/runs/${path.basename(dir)}/cwd`)
     ? path.dirname(cwd)
@@ -4780,8 +4813,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(workOfRuns(runsDir));
-  // Each scenario's scorer, keyed by the name its runs' directories start with. A cased
-  // scenario's scorer takes the case both the run's directory and its case.txt name (CASED,
+  // Each scenario's scorer, keyed by the scenario its runs' records name (for a run recorded
+  // before the names left the world, the name its directory starts with). A cased scenario's
+  // scorer takes the case the record names, or both that directory and its case.txt name (CASED,
   // runCase); a scenario that takes none is handed "".
   const scorers: Record<string, (dir: string, run: string, label: string, name: string) => Row> = {
     "ask-on-message": askOnMessage,
@@ -4796,17 +4830,26 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   for (const [run, dir] of [...runs].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    const match = name.exec(run);
-    const score = scorers[match?.[1] ?? ""];
-    if (!match || !score) continue;
-    const [, scenario = "", named = ""] = match;
+    // The run's record, beside its directory; none for a run recorded before the names left the
+    // world, whose directory's name is its record.
+    const identity = existsSync(recordFile(dir)) || RUN_ID.test(run) ? runIdentity(dir) : undefined;
+    if (typeof identity === "string") {
+      if (!only) errors.push({ run, key: "?\t?", reason: identity });
+      continue;
+    }
+    const match = identity === undefined ? name.exec(run) : null;
+    const scenario = identity?.scenario ?? match?.[1] ?? "";
+    const score = scorers[scenario];
+    if ((identity === undefined && !match) || !score) continue;
     if (only && scenario !== only) continue;
     // undefined for a scenario that takes no case, null for a cased scenario's directory that
     // names none.
     const cased = CASED[scenario];
-    const casedRun = cased === undefined ? undefined : cased.run.exec(run);
-    const [, dirCase = "", label = named] = casedRun ?? [];
-    const key = `${casedRun ? `${scenario}:${dirCase}` : scenario}\t${label}`;
+    const casedRun =
+      identity !== undefined || cased === undefined ? undefined : cased.run.exec(run);
+    const [, dirCase = identity?.case ?? "", label = identity?.label ?? match?.[2] ?? ""] =
+      casedRun ?? [];
+    const key = `${cased !== undefined && casedRun !== null ? `${scenario}:${dirCase}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
       if (casedRun === null) throw new Error(`the directory names no case: ${cased?.shape ?? ""}`);
@@ -4814,14 +4857,17 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const calls = runCalls(dir);
       // The paths the run had when it ran, which its transcripts name, never those of a copy
       // scored elsewhere (ranAt).
-      const ran = ranAt(dir, session(dir));
+      const ran = ranAt(dir, session(dir), identity?.ran);
       const work = workOfRuns(path.dirname(ran));
-      const profile = path.join(work, "profiles", label);
+      // Where the label's profile was installed (run-names.ts's `labelInstall`), as the run had
+      // it, read from the work directory scored.
+      const profile = labelInstall(workOfRuns(runsDir), label, work);
       // The run's own skills: its HOME (in its directory), its label's profile and checkout.
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
-      // The case the directory names: what the run was built for, which is what decides the
-      // halves it boots. The case the run itself recorded is read below, where it is held to this
-      // one (runCase), and a run whose two records disagree is a rig error of its own.
+      // The case the run was built for, which is what decides the halves it boots: its record's,
+      // or the one its directory names. A run recorded before the names left the world also kept
+      // its case in case.txt, which is read below, where it is held to the name (runCase), and a
+      // run whose two records disagree is a rig error of its own.
       reason = unscored(dir, scenario, dirCase, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
         // A scenario that takes no case reads no case.txt and is handed "".
@@ -4829,7 +4875,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
           dir,
           run,
           label,
-          cased === undefined ? "" : runCase(dir, cased, dirCase)
+          identity !== undefined || cased === undefined ? dirCase : runCase(dir, cased, dirCase)
         );
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);

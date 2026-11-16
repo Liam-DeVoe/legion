@@ -9,6 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { identityOf, recordFile } from "./run-names";
 import { Opened } from "./run-records";
 
 /** The daemon stand-in's log, under the run directory, which every stand-in of the run appends
@@ -132,16 +133,21 @@ export const LABEL_DAEMONS: Readonly<
   base: { lateRole: "refused", recordRoute: "issue" },
 };
 
-/** The label of the run under `runDir`: the label of `LABEL_DAEMONS` that the run directory's
- * name ends with before its number. That is how rig.sh's cmd_run names a run
- * (`<scenario>[-<case>]-<label>-<n>`) and how score.ts reads its label. The stand-in and health
- * both read it here. Throws for a name that ends with no such label. */
+/** The label of the run under `runDir`: the label its record names (run-names.ts's
+ * `runIdentity`), which must be a label of `LABEL_DAEMONS`. A run recorded before the names left
+ * the world has no record, and its label is the label of `LABEL_DAEMONS` its directory's name
+ * ends with before its number, which is how cmd_run named a run then
+ * (`<scenario>[-<case>]-<label>-<n>`). The stand-in, health and the scorer read it here. Throws
+ * for a record that is no run's, and for a label this rig models no daemon for. */
 export function labelOf(runDir: string): string {
-  const name = path.basename(runDir);
-  const label = Object.keys(LABEL_DAEMONS)
-    .filter((named) => new RegExp(`-${named}-\\d+$`).test(name))
-    .sort((a, b) => b.length - a.length)[0];
-  if (label === undefined)
+  const identity = existsSync(recordFile(runDir)) ? identityOf(runDir) : undefined;
+  const name = identity?.name ?? path.basename(runDir);
+  const label =
+    identity?.label ??
+    Object.keys(LABEL_DAEMONS)
+      .filter((named) => new RegExp(`-${named}-\\d+$`).test(name))
+      .sort((a, b) => b.length - a.length)[0];
+  if (label === undefined || LABEL_DAEMONS[label] === undefined)
     throw new Error(
       `${name} names no label this rig models a daemon for (completion-answers.ts's LABEL_DAEMONS: ${Object.keys(LABEL_DAEMONS).join(", ")})`
     );
@@ -270,9 +276,14 @@ export const SKIPS: Readonly<
   },
 };
 
-/** The scenario of `ANSWERS` the run directory's name starts with, which is how score.ts reads
- * a run's scenario; undefined for a run of a scenario the table does not name. */
+/** The scenario of `ANSWERS` the run is of: the one its record names (`runIdentity`), or, for a
+ * run recorded before the names left the world, the one its directory's name starts with;
+ * undefined for a run of a scenario the table does not name. */
 export function scenarioOf(runDir: string): string | undefined {
+  if (existsSync(recordFile(runDir))) {
+    const { scenario } = identityOf(runDir);
+    return ANSWERS[scenario] === undefined ? undefined : scenario;
+  }
   const name = path.basename(runDir);
   return Object.keys(ANSWERS).find((scenario) => name.startsWith(`${scenario}-`));
 }

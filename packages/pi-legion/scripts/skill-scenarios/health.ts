@@ -7,7 +7,9 @@
  *      decision for each role its scenario boots (ANSWERS' `boots`), in that order, the first a
  *      `boot` of the first role, each other a `boot <role>` or a `skip <role> <reason>` with the
  *      reason SKIPS declares for the run's scenario and case; a relaunch's repeated `boot` line of
- *      the same role is that one decision. Each role it booted finished on its own record: its
+ *      the same role is that one decision, and the `since <role> <time>` line rig.sh's boot_agent
+ *      writes after each `boot` line is the time that attempt's launch began, no decision. Each
+ *      role it booted finished on its own record: its
  *      own output ends with an `exit=` line (<run>/out-<role>.txt, where rig.sh's worker_boot
  *      moves it when it boots another agent after it, or <run>/out.txt for the last role booted),
  *      and its own session directory holds a transcript with an entry (<run>/sessions/*.jsonl for
@@ -51,7 +53,8 @@
  *      workspaces, the work directory, every label's checkout — outside its own directory, its
  *      /tmp and every path its world shows again (`outsideWorld`). The world is rig.sh's one
  *      declaration of it (world_paths, `rig.sh world`), the one the run's namespace mounts;
- *  11. another process: no tool call reads a /proc/<n>/environ or cmdline but /proc/self's
+ *  11. another process: no tool call reads a /proc/<n>/environ or cmdline but the caller's own:
+ *      /proc/self's, /proc/thread-self's, or its shell's (`$$`, `${$}`, `$BASHPID`, `${BASHPID}`)
  *      (`otherProcess`);
  *  12. credentials: no tool call names a path under /var/run/legion or /var/run/secrets, by
  *      either name (`credentialReach`);
@@ -92,31 +95,48 @@
  *      the scenario declares that answer for the agent's role (DISPATCH_DECLARED,
  *      `dispatchUndeclared`). A request is the agent's whose daemon stand-in opened last before the
  *      request began (`agentBoots`); a run with no such log is unhealthy. It is read right after
- *      rule 7.
- * Rules 6 and 8 to 13 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each agent's
- * and each subagent's) through score.ts's readers. The run's own directory is the one its pane
- * file names (`SKILL_SCENARIO_RUN`, which the transcripts' paths are written under) and the
- * directory health was given, which differ for a run read from an archive or a copy. Rule 9 reads
- * the runs it is given together, so a batch's runs are judged in one call: given one run, it
- * sees no other run's writes and flags nothing, and rule 10 sees no other label's checkout but
- * the work directory's profiles name, while the other rules read each run alone.
+ *      rule 7;
+ *  17. names: no sentence of an agent's own text or thinking, in any transcript of the run, says a
+ *      scenario, case or label word (`namesSaid`): a word of run-names.ts's vocabulary, derived
+ *      from its SCENARIOS and the labels of LABEL_DAEMONS and the run's own, as run-names.ts's
+ *      `proseNames` reads a sentence — a distinctive word (`text-only`, `threads-closed`), a run's
+ *      name in rig.sh's old shape, or a case word beside a label word (`defect head`), and never a
+ *      plain word alone (`head SHA`, `base branch`, `not a defect`). The world names none of them
+ *      (rig.sh's launch refuses one that does), so a word an agent says came from no name it was
+ *      given, and the run is read no further until it is traced: on 2026-11-16, 16 of the 36 runs
+ *      of the batch at c273084d reasoned from the run's name, which named the scenario, the case
+ *      and the label.
+ * Rules 6, 8 to 13 and 17 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each
+ * agent's and each subagent's) through score.ts's readers. The run's own directory is the one its
+ * record names (run-names.ts's `ran`; for a run recorded before the names left the world, the one
+ * its pane file names, `SKILL_SCENARIO_RUN`), which the transcripts' paths are written under, and
+ * the directory health was given, which differ for a run read from an archive or a copy. A run's
+ * scenario, case and label are its record's (run-names.ts's `runIdentity`), and a run recorded
+ * before the names left the world has them in its directory's name. Rule 9 reads the runs it is
+ * given together, so a batch's runs are judged in one call: given one run, it sees no other run's
+ * writes and flags nothing, and rule 10 sees no other label's checkout but the work directory's
+ * profiles name, while the other rules read each run alone.
  *
  * Prints one line per run, `<run>  healthy` or `<run>  unhealthy: <reason>`, naming the first rule
  * the run fails with the evidence it failed on; then, for each rule, `health: <rule>: <n> of <m>
  * runs`, the runs that rule alone flags; then, for each label of the runs given, how often rig.sh
  * relaunched an agent at its boot (`relaunches`: `health: boot relaunches, <label>: <n> in <r> of
  * <m> runs`, each relaunch an agent's first attempt kept under <run>/boot-1/<role>/); then how
- * many runs wrote outside their own directory, each by name with the paths it wrote
- * (`wroteOutside`), which is no verdict; then `health: <n> of <m> runs unhealthy`. Exits 0 when
- * every run is healthy, 1 otherwise, and 2, printing no run, for no argument or for a path that
- * is not a run directory of a scenario `ANSWERS` names and of a label `LABEL_DAEMONS` names.
+ * many runs wrote outside their own directory, each by name with the paths it wrote, and how many
+ * had a path appear in the shared scratch while they ran that none of their calls wrote, each by
+ * name with those paths (`wroteOutside`), which is no verdict; then `health: <n> of <m> runs
+ * unhealthy`. Exits 0 when every run is healthy, 1 otherwise, and 2, printing no run, for no
+ * argument or for a path that is not a run directory of a scenario `ANSWERS` names and of a label
+ * `LABEL_DAEMONS` names.
  *
- * `health.ts --boot-refusal <run dir> <role> <since> <sessions dir>` is rig.sh's question after an
- * agent's launch (boot_agent): it prints the claim boot refusal that agent met before its first
- * turn, read from <run>/out.txt, the stand-in's lines of that role at or after <since> and the
- * transcripts under <sessions dir>, and exits 0 for a relaunch; exits 1 for none, a refusal
- * after a turn included; and 2 for a usage error. boot-refusal.ts answers it (`askBootRefusal`),
- * which `bun boot-refusal.ts <run dir> <role> <since> <sessions dir>` answers the same.
+ * `health.ts --boot-refusal <run dir> <role> <since> <sessions dir>` is the question rig.sh's
+ * boot_agent asked after an agent's launch in every batch before the names left the world (it
+ * asks `bun boot-refusal.ts` with the same arguments now), kept so a replay of such a batch reads
+ * its boots through the entry they ran by: it prints the claim boot refusal that agent met before
+ * its first turn, read from <run>/out.txt, the stand-in's lines of that role at or after <since>
+ * and the transcripts under <sessions dir>, and exits 0 for a relaunch; exits 1 for none, a
+ * refusal after a turn included; and 2 for a usage error. boot-refusal.ts answers it
+ * (`askBootRefusal`).
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -130,6 +150,7 @@ import {
   DAEMON_LOG,
   daemonLines,
   exited,
+  LABEL_DAEMONS,
   labelOf,
   refusedCompletion,
   SKIPS,
@@ -138,6 +159,7 @@ import {
 } from "./completion-answers";
 import { labelCheckout, labelRoutes, serves } from "./daemon-pane";
 import { isPost, methodOf, readWorld, reviewsRoute, submitsReview } from "./gh-call";
+import { proseNames, RUN_ID, runIdentity, SCENARIOS, vocabulary } from "./run-names";
 import { CALLS, Opened } from "./run-records";
 import {
   ABSOLUTE_PATH,
@@ -177,7 +199,8 @@ interface Run {
   readonly dir: string;
   readonly scenario: string;
   readonly label: string;
-  /** The run's own directory: the one its pane file names and the one health was given. */
+  /** The run's own directory: the one its record (or, for a run recorded before the names left
+   * the world, its pane file) names, and the one health was given. */
   readonly own: readonly string[];
   /** Whether the run's agents ran in a namespace of the run's own (NAMESPACE), where a path under
    * /tmp is the run's own or one its world shows (`mounted`), and never the machine's /tmp. */
@@ -186,7 +209,11 @@ interface Run {
   readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
   /** Every tool result's text of every transcript of the run, with the transcript it is in. */
   readonly results: readonly { file: string; text: string }[];
-  /** What the run wrote outside its own directory, HOME and TMPDIR (`writesOf`). */
+  /** Every text and thinking part an agent of the run wrote, with the transcript it is in and
+   * its kind (`text` or `thinking`). */
+  readonly said: readonly { file: string; kind: string; text: string }[];
+  /** What the run wrote outside its own directory, HOME and TMPDIR, and what appeared in the
+   * shared scratch while it ran (`writesOf`). */
   readonly writes: readonly Access[];
   /** Every path a tool call of the run reads (`readsOf`). */
   readonly reads: readonly Access[];
@@ -198,10 +225,10 @@ interface Run {
 /** The run directory `dir` names, with its scenario and label, or why it is none. */
 function runOf(dir: string): { scenario: string; label: string } | string {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) return `${dir} is not a directory`;
-  const scenario = scenarioOf(dir);
-  if (scenario === undefined)
-    return `${dir} is no run of a scenario health reads (completion-answers.ts's ANSWERS)`;
   try {
+    const scenario = scenarioOf(dir);
+    if (scenario === undefined)
+      return `${dir} is no run of a scenario health reads (completion-answers.ts's ANSWERS)`;
     return { scenario, label: labelOf(dir) };
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
@@ -226,9 +253,13 @@ function paneOf(dir: string): Map<string, string> {
  * rig made a namespace holds none, and its agents wrote and read the machine's own paths. */
 const NAMESPACE = "namespace.txt";
 
-function loadRun(dir: string, scenario: string, label: string): Run {
+export function loadRun(dir: string, scenario: string, label: string): Run {
   const pane = paneOf(dir);
-  const own = [path.resolve(dir), pane.get("SKILL_SCENARIO_RUN")]
+  // Where the run ran: its record's `ran`, or, for a run recorded before the names left the
+  // world, the run its pane file names.
+  const identity = runIdentity(dir);
+  const ranAt = typeof identity === "string" ? undefined : identity.ran;
+  const own = [path.resolve(dir), ranAt ?? pane.get("SKILL_SCENARIO_RUN")]
     .filter((one): one is string => one !== undefined && one !== "")
     .map((one) => path.posix.normalize(one));
   const writable = [
@@ -240,12 +271,13 @@ function loadRun(dir: string, scenario: string, label: string): Run {
   const ran = { dir, label, namespaced: existsSync(path.join(dir, NAMESPACE)) };
   const calls: { file: string; tool: string; args: ToolArgs; at: number }[] = [];
   const results: { file: string; text: string }[] = [];
+  const said: { file: string; kind: string; text: string }[] = [];
   for (const full of transcriptFiles(dir)) {
     const file = path.relative(dir, full);
     for (const entry of transcriptEntries(full)) {
       const message = entry.message;
       if (message?.role === "assistant")
-        for (const part of message.content ?? [])
+        for (const part of message.content ?? []) {
           if (part.type === "toolCall")
             calls.push({
               file,
@@ -253,6 +285,11 @@ function loadRun(dir: string, scenario: string, label: string): Run {
               args: ToolArgs.safeParse(part.arguments).data ?? {},
               at: Date.parse(entry.timestamp ?? ""),
             });
+          // An agent's own words: its text, and its thinking (`{type: "thinking", thinking}`).
+          const words = part.type === "thinking" ? part.thinking : part.text;
+          if ((part.type === "text" || part.type === "thinking") && typeof words === "string")
+            said.push({ file, kind: part.type, text: words });
+        }
       if (message?.role === "toolResult")
         results.push({
           file,
@@ -268,6 +305,7 @@ function loadRun(dir: string, scenario: string, label: string): Run {
     namespaced: ran.namespaced,
     calls,
     results,
+    said,
     writes: writesOf(ran, calls, writable),
     reads: calls.flatMap((call) =>
       readsOf(call.tool, call.args).map((read) => ({ ...call, path: reachedIn(ran, read) }))
@@ -548,31 +586,42 @@ type BootDecision =
   | { readonly kind: "boot"; readonly role: string }
   | { readonly kind: "skip"; readonly role: string; readonly reason: string };
 
-/** A line of the boot record: `boot <role>`, or `skip <role> <reason>`, the reason the rest of
- * the line. */
-const BOOT_LINE = /^(boot) (\S+)$|^(skip) (\S+) (\S.*)$/;
+/** A line of the boot record: `boot <role>`; `since <role> <time>`, the time (UTC, to the
+ * millisecond) rig.sh's boot_agent began that attempt's launch, the `since` it asks
+ * boot-refusal.ts with, which it writes right after the attempt's `boot` line; or `skip <role>
+ * <reason>`, the reason the rest of the line. */
+const BOOT_LINE =
+  /^(boot) (\S+)$|^(skip) (\S+) (\S.*)$|^(since) (\S+) (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z)$/;
 
 /** The run's boot decisions in the order rig.sh wrote them, a relaunch's `boot` line of the role
- * booted on the line before it read as that same boot (boot_agent writes one per attempt);
- * undefined for a run with no record. Throws for a line that is neither shape. */
+ * booted on the line before it read as that same boot (boot_agent writes one per attempt), and a
+ * `since` line no decision; undefined for a run with no record. Throws for a line of no such
+ * shape, and for a `since` line that does not follow a `boot` line of its role. */
 function bootDecisions(dir: string): BootDecision[] | undefined {
   const file = path.join(dir, BOOTED);
   if (!existsSync(file)) return undefined;
   const decisions: BootDecision[] = [];
+  let previous = "";
   for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
     if (line === "") continue;
-    const [, boot, booted, skip, skipped, reason] = BOOT_LINE.exec(line) ?? [];
+    const [, boot, booted, skip, skipped, reason, since, timed] = BOOT_LINE.exec(line) ?? [];
     const last = decisions.at(-1);
     if (boot !== undefined && booted !== undefined) {
       if (last?.kind !== "boot" || last.role !== booted)
         decisions.push({ kind: "boot", role: booted });
     } else if (skip !== undefined && skipped !== undefined && reason !== undefined) {
       decisions.push({ kind: "skip", role: skipped, reason });
+    } else if (since !== undefined && timed !== undefined) {
+      if (previous !== `boot ${timed}`)
+        throw new Error(
+          `${BOOTED}:${index + 1} is a \`since\` line that does not follow its role's \`boot\` line: ${line}`
+        );
     } else {
       throw new Error(
-        `${BOOTED}:${index + 1} is neither \`boot <role>\` nor \`skip <role> <reason>\`: ${line}`
+        `${BOOTED}:${index + 1} is none of \`boot <role>\`, \`since <role> <time>\` and \`skip <role> <reason>\`: ${line}`
       );
     }
+    previous = line;
   }
   return decisions;
 }
@@ -597,8 +646,9 @@ function holdsTranscript(dir: string): boolean {
  * head-1 at 7bf20811, whose reviewer's stand-in never started, left out.txt the implementer's,
  * its `exit=` line too, when worker_boot still copied it. So each role is read on its own output
  * and its own transcript, and a record of an earlier role never stands in for a later one's.
- * The case is the one the run's directory names (`<scenario>-<case>-<label>-<n>`, as rig.sh's
- * cmd_run names a run), which is the case rig.sh booted it for. */
+ * The case is the one the run's record names (run-names.ts's `runIdentity`; a run recorded before
+ * the names left the world names it in its directory's name, `<scenario>-<case>-<label>-<n>`),
+ * which is the case rig.sh booted it for. */
 export function unfinished(run: Pick<Run, "dir" | "scenario" | "label">): string | undefined {
   const decisions = bootDecisions(run.dir);
   if (decisions === undefined)
@@ -619,10 +669,8 @@ export function unfinished(run: Pick<Run, "dir" | "scenario" | "label">): string
   const missing = roles[decisions.length];
   if (missing !== undefined)
     return `boot record: <run>/${BOOTED} neither boots nor skips the ${missing}; ${definition}`;
-  const runCase = path
-    .basename(run.dir)
-    .slice(run.scenario.length + 1)
-    .replace(new RegExp(`(?:^|-)${run.label}-\\d+$`), "");
+  const identity = runIdentity(run.dir);
+  const runCase = typeof identity === "string" ? "" : identity.case;
   for (const decision of decisions) {
     if (decision.kind !== "skip") continue;
     const declared = SKIPS[run.scenario]?.[runCase]?.[decision.role];
@@ -733,19 +781,21 @@ function namedPaths(tool: string, args: ToolArgs): string[] {
   return named.filter((one) => one.startsWith("/")).map((one) => path.posix.normalize(one));
 }
 
-/** A run directory's name as rig.sh's cmd_run gives it, `<scenario>[-<case>]-<label>-<n>`, for
- * each scenario cmd_run runs. */
-const RUN_NAME =
-  /^(?:ask-on-message|measure-before-ask|tester-proof|reviewer-text-findings|threads-closed|brainstorm|askgate|spec-writing|spec-rewrite)-[a-z0-9][a-z0-9-]*-\d+$/;
+/** A run directory's name as rig.sh's cmd_run gave it before the names left the world,
+ * `<scenario>[-<case>]-<label>-<n>`, for each scenario of run-names.ts's SCENARIOS. */
+const RUN_NAME = new RegExp(`^(?:${Object.keys(SCENARIOS).join("|")})-[a-z0-9][a-z0-9-]*-\\d+$`);
 
 /** The run directory `target` lies in or names, when that is a run other than this one: the
- * first component of the path named as a run is (RUN_NAME), wherever it sits — beside this run
- * in the runs directory, in the archive rig.sh moves a finished run to, or under another batch's
- * work directory. */
+ * first component of the path that names a run, wherever it sits — beside this run in the runs
+ * directory, in the archive rig.sh moves a finished run to, or under another batch's work
+ * directory: a run's id (RUN_ID) under a `runs` directory, as cmd_run makes a run, or a name of
+ * a run recorded before the names left the world (RUN_NAME). */
 function otherRun(target: string, run: Run): string | undefined {
   if (run.own.some((dir) => inside(target, dir))) return undefined;
   const parts = target.split("/");
-  const at = parts.findIndex((part) => RUN_NAME.test(part));
+  const at = parts.findIndex(
+    (part, index) => RUN_NAME.test(part) || (RUN_ID.test(part) && parts[index - 1] === "runs")
+  );
   return at < 0 ? undefined : parts.slice(0, at + 1).join("/");
 }
 
@@ -868,22 +918,51 @@ function callText(tool: string, args: ToolArgs): string {
   return ["read", "grep", "glob"].includes(tool) ? (stringArg(args, "path") ?? "") : "";
 }
 
-/** The environment or the command line of a process other than the caller's own: any
- * `/proc/<n>/environ` or `/proc/<n>/cmdline` but `/proc/self/…` and `/proc/thread-self/…`, a glob
- * or a variable in place of `<n>` included. Inside a run's namespace PID 1 is the run's own, but
- * a run from before it shared the pod's processes, and a transcript does not say which it was. */
-const OTHER_PROCESS =
-  /\/proc\/(?!self\/|thread-self\/)[^/\s'"`;|&<>()]+\/(?:environ|cmdline)(?![\w.-])/;
+/** A command substitution in place of `<n>`: `$(…)`, up to two levels of parentheses inside it
+ * (an arithmetic `$((…))` among them), or `` `…` ``. The shell puts there what the command printed,
+ * which names whatever process that command found (`$(pgrep bun)`). */
+const SUBSTITUTION = /\$\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)|`[^`]*`/.source;
+
+/** Any other character of the word in place of `<n>`: none that ends a path's segment or a shell
+ * word. */
+const PROCESS_CHARACTER = /[^/\s'"`;|&<>()]/.source;
+
+/** A read of a process's environment or command line: `/proc/<n>/environ` or
+ * `/proc/<n>/cmdline`, the word in place of `<n>` captured. */
+const PROCESS_READ = new RegExp(
+  String.raw`/proc/((?:${SUBSTITUTION}|${PROCESS_CHARACTER})+)/(?:environ|cmdline)(?![\w.-])`,
+  "g"
+);
+
+/** The words in place of `<n>` that name the caller's own process, read as the kernel and bash
+ * read them:
+ *   - `self` and `thread-self`: the kernel's links to the process, and the thread, that opens the
+ *     path (proc(5));
+ *   - `$$` and `${$}`, the special parameter `$`: it "expands to the process ID of the shell. In a
+ *     subshell, it expands to the process ID of the invoking shell, not the subshell", and
+ *     "assignment to them is not allowed" (Bash Reference Manual, Special Parameters): the shell
+ *     that runs the command, wherever in the command the read stands;
+ *   - `$BASHPID` and `${BASHPID}`: it "expands to the process ID of the current Bash process",
+ *     which differs from `$$` in a subshell that is a fork of that same shell, and "assignments to
+ *     BASHPID have no effect" (Bash Reference Manual, Bash Variables). Only an `unset BASHPID`
+ *     before a new value takes that from it, which this does not read.
+ * The worker prompt both labels load reads Dispatch's address out of `/proc/$$/environ`
+ * (packages/daemon/internal/prompts/go/worker-common.md), a redirect from /proc/self/environ
+ * reading empty under the pod's gVisor (src/stall-evidence.ts). Every other word names another
+ * process, or may: `$PPID`, which is the shell's parent; any other variable; a number; a glob; a
+ * command substitution (SUBSTITUTION). */
+const OWN_PROCESS = /^(?:self|thread-self|\$\$|\$\{\$\}|\$BASHPID|\$\{BASHPID\})$/;
 
 /** Rule 11: the first tool call of the run that reads another process's environment
- * or command line (OTHER_PROCESS), here-document bodies included: the 2026-11-14 probe read the
- * caller's Dispatch variables out of /proc/1/environ. */
+ * or command line (PROCESS_READ, but OWN_PROCESS), here-document bodies included: the 2026-11-14
+ * probe read the caller's Dispatch variables out of /proc/1/environ. A glob or a variable in place
+ * of `<n>` is another process's. Inside a run's namespace PID 1 is the run's own, but a run from
+ * before it shared the pod's processes, and a transcript does not say which it was. */
 function otherProcess(run: Run): string | undefined {
-  for (const call of run.calls) {
-    const found = OTHER_PROCESS.exec(callText(call.tool, call.args));
-    if (found !== null)
-      return `another process: a ${call.tool} call in ${call.file} reads ${found[0]}, a process the run does not own`;
-  }
+  for (const call of run.calls)
+    for (const found of callText(call.tool, call.args).matchAll(PROCESS_READ))
+      if (!OWN_PROCESS.test(found[1]))
+        return `another process: a ${call.tool} call in ${call.file} reads ${found[0]}, a process the run does not own`;
   return undefined;
 }
 
@@ -2420,10 +2499,10 @@ export function writtenBy(tool: string, args: ToolArgs): string[] {
 /** What the run wrote outside its own directory, its HOME and its TMPDIR (`writable`): every path
  * a tool call writes there (`writtenBy`), read as the run's namespace mounts it (`reachedIn`), so
  * a write into a namespace's /tmp is one into the run's own <run>/tmp and none of these; and
- * every entry rig.sh's scratch_clean found the run had left in the machine's shared scratch
- * (<run>/scratch-created.txt, `<epoch seconds> <path>`), which rig.sh reads outside the
- * namespace and is the machine's path as it stands. A run's own writes are no verdict on it;
- * another run that reads one is (`otherRunWrite`). */
+ * every entry rig.sh's scratch_clean found had appeared in the machine's shared scratch while the
+ * run ran (<run>/scratch-created.txt, `<epoch seconds> <path>`), which rig.sh reads outside the
+ * namespace and is the machine's path as it stands, whoever wrote it (`appearedOnly`). A run's own
+ * writes are no verdict on it; another run that reads one is (`otherRunWrite`). */
 function writesOf(
   run: Pick<Run, "dir" | "label" | "namespaced">,
   calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[],
@@ -2704,28 +2783,75 @@ function relaunches(runs: readonly Run[]): string[] {
     );
 }
 
-/** How many paths of a run's writes outside its own directory `wroteOutside` names before it
- * counts the rest. */
+/** How many paths of one kind of a run's writes outside its own directory `wroteOutside` names
+ * before it counts the rest. */
 const WRITES_NAMED = 3;
 
-/** The line of the runs of `runs` that wrote outside their own directory, HOME and TMPDIR
- * (`writesOf`), which is no verdict on any of them: `health: wrote outside its own directory,
- * HOME and TMPDIR (no verdict): <n> of <m> runs`, then, where <n> is not 0, `: <run> (<path>,
- * <path>, <path> and <k> more); <run> (…)`: each such run by its directory's name, in the order
- * given, with the paths it wrote there in the order it first wrote each, the first WRITES_NAMED
- * of them and a count of the rest. So the line itself says which runs they were and where each
- * wrote, with no copy of the runs to read them out of. */
+/** Whether `write`, one of the run's (`writesOf`), is an entry only rig.sh's scratch_clean
+ * recorded: one that appeared at the top of the machine's shared scratch while the run ran
+ * (scratch-created.txt), and that no tool call of the run wrote, itself or a path under it. Who
+ * wrote it is unknown: any other process of the machine's user may have, and in a namespace the
+ * run's agents reach none of the machine's /tmp at all. */
+function appearedOnly(run: Run, write: Access): boolean {
+  return (
+    write.tool === "scratch_clean" &&
+    !run.writes.some((call) => call.tool !== "scratch_clean" && inside(call.path, write.path))
+  );
+}
+
+/** The line of the runs of `runs` that left a path outside their own directory, HOME and TMPDIR
+ * (`writesOf`), which is no verdict on any of them, in two kinds each counted and named on its
+ * own: `health: wrote outside its own directory, HOME and TMPDIR (no verdict): <n> of <m> runs`,
+ * the paths a tool call of the run wrote, and an entry scratch_clean recorded that one of those
+ * calls wrote or wrote under; then `. Appeared in the shared scratch while the run ran, by an
+ * unknown writer (no verdict): <k> of <m> runs`, the entries scratch_clean alone recorded
+ * (`appearedOnly`). Where its count is not 0, each kind goes on with `: <run> (<path>, <path>,
+ * <path> and <j> more); <run> (…)`: each such run by its directory's name, in the order given,
+ * with its paths of that kind in the order it first wrote each, the first WRITES_NAMED of them and
+ * a count of the rest. So the line itself says which runs they were, where each wrote and what
+ * appeared while each ran, with no copy of the runs to read them out of. On 2026-11-16 one kind
+ * alone read /tmp/go-build218583819, which only reviewer-text-findings-text-only-head-5's
+ * scratch-created.txt names, as a write of that run, whose agents' /tmp was the run's own. */
 function wroteOutside(runs: readonly Run[]): string {
-  const wrote = runs.flatMap((run) => {
-    const paths = [...new Set(run.writes.map((write) => write.path))];
-    const rest = paths.length - WRITES_NAMED;
-    return paths.length === 0
-      ? []
-      : [
-          `${path.basename(run.dir)} (${paths.slice(0, WRITES_NAMED).join(", ")}${rest > 0 ? ` and ${rest} more` : ""})`,
-        ];
-  });
-  return `health: wrote outside its own directory, HOME and TMPDIR (no verdict): ${wrote.length} of ${runs.length} runs${wrote.length === 0 ? "" : `: ${wrote.join("; ")}`}`;
+  const listed = (appeared: boolean) => {
+    const named = runs.flatMap((run) => {
+      const paths = [
+        ...new Set(
+          run.writes
+            .filter((write) => appearedOnly(run, write) === appeared)
+            .map((write) => write.path)
+        ),
+      ];
+      const rest = paths.length - WRITES_NAMED;
+      return paths.length === 0
+        ? []
+        : [
+            `${path.basename(run.dir)} (${paths.slice(0, WRITES_NAMED).join(", ")}${rest > 0 ? ` and ${rest} more` : ""})`,
+          ];
+    });
+    return `${named.length} of ${runs.length} runs${named.length === 0 ? "" : `: ${named.join("; ")}`}`;
+  };
+  return `health: wrote outside its own directory, HOME and TMPDIR (no verdict): ${listed(false)}. Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): ${listed(true)}`;
+}
+
+/** A sentence of an agent's text: what ends at a `.`, `!` or `?` before a space, or at a line's
+ * end. */
+const SENTENCE = /(?<=[.!?])\s+|\n+/;
+
+/** Rule 17: the first sentence of an agent's own text or thinking, in any transcript of the run,
+ * that says a scenario, case or label word (run-names.ts's `proseNames`, over the vocabulary of
+ * its SCENARIOS and the labels of LABEL_DAEMONS and the run's own). The verbatim thinking of the
+ * batch at c273084d: "The run name points to a text-only case, so I expect the findings to be
+ * wording rather than behavioural". */
+export function namesSaid(run: Pick<Run, "said" | "label">): string | undefined {
+  const vocab = vocabulary([...Object.keys(LABEL_DAEMONS), run.label]);
+  for (const { file, kind, text } of run.said)
+    for (const sentence of text.split(SENTENCE)) {
+      const word = proseNames(sentence, vocab);
+      if (word !== undefined)
+        return `names: a ${kind} part in ${file} says "${word}": "${sentence.trim().slice(0, 240)}"`;
+    }
+  return undefined;
 }
 
 /** Every rule, in the order a run's line names the first it fails. A rule is given the run and
@@ -2773,6 +2899,8 @@ const RULES: readonly {
   { name: "another process", judge: otherProcess },
   { name: "credentials", judge: credentialReach },
   { name: "off-world network", judge: offWorld },
+  // Rule 17, read last: what an agent said, once the world it said it in has been read.
+  { name: "names", judge: namesSaid },
 ];
 
 if (import.meta.main) {
@@ -2836,8 +2964,13 @@ if (import.meta.main) {
       return [reason];
     });
     if (reasons.length > 0) failed += 1;
+    // Keyed by the run's directory, its id, as every reader of these lines keys them; a run with a
+    // record also names it last, `(<scenario>[-<case>]-<label>-<n>)`, which no verdict reads, so a
+    // person can tell the run without opening the record. Health runs outside every run's world.
+    const identity = runIdentity(run.dir);
+    const name = typeof identity !== "string" && identity.recorded ? `  (${identity.name})` : "";
     console.log(
-      `${path.basename(run.dir)}  ${reasons[0] === undefined ? "healthy" : `unhealthy: ${reasons[0]}`}`
+      `${path.basename(run.dir)}  ${reasons[0] === undefined ? "healthy" : `unhealthy: ${reasons[0]}`}${name}`
     );
   }
   for (const [name, count] of flagged)
@@ -2845,8 +2978,9 @@ if (import.meta.main) {
   // How often each label's agents met a boot refusal the rig relaunched them for, which no rule
   // flags (rule 14 declares a first attempt's): a batch reads its relaunches here, by label.
   for (const line of relaunches(runs)) console.log(line);
-  // A run's own writes outside its directory are no verdict on it: named here, run by run, and
-  // judged where another run read them (`otherRunWrite`).
+  // A run's own writes outside its directory, and what appeared in the shared scratch while it
+  // ran, are no verdict on it: named here, run by run and kind by kind, and judged where another
+  // run read them (`otherRunWrite`).
   console.log(wroteOutside(runs));
   console.log(`health: ${failed} of ${runs.length} runs unhealthy`);
   process.exit(failed === 0 ? 0 : 1);

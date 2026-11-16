@@ -133,7 +133,8 @@ import {
   serves,
   standinFacts,
 } from "./daemon-pane";
-import { mergeStateOn, routeFor, worldOf } from "./gh-call";
+import { routeFor, worldOf } from "./gh-call";
+import { mergeStateOf, recordedCalls, threadState } from "./gh-threads";
 import { CALLS, openingLine } from "./run-records";
 
 const GRANT_TTL_MS = 60_000;
@@ -199,7 +200,8 @@ for (const named of COMPLETED_ROWS) {
  * request is open against; and it reads the round's outcome off the issue branch of the run's
  * own remote, whose tip is the pull request's head, and the pull request's number, whose
  * reviews the world's routes answer. */
-const { repo, base, branch: BRANCH, pr: PR } = worldOf(runDir, "daemon-standin");
+const world = worldOf(runDir, "daemon-standin");
+const { repo, base, branch: BRANCH, pr: PR } = world;
 /** The owner of the run's repository, which is the one owner the project maps. */
 const [REPO_OWNER = ""] = repo.split("/");
 if (REPO_OWNER === "" || !repo.includes("/")) {
@@ -209,7 +211,10 @@ if (REPO_OWNER === "" || !repo.includes("/")) {
 /** Encoded exactly as the daemon encodes it (`legion-<project>-<key>-<role>`, lower-cased),
  * since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
 const ROLE_TOKEN = roleToken(project, issue, role);
-const SESSION_SECRET = "rig-secret";
+/** The secret a registration answers, in the shape the daemon mints one (Go's `rand.Text()`, 26
+ * letters and digits of base32: packages/daemon/internal/api/claims.go): a word of the rig's
+ * (`rig-secret`) was what the agent's plugin held. Fixed, since daemon-standin.test.ts sends it. */
+const SESSION_SECRET = "M4QZ7KWT2HXR5NBJ6YCPVD3LGE";
 /** A fact of the run's label's daemon read at boot, or the boot failed with why it could not be
  * read: a run whose daemon cannot be read is never answered as some other daemon would answer
  * it. */
@@ -331,8 +336,10 @@ const stateIn = (phase: string) =>
  * world reports and never on a completion (`roundOutcome`, read at each state read): the head is
  * the tip of the run's own remote, the decision is the last `APPROVED` or `CHANGES_REQUESTED`
  * among the reviews the world held when the run began and those the run left, and GitHub's merge
- * state for the head is the world's (gh-call.ts's `mergeStateOn`). It does what `reviewRound`
- * does with them:
+ * state for the head is the world's as the run's review threads leave it (gh-threads.ts's
+ * `mergeStateOf`, which the gh stand-in answers `mergeStateStatus` with): a base that requires
+ * conversation resolution holds it `BLOCKED` until the last thread is resolved. It does what
+ * `reviewRound` does with them:
  *   - a change request ends the round rejected whatever head it names and whether or not the
  *     reviewer has completed, and the issue goes back to `implementing` (`TriggerReviewRejected`).
  *     reviewer-text-findings' defect case reaches it, in `reviewing`;
@@ -368,6 +375,7 @@ const Fixtures = z.looseObject({
       match: z.string(),
       methods: z.array(z.string()).optional(),
       stdout: z.unknown().optional(),
+      graph: z.unknown().optional(),
     })
   ),
   mergeStates: z.unknown().optional(),
@@ -401,8 +409,9 @@ function roundOutcome(): "accepting" | "implementing" | undefined {
     JSON.parse(readFileSync(`${runDir}/fixtures.json`, "utf8"))
   );
   const listed = routeFor(routes, ["api", `repos/${repo}/pulls/${PR}/reviews`])?.stdout;
-  const recorded = existsSync(`${runDir}/${CALLS}`)
-    ? readFileSync(`${runDir}/${CALLS}`, "utf8")
+  const record = `${runDir}/${CALLS}`;
+  const recorded = existsSync(record)
+    ? readFileSync(record, "utf8")
         .split("\n")
         .filter((line) => line.trim() !== "")
         .flatMap((line) => {
@@ -420,7 +429,10 @@ function roundOutcome(): "accepting" | "implementing" | undefined {
   if (decision?.state === "CHANGES_REQUESTED") return "implementing";
   const stands =
     decision !== undefined && decision.head.length >= 7 && head.startsWith(decision.head);
-  return stands && MERGEABLE.includes(mergeStateOn(mergeStates, head)) ? "accepting" : undefined;
+  const at = { routes, world };
+  const threads = threadState(at, existsSync(record) ? recordedCalls(record) : []);
+  const state = mergeStateOf(at, threads, mergeStates, head);
+  return stands && MERGEABLE.includes(state) ? "accepting" : undefined;
 }
 
 interface LogLine {

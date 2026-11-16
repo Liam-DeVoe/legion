@@ -34,6 +34,9 @@ const work = temporaryDirectory("skill-scenarios-standin");
  * project, the run's own directory and the phase". */
 const WORLD_REPO = "example/widgets";
 const WORLD_BASE = "main";
+/** The secret the stand-in's registration answers (daemon-standin.ts's SESSION_SECRET), which a
+ * claim's later requests carry. */
+const SECRET = "M4QZ7KWT2HXR5NBJ6YCPVD3LGE";
 
 /** The stand-in, started on a port the kernel picks, with its own log and boot token file, on a
  * run directory holding `world`, which defaults to the world rig.sh builds, and in `phase` when
@@ -108,7 +111,7 @@ async function standin(
         method: "POST",
         body: JSON.stringify({
           sessionId: "01a0f2cc",
-          secret: "rig-secret",
+          secret: SECRET,
           tree: "LWEVAL-1",
           issue: "LWEVAL-1",
         }),
@@ -151,8 +154,8 @@ function git(dir: string, ...args: string[]): string {
 /** The pull request of the run under `dir`, in the shapes rig.sh's fixture_write writes it: a
  * bare remote whose issue branch is at the head, no review on it, the create route every world
  * answers a review with, and the merge state GitHub reports while the pull request is at that
- * head, `state` (`CLEAN` unless the row names another), every other head being `CLEAN` (rig.sh's
- * `blocked_at`, gh-call.ts's `mergeStateOn`). `push` puts a commit above the tip and returns it;
+ * head, `state` (`CLEAN` unless the row names another), every other head being `CLEAN`
+ * (gh-call.ts's `mergeStateOn`). `push` puts a commit above the tip and returns it;
  * `approve` and `requestChanges` submit a review of a head through the gh stand-in itself, so the
  * review the daemon stand-in reads is the one the world answered the call with. */
 function pullRequest(dir: string, state = "CLEAN") {
@@ -196,7 +199,7 @@ function pullRequest(dir: string, state = "CLEAN") {
         "--input",
         body,
       ],
-      { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+      { env: { ...process.env, GH_DATA_DIR: dir } }
     );
     if (call.exitCode !== 0) throw new Error(`the review was refused: ${call.stderr.toString()}`);
   };
@@ -303,8 +306,8 @@ test.skipIf(skip)(
 // pull request's, which sets it aside (`classify.ApprovalSetAside`, `stuckApprovedOtherCode`),
 // and only an approval of the new head ends the round. Once the record is in `accepting` a push
 // lands outside any round and moves nothing (review_test.go's "the approval of the head, then a
-// push"). The approved head is `BLOCKED` and the fix head `CLEAN`, as threads-closed's
-// text-fixes world serves them (rig.sh's approved_world).
+// push"). The approved head is `BLOCKED` and the fix head `CLEAN`, each by the world's own merge
+// state for that head.
 test.skipIf(skip)(
   "a push after the approval leaves the issue in reviewing until the new head is approved",
   async () => {
@@ -318,6 +321,75 @@ test.skipIf(skip)(
       pull.approve(fixed);
       expect(await daemon.phase()).toBe("accepting");
       pull.push();
+      expect(await daemon.phase()).toBe("accepting");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// GitHub holds a head whose base requires conversation resolution `BLOCKED` while a review thread
+// is open and reports it `CLEAN` once the last is resolved, and main's engine ends the round on
+// an approval that stands only then. Catches: a daemon stand-in that moves on a merge state frozen
+// into the world while the gh stand-in answers the threads as the run left them — the approval of
+// threads-closed's text-fixes head waited in `reviewing` for ever, however many threads the
+// implementer resolved — and one that reads another state than the one the gh stand-in answers
+// `mergeStateStatus` with (gh-threads.ts's `mergeStateOf`, which both read). The resolve is the
+// recorded reviewer-text-findings-text-only-head-1/calls.jsonl:29, made through the gh stand-in.
+test.skipIf(skip)(
+  "an approval waits in reviewing while a thread its base requires resolved is open, and moves once the run resolves it",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const pull = pullRequest(daemon.dir);
+      const file = path.join(daemon.dir, "fixtures.json");
+      const fixtures = JSON.parse(readFileSync(file, "utf8"));
+      fixtures.routes.push(
+        {
+          match: "^gh api .*/branches/main/protection",
+          stdout: { required_conversation_resolution: { enabled: true } },
+        },
+        {
+          match: "^gh api .*graphql",
+          graph: {
+            query: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: [
+                    {
+                      id: "PRRT_kwDOrig0001",
+                      isResolved: false,
+                      comments: [{ databaseId: 7001, state: "SUBMITTED", body: "a wording nit" }],
+                    },
+                  ],
+                },
+              },
+            },
+            mutation: { resolveReviewThread: {} },
+          },
+        }
+      );
+      writeFileSync(file, JSON.stringify(fixtures));
+      pull.approve();
+      expect(await daemon.phase()).toBe("reviewing");
+      const resolve = spawnChecked(
+        [
+          "bun",
+          GH_STANDIN,
+          "gh",
+          "api",
+          "graphql",
+          "-f",
+          "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+          "-F",
+          "id=PRRT_kwDOrig0001",
+        ],
+        { env: { ...process.env, GH_DATA_DIR: daemon.dir } }
+      );
+      expect(resolve.stdout.toString().trim()).toBe(
+        JSON.stringify({ data: { resolveReviewThread: { thread: { isResolved: true } } } })
+      );
       expect(await daemon.phase()).toBe("accepting");
     } finally {
       daemon.stop();
@@ -885,7 +957,7 @@ function turn(role: LegionRole, sequence: number, outcome: string, extra: object
   return {
     claimToken: roleToken("skills1", "LWEVAL-1", role),
     sessionId: "01a0f2cc",
-    secret: "rig-secret",
+    secret: SECRET,
     generation: 1,
     sequence,
     outcome,
@@ -992,9 +1064,9 @@ test.skipIf(skip)(
       expect(
         (await daemon.post("/legion/v1/claims/turn-outcome", turn("reviewer", 1, "clean"))).status
       ).toBe(404);
-      expect(
-        (await daemon.post("/legion/v1/claims/activity", { secret: "rig-secret" })).status
-      ).toBe(404);
+      expect((await daemon.post("/legion/v1/claims/activity", { secret: SECRET })).status).toBe(
+        404
+      );
       expect(await daemon.phase()).toBe("reviewing");
       expect(
         daemon
@@ -1031,10 +1103,10 @@ test.skipIf(skip)(
       const answers = [];
       for (const [route, body] of [
         ["/legion/v1/claims/turn-outcome", turn("reviewer", limit + 1, "clean")],
-        ["/legion/v1/claims/activity", { secret: "rig-secret" }],
+        ["/legion/v1/claims/activity", { secret: SECRET }],
         [
           "/legion/v1/grants",
-          { sessionId: "01a0f2cc", secret: "rig-secret", tree: "LWEVAL-1", issue: "LWEVAL-1" },
+          { sessionId: "01a0f2cc", secret: SECRET, tree: "LWEVAL-1", issue: "LWEVAL-1" },
         ],
       ] as const) {
         const answer = await daemon.post(route, body);
@@ -1138,7 +1210,7 @@ test.skipIf(skip)(
       const records = (body: object) =>
         daemon.post("/legion/v1/claims/release-records", {
           claimToken: roleToken("skills1", "LWEVAL-1", "reviewer"),
-          secret: "rig-secret",
+          secret: SECRET,
           since: "2026-11-01T00:00:00Z",
           ...body,
         });

@@ -3,7 +3,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
-import { mounted, offWorldReach, serviceProvenance, unfinished, writtenBy } from "./health";
+import {
+  loadRun,
+  mounted,
+  namesSaid,
+  offWorldReach,
+  serviceProvenance,
+  unfinished,
+  writtenBy,
+} from "./health";
+import { vocabulary } from "./run-names";
 
 /** The world of a run whose pane names only the loopback. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -955,6 +964,16 @@ describe("health: rule 1, finished, on the run's boot record", () => {
         )
       )
     ).toBe(undefined);
+    // As boot_agent writes it now: each launch it asks the boot's reader about followed by the
+    // `since` it asked with, and a relaunch's repeated `boot` line, asked nothing, with none.
+    expect(
+      judge(
+        both(
+          "threads-closed-text-fixes-head-11",
+          "boot implementer\nsince implementer 2026-11-16T09:00:00.000Z\nboot implementer\nboot reviewer\nsince reviewer 2026-11-16T09:10:00.000Z\n"
+        )
+      )
+    ).toBe(undefined);
     expect(
       judge(
         runOf("reviewer-text-findings-defect-base-1", {
@@ -988,6 +1007,33 @@ describe("health: rule 1, finished, on the run's boot record", () => {
       skipped("threads-closed-code-defect-head-2", "boot implementer\nskip reviewer it was late\n")
     ).toBe(
       'undeclared skip: <run>/booted skips the reviewer because "it was late", where threads-closed code-defect declares "the implementer sent the reviewer nothing" (completion-answers.ts\'s SKIPS)'
+    );
+    // A run named by its id reads its case from its record (run-names.ts's `runIdentity`), never
+    // from its directory's name, which names nothing.
+    const recorded = (id: string, runCase: string) => {
+      const dir = runOf(id, {
+        booted: `boot implementer\n${SKIPPED}`,
+        "out.txt": "Told the architect the thread's sentence is false.\nexit=0\n",
+        [FIRST]: TRANSCRIPT,
+      });
+      writeFileSync(
+        `${dir}.json`,
+        JSON.stringify({
+          run: id,
+          scenario: "threads-closed",
+          case: runCase,
+          label: "head",
+          n: 3,
+          name: `threads-closed-${runCase}-head-3`,
+          batch: "legion-00000000-1",
+          ran: dir,
+        })
+      );
+      return judge(dir);
+    };
+    expect(recorded("0123456789ab", "code-defect")).toBe(undefined);
+    expect(recorded("0123456789ac", "text-fixes")).toBe(
+      'undeclared skip: <run>/booted skips the reviewer because "the implementer sent the reviewer nothing", and threads-closed text-fixes declares no skip of it (completion-answers.ts\'s SKIPS)'
     );
   });
 
@@ -1027,7 +1073,19 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     );
     expect(() =>
       judge(both("threads-closed-text-fixes-head-10", "launched implementer\n"))
-    ).toThrow("booted:1 is neither `boot <role>` nor `skip <role> <reason>`: launched implementer");
+    ).toThrow(
+      "booted:1 is none of `boot <role>`, `since <role> <time>` and `skip <role> <reason>`: launched implementer"
+    );
+    expect(() =>
+      judge(
+        both(
+          "threads-closed-text-fixes-head-12",
+          "boot implementer\nsince reviewer 2026-11-16T09:00:00.000Z\nboot reviewer\n"
+        )
+      )
+    ).toThrow(
+      "booted:2 is a `since` line that does not follow its role's `boot` line: since reviewer 2026-11-16T09:00:00.000Z"
+    );
   });
 
   // Catches: a role's record that is another's standing in for it: the first role's transcript
@@ -1243,5 +1301,81 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
 
   test("a world that shows /tmp itself keeps the machine's", () => {
     expect(mounted({ own: RUN, shown: [RUN, "/tmp"] }, "/tmp/body.md")).toBe("/tmp/body.md");
+  });
+});
+
+// Rule 17, names: an agent's own sentence that says a scenario, case or label word, by the
+// vocabulary run-names.ts derives from the rig's scenario table and the labels, never typed
+// here. Catches: the batch at c273084d, 16 of whose 36 runs reasoned from the run's name, read
+// healthy; and the work's own plain words read as the measurement's.
+describe("health: rule 17, names, in what an agent says", () => {
+  const FILE = "sessions/2026-11-16T00-00-00-000Z_s1.jsonl";
+  const said = (kind: string, text: string) => ({
+    said: [{ file: FILE, kind, text }],
+    label: "head",
+  });
+
+  test("a scenario, case or label word an agent says or thinks makes the run unhealthy, naming the sentence", () => {
+    // The batch's own thinking, verbatim.
+    expect(
+      namesSaid(
+        said(
+          "thinking",
+          "Let me look again. The run name points to a text-only case, so I expect the findings to be wording rather than behavioural. Next."
+        )
+      )
+    ).toBe(
+      `names: a thinking part in ${FILE} says "text-only": "The run name points to a text-only case, so I expect the findings to be wording rather than behavioural."`
+    );
+    // A case word beside a label word, as a run's name puts them, in the agent's text.
+    expect(namesSaid(said("text", "This is the defect head run, so the verdict is CHANGES."))).toBe(
+      `names: a text part in ${FILE} says "defect head": "This is the defect head run, so the verdict is CHANGES."`
+    );
+    // Every distinctive word of the derived vocabulary, planted alone.
+    const missed = vocabulary(["head", "base"]).distinctive.filter(
+      (word) => namesSaid(said("text", `I think this is the ${word} one.`)) === undefined
+    );
+    expect(missed).toEqual([]);
+  });
+
+  test("a run whose agents say the work's own plain words stays healthy", () => {
+    expect(
+      namesSaid(
+        said(
+          "text",
+          "The head SHA is a0ce49e. The base branch is main, and its protection requires `test`. This is not a defect: the link is fine."
+        )
+      )
+    ).toBe(undefined);
+    expect(
+      namesSaid(said("thinking", "Compare the base and the head, then upload the facts."))
+    ).toBe(undefined);
+  });
+
+  // Catches: a reader of the run that leaves the agent's thinking, or a later agent's
+  // transcript, out of what it says: each part is read from the run's own transcripts.
+  const runs = temporaryDirectories("health-names");
+  test("a word in a later agent's thinking, read from its transcript, names the run", () => {
+    const dir = path.join(runs(), "0123456789ab");
+    const turn = (part: object) =>
+      `${JSON.stringify({ type: "session", id: "s1" })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", content: [part] },
+      })}\n`;
+    mkdirSync(path.join(dir, "sessions", "reviewer"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "sessions", "s1.jsonl"),
+      turn({ type: "text", text: "Fixed both threads." })
+    );
+    writeFileSync(
+      path.join(dir, "sessions", "reviewer", "s2.jsonl"),
+      turn({
+        type: "thinking",
+        thinking: "The scenario label points to the code-defect case. So CHANGES.",
+      })
+    );
+    expect(namesSaid(loadRun(dir, "threads-closed", "head"))).toBe(
+      `names: a thinking part in sessions/reviewer/s2.jsonl says "code-defect": "The scenario label points to the code-defect case."`
+    );
   });
 });

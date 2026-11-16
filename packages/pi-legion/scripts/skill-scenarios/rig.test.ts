@@ -21,6 +21,7 @@ import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { ANSWERS, BOOTED, SKIPS, scenarioOf } from "./completion-answers";
 import { routeFor } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
+import { nameWords, runIdentity, textWords, vocabulary, WORLD_PROJECT } from "./run-names";
 import { bundled, spawnChecked } from "./test-programs";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -125,7 +126,17 @@ const namespaceRefusal = (() => {
 const withoutNamespace = namespaceRefusal !== undefined;
 /** The login every answer of a world names a user by (rig.sh's `world_login`). */
 const WORLD_LOGIN = assignment("world_login").replace(/^world_login='(.*)'$/, "$1");
-const work = temporaryDirectory("skill-scenarios-rig");
+/** rig.sh's values naming the two GitHub Apps a world's roles commit as (role_identity), which
+ * every builder that runs a world's commits or a worker's boot sets. */
+const WORLD_APPS = [
+  "world_implement_app",
+  "world_implement_app_id",
+  "world_review_app",
+  "world_review_app_id",
+];
+// A name of no measurement: every path a run's agent reads is built on it, and rig.sh's launch
+// starts no agent whose world names the rig (run-names.ts's guard).
+const work = temporaryDirectory("suite");
 const operatorHome = path.join(work, "operator-home");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
 // read it would list this directory. It is staged in a hook, below the one the reservation
@@ -433,8 +444,14 @@ describe("a setup that fails after install_model_route", () => {
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain("the superpowers probe failed");
     const P = path.join(work, "profiles/probe");
-    expect(existsSync(path.join(P, "home/.omp/profiles/skills-probe/agent/models.yml"))).toBe(true);
-    expect(existsSync(path.join(P, "model-key"))).toBe(false);
+    // The profile is installed under an id of no meaning (P/install), with production's own
+    // profile name, so no path a run's agent reads names the label.
+    const id = readFileSync(path.join(P, "install"), "utf8").trim();
+    expect(id).toMatch(/^[0-9a-f]{12}$/);
+    expect(readFileSync(path.join(P, "profile"), "utf8")).toBe("legion\n");
+    const I = path.join(work, "installs", id);
+    expect(existsSync(path.join(I, "home/.omp/profiles/legion/agent/models.yml"))).toBe(true);
+    expect(existsSync(path.join(I, "model-key"))).toBe(false);
     expect(existsSync(path.join(P, "ready"))).toBe(false);
 
     // The same setup that succeeds keeps its key command: a ready profile uses it.
@@ -448,7 +465,10 @@ describe("a setup that fails after install_model_route", () => {
       }
     );
     expect({ code: ok.code, stderr: ok.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(existsSync(path.join(kept, "profiles/probe/model-key/anthropic-key"))).toBe(true);
+    const installed = readFileSync(path.join(kept, "profiles/probe/install"), "utf8").trim();
+    expect(existsSync(path.join(kept, "installs", installed, "model-key/anthropic-key"))).toBe(
+      true
+    );
     expect(existsSync(path.join(kept, "profiles/probe/ready"))).toBe(true);
   });
 
@@ -543,6 +563,18 @@ function treeDigest(dir: string): string {
   };
   walk(".");
   return hasher.digest("hex");
+}
+/** The directory of the run whose record (rig.sh's cmd_run) names it `name` in the runs directory
+ * `runs`, or undefined for none: a run's directory is named by an id, and its record beside it
+ * says which run it is. */
+function namedRun(runs: string, name: string): string | undefined {
+  for (const file of existsSync(runs) ? readdirSync(runs) : [])
+    if (
+      file.endsWith(".json") &&
+      JSON.parse(readFileSync(path.join(runs, file), "utf8")).name === name
+    )
+      return path.join(runs, file.slice(0, -".json".length));
+  return undefined;
 }
 
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
@@ -771,12 +803,12 @@ describe("cmd_batch numbering", () => {
           "label_services",
           "label_provenance",
           "next_run",
-          "scenario_case",
-          "askgate_case",
-          "reviewer_case",
-          "threads_case",
           "cmd_batch",
         ].map(fn),
+        // The real scenario_case, which reads the case through this directory's run-names.ts,
+        // while `here` is the batch's stub rig.
+        fn("scenario_case").replace(/^scenario_case\(\)/, "real_scenario_case()"),
+        'scenario_case() { here=$RIG real_scenario_case "$@"; }',
         "load_label() { co=$root; }",
         "push_guard() { :; }",
         "require_namespace() { :; }",
@@ -790,7 +822,7 @@ describe("cmd_batch numbering", () => {
         'go() { : >"$3"; }',
         "label_facts() { :; }",
         "work=$1 here=$2 root=$3 tag=rig-test containers=()",
-        "services_postgres=$work/services/postgres-url",
+        "services_postgres=$work/services/postgres-url tokens=$work/services/tokens",
         'cmd_batch "$4" 1 head',
       ].join("\n"),
       [work, here, root, scenario],
@@ -799,6 +831,7 @@ describe("cmd_batch numbering", () => {
         SKILL_SCENARIOS_PARALLEL: "1",
         SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig@127.0.0.1:5432/postgres",
         SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+        RIG: import.meta.dir,
         ...env,
       }
     );
@@ -822,17 +855,23 @@ describe("cmd_batch numbering", () => {
 
   // Catches: numbering that reads the scenario's runs without the case every run name of a cased
   // scenario carries, which finds none and starts at 1 again, and numbering that counts another
-  // case's runs as this case's.
-  test("a cased scenario's batches are numbered within their case", () => {
+  // case's runs as this case's, and numbering that reads no run's record, where a run's name is
+  // since the names left the world (rig.sh's cmd_run), so a record's number is taken again.
+  test("a cased scenario's batches are numbered within their case, from names and records alike", () => {
     const work = freshDir("batch-numbering-case");
     mkdirSync(path.join(work, "archive", "runs", "askgate-facts-head-4"), { recursive: true });
+    mkdirSync(path.join(work, "archive", "runs", "0123456789ab"), { recursive: true });
+    writeFileSync(
+      path.join(work, "archive", "runs", "0123456789ab.json"),
+      JSON.stringify({ name: "askgate-link-head-2" })
+    );
     for (const _ of [1, 2])
       expect(batch(work, "askgate", { SKILL_SCENARIOS_ASKGATE_CASE: "link" })).toMatchObject({
         code: 0,
         stderr: "",
       });
     expect(readFileSync(path.join(work, "runs.log"), "utf8")).toBe(
-      "askgate-link-head-1\naskgate-link-head-2\n"
+      "askgate-link-head-3\naskgate-link-head-4\n"
     );
   });
 });
@@ -987,7 +1026,7 @@ describe("a run or live read of a name already taken", () => {
     return { work, dir, digest: treeDigest(dir) };
   }
   const stubs = [
-    "load_label() { P=$work/profiles/$1; co=$work/checkout; }",
+    "load_label() { P=$work/profiles/$1; I=$P; co=$work/checkout; }",
     "push_guard() { :; }",
     "require_namespace() { :; }",
     "scratch_before() { :; }",
@@ -1000,19 +1039,21 @@ describe("a run or live read of a name already taken", () => {
           "fail",
           "on_exit",
           "scenario_case",
-          "askgate_case",
-          "reviewer_case",
-          "threads_case",
+          "run_named",
           "cmd_run",
           "label_services",
           "label_provenance",
         ].map(fn),
         ...stubs,
-        "work=$1",
+        "work=$1 here=$2",
         "cmd_run ask-on-message head 3 1 100",
       ].join("\n"),
-      [work]
+      [work, import.meta.dir]
     );
+  /** The run directories and records of the work directory's runs/, which a refused run adds
+   * none to. */
+  const made = (work: string) =>
+    existsSync(path.join(work, "runs")) ? readdirSync(path.join(work, "runs")).sort() : [];
 
   // Catches: a run that removes the live run of its name (cmd_run started from `rm -rf`), or sets
   // the exit handler that would stop and archive that run's directory.
@@ -1020,10 +1061,11 @@ describe("a run or live read of a name already taken", () => {
     const { work, dir, digest } = takenWork("runs/ask-on-message-head-3");
     const result = run(work);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain(
-      `skill-scenarios: run ask-on-message-head-3 could not be made at ${dir} (mkdir says why above); a run never replaces another`
+    expect(result.stderr).toBe(
+      `skill-scenarios: run ask-on-message-head-3 is already at ${dir}; a run never replaces another (a batch numbers its runs above each label's highest)\n`
     );
     expect(treeDigest(dir)).toBe(digest);
+    expect(made(work)).toEqual(["ask-on-message-head-3"]);
     expect(existsSync(path.join(work, "stopped"))).toBe(false);
   });
 
@@ -1034,11 +1076,27 @@ describe("a run or live read of a name already taken", () => {
     const result = run(work);
     expect(result.code).toBe(1);
     expect(result.stderr).toBe(
-      `skill-scenarios: run ask-on-message-head-3 is already archived at ${dir}; a run never replaces another (a batch numbers its runs above each label's highest)\n`
+      `skill-scenarios: run ask-on-message-head-3 is already at ${dir}; a run never replaces another (a batch numbers its runs above each label's highest)\n`
     );
     expect(treeDigest(dir)).toBe(digest);
-    expect(existsSync(path.join(work, "runs", "ask-on-message-head-3"))).toBe(false);
+    expect(made(work)).toEqual([]);
     expect(existsSync(path.join(work, "stopped"))).toBe(false);
+  });
+
+  // Catches: a name a run's record holds, live or archived, taken again, since a run's directory
+  // is its id and names nothing, so the record is where the name a batch numbers by is held.
+  test("a run whose name a recorded run holds is refused, naming that run's directory", () => {
+    for (const runs of ["runs", "archive/runs"]) {
+      const { work, dir, digest } = takenWork(`${runs}/0123456789ab`);
+      writeFileSync(`${dir}.json`, JSON.stringify({ name: "ask-on-message-head-3" }));
+      const result = run(work);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toBe(
+        `skill-scenarios: run ask-on-message-head-3 is already at ${dir}; a run never replaces another (a batch numbers its runs above each label's highest)\n`
+      );
+      expect(treeDigest(dir)).toBe(digest);
+      expect(made(work)).toEqual(runs === "runs" ? ["0123456789ab", "0123456789ab.json"] : []);
+    }
   });
 
   // Catches: a live read that removes the earlier live read of its label (it started from
@@ -1082,26 +1140,24 @@ describe("cmd_run and its label's services", () => {
           "fail",
           "on_exit",
           "scenario_case",
-          "askgate_case",
-          "reviewer_case",
-          "threads_case",
+          "run_named",
           "run_project",
           "label_services",
           "label_provenance",
           "cmd_run",
         ].map(fn),
-        "load_label() { P=$work/profiles/$1; co=/co/$1; }",
+        "load_label() { P=$work/profiles/$1; I=$P; co=/co/$1; }",
         "push_guard() { :; }",
         "require_namespace() { :; }",
         "scratch_before() { :; }",
         "stop_run() { :; }",
         'run_ask_on_message() { cp "$R/services-from" "$R/at-start" && printf \'%s\\n\' "$services_env" >"$R/services-env" && echo exit=0 >"$R/out.txt"; }',
-        "work=$1 tag=rig-test",
+        "work=$1 here=$2 tag=legion-00000000 worker_repo=fernbrook/widgets",
         "cmd_run ask-on-message base 1 1 100",
       ].join("\n"),
-      [work]
+      [work, import.meta.dir]
     );
-    return { work, run: path.join(work, "runs", "ask-on-message-base-1"), result };
+    return { work, run: namedRun(path.join(work, "runs"), "ask-on-message-base-1"), result };
   }
 
   // Catches: a run with no record of what its services came from, or one recorded only after its
@@ -1115,12 +1171,28 @@ describe("cmd_run and its label's services", () => {
       "services-from-head": "envoy-listener label /co/head sha256:00\n",
     });
     expect(result).toMatchObject({ code: 0, stderr: "" });
+    if (run === undefined) throw new Error("the run left no record of its name");
     expect(readFileSync(path.join(run, "at-start"), "utf8")).toBe(provenance);
     expect(readFileSync(path.join(run, "services-from"), "utf8")).toBe(provenance);
     expect(readFileSync(path.join(run, "built-from"), "utf8")).toBe("checkout /co/base\n");
     expect(readFileSync(path.join(run, "services-env"), "utf8")).toBe(
       `${path.join(work, "services", "env-base")}\n`
     );
+    // Catches: a run directory named for the run's scenario, case or label, which every path its
+    // agent reads is built on, and a run whose record of what it is is missing, wrong or late.
+    const id = path.basename(run);
+    expect(id).toMatch(/^[0-9a-f]{12}$/);
+    expect(JSON.parse(readFileSync(`${run}.json`, "utf8"))).toEqual({
+      run: id,
+      scenario: "ask-on-message",
+      case: "",
+      label: "base",
+      n: 1,
+      name: "ask-on-message-base-1",
+      batch: "legion-00000000-100",
+      ran: run,
+    });
+    expect(readdirSync(path.join(work, "runs")).sort()).toEqual([id, `${id}.json`]);
   });
 
   // Catches: a run started on a batch that brought up no services for its label, or wrote no
@@ -1132,12 +1204,13 @@ describe("cmd_run and its label's services", () => {
       { "services-from-base": "" },
     ];
     for (const services of cases) {
-      const { run, result } = started(services);
+      const { work, run, result } = started(services);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain(
         "skill-scenarios: a run needs its batch's services for label base"
       );
-      expect(existsSync(run)).toBe(false);
+      expect(run).toBeUndefined();
+      expect(existsSync(path.join(work, "runs"))).toBe(false);
     }
   });
 });
@@ -1164,13 +1237,9 @@ describe("push_guard", () => {
     writeFileSync(path.join(bin, "git"), git, { mode: 0o755 });
     const R = path.join(dir, "run");
     const result = bash(
-      [
-        fn("fail"),
-        fn("push_guard"),
-        fn("base_env"),
-        "R=$1 P=$2 profile=skills-test",
-        "base_env",
-      ].join("\n"),
+      [fn("fail"), fn("push_guard"), fn("base_env"), "R=$1 I=$2 profile=legion", "base_env"].join(
+        "\n"
+      ),
       [R, profileDir()],
       {
         PATH: callerPath ?? `${bin}:${childEnv.PATH}`,
@@ -1300,6 +1369,8 @@ describe("childEnv", () => {
             "fixture_head_commit",
             "fixture_implement",
             "fixture_workspace",
+            "role_identity",
+            "role_env",
             "fixture_checks",
             "fixture_body",
             "fixture_write",
@@ -1313,6 +1384,10 @@ describe("childEnv", () => {
             "world_author_name",
             "world_author_email",
             "world_login",
+            "world_implement_app",
+            "world_implement_app_id",
+            "world_review_app",
+            "world_review_app_id",
           ].map(assignment),
           "R=$1 worker_key=LWEVAL-1",
           "tester_proof_world 1 100",
@@ -1438,10 +1513,12 @@ describe("run_project", () => {
 // <run>/case.txt, and score.ts reads the name and the file and holds them to each other. All four
 // read it through scenario_case.
 describe("scenario_case", () => {
+  // scenario_case reads the rig's one scenario table (run-names.ts's SCENARIOS) through this
+  // directory's run-names.ts.
   const cases = (scenario: string, env: Record<string, string> = {}) =>
     bash(
-      `${fn("fail")}\n${fn("scenario_case")}\n${fn("askgate_case")}\n${fn("reviewer_case")}\n${fn("threads_case")}\nscenario_case "$1"`,
-      [scenario],
+      `${fn("fail")}\n${fn("scenario_case")}\nhere=$2\nscenario_case "$1"`,
+      [scenario, import.meta.dir],
       env
     );
 
@@ -1555,7 +1632,7 @@ describe("round_world and the worlds' own text findings", () => {
         fn("fail"),
         fn(world),
         fn("resolution_protection_routes"),
-        fn("blocked_at"),
+        fn("concluded_checks"),
         'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
         "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001; }",
         "fixture_body() { :; }",
@@ -1618,22 +1695,23 @@ describe("round_world and the worlds' own text findings", () => {
 // serves the role's own phase to a loop the daemon starts no phase for.
 describe("worker_boot", () => {
   /** The `gh` rig.sh's standins leaves in $R/bin: the stand-in behind a wrapper, as the pane's
-   * PATH reaches it, with the arguments it was given kept beside the run so a row can see what
-   * the boot ran it for. */
-  const recordingGh = (dir: string) =>
+   * PATH reaches it, naming the run `run` it records under as the bundle's banner does (no
+   * variable of the pane names it), with the arguments it was given kept beside the run so a row
+   * can see what the boot ran it for. */
+  const recordingGh = (dir: string, run = dir) =>
     [
       "#!/bin/sh",
       `printf '%s\\n' "$*" >>"${path.join(dir, "pane-gh-args")}"`,
-      `exec "${process.execPath}" "${GH_STANDIN}" gh "$@"`,
+      `GH_DATA_DIR='${run}' exec "${process.execPath}" "${GH_STANDIN}" gh "$@"`,
       "",
     ].join("\n");
 
   /** worker_boot for ROLE in PHASE, with every process it starts stubbed, boot_agent's launch of
    * the agent among them (its arguments kept in boot-agent-args), on a run whose world
-   * fixture_write wrote, and the boot's own result unjudged. `gh` writes the pane's own gh,
-   * `panePath` the PATH the pane file carries, which is where the boot looks for it, and
-   * `paneRun` the run that file records calls under: a row breaks one of the three to say what
-   * a run whose agents could reach no stand-in must leave behind. `before` is the role of an
+   * fixture_write wrote, and the boot's own result unjudged. `gh` writes the pane's own gh, and
+   * `panePath` the PATH the pane file carries, which is where the boot looks for it: a row breaks
+   * one of the two, or writes a gh that names no run, to say what a run whose agents could reach
+   * no stand-in must leave behind. `before` is the role of an
    * agent the run booted and ran before this one, whose output is the run's out.txt. Each process
    * started keeps the run's boot record as it stood then (booted-at-<process>), and each `bun`
    * the build of daemon-pane.go it was given (bun-builds). */
@@ -1644,7 +1722,6 @@ describe("worker_boot", () => {
       completed = "",
       gh = recordingGh,
       panePath = (dir: string) => `${path.join(dir, "bin")}:${childEnv.PATH}`,
-      paneRun = (dir: string) => dir,
       before = "",
     } = {}
   ) {
@@ -1660,13 +1737,11 @@ describe("worker_boot", () => {
     writeFileSync(path.join(dir, "bin", "gh"), gh(dir), { mode: 0o755 });
     // The pane the daemon would give, carrying the Envoy address a pane whose environment
     // configures none gets (daemon-pane.ts's DEFAULT_ENVOY_URL), the PATH it hands the agent
-    // (daemon-pane.ts's `path`, the run's own bin first), the run every call of that agent's is
-    // recorded under (base_env's SKILL_SCENARIO_RUN, which the daemon's pane keeps), and the
-    // batch's services file, carrying the listener it started: the two addresses the run's
-    // pane.env is built from.
+    // (daemon-pane.ts's `path`, the run's own bin first), and the batch's services file,
+    // carrying the listener it started: the two addresses the run's pane.env is built from.
     writeFileSync(
       path.join(dir, "worker.env"),
-      `ENVOY_URL=http://127.0.0.1:9020\nPI_NO_TITLE=1\nSKILL_SCENARIO_RUN=${paneRun(dir)}\nPATH=${panePath(dir)}\n`
+      `ENVOY_URL=http://127.0.0.1:9020\nPI_NO_TITLE=1\nPATH=${panePath(dir)}\n`
     );
     writeFileSync(
       path.join(dir, "services.env"),
@@ -1677,6 +1752,9 @@ describe("worker_boot", () => {
         fn("fail"),
         fn("build_dir"),
         fn("worker_boot"),
+        fn("role_identity"),
+        fn("role_env"),
+        fn("adopt_workspace"),
         fn("fixture_write"),
         fn("concluded_checks"),
         'start_process() { printf "%s\\n" "$*" >"$R/started-$1"; cp "$R/booted" "$R/booted-at-$1"; [ "$1" != daemon ] || echo "listening on http://127.0.0.1:4321" >"$R/logs/daemon.log"; }',
@@ -1689,10 +1767,11 @@ describe("worker_boot", () => {
         `R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=$3 worker_base=main booted='${before}' daemon_pid=''`,
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
-        "services_env=$R/services.env work=$R/work dispatch_port=1 profile=$R/p co=$R/c",
+        "services_env=$R/services.env work=$R/work tokens=$R/work/services/tokens dispatch_port=1 profile=$R/p co=$R/c",
         assignment("world_author_name"),
         assignment("world_author_email"),
         assignment("world_login"),
+        ...WORLD_APPS.map(assignment),
         "fixture_write '[]' '\"\"' '[]'",
         'worker_boot the-run "$4" "$5" "$6" "$7"',
       ].join("\n"),
@@ -1718,21 +1797,38 @@ describe("worker_boot", () => {
   }
 
   // Catches: a rig word in the identity a worker agent's own jj commits carry, which its push puts
-  // into the history every later role reads (`Rig Worker`, as the pane once named it): it is the
-  // world's author, in the pane file `launch` hands the agent and in the jj configuration it
-  // names, and the class of what the rig writes into a repository holds it to no word of the
-  // rig's ("what the rig writes into a run's world" below).
-  test("the agent's jj identity is the world's author, in the pane and in its jj configuration", () => {
+  // into the history every later role reads (`Rig Worker`, as the pane once named it): it is its
+  // role's App, as a pod's worker commits as, in the pane file `launch` hands the agent (jj's
+  // and git's variables both) and in the jj configuration it names, and the class of what the
+  // rig writes into a repository holds it to no word of the rig's ("what the rig writes into a
+  // run's world" below). Two roles of two Apps differ.
+  test("the agent's identity is its role's App, in the pane and in its jj configuration", () => {
     const { dir } = boot("implementer", "reviewing");
     const pane = readFileSync(path.join(dir, "pane.env"), "utf8").split("\n");
-    const identity = pane.filter((line) => /^JJ_(USER|EMAIL)=/.test(line));
+    const identity = pane.filter((line) =>
+      /^(JJ_(USER|EMAIL)|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL))=/.test(line)
+    );
+    const implementer = "widgets-implementer[bot]";
+    const implementerEmail = `318406215+${implementer}@users.noreply.github.com`;
     expect(identity).toEqual([
-      expect.stringMatching(/^JJ_USER=[A-Z][a-z]+ [A-Z][a-z]+$/),
-      expect.stringMatching(/^JJ_EMAIL=\S+@example\.invalid$/),
+      `JJ_USER=${implementer}`,
+      `JJ_EMAIL=${implementerEmail}`,
+      `GIT_AUTHOR_NAME=${implementer}`,
+      `GIT_AUTHOR_EMAIL=${implementerEmail}`,
+      `GIT_COMMITTER_NAME=${implementer}`,
+      `GIT_COMMITTER_EMAIL=${implementerEmail}`,
     ]);
     const config = readFileSync(path.join(dir, "jj.toml"), "utf8");
-    for (const line of identity) expect(config).toContain(`"${line.replace(/^JJ_\w+=/, "")}"`);
+    expect(config).toContain(`name = "${implementer}"`);
+    expect(config).toContain(`email = "${implementerEmail}"`);
     expect([...identity, config].filter((text) => /fixture|\brig\b/i.test(text))).toEqual([]);
+    const reviewer = readFileSync(path.join(boot("reviewer", "reviewing").dir, "pane.env"), "utf8")
+      .split("\n")
+      .filter((line) => /^JJ_(USER|EMAIL)=/.test(line));
+    expect(reviewer).toEqual([
+      "JJ_USER=widgets-reviewer[bot]",
+      "JJ_EMAIL=318406277+widgets-reviewer[bot]@users.noreply.github.com",
+    ]);
   });
 
   // Catches: the pane's own ENVOY_URL left in beside the batch's, which is one fact in two
@@ -1807,14 +1903,16 @@ describe("worker_boot", () => {
     expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(false);
   });
 
-  // The third way the opening line could say what is not so: a pane that names no run. The
-  // stand-in records under SKILL_SCENARIO_RUN, which it reads from the environment `launch`
-  // gives the agent and the boot hands it unchanged, so a pane file that lost the variable
-  // records no call of the agent's either, and leaves no record here.
-  test("a pane file that names no run opens no record, and the boot says so", () => {
-    const { dir, result } = bootResult("merger", "merging", { paneRun: () => "" });
+  // The third way the opening line could say what is not so: a gh that names no run. The
+  // stand-in records under the run its bundle's banner names (standins), which no variable of
+  // the pane carries, so a bundle that lost it records no call of the agent's either, and leaves
+  // no record here.
+  test("a gh that names no run opens no record, and the boot says so", () => {
+    const { dir, result } = bootResult("merger", "merging", {
+      gh: (run: string) => recordingGh(run, ""),
+    });
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain("gh-standin: SKILL_SCENARIO_RUN is unset");
+    expect(result.stderr).toContain("gh: GH_DATA_DIR is unset");
     expect(result.stderr).toContain(`skill-scenarios: worker_boot: the pane's gh (${dir}/bin/gh)`);
     expect(existsSync(path.join(dir, "calls.jsonl"))).toBe(false);
   });
@@ -2824,7 +2922,7 @@ describe("health", () => {
       expect(stdout).toContain(`health: ${rule}: 0 of 1 runs\n`);
     // No write of it left its own directory: a `>` inside a quoted sed script redirects nothing.
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 0 of 1 runs\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 0 of 1 runs. Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 1 runs\n"
     );
     expect(code).toBe(0);
   });
@@ -3245,7 +3343,7 @@ describe("health", () => {
     );
     expect(stdout).toContain("health: another run's write: 2 of 4 runs\n");
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-text-fixes-head-5 (/tmp/LWEVAL-1-review.json, /tmp/placeholder)\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-text-fixes-head-5 (/tmp/LWEVAL-1-review.json, /tmp/placeholder). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 4 runs\n"
     );
   });
 
@@ -3293,7 +3391,43 @@ describe("health", () => {
       "threads-closed-code-defect-head-11  healthy",
     ]);
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 2 of 3 runs: threads-closed-text-fixes-head-12 (/recorded/work/profiles/head/key/calls); threads-closed-code-defect-head-11 (/legion/tmp/LWEVAL-1-review.json, /legion/tmp/copy.json, /legion/tmp/a and 1 more)\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 2 of 3 runs: threads-closed-text-fixes-head-12 (/recorded/work/profiles/head/key/calls); threads-closed-code-defect-head-11 (/legion/tmp/LWEVAL-1-review.json, /legion/tmp/copy.json, /legion/tmp/a and 1 more). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 3 runs\n"
+    );
+    expect(code).toBe(0);
+  });
+
+  // The architect's measure of 2026-11-16 at 19e19657: `1 of 32 runs:
+  // reviewer-text-findings-text-only-head-5 (/tmp/go-build218583819)`, a path only that run's
+  // scratch-created.txt names, its time 04:46:00Z, six seconds after the run ended, in the
+  // machine's /tmp, none of which the run's namespace gave its agents.
+  // Catches: an entry only the scratch snapshot recorded named as a write of the run's, in the
+  // one kind the line had or in a kind of its own; and the other way: an entry a call of the run
+  // wrote, itself or a path under it, named as one that appeared by an unknown writer.
+  test("the line names what a run's calls wrote apart from what only appeared in the shared scratch while it ran", () => {
+    const appeared = worldRun("reviewer-text-findings-text-only-head-5", {
+      created: [["2026-11-16T04:46:00.000Z", "/tmp/go-build218583819"]],
+      steps: [{ tool: "bash", args: { command: "cat > /tmp/body.md <<'EOF'\nFixed.\nEOF" } }],
+    }).dir;
+    const wrote = worldRun("threads-closed-text-fixes-head-24", {
+      namespace: false,
+      before: [],
+      created: [
+        ["2026-11-14T00:00:01.000Z", "/tmp/LWEVAL-1-review.json"],
+        ["2026-11-14T00:00:02.000Z", "/tmp/lweval1"],
+        ["2026-11-14T00:00:03.000Z", "/tmp/go-build1"],
+      ],
+      steps: [
+        { tool: "write", args: { path: "/tmp/LWEVAL-1-review.json", content: "{}" } },
+        { tool: "bash", args: { command: "mkdir -p /tmp/lweval1/ws" } },
+      ],
+    }).dir;
+    const { code, stdout } = health(appeared, wrote);
+    expect([appeared, wrote].map((dir) => verdict(stdout, dir))).toEqual([
+      "reviewer-text-findings-text-only-head-5  healthy",
+      "threads-closed-text-fixes-head-24  healthy",
+    ]);
+    expect(stdout).toContain(
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-text-fixes-head-24 (/tmp/LWEVAL-1-review.json, /tmp/lweval1/ws, /tmp/lweval1). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 2 of 2 runs: reviewer-text-findings-text-only-head-5 (/tmp/go-build218583819); threads-closed-text-fixes-head-24 (/tmp/go-build1)\n"
     );
     expect(code).toBe(0);
   });
@@ -3321,7 +3455,7 @@ describe("health", () => {
     const { code, stdout } = health(dir);
     expect(verdict(stdout, dir)).toBe(`${name}  healthy`);
     expect(stdout).toContain(
-      `health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 1 runs: ${name} (${work}/profiles/head/key/calls)\n`
+      `health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 1 runs: ${name} (${work}/profiles/head/key/calls). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 1 runs\n`
     );
     expect(code).toBe(0);
   });
@@ -3362,7 +3496,7 @@ describe("health", () => {
     ]);
     expect(stdout).toContain("health: another run's write: 1 of 3 runs\n");
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 3 runs: threads-closed-text-fixes-head-14 (/legion/tmp/LWEVAL-1-review.json, /tmp/lweval1-body.md)\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 3 runs: threads-closed-text-fixes-head-14 (/legion/tmp/LWEVAL-1-review.json). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 1 of 3 runs: threads-closed-text-fixes-head-14 (/tmp/lweval1-body.md)\n"
     );
     expect(code).toBe(1);
   });
@@ -3386,7 +3520,7 @@ describe("health", () => {
     );
     expect(stdout).toContain("health: another run: 1 of 2 runs\n");
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-text-fixes-head-17 (/tmp/threads-closed-text-fixes-base-1/ws)\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-text-fixes-head-17 (/tmp/threads-closed-text-fixes-base-1/ws). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 2 runs\n"
     );
     expect(code).toBe(1);
   });
@@ -3473,6 +3607,42 @@ describe("health", () => {
     expect(stdout).not.toContain("model-gateway.example.invalid");
   });
 
+  // Catches: a read of the caller's own shell's environment, `/proc/$$/environ`, read as another
+  // process's. `$$`, `${$}` and `$BASHPID` name the shell that runs the command, as `/proc/self`
+  // names the caller, and the worker prompt both labels load teaches that read
+  // (packages/daemon/internal/prompts/go/worker-common.md: `export DISPATCH_URL="$(tr '\0' '\n' <
+  // /proc/$$/environ | sed -n 's/^DISPATCH_URL=//p')"`): two runs of the 2026-11-16 batch that
+  // looked their session id up that way were called unhealthy and replaced
+  // (reviewer-text-findings-text-only-base-3, threads-closed-text-fixes-head-1). And the other
+  // way: a variable or a glob that can name another process read as the caller's own.
+  test("a read of the caller's own shell's environment is no other process's, and a variable or a glob in its place still is", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const own = worldRun("threads-closed-text-fixes-head-21", {
+      steps: [
+        bash(
+          "export DISPATCH_URL=\"$(tr '\\0' '\\n' < /proc/$$/environ | sed -n 's/^DISPATCH_URL=//p')\""
+        ),
+        bash("tr '\\0' '\\n' < /proc/$BASHPID/environ | grep -c DISPATCH"),
+        bash(["tr '\\0' '\\n' < /proc/$", "{$}/environ | grep -c DISPATCH"].join("")),
+        bash(["cat /proc/$", "{BASHPID}/cmdline"].join("")),
+      ],
+    }).dir;
+    const variable = worldRun("threads-closed-text-fixes-head-22", {
+      steps: [bash("tr '\\0' '\\n' < /proc/$pid/environ | grep DISPATCH")],
+    }).dir;
+    const glob = worldRun("threads-closed-text-fixes-head-23", {
+      steps: [bash("cat /proc/*/environ | tr '\\0' '\\n' | grep DISPATCH")],
+    }).dir;
+    const runs = [own, variable, glob];
+    const { stdout } = health(...runs);
+    const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-text-fixes-head-21  healthy",
+      `threads-closed-text-fixes-head-22  unhealthy: another process: a bash call in ${session} reads /proc/$pid/environ, a process the run does not own`,
+      `threads-closed-text-fixes-head-23  unhealthy: another process: a bash call in ${session} reads /proc/*/environ, a process the run does not own`,
+    ]);
+  });
+
   // Catches: an eval cell that reaches a host off the run's world read as no reach at all. The
   // agents of these scenarios run eval cells (round 17's published through one), and a Python
   // `urllib.request.urlopen` or a JavaScript `fetch` of api.github.com reads the public pull
@@ -3514,6 +3684,46 @@ describe("health", () => {
     );
     expect(own).toBe("threads-closed-code-defect-head-8  healthy");
     expect(stdout).toContain("health: off-world network: 2 of 3 runs\n");
+  });
+
+  // The words in place of the process's number that the row of the caller's own shell (above the
+  // eval cell's) does not hold.
+  // Catches: `$PPID` read as the caller's own shell, though it is that shell's parent; a braced
+  // variable, a number, or a command substitution in either form (`$(…)`, `` `…` ``)
+  // read as the caller's own, or not read as a process's number at all, as a substitution was
+  // before 2026-11-16; the shell's own number with a digit after it (`$$0`) read as the shell's
+  // own; a read of another process after one of the shell's own in the same call let through; and
+  // `/proc/self` no longer read as the caller's own.
+  test("a read of the shell's parent, a braced variable, a number or a substitution in place of the process is another process's; /proc/self is the caller's own", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const braced = ["/proc/$", "{ppid}/environ"].join("");
+    const steps: Record<string, string> = {
+      "threads-closed-code-defect-head-21":
+        "tr '\\0' '\\n' < /proc/$$/environ | grep -c DISPATCH; tr '\\0' '\\n' < /proc/$PPID/environ",
+      "threads-closed-code-defect-head-22": `ppid=$(ps -o ppid= $$); cat ${braced}`,
+      "threads-closed-code-defect-head-23": "tr '\\0' ' ' < /proc/4242/cmdline",
+      "threads-closed-code-defect-head-24": "tr '\\0' '\\n' < /proc/$(pgrep bun)/environ",
+      "threads-closed-code-defect-head-25": "cat /proc/`pgrep -n bun`/cmdline",
+      "threads-closed-code-defect-head-26": "cat /proc/$$0/environ",
+      "threads-closed-code-defect-head-27":
+        "tr '\\0' '\\n' < /proc/self/environ | grep -c DISPATCH; cat /proc/thread-self/cmdline",
+    };
+    const runs = Object.entries(steps).map(
+      ([name, command]) => worldRun(name, { steps: [bash(command)] }).dir
+    );
+    const { stdout } = health(...runs);
+    const read = (name: string, target: string) =>
+      `${name}  unhealthy: another process: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl reads ${target}, a process the run does not own`;
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      read("threads-closed-code-defect-head-21", "/proc/$PPID/environ"),
+      read("threads-closed-code-defect-head-22", braced),
+      read("threads-closed-code-defect-head-23", "/proc/4242/cmdline"),
+      read("threads-closed-code-defect-head-24", "/proc/$(pgrep bun)/environ"),
+      read("threads-closed-code-defect-head-25", "/proc/`pgrep -n bun`/cmdline"),
+      read("threads-closed-code-defect-head-26", "/proc/$$0/environ"),
+      "threads-closed-code-defect-head-27  healthy",
+    ]);
+    expect(stdout).toContain("health: another process: 6 of 7 runs\n");
   });
 
   // Catches: a host a bash command reaches with no URL's scheme read as no host at all: a git
@@ -3864,13 +4074,13 @@ describe("fixture_write", () => {
     expect(result).toMatchObject({ code: 0, stderr: "" });
     return (...args: string[]) =>
       spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
-        env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+        env: { ...childEnv, GH_DATA_DIR: dir },
       });
   }
 
   // The two reads of skill://legion-worker/references/merge-gate.md, each with the jq that rule
-  // writes: an unprotected base answers an empty list of rules and a branch whose required
-  // checks are none, so both print nothing and exit 0. A 404 at either is a refused read, which
+  // writes: every base requires the checks the head reports (`test`, `lint`), which the branch's
+  // protection read names, and its rulesets name none. A 404 at either is a refused read, which
   // the rule has the reviewer report to the architect and never guess around.
   test("the world answers the base branch's rulesets and its protection, as GitHub does", () => {
     const gh = world();
@@ -3888,26 +4098,45 @@ describe("fixture_write", () => {
       "--jq",
       ".protection.required_status_checks.checks[].context"
     );
-    expect([branch.exitCode, branch.stdout.toString()]).toEqual([0, ""]);
-    // And the branch read answers the branch itself, as GitHub answers an unprotected one.
+    expect([branch.exitCode, branch.stdout.toString()]).toEqual([0, "test\nlint\n"]);
+    // And the branch read answers the branch itself, as GitHub answers a protected one.
     const read = gh("api", "repos/example/widgets/branches/main");
     expect(JSON.parse(read.stdout.toString())).toMatchObject({
       name: "main",
-      protected: false,
-      protection: { enabled: false, required_status_checks: { checks: [] } },
+      protected: true,
+      protection: {
+        enabled: true,
+        required_status_checks: {
+          enforcement_level: "non_admins",
+          contexts: ["test", "lint"],
+          checks: [
+            { context: "test", app_id: null },
+            { context: "lint", app_id: null },
+          ],
+        },
+      },
     });
   });
 
   // Catches: the protection endpoint answered from the branch route, whose regex matches that
-  // path too. `…/branches/main/protection` is GitHub's own protection read, and GitHub answers
-  // a branch nothing protects 404 `Branch not protected` there; the branch object and a 200
-  // tell a reviewer this base's protection in a body that answers another call, and the rule
-  // has a refused read reported to the architect rather than guessed around.
-  test("the world refuses the base branch's protection endpoint, as GitHub refuses an unprotected branch's", () => {
-    const refused = world()("api", "repos/example/widgets/branches/main/protection");
-    expect(refused.exitCode).toBe(1);
-    expect(refused.stdout.toString()).toBe("");
-    expect(refused.stderr.toString()).toBe("gh: Branch not protected (HTTP 404)\n");
+  // path too. `…/branches/main/protection` is GitHub's own protection read, which answers the
+  // checks the base requires; the branch object there tells a reviewer this base's protection in
+  // a body that answers another call.
+  test("the world answers the base branch's protection endpoint with the checks it requires", () => {
+    const read = world()("api", "repos/example/widgets/branches/main/protection");
+    expect(read.exitCode).toBe(0);
+    expect(read.stderr.toString()).toBe("");
+    expect(JSON.parse(read.stdout.toString())).toMatchObject({
+      required_status_checks: {
+        strict: false,
+        contexts: ["test", "lint"],
+        checks: [
+          { context: "test", app_id: null },
+          { context: "lint", app_id: null },
+        ],
+      },
+      required_conversation_resolution: { enabled: false },
+    });
   });
 
   test("the world answers a listing of the pull requests open on its branch", () => {
@@ -3971,6 +4200,8 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         ...[
           "fixture_open",
           "fixture_git",
+          "role_identity",
+          "role_env",
           "fixture_docs_before",
           "fixture_first_commit",
           "fixture_round_files",
@@ -3982,7 +4213,6 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
           "fixture_write",
           "concluded_checks",
           "resolution_protection_routes",
-          "blocked_at",
           "round_world",
           world,
         ].map(fn),
@@ -3992,6 +4222,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         assignment("world_author_name"),
         assignment("world_author_email"),
         assignment("world_login"),
+        ...WORLD_APPS.map(assignment),
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
         `${world} 1 100 "$2"`,
       ].join("\n"),
@@ -4004,7 +4235,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
    * stdout and its stderr, which is where a refusal's own text goes. */
   function call(dir: string, ...args: string[]) {
     const made = spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
-      env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      env: { ...childEnv, GH_DATA_DIR: dir },
     });
     return {
       code: made.exitCode,
@@ -4019,14 +4250,15 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   }
   /** A thread resolved as review-threads.md resolves one, reading the mutation's own answer
    * back: the call every world's `resolveReviewThread` route answers. */
-  const RESOLVE = [
+  const resolve = (thread: string) => [
     "api",
     "graphql",
     "-f",
-    'query=mutation { resolveReviewThread(input: {threadId: "PRRT_kwDOfix001"}) { thread { isResolved } } }',
+    `query=mutation { resolveReviewThread(input: {threadId: "${thread}"}) { thread { isResolved } } }`,
     "--jq",
     ".data.resolveReviewThread.thread.isResolved",
   ];
+  const RESOLVE = resolve("PRRT_kwDOfix001");
   /** The pull request's review threads listed as review-threads.md lists them, reading `jq` out
    * of the answer: the call the world's `reviewThreads` route answers. */
   const threadQuery = (jq: string) => [
@@ -4050,11 +4282,14 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       "api",
       "--method",
       "POST",
-      "repos/example/widgets/pulls/1001/comments/5001/replies",
+      // The first comment of the approval's first thread (rig.sh's fixture_write numbers the
+      // comments of the world's own threads from 7001); 5001 is the approval, no comment.
+      "repos/example/widgets/pulls/1001/comments/7001/replies",
       "-f",
       "body=fixed",
     ];
-    expect(answer(dir, ...reply, "--jq", ".id")).toEqual({ code: 0, out: "7001" });
+    // The first comment the run makes.
+    expect(answer(dir, ...reply, "--jq", ".id")).toEqual({ code: 0, out: "9001" });
     // The submission's route takes the verdict's `--method POST` on either side of the path, and
     // the read of the reviews already there takes neither: one route for the POST, one for the
     // GET, and the POST's first. Each create carries its verdict, so neither is a pending review,
@@ -4081,7 +4316,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
 
   test("the review round's world resolves a thread and lists the bot's, each by its own route", () => {
     const dir = built("review_world");
-    expect(answer(dir, ...RESOLVE)).toEqual({ code: 0, out: "true" });
+    // A thread the review round's world has not got is GitHub's NOT_FOUND, and its own the bot's.
+    expect(answer(dir, ...RESOLVE)).toEqual({ code: 1, out: "null" });
+    expect(answer(dir, ...resolve("PRRT_kwDOrig0001"))).toEqual({ code: 0, out: "true" });
     expect(answer(dir, ...threadQuery(IDS))).toEqual({ code: 0, out: "PRRT_kwDOrig0001" });
   });
 
@@ -4091,10 +4328,10 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   // every check green and an approval standing is one whose base requires conversation
   // resolution while a thread is open, so a world serving that state must answer that rule at
   // both reads the merge gate makes of its base — the branch's rules and the branch itself, and
-  // the protection endpoint — with no required check, so the gate's reads of its checks print
-  // nothing and exit 0. A world whose head is `CLEAN` keeps the unprotected base. Every head's
-  // checks are concluded: `BLOCKED` comes from the threads, not from CI.
-  test("a BLOCKED head's base requires conversation resolution, every check green, and a CLEAN head's base is unprotected", () => {
+  // the protection endpoint. Every base requires the checks the head reports, `test` and `lint`,
+  // which the protection read prints and the rulesets read does not. Every head's checks are
+  // concluded: `BLOCKED` comes from the threads, not from CI.
+  test("a BLOCKED head's base requires conversation resolution, every check green, and a CLEAN head's base requires only its checks", () => {
     for (const [world, guard, blocked] of [
       ["review_world", "", true],
       ["review_world", "dropped", true],
@@ -4165,11 +4402,11 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       ]).toEqual([
         world,
         guard,
-        { code: 0, out: String(blocked) },
+        { code: 0, out: "true" },
         { code: 0, out: blocked ? "true" : "null" },
-        blocked ? { code: 0, out: "true" } : { code: 1, out: "" },
         { code: 0, out: String(blocked) },
-        { code: 0, out: "" },
+        { code: 0, out: String(blocked) },
+        { code: 0, out: "test\nlint" },
         { code: 0, out: "" },
       ]);
     }
@@ -4620,6 +4857,8 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         ...[
           "fixture_open",
           "fixture_git",
+          "role_identity",
+          "role_env",
           "fixture_docs_before",
           "fixture_first_commit",
           "fixture_round_files",
@@ -4631,7 +4870,6 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
           "fixture_write",
           "concluded_checks",
           "resolution_protection_routes",
-          "blocked_at",
           "round_world",
           world,
         ].map(fn),
@@ -4641,6 +4879,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         assignment("world_author_name"),
         assignment("world_author_email"),
         assignment("world_login"),
+        ...WORLD_APPS.map(assignment),
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
         `${world} 1 100 "$2"`,
       ].join("\n"),
@@ -4658,7 +4897,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
    * one JSON value read as that value written compactly, whatever indentation jq gave it. */
   function gh(dir: string, ...args: string[]) {
     const made = spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
-      env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      env: { ...childEnv, GH_DATA_DIR: dir },
     });
     return {
       code: made.exitCode,
@@ -4670,7 +4909,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     (JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")) as { head: string }).head;
   const REPO = "repos/example/widgets";
   /** The worlds whose base requires conversation resolution and whose head GitHub holds
-   * `BLOCKED` (rig.sh's resolution_protection_routes and blocked_at). */
+   * `BLOCKED` while their threads are open (rig.sh's resolution_protection_routes). */
   const PROTECTED: readonly WorldName[] = [
     "review_world",
     "review_world dropped",
@@ -4725,8 +4964,13 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     },
     "GET repos/{owner}/{repo}/pulls/{number}/reviews": {
       argv: () => ["api", "--paginate", `${REPO}/pulls/1001/reviews`, "--jq", "[.[] | .id] | @csv"],
+      // The approval in an approved world, and the bot's own COMMENTED review in a review
+      // round's world, which its thread came in.
       answers: (got, world) =>
-        expect(got).toMatchObject({ code: 0, out: approved(world) ? "5001" : "" }),
+        expect(got).toMatchObject({
+          code: 0,
+          out: approved(world) ? "5001" : world.startsWith("review_world") ? "4001" : "",
+        }),
     },
     "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}": {
       argv: () => ["api", `${REPO}/pulls/1001/reviews/5001`, "--jq", ".state"],
@@ -4738,15 +4982,41 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         ),
     },
     "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": {
-      argv: () => ["api", `${REPO}/pulls/1001/reviews/5001/comments`],
+      argv: () => ["api", `${REPO}/pulls/1001/reviews/5001/comments`, "--jq", "[.[].id]"],
       answers: (got, world) =>
         expect(got).toMatchObject(
-          approved(world) ? { code: 0, out: "[]" } : { code: 1, err: "gh: Not Found (HTTP 404)\n" }
+          world === "approved_world"
+            ? { code: 0, out: "[7001,7002]" }
+            : world === "approved_world dropped"
+              ? { code: 0, out: "[7001]" }
+              : { code: 1, err: "gh: Not Found (HTTP 404)\n" }
         ),
     },
     "GET repos/{owner}/{repo}/pulls/{number}/comments": {
-      argv: () => ["api", `${REPO}/pulls/1001/comments`],
-      answers: (got) => expect(got).toMatchObject({ code: 0, out: "[]" }),
+      argv: () => ["api", `${REPO}/pulls/1001/comments`, "--jq", "[.[].id]"],
+      answers: (got, world) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out:
+            world === "tester_proof_world"
+              ? "[]"
+              : world === "approved_world"
+                ? "[7001,7002]"
+                : "[7001]",
+        }),
+    },
+    // A file's contents at a commit, and at the default branch when the read names no ref (the
+    // tester's cross-check found a reviewer reading the workflow so, with `--jq .content`).
+    "GET repos/{owner}/{repo}/contents/{path+}": {
+      argv: (head) => [
+        "api",
+        `${REPO}/contents/greet.ts?ref=${head}`,
+        "-H",
+        "Accept: application/vnd.github.raw",
+      ],
+      also: [["api", `${REPO}/contents/greet.ts`, "--jq", ".content"]],
+      answers: (got) =>
+        expect(got).toMatchObject({ code: 0, out: "export const greet = 1;", err: "" }),
     },
     "GET repos/{owner}/{repo}/issues/{number}/comments": {
       argv: () => ["api", `${REPO}/issues/1001/comments`],
@@ -4800,19 +5070,11 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         ".required_conversation_resolution.enabled",
       ],
       answers: (got, world) =>
-        expect(got).toMatchObject(
-          PROTECTED.includes(world)
-            ? { code: 0, out: "true" }
-            : { code: 1, out: "", err: "gh: Branch not protected (HTTP 404)\n" }
-        ),
+        expect(got).toMatchObject({ code: 0, out: String(PROTECTED.includes(world)) }),
     },
     "GET repos/{owner}/{repo}/branches/{branch+}": {
       argv: () => ["api", `${REPO}/branches/main`, "--jq", "[.name, .protected]"],
-      answers: (got, world) =>
-        expect(got).toMatchObject({
-          code: 0,
-          out: JSON.stringify(["main", PROTECTED.includes(world)]),
-        }),
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: JSON.stringify(["main", true]) }),
     },
     "GET repos/{owner}/{repo}/compare/{basehead+}": {
       argv: () => ["api", `${REPO}/compare/main...legion/LWEVAL-1`, "--jq", ".status"],
@@ -5255,15 +5517,39 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       gh(dir, "api", "--method", "POST", `${REPO}/pulls/1001/reviews`, "--input", review).code
     ).toBe(0);
     const listed = [".[] | [.pull_request_review_id, .path, .line, .body, .commit_id]"];
-    expect(gh(dir, "api", `${REPO}/pulls/1001/comments`, "--jq", ...listed).out).toBe(
-      JSON.stringify([6001, "greet.ts", 1, "a line note", head])
+    // The pull request's review comments: the bot's, which the world seeded in its own review
+    // 4001, then the run's.
+    expect(
+      gh(
+        dir,
+        "api",
+        `${REPO}/pulls/1001/comments`,
+        "--jq",
+        "[.[] | [.pull_request_review_id, .path, .line, .body, .commit_id]]"
+      ).out
+    ).toBe(
+      JSON.stringify([
+        [
+          4001,
+          "greet.test.ts",
+          4,
+          "greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers.",
+          head,
+        ],
+        [6001, "greet.ts", 1, "a line note", head],
+      ])
     );
     expect(gh(dir, "api", `${REPO}/pulls/1001/reviews/6001/comments`, "--jq", ...listed).out).toBe(
       JSON.stringify([6001, "greet.ts", 1, "a line note", head])
     );
     expect(
       gh(dir, "api", `${REPO}/pulls/1001/reviews`, "--jq", "[.[] | [.id, .state, .body]]").out
-    ).toBe(JSON.stringify([[6001, "COMMENTED", "one note"]]));
+    ).toBe(
+      JSON.stringify([
+        [4001, "COMMENTED", ""],
+        [6001, "COMMENTED", "one note"],
+      ])
+    );
   });
 
   // A call outside the routes the world answers stays the refusal it has always been, recorded
@@ -5330,6 +5616,8 @@ describe("the world answers every gh call the census found refused", () => {
         ...[
           "fixture_open",
           "fixture_git",
+          "role_identity",
+          "role_env",
           "fixture_docs_before",
           "fixture_first_commit",
           "fixture_round_files",
@@ -5341,7 +5629,6 @@ describe("the world answers every gh call the census found refused", () => {
           "fixture_write",
           "concluded_checks",
           "resolution_protection_routes",
-          "blocked_at",
           "round_world",
           world,
         ].map(fn),
@@ -5351,6 +5638,7 @@ describe("the world answers every gh call the census found refused", () => {
         assignment("world_author_name"),
         assignment("world_author_email"),
         assignment("world_login"),
+        ...WORLD_APPS.map(assignment),
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
         `${world} 1 100 "$2"`,
       ].join("\n"),
@@ -5361,7 +5649,7 @@ describe("the world answers every gh call the census found refused", () => {
   }
   function gh(dir: string, args: string[]) {
     const made = spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
-      env: { ...childEnv, SKILL_SCENARIO_RUN: dir },
+      env: { ...childEnv, GH_DATA_DIR: dir },
     });
     return {
       code: made.exitCode,
@@ -5472,8 +5760,11 @@ describe("the world answers every gh call the census found refused", () => {
 // operator's and no text of the rig's.
 describe("what the rig writes into a run's world", () => {
   /** The rig's own vocabulary, which names the measurement and nothing a repository of the
-   * world would hold (the architect's ruling of round 15, item b). */
+   * world would hold (the architect's ruling of round 15, item b); and the words run-names.ts
+   * derives from the rig's scenario table and the label names, with the names the rig gave its
+   * world (REMOVED_NAMES), which the ruling of 2026-11-16 took out of everything an agent reads. */
   const RIG_WORDS = /scenario|premise|there to find|fixture|\bthe run\b|\brig\b/i;
+  const VOCABULARY = vocabulary(["head", "base"]);
   /** jj's own record of each commit of the issue workspace: author, committer and message. */
   const JJ_COMMITS =
     'author.name() ++ " <" ++ author.email() ++ ">\\n" ++ committer.name() ++ " <" ++ committer.email() ++ ">\\n" ++ description ++ "\\n"';
@@ -5539,6 +5830,7 @@ describe("what the rig writes into a run's world", () => {
       "world_author_name",
       "world_author_email",
       "world_login",
+      ...WORLD_APPS,
     ];
     const result = bash(
       [
@@ -5553,18 +5845,19 @@ describe("what the rig writes into a run's world", () => {
           "fixture_implement",
           "fixture_test_handoff",
           "fixture_workspace",
+          "role_identity",
+          "role_env",
           "fixture_checks",
           "fixture_body",
           "fixture_write",
           "concluded_checks",
           "resolution_protection_routes",
-          "blocked_at",
           "round_world",
           world,
         ].map(fn),
         definition("fixture_cli"),
         ...[...values, "text_finding_doc_line", "text_finding_trigger"].map(assignment),
-        "R=$1 worker_key=LWEVAL-1",
+        `R=$1 worker_key=${WORLD_PROJECT}-1`,
         `${world} 1 100 "$2"`,
       ].join("\n"),
       [dir, guard]
@@ -5655,11 +5948,15 @@ describe("what the rig writes into a run's world", () => {
         expect([where, text]).toEqual([where, expect.stringMatching(/@example\.invalid>/)]);
     const words = [...read].flatMap(([where, text]) => {
       const word = RIG_WORDS.exec(text);
-      return word === null
-        ? []
-        : [
-            `${where}: "${word[0]}" in "${text.slice(Math.max(0, word.index - 40), word.index + 40)}"`,
-          ];
+      const derived = textWords(text, VOCABULARY);
+      return [
+        ...(word === null
+          ? []
+          : [
+              `${where}: "${word[0]}" in "${text.slice(Math.max(0, word.index - 40), word.index + 40)}"`,
+            ]),
+        ...(derived === undefined ? [] : [`${where}: "${derived}" (the derived vocabulary)`]),
+      ];
     });
     expect(words).toEqual([]);
   });
@@ -5891,9 +6188,12 @@ echo done
 `,
       { mode: 0o755 }
     );
+    // Run from the label's own temporary directory, with the label for both P and I: an install
+    // path the call gets wrong lands there, never in the checkout the suite runs from (an earlier
+    // argument order wrote packages/pi-legion/skills-s1).
     const run = () =>
       bash(
-        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ninstall_superpowers "$1" skills-s1 omp@pin`,
+        `${fn("fail")}\n${fn("pinned_omp")}\n${fn("install_superpowers")}\nsuperpowers_skills=(writing-plans brainstorming)\ncd "$1"\ninstall_superpowers "$1" "$1" legion omp@pin`,
         [label],
         { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_SUPERPOWERS: src, USER: "rig" }
       );
@@ -5905,7 +6205,7 @@ echo done
   test("copies both skills into the profile, probes with no Envoy, and marks the label", () => {
     const { bin, label, run } = setup("# Skill writing-plans\n\nbody");
     expect(run()).toMatchObject({ code: 0, stderr: "" });
-    const skills = path.join(label, "home/.omp/profiles/skills-s1/agent/skills");
+    const skills = path.join(label, "home/.omp/profiles/legion/agent/skills");
     expect(readFileSync(path.join(skills, "brainstorming/SKILL.md"), "utf8")).toContain(
       "# Skill brainstorming"
     );
@@ -5913,7 +6213,7 @@ echo done
     expect(existsSync(path.join(label, "superpowers"))).toBe(true);
     const env = readFileSync(path.join(bin, "env.txt"), "utf8");
     expect(env).toContain("ENVOY_URL=http://127.0.0.1:1\n");
-    expect(env).toContain("OMP_PROFILE=skills-s1\n");
+    expect(env).toContain("OMP_PROFILE=legion\n");
     expect(env).toContain(`HOME=${label}/home\n`);
     expect(readFileSync(path.join(label, "built-from"), "utf8")).toContain(
       "superpowers-skill writing-plans "
@@ -6403,8 +6703,13 @@ sleep() { command sleep 0.05; }`;
     env?: Record<string, string>;
     /** The pane's PATH; the stand-ins' and the caller's by default. */
     panePath?: string;
-    /** Lines the pane file carries after its PATH and SKILL_SCENARIO_RUN. */
+    /** Lines the pane file carries after its PATH and HOME. */
     pane?: string[];
+    /** Whether the run gets rig.sh's stand-ins in $R/bin (standins) before its launch. */
+    standins?: boolean;
+    /** Files of the run's directory, each at its path under the run, written over launched's own
+     * (prompt.txt) before the launch: system-args, bin/gh. */
+    files?: Record<string, string>;
     /** Directories ahead of the stand-ins on the caller's PATH. */
     callerPath?: string[];
     /** The rig's own directory (`here`); this one by default. */
@@ -6413,9 +6718,21 @@ sleep() { command sleep 0.05; }`;
      * `launch`, the run's own sessions/ its session directory. */
     boot?: string;
   }
-  /** A work directory holding the run `name` under runs/, with the run's prompt and pane file,
-   * another live run and an archived one, each with a file of its own, and each label's profile
-   * naming its checkout; `agent` is the body of the shell script that stands in for omp. */
+  /** The run directory a row's run `name` is made at: <work>/runs/<id>, an id of no meaning as
+   * rig.sh's cmd_run gives one (here the name's digest, so a row can name it before the run). */
+  const runDirOf = (work: string, name: string) =>
+    path.join(work, "runs", new Bun.CryptoHasher("sha256").update(name).digest("hex").slice(0, 12));
+  /** Where a label's profile is installed in a row's work directory (rig.sh's cmd_profile). */
+  const installOf = (work: string, label: string) =>
+    path.join(
+      work,
+      "installs",
+      new Bun.CryptoHasher("sha256").update(label).digest("hex").slice(0, 12)
+    );
+  /** A work directory holding the run `name` at runDirOf, with its record beside it when the name
+   * is one a run's record holds, the run's prompt and pane file, another live run and an archived
+   * one, each with a file of its own, each label's profile naming its checkout and its install;
+   * `agent` is the body of the shell script that stands in for omp. */
   function launched(
     work: string,
     name: string,
@@ -6423,21 +6740,40 @@ sleep() { command sleep 0.05; }`;
     args: string[] = [],
     options: Launch = {}
   ) {
-    const run = path.join(work, "runs", name);
+    const run = runDirOf(work, name);
     const bin = path.join(work, "bin");
     const label = options.label ?? "head";
     const checkouts = options.checkouts ?? { head: `${work}-checkout` };
     for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir), { recursive: true });
-    writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
+    const identity = runIdentity(path.join("/", name));
+    if (typeof identity !== "string")
+      writeFileSync(
+        `${run}.json`,
+        JSON.stringify({
+          run: path.basename(run),
+          scenario: identity.scenario,
+          case: identity.case,
+          label: identity.label,
+          n: identity.n,
+          name,
+          batch: "t-100",
+          ran: run,
+        })
+      );
+    writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on WID-2.\n");
     writeFileSync(
       path.join(run, "pane.env"),
       [
         `PATH=${options.panePath ?? `${bin}:${process.env.PATH ?? ""}`}`,
-        `SKILL_SCENARIO_RUN=${run}`,
+        `HOME=${run}/home`,
         ...(options.pane ?? []),
         "",
       ].join("\n")
     );
+    for (const [file, text] of Object.entries(options.files ?? {})) {
+      mkdirSync(path.dirname(path.join(run, file)), { recursive: true });
+      writeFileSync(path.join(run, file), text);
+    }
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
     writeFileSync(path.join(run, "daemon.log"), '{"at":"t","opened":"daemon.log"}\n');
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
@@ -6448,17 +6784,22 @@ sleep() { command sleep 0.05; }`;
       { mode: 0o755 }
     );
     for (const [dir, file] of [
-      [path.join(work, "runs", "threads-closed-text-fixes-head-9"), "pointer"],
-      [path.join(work, "archive", "runs", "threads-closed-text-fixes-base-1"), "pointer"],
+      [runDirOf(work, "threads-closed-text-fixes-head-9"), "pointer"],
+      [path.join(work, "archive", "runs", "0a0b0c0d0e0f"), "pointer"],
     ] as const) {
       mkdirSync(dir, { recursive: true });
       writeFileSync(path.join(dir, file), `${dir}\n`);
     }
-    mkdirSync(path.join(work, "services"), { recursive: true });
+    mkdirSync(path.join(work, "services", "tokens"), { recursive: true });
     for (const [one, checkout] of Object.entries(checkouts)) {
       mkdirSync(path.join(work, "profiles", one), { recursive: true });
       mkdirSync(checkout, { recursive: true });
+      mkdirSync(installOf(work, one), { recursive: true });
       writeFileSync(path.join(work, "profiles", one, "checkout"), `${checkout}\n`);
+      writeFileSync(
+        path.join(work, "profiles", one, "install"),
+        `${path.basename(installOf(work, one))}\n`
+      );
     }
     const result = bash(
       [
@@ -6470,7 +6811,8 @@ sleep() { command sleep 0.05; }`;
         assignment("namespace_path"),
         quotedAssignment("private_world"),
         standIns,
-        `R=$1 work=$2 tag=t pin=omp@pin P=$work/profiles/${label} co=$3 here=$4`,
+        `R=$1 work=$2 tag=t pin=omp@pin P=$work/profiles/${label} I=${installOf(work, label)} co=$3 here=$4`,
+        ...(options.standins === true ? [fn("standins"), "standins"] : []),
         ...(options.boot === undefined
           ? [`launch ${name} "\${@:5}"`]
           : [
@@ -6504,7 +6846,7 @@ sleep() { command sleep 0.05; }`;
       const { result, out } = launched(work, "spec-writing-s1-1", 'echo "$0 $*"', ["--continue"]);
       expect(result.code).toBe(0);
       expect(out).toBe(
-        `${work}/bin/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${work}/runs/spec-writing-s1-1/sessions\nexit=0\n`
+        `${work}/bin/pin/bin/omp -p The person answered your asks on WID-2. --continue --session-dir ${runDirOf(work, "spec-writing-s1-1")}/sessions\nexit=0\n`
       );
     }
   );
@@ -6512,7 +6854,7 @@ sleep() { command sleep 0.05; }`;
   /** The line the plugin prints when the Envoy listener refuses the claim of a session that holds
    * no consumer, after its registration (round 23's, at 2926519c). */
   const ENVOY_REFUSAL =
-    "claim boot failed at claimRole after claims/register registered legion-skills1-lweval-1-reviewer with the daemon at http://127.0.0.1:4321; exiting so the daemon launches it again: the session asked for no session consumer: a session receives only what its own consumer holds, so register with delivery.consumer true";
+    "claim boot failed at claimRole after claims/register registered legion-fernbrookwidgets0123456789ab-wid-1-reviewer with the daemon at http://127.0.0.1:4321; exiting so the daemon launches it again: the session asked for no session consumer: a session receives only what its own consumer holds, so register with delivery.consumer true";
   /** An omp that stands in for a reviewer phase worker and its plugin, each launch of it doing
    * what its line of `$R/plan` names: `envoy`, registered with the daemon stand-in and refused by
    * the listener at its claim (ENVOY_REFUSAL); `register`, refused 401 by the stand-in's
@@ -6521,7 +6863,7 @@ sleep() { command sleep 0.05; }`;
    * $R/daemon.log, as the stand-in does, and its transcript under the session directory it is
    * given, and counts its launches in $R/attempts. */
   const BOOTING = [
-    "R=$SKILL_SCENARIO_RUN",
+    'R=$(dirname "$HOME")',
     'n=$(( $(cat "$R/attempts" 2>/dev/null || echo 0) + 1 ))',
     'echo "$n" >"$R/attempts"',
     'for word; do [ "$previous" = --session-dir ] && sessions=$word; previous=$word; done',
@@ -6545,7 +6887,7 @@ sleep() { command sleep 0.05; }`;
    * for it then, which no request of the stand-in agent reaches. */
   function booted(name: string, plan: string[]) {
     const work = freshDir("boot-agent");
-    const run = path.join(work, "runs", name);
+    const run = runDirOf(work, name);
     const checkout = `${work}-checkout`;
     const core = path.join("packages", "pi-shared", "src", "legion-claim-core.ts");
     mkdirSync(path.dirname(path.join(checkout, core)), { recursive: true });
@@ -6564,13 +6906,14 @@ sleep() { command sleep 0.05; }`;
     return {
       result,
       run,
+      id: path.basename(run),
       first: path.join(run, "boot-1", "reviewer"),
       attempts: readFileSync(path.join(run, "attempts"), "utf8").trim(),
       record: readFileSync(path.join(run, "booted"), "utf8"),
       verdict: health.stdout
         .toString()
         .split("\n")
-        .find((line) => line.startsWith(`${name}  `)),
+        .find((line) => line.startsWith(`${path.basename(run)}  `)),
     };
   }
 
@@ -6587,14 +6930,20 @@ sleep() { command sleep 0.05; }`;
         ["register", "claims/register registration failed (401): Invalid boot token"],
       ] as const) {
         const name = "reviewer-text-findings-text-only-head-1";
-        const { result, run, first, attempts, record, verdict } = booted(name, [refused, "works"]);
+        const { result, run, id, first, attempts, record, verdict } = booted(name, [
+          refused,
+          "works",
+        ]);
         expect(result).toMatchObject({ code: 0, stderr: "" });
         expect(result.stdout).toContain(
-          `skill-scenarios: ${name}: the reviewer's claim boot was refused before its first turn (`
+          `skill-scenarios: ${id}: the reviewer's claim boot was refused before its first turn (`
         );
         expect(attempts).toBe("2");
-        // Each attempt on the run's boot record, the relaunch's line added before it started.
-        expect(record).toBe("boot reviewer\nboot reviewer\n");
+        // Each attempt on the run's boot record, the relaunch's line added before it started; the
+        // first, which the reader was asked about, followed by the `since` it was asked with.
+        expect(record).toMatch(
+          /^boot reviewer\nsince reviewer \d{4}-\d\d-\d\dT[\d:.]+Z\nboot reviewer\n$/
+        );
         // The first attempt, whole, beside the second: its output, its transcript and the
         // stand-in's lines of it.
         expect(readFileSync(path.join(first, "out.txt"), "utf8")).toBe(
@@ -6610,7 +6959,7 @@ sleep() { command sleep 0.05; }`;
         // The second where any agent's record stands.
         expect(readFileSync(path.join(run, "out.txt"), "utf8")).toBe("reviewed\nexit=0\n");
         expect(readdirSync(path.join(run, "sessions"))).toEqual(["s2.jsonl"]);
-        expect(verdict).toBe(`${name}  healthy`);
+        expect(verdict).toBe(`${id}  healthy  (${name})`);
       }
     }
   );
@@ -6623,19 +6972,19 @@ sleep() { command sleep 0.05; }`;
     "a worker refused at both attempts is launched twice and no more, and the run is unhealthy, naming both",
     () => {
       const name = "reviewer-text-findings-text-only-base-1";
-      const { result, first, attempts, record, verdict } = booted(name, [
+      const { result, id, first, attempts, record, verdict } = booted(name, [
         "register",
         "register",
         "works",
       ]);
       expect(result).toMatchObject({ code: 0, stderr: "" });
       expect(attempts).toBe("2");
-      expect(record).toBe("boot reviewer\nboot reviewer\n");
+      expect(record).toMatch(/^boot reviewer\nsince reviewer \S+Z\nboot reviewer\n$/);
       expect(existsSync(path.join(first, "out.txt"))).toBe(true);
       const answered =
         "the daemon stand-in answered the reviewer's POST /legion/v1/claims/register 401 INVALID_BOOT_TOKEN";
       expect(verdict).toBe(
-        `${name}  unhealthy: claim boot refused on both attempts: the reviewer's first (<run>/boot-1/reviewer/out.txt): ${answered}; its relaunch (<run>/out.txt): ${answered}`
+        `${id}  unhealthy: claim boot refused on both attempts: the reviewer's first (<run>/boot-1/reviewer/out.txt): ${answered}; its relaunch (<run>/out.txt): ${answered}  (${name})`
       );
     }
   );
@@ -6646,17 +6995,17 @@ sleep() { command sleep 0.05; }`;
     "a worker refused after its first turn is not relaunched, and the run is unhealthy",
     () => {
       const name = "reviewer-text-findings-defect-head-1";
-      const { result, run, first, attempts, record, verdict } = booted(name, ["late", "works"]);
+      const { result, run, id, first, attempts, record, verdict } = booted(name, ["late", "works"]);
       expect(result).toMatchObject({ code: 0, stderr: "" });
       expect(result.stdout).not.toContain("claim boot was refused");
       expect(attempts).toBe("1");
-      expect(record).toBe("boot reviewer\n");
+      expect(record).toMatch(/^boot reviewer\nsince reviewer \S+Z\n$/);
       expect(existsSync(first)).toBe(false);
       expect(readFileSync(path.join(run, "out.txt"), "utf8")).toBe(
         `[legion] ${ENVOY_REFUSAL}\nexit=1\n`
       );
       expect(verdict).toBe(
-        `${name}  unhealthy: claim boot refused: ${ENVOY_REFUSAL} (<run>/out.txt), and the agent was not relaunched: the rig relaunches an agent once when its claim boot is refused before its first turn, and never after it`
+        `${id}  unhealthy: claim boot refused: ${ENVOY_REFUSAL} (<run>/out.txt), and the agent was not relaunched: the rig relaunches an agent once when its claim boot is refused before its first turn, and never after it  (${name})`
       );
     }
   );
@@ -6671,20 +7020,23 @@ sleep() { command sleep 0.05; }`;
     "the agent sees its own run alone and its own /tmp, as this user, and its writes land in the run",
     () => {
       const work = freshDir("launch-world");
-      const marker = `rig-launch-${path.basename(work)}`;
-      const others = `${work}/runs/threads-closed-text-fixes-head-9/pointer ${work}/archive/runs/threads-closed-text-fixes-base-1/pointer`;
+      const marker = `launch-marker-${path.basename(work)}`;
+      const name = "threads-closed-text-fixes-head-1";
+      const own = runDirOf(work, name);
+      const sibling = runDirOf(work, "threads-closed-text-fixes-head-9");
+      const others = `${sibling}/pointer ${work}/archive/runs/0a0b0c0d0e0f/pointer`;
       const { run, result, out } = launched(
         work,
-        "threads-closed-text-fixes-head-1",
+        name,
         [
           `echo "uid=$(id -u)"`,
           `echo "runs=$(ls ${work}/runs)"`,
           `echo "archive=$(ls -A ${work}/archive 2>/dev/null)"`,
           `for f in ${others}; do cat "$f" >/dev/null 2>&1 && echo "read $f"; done`,
-          `echo "profile=$(cat ${work}/profiles/head/checkout)"`,
-          `echo "log=$(cat ${work}/runs/threads-closed-text-fixes-head-1/daemon.log)"`,
+          `echo "profile=$(cat ${work}/profiles/head/checkout 2>/dev/null)"`,
+          `echo "log=$(cat ${own}/daemon.log)"`,
           `echo scratch >/tmp/${marker}`,
-          `echo record >${work}/runs/threads-closed-text-fixes-head-1/agent-wrote`,
+          `echo record >${own}/agent-wrote`,
         ].join("\n"),
         [],
         { env: { TMPDIR: freshDir("launch-elsewhere") } }
@@ -6692,9 +7044,10 @@ sleep() { command sleep 0.05; }`;
       expect(result.code).toBe(0);
       expect(out.split("\n")).toEqual([
         `uid=${process.getuid?.()}`,
-        "runs=threads-closed-text-fixes-head-1",
+        `runs=${path.basename(own)}`,
         "archive=",
-        `profile=${work}-checkout`,
+        // The label's profile is under the work directory's cover, and no path shows it again.
+        "profile=",
         'log={"at":"t","opened":"daemon.log"}',
         "exit=0",
         "",
@@ -6707,66 +7060,49 @@ sleep() { command sleep 0.05; }`;
       );
       expect(readFileSync(path.join(run, "tmp", marker), "utf8")).toBe("scratch\n");
       expect(existsSync(path.join("/tmp", marker))).toBe(false);
-      expect(readdirSync(path.join(work, "runs")).sort()).toEqual([
-        "threads-closed-text-fixes-head-1",
-        "threads-closed-text-fixes-head-9",
-      ]);
+      expect(readdirSync(path.join(work, "runs")).sort()).toEqual(
+        [path.basename(own), `${path.basename(own)}.json`, path.basename(sibling)].sort()
+      );
     }
   );
 
   // Catches: a shown path that is a link whose target lies under a cover, bound back at the link
   // itself: the link stays visible, its target is covered, and `mkdir -p` on the dangling link
   // answers `File exists`, so no run starts. Measured by the tester on 2026-11-15 with the rig's
-  // own node_modules/zod, which every bun install makes a link into the root's .bun store, and a
-  // root whose node_modules is itself a link into a covered workspace (/legion/scratch/tmp/
-  // head-checkout's into the issue workspace). Here the rig's directory lies outside the
-  // scratch root, as the tester's did, and its zod resolves through both links into the root,
-  // which the scratch root covers; the gh stand-in, which imports zod, must load inside the run.
-  // The covered root sorts after the tree, as /legion/workspaces sorts after /legion/scratch, so
+  // own node_modules/zod, a link into the root's .bun store under a covered workspace; a run's
+  // world now shows no checkout, and the links it shows are the pane's tool directories, as here
+  // one whose target lies under the scratch root. And a gh stand-in that needs the rig's
+  // directory or its zod, which the world no longer shows: it runs from its bundle in the run.
+  // The covered root sorts after the link, as /legion/workspaces sorts after /legion/scratch, so
   // the link is bound back before its target is.
   test.skipIf(withoutNamespace)(
-    "a rig whose node_modules/zod links into a covered root boots, and the gh stand-in imports zod in the run",
+    "a tool directory that links into a covered root is shown at both paths, and the gh stand-in runs from its bundle",
     () => {
       const work = freshDir("launch-linked");
       const scratch = freshDir("launch-linked-workspace");
-      // zod as bun installs it: a package under the root's .bun store, under the scratch root.
-      let modules = RIG;
-      while (modules !== "/" && !existsSync(path.join(modules, "node_modules", "zod")))
-        modules = path.dirname(modules);
-      const store = path.join(scratch, "root", "node_modules");
-      const zod = path.join(".bun", "zod@pin", "node_modules", "zod");
-      cpSync(realpathSync(path.join(modules, "node_modules", "zod")), path.join(store, zod), {
-        recursive: true,
-        dereference: true,
-      });
-      // The rig's tree, outside the scratch root: its root's node_modules a link into the store,
-      // and its package's node_modules/zod a link through that one, as bun lays them out.
+      const store = path.join(scratch, "root", "tools");
+      mkdirSync(store, { recursive: true });
+      writeFileSync(path.join(store, "hello"), "#!/bin/sh\necho hello\n", { mode: 0o755 });
       const tree = freshDir("launch-linked-tree");
-      symlinkSync(store, path.join(tree, "node_modules"));
-      const here = path.join(tree, "packages", "pi-legion", "scripts", "skill-scenarios");
-      mkdirSync(here, { recursive: true });
-      mkdirSync(path.join(tree, "packages", "pi-legion", "node_modules"));
-      symlinkSync(
-        path.join("..", "..", "..", "node_modules", zod),
-        path.join(tree, "packages", "pi-legion", "node_modules", "zod")
-      );
-      for (const file of ["gh-standin.ts", "gh-call.ts", "gh-routes.ts", "run-records.ts"])
-        cpSync(path.join(RIG, file), path.join(here, file));
+      symlinkSync(store, path.join(tree, "bin"));
       const { run, result, out } = launched(
         work,
         "threads-closed-text-fixes-head-1",
-        `bun ${here}/gh-standin.ts gh --open; echo "gh=$?"`,
+        `hello; "$(dirname "$HOME")/bin/gh" --open; echo "gh=$?"`,
         [],
-        { env: { TMPDIR: scratch }, here }
+        {
+          env: { TMPDIR: scratch },
+          panePath: `${path.join(work, "bin")}:${path.join(tree, "bin")}:${process.env.PATH ?? ""}`,
+          standins: true,
+        }
       );
-      expect(out).toBe("gh=0\nexit=0\n");
+      expect(out).toBe("hello\ngh=0\nexit=0\n");
       expect(result.code).toBe(0);
       expect(readFileSync(path.join(run, "calls.jsonl"), "utf8")).toContain('"opened"');
-      // The world shows the link where bun reads it and the store where the link resolves.
-      expect(world(run)).toContain(
-        `ro ${path.join(tree, "packages", "pi-legion", "node_modules", "zod")}`
-      );
-      expect(world(run)).toContain(`ro ${realpathSync(path.join(store, zod))}`);
+      // The world shows the link where the PATH names it and the directory it resolves to.
+      expect(world(run)).toContain(`ro ${path.join(tree, "bin")}`);
+      expect(world(run)).toContain(`ro ${realpathSync(store)}`);
+      expect(world(run).filter((line) => line.includes(RIG))).toEqual([]);
     }
   );
 
@@ -6774,7 +7110,7 @@ sleep() { command sleep 0.05; }`;
   // absent from the second run's.
   test.skipIf(withoutNamespace)("a file one run writes to /tmp is absent in the next run", () => {
     const work = freshDir("launch-next");
-    const marker = `rig-next-${path.basename(work)}`;
+    const marker = `next-marker-${path.basename(work)}`;
     const first = launched(work, "threads-closed-text-fixes-head-1", `echo first >/tmp/${marker}`);
     expect(first.result.code).toBe(0);
     const second = launched(
@@ -6806,11 +7142,12 @@ sleep() { command sleep 0.05; }`;
     }
   );
 
-  // Catches: a world whose declaration drops a path a run needs (the label's profile, the
-  // batch's services, its own checkout, the rig's directory, a tool directory, mise's installs,
-  // the pin, the push guard's check), a namespace that hides a declared path rather than showing
-  // it again, and one that shows a read-only path writable. Every fixture path lies under the
-  // scratch root, so each is hidden unless the world shows it again.
+  // Catches: a world whose declaration drops a path a run needs (the label's install, the
+  // batch's tokens, a tool directory, mise's installs, the pin, the push guard's check), or shows
+  // one no run of the new world needs (the label's checkout, the rig's directory, zod, the whole
+  // services directory), a namespace that hides a declared path rather than showing it again,
+  // and one that shows a read-only path writable. Every fixture path lies under the scratch
+  // root, so each is hidden unless the world shows it again.
   test.skipIf(withoutNamespace)(
     "every path the run's world shows is there inside it, writable only where declared rw",
     () => {
@@ -6818,50 +7155,83 @@ sleep() { command sleep 0.05; }`;
       const mise = freshDir("mise-data");
       const guard = path.join(freshDir("leak-check"), "public-leak-check.sh");
       writeFileSync(guard, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-      mkdirSync(path.join(work, "profiles", "head", "key"), { recursive: true });
+      const install = installOf(work, "head");
+      mkdirSync(path.join(install, "key"), { recursive: true });
       const name = "threads-closed-text-fixes-head-1";
-      const R = path.join(work, "runs", name);
+      const R = runDirOf(work, name);
+      const needed = [
+        `rw ${R}`,
+        `ro ${install}`,
+        `rw ${install}/key`,
+        `rw ${install}/cache`,
+        `ro ${work}/services/tokens`,
+        `ro ${work}/bin`,
+        `ro ${mise}`,
+        `ro ${work}/bin/pin`,
+        `ro ${path.dirname(guard)}`,
+      ];
+      // The agent probes the paths this row needs shown, listed in a file of the run: the world's
+      // own declaration, namespace.txt, is one of the rig's records the run's agents cannot read.
       const { result, out } = launched(
         work,
         name,
         [
           `while read -r kind p; do`,
-          `  case $kind in rw | ro) ;; *) continue ;; esac`,
           `  [ -d "$p" ] || { echo "$kind $p absent"; continue; }`,
-          `  if touch "$p/.rig-probe" 2>/dev/null; then rm -f "$p/.rig-probe"; echo "$kind $p writable"; else echo "$kind $p read-only"; fi`,
-          `done <${R}/namespace.txt`,
+          `  if touch "$p/.probe" 2>/dev/null; then rm -f "$p/.probe"; echo "$kind $p writable"; else echo "$kind $p read-only"; fi`,
+          `done <${R}/probe.txt`,
         ].join("\n"),
         [],
-        { pane: [`MISE_DATA_DIR=${mise}`, `PUBLIC_LEAK_CHECK=${guard}`] }
+        {
+          pane: [`MISE_DATA_DIR=${mise}`, `PUBLIC_LEAK_CHECK=${guard}`],
+          files: { "probe.txt": `${needed.join("\n")}\n` },
+        }
       );
       expect(result.code).toBe(0);
       const declared = world(R).filter((line) => /^r[ow] /.test(line));
-      // zod, where bun finds it from the rig's directory: the gh stand-in's one package.
-      let modules = RIG;
-      while (modules !== "/" && !existsSync(path.join(modules, "node_modules", "zod")))
-        modules = path.dirname(modules);
-      for (const line of [
-        `rw ${R}`,
-        `ro ${work}/profiles/head`,
-        `rw ${work}/profiles/head/key`,
-        `rw ${work}/profiles/head/cache`,
-        `ro ${work}/services`,
-        `ro ${work}-checkout`,
-        `ro ${RIG}`,
-        `ro ${path.join(modules, "node_modules", "zod")}`,
-        `ro ${work}/bin`,
-        `ro ${mise}`,
-        `ro ${work}/bin/pin`,
-        `ro ${path.dirname(guard)}`,
-      ])
-        expect(declared).toContain(line);
-      // Inside the run, each declared path the host has is there, writable where it is rw.
-      const expected = declared.map((line) => {
+      for (const line of needed) expect(declared).toContain(line);
+      for (const hidden of [`${work}-checkout`, RIG, `${work}/services`, `${work}/profiles`])
+        expect(declared.filter((line) => line === `ro ${hidden}`)).toEqual([]);
+      // Inside the run, each needed path the host has is there, writable where it is rw.
+      const expected = needed.map((line) => {
         const [kind = "", where = ""] = [line.slice(0, 2), line.slice(3)];
         if (!existsSync(where) || !statSync(where).isDirectory()) return `${kind} ${where} absent`;
         return `${kind} ${where} ${kind === "rw" ? "writable" : "read-only"}`;
       });
       expect(out.split("\n")).toEqual([...expected, "exit=0", ""]);
+    }
+  );
+
+  // Catches: the services' logs readable by a run's agents in the run's own directory, and a hide
+  // that lets the agent write into the host's; and a guard that reads the rig's records
+  // (run-names.ts's RECORDS), which would refuse every run, since services-from names the rig's
+  // own directory in every one. The records that are files stay readable: this gVisor host
+  // refuses a mount onto a file.
+  test.skipIf(withoutNamespace)(
+    "the services' logs read empty inside a run and stay whole outside it, and the guard passes the rig's records over",
+    () => {
+      const work = freshDir("launch-records");
+      const name = "threads-closed-text-fixes-head-1";
+      const R = runDirOf(work, name);
+      const records = {
+        "services-from": "gh-standin.ts shared /co/packages/pi-legion/scripts/skill-scenarios -\n",
+        "built-from": "checkout /co\n",
+        "logs/dispatch.log": "a line of the server's\n",
+      };
+      const { result, out } = launched(
+        work,
+        name,
+        [
+          `echo "logs=$(ls -A ${R}/logs)"`,
+          `{ echo over >${R}/logs/dispatch.log; } 2>/dev/null && echo wrote || echo refused`,
+        ].join("\n"),
+        [],
+        { files: records }
+      );
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(out).toBe("logs=\nrefused\nexit=0\n");
+      for (const [file, text] of Object.entries(records))
+        expect(readFileSync(path.join(R, file), "utf8")).toBe(text);
     }
   );
 
@@ -6881,7 +7251,7 @@ sleep() { command sleep 0.05; }`;
     cpSync(path.dirname(shared), copy, { recursive: true });
     const check = path.join(copy, path.basename(shared));
     const name = "threads-closed-text-fixes-head-1";
-    const R = path.join(work, "runs", name);
+    const R = runDirOf(work, name);
     const git = "/usr/bin/git -c user.name=A -c user.email=a@example.invalid";
     const { result, out } = launched(
       work,
@@ -6920,7 +7290,7 @@ sleep() { command sleep 0.05; }`;
         `#!/bin/sh\nenv >${seen}\nexec ${Bun.which("unshare") ?? "/usr/bin/unshare"} "$@"\n`,
         { mode: 0o755 }
       );
-      const marker = `RIG_CALLER_MARKER_${path.basename(work).replace(/\W/g, "_")}`;
+      const marker = `CALLER_MARKER_${path.basename(work).replace(/\W/g, "_")}`;
       const { result, out } = launched(
         work,
         "threads-closed-text-fixes-head-1",
@@ -6955,7 +7325,7 @@ sleep() { command sleep 0.05; }`;
       const outside = Bun.spawn(["sh", "-c", "sleep 30", "Legion Tester Deployment instructions"]);
       try {
         const name = "threads-closed-text-fixes-head-1";
-        const R = path.join(work, "runs", name);
+        const R = runDirOf(work, name);
         const { result, out } = launched(
           work,
           name,
@@ -6964,7 +7334,7 @@ sleep() { command sleep 0.05; }`;
             `  line=$(tr '\\0' ' ' <"$d/cmdline" 2>/dev/null) || continue`,
             `  case $line in *"Legion Tester"* | *"Deployment instructions"*) echo "marked \${d#/proc/}" ;; esac`,
             `  vars=$(tr '\\0' '\\n' <"$d/environ" 2>/dev/null) || continue`,
-            `  printf '%s\\n' "$vars" | grep -qxF "SKILL_SCENARIO_RUN=${R}" || echo "foreign \${d#/proc/}"`,
+            `  printf '%s\\n' "$vars" | grep -qxF "HOME=${R}/home" || echo "foreign \${d#/proc/}"`,
             `done`,
             `echo listed`,
           ].join("\n")
@@ -6988,7 +7358,7 @@ sleep() { command sleep 0.05; }`;
     () => {
       const work = freshDir("launch-credentials");
       const name = "threads-closed-text-fixes-head-1";
-      const R = path.join(work, "runs", name);
+      const R = runDirOf(work, name);
       const { run, result, out } = launched(
         work,
         name,
@@ -7021,11 +7391,12 @@ sleep() { command sleep 0.05; }`;
     }
   );
 
-  // Catches: a run that reads the other label's text: from a base run, the head label's checkout
-  // (outside the scratch root and the issue workspaces, so its own cover alone hides it), a
-  // whole-tree extraction under the scratch root, and another issue's workspace under the
-  // workspaces root LEGION_WORKSPACE names; and the mirror from a head run. Each run keeps its
-  // own label's copy and the rig's own directory, which lies in the head's checkout.
+  // Catches: a run that reads the other label's text: from a base run, the head label's install
+  // or checkout (outside the scratch root and the issue workspaces, so its own cover alone hides
+  // it), a whole-tree extraction under the scratch root, and another issue's workspace under the
+  // workspaces root LEGION_WORKSPACE names; and the mirror from a head run. Each run reads its
+  // skills from its own label's install alone: no label's checkout is in its world, its own
+  // neither, since every path in it would name the rig.
   test.skipIf(withoutNamespace)(
     "a run reads its own label's skills and no other copy, from either label",
     () => {
@@ -7034,52 +7405,57 @@ sleep() { command sleep 0.05; }`;
       const work = path.join(scratch, "work");
       const skill = "skills/legion-worker/references/review-threads.md";
       const copies = {
-        head: path.join(top, "head-checkout"),
-        base: path.join(scratch, "base-checkout"),
-        extraction: path.join(scratch, "rig-at-0123456"),
+        head: path.join(top, "tree-one"),
+        base: path.join(scratch, "tree-two"),
+        extraction: path.join(scratch, "tree-at-0123456"),
         workspace: path.join(top, "workspaces", "acme", "widgets", "widgets-7"),
       };
       for (const [which, dir] of Object.entries(copies)) {
         mkdirSync(path.dirname(path.join(dir, skill)), { recursive: true });
         writeFileSync(path.join(dir, skill), `${which}\n`);
       }
-      const here = path.join(copies.head, "packages/pi-legion/scripts/skill-scenarios");
-      mkdirSync(here, { recursive: true });
-      writeFileSync(path.join(here, "rig.sh"), "the rig\n");
+      const installed = (label: string) => path.join(installOf(work, label), "pi-legion", skill);
+      for (const label of ["head", "base"]) {
+        mkdirSync(path.dirname(installed(label)), { recursive: true });
+        writeFileSync(installed(label), `${label} install\n`);
+      }
       const agent = [
         ...Object.values(copies).map(
           (dir) => `cat ${dir}/${skill} 2>/dev/null || echo "absent ${path.basename(dir)}"`
         ),
-        `cat ${here}/rig.sh`,
+        ...["head", "base"].map(
+          (label) => `cat ${installed(label)} 2>/dev/null || echo "absent ${label} install"`
+        ),
       ].join("\n");
       const options = (label: string) => ({
         label,
         checkouts: { head: copies.head, base: copies.base },
-        here,
         env: {
           TMPDIR: scratch,
           LEGION_WORKSPACE: path.join(top, "workspaces", "acme", "widgets", "widgets-1"),
         },
       });
-      const base = launched(work, "threads-closed-text-fixes-base-1", agent, [], options("base"));
-      expect(base.result.code).toBe(0);
-      expect(base.out.split("\n")).toEqual([
-        "absent head-checkout",
-        "base",
-        "absent rig-at-0123456",
+      const absent = [
+        "absent tree-one",
+        "absent tree-two",
+        "absent tree-at-0123456",
         "absent widgets-7",
-        "the rig",
+      ];
+      const base = launched(work, "threads-closed-text-fixes-base-1", agent, [], options("base"));
+      expect(base.result).toMatchObject({ code: 0, stderr: "" });
+      expect(base.out.split("\n")).toEqual([
+        ...absent,
+        "absent head install",
+        "base install",
         "exit=0",
         "",
       ]);
       const head = launched(work, "threads-closed-text-fixes-head-1", agent, [], options("head"));
-      expect(head.result.code).toBe(0);
+      expect(head.result).toMatchObject({ code: 0, stderr: "" });
       expect(head.out.split("\n")).toEqual([
-        "head",
-        "absent base-checkout",
-        "absent rig-at-0123456",
-        "absent widgets-7",
-        "the rig",
+        ...absent,
+        "head install",
+        "absent base install",
         "exit=0",
         "",
       ]);
@@ -7095,7 +7471,7 @@ sleep() { command sleep 0.05; }`;
     const { run, result } = launched(
       work,
       name,
-      `: >${path.join(work, "runs", name, "agent-ran")}`,
+      `: >${path.join(runDirOf(work, name), "agent-ran")}`,
       [],
       {
         callerPath: [refusing()],
@@ -7103,7 +7479,7 @@ sleep() { command sleep 0.05; }`;
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain(
-      `the agent of ${name} did not start: its namespace could not be made: ${REFUSAL}`
+      `the agent of ${path.basename(run)} did not start: its namespace could not be made: ${REFUSAL}`
     );
     expect(existsSync(path.join(run, "agent-ran"))).toBe(false);
   });
@@ -7117,7 +7493,7 @@ sleep() { command sleep 0.05; }`;
     const { run, result } = launched(
       work,
       name,
-      `: >${path.join(work, "runs", name, "agent-ran")}`,
+      `: >${path.join(runDirOf(work, name), "agent-ran")}`,
       [],
       {
         env: { TMPDIR: path.join(top, "scratch") },
@@ -7129,6 +7505,231 @@ sleep() { command sleep 0.05; }`;
       `launch: the run's world shows ${top} (ro), which holds ${path.join(top, "scratch")}, a path it hides (world_paths)`
     );
     expect(existsSync(path.join(run, "agent-ran"))).toBe(false);
+  });
+
+  /** The lines an agent printed of what it can read, by place: each `== <place>` line starts one. */
+  const places = (out: string) => {
+    const found = new Map<string, string[]>();
+    let at = "";
+    for (const line of out.split("\n")) {
+      if (line.startsWith("== ")) {
+        at = line.slice(3);
+        found.set(at, []);
+      } else if (line !== "" && at !== "") found.get(at)?.push(line);
+    }
+    return found;
+  };
+  /** An agent that prints everything a process of its run can read about its world: its
+   * environment, its mounts (/proc/self/mountinfo, whose bind lines name each host source), its
+   * working directory, and every process of its namespace, /proc/1 among them, by its command
+   * line and its environment. */
+  const DUMP = [
+    'echo "== env"; env',
+    'echo "== mountinfo"; cat /proc/self/mountinfo',
+    'echo "== cwd"; readlink /proc/self/cwd',
+    "for d in /proc/[0-9]*; do",
+    `  echo "== cmdline \${d#/proc/}"; tr "\\0" "\\n" <"$d/cmdline" 2>/dev/null`,
+    `  echo "== environ \${d#/proc/}"; tr "\\0" "\\n" <"$d/environ" 2>/dev/null`,
+    "done",
+  ].join("\n");
+  /** The variables whose value is a name (run-names.ts's NAMED_VARS). */
+  const NAMED_VALUE =
+    /^(OMP_PROFILE|PI_PROFILE|LEGION_PROJECT|LEGION_ISSUE|LEGION_TREE|LEGION_ROLE|GH_REPO)=/;
+
+  // Catches: a scenario, case or label word, or a name the rig gave its world (run-names.ts's
+  // REMOVED_NAMES), anywhere a process of the run can read it from inside its namespace: an
+  // environment value or name, a mount (its mount point or the host source mountinfo names),
+  // the working directory, /proc/1 and every process's command line and environment, the
+  // profile, the session directory, the Dispatch project and issue keys and the role that make
+  // its Envoy topics. On 2026-11-16, 16 of the 36 runs of the batch at c273084d reasoned from the
+  // run's name that every such place carried. The words are derived (run-names.ts's
+  // `vocabulary`, from SCENARIOS and the labels), never typed here, and the pane carries the
+  // values a worker pane does, built by rig.sh's own run_project.
+  test.skipIf(withoutNamespace)(
+    "nothing a run's processes can read inside its namespace names a scenario, case, label or removed name",
+    () => {
+      const work = freshDir("launch-vocabulary");
+      const name = "threads-closed-text-fixes-head-1";
+      const project = bash(
+        [
+          fn("run_project"),
+          assignment("worker_repo"),
+          "run_project threads-closed text-fixes head 1 t-100",
+        ].join("\n")
+      ).stdout.trim();
+      const role = "reviewer";
+      const pane = [
+        "OMP_PROFILE=legion",
+        `LEGION_PROJECT=${project}`,
+        `LEGION_ISSUE=${WORLD_PROJECT}-1`,
+        `LEGION_ROLE=${role}`,
+        `GH_REPO=${assignment("worker_repo").replace(/^worker_repo=/, "")}`,
+        `DISPATCH_TOKEN_FILE=${work}/services/tokens/dispatch-token`,
+        `TMPDIR=${runDirOf(work, name)}/tmp`,
+      ];
+      const { run, result, out } = launched(work, name, DUMP, [], { pane });
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      const read = places(out);
+      // What the agent read is the world it was given, so the check below reads something.
+      expect(read.get("env")).toContain(`HOME=${run}/home`);
+      expect(read.get("env")).toContain("OMP_PROFILE=legion");
+      expect(read.get("mountinfo")?.join("\n")).toContain(` ${run} `);
+      expect(read.get("cwd")).toEqual([`${run}/cwd`]);
+      expect(
+        [...read].filter(
+          ([at, lines]) => at.startsWith("cmdline") && lines.includes("--session-dir")
+        )
+      ).not.toEqual([]);
+      const topic = `notifications.role.legion-${project}-${WORLD_PROJECT.toLowerCase()}-1-${role}`;
+      const vocab = vocabulary(["head", "base"]);
+      const named: string[] = [];
+      for (const [at, lines] of [...read, ["topic", [topic]] as const])
+        for (const line of lines) {
+          const equals = line.indexOf("=");
+          const words =
+            at === "env" || at.startsWith("environ")
+              ? [
+                  nameWords(line.slice(0, Math.max(equals, 0)), vocab),
+                  NAMED_VALUE.test(line) || line.slice(equals + 1).includes("/")
+                    ? nameWords(line.slice(equals + 1), vocab)
+                    : textWords(line.slice(equals + 1), vocab),
+                ]
+              : at === "mountinfo"
+                ? line.split(" ").map((field) => nameWords(field, vocab))
+                : [
+                    line.includes("/") || at === "topic"
+                      ? nameWords(line, vocab)
+                      : textWords(line, vocab),
+                  ];
+          for (const word of words)
+            if (word !== undefined) named.push(`${at}: "${word}" in ${line}`);
+        }
+      expect(named).toEqual([]);
+    }
+  );
+
+  // Catches: a guard that misses one place of what the agent can read (run-names.ts's
+  // worldNames): each row plants one word of the vocabulary in one place, and the launch refuses
+  // before the agent starts, naming the word and the place. The host-side work directory is one:
+  // every bind's host source is in /proc/self/mountinfo, so a work directory holding a removed
+  // name fails the run as the run's own path does.
+  test("a scenario, case, label or removed name planted in any one place the agent reads refuses the launch", () => {
+    const name = "threads-closed-text-fixes-head-1";
+    const plants: {
+      what: string;
+      word: string;
+      place: string;
+      work?: string;
+      options?: (work: string) => Launch;
+    }[] = [
+      {
+        what: "the profile",
+        word: "head",
+        place: "the variable OMP_PROFILE",
+        options: () => ({ pane: ["OMP_PROFILE=skills-head"] }),
+      },
+      {
+        what: "the issue key",
+        word: "lweval",
+        place: "the variable LEGION_ISSUE",
+        options: () => ({ pane: ["LEGION_ISSUE=LWEVAL-1"] }),
+      },
+      {
+        what: "the project key",
+        word: "defect",
+        place: "the variable LEGION_PROJECT",
+        options: () => ({ pane: ["LEGION_PROJECT=defect"] }),
+      },
+      {
+        what: "the role a topic carries",
+        word: "rig-",
+        place: "the variable LEGION_ROLE",
+        options: () => ({ pane: ["LEGION_ROLE=rig-tester"] }),
+      },
+      {
+        what: "a variable's name",
+        word: "skill-scenario",
+        place: "the variable name SKILL_SCENARIO_RUN",
+        options: () => ({ pane: ["SKILL_SCENARIO_RUN=/somewhere"] }),
+      },
+      {
+        what: "a variable's text",
+        word: "text-only",
+        place: "the variable NOTE",
+        options: () => ({ pane: ["NOTE=the text-only case"] }),
+      },
+      {
+        what: "a mount: a label's checkout the namespace covers",
+        word: "threads-closed",
+        place: "a mount of its namespace",
+        options: () => ({
+          checkouts: { head: freshDir("threads-closed") },
+          env: { TMPDIR: freshDir("elsewhere") },
+        }),
+      },
+      {
+        what: "the host's work directory",
+        word: "skill-scenario",
+        place: "the variable PATH",
+        work: "skill-scenarios",
+      },
+      {
+        what: "the session directory",
+        word: "text-fixes",
+        place: "its session directory",
+        options: (work) => ({
+          env: { sessions_dir: `${runDirOf(work, name)}/sessions/text-fixes` },
+        }),
+      },
+      {
+        what: "the prompt",
+        word: "code-defect",
+        place: "<run>/prompt.txt",
+        options: () => ({ files: { "prompt.txt": "Review the code-defect run.\n" } }),
+      },
+      {
+        what: "the system prompt",
+        word: "reviewer-text-findings",
+        place: "<run>/system-args",
+        options: () => ({
+          files: { "system-args": "--append-system-prompt 'a reviewer-text-findings run'" },
+        }),
+      },
+      {
+        what: "the gh stand-in",
+        word: "skill-scenario",
+        place: "<run>/bin/gh",
+        options: () => ({ files: { "bin/gh": "#!/bin/sh\n# skill-scenarios\n" } }),
+      },
+      {
+        what: "the gh bundle",
+        word: "skill-scenario",
+        place: "<run>/lib/gh.js",
+        options: () => ({ files: { "lib/gh.js": 'process.env.SKILL_SCENARIO_RUN = "/x";\n' } }),
+      },
+      {
+        what: "a file of the label's install",
+        word: "threads-closed",
+        place: "{install}/pi-legion/README.md",
+        options: (work) => {
+          const at = path.join(installOf(work, "head"), "pi-legion");
+          mkdirSync(at, { recursive: true });
+          writeFileSync(path.join(at, "README.md"), "Run the threads-closed scenario.\n");
+          return {};
+        },
+      },
+    ];
+    const missed: string[] = [];
+    for (const plant of plants) {
+      const work = freshDir(plant.work ?? "launch-planted");
+      const ran = path.join(runDirOf(work, name), "agent-ran");
+      const { run, result } = launched(work, name, `: >${ran}`, [], plant.options?.(work) ?? {});
+      const place = plant.place.replace("{install}", installOf(work, "head"));
+      const refused = `the world of ${path.basename(run)} names "${plant.word}" in ${place}`;
+      if (result.code !== 1 || !result.stderr.includes(refused) || existsSync(ran))
+        missed.push(`${plant.what}: exit ${result.code}: ${result.stderr.trim()}`);
+    }
+    expect(missed).toEqual([]);
   });
 
   // Catches: a probe that reads a refusal as a namespace, or reports none of the host's words:
@@ -7209,7 +7810,7 @@ docker() {
       for (const module of ["envoy", "daemon"])
         mkdirSync(path.join(work, "checkouts", label, "packages", module), { recursive: true });
     const result = bash(
-      `${servicesUp}\n${stubs}\nwork=$1 S=$1/services root=$2 here=$3 tag=rig-test\nservices_postgres=$S/postgres-url\nshift 3\nservices_up "$@"`,
+      `${servicesUp}\n${stubs}\nwork=$1 S=$1/services root=$2 here=$3 tag=rig-test\nservices_postgres=$S/postgres-url tokens=$S/tokens\nshift 3\nservices_up "$@"`,
       [work, root, import.meta.dir, ...labels],
       env
     );
@@ -7453,9 +8054,36 @@ docker() {
     });
   });
 
+  // Catches: a program this directory runs inside every run left off the run's provenance, so a
+  // change to it changes a run unseen by any digest a batch records: boot-refusal.ts, which
+  // boot_agent now runs itself inside every boot to decide a relaunch, and run-names.ts, which
+  // launch runs before every agent to refuse a world that names the measurement; and a digest
+  // that is not the file's own.
+  test("services_from names every program a run runs from this directory, by its own digest", () => {
+    const here = import.meta.dir;
+    const result = bash(
+      [
+        ...["given_services", "safe_url", "file_digest", "services_from"].map(fn),
+        "pinned_omp() { echo /x/omp; }",
+        `here=${here} co=/co pin=omp@pin I=/w/installs/0a1b2c3d4e5f profile=legion`,
+        "nats_url=nats://127.0.0.1:4222 pg_url=postgres://127.0.0.1:5432/postgres",
+        "services_from /l /d /p",
+      ].join("\n"),
+      [],
+      given
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    const digest = (file: string) =>
+      `sha256:${new Bun.CryptoHasher("sha256").update(readFileSync(path.join(here, file))).digest("hex")}`;
+    for (const program of ["boot-refusal.ts", "run-names.ts", "gh-standin.ts", "daemon-standin.ts"])
+      expect(result.stdout).toContain(`\n${program} shared ${here} ${digest(program)}\n`);
+  });
+
   // Catches: two labels' listeners started as one service (one log, one port file, one pid kept)
   // or under one machine id, whose durable NATS consumer the two would share and take each
-  // other's deliveries from; and a listener started from any binary but the one it is given.
+  // other's deliveries from; a machine id that names the label, which an agent's `envoy_whoami`
+  // answers (it is the batch's tag and the label's install id, load_label's I); and a listener
+  // started from any binary but the one it is given.
   test("start_listener starts the label's binary as a service and a machine of its own", () => {
     const S = freshDir("start-listener");
     writeFileSync(path.join(S, "envoy-token"), "token\n");
@@ -7464,16 +8092,16 @@ docker() {
         fn("start_listener"),
         `start_held() { printf '%s|%s|%s\\n' "$1" "$ENVOY_MACHINE_ID" "\${@: -1}" >>"$S/held"; printf -v "$2" %s 4100; printf -v "\${1}_pid" %s "$((4200 + \${#listener_pids[@]}))"; }`,
         "await_start() { :; }",
-        "S=$1 tag=rig-test nats_url=nats://127.0.0.1:4222 listener_pids=()",
-        "start_listener head /builds/a/envoy-listener",
-        "start_listener ablate-x /builds/b/envoy-listener",
+        "S=$1 tokens=$1 tag=rig-test nats_url=nats://127.0.0.1:4222 listener_pids=()",
+        "I=/w/installs/0a1b2c3d4e5f start_listener head /builds/a/envoy-listener",
+        "I=/w/installs/9f8e7d6c5b4a start_listener ablate-x /builds/b/envoy-listener",
         `echo "\${listener_pids[*]}"`,
       ].join("\n"),
       [S]
     );
     expect(result).toMatchObject({ code: 0, stdout: "4200 4201\n" });
     expect(readFileSync(path.join(S, "held"), "utf8")).toBe(
-      "listener_head|rig-test-head|/builds/a/envoy-listener\nlistener_ablate_x|rig-test-ablate-x|/builds/b/envoy-listener\n"
+      "listener_head|rig-test-0a1b2c3d4e5f|/builds/a/envoy-listener\nlistener_ablate_x|rig-test-9f8e7d6c5b4a|/builds/b/envoy-listener\n"
     );
   });
 
@@ -7482,8 +8110,8 @@ docker() {
     "env-head",
     "services-from-head",
     "postgres-url",
-    "envoy-token",
-    "dispatch-token",
+    "tokens/envoy-token",
+    "tokens/dispatch-token",
   ];
   /** services_up and the stubs its rows run it on, for a row that tears down after it. */
   const upStubs = `${servicesUp}\n${stubs}\nroot=${root}`;
@@ -7492,11 +8120,11 @@ docker() {
   function down(env: Record<string, string>, prelude = "") {
     const work = freshDir("services-down");
     const S = path.join(work, "services");
-    mkdirSync(S);
+    mkdirSync(path.join(S, "tokens"), { recursive: true });
     for (const file of [...SERVICES_FILES, "up"]) writeFileSync(path.join(S, file), "");
     writeFileSync(path.join(work, "listener_head.port"), "4100\n");
     const result = bash(
-      `${fn("given_services")}\n${fn("services_files")}\n${fn("services_down")}\nstop_tree() { printf 'stop_tree %s\\n' "$*" >>"$S/stopped"; }\ndocker() { printf 'docker %s\\n' "$*" >>"$S/docker-calls"; }\nwork=$1 S=$1/services tag=rig-test containers=()\nservices_postgres=$S/postgres-url\nlistener_pids=(4242 4343)\n${prelude}\nservices_down`,
+      `${fn("given_services")}\n${fn("services_files")}\n${fn("services_down")}\nstop_tree() { printf 'stop_tree %s\\n' "$*" >>"$S/stopped"; }\ndocker() { printf 'docker %s\\n' "$*" >>"$S/docker-calls"; }\nwork=$1 S=$1/services tokens=$1/services/tokens tag=rig-test containers=()\nservices_postgres=$S/postgres-url\nlistener_pids=(4242 4343)\n${prelude}\nservices_down`,
       [work],
       env
     );
@@ -7545,21 +8173,23 @@ docker() {
   test("a file an earlier batch left is refused, named, and kept, and the lock is not held", () => {
     const work = freshDir("services-lock");
     const S = path.join(work, "services");
-    mkdirSync(S);
-    writeFileSync(path.join(S, "envoy-token"), "an earlier batch's token\n");
+    mkdirSync(path.join(S, "tokens"), { recursive: true });
+    writeFileSync(path.join(S, "tokens", "envoy-token"), "an earlier batch's token\n");
     writeFileSync(path.join(S, "services-from-base"), "envoy-listener label /co -\n");
     writeFileSync(path.join(work, "listener_base.port"), "4100\n");
     const result = bash(
-      `${fn("fail")}\n${fn("services_files")}\n${fn("lock_services")}\nwork=$1 tag=rig-test\nservices_postgres=$work/services/postgres-url\nlock_services`,
+      `${fn("fail")}\n${fn("services_files")}\n${fn("lock_services")}\nwork=$1 tag=rig-test tokens=$1/services/tokens\nservices_postgres=$work/services/postgres-url\nlock_services`,
       [work]
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain(
-      `an earlier batch left ${S}/envoy-token ${S}/services-from-base ${work}/listener_base.port; a batch replaces no earlier batch's file`
+      `an earlier batch left ${S}/tokens/envoy-token ${S}/services-from-base ${work}/listener_base.port; a batch replaces no earlier batch's file`
     );
-    expect(readFileSync(path.join(S, "envoy-token"), "utf8")).toBe("an earlier batch's token\n");
+    expect(readFileSync(path.join(S, "tokens", "envoy-token"), "utf8")).toBe(
+      "an earlier batch's token\n"
+    );
     expect(readFileSync(path.join(work, "listener_base.port"), "utf8")).toBe("4100\n");
-    expect(readdirSync(S).sort()).toEqual(["envoy-token", "logs", "services-from-base"]);
+    expect(readdirSync(S).sort()).toEqual(["logs", "services-from-base", "tokens"]);
   });
 });
 

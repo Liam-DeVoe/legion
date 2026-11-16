@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
-import { sentBody } from "./gh-call";
+import { readWorld, sentBody } from "./gh-call";
 import {
   commandsIn,
   routeOf,
@@ -21,6 +21,7 @@ import {
   WORLD_ROUTES,
   worldRouteOf,
 } from "./gh-routes";
+import { REMOVED_NAMES } from "./run-names";
 import { bundled, spawnChecked } from "./test-programs";
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
@@ -59,6 +60,16 @@ function git(dir: string, ...args: string[]): string {
   );
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
   return result.stdout.toString().trim();
+}
+
+/** The environment the stand-in answers a call under in the run whose directory is `dir`
+ * (GH_DATA_DIR), as the pane of the role `by` names (LEGION_ROLE): this process's own without
+ * the role a Legion pod's environment carries, so a call records `by` and no other role. */
+function callEnv(dir: string, by?: string): Record<string, string | undefined> {
+  const own = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name !== "LEGION_ROLE")
+  );
+  return { ...own, GH_DATA_DIR: dir, ...(by === undefined ? {} : { LEGION_ROLE: by }) };
 }
 
 /** The run directory every `runDir` is a copy of: the routes rig.sh's fixture_write writes for
@@ -131,7 +142,7 @@ const headOf = (dir: string) =>
   spawnChecked(
     ["bun", STANDIN, "gh", "pr", "view", "1001", "--json", "headRefOid", "--jq", ".headRefOid"],
     {
-      env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+      env: callEnv(dir),
     }
   )
     .stdout.toString()
@@ -141,7 +152,7 @@ const headOf = (dir: string) =>
  * review and the submit of a pending one, as the reviewer's prompt makes them. */
 const apiPost = (dir: string, route: string, ...rest: string[]) =>
   spawnChecked(["bun", STANDIN, "gh", "api", "--method", "POST", route, ...rest], {
-    env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+    env: callEnv(dir),
   });
 const REVIEWS = "repos/example/widgets/pulls/1001/reviews";
 /** The create of a pending review: a body naming no `event`, which is what leaves one. */
@@ -340,7 +351,7 @@ test("a submit that is the run's first gh call is refused, not thrown", () => {
  * below read a refusal's own text as well as the answer. */
 const ghCall = (dir: string, ...args: string[]) => {
   const made = spawnChecked(["bun", STANDIN, "gh", ...args], {
-    env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+    env: callEnv(dir),
   });
   return {
     code: made.exitCode,
@@ -916,11 +927,7 @@ test("a run with no worker fixture leaves the submit of a review to the routes",
  * an agent. */
 const answer = (dir: string, args: string[], by?: string) =>
   spawnChecked(["bun", STANDIN, "gh", ...args], {
-    env: {
-      ...process.env,
-      SKILL_SCENARIO_RUN: dir,
-      ...(by === undefined ? {} : { SKILL_SCENARIO_AGENT: by }),
-    },
+    env: callEnv(dir, by),
   })
     .stdout.toString()
     .trim();
@@ -960,7 +967,7 @@ test("a world.json that does not parse exits with an error, and one with no base
     const { dir } = runDir({ fixture: true });
     writeFileSync(path.join(dir, "world.json"), text);
     const call = spawnChecked(["bun", STANDIN, "gh", "pr", "view", "1001"], {
-      env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+      env: callEnv(dir),
     });
     expect(call.exitCode).toBe(2);
     expect(call.stderr.toString()).toContain("world.json is no world");
@@ -981,6 +988,65 @@ test("each call records the agent the run named, and none when it names one", ()
   expect(recorded[0]).toMatchObject({ opened: "calls.jsonl" });
   expect(recorded.slice(1).map((call) => call.by)).toEqual(["implementer", undefined]);
 });
+
+// The gh a run's PATH resolves to runs a bundle of this stand-in (rig.sh's standins: $R/lib/gh.js,
+// the run's directory set in its first line), a file the world shows and an agent can `cat`, and
+// it carried the rig's names: the two variables it took its run and its agent's role in
+// (SKILL_SCENARIO_RUN, SKILL_SCENARIO_AGENT) and its own name in its refusals (`gh-standin`). So
+// it takes its run in GH_DATA_DIR, a variable of gh's own shape, and its role in LEGION_ROLE,
+// which production names every pane's role in, and refuses as `gh`. The route table's name,
+// fixtures.json, stays: the world shows $R, so `ls` shows the file by name whatever the bundle
+// says, and health.ts and score.ts read it under that name in every recorded run. Catches: a
+// bundle that names the rig, one that finds no run with nothing in its caller's environment, a
+// call that records a role its pane did not name, and a refusal in the rig's words.
+test("the gh a run's PATH resolves to names none of the rig's words, and finds its run and role", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gh-bundle-"));
+  made.push(dir);
+  const built = spawnChecked(
+    [
+      "bash",
+      "-c",
+      [fn("fail"), fn("standins"), `here='${import.meta.dir}'`, "R=$1", "standins"].join("\n"),
+      "-",
+      dir,
+    ],
+    { env: process.env }
+  );
+  expect([built.exitCode, built.stderr.toString()]).toEqual([0, ""]);
+  // The run's own path, which the banner sets, is the world's to name (rig.sh's world_paths), so
+  // it is masked: what is read is what the bundle says of its own.
+  const bundle = readFileSync(path.join(dir, "lib", "gh.js"), "utf8").replaceAll(dir, "<run>");
+  expect(bundle).toContain('\nprocess.env.GH_DATA_DIR = "<run>";\n');
+  const words = [
+    /skill.?scenario/gi,
+    /stand.?in/gi,
+    ...REMOVED_NAMES.map(
+      (name) => new RegExp(`(?<![a-z0-9])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "gi")
+    ),
+  ];
+  expect(words.flatMap((word) => bundle.match(word) ?? [])).toEqual([]);
+  const gh = (role: string | undefined, ...args: string[]) =>
+    spawnChecked([path.join(dir, "bin", "gh"), ...args], {
+      env: { PATH: process.env.PATH ?? "", ...(role === undefined ? {} : { LEGION_ROLE: role }) },
+    });
+  expect(gh(undefined, "--open").exitCode).toBe(0);
+  const asked = gh("reviewer", "api", "user");
+  expect([asked.exitCode, asked.stderr.toString()]).toEqual([1, "gh: Not Found (HTTP 404)\n"]);
+  gh(undefined, "api", "user");
+  const recorded = readFileSync(path.join(dir, "calls.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line));
+  expect(recorded.map((call) => [call.opened, call.by, call.argv])).toEqual([
+    ["calls.jsonl", undefined, undefined],
+    [undefined, "reviewer", ["api", "user"]],
+    [undefined, undefined, ["api", "user"]],
+  ]);
+  const unset = spawnChecked(["bun", STANDIN, "gh", "api", "user"], {
+    env: { PATH: process.env.PATH ?? "" },
+  });
+  expect([unset.exitCode, unset.stderr.toString()]).toEqual([2, "gh: GH_DATA_DIR is unset\n"]);
+}, 60_000);
 
 // Catches: a call that names github.com, gh's own default host and the host the world plays,
 // refused where GitHub answers it as it answers the bare call (`gh api --hostname github.com
@@ -1103,7 +1169,7 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
   writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify(fixtures));
   const checks = () =>
     spawnChecked(["bun", STANDIN, "gh", "pr", "checks", "1001"], {
-      env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+      env: callEnv(dir),
     });
   const merge = () => [
     answer(dir, ["pr", "view", "1001", "--json", "mergeStateStatus", "--jq", ".mergeStateStatus"]),
@@ -1142,7 +1208,7 @@ test("--open opens the record with one line and records no call", () => {
   const { dir } = runDir({ fixture: true });
   const open = () =>
     spawnChecked(["bun", STANDIN, "gh", "--open"], {
-      env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+      env: callEnv(dir),
     });
   const recorded = () =>
     readFileSync(path.join(dir, "calls.jsonl"), "utf8")
@@ -1204,7 +1270,7 @@ test("a comparison the run's remote cannot resolve is 404, as GitHub answers it"
   const { dir } = runDir({ fixture: true });
   const call = spawnChecked(
     ["bun", STANDIN, "gh", "api", "repos/example/widgets/compare/deadbeef...cafed00d"],
-    { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+    { env: callEnv(dir) }
   );
   expect(call.exitCode).toBe(1);
   expect(call.stderr.toString()).toContain("gh: Not Found (HTTP 404)");
@@ -1304,7 +1370,7 @@ test("a compare ref that reads as an option is refused, not run, on either side"
         "Accept: application/vnd.github.v3.diff",
         `repos/example/widgets/compare/${refs(`--output=${written}`)}`,
       ],
-      { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+      { env: callEnv(dir) }
     );
     expect(call.exitCode).toBe(1);
     expect(call.stderr.toString()).toContain("gh: Not Found (HTTP 404)");
@@ -1326,7 +1392,7 @@ test("a compare head that reads as an option writes no file through the counts e
   const written = path.join(dir, "counts-wrote-this");
   const call = spawnChecked(
     ["bun", STANDIN, "gh", "api", `repos/example/widgets/compare/main...--output=${written}`],
-    { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+    { env: callEnv(dir) }
   );
   expect(call.exitCode).toBe(1);
   expect(call.stderr.toString()).toContain("gh: Not Found (HTTP 404)");
@@ -1403,7 +1469,7 @@ test("a create whose body is on stdin as JSON lines leaves a pending review", ()
   const created = spawnChecked(
     ["bun", STANDIN, "gh", "api", "--method", "POST", REVIEWS, "--input", "-"],
     {
-      env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+      env: callEnv(dir),
       stdin: new TextEncoder().encode(
         `${JSON.stringify({ commit_id: first, body: "two findings" }, null, 2)}\n`
       ),
@@ -1477,6 +1543,744 @@ test("a pull request read through the api carries the run's own head in head.sha
   git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", second);
   expect(sha()).toBe(second);
 });
+
+/** The top-level values of rig.sh a world's functions read: the repository's own developer, the
+ * two Apps the roles act as, the login the run's token acts as and the round's two findings. */
+const WORLD_VALUES = [
+  "world_author_name",
+  "world_author_email",
+  "world_implement_app",
+  "world_implement_app_id",
+  "world_review_app",
+  "world_review_app_id",
+  "world_login",
+  "text_finding_doc_line",
+  "text_finding_trigger",
+];
+/** WORLD (with GUARD) built for real under a run directory of its own by rig.sh's own world
+ * functions, as rig.test.ts builds its worlds, with `fixture_cli` stubbed, whose heredoc holds a
+ * line that is `}` alone, which `scriptFunctions` reads as the end of the function (the stub
+ * writes the two files that step writes), and `fixture_workspace`, which clones the issue
+ * workspace with jj and which no gh answer reads, stubbed unless `workspace` asks for it. `env`
+ * is the operator's own environment the build runs in, over this process's. */
+function worldDir(
+  world: string,
+  guard = "",
+  { workspace = false, env = {} }: { workspace?: boolean; env?: Record<string, string> } = {}
+): string {
+  const dir = mkdtempSync(path.join(tmpdir(), `gh-standin-${world}-`));
+  made.push(dir);
+  const steps = [
+    "fixture_open",
+    "fixture_git",
+    "fixture_docs_before",
+    "fixture_first_commit",
+    "fixture_round_files",
+    "fixture_head_commit",
+    "fixture_implement",
+    "fixture_test_handoff",
+    "fixture_checks",
+    "fixture_body",
+    "fixture_write",
+    "concluded_checks",
+    "resolution_protection_routes",
+    "round_world",
+    "role_identity",
+    "role_env",
+    ...(workspace ? ["fixture_workspace"] : []),
+    world,
+  ];
+  const built = spawnChecked(
+    [
+      "bash",
+      "-c",
+      [
+        fn("fail"),
+        ...steps.map(fn),
+        'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
+        ...(workspace ? [] : ["fixture_workspace() { :; }"]),
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        ...WORLD_VALUES.map(assignment),
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      "-",
+      dir,
+      guard,
+    ],
+    {
+      env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...env },
+    }
+  );
+  if (built.exitCode !== 0) throw new Error(`${world}: ${built.stderr.toString()}`);
+  return dir;
+}
+/** The pull request's head the world under `dir` was built at, read by the one schema of its
+ * world.json (gh-call.ts's `readWorld`). */
+function builtHead(dir: string): string {
+  const read = readWorld(dir);
+  if (!("world" in read)) throw new Error(read.why);
+  return read.world.head;
+}
+/** Pushes a commit that writes `text` into `file` over the issue branch's tip to the run's own
+ * remote, as a role pushes its fix, so the remote's own hook logs the push; the commit. */
+function pushFix(dir: string, file: string, text: string): string {
+  const work = path.join(dir, "fix-work");
+  git(dir, "clone", "-q", "-b", "legion/LWEVAL-1", path.join(dir, "remote.git"), work);
+  writeFileSync(path.join(work, file), text);
+  git(work, "add", "-A");
+  git(work, "commit", "-qm", "docs: the text fix");
+  git(work, "push", "-q", "origin", "legion/LWEVAL-1");
+  return git(work, "rev-parse", "HEAD");
+}
+/** `gh api graphql` with QUERY and the three variables a role sends with the threads query
+ * (`-F o=example -F r=widgets -F n=1001`), then REST. */
+const threadsQuery = (query: string, ...rest: string[]) => [
+  "api",
+  "graphql",
+  "-f",
+  `query=${query}`,
+  "-F",
+  "o=example",
+  "-F",
+  "r=widgets",
+  "-F",
+  "n=1001",
+  ...rest,
+];
+
+// GitHub keeps what a run did: a thread a review's inline comment opens is the pull request's
+// from then on, a resolution GitHub answered `true` reads back resolved, and a reply is its
+// thread's last comment. Measured in INFRA-764 round 24 (dispatch://INFRA-764/artifact/
+// infra-764-r24-names-scan-partial-txt): reviewers that resolved a thread or opened their own
+// read the listing back as the fixture froze it — "the mock's graphql `reviewThreads` only
+// surfaces the seeded style-bot thread and doesn't persist my reply/resolution or new threads"
+// (reviewer-text-findings-text-only-head-1), "doesn't reflect my new threads or the resolve
+// (which returned `true`)" (-head-4) — and named the world a mock in 29 of 36 runs. Every call
+// is the recorded shape: the create of reviewer-text-findings-text-only-head-1/calls.jsonl:21
+// and its listing at :22, the resolve at :29, and threads-closed-text-fixes-head-1/calls.jsonl's
+// listing at :33, reply at :9 and comment read at :3. Catches: the world's threads answered as
+// the fixture froze them, a resolve answered `true` and read back unresolved, a reply answered
+// with an id and found under no thread, and a resolve of a thread the world has not got
+// answered `true`, where GitHub answers NOT_FOUND.
+test("GitHub keeps the threads: one a review opens is listed, a resolve reads back resolved, a reply is its thread's last comment", () => {
+  const dir = worldDir("review_world");
+  const head = builtHead(dir);
+  const doc = 'The doc says the CLI "prints the name exactly as it was given, spaces and all,"';
+  const trigger = 'The comment says the workflow runs "on every push to main"';
+  const input = path.join(dir, "body.json");
+  writeFileSync(
+    input,
+    JSON.stringify({
+      commit_id: head,
+      event: "APPROVE",
+      body: `Reviewed PR #1001 at head ${head}.`,
+      comments: [
+        {
+          path: "docs/cli.md",
+          line: 5,
+          side: "RIGHT",
+          start_line: null,
+          position: null,
+          body: doc,
+        },
+        {
+          path: ".github/workflows/greet.yml",
+          line: 1,
+          side: "RIGHT",
+          start_line: null,
+          position: null,
+          body: trigger,
+        },
+      ],
+    })
+  );
+  const create = ghCall(
+    dir,
+    ...["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews", "--input", input],
+    ...["--jq", "{id:.id,state:.state,commit_id:.commit_id}"]
+  );
+  expect([create.code, JSON.parse(create.out)]).toEqual([
+    0,
+    { id: 6001, state: "APPROVED", commit_id: head },
+  ]);
+  const listing = ghCall(
+    dir,
+    ...threadsQuery(
+      "query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved path line comments(first:1){nodes{author{login} body}}}}}}}"
+    ).toSpliced(2, 0, "--paginate")
+  );
+  const node = (id: string, file: string, line: number, login: string, body: unknown) => ({
+    id,
+    isResolved: false,
+    path: file,
+    line,
+    comments: { nodes: [{ author: { login }, body }] },
+  });
+  expect([listing.code, JSON.parse(listing.out)]).toEqual([
+    0,
+    {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: expect.any(String) },
+              nodes: [
+                node(
+                  "PRRT_kwDOrig0001",
+                  "greet.test.ts",
+                  4,
+                  "style-bot[bot]",
+                  expect.stringContaining("greets by name")
+                ),
+                node("PRRT_kwDOAAAAAc4AAD9001", "docs/cli.md", 5, WORLD_LOGIN, doc),
+                node(
+                  "PRRT_kwDOAAAAAc4AAD9002",
+                  ".github/workflows/greet.yml",
+                  1,
+                  WORLD_LOGIN,
+                  trigger
+                ),
+              ],
+            },
+          },
+        },
+      },
+    },
+  ]);
+  const resolve = (id: string) =>
+    ghCall(
+      dir,
+      "api",
+      "graphql",
+      "-f",
+      "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+      "-F",
+      `id=${id}`
+    );
+  expect(resolve("PRRT_kwDOAAAAAc4AAD9001")).toEqual({
+    code: 0,
+    out: JSON.stringify({ data: { resolveReviewThread: { thread: { isResolved: true } } } }),
+    err: "",
+  });
+  const states = () =>
+    ghCall(
+      dir,
+      ...threadsQuery(
+        "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved}}}}}",
+        "--jq",
+        ".data.repository.pullRequest.reviewThreads.nodes[] | [.id, .isResolved] | @tsv"
+      )
+    ).out;
+  expect(states()).toBe(
+    "PRRT_kwDOrig0001\tfalse\nPRRT_kwDOAAAAAc4AAD9001\ttrue\nPRRT_kwDOAAAAAc4AAD9002\tfalse"
+  );
+  const fixed = `Fixed in ${head}: the workflow comment now names only the pull_request trigger the file carries.`;
+  const reply = ghCall(
+    dir,
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}",
+    "-F",
+    "t=PRRT_kwDOAAAAAc4AAD9002",
+    "-F",
+    `b=${fixed}`,
+    "--jq",
+    ".data.addPullRequestReviewThreadReply.comment.id"
+  );
+  expect(reply).toEqual({ code: 0, out: "PRRC_kwDOAAAAAc4AAC9003", err: "" });
+  const last = ghCall(
+    dir,
+    ...threadsQuery(
+      "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}",
+      "--jq",
+      ".data.repository.pullRequest.reviewThreads.nodes[2] | [.id, .comments.nodes[0].author.login, .comments.nodes[0].body] | @tsv"
+    )
+  );
+  expect(last.out).toBe(`PRRT_kwDOAAAAAc4AAD9002\t${WORLD_LOGIN}\t${fixed}`);
+  // A thread the world has not got is GitHub's NOT_FOUND, and resolves nothing.
+  expect(resolve("PRRT_kwDOfix001")).toEqual({
+    code: 1,
+    out: JSON.stringify({
+      data: { resolveReviewThread: null },
+      errors: [
+        {
+          type: "NOT_FOUND",
+          path: ["resolveReviewThread"],
+          message: "Could not resolve to a node with the global id of 'PRRT_kwDOfix001'.",
+        },
+      ],
+    }),
+    err: "gh: Could not resolve to a node with the global id of 'PRRT_kwDOfix001'.\n",
+  });
+  expect(states()).toBe(
+    "PRRT_kwDOrig0001\tfalse\nPRRT_kwDOAAAAAc4AAD9001\ttrue\nPRRT_kwDOAAAAAc4AAD9002\tfalse"
+  );
+}, 60_000);
+
+// A review thread GitHub holds is made of review comments, each with the `databaseId` that is its
+// id in the REST API, and the REST reply route answers a reply to one and files it in that
+// thread. Measured in INFRA-764 round 24: "The thread comment has no databaseId, path, or line,
+// so it looks like a synthetic seeded thread rather than a real review comment, which means the
+// REST reply route won't work" (reviewer-text-findings-defect-base-1), and "REST shows no
+// comments (synthetic rig thread)" (-defect-base-2). The REST listing is the recorded
+// threads-closed-text-fixes-base-1/calls.jsonl:44 and reviewer-text-findings-text-only-head-1/
+// calls.jsonl:26; the threads read is reviewer-text-findings-text-only-head-1/calls.jsonl:22's
+// with the fields that sentence names; the reply is GitHub's REST form of it, which no recorded
+// run could make for want of the id. Catches: a seeded thread whose comment carries no
+// databaseId, a REST listing empty of the world's own thread, a REST reply answered with an id
+// of no comment and filed in no thread, and a reply to a comment GitHub has not got answered 200.
+test("a thread's comment carries its databaseId and its REST comment, and a REST reply lands in its thread", () => {
+  const dir = worldDir("review_world");
+  const head = builtHead(dir);
+  const comments = () =>
+    ghCall(
+      dir,
+      "api",
+      "repos/example/widgets/pulls/1001/comments",
+      "--jq",
+      ".[] | [.id, .path, .line, .user.login, .in_reply_to_id] | @tsv"
+    );
+  expect(comments()).toEqual({ code: 0, out: "7001\tgreet.test.ts\t4\tstyle-bot[bot]", err: "" });
+  const ids = ghCall(
+    dir,
+    ...threadsQuery(
+      "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:20){nodes{databaseId path line author{login} body}}}}}}}",
+      "--jq",
+      ".data.repository.pullRequest.reviewThreads.nodes[] | .comments.nodes[] | [.databaseId, .path, .line] | @tsv"
+    )
+  );
+  expect(ids.out).toBe("7001\tgreet.test.ts\t4");
+  const answer = "Not a defect: `greets by name` and `trims the name` name different cases.";
+  const reply = ghCall(
+    dir,
+    ...["api", "--method", "POST", "repos/example/widgets/pulls/1001/comments/7001/replies"],
+    ...["-f", `body=${answer}`, "--jq", "[.id, .in_reply_to_id, .path, .line, .commit_id, .body]"]
+  );
+  expect([reply.code, JSON.parse(reply.out)]).toEqual([
+    0,
+    [9001, 7001, "greet.test.ts", 4, head, answer],
+  ]);
+  expect(comments().out).toBe(
+    `7001\tgreet.test.ts\t4\tstyle-bot[bot]\t\n9001\tgreet.test.ts\t4\t${WORLD_LOGIN}\t7001`
+  );
+  const thread = ghCall(
+    dir,
+    ...threadsQuery(
+      "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id comments(last:1){totalCount nodes{databaseId author{login} body}}}}}}}",
+      "--jq",
+      ".data.repository.pullRequest.reviewThreads.nodes[0].comments | [.totalCount, .nodes[0].databaseId, .nodes[0].body] | @tsv"
+    )
+  );
+  expect(thread.out).toBe(`2\t9001\t${answer}`);
+  // The review the bot's comment belongs to is the pull request's, as GitHub lists it.
+  expect(
+    ghCall(dir, "api", "repos/example/widgets/pulls/1001/reviews/4001/comments", "--jq", ".[].id")
+      .out
+  ).toBe("7001");
+  // A comment GitHub has not got takes no reply: 404, and nothing is filed.
+  const nowhere = ghCall(
+    dir,
+    ...["api", "--method", "POST", "repos/example/widgets/pulls/1001/comments/7/replies"],
+    ...["-f", "body=fixed"]
+  );
+  expect(nowhere).toEqual({ code: 1, out: "", err: "gh: Not Found (HTTP 404)\n" });
+  expect(comments().out.split("\n")).toHaveLength(2);
+}, 60_000);
+
+// GitHub answers `gh api repos/<o>/<r>/contents/<path>?ref=<sha>` with the file at that commit:
+// its own bytes under the raw media type, and GitHub's JSON of it otherwise. The first call is
+// the tester's, word for word but the head (INFRA-764 round 24,
+// not-counted-r24/threads-closed-text-fixes-head-3/calls.jsonl:16): the reviewer re-read the
+// fixed file at the implementer's head, was refused 404 by a world that answered no contents
+// read, and wrote "Content API 404s are just the eval sandbox"; that refusal voided 2 of the 7
+// launches of the arm. Catches: the read refused, a file read from anywhere but the run's own
+// remote at that commit (the fix push changes it), a raw read given a newline the file has not
+// got, JSON whose content or sha is not the blob's, a ref or a path the remote has not got
+// answered 200, and a route the world serves with no evidence in the table (gh-routes.ts).
+test("the contents read answers the file at the commit from the run's own remote, raw or as GitHub's JSON", () => {
+  const dir = worldDir("approved_world");
+  const head = builtHead(dir);
+  const raw = (sha: string, file = "greet.ts") => [
+    "api",
+    `repos/example/widgets/contents/${file}?ref=${sha}`,
+    "-H",
+    "Accept: application/vnd.github.raw",
+  ];
+  const bytes = (sha: string, file = "greet.ts") =>
+    spawnChecked([
+      "git",
+      "-C",
+      path.join(dir, "remote.git"),
+      "show",
+      `${sha}:${file}`,
+    ]).stdout.toString();
+  const read = (argv: string[]) => {
+    const made = spawnChecked(["bun", STANDIN, "gh", ...argv], {
+      env: callEnv(dir),
+    });
+    return { code: made.exitCode, out: made.stdout.toString(), err: made.stderr.toString() };
+  };
+  expect(read(raw(head))).toEqual({ code: 0, out: bytes(head), err: "" });
+  const fix = pushFix(dir, "greet.ts", "export const greet = (name: string) => name.trim();");
+  expect(read(raw(fix))).toEqual({
+    code: 0,
+    out: "export const greet = (name: string) => name.trim();",
+    err: "",
+  });
+  expect(read(raw(head)).out).toBe(bytes(head));
+  expect(JSON.parse(read(raw(fix).slice(0, 2)).out)).toMatchObject({
+    type: "file",
+    encoding: "base64",
+    name: "greet.ts",
+    path: "greet.ts",
+    sha: git(path.join(dir, "remote.git"), "rev-parse", `${fix}:greet.ts`),
+    size: 51,
+    download_url: `https://raw.githubusercontent.com/example/widgets/${fix}/greet.ts`,
+    content: expect.stringMatching(/^([A-Za-z0-9+/=]{1,60}\n)+$/),
+  });
+  expect(read([...raw(fix).slice(0, 2), "--jq", '.content | gsub("\\n"; "") | @base64d']).out).toBe(
+    `${bytes(fix)}\n`
+  );
+  // A directory is the list of what it holds; the branch, the default branch with no ref.
+  expect(
+    read(["api", "repos/example/widgets/contents/docs?ref=legion/LWEVAL-1", "--jq", ".[].path"])
+  ).toEqual({ code: 0, out: "docs/cli.md\n", err: "" });
+  const base = git(path.join(dir, "remote.git"), "rev-parse", "main:docs/cli.md");
+  expect(base).not.toBe(git(path.join(dir, "remote.git"), "rev-parse", `${head}:docs/cli.md`));
+  expect(
+    read(["api", "repos/example/widgets/contents/docs/cli.md", "--jq", ".sha"]).out.trim()
+  ).toBe(base);
+  expect(read(raw("0123456789abcdef0123456789abcdef01234567"))).toEqual({
+    code: 1,
+    out: "",
+    err: "gh: No commit found for the ref 0123456789abcdef0123456789abcdef01234567 (HTTP 404)\n",
+  });
+  expect(read(raw(fix, "nothing.ts"))).toEqual({
+    code: 1,
+    out: "",
+    err: "gh: Not Found (HTTP 404)\n",
+  });
+  const key = routeOf(raw(head))?.key ?? "";
+  expect(worldRouteOf(key)).toMatchObject({
+    route: "GET repos/{owner}/{repo}/contents/{path+}",
+    evidence: { run: "not-counted-r24/threads-closed-text-fixes-head-3/calls.jsonl:16" },
+  });
+}, 60_000);
+
+// GitHub reads a contents call that names no `ref` on the repository's default branch, and
+// `--jq .content` prints the base64 of the file the caller then decodes. Measured by the tester's
+// cross-check at 19e19657: of forty runs, two were unhealthy on a refused contents read, the
+// second `gh api repos/example/widgets/contents/.github/workflows/greet.yml --jq .content`, no
+// `ref` at all. The world's workflow is the change's own, on the issue branch and not yet on the
+// default branch, so that call is GitHub's 404 there, as it would be on GitHub, and the same read
+// at the head (`?ref=<head>`) answers the workflow; a file the default branch holds answers that
+// branch's bytes, not the head's. Catches: a no-ref read refused, or answered from the head or
+// from no branch at all; and a `content` that is not the base64 of the file.
+test("a contents read with no ref answers the default branch's file, and .content is its base64", () => {
+  const dir = worldDir("approved_world");
+  const head = builtHead(dir);
+  const remote = path.join(dir, "remote.git");
+  const content = (endpoint: string) =>
+    ghCall(dir, "api", `repos/example/widgets/contents/${endpoint}`, "--jq", ".content");
+  const decoded = (read: { out: string }) => Buffer.from(read.out, "base64").toString();
+  const shown = (ref: string, file: string) =>
+    spawnChecked(["git", "-C", remote, "show", `${ref}:${file}`]).stdout.toString();
+  const workflow = content(".github/workflows/greet.yml");
+  expect(workflow).toEqual({ code: 1, out: "", err: "gh: Not Found (HTTP 404)\n" });
+  const atHead = content(`.github/workflows/greet.yml?ref=${head}`);
+  expect([atHead.code, decoded(atHead)]).toEqual([0, shown(head, ".github/workflows/greet.yml")]);
+  const docs = content("docs/cli.md");
+  expect([docs.code, decoded(docs)]).toEqual([0, shown("main", "docs/cli.md")]);
+  expect(decoded(docs)).not.toBe(shown(head, "docs/cli.md"));
+}, 60_000);
+
+// GitHub holds a head whose base requires conversation resolution `BLOCKED` while any review
+// thread is open, and reports it `CLEAN` once the run resolves the last one; a thread the run
+// opens holds it again. A base that requires no resolution is moved by no thread. Catches: a
+// merge state frozen into the world, which read `BLOCKED` however many threads a run resolved —
+// the one state of this change's subject a run can observe, an approval left with threads open
+// and an implementer that resolves them — and one that blocks a base that requires nothing. The
+// reads are the merge gate's (`gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus`),
+// the REST `mergeable_state` and merger.md's GraphQL query; the resolve is the recorded
+// reviewer-text-findings-text-only-head-1/calls.jsonl:29. The daemon stand-in moves the record on
+// the same state (daemon-standin.test.ts, "an approval waits in reviewing while a thread …").
+test("the merge state follows the threads: BLOCKED until the last one the base requires resolved is", () => {
+  const states = (dir: string) => [
+    ghCall(
+      dir,
+      ...["pr", "view", "1001", "--repo", "example/widgets"],
+      ...["--json", "mergeable,mergeStateStatus", "--jq", ".mergeStateStatus"]
+    ).out,
+    ghCall(dir, "api", "repos/example/widgets/pulls/1001", "--jq", ".mergeable_state").out,
+    ghCall(
+      dir,
+      "api",
+      "graphql",
+      "-f",
+      "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeStateStatus}}}",
+      "-f",
+      "owner=example",
+      "-f",
+      "name=widgets",
+      "-F",
+      "number=1001",
+      "--jq",
+      ".data.repository.pullRequest.mergeStateStatus"
+    ).out,
+  ];
+  const resolve = (dir: string, id: string) =>
+    ghCall(
+      dir,
+      "api",
+      "graphql",
+      "-f",
+      "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+      "-F",
+      `id=${id}`
+    ).code;
+  const comment = (dir: string) => {
+    const input = path.join(dir, "comment-review.json");
+    writeFileSync(
+      input,
+      JSON.stringify({
+        commit_id: builtHead(dir),
+        event: "COMMENT",
+        body: "one note",
+        comments: [{ path: "docs/cli.md", line: 5, side: "RIGHT", body: "a line note" }],
+      })
+    );
+    return ghCall(
+      dir,
+      ...["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews", "--input", input]
+    ).code;
+  };
+  const blocked = ["BLOCKED", "blocked", "BLOCKED"];
+  const clean = ["CLEAN", "clean", "CLEAN"];
+  const guarded = worldDir("review_world");
+  expect(states(guarded)).toEqual(blocked);
+  expect(resolve(guarded, "PRRT_kwDOrig0001")).toBe(0);
+  expect(states(guarded)).toEqual(clean);
+  expect(comment(guarded)).toBe(0);
+  expect(states(guarded)).toEqual(blocked);
+  expect(resolve(guarded, "PRRT_kwDOAAAAAc4AAD9001")).toBe(0);
+  expect(states(guarded)).toEqual(clean);
+  // A base that requires no resolution: its open thread holds nothing, nor does a new one.
+  const open = worldDir("approved_world", "dropped");
+  expect(states(open)).toEqual(clean);
+  expect(comment(open)).toBe(0);
+  expect(states(open)).toEqual(clean);
+}, 120_000);
+
+// GitHub answers the base branch's protection with the checks it requires, and a head's check
+// runs as runs of that head. Measured in INFRA-764 round 24: "Head checks green (`test`, `lint`
+// both success); no required-check config in this rig" (reviewer-text-findings-text-only-base-3),
+// "the rig doesn't require any specific checks" (-defect-base-3), and a reviewer that read its own
+// push's checks four times to see "whether CI goes green, since a local rig might never report
+// checks back" (-defect-base-4; reviewer-text-findings-defect-base-1/calls.jsonl:23 to :26 in
+// the preflight). The reads are the merge gate's, as recorded at
+// reviewer-text-findings-defect-base-1/calls.jsonl:18, :20 and :21. Catches: a base that names
+// no required check, at either read, in a world whose base requires nothing else; and check
+// runs that name no head, sit on no page of GitHub's and ran ten months before the commit they
+// report on, read at the world's head and at the head a push made.
+test("the base requires the head's checks, and the head's checks report on that head as GitHub reports them", () => {
+  const rules = [
+    "api",
+    "--paginate",
+    "repos/example/widgets/rules/branches/main",
+    "--jq",
+    '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
+  ];
+  const protection = [
+    "api",
+    "repos/example/widgets/branches/main",
+    "--jq",
+    ".protection.required_status_checks.checks[].context",
+  ];
+  for (const [world, guard] of [
+    ["tester_proof_world", ""],
+    ["approved_world", "dropped"],
+    ["review_world", ""],
+  ] as const) {
+    const dir = worldDir(world, guard);
+    expect([world, ghCall(dir, ...rules), ghCall(dir, ...protection)]).toEqual([
+      world,
+      { code: 0, out: "", err: "" },
+      { code: 0, out: "test\nlint", err: "" },
+    ]);
+    expect(
+      ghCall(
+        dir,
+        "api",
+        "repos/example/widgets/branches/main/protection",
+        "--jq",
+        "[.required_status_checks.contexts[], .required_conversation_resolution.enabled] | @json"
+      ).out
+    ).toBe(JSON.stringify(["test", "lint", world === "review_world"]));
+  }
+  const dir = worldDir("approved_world", "dropped");
+  const head = builtHead(dir);
+  const runsOf = (sha: string) =>
+    ghCall(
+      dir,
+      ...["api", `repos/example/widgets/commits/${sha}/check-runs`, "--paginate"],
+      ...["--jq", ".check_runs[] | [.name, .status, .conclusion] | @tsv"]
+    );
+  // Each run as GitHub reports it: on the commit read, on GitHub's page of it, with the app's
+  // own link, started no earlier than the commit was made and ended after it started.
+  const reportOf = (sha: string) => {
+    const made = git(path.join(dir, "remote.git"), "show", "-s", "--format=%ct", sha);
+    const facts = `[.check_runs[] | [.head_sha, .html_url, .details_url, (.started_at | fromdateiso8601) >= ${made}, (.completed_at | fromdateiso8601) > (.started_at | fromdateiso8601), .app.slug, .app.id]]`;
+    const read = ghCall(
+      dir,
+      "api",
+      `repos/example/widgets/commits/${sha}/check-runs`,
+      "--jq",
+      facts
+    );
+    return [read.code, JSON.parse(read.out)];
+  };
+  const page = expect.stringMatching(/^https:\/\/github\.com\/example\/widgets\/runs\/\d+$/);
+  for (const sha of [head, pushFix(dir, "docs/cli.md", "the text fix\n")]) {
+    expect(runsOf(sha)).toEqual({
+      code: 0,
+      out: "test\tcompleted\tsuccess\nlint\tcompleted\tsuccess",
+      err: "",
+    });
+    expect(reportOf(sha)).toEqual([
+      0,
+      [
+        [sha, page, "https://example.invalid/2", true, true, "github-actions", 15368],
+        [sha, page, "https://example.invalid/1", true, true, "github-actions", 15368],
+      ],
+    ]);
+  }
+}, 120_000);
+
+/** rig.sh's own top-level value of `name`, as its assignment line writes it, unquoted. */
+const rigValue = (name: string) =>
+  assignment(name)
+    .replace(/^[^=]+=/, "")
+    .replace(/^'(.*)'$/, "$1");
+/** The identity production's daemon gives a pane acting as the `implement` or the `review` App
+ * (appauth.go's `botIdentity`): the App's bot login, and the noreply address of its bot user,
+ * read off rig.sh's two Apps. */
+function botOf(app: "implement" | "review"): string {
+  const slug = rigValue(`world_${app}_app`);
+  return `${slug}[bot] <${rigValue(`world_${app}_app_id`)}+${slug}[bot]@users.noreply.github.com>`;
+}
+/** The identity of the operator a run is started by, in the six variables a Legion pod carries
+ * its own App in (runtime.go's `GitIdentity.Env`): a run that carried it into the world's history
+ * would hand every agent the identity of the pod that ran the rig. */
+const OPERATOR = Object.fromEntries(
+  ["JJ_USER", "GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"]
+    .map((name) => [name, "operator-app[bot]"])
+    .concat(
+      ["JJ_EMAIL", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"].map((name) => [
+        name,
+        "1+operator-app[bot]@users.noreply.github.com",
+      ])
+    )
+);
+
+// Production gives each role its App's bot identity, `<slug>[bot]` and
+// `<id>+<slug>[bot]@users.noreply.github.com` (packages/daemon/internal/appauth's `AppRoleFor` and
+// `botIdentity`), so the implementer's commit on an issue branch is the implement App's, and the
+// default branch's history is the repository's own. Measured in INFRA-764 round 24: every seeded
+// commit and every pane wrote as one developer, and agents read that as "the harness looks like
+// it's using robin.hale as the default committer" (preflight-r24/reviewer-text-findings-defect-
+// base-1); and round 24's preflight seeded its commits as the pod's own App, the operator's
+// GIT_AUTHOR_* winning over the world's `-c user.name`. Catches: a seeded commit of one author,
+// the implementer's commit not the implement App's, and the operator's identity in the world's
+// history.
+test("a seeded commit carries the identity of the role that made it, and none of the operator's", () => {
+  const dir = worldDir("approved_world", "", { env: OPERATOR });
+  const author = `${rigValue("world_author_name")} <${rigValue("world_author_email")}>`;
+  expect(
+    git(path.join(dir, "remote.git"), "log", "--all", "--format=%s|%an <%ae>|%cn <%ce>").split("\n")
+  ).toEqual([
+    `feat: greet(), a greeting helper for the widgets CLI (LWEVAL-1)|${botOf("implement")}|${botOf("implement")}`,
+    `init|${author}|${author}`,
+  ]);
+}, 60_000);
+
+// The brainstorm run's to-do CLI is a repository of its own developer's, and its one commit
+// carries that developer, given as fixture_git gives a world's: round 24's preflight seeded the
+// widgets worlds as the pod's own App, the operator's GIT_AUTHOR_* winning over `-c user.name`,
+// and run_brainstorm committed the same way. Catches: the operator's identity in the to-do CLI's
+// history, as author or as committer.
+test("the brainstorm repository's commit carries its developer, and none of the operator's", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gh-standin-brainstorm-"));
+  made.push(dir);
+  mkdirSync(path.join(dir, "cwd"));
+  const built = spawnChecked(
+    [
+      "bash",
+      "-c",
+      [
+        fn("run_brainstorm"),
+        "own_dispatch() { :; }",
+        "dispatch_session() { :; }",
+        ...["world_author_name", "world_author_email"].map(assignment),
+        "R=$1",
+        "run_brainstorm brainstorm-1",
+      ].join("\n"),
+      "-",
+      dir,
+    ],
+    { env: { ...process.env, ...OPERATOR, GIT_CONFIG_GLOBAL: "/dev/null" } }
+  );
+  const author = `${rigValue("world_author_name")} <${rigValue("world_author_email")}>`;
+  expect([
+    built.exitCode,
+    built.stderr.toString(),
+    git(path.join(dir, "cwd"), "log", "--format=%s|%an <%ae>|%cn <%ce>"),
+  ]).toEqual([0, "", `A tiny to-do CLI|${author}|${author}`]);
+}, 60_000);
+
+// A pane's commit carries its role's App, author and committer alike, with jj and with git, as
+// production's runtime gives a pane the six variables of its App (runtime.go's
+// `GitIdentity.Env`) and adopts the shared workspace's working copy for each role at its start
+// (packages/daemon/internal/shim's `runAdoption`: an undescribed working copy takes the role's
+// author, a described one is kept and the role starts a new one). jj sets a change's author when
+// it makes the change, so without the adoption the reviewer's prose commit carried the author of
+// the change the implementer's commit left. Catches: every role one identity, a role's commit
+// authored by the role before it or by the fixture, the operator's identity, a git commit of the
+// pane under any other identity, and a described working copy rewritten to the next role.
+test("a pane's commit carries its role's App as author and committer, and two roles differ", () => {
+  const dir = worldDir("approved_world", "", { workspace: true, env: OPERATOR });
+  writeFileSync(path.join(dir, "jj.toml"), '[ui]\npaginate = "never"\n');
+  const shown =
+    'author.name() ++ " <" ++ author.email() ++ ">|" ++ committer.name() ++ " <" ++ committer.email() ++ ">"';
+  const pane = spawnChecked(
+    [
+      "bash",
+      "-c",
+      [
+        ...["role_identity", "role_env", "adopt_workspace"].map(fn),
+        ...WORLD_VALUES.map(assignment),
+        "R=$1",
+        'as_role() { local identity; mapfile -t identity < <(role_env "$1"); shift; (cd "$R/ws" && env "${identity[@]}" JJ_CONFIG="$R/jj.toml" "$@"); }',
+        `show() { as_role "$1" jj log --no-graph -r "$2" -T '${shown} ++ "\\n"'; }`,
+        'commit() { adopt_workspace "$1" && printf "%s\\n" "$1" >"$R/ws/$1.md" && as_role "$1" jj commit -m "docs: $1" >/dev/null 2>&1 && show "$1" @-; }',
+        "commit implementer && commit reviewer",
+        'as_role reviewer jj describe -m "wip" >/dev/null 2>&1 && adopt_workspace implementer && show implementer @- && show implementer @',
+        'git clone -q "$R/remote.git" "$R/git-pane" && mapfile -t identity < <(role_env tester)',
+        'env "${identity[@]}" git -C "$R/git-pane" commit --allow-empty -qm "a tester note" && git -C "$R/git-pane" log -1 --format="%an <%ae>|%cn <%ce>"',
+      ].join("\n"),
+      "-",
+      dir,
+    ],
+    { env: { ...process.env, ...OPERATOR, GIT_CONFIG_GLOBAL: "/dev/null" } }
+  );
+  const implementer = `${botOf("implement")}|${botOf("implement")}`;
+  const reviewer = `${botOf("review")}|${botOf("review")}`;
+  expect(botOf("implement")).not.toBe(botOf("review"));
+  expect([pane.exitCode, pane.stdout.toString().trim().split("\n")]).toEqual([
+    0,
+    [implementer, reviewer, reviewer, `${botOf("implement")}|${botOf("implement")}`, reviewer],
+  ]);
+}, 60_000);
 
 // The routes a world answers are every gh read either label's role texts name, and every route a
 // recorded run called (gh-routes.ts's WORLD_ROUTES). The sweep reads the texts at test time, from

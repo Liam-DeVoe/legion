@@ -119,9 +119,9 @@
 #                   SKILL_SCENARIOS_REVIEWER_CASE names the world: `text-only`, the change above,
 #                   whose code is correct, and `defect`, that change with the CLI's blank-name
 #                   guard dropped — a finding whose closing changes code that runs — which is the
-#                   negative control. The case is in the run's name,
-#                   reviewer-text-findings-<case>-<label>-<n>, so each case's batch keeps its own
-#                   runs, and each run writes the case to <run>/case.txt. `base`, the head with
+#                   negative control. The case is in the run's record (cmd_run), whose name,
+#                   reviewer-text-findings-<case>-<label>-<n>, keeps each case's batch's runs
+#                   numbered apart, and never in its world. `base`, the head with
 #                   the reviewer's verdict rule deleted from its skills, is this scenario's ablate
 #                   arm, and the scenario is an instrument once that arm scores lower on it.
 #                   Scored by reviewerTextFindings, counted per case and label.
@@ -143,7 +143,7 @@
 #                   the implementer published to its role topic and by nothing else, or by
 #                   nothing at all when the implementer published none (reviewer_wake,
 #                   <run>/reviewer-wake.json). Each agent's calls carry the role
-#                   that made them (SKILL_SCENARIO_AGENT, a recorded call's `by`), so the run's
+#                   that made them (its pane's LEGION_ROLE, a recorded call's `by`), so the run's
 #                   one calls.jsonl and one pushes.log hold both halves and the score reads each.
 #                   SKILL_SCENARIOS_THREADS_CASE names the world: `text-fixes`, two threads whose
 #                   sentences a text fix closes, which the implementer fixes in one push of one
@@ -151,8 +151,8 @@
 #                   thread whose sentence is false only because the code is wrong, which no text
 #                   fix closes and which goes to the architect, neither role moving the issue —
 #                   the negative control. Unset is `text-fixes`, the measured arm. The case is in
-#                   the run's name, threads-closed-<case>-<label>-<n>, so each case's batch keeps
-#                   its own runs, and each run writes the case to <run>/case.txt. `base`, the
+#                   the run's record, whose name, threads-closed-<case>-<label>-<n>, keeps each
+#                   case's batch's runs numbered apart, and never in its world. `base`, the
 #                   head whose skills still have the implementer resolve the threads it answered
 #                   and leave the text fixes to a phase of its own, is this scenario's ablate
 #                   arm, and the scenario is an instrument once that arm scores lower on it.
@@ -184,9 +184,9 @@
 #                   not run) and `tried` (that ask, after the agent ran the read and got the gh
 #                   stand-in's error). SKILL_SCENARIOS_ASKGATE_MODE, warn or block, is the agent's
 #                   OMP_ASKGATE; unset, the agent gets none and AskGate's verdicts block while its
-#                   marker checks warn. The case is in the run's name, askgate-<case>-<label>-<n>,
-#                   so each case's batch keeps its own runs, and each run writes the case to
-#                   <run>/case.txt and a set mode to <run>/mode.txt (run_askgate). Scored by
+#                   marker checks warn. The case and a set mode are in the run's record, whose
+#                   name, askgate-<case>-<label>-<n>, keeps each case's batch's runs numbered
+#                   apart (cmd_run, run_askgate). Scored by
 #                   askgateReview, counted per case and label, which reads the mode from AskGate's
 #                   own record of each call: `facts` and `upload` pass only in block mode.
 #   spec-writing    A plain session is told that the people's messages on its Dispatch issue
@@ -256,7 +256,8 @@
 # `judge` and `judge-omp` also need Docker: each judge runs in a container (cmd_judge_omp).
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
-#                             any directory above it (default ${TMPDIR:-/tmp}/skill-scenarios)
+#                             any directory above it (default ${TMPDIR:-/tmp}/work); its path
+#                             names no scenario, case or label, nor the rig (launch refuses one)
 #   SKILL_SCENARIOS_PARALLEL  concurrent runs in a batch (default 5)
 #   SKILL_SCENARIOS_TIMEOUT   seconds one run, or one turn of a spec run, may take (default 1500)
 #   SKILL_SCENARIOS_ASKGATE_CASE  askgate: facts, link, upload, nochange, nochange-rebuttal,
@@ -299,12 +300,16 @@
 #   - Its profile's settings set extensionHandlers.toolCallTimeoutMs to 120000 or more, as the model
 #     route installers write them, so AskGate's review fits inside Oh My Pi's handler limit
 #     (load_label refuses a profile that does not).
-#   - It runs in the tmux session skill-scenarios-<digest>-<run> on the work directory's own tmux
-#     server (<work>/tmux.sock), <run> being <scenario>-<label>-<n> (<scenario>-<case>-<label>-<n>
-#     for a cased scenario: askgate, reviewer-text-findings and threads-closed). The pane shows
-#     nothing: omp's
-#     output goes to <work>/runs/<run>/out.txt, and the transcript, which grows as the agent
-#     works, to the .jsonl under <work>/runs/<run>/sessions. A run that boots more than one agent
+#   - Its directory is <work>/runs/<id>, an id of twelve hex digits, and its record, which says what
+#     the run is — its scenario, case, label and number, its name <scenario>-<label>-<n>
+#     (<scenario>-<case>-<label>-<n> for a cased scenario: askgate, reviewer-text-findings and
+#     threads-closed), its batch and where it ran — is <work>/runs/<id>.json beside it (cmd_run,
+#     run-names.ts's RunRecord), which no agent of the run can read. Every path, variable and
+#     process its agents can read is built on the id, and launch starts no agent whose world names
+#     a word of the scenarios', cases' or labels' (run-names.ts guard). It runs in the tmux
+#     session <tag>-<id> on the work directory's own tmux server (<work>/tmux.sock). The pane
+#     shows nothing: omp's output goes to <run>/out.txt, and the transcript, which grows as the
+#     agent works, to the .jsonl under <run>/sessions. A run that boots more than one agent
 #     (threads-closed) runs each in a tmux session and an Oh My Pi session of its own, under the
 #     one run directory: the first agent's transcript is the run's own, each later agent's is in
 #     <run>/sessions/<role>/, and each agent's last line of output is kept as
@@ -312,16 +317,17 @@
 #   - `gh` and `bun` stand-ins are first on its PATH (standins): no run reaches GitHub, and a bun
 #     it reaches through PATH is the bun this script runs on, recorded. A bun named by its path or
 #     run through `mise exec` bypasses the stand-in and goes unrecorded. Every container and tmux
-#     session a work directory starts carries the directory's digest in its name. The stand-ins
-#     and the panes are this script's own directory's, whichever label the run is, so score.ts
-#     reads none of them as another label's text (score.ts, RIG_DIR).
+#     session a work directory starts carries the directory's digest in its name. The gh stand-in
+#     is a bundle of this script's own gh-standin.ts in the run's own directory, whichever label
+#     the run is, so no run reads this script's directory (score.ts's RIG_DIR reads a run that
+#     ran the stand-in from there, as runs before the names left the world did).
 #   - Its pushes meet the push guard a Legion pod's do: the caller's `git` and `jj` (on a pod,
 #     /opt/legion/bin's leak-check wrappers) with the caller's PUBLIC_LEAK_CHECK in its pane. A run
 #     whose `git` is such a wrapper and whose caller names no readable PUBLIC_LEAK_CHECK is
 #     refused before anything of it is built (push_guard).
-#   - A worker run gets a Legion project of its own, built from its scenario, its case, its label,
-#     its number and its batch (run_project), since the Envoy role topics it claims carry that
-#     project and every worker run is booted on one issue key.
+#   - A worker run gets a Legion project of its own, digested from its scenario, its case, its
+#     label, its number and its batch (run_project), since the Envoy role topics it claims carry
+#     that project and every worker run is booted on one issue key.
 #   - A phase worker whose claim boot is refused before its first turn (the daemon stand-in refuses
 #     its `claims/register`, or its plugin prints `claim boot failed at …` and exits, as round
 #     23's reviewer did on the Envoy listener's consumer refusal) is launched once more in the same
@@ -330,9 +336,10 @@
 #     second refusal stands, and health names both attempts. One refused after its first turn is
 #     never relaunched.
 #   - A worker run's boot record, <run>/booted, holds a line for each role its scenario boots:
-#     `boot <role>` before that role's daemon stand-in starts, again before a relaunch, and `skip
-#     <role> <reason>` where the rig boots none, the reason completion-answers.ts's SKIPS declares
-#     (worker_boot, boot_agent, run_threads_closed). health.ts reads it.
+#     `boot <role>` before that role's daemon stand-in starts, again before a relaunch, each
+#     launch boot_agent asks about followed by `since <role> <time>`, and `skip <role> <reason>`
+#     where the rig boots none, the reason completion-answers.ts's SKIPS declares (worker_boot,
+#     boot_agent, run_threads_closed). health.ts reads it.
 #   - Its Envoy listener, its Dispatch server and the daemon facts its stand-in answers by are its
 #     label's own: services_up builds the listener, the server and daemon-pane.go out of the
 #     label's checkout and reads every fact a stand-in boots on before any run starts
@@ -340,8 +347,9 @@
 #   - Its agent runs in a user, mount and PID namespace of its own, started with `env -i` (launch,
 #     world_paths, private_world): the scratch root TMPDIR names, the issue workspaces, the work
 #     directory, every label's checkout, /var/run/legion and /var/run/secrets are each an empty
-#     tmpfs, and only the run's world is shown again: its own directory, its label's profile and
-#     checkout, the batch's services, this script's own directory and the tools its pane names.
+#     tmpfs, and only the run's world is shown again: its own directory, its label's install, the
+#     batch's tokens and the tools its pane names: no label's checkout and not this script's own
+#     directory, whose path names the rig.
 #     /tmp is the run's own $R/tmp and /proc holds its own processes alone. It can still read the
 #     rest of the filesystem, the operator's home included. A host that refuses the namespace
 #     starts no run (require_namespace). score.ts does not score a run
@@ -393,7 +401,10 @@ done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
-work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
+# The work directory's default is a word of no measurement: every path a run's agent can read is
+# built on it, and its old default, `skill-scenarios`, was in every one of them. launch starts no
+# agent whose world names a word of the vocabulary, a work directory's included (run-names.ts guard).
+work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/work}
 work=$(realpath -m -- "$work")
 
 # The worker world (worker_fixture below), which tester-proof, reviewer-text-findings and
@@ -417,25 +428,82 @@ work=$(realpath -m -- "$work")
 # pane's own addressing named — one of those two agents wrote that the architect's note and the
 # addressing line gave two repositories. The scorer read those reviews as no review at all
 # (gh-call.ts's `reviewsRoute`).
+#
+# The repository's name is one a team's could be, which the public leak check passes and which
+# names no host and no deployment: it was `example/widgets`, and two agents of the batch at
+# c273084d took the `example` for a simulation.
 worker_key=''
-worker_repo=example/widgets
+worker_repo=fernbrook/widgets
 worker_base=main
 
-# The developer every commit the rig writes into a run's repository is written by — the worker
-# world's (fixture_git), the issue workspace's working copy (fixture_workspace) and the brainstorm
-# run's to-do CLI — and the identity a worker agent's own jj commits carry (worker_boot). `git
-# log` is something the world writes and the agent reads, so this is a name and an address a
-# repository could hold, in no word of the rig's own: the world's commits were `Fixture`'s, the
-# brainstorm repository's `rig`'s and jj's `Rig Worker`'s (review 5887659447, finding 2), and
-# rig.test.ts's "no file, commit, commit identity or gh answer of a run's world holds a word of
-# the rig's" holds every world to that.
+# The developer the repository's own history is written by, from before any role of Legion worked
+# on it: the default branch's commit every worker world opens on (fixture_first_commit, through
+# fixture_git) and the brainstorm run's to-do CLI. Every commit a role makes, seeded or the run's
+# own, carries that role's App instead (role_identity). `git log` is something the world writes
+# and the agent reads, so this is a name and an address a repository could hold, in no word of
+# the rig's own: the world's commits were `Fixture`'s, the brainstorm repository's `rig`'s and
+# jj's `Rig Worker`'s (review 5887659447, finding 2), and rig.test.ts's "no file, commit, commit
+# identity or gh answer of a run's world holds a word of the rig's" holds every world to that.
 world_author_name='Robin Hale'
 world_author_email=robin.hale@example.invalid
+# The two GitHub Apps a worker run's roles act as, each a slug and the id of its bot user, as
+# production's daemon gives every role its App's bot identity (role_identity): the implement App
+# for the roles that write an issue branch, the review App for every other. Names a repository's
+# own Apps could have, in no word of the rig's.
+world_implement_app=widgets-implementer
+world_implement_app_id=318406215
+world_review_app=widgets-reviewer
+world_review_app_id=318406277
 # The login of the user whose token a run's gh calls are made with, which every answer of the
-# world that names a user carries (`gh api user`, the create of a review): a login a reviewer of
-# this repository could have, in no word of the rig's own — the world answered `rig[bot]` — and
-# the same rig.test.ts row reads every answer the world's routes serve for that.
+# world that names a user carries (`gh api user`, the create of a review): the review App's bot
+# login, in no word of the rig's own — the world answered `rig[bot]` — and the same rig.test.ts
+# row reads every answer the world's routes serve for that.
 world_login='widgets-reviewer[bot]'
+
+# role_identity ROLE prints, a tab between them, the name and the email every commit ROLE makes
+# carries: its App's bot identity, `<slug>[bot]` and `<id>+<slug>[bot]@users.noreply.github.com`,
+# the implement App for the implementer and the merger and the review App for every other role,
+# as production decides it (packages/daemon/internal/appauth's `AppRoleFor` in identity.go and
+# `botIdentity` in appauth.go). Every pane and every seeded commit of one author told the agents
+# that read `git log` that one account made every role's work (INFRA-764 round 24: "the harness
+# looks like it's using robin.hale as the default committer").
+role_identity() {
+  local slug=$world_review_app id=$world_review_app_id
+  case $1 in implementer | merger) slug=$world_implement_app id=$world_implement_app_id ;; esac
+  printf '%s[bot]\t%s+%s[bot]@users.noreply.github.com\n' "$slug" "$id" "$slug"
+}
+
+# role_env ROLE prints the six variables production's runtime gives a pane of ROLE so every
+# commit it makes, with jj or with git, carries ROLE's identity (runtime.go's `GitIdentity.Env`):
+# each wins over any configuration, and over the operator's own identity, which a Legion pod
+# that runs this rig carries in the same six.
+role_env() {
+  local name email
+  IFS=$'\t' read -r name email < <(role_identity "$1")
+  printf '%s\n' "JJ_USER=$name" "JJ_EMAIL=$email" "GIT_AUTHOR_NAME=$name" \
+    "GIT_AUTHOR_EMAIL=$email" "GIT_COMMITTER_NAME=$name" "GIT_COMMITTER_EMAIL=$email"
+}
+
+# adopt_workspace ROLE gives the issue workspace's working copy ($R/ws) to ROLE before its agent
+# starts, as production's runtime does at every role's start (packages/daemon/internal/shim's
+# `runAdoption`): an undescribed working copy takes ROLE's identity as its author (`jj metaedit
+# --update-author`), and one a previous role described, its own work, is kept and ROLE starts on a
+# new one (`jj new`). jj sets a change's author when it makes the change, so without it a pane's
+# first commit carried the author of the change the fixture made, whatever the pane committed
+# as. A run with no workspace has nothing to adopt.
+adopt_workspace() {
+  local identity described
+  [ -d "$R/ws/.jj" ] || return 0
+  mapfile -t identity < <(role_env "$1")
+  described=$(cd "$R/ws" && env "${identity[@]}" JJ_CONFIG="$R/jj.toml" \
+    jj log -r '@ ~ description(exact:"")' --no-graph -T commit_id) || return 1
+  if [ -n "$described" ]; then
+    (cd "$R/ws" && env "${identity[@]}" JJ_CONFIG="$R/jj.toml" jj new) >/dev/null 2>&1
+  else
+    (cd "$R/ws" && env "${identity[@]}" JJ_CONFIG="$R/jj.toml" \
+      jj metaedit --update-author -r '@ & description(exact:"")') >/dev/null 2>&1
+  fi
+}
 
 note() { printf 'skill-scenarios: %s\n' "$*"; }
 fail() {
@@ -490,7 +558,10 @@ timeout_hook=
 # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
+# The work directory's tag, which names its containers, its tmux sessions and each listener's
+# machine id. A listener's machine id is what an agent's `envoy_whoami` answers, so the tag is a
+# word of no measurement, as a machine's name is: it was `skill-scenarios-<digest>`.
+tag=legion-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
@@ -500,8 +571,9 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 # `booted` is the role of the agent a run has already run, empty until the first one, and
 # `sessions_dir` the Oh My Pi session directory of the agent running now: a run that boots more
 # than one agent gives each its own (worker_boot). `services_env` is the services file of the
-# run's label (cmd_run), which a worker run's pane and its recorder read.
-R='' session='' daemon_pid='' dispatch_pid='' record_pid='' runs_pid='' batch_scenario=''
+# run's label (cmd_run), which a worker run's pane and its recorder read. `batch_start` is the
+# batch's start second, which each of its runs' records names (stop_batch).
+R='' session='' daemon_pid='' dispatch_pid='' record_pid='' runs_pid='' batch_scenario='' batch_start=''
 S='' envoy_port='' dispatch_port='' pg_url='' nats_url='' booted='' sessions_dir='' services_env=''
 listener_pids=()
 
@@ -511,10 +583,15 @@ label_dir() {
 }
 
 # The label's checkout, pin and profile name, recorded by `profile`, as the globals P (the label's
-# directory), co, pin and profile that every command and helper below reads.
+# own directory, <work>/profiles/<label>), I (where its profile is installed, its HOME and its
+# plugins: <work>/installs/<id>, the id in $P/install, so no path a run's agent reads names the
+# label; $P itself for a label built before the names left the world), co, pin and profile that
+# every command and helper below reads.
 load_label() {
   P=$(label_dir "$1")
   [ -f "$P/ready" ] || fail "no profile for label $1: run \`rig.sh profile $1 <checkout>\` first"
+  I=$P
+  [ ! -f "$P/install" ] || I=$work/installs/$(<"$P/install")
   co=$(<"$P/checkout")
   pin=$(<"$P/pin")
   profile=$(<"$P/profile")
@@ -524,9 +601,10 @@ load_label() {
   # timeout, not the rule. The model route installers set the limit in the profile's settings
   # (scripts/e2e/lib/install-model-gateway.sh, install-key-file-model-route.sh); a profile built
   # before they did is refused here.
-  local settings=$P/home/.omp/profiles/$profile/agent/config.yml
+  local settings=$I/home/.omp/profiles/$profile/agent/config.yml remove=$P
+  [ "$I" = "$P" ] || remove="$P and $I"
   bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 1)' "$settings" 2>/dev/null ||
-    fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it"
+    fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $remove and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it"
 }
 
 # install_model_route CHECKOUT PROFILE DIR installs the model route of the profile whose HOME is
@@ -661,23 +739,32 @@ checkout_commit() {
   printf '%s parents=%s%s\n' "$head" "${parents// /,}" "${status:+ dirty}"
 }
 
+# The profile, its HOME and its packed plugins, are installed under <work>/installs/<id>, an id of
+# no meaning that $P/install records (load_label's I), and the label's own directory, $P, keeps
+# what the rig reads of the label. The profile's name is production's own, `legion`, the same for
+# every label. Every skill file an agent reads and its HOME are under the install, so no path it
+# reads names the label: the profile was `skills-<label>` under <work>/profiles/<label>.
 cmd_profile() {
   local usage="usage: rig.sh profile <label> <checkout> [--envoy-json <file>]"
   [ $# = 2 ] || [ $# = 4 ] || fail "$usage"
-  local label=$1 P co profile=skills-$1 envoy_json=''
+  local label=$1 P I co profile=legion envoy_json='' id
   if [ $# = 4 ]; then
     [ "$3" = --envoy-json ] || fail "$usage"
     envoy_json=$(realpath -e -- "$4") || fail "--envoy-json $4 does not exist"
     jq -e 'type == "object"' "$envoy_json" >/dev/null 2>&1 || fail "--envoy-json $4 is not a JSON object"
   fi
   P=$(label_dir "$label")
-  [ ! -e "$P" ] || fail "$P exists; remove it to rebuild label $label"
+  [ ! -e "$P" ] || fail "$P exists; remove it, and the install its install file names, to rebuild label $label"
   co=$(cd "$2" && pwd -P)
   [ -f "$co/scripts/e2e/lib/install-plugin-profile.sh" ] || fail "$co is not a Legion checkout"
-  mkdir -p "$P"
-  on_exit "$(printf 'drop_unready_keys %q %q' "$P/ready" "$P/model-key")"
+  id=$(openssl rand -hex 6)
+  I=$work/installs/$id
+  mkdir -p "$P" "$work/installs"
+  mkdir -- "$I" || fail "the install $I could not be made (mkdir says why above)"
+  on_exit "$(printf 'drop_unready_keys %q %q' "$P/ready" "$I/model-key")"
   printf '%s\n' "$co" >"$P/checkout"
   printf '%s\n' "$profile" >"$P/profile"
+  printf '%s\n' "$id" >"$P/install"
   # What the label runs: the checkout's working-copy commit and a digest of its skills tree, the
   # files the packed plugins stage into their dist/skills, listed in byte order (LC_ALL=C) so the
   # digest is the same in every locale.
@@ -692,31 +779,31 @@ cmd_profile() {
   (
     # shellcheck source=/dev/null
     source "$co/scripts/e2e/lib/omp-home.sh"
-    make_omp_home "$P/home"
+    make_omp_home "$I/home"
   )
   # Both plugins: a tester-proof worker's pane loads the Legion extension, which exits a Legion
   # session that finds no Envoy plugin, and every plain session gets its Dispatch skills and tools
   # from the Envoy plugin.
-  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$P/home" --dest "$P/pi-envoy" >"$P/install.log" 2>&1 ||
+  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$I/home" --dest "$I/pi-envoy" >"$P/install.log" 2>&1 ||
     fail "install-plugin-profile.sh --package pi-envoy failed; see $P/install.log"
-  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$P/home" --dest "$P/pi-legion" >>"$P/install.log" 2>&1 ||
+  bash "$co/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$I/home" --dest "$I/pi-legion" >>"$P/install.log" 2>&1 ||
     fail "install-plugin-profile.sh --package pi-legion failed; see $P/install.log"
   # The envoy.json a session of the label reads: a named profile's $PI_CODING_AGENT_DIR/envoy.json
   # (envoyConfigPath, packages/envoy-client/src/envoy-config.ts), which Oh My Pi sets to the
   # profile's agent directory. The given object is merged over whatever is there.
   if [ -n "$envoy_json" ]; then
-    local agent=$P/home/.omp/profiles/$profile/agent
+    local agent=$I/home/.omp/profiles/$profile/agent
     mkdir -p "$agent"
     [ -f "$agent/envoy.json" ] || echo '{}' >"$agent/envoy.json"
     jq -s '.[0] * .[1]' "$agent/envoy.json" "$envoy_json" >"$agent/envoy.json.new"
     mv "$agent/envoy.json.new" "$agent/envoy.json"
   fi
-  install_model_route "$co" "$profile" "$P" "${LEGION_E2E_MODEL_PROVIDER_MODEL:-}" >>"$P/install.log" 2>&1 ||
+  install_model_route "$co" "$profile" "$I" "${LEGION_E2E_MODEL_PROVIDER_MODEL:-}" >>"$P/install.log" 2>&1 ||
     fail "the model route (${LEGION_E2E_MODEL_ROUTE:-gateway}) could not be installed; see $P/install.log"
   [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" != provider ] ||
     printf 'model %s/%s\n' "$LEGION_E2E_MODEL_PROVIDER" "${LEGION_E2E_MODEL_PROVIDER_MODEL:-$route_model_id}" >>"$P/built-from"
   cp "$co/.omp-pin" "$P/pin"
-  [ -z "${SKILL_SCENARIOS_SUPERPOWERS:-}" ] || install_superpowers "$P" "$profile" "$(<"$P/pin")"
+  [ -z "${SKILL_SCENARIOS_SUPERPOWERS:-}" ] || install_superpowers "$P" "$I" "$profile" "$(<"$P/pin")"
   touch "$P/ready"
   trap - EXIT HUP INT TERM
   cat "$P/built-from"
@@ -733,18 +820,19 @@ pinned_omp() {
   printf '%s\n' "$omp"
 }
 
-# install_superpowers P PROFILE PIN copies SKILL_SCENARIOS_SUPERPOWERS's writing-plans and
-# brainstorming skills into the profile's user skill directory, the one the pinned Oh My Pi reads
-# for a named profile ($HOME/.omp/profiles/<profile>/agent/skills/<name>/SKILL.md). Then one
-# `omp -p` under the profile reads skill://writing-plans, and the step fails when the reply holds
-# `Unknown skill`, Oh My Pi's answer for a skill it did not load. It also fails when no tool result
-# of the probe's transcript holds the skill's own heading, so a probe that read nothing does not
-# pass. It records the plugin's version and each skill's digest in built-from. It marks the label
-# with a `superpowers` file, which a spec run needs.
+# install_superpowers P I PROFILE PIN copies SKILL_SCENARIOS_SUPERPOWERS's writing-plans and
+# brainstorming skills into the profile's user skill directory under the label's install I, the one
+# the pinned Oh My Pi reads for a named profile ($HOME/.omp/profiles/<profile>/agent/skills/<name>/
+# SKILL.md). Then one `omp -p` under the profile reads skill://writing-plans, and the step fails
+# when the reply holds `Unknown skill`, Oh My Pi's answer for a skill it did not load. It also
+# fails when no tool result of the probe's transcript holds the skill's own heading, so a probe
+# that read nothing does not pass. It records the plugin's version and each skill's digest in the
+# label's built-from. It marks the label P with a `superpowers` file, which a spec run needs. The
+# probe is the rig's own and no run's, kept under P, outside every run's world.
 install_superpowers() {
-  local P=$1 profile=$2 pin=$3 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version omp
+  local P=$1 I=$2 profile=$3 pin=$4 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version omp
   omp=$(pinned_omp "$pin") || exit 1
-  dest=$P/home/.omp/profiles/$profile/agent/skills
+  dest=$I/home/.omp/profiles/$profile/agent/skills
   mkdir -p "$dest"
   for skill in "${superpowers_skills[@]}"; do
     [ -f "$src/skills/$skill/SKILL.md" ] || fail "SKILL_SCENARIOS_SUPERPOWERS $src has no skills/$skill/SKILL.md"
@@ -763,7 +851,7 @@ install_superpowers() {
   mkdir -p "$probe/cwd" "$probe/tmp"
   (
     cd "$probe/cwd" &&
-      env -i HOME="$P/home" USER="$USER" TERM=xterm-256color TMPDIR="$probe/tmp" PATH="$PATH" \
+      env -i HOME="$I/home" USER="$USER" TERM=xterm-256color TMPDIR="$probe/tmp" PATH="$PATH" \
         MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}" OMP_PROFILE="$profile" \
         PI_NOTIFICATIONS=off PI_NO_TITLE=1 ENVOY_URL=http://127.0.0.1:1 timeout "${SKILL_SCENARIOS_TIMEOUT:-1500}" \
         mise x "$pin" -- "$omp" -p 'Call the read tool once on the path skill://writing-plans, and nothing else. Then reply with the first line of what it returned.' \
@@ -806,19 +894,21 @@ push_guard() {
   [ -z "${PUBLIC_LEAK_CHECK:-}" ] || printf 'PUBLIC_LEAK_CHECK=%s\n' "$PUBLIC_LEAK_CHECK"
 }
 
-# Writes the variables every agent gets to $R/pane.env: a HOME copied from the label's, the
+# Writes the variables every agent gets to $R/pane.env: a HOME copied from the label's install, the
 # label's profile, the run's stand-ins first on PATH, its own TMPDIR, the push guard's check
-# (push_guard), and nothing else from the caller's environment. A run that boots a second agent
-# calls this again, and that agent gets a HOME copied afresh from the label's, as the first one
-# did; the HOME the agent before it wrote in is kept beside its logs and its output, under
-# $R/home-<its role> (worker_boot).
+# (push_guard), and nothing else from the caller's environment. No variable names the rig: the
+# run's directory reaches the gh stand-in through its bundle (standins), and every process of the
+# run carries the run in its HOME (run_env_pids). A run that boots a second agent calls this
+# again, and that agent gets a HOME copied afresh from the label's, as the first one did; the HOME
+# the agent before it wrote in is kept beside its logs and its output, under $R/home-<its role>
+# (worker_boot).
 base_env() {
   mkdir -p "$R/tmp"
   # Nothing is removed here: the HOME of the agent before this one is moved to home-<its role>
   # by the caller, so this copy lands on nothing. A directory still here is that move not made,
   # which `cp -a` would answer by nesting the label's home inside the last agent's.
   [ ! -e "$R/home" ] || fail "base_env: $R/home is still there; worker_boot moves it to home-<role>"
-  cp -a "$P/home" "$R/home"
+  cp -a "$I/home" "$R/home"
   {
     echo "HOME=$R/home"
     echo "USER=$USER"
@@ -828,7 +918,6 @@ base_env() {
     echo "OMP_PROFILE=$profile"
     echo "PI_NOTIFICATIONS=off"
     echo "PI_NO_TITLE=1"
-    echo "SKILL_SCENARIO_RUN=$R"
     echo "PATH=$R/bin:$PATH"
     push_guard
   } >"$R/pane.env"
@@ -840,20 +929,30 @@ base_env() {
 # its own. The score reads the tester's run of the CLI from that record. No `legion` stands in: an
 # agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
 #
+# `gh` runs $R/lib/gh.js, a bundle of gh-standin.ts built here (`bun build --target=bun`), and
+# never this script's own directory, which the run's world does not show: its path names the
+# rig. The bundle opens with the stand-in's one input, the run's directory, as GH_DATA_DIR,
+# shaped as gh's own GH_CONFIG_DIR is; the role that makes a call is the pane's own LEGION_ROLE,
+# which the stand-in reads itself. So no text of the bundle, and no variable of the pane, names
+# the rig.
+#
 # It opens no record: a scenario that reads none needs no file, and the two whose score reads
 # this one are worker runs, whose boot opens it by running this `gh` itself, the one the pane's
 # PATH resolves to, with `--open` (worker_boot).
 standins() {
   local bun_real
   bun_real=$(bun -e 'console.log(process.execPath)')
-  mkdir -p "$R/bin"
-  printf '#!/bin/sh\nexec %q %q gh "$@"\n' "$bun_real" "$here/gh-standin.ts" >"$R/bin/gh"
+  mkdir -p "$R/bin" "$R/lib"
+  bun build "$here/gh-standin.ts" --target=bun --minify-whitespace --outfile "$R/lib/gh.js" \
+    --banner "process.env.GH_DATA_DIR = $(jq -n --arg run "$R" '$run');" \
+    >/dev/null || fail "standins: the gh stand-in did not build"
+  printf '#!/bin/sh\nexec %q %q gh "$@"\n' "$bun_real" "$R/lib/gh.js" >"$R/bin/gh"
   cat >"$R/bin/bun" <<EOF
 #!/usr/bin/env bash
 at=\$(date -u +%FT%T.%3NZ)
 status=0
 $(printf %q "$bun_real") "\$@" || status=\$?
-jq -cn --arg at "\$at" --arg by "\${SKILL_SCENARIO_AGENT:-}" --argjson exit "\$status" \\
+jq -cn --arg at "\$at" --arg by "\${LEGION_ROLE:-}" --argjson exit "\$status" \\
   '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit} + (if \$by == "" then {} else {by:\$by} end)' \\
   --args -- "\$@" >>$(printf %q "$R/calls.jsonl")
 exit "\$status"
@@ -874,22 +973,28 @@ pane_var() {
   [ ! -f "$2" ] || sed -n "s/^$1=//p" "$2" | tail -n 1
 }
 
-# world_paths R WORK P CO PANE [PIN_DIR] prints the world of the run R, one `<kind> <path>` a
+# world_paths R WORK I PANE [PIN_DIR [CO]] prints the world of the run R, one `<kind> <path>` a
 # line: what the run's namespace hides (private_world mounts it) and what health.ts judges a run's
 # tool calls by (`rig.sh world`, cmd_world). It is the one declaration of that world: launch
 # writes it to $R/namespace.txt for the namespace, and health.ts reads it for each run it judges,
-# so the namespace and the detector cannot hold two lists. WORK is the run's work directory, P its
-# label's profile, CO its label's checkout, PANE its pane file and PIN_DIR the pinned Oh My Pi's
-# install. The kinds:
+# so the namespace and the detector cannot hold two lists. WORK is the run's work directory, I
+# its label's install (load_label), PANE its pane file and PIN_DIR the pinned Oh My Pi's install.
+# The kinds:
 #   cover        hidden behind an empty tmpfs: a path a run names under one, outside its own
 #                directory and every rw and ro path, is one the run reached out of its world;
 #   credentials  hidden the same way: any path a run names under one is a reach for a credential;
 #   rw, ro       shown again at its own path, writable or read-only, where it exists; a path that
 #                is a link, or lies under one, is shown at what it resolves to as well.
 # Anything a cover hides that no rw or ro line shows again is out of the run's world, and /tmp is
-# the run's own $R/tmp (private_world's last bind).
+# the run's own $R/tmp (private_world's last bind). Every path shown is a mount the agent's
+# /proc/self/mountinfo names, at its own path and from its own path, so no path shown names the
+# rig or the run's scenario, case or label (launch's guard refuses one that does): no label's
+# checkout is shown, and not this script's own directory either, whose path names the rig. CO,
+# the label's checkout, is given by cmd_world alone, for a run recorded before the names left the
+# world, whose world showed that checkout, this script's directory and the zod its gh stand-in
+# imported there: such a run is read against the world it had.
 world_paths() {
-  local R=$1 work=$2 P=$3 co=$4 pane=$5 pin_dir=${6:-} workspaces=/legion/workspaces dir file entry kind real
+  local R=$1 work=$2 I=$3 pane=$4 pin_dir=${5:-} co=${6:-} workspaces=/legion/workspaces dir file entry kind real
   # Hidden. The scratch root the caller's TMPDIR names: on a Legion pod every role of the issue
   # writes there, and it holds the work directory, the base label's checkout and every extraction
   # of a tree (rig-at-<commit>, head-checkout).
@@ -913,24 +1018,33 @@ world_paths() {
   done
   # Shown again. The run's own directory: its record, HOME, TMPDIR, cwd and world.
   printf 'rw %s\n' "$R"
+  # Hidden inside it: the services' logs (<run>/logs), the one directory of the rig's records,
+  # under an empty read-only tmpfs once the run's directory is bound back (private_world), so an
+  # agent reads none of it and the host keeps it whole. The rig's records that are files
+  # (run-names.ts's RECORDS: built-from, services-from, namespace.txt and the rest) cannot be
+  # hidden so: a mount onto a file is refused on a gVisor pod ("mount point is not a directory"),
+  # so an agent can read them, and launch's guard, which reads every other file the world shows,
+  # passes them over.
+  printf 'hide %s\n' "$R/logs"
   {
-    # The label's profile: its packed plugins and model route, which the HOME copied from it names.
-    printf 'ro %s\n' "$P"
+    # The label's install: its packed plugins and model route, which the HOME copied from it
+    # names.
+    printf 'ro %s\n' "$I"
     # The model route's call record and minted key, which its key command writes on every model
     # call (install_model_route's DIR/key and DIR/cache).
-    printf 'rw %s\n' "$P/key" "$P/cache"
-    # The batch's services: the Dispatch token and the Envoy listener's address the pane names.
-    printf 'ro %s\n' "$work/services"
-    # The run's own label's checkout, and no other label's.
-    [ -z "$co" ] || printf 'ro %s\n' "$co"
-    # The rig's own directory (score.ts's RIG_DIR), not the tree around it: the gh and bun
-    # stand-ins on the pane's PATH run its scripts.
-    printf 'ro %s\n' "$here"
-    # zod, the one package those scripts import, where bun's resolution finds it from that
-    # directory: the first node_modules/zod above it.
-    dir=$here
-    while [ "$dir" != / ] && [ ! -e "$dir/node_modules/zod" ]; do dir=$(dirname -- "$dir"); done
-    [ ! -e "$dir/node_modules/zod" ] || printf 'ro %s\n' "${dir%/}/node_modules/zod"
+    printf 'rw %s\n' "$I/key" "$I/cache"
+    # The batch's tokens: the Dispatch and Envoy tokens the pane names, and nothing else of the
+    # batch's services, whose files name every label.
+    printf 'ro %s\n' "$work/services/tokens"
+    # A run recorded before the names left the world: its label's checkout, this script's own
+    # directory, and zod, the one package its scripts import, where bun's resolution finds it
+    # from that directory, the first node_modules/zod above it.
+    if [ -n "$co" ]; then
+      printf 'ro %s\n' "$co" "$here" "$work/services"
+      dir=$here
+      while [ "$dir" != / ] && [ ! -e "$dir/node_modules/zod" ]; do dir=$(dirname -- "$dir"); done
+      [ ! -e "$dir/node_modules/zod" ] || printf 'ro %s\n' "${dir%/}/node_modules/zod"
+    fi
     # Every tool directory on the pane's PATH but the run's own: mise and tmux, git and jj with
     # the push guard's wrappers, bun, the operator's tools.
     while IFS= read -r -d : entry; do
@@ -971,7 +1085,9 @@ world_paths() {
 #      what it resolves to, which is bound back at that path, and the link reaches it there. The
 #      mount point is made for the target, never for the link, whose `mkdir -p` answers `File
 #      exists` once its target is covered;
-#   4. binds $R/tmp onto /tmp, and the held paths under /tmp again, since that bind hides them;
+#   4. binds $R/tmp onto /tmp, and the held paths under /tmp again, since that bind hides them,
+#      then covers each hide directory with an empty read-only tmpfs, which $R's bind had shown
+#      again;
 #   5. drops the holder for an empty /dev/shm of the run's own, marks $R/namespace-ready, and
 #      starts the command in a second user namespace that maps it back to this user's uid and gid.
 # The order is the record: covering first and binding $R onto itself afterwards binds the new
@@ -998,6 +1114,9 @@ mount --bind "$R/tmp" /tmp || exit 1
 while read -r i kind p; do
   case $p/ in /tmp/*) back "$i" "$kind" "$p" || exit 1 ;; esac
 done </dev/shm/held
+while read -r kind p; do
+  case $kind in hide) [ ! -d "$p" ] || mount -t tmpfs -o ro tmpfs "$p" || exit 1 ;; esac
+done </dev/shm/plan
 umount -l /dev/shm && mount -t tmpfs tmpfs /dev/shm && : >"$R/namespace-ready" && cd "$cwd" || exit 1
 exec unshare -U --map-user="$uid" --map-group="$gid" "$@"
 '
@@ -1040,17 +1159,24 @@ require_namespace() {
 # The agent and every process it starts run in a world of the run's own (world_paths,
 # private_world): the scratch root, the issue workspaces, the work directory, every label's
 # checkout and the pod's credentials are each an empty tmpfs, with the run's own $R, its label's
-# profile and checkout, the batch's services, the rig's own directory and the tools the pane names
-# shown again; $R/tmp is /tmp, and /proc holds the run's own processes alone. So `ls` of the runs
-# directory shows this run alone, no other run's directory, live or archived, no other role's
-# scratch, no other label's checkout and no credential under /var/run/legion can be read, and
-# nothing a run writes to /tmp reaches the machine's /tmp or another run: it stays under $R as the
-# run's record. The 2026-11-14 agents read other runs' pointer files under the runs directory and
-# wrote /tmp/LWEVAL-1-review.json, a name every run's agent picks, into the /tmp every run shared.
-# An agent that does not start in this namespace fails the run, naming the host's refusal: there
-# is no fallback to the shared world. A path the run's world shows that holds a path it hides is
-# refused before anything starts, since showing it would show all it holds. scratch_clean and
-# health.ts's rules stay behind this as a second line.
+# install, the batch's tokens and the tools the pane names shown again; $R/tmp is /tmp, and /proc
+# holds the run's own processes alone. So `ls` of the runs directory shows this run alone, no
+# other run's directory, live or archived, no other role's scratch, no other label's checkout and
+# no credential under /var/run/legion can be read, and nothing a run writes to /tmp reaches the
+# machine's /tmp or another run: it stays under $R as the run's record. The 2026-11-14 agents read
+# other runs' pointer files under the runs directory and wrote /tmp/LWEVAL-1-review.json, a name
+# every run's agent picks, into the /tmp every run shared. An agent that does not start in this
+# namespace fails the run, naming the host's refusal: there is no fallback to the shared world. A
+# path the run's world shows that holds a path it hides is refused before anything starts, since
+# showing it would show all it holds. scratch_clean and health.ts's rules stay behind this as a
+# second line.
+#
+# Nothing the agent can read names the run's scenario, case or label, or a name the rig gave its
+# world: before the agent starts, `run-names.ts guard` reads every variable of its pane, every
+# mount of its namespace, its working and session directories, its prompt, its system prompt and
+# its stand-ins for a word of the vocabulary (run-names.ts's `worldNames`), and the run fails,
+# naming the word and where it is, where one is there. On 2026-11-16, 16 of the 36 runs of the
+# batch at c273084d reasoned from the run's name, which every path of the run carried.
 launch() {
   local system='' extra='' omp unshare kind path other hidden
   omp=$(pinned_omp "$pin") || exit 1
@@ -1060,7 +1186,7 @@ launch() {
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
   mkdir -p "$R/tmp" "$work/runs" "$work/archive"
-  world_paths "$R" "$work" "$P" "$co" "$R/pane.env" "${omp%/bin/omp}" >"$R/namespace.txt"
+  world_paths "$R" "$work" "$I" "$R/pane.env" "${omp%/bin/omp}" >"$R/namespace.txt"
   while read -r kind path; do
     case $kind in rw | ro) ;; *) continue ;; esac
     while read -r other hidden; do
@@ -1068,6 +1194,8 @@ launch() {
       case $hidden in "${path%/}"/?*) fail "launch: the run's world shows $path ($kind), which holds $hidden, a path it hides (world_paths)" ;; esac
     done <"$R/namespace.txt"
   done <"$R/namespace.txt"
+  bun "$here/run-names.ts" guard "$R" "${sessions_dir:-$R/sessions}" "$work" ||
+    fail "launch: the world of ${R##*/} names the run or the rig (above), so its agent does not start"
   rm -f "$R/namespace-ready"
   cat >"$R/launch.sh" <<EOF
 #!/usr/bin/env bash
@@ -1091,27 +1219,27 @@ EOF
     fail "the agent of ${R##*/} did not start: its namespace could not be made: $(grep -v '^exit=' "$R/out.txt" | head -n 3 | tr '\n' ' ')"
 }
 
-# run_env_pids DIR prints each process whose environment names a run at or under DIR in
-# SKILL_SCENARIO_RUN, which an agent gets from its pane file and every command it runs inherits.
-# It finds what stop_tree cannot reach from the pids a command recorded: a process that left their
+# run_env_pids DIR prints each process whose environment's HOME is under DIR: an agent gets its
+# HOME, under its run's directory, from its pane file, and every command it runs inherits it. It
+# finds what stop_tree cannot reach from the pids a command recorded: a process that left their
 # tree, such as a `setsid -f` child. A process that merely works under DIR, such as a developer's
-# shell watching a run, has no such variable, and another user's environment cannot be read. One
+# shell watching a run, has a HOME of its own, and another user's environment cannot be read. One
 # grep narrows the environments to those holding the text anywhere; each is then read variable by
 # variable.
 # shellcheck disable=SC2329 # stop_env_processes, which the exit traps run, runs it
 run_env_pids() {
   local p var
-  for p in $(grep -lzsF -e "SKILL_SCENARIO_RUN=$1" /proc/[0-9]*/environ || true); do
+  for p in $(grep -lzsF -e "HOME=$1/" /proc/[0-9]*/environ || true); do
     {
       while IFS= read -r -d '' var; do
-        case $var in "SKILL_SCENARIO_RUN=$1" | "SKILL_SCENARIO_RUN=$1"/*) echo "${p//[!0-9]/}" && break ;; esac
+        case $var in "HOME=$1"/*) echo "${p//[!0-9]/}" && break ;; esac
       done <"$p"
     } 2>/dev/null || true
   done
 }
 
 # stop_env_processes DIR stops, with stop_tree, each process run_env_pids DIR finds and everything
-# under it, a child that dropped the variable included; the parent stop_tree checks is the one the
+# under it, a child that dropped its HOME included; the parent stop_tree checks is the one the
 # process has now, read a moment after the list.
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
@@ -1129,8 +1257,8 @@ stop_panes() {
 }
 
 # A run's or a live read's exit: its daemon stand-in, its own Dispatch server, its agent's session,
-# and every process that carries its SKILL_SCENARIO_RUN; then the run's directory goes to the
-# archive (archive_run). The run's database stays in the batch's Postgres: services_down removes
+# and every process whose HOME is under the run's directory; then the run's directory goes to the
+# archive with its record (archive_run). The run's database stays in the batch's Postgres: services_down removes
 # the container it started, and leaves a given server, with every database its runs made, to the
 # operator. The two services are this shell's own jobs, so each is waited for once it is killed:
 # bash otherwise prints a `Killed` notice for it on stderr.
@@ -1202,30 +1330,34 @@ scratch_clean() {
 }
 
 # archive_run moves the directory of a run that has ended, and whose processes are stopped, out
-# of $work/runs, where every run of a batch is made, to $work/archive/runs/<run>. An archived run
-# of that name is an earlier run's evidence: archive_run refuses it, naming the run and the path,
-# and exits 1, removing and replacing nothing, so the archived run stays as it was and this run
-# stays in $work/runs. cmd_run refuses such a name before the run starts and every batch numbers
-# above it (next_run), so this is the last line behind those two. An agent sees neither directory
-# but its own run (launch's private_world); outside that namespace the same Unix user reaches
-# both, so a run's directory keeps out of the runs/ every later run is made in, and health.ts's
-# rule against naming another run's directory, the archive's included, stays the check behind
-# them. `rig.sh score` reads the archive, and score.ts and judge.ts read an archived run's work
-# directory as this one (score.ts's `workOfRuns`). A run directory outside $work/runs (a live
-# read's) stays where it is.
+# of $work/runs, where every run of a batch is made, to $work/archive/runs/<run>, and its record
+# (<run>.json, cmd_run) beside it. An archived run of that id is an earlier run's evidence:
+# archive_run refuses it, naming the run and the path, and exits 1, removing and replacing
+# nothing, so the archived run stays as it was and this run stays in $work/runs. cmd_run refuses
+# such a run before it starts, so this is the last line behind it. An agent sees neither
+# directory but its own run (launch's private_world); outside that namespace the same Unix user
+# reaches both, so a run's directory keeps out of the runs/ every later run is made in, and
+# health.ts's rule against naming another run's directory, the archive's included, stays the
+# check behind them. `rig.sh score` reads the archive, and score.ts and judge.ts read an archived
+# run's work directory as this one (score.ts's `workOfRuns`). A run directory outside $work/runs
+# (a live read's) stays where it is.
 # shellcheck disable=SC2329 # stop_run, an exit trap, runs it
 archive_run() {
   case ${R:-} in "$work/runs/"?*) ;; *) return 0 ;; esac
   [ -d "$R" ] || return 0
   local to=$work/archive/runs/${R##*/}
   mkdir -p "$work/archive/runs"
-  [ ! -e "$to" ] && [ ! -L "$to" ] ||
+  [ ! -e "$to" ] && [ ! -L "$to" ] && [ ! -e "$to.json" ] && [ ! -L "$to.json" ] ||
     fail "archive_run: run ${R##*/} is already archived at $to; neither is removed or replaced, and this run stays at $R"
   # -n and the check after it: a directory that appeared at $to since the check above is skipped,
-  # never replaced, and the run that could not move is refused as above.
+  # never replaced, and the run that could not move is refused as above. The record follows the
+  # directory, so a run whose directory could not move keeps its record beside it.
   mv -nT -- "$R" "$to" || true
   [ ! -e "$R" ] ||
     fail "archive_run: run ${R##*/} could not move to $to; nothing there is removed or replaced, and this run stays at $R"
+  [ ! -e "$R.json" ] || mv -nT -- "$R.json" "$to.json" || true
+  [ ! -e "$R.json" ] ||
+    fail "archive_run: the record of run ${R##*/} could not move to $to.json; it stays at $R.json"
 }
 
 # on_exit HANDLER runs HANDLER at the command's exit, INT, TERM and HUP included.
@@ -1255,7 +1387,8 @@ cmd_live_read() {
   require_namespace
   shift
   local paths=() skill list
-  R=$work/live-read/${P##*/}
+  # The label's install id names the read, so no path its agent reads names the label.
+  R=$work/live-read/${I##*/}
   # An earlier live read of the label is that read's record: refused, naming it, never replaced,
   # before the exit handler (stop_run) is set on a directory this read did not make.
   mkdir -p "$work/live-read"
@@ -1272,7 +1405,7 @@ cmd_live_read() {
   standins
   # No Dispatch, and an Envoy address nothing listens on: the session reads files and nothing else.
   echo "ENVOY_URL=http://127.0.0.1:1" >>"$R/pane.env"
-  launch "live-read-${P##*/}"
+  launch "live-read-${I##*/}"
   bun "$here/score.ts" live-read "$R" "$co/skills" "$R/home/.omp/profiles/$profile/logs"
 }
 
@@ -1289,6 +1422,10 @@ label_provenance() { printf '%s\n' "$work/services/services-from-$1"; }
 # never one its own environment names. The file is 0600, since the URL can carry a password, and
 # its absence is how a run knows its batch started a container instead.
 services_postgres=$work/services/postgres-url
+# The batch's Envoy and Dispatch tokens, which services_up writes and every run's pane names: a
+# directory of their own, the one part of the batch's services a run's world shows (world_paths),
+# since the services files beside it name every label.
+tokens=$work/services/tokens
 # The two images a batch starts when it is given no servers, by digest (services_up), which each
 # run's provenance names (services_from): ghcr.io/cybermonklabs/legion/ci's copies of
 # pgvector/pgvector and nats:2.10 (.github/ci-images.yaml).
@@ -1357,16 +1494,18 @@ label_facts() {
 # $work/listener_<label>.port, the label's hyphens as underscores, which no label holds), its pid
 # in listener_pids, under a machine id of its own: a listener's durable NATS consumer is named for
 # its machine (bus.ListenerDurable), and two listeners under one id on the batch's one NATS would
-# take each other's deliveries, which no two machines of production do.
+# take each other's deliveries, which no two machines of production do. The machine id is the tag
+# and the label's install id (load_label's I), since an agent's `envoy_whoami` answers it: it
+# named the label.
 start_listener() {
   local name=listener_${1//-/_} pid
-  ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="$tag-$1" NATS_URLS="$nats_url" \
+  ENVOY_API_TOKEN="$(<"$tokens/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
+    ENVOY_MACHINE_ID="$tag-${I##*/}" NATS_URLS="$nats_url" \
     start_held "$name" envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$2"
   pid=${name}_pid
   listener_pids+=("${!pid}")
   await_start "$name" "${!pid}" 60 "the $1 label's Envoy listener to answer /v1/sessions" \
-    curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$S/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+    curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$tokens/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
 # file_digest FILE prints `sha256:<hex>` of FILE's bytes, or `missing` when there is no such file.
@@ -1394,7 +1533,9 @@ file_digest() {
 #   pin     its Oh My Pi, the version that checkout pins (.omp-pin), <from> being the pin;
 #   shared  a service production shares across versions, or this rig's own instrument, <from>
 #           being where it comes from: the stand-ins, readers and seed programs of this
-#           directory, NATS, Postgres and the push guard's check.
+#           directory (boot-refusal.ts, which boot_agent runs inside every boot, and
+#           run-names.ts, which launch runs before every agent starts, among them), NATS,
+#           Postgres and the push guard's check.
 # <digest> is file_digest of the binary or program file a run starts (`missing` where that file is
 # not there), or `-` where it starts none. The README's skill-scenarios section
 # (packages/pi-envoy/scripts/README.md) holds the table of every service, with the reason each
@@ -1405,11 +1546,11 @@ services_from() {
   printf 'envoy-listener label %s %s\n' "$co" "$(file_digest "$listener")"
   printf 'dispatch label %s %s\n' "$co" "$(file_digest "$dispatch")"
   printf 'plugins label %s -\n' "$co"
-  printf 'model-route label %s %s\n' "$co" "$(file_digest "$P/home/.omp/profiles/$profile/agent/models.yml")"
+  printf 'model-route label %s %s\n' "$co" "$(file_digest "$I/home/.omp/profiles/$profile/agent/models.yml")"
   printf 'daemon-facts label %s %s\n' "$co" "$(file_digest "$pane")"
   printf 'worker-pane label %s %s\n' "$co" "$(file_digest "$pane")"
   printf 'omp pin %s %s\n' "$pin" "$(file_digest "$omp")"
-  for program in daemon-standin.ts daemon-pane.go daemon-routes.go worker-pane.ts gh-standin.ts seed.ts record-publishes.ts; do
+  for program in daemon-standin.ts daemon-pane.go daemon-routes.go worker-pane.ts gh-standin.ts seed.ts record-publishes.ts boot-refusal.ts run-names.ts; do
     printf '%s shared %s %s\n' "$program" "$here" "$(file_digest "$here/$program")"
   done
   if given_services; then
@@ -1461,7 +1602,7 @@ start_dispatch() {
 # batch's. The binaries are no such file: they are kept from one batch to the next (go_binary).
 services_files() {
   local file
-  printf '%s\n' "$services_postgres" "$S/envoy-token" "$S/dispatch-token"
+  printf '%s\n' "$services_postgres" "$tokens/envoy-token" "$tokens/dispatch-token"
   for file in "$S"/env-* "$S"/services-from-* "$work"/listener_*.port; do
     [ ! -e "$file" ] && [ ! -L "$file" ] || printf '%s\n' "$file"
   done
@@ -1599,7 +1740,7 @@ services_up() {
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
   fi
-  (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
+  (umask 077 && mkdir -p "$tokens" && openssl rand -hex 24 >"$tokens/envoy-token" && printf 'e2e-token\n' >"$tokens/dispatch-token")
   for label in "$@"; do
     load_label "$label"
     listener=$(go_binary "$co" envoy ./cmd/listener envoy-listener) || fail "the Envoy listener of label $label's checkout $co did not build"
@@ -1610,7 +1751,7 @@ services_up() {
     {
       echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
       echo "ENVOY_NATS_URL=$nats_url"
-      echo "ENVOY_TOKEN_FILE=$S/envoy-token"
+      echo "ENVOY_TOKEN_FILE=$tokens/envoy-token"
     } >"$(label_services "$label")"
     services_from "$listener" "$dispatch" "$pane" >"$(label_provenance "$label")"
     listening+=("$label :$envoy_port")
@@ -1620,9 +1761,10 @@ services_up() {
 
 # services_down stops and removes what this batch started and made, and nothing else: each
 # label's listener (listener_pids), the containers it started (containers), and its services'
-# files (services_files), which lock_services found absent before this batch made them, then its
-# lock. A given Postgres and a given NATS keep running, and every database a run made on that
-# Postgres (own_dispatch) stays there for the operator to drop.
+# files (services_files), which lock_services found absent before this batch made them, the
+# tokens directory they leave empty, then its lock. A given Postgres and a given NATS keep
+# running, and every database a run made on that Postgres (own_dispatch) stays there for the
+# operator to drop.
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
   local pid files
@@ -1630,6 +1772,7 @@ services_down() {
   [ ${#containers[@]} = 0 ] || docker rm -fv "${containers[@]}" >/dev/null 2>&1 || true
   mapfile -t files < <(services_files)
   rm -f -- "${files[@]}" "$S/up"
+  rmdir -- "$tokens" 2>/dev/null || true
 }
 
 # own_dispatch SEED gives the run a Dispatch of its own and seeds it with `seed.ts SEED`, the world
@@ -1687,7 +1830,7 @@ dispatch_session() {
   standins
   {
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
-    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+    echo "DISPATCH_TOKEN_FILE=$tokens/dispatch-token"
     echo "ENVOY_URL=http://127.0.0.1:1"
   } >>"$R/pane.env"
   [ $# = 0 ] || printf '%s\n' "$@" >>"$R/pane.env"
@@ -1735,12 +1878,11 @@ run_measure_before_ask() {
 # `dispatch` command of literal words, the form AskGate reads and mints a marker for: a write sent
 # any other way reaches no review at all, and the CLI refuses it in block mode or posts it with a
 # warning in warn mode, which measures nothing of the rules check. A set
-# SKILL_SCENARIOS_ASKGATE_MODE is the pane's OMP_ASKGATE and <run>/mode.txt; unset, the pane gets
-# no OMP_ASKGATE, so AskGate's verdicts block and its marker checks warn.
+# SKILL_SCENARIOS_ASKGATE_MODE is the pane's OMP_ASKGATE and the run record's `mode` (cmd_run);
+# unset, the pane gets no OMP_ASKGATE, so AskGate's verdicts block and its marker checks warn.
 run_askgate() {
   local name=$1 askCase=$2 mode=${SKILL_SCENARIOS_ASKGATE_MODE:-} issue message ref ask billing one
   case $mode in '' | warn | block) ;; *) fail "SKILL_SCENARIOS_ASKGATE_MODE is '$mode', not warn or block" ;; esac
-  [ -z "$mode" ] || printf '%s\n' "$mode" >"$R/mode.txt"
   own_dispatch project
   seed_dispatch askgate
   ref=$(jq -r .comment_ref "$R/fixture.json")
@@ -1833,8 +1975,12 @@ Tasks live in `tasks.json` beside `todo.py`.
 MDEOF
   git -C "$R/cwd" init -q
   git -C "$R/cwd" add -A
-  git -C "$R/cwd" -c user.name="$world_author_name" -c user.email="$world_author_email" \
-    -c commit.gpgsign=false commit -qm "A tiny to-do CLI"
+  # The repository's history is its own developer's, given as fixture_git gives it: in the
+  # variables git reads ahead of any `-c`, so the operator's own GIT_AUTHOR_* (a Legion pod's App)
+  # never reaches the agent's `git log`.
+  GIT_AUTHOR_NAME=$world_author_name GIT_AUTHOR_EMAIL=$world_author_email \
+    GIT_COMMITTER_NAME=$world_author_name GIT_COMMITTER_EMAIL=$world_author_email \
+    git -C "$R/cwd" -c commit.gpgsign=false commit -qm "A tiny to-do CLI"
   # shellcheck disable=SC2016 # the backticks are the prompt's own, a command name for the agent
   printf '/brainstorming a small feature: let a task in this to-do CLI carry an optional due date, and have `list` show overdue tasks first.\n' \
     >"$R/prompt.txt"
@@ -1855,20 +2001,29 @@ judge_ts() {
     fail "judge.ts $1 failed; see $R/judge.log"
 }
 
-# next_run NAME LABEL prints one above the highest <n> of a run directory
-# $work/runs/<NAME>-<LABEL>-<n> or $work/archive/runs/<NAME>-<LABEL>-<n> (archive_run), or 1 when
-# there is none. NAME is the scenario, with its case after it for a cased scenario, as cmd_run
-# names a run: cmd_batch numbers every run it starts from this, so no batch takes the name of a
-# run of an earlier one.
+# next_run NAME LABEL prints one above the highest <n> of a run named <NAME>-<LABEL>-<n>, live or
+# archived (archive_run), or 1 when there is none: a run's name is its record's `name` (cmd_run),
+# or, for a run recorded before the names left the world, its directory's own. NAME is the
+# scenario, with its case after it for a cased scenario, as cmd_run names a run: cmd_batch numbers
+# every run it starts from this, so no batch takes the name of a run of an earlier one.
 next_run() {
-  local dir n highest=0
-  for dir in "$work/runs/$1-$2-"* "$work/archive/runs/$1-$2-"*; do
-    [ -d "$dir" ] || continue
-    n=${dir##*/"$1-$2-"}
-    [[ $n =~ ^[0-9]+$ ]] || continue
-    ((10#$n <= highest)) || highest=$((10#$n))
-  done
-  printf '%s\n' "$((highest + 1))"
+  local name n highest=0 record
+  {
+    for name in "$work/runs/$1-$2-"* "$work/archive/runs/$1-$2-"*; do
+      [ ! -d "$name" ] || printf '%s\n' "${name##*/}"
+    done
+    for record in "$work"/runs/*.json "$work"/archive/runs/*.json; do
+      [ ! -f "$record" ] || jq -r '.name' "$record"
+    done
+  } | {
+    while IFS= read -r name; do
+      case $name in "$1-$2-"*) ;; *) continue ;; esac
+      n=${name#"$1-$2-"}
+      [[ $n =~ ^[0-9]+$ ]] || continue
+      ((10#$n <= highest)) || highest=$((10#$n))
+    done
+    printf '%s\n' "$((highest + 1))"
+  }
 }
 
 # source_dir SCENARIO NAME prints the directory of the source NAME under $work/sources, and fails,
@@ -1951,7 +2106,7 @@ run_spec() {
   standins
   {
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
-    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+    echo "DISPATCH_TOKEN_FILE=$tokens/dispatch-token"
     echo "ENVOY_URL=http://127.0.0.1:1"
   } >>"$R/pane.env"
   spec_turns "$name" "$issue" "$prompt"
@@ -2274,61 +2429,69 @@ round_world() {
 # The world a review round reads, which reviewer-text-findings' two cases build: the round's base
 # world (round_world), whose two findings this round is the first to read, and the pull request's
 # one unresolved bot thread, whose finding is a wording nit the reviewer answers and closes
-# nothing for. `dropped` is that change with the blank-name guard gone, the negative control's
-# behavioural finding. A push to legion/<key> is this world's own failure, since a review round
-# pushes nothing at all. The base requires conversation resolution (resolution_protection_routes)
-# and the bot's thread is open, so GitHub reports the head `BLOCKED` with every check green
-# (blocked_at): the approval then waits in `reviewing`, as main's engine leaves it (review.go's
-# `reviewRound`, which reports the round `stuckMergeState`), so a reviewer that reads the record
-# after its approval reads `reviewing`, and the wake of the implementer it owns at the approval
-# is the one step that starts the fix (review 5887659447, finding 3).
+# nothing for. The bot left it as GitHub leaves every inline comment, in a review of its own
+# (COMMENTED, with no body), so the reviews list holds that review and the thread's comment is a
+# review comment of it, read the same through GraphQL and REST. `dropped` is that change with the
+# blank-name guard gone, the negative control's behavioural finding. A push to legion/<key> is
+# this world's own failure, since a review round pushes nothing at all. The base requires
+# conversation resolution (resolution_protection_routes) and the bot's thread is open, so GitHub
+# reports the head `BLOCKED` with every check green (gh-threads.ts's `mergeStateOf`, from the
+# threads as they stand, until the run resolves the last of them): the approval then waits in
+# `reviewing`, as main's engine leaves it (review.go's `reviewRound`, which reports the round
+# `stuckMergeState`), so a reviewer that reads the record after its approval reads `reviewing`,
+# and the wake of the implementer it owns at the approval is the one step that starts the fix
+# (review 5887659447, finding 3).
 review_world() {
-  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body threads
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body threads reviews
   round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
-  threads=$(jq -n '[{id:"PRRT_kwDOrig0001", isResolved:false, path:"greet.test.ts", line:4,
+  threads=$(jq -n '[{id:"PRRT_kwDOrig0001", isResolved:false, path:"greet.test.ts", line:4, review:4001,
     comments:[{author:{login:"style-bot[bot]"},
       body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}]')
-  fixture_write "$(resolution_protection_routes)" '""' '[]' "$(blocked_at "$C1")" "$threads"
+  reviews=$(jq -n --arg head "$C1" '[{id:4001, state:"COMMENTED", commit_id:$head,
+    author:{login:"style-bot[bot]"}, user:{login:"style-bot[bot]"}, body:""}]')
+  fixture_write "$(resolution_protection_routes)" '""' "$reviews" '{}' "$threads"
 }
 
 # The world an approval that left text threads open leaves behind, which threads-closed's two
 # cases build: the round's base world (round_world), and then the approval — the pull request
 # is APPROVED, its body carries the reviewer's `Threads:` count and one open entry per thread,
 # the reviewer's handoff body is at $R/review.json for the runner to record, the threads
-# themselves are in the world's GraphQL graph (fixture_write's THREADS) and in $R/threads.json,
-# which the score reads, and `resolveReviewThread`
-# answers as GitHub answers a role with write access: success. It encodes no verdict of its own —
-# a stand-in that refused the mutation would prove the claim the scenario is there to measure —
-# and the day a live reviewer finds GitHub refusing it, this answer and the rule change together
-# on that evidence. The base branch's protection is read at both reads the merge gate prescribes
-# — the rules of the branch and the branch itself — and fixture_write serves both, since a 404
-# there is a refused read, which the rule has a reviewer report and never guess around (the
-# batch of 2026-11-10 holds 91 refused reads of this kind); neither ever names a required
-# check. `gh pr diff` is the diff of the run's own
-# remote at the call, so the
-# reviewer reads the fix the implementer pushed and no world freezes a diff of its own
-# (gh-standin.ts). The world's review threads are the fixture's own answer and no record of the run:
-# a reply the implementer wrote does not appear under its thread, and a thread the reviewer
-# resolved still reads `isResolved: false`. The score reads the calls each role made and never
-# that state, so neither changes what a run scores, but a role that lists the threads again after
-# its own call sees them as the approval left them.
+# themselves are in the world's GraphQL graph (fixture_write's THREADS), each opened by an inline
+# comment of the approval, and in $R/threads.json, which the score reads. The threads are
+# GitHub's state and so the run's: `resolveReviewThread` answers as GitHub answers a role with
+# write access, the thread resolved, a reply by GraphQL or by the REST route is its thread's last
+# comment from then on, and every later read of the threads finds both (gh-standin.ts's
+# `threadState`). It encodes no verdict of its own — a stand-in that refused the mutation would
+# prove the claim the scenario is there to measure — and the day a live reviewer finds GitHub
+# refusing it, this answer and the rule change together on that evidence. The base branch's
+# protection is read at both reads the merge gate prescribes — the rules of the branch and the
+# branch itself — and fixture_write serves both, since a 404 there is a refused read, which the
+# rule has a reviewer report and never guess around (the batch of 2026-11-10 holds 91 refused
+# reads of this kind); the protection names the checks the head reports as the ones it requires.
+# `gh pr diff` is the diff of the run's own remote at the call, so the reviewer reads the fix the
+# implementer pushed and no world freezes a diff of its own (gh-standin.ts). The score reads the
+# calls each role made and never the threads' state, so that state changes what a role reads and
+# nothing of what a run scores. Before it was kept, a role that listed the threads again after
+# its own call saw them as the approval left them, and wrote that the world was a mock.
 #
 # Without the guard dropped it leaves the review world's two text findings as two threads, which
 # one commit of text closes. Its base requires conversation resolution
 # (resolution_protection_routes), so with those threads open GitHub reports the approved head
-# `BLOCKED` with every check green (blocked_at): the approval waits in `reviewing`, as main's
-# engine leaves it (review.go's `reviewRound`, reporting the round `stuckMergeState`), the
+# `BLOCKED` with every check green (gh-threads.ts's `mergeStateOf`): the approval waits in
+# `reviewing`, as main's engine leaves it (review.go's `reviewRound`, reporting the round
+# `stuckMergeState`), the
 # implementer's push sets it aside (`stuckApprovedOtherCode`), and the reviewer's approval of the
 # fix head is what ends the round (daemon-standin.ts's `servedPhase`; run_threads_closed boots
-# both halves in `reviewing`). The fix head is `CLEAN`: by the time the reviewer approves it, it
-# has resolved each thread, which is what lifts the rule. `dropped` is the change
+# both halves in `reviewing`). The state follows the threads: once the last of them is resolved
+# GitHub reports the head `CLEAN`, the approved head and the fix head alike, since resolving them
+# is what lifts the rule. `dropped` is the change
 # with the blank-name guard gone, an honest
 # workflow comment, and one thread on the docs/cli.md sentence the change adds, which says that a
 # blank name exits 2: that sentence is false only because the code is wrong, so no text fix closes
-# the thread and it is a message to the architect. It is the negative control: its base is
-# protected by nothing and its approved head is `CLEAN`, so the round ended on the approval and
-# the loop runs in `accepting` (run_threads_closed says why).
+# the thread and it is a message to the architect. It is the negative control: its base requires
+# no conversation resolution and its approved head is `CLEAN`, so the round ended on the approval
+# and the loop runs in `accepting` (run_threads_closed says why).
 approved_world() {
   local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body extra
   local threads entries threads_line reviews
@@ -2379,9 +2542,11 @@ $entries"
      critical:0, important:0, minor:($threads|length),
      keyFindings:[$threads[] | {severity:"minor", file:.path, description:.open}]}' >"$R/review.json"
   fixture_body "$threads_line" "$(fixture_checks implementer tester)"
-  # A resolution succeeds, as GitHub answers a role with write access; a reply goes through the
-  # GraphQL mutation (fixture_write's graph) or the REST reply route; the threads the approval
-  # left open are the ones $R/threads.json holds, which fixture_write's graph serves. The create
+  # A resolution succeeds, as GitHub answers a role with write access, and a reply goes through
+  # the GraphQL mutation or the REST reply route, each answered from the threads as they stand
+  # (gh-standin.ts's `threadState`); the threads the approval left open are the ones
+  # $R/threads.json holds, which fixture_write's graph serves, each opened by an inline comment of
+  # the approval (`review: 5001`). The create
   # of a review is the POST of the reviews path, chosen by the call's own verb (`methods`, read as
   # the score reads it, so a create written `-f commit_id=<head>` with no method is the create
   # `--method POST` is), and it stands ahead of fixture_write's own; the reviews already there,
@@ -2405,22 +2570,18 @@ $entries"
   # that passed on it was built by review_world.
   #
   # Text-fixes' base requires conversation resolution, which its open threads hold the approved
-  # head `BLOCKED` on, and the negative control's base is protected by nothing and its head
-  # `CLEAN` (the header above says why each).
-  local protection='[]' states='{}'
-  if [ -z "$guard" ]; then
-    protection=$(resolution_protection_routes)
-    states=$(blocked_at "$C1")
-  fi
+  # head `BLOCKED` on until the last is resolved (gh-threads.ts's `mergeStateOf`), and the
+  # negative control's base requires none and its head is `CLEAN` (the header above says why
+  # each).
+  local protection='[]'
+  [ -n "$guard" ] || protection=$(resolution_protection_routes)
   extra=$(jq -n --arg url "$worker_pr_url" --argjson number "$worker_pr" \
     --arg login "$world_login" --argjson protection "$protection" '$protection + [
-    {match:("^gh api .*pulls/" + ($number|tostring) + "/comments/[0-9]+/replies"),
-     stdout:{id:7001, html_url:($url+"#discussion_r7001")}},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews([ ?]|$)"), methods:["POST"],
      stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:$login}}}
   ]')
-  fixture_write "$extra" '"APPROVED"' "$reviews" "$states" "$(jq '[.[] | {id, isResolved:false, path, line,
-    comments:[{author:{login:"legion-review[bot]"}, body}]}]' <<<"$threads")"
+  fixture_write "$extra" '"APPROVED"' "$reviews" '{}' "$(jq '[.[] | {id, isResolved:false, path, line,
+    review:5001, comments:[{author:{login:"legion-review[bot]"}, body}]}]' <<<"$threads")"
 }
 
 # The steps the three worlds are built from. Each reads and sets the world function's own
@@ -2447,12 +2608,17 @@ EOF
   printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
 }
 
-# The world's git in $src: this world's date on every commit, and the world's own author
-# ($world_author_name).
+# The world's git in $src: this world's date on every commit, and the identity a commit of $src
+# carries, the repository's own developer ($world_author_name) or, where the caller names a role
+# in $fixture_by, that role's App (role_identity). The identity goes in the variables git reads
+# ahead of any `-c`, so the operator's own GIT_AUTHOR_* and GIT_COMMITTER_* never reach the
+# world's history: on a Legion pod they are the pod's App, and the seeded commits of round 24's
+# preflight carried it.
 fixture_git() {
-  GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when \
-    git -C "$src" -c user.name="$world_author_name" -c user.email="$world_author_email" \
-    -c commit.gpgsign=false "$@"
+  local name=$world_author_name email=$world_author_email
+  [ -z "${fixture_by:-}" ] || IFS=$'\t' read -r name email < <(role_identity "$fixture_by")
+  GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when GIT_AUTHOR_NAME=$name GIT_AUTHOR_EMAIL=$email \
+    GIT_COMMITTER_NAME=$name GIT_COMMITTER_EMAIL=$email git -C "$src" -c commit.gpgsign=false "$@"
 }
 
 # docs/cli.md as it stands before the change this world's commit makes, which leaves it with one
@@ -2559,7 +2725,8 @@ EOF
 # already written the fixture's own pushes into it, so the empty file is the reading "no push",
 # which is what a review round leaves.
 fixture_head_commit() {
-  fixture_git add -A && fixture_git commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
+  fixture_git add -A &&
+    fixture_by=implementer fixture_git commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
   C1=$(fixture_git rev-parse HEAD)
   fixture_git push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
@@ -2585,17 +2752,20 @@ fixture_test_handoff() {
 }
 
 # fixture_workspace clones the remote into $R/ws, the issue workspace every role of the run
-# shares. It is isolated from the operator's own jj configuration (fsmonitor.backend = "watchman"
-# on a devbox that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this
-# fixture's own identity, the world's author ($world_author_name), so jj falls back to its
-# built-in defaults and `jj new`'s working-copy snapshot never registers this run's workspace
-# with the operator's long-running watchman.
+# shares, as the implement App, the App production's workspace provisioning clones with
+# (packages/daemon/internal/daemon's outbox `createBranch`); each role then adopts its working copy
+# at its boot (adopt_workspace). It is isolated from the operator's own jj configuration
+# (fsmonitor.backend = "watchman" on a devbox that runs it) by a bare JJ_CONFIG naming only
+# fsmonitor.backend = "none", so jj falls back to its built-in defaults and `jj new`'s
+# working-copy snapshot never registers this run's workspace with the operator's long-running
+# watchman; and from the operator's own identity by the App's (role_env).
 fixture_workspace() {
-  local jj_setup_config=$R/jj-setup.toml
-  printf '[user]\nname = "%s"\nemail = "%s"\n[fsmonitor]\nbackend = "none"\n' \
-    "$world_author_name" "$world_author_email" >"$jj_setup_config"
-  JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
-  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
+  local jj_setup_config=$R/jj-setup.toml identity
+  mapfile -t identity < <(role_env implementer)
+  printf '[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
+  env "${identity[@]}" JJ_CONFIG="$jj_setup_config" jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
+  (cd "$R/ws" && env "${identity[@]}" JJ_CONFIG="$jj_setup_config" jj bookmark track "legion/$worker_key" --remote origin &&
+    env "${identity[@]}" JJ_CONFIG="$jj_setup_config" jj new "legion/$worker_key") >/dev/null 2>&1
 }
 
 # fixture_checks ROLE... prints the pull request body's `**Checks:**` section: one line per role
@@ -2646,18 +2816,19 @@ $2
 # both of them by name (skill://legion-worker/references/merge-gate.md, "the base branch's
 # rulesets' required checks and its branch protection's"), and that rule has a refused read
 # reported to the architect and never guessed, so a 404 stops a reviewer where GitHub would have
-# answered it — the batch of 2026-11-10 holds 91 refused reads of this kind. Nothing protects
-# a world's base unless its own routes say so (resolution_protection_routes, which they stand
-# ahead of), and GitHub answers that base on a public repository with 200 twice: an empty list
-# of rules, and the branch itself with `protected: false` and no required check. The bodies hold
-# the fields that answer those two reads and leave out the commit and link fields no reader of
-# this gate reads. The rules route is ahead of the branch route, whose regex matches the rules
-# path too, and so is the protection route, which that same regex matches: a call on GitHub's
-# protection endpoint, `…/branches/<base>/protection`, answered from the branch route got the
-# branch object and 200, where GitHub answers a branch nothing protects 404 `Branch not
-# protected`. A reviewer reading that 200 is told this base's protection by a body that is no
-# answer to the call it made. The stand-in answers from the first route that matches the whole
-# call.
+# answered it — the batch of 2026-11-10 holds 91 refused reads of this kind. Every world's base
+# is protected as a repository whose CI gates its merges is: its branch protection requires the
+# checks the head reports (concluded_checks, `test` and `lint`), so the gate's protection read
+# prints them and its rulesets read prints none, the base having no ruleset unless a world's own
+# routes say so (resolution_protection_routes, which they stand ahead of). A base that named no
+# required check left reviewers writing that the world held no required-check configuration at
+# all (INFRA-764 round 24, reviewer-text-findings-text-only-base-3 and defect-base-3). The
+# bodies hold the fields that answer those reads and leave out the commit and link fields no
+# reader of this gate reads. The rules route is ahead of the branch route, whose regex matches
+# the rules path too, and so is the protection route, which that same regex matches: a call on
+# GitHub's protection endpoint, `…/branches/<base>/protection`, answered from the branch route
+# got the branch object, which is no answer to the call it made. The stand-in answers from the
+# first route that matches the whole call.
 #
 # Every other read a role text of either label names, and every read the census saw an agent
 # make, is a shared route too, each answered as GitHub answers it from the world's state
@@ -2665,18 +2836,23 @@ $2
 # repository itself, with its default branch; a commit's combined status, its check runs, the
 # workflow runs and a run's jobs, four GitHub routes with four shapes, where one regex over
 # `check-runs|status` once answered the first three with the check-runs list, so a read of the
-# statuses or the runs failed on a shape GitHub never gives; the pull request's conversation and inline
-# comments; a ref; and GraphQL, whose queries the stand-in answers from the graph written here
-# (gh-standin.ts's `graphAnswer`): the pull request, its review threads (THREADS), its timeline,
-# the viewer, and the two mutations a role makes on a thread. A route answered from what the run
-# did — the reviews it created, the comments it posted, the ref a commit status names — carries
-# `answer`, which names the stand-in's reading of the run's own record and remote; its `stdout`
-# is what the world held before the run. The world holds no workflow run and no commit status:
-# its checks are check runs of no Actions workflow, so the runs list and the statuses are empty,
-# a run's jobs and `gh run view`/`gh run watch` are GitHub's and gh's refusals for a run that is
-# not there, which health.ts declares for every role (GH_DECLARED's NO_RUN) since a role that meets
-# one meets production, and the combined status reads `pending`, as GitHub's does for a head with
-# none.
+# statuses or the runs failed on a shape GitHub never gives; the pull request's conversation and
+# its review comments; a ref; a file or a directory at a ref; and GraphQL, whose queries the
+# stand-in answers from the graph written here (gh-standin.ts's `graphAnswer`): the pull request,
+# its review threads (THREADS), its timeline, the viewer, and the two mutations a role makes on a
+# thread. A route answered from what the run did — the reviews it created, the comments it
+# posted, the ref a commit status names, the commit whose check runs are read, the commit a file
+# is read at — carries `answer`, which names the stand-in's reading of the run's own record and
+# remote; its `stdout` is what the world held before the run. The review threads are the run's
+# too: the graph holds the world's own, and the stand-in answers every read of a thread or of a
+# review comment, GraphQL or REST, with those threads and the effect of every call the run made
+# on them (gh-standin.ts's `threadState`), and the two mutations' payloads from that same state,
+# so the graph's `mutation` names the two GitHub serves a role and holds no answer of its own. The
+# world holds no workflow run and no commit status: its checks are check runs of no Actions
+# workflow, so the runs list and the statuses are empty, a run's jobs and `gh run view`/`gh run
+# watch` are GitHub's and gh's refusals for a run that is not there, which health.ts declares for
+# every role (GH_DECLARED's NO_RUN) since a role that meets one meets production, and the combined
+# status reads `pending`, as GitHub's does for a head with none.
 #
 # The route every call that creates something falls to is chosen by the call's verb and not by a
 # regex over its text (`methods`, which the stand-in reads with the score's own reader): gh sends
@@ -2694,18 +2870,29 @@ $2
 # recorded PATCH calls read `.body` back as null (review 5887659447, finding 6).
 #
 # fixture_write EXTRA DECISION REVIEWS [MERGE_STATES] writes MERGE_STATES, a JSON object from a
-# head's SHA to the merge state GitHub reports for the pull request while it is at that head
-# (GitHub's names: `CLEAN`, `BLOCKED`, …), beside the routes as `mergeStates`, and every head it
-# names none for is `CLEAN` (gh-call.ts's `mergeStateOn`). The pull request's own answers carry
-# the state of the head the run's remote is at (gh-standin.ts), and the daemon stand-in moves the
-# record on it as main's engine moves on `record.MergeState` (daemon-standin.ts's `servedPhase`).
+# head's SHA to the merge state GitHub reports for the pull request while it is at that head for a
+# reason no review thread decides (GitHub's names: `CLEAN`, `BEHIND`, `DIRTY`, …), beside the
+# routes as `mergeStates`, and every head it names none for is `CLEAN` (gh-call.ts's
+# `mergeStateOn`). A base whose protection requires conversation resolution holds that state
+# `BLOCKED` while a thread is open, from the threads as the run leaves them (gh-threads.ts's
+# `mergeStateOf`), so no world writes the `BLOCKED` its threads cause. The pull request's own
+# answers carry the state of the head the run's remote is at (gh-standin.ts), and the daemon
+# stand-in moves the record on that same state as main's engine moves on `record.MergeState`
+# (daemon-standin.ts's `servedPhase`).
 # fixture_write EXTRA DECISION REVIEWS MERGE_STATES [THREADS] writes THREADS, the pull request's
-# review threads as GitHub's GraphQL names them (`id`, `isResolved`, `path`, `line`, and
-# `comments`, each with its `author` and `body`), into the graph, and a world with none passes
-# none.
+# review threads, each given as `id`, `isResolved`, `path`, `line`, `review` (the id of the
+# review whose inline comment opened it, one of REVIEWS) and `comments`, each with its `author`
+# and `body`, into the graph in the shape GitHub's GraphQL answers them: each comment carries its
+# node id, its `databaseId` — the id of the same comment in GitHub's REST API, which the REST
+# reply route names — its path, its line, the commit it is on, the review it belongs to and, for
+# every comment after the first, the one it replies to. The comments are numbered from 7001 in
+# the order given, and the time they were made is this world's ($when). A world with none passes
+# none. A thread whose comment carried no `databaseId` and no REST comment left reviewers writing
+# that the thread was a synthetic one no REST reply could reach (INFRA-764 round 24,
+# reviewer-text-findings-defect-base-1, -2 and -3).
 fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg login "$world_login" \
+    --arg login "$world_login" --arg when "${when:-}" \
     --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson number "$worker_pr" --argjson extra "$1" \
     --argjson decision "$2" --argjson reviews "$3" --argjson runs "$(concluded_checks)" \
@@ -2713,6 +2900,31 @@ fixture_write() {
     ($number|tostring) as $n
     | ($repo | split("/")) as [$owner, $name]
     | ($repo | gsub("(?<c>[.+*?()|\\[\\]{}^$\\\\])"; "\\\(.c)")) as $repo_re
+    | (if $when == "" then null else ($when | ltrimstr("@") | split(" ")[0] | tonumber | todate) end) as $at
+    | ("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection") as $protection_url
+    | ($runs | map(.name)) as $required
+    | [$required[] | {context:., app_id:null}] as $required_checks
+    | (reduce $threads[] as $thread ({next:7001, out:[]};
+        .next as $first
+        | .out += [($thread | del(.review)) + {__typename:"PullRequestReviewThread",
+            isOutdated:false, isCollapsed:$thread.isResolved, originalLine:$thread.line,
+            startLine:null, originalStartLine:null, diffSide:"RIGHT", startDiffSide:null,
+            subjectType:"LINE", resolvedBy:null, viewerCanResolve:($thread.isResolved | not),
+            viewerCanUnresolve:$thread.isResolved, viewerCanReply:true,
+            comments:[$thread.comments | to_entries[] | (.key + $first) as $id | .value + {
+              __typename:"PullRequestReviewComment", id:("PRRC_kwDOAAAAAc4AAC" + ($id|tostring)),
+              databaseId:$id, fullDatabaseId:($id|tostring), authorAssociation:"NONE",
+              path:$thread.path, line:$thread.line, originalLine:$thread.line,
+              url:($url + "#discussion_r" + ($id|tostring)),
+              createdAt:$at, updatedAt:$at, publishedAt:$at, state:"SUBMITTED", outdated:false,
+              isMinimized:false,
+              replyTo:(if .key == 0 then null
+                else {id:("PRRC_kwDOAAAAAc4AAC" + ($first|tostring)), databaseId:$first} end),
+              commit:{oid:$head}, originalCommit:{oid:$head},
+              pullRequestReview:(if $thread.review == null then null
+                else {id:("PRR_kwDOAAAAAc4AAE" + ($thread.review|tostring)), databaseId:$thread.review} end)}]}]
+        | .next += ($thread.comments | length))
+      | .out) as $seeded
     | {number:$number, id:("PR_kwDOAAAAAc4AAA" + $n), url:$url, html_url:$url,
      title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false, isCrossRepository:false,
      headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
@@ -2736,31 +2948,39 @@ fixture_write() {
         query:{viewer:{login:$login},
           repository:{__args:{owner:$owner, name:$name}, name:$name, nameWithOwner:$repo,
             defaultBranchRef:{name:$base},
-            pullRequest:{__args:{number:$number}, reviewThreads:$threads, timelineItems:[],
+            pullRequest:{__args:{number:$number}, reviewThreads:$seeded, timelineItems:[],
               isInMergeQueue:false, mergeQueueEntry:null}}},
-        mutation:{resolveReviewThread:{thread:{isResolved:true}},
-          addPullRequestReviewThreadReply:{comment:{id:"PRRC_kwDOfix900", url:($url+"#discussion_r900")}}}}},
+        mutation:{resolveReviewThread:{}, addPullRequestReviewThreadReply:{}}}},
       {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), methods:["POST"],
        stdout:{id:6001, html_url:($url+"#pullrequestreview-6001"), user:{login:$login}}},
       {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["PATCH"], stdout:$pr},
       {match:"^gh api ", methods:["POST","PATCH","PUT"], stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
-      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+/comments([ ?]|$)"), answer:"review-comments", stdout:[]},
+      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+/comments([ ?]|$)"), answer:"review-comments"},
       {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+([ ?]|$)"), answer:"review", stdout:$reviews},
       {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), answer:"reviews", stdout:$reviews},
-      {match:("^gh api .*pulls/" + $n + "/comments([ ?]|$)"), answer:"review-comments", stdout:[]},
+      {match:("^gh api .*pulls/" + $n + "/comments([ ?]|$)"), answer:"review-comments"},
       {match:("^gh api .*issues/" + $n + "/comments([ ?]|$)"), answer:"issue-comments", stdout:[]},
       {match:("^gh api .*/rules/branches/" + $base), stdout:[]},
       {match:("^gh api .*/branches/" + $base + "/protection"),
-       stderr:"gh: Branch not protected (HTTP 404)\n", exit:1},
+       stdout:{url:$protection_url,
+         required_status_checks:{url:($protection_url + "/required_status_checks"), strict:false,
+           contexts:$required, contexts_url:($protection_url + "/required_status_checks/contexts"),
+           checks:$required_checks},
+         enforce_admins:{url:($protection_url + "/enforce_admins"), enabled:false},
+         required_conversation_resolution:{enabled:false}, allow_force_pushes:{enabled:false},
+         allow_deletions:{enabled:false}}},
       {match:("^gh api .*/branches/" + $base),
-       stdout:{name:$base, protected:false,
-         protection:{enabled:false, required_status_checks:{enforcement_level:"off", contexts:[], checks:[]}},
-         protection_url:("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection")}},
-      {match:"^gh api .*commits/[^/ ]+/check-runs([ ?]|$)", stdout:{total_count:($runs|length), check_runs:$runs}},
+       stdout:{name:$base, protected:true,
+         protection:{enabled:true,
+           required_status_checks:{enforcement_level:"non_admins", contexts:$required, checks:$required_checks}},
+         protection_url:$protection_url}},
+      {match:"^gh api .*commits/[^/ ]+/check-runs([ ?]|$)", answer:"check-runs",
+       stdout:{total_count:($runs|length), check_runs:$runs}},
       {match:"^gh api .*commits/[^/ ]+/status([ ?]|$)", answer:"combined-status", stdout:{statuses:[]}},
       {match:"^gh api .*actions/runs/[0-9]+/jobs([ ?]|$)", stderr:"gh: Not Found (HTTP 404)\n", exit:1},
       {match:"^gh api .*actions/runs([ ?]|$)", stdout:{total_count:0, workflow_runs:[]}},
       {match:"^gh api .*git/ref/", answer:"git-ref"},
+      {match:"^gh api .*repos/[^/ ]+/[^/ ]+/contents([/?][^ ]*)?( |$)", methods:["GET"], answer:"contents"},
       {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), stdout:$pr},
       {match:("^gh api (.* )?/?repos/" + $repo_re + "([?][^ ]*)?( |$)"), stdout:$repository},
       {match:"^gh (api user|auth status)", stdout:{login:$login}},
@@ -2774,33 +2994,40 @@ fixture_write() {
 }
 
 # concluded_checks prints the check runs GitHub reports on a head whose CI has finished: `test`
-# and `lint`, each completed with success, in the shape of the check-runs route, with the link
-# and the times `gh pr checks` prints from them. It is the answer every head of every world
-# takes: no world holds a head's CI running, since what holds an approved head `BLOCKED` here is
-# the open threads (resolution_protection_routes), not a check.
+# and `lint`, each completed with success, in the shape of the check-runs route, with the link of
+# the app that ran it (`details_url`) and the times `gh pr checks` prints from them. It is the
+# answer every head of every world takes: no world holds a head's CI running, since what holds an
+# approved head `BLOCKED` here is the open threads (resolution_protection_routes), not a check.
+# The times say how long each ran; the gh stand-in reports each on the commit it is read for, its
+# ids that commit's and its times counted from when that commit reached the remote
+# (gh-standin.ts's `reportedRuns`). These two are the checks every world's base requires
+# (fixture_write).
 concluded_checks() {
   jq -n '[
-    {name:"test", status:"completed", conclusion:"success", html_url:"https://example.invalid/2",
+    {name:"test", status:"completed", conclusion:"success", details_url:"https://example.invalid/2",
      started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:20Z"},
-    {name:"lint", status:"completed", conclusion:"success", html_url:"https://example.invalid/1",
+    {name:"lint", status:"completed", conclusion:"success", details_url:"https://example.invalid/1",
      started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:10Z"}]'
 }
 
 # resolution_protection_routes prints the routes of a base branch ($worker_base of
-# $worker_repo) whose protection requires conversation resolution and no check: the one rule
-# that holds a pull request `BLOCKED` with every check green and an approval standing, while a
-# review thread is open. GitHub states it at each read the merge gate prescribes, which a world
-# puts ahead of fixture_write's unprotected answers: the branch's rules, in the ruleset form
-# (`pull_request` with `required_review_thread_resolution`); the branch, `protected: true` with
+# $worker_repo) whose protection requires conversation resolution beside the checks every
+# world's base requires (fixture_write): the one rule that holds a pull request `BLOCKED` with
+# every check green and an approval standing, while a review thread is open. GitHub states it at
+# each read the merge gate prescribes, which a world puts ahead of fixture_write's own answers:
+# the branch's rules, in the ruleset form (`pull_request` with
+# `required_review_thread_resolution`); the branch, `protected: true` with
 # `required_conversation_resolution` enabled; and its protection endpoint, which answers the same
-# protection rather than 404. Each names its required checks as an empty list, so the gate's
-# reads of those print nothing and exit 0 as they do on an unprotected base. In that order, since
-# the branch route's regex matches the other two paths as well.
+# protection. The protection names the required checks as fixture_write's does, the checks the
+# head reports (concluded_checks), so the gate's protection read prints them and its rulesets
+# read prints none. In that order, since the branch route's regex matches the other two paths as
+# well.
 resolution_protection_routes() {
-  jq -n --arg repo "$worker_repo" --arg base "$worker_base" '
+  jq -n --arg repo "$worker_repo" --arg base "$worker_base" --argjson runs "$(concluded_checks)" '
     ("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection") as $url
-    | {required_status_checks:{enforcement_level:"off", contexts:[], checks:[]},
-       required_conversation_resolution:{enabled:true}} as $rules
+    | ($runs | map(.name)) as $required
+    | [$required[] | {context:., app_id:null}] as $checks
+    | {required_conversation_resolution:{enabled:true}} as $rules
     | [
       {match:("^gh api .*/rules/branches/" + $base),
        stdout:[{type:"pull_request", ruleset_source_type:"Repository", ruleset_source:$repo, ruleset_id:1,
@@ -2808,22 +3035,17 @@ resolution_protection_routes() {
            require_last_push_approval:false, required_approving_review_count:0,
            required_review_thread_resolution:true}}]},
       {match:("^gh api .*/branches/" + $base + "/protection"),
-       stdout:($rules + {url:$url, enforce_admins:{enabled:false}, allow_force_pushes:{enabled:false},
-         allow_deletions:{enabled:false}})},
+       stdout:($rules + {url:$url,
+         required_status_checks:{url:($url + "/required_status_checks"), strict:false,
+           contexts:$required, contexts_url:($url + "/required_status_checks/contexts"), checks:$checks},
+         enforce_admins:{url:($url + "/enforce_admins"), enabled:false},
+         allow_force_pushes:{enabled:false}, allow_deletions:{enabled:false}})},
       {match:("^gh api .*/branches/" + $base),
-       stdout:{name:$base, protected:true, protection:($rules + {enabled:true}), protection_url:$url}}
+       stdout:{name:$base, protected:true,
+         protection:($rules + {enabled:true,
+           required_status_checks:{enforcement_level:"non_admins", contexts:$required, checks:$checks}}),
+         protection_url:$url}}
     ]'
-}
-
-# blocked_at HEAD prints fixture_write's MERGE_STATES for a world whose HEAD GitHub reports
-# `BLOCKED` and every other head `CLEAN`. The world's base requires conversation resolution
-# (resolution_protection_routes) and its approved HEAD has threads open, which is what GitHub
-# holds it `BLOCKED` on with every check green; main's engine reads that state for an approval
-# that stands and reports the round `stuckMergeState` (review.go's `reviewRound` and
-# `stuckMergeStateReason`), leaving the issue in `reviewing`. A head the reviewer approves after
-# resolving each thread is `CLEAN`, since resolving them is what lifts the rule.
-blocked_at() {
-  jq -n --arg head "$1" '{($head): "BLOCKED"}'
 }
 
 # run_project SCENARIO CASE LABEL N [BATCH] prints the Legion project token of one worker run.
@@ -2837,15 +3059,17 @@ blocked_at() {
 # batch to the next: BATCH is what tells one batch from another, the work directory's tag and the
 # batch's start second.
 #
-# A project token is lower-case letters and digits alone (isLegionProjectToken), while a scenario,
-# a case and a label carry hyphens and a scenario that takes no case gives an empty one, so the
-# token is `skills` and the first 16 hex digits of the parts' digest rather than the parts
-# themselves. The run's own name, which carries the scenario, the case, the label and the number
-# in full, is its directory's (cmd_run).
+# A project token is lower-case letters and digits alone (isLegionProjectToken), and the agent
+# reads it in its LEGION_PROJECT, its role topics and its system prompt's addressing, so the token
+# is the one production makes of a deployment's project, the repository's name lower-cased with
+# every other character dropped (contracts' legionProjectToken: `cybermonklabs/legion` is
+# `cybermonklabslegion`), and the first 12 hex digits of the parts' digest, which tell the runs
+# apart and name none of the parts: it was `skills` and the digest, and `skills` named the
+# experiment. The run's scenario, case, label and number are its record's (cmd_run).
 run_project() {
   local digest
   digest=$(printf '%s\0' "$1" "$2" "$3" "$4" "${5:-}" | sha256sum)
-  printf 'skills%.16s\n' "$digest"
+  printf '%s%.12s\n' "$(printf '%s' "$worker_repo" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')" "$digest"
 }
 
 # worker_boot NAME PROJECT ROLE [PHASE [COMPLETED]] boots the label's checkout's phase worker for
@@ -2869,15 +3093,16 @@ run_project() {
 # stand-in, the remote and the Dispatch issue the first left. Each agent gets its own daemon
 # stand-in, whose own output ($R/logs/daemon.log, where start_process writes it) is moved aside
 # under the role of the agent it served, its own HOME, its own Oh My Pi session directory and its
-# own last line of output, and the role of each is in the calls it records (SKILL_SCENARIO_AGENT),
+# own last line of output, and the role of each is in the calls it records (its pane's LEGION_ROLE),
 # while the run keeps one calls.jsonl, one pushes.log and one record of what reached the daemon,
 # $R/daemon.log, which every stand-in of the run appends to. The agent is launched by boot_agent,
 # which relaunches it once when its claim boot is refused before its first turn.
 #
 # Each boot is on the run's boot record, <run>/booted (completion-answers.ts's BOOTED), before its
 # stand-in starts: `boot <role>`, a line per attempt (boot_agent writes the relaunch's), so a boot
-# whose stand-in never listened is on the record too. A role the rig decides not to boot is there
-# as `skip <role> <reason>` (run_threads_closed). Health holds the record to the scenario's roles
+# whose stand-in never listened is on the record too, followed by the `since <role> <time>`
+# boot_agent asks the boot's reader with. A role the rig decides not to boot is there as `skip
+# <role> <reason>` (run_threads_closed). Health holds the record to the scenario's roles
 # (ANSWERS' boots, SKIPS) and each booted role to its own output and transcript.
 worker_boot() {
   local name=$1 project=$2 role=$3 phase=${4:-} completed=${5:-} state port pane_gh pane_vars pane_build
@@ -2885,8 +3110,10 @@ worker_boot() {
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
+  local identity_name identity_email
+  IFS=$'\t' read -r identity_name identity_email < <(role_identity "$role")
   printf '[user]\nname = "%s"\nemail = "%s"\n[ui]\npaginate = "never"\n' \
-    "$world_author_name" "$world_author_email" >"$R/jj.toml"
+    "$identity_name" "$identity_email" >"$R/jj.toml"
   if [ -n "$booted" ]; then
     # The agent before this one has exited, and its stand-in goes with it: stopped here so no run
     # leaves one listening, and its log kept, so the port read below is this stand-in's own. The
@@ -2942,20 +3169,18 @@ worker_boot() {
     sed '/^ENVOY_URL=/d' "$R/worker.env"
     cat "$services_env"
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
-    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+    echo "DISPATCH_TOKEN_FILE=$tokens/dispatch-token"
     echo "GIT_CONFIG_COUNT=0"
-    echo "JJ_USER=$world_author_name"
-    echo "JJ_EMAIL=$world_author_email"
+    role_env "$role"
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
-    echo "SKILL_SCENARIO_AGENT=$role"
   } >"$R/pane.env"
   # The record of the run's calls is opened here, before the agent starts, by the `gh` the pane's
   # own PATH resolves to, run in the pane's own environment: the file above is the one `launch`
   # gives the agent, so `command -v` on its PATH finds the gh the agent's own calls will reach —
   # whatever stands between it and the stand-in, since the daemon's pane leads PATH with its
-  # launcher directory — and `env -i` hands that gh the variables `launch` hands the agent, the
-  # run it records under (SKILL_SCENARIO_RUN) among them. `--open` writes the one line that says
+  # launcher directory — and `env -i` hands that gh the variables `launch` hands the agent: the
+  # run it records under is its bundle's own (standins). `--open` writes the one line that says
   # the stand-in was there and records no call, as record-publishes.ts writes its `recording`
   # line. So a run whose agents call neither gh nor bun leaves calls.jsonl there holding that
   # line alone, which the score reads as the run that called nothing, where a record nothing
@@ -2972,6 +3197,7 @@ worker_boot() {
     fail "worker_boot: $R/pane.env names no PATH with a gh on it, so no call of this run could reach the gh stand-in"
   env -i "${pane_vars[@]}" "$pane_gh" --open ||
     fail "worker_boot: the pane's gh ($pane_gh) could not open $R/calls.jsonl"
+  adopt_workspace "$role" || fail "worker_boot: $role could not take the issue workspace's working copy ($R/ws)"
   boot_agent "$name" "$role"
   booted=$role
 }
@@ -2984,12 +3210,17 @@ worker_boot() {
 # Envoy listener (session_delivery.go), then one listener built from the head clone for both
 # labels and now each label's own (services_up), and a rig run is one `omp -p` with nobody to
 # launch it again. How often it fires, by label, is the count `rig.sh health` prints. What counts
-# is read by health.ts --boot-refusal, the one reader of it, whose "claim boot" rule holds the run
-# to the same record: the daemon stand-in's refusal of the agent's `claims/register` (its
-# $R/daemon.log lines of ROLE since the launch began), or the plugin's own `claim boot failed at …`
-# line in $R/out.txt, and only when the agent's transcripts hold no turn, no model call and no tool
-# call. A refusal after the first turn is never relaunched: the daemon's relaunch would not take
-# that turn back.
+# is read by boot-refusal.ts, the one reader of it, run here as its own program, whose "claim
+# boot" rule in health holds the run to the same record: the daemon stand-in's refusal of the
+# agent's `claims/register` (its $R/daemon.log lines of ROLE since the launch began), or the
+# plugin's own `claim boot failed at …` line in $R/out.txt, and only when the agent's transcripts
+# hold no turn, no model call and no tool call. A refusal after the first turn is never
+# relaunched: the daemon's relaunch would not take that turn back.
+#
+# The `since` the reader is asked with, the time the launch began, is on the run's boot record
+# right after the attempt's `boot <role>` line, as `since <role> <time>` (completion-answers.ts's
+# BOOTED), so a replay of the boot asks the reader with the call's own argument rather than one
+# rebuilt from the stand-in's log. The relaunch is asked nothing, and its `boot` line has none.
 #
 # The first attempt is kept whole beside the second, under $R/boot-1/ROLE: its out.txt, its
 # session directory (sessions/) and the stand-in's lines of it (daemon.log), while the second
@@ -3003,12 +3234,13 @@ worker_boot() {
 boot_agent() {
   local name=$1 role=$2 since first refusal status=0
   since=$(date -u +%FT%T.%3NZ)
+  printf 'since %s %s\n' "$role" "$since" >>"$R/booted"
   launch "$name"
-  refusal=$(bun "$here/health.ts" --boot-refusal "$R" "$role" "$since" "$sessions_dir") || status=$?
+  refusal=$(bun "$here/boot-refusal.ts" "$R" "$role" "$since" "$sessions_dir") || status=$?
   case $status in
   0) ;;
   1) return 0 ;;
-  *) fail "boot_agent: health.ts could not read the $role's boot (exit $status)" ;;
+  *) fail "boot_agent: boot-refusal.ts could not read the $role's boot (exit $status)" ;;
   esac
   first=$R/boot-1/$role
   mkdir -p "$first"
@@ -3211,43 +3443,50 @@ run_threads_closed() {
 
 # scenario_case SCENARIO prints the case SCENARIO's own variable names, nothing for a scenario
 # that takes none, and fails, naming the variable and every case it takes, when a cased scenario's
-# variable names none. A batch and each of its runs read the case through this, so a batch refuses
-# a case no run would take, and the run's directory name and its <run>/case.txt carry the one word
-# the scorer reads back from both.
+# variable names none: run-names.ts's `caseOf`, which reads the rig's one scenario table
+# (SCENARIOS). threads-closed runs its own change, text-fixes, when its variable is unset, since
+# that is the scenario's measured arm and the check that runs it names no variable. A batch and
+# each of its runs read the case through this, so a batch refuses a case no run would take, and
+# the run's record carries the one word the scorer and health read back.
 scenario_case() {
-  case $1 in
-  askgate) askgate_case ;;
-  reviewer-text-findings) reviewer_case ;;
-  threads-closed) threads_case ;;
-  esac
-}
-askgate_case() {
-  case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
-  facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
-    printf '%s\n' "$SKILL_SCENARIOS_ASKGATE_CASE"
-    ;;
-  *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
-  esac
-}
-reviewer_case() {
-  case ${SKILL_SCENARIOS_REVIEWER_CASE:-} in
-  text-only | defect) printf '%s\n' "$SKILL_SCENARIOS_REVIEWER_CASE" ;;
-  *) fail "SKILL_SCENARIOS_REVIEWER_CASE is '${SKILL_SCENARIOS_REVIEWER_CASE:-}', not text-only or defect" ;;
-  esac
-}
-# threads-closed runs its own change, text-fixes, when the variable is unset, since that is the
-# scenario's measured arm and the check that runs it names no variable; a word that is neither
-# case is a typo, and fails as the other cased scenarios' do.
-threads_case() {
-  case ${SKILL_SCENARIOS_THREADS_CASE:-text-fixes} in
-  text-fixes | code-defect) printf '%s\n' "${SKILL_SCENARIOS_THREADS_CASE:-text-fixes}" ;;
-  *) fail "SKILL_SCENARIOS_THREADS_CASE is '$SKILL_SCENARIOS_THREADS_CASE', not text-fixes or code-defect" ;;
-  esac
+  local out status=0
+  out=$(bun "$here/run-names.ts" case "$1" 2>&1) || status=$?
+  [ "$status" = 0 ] || fail "$out"
+  [ -z "$out" ] || printf '%s\n' "$out"
 }
 
+# run_named NAME prints the directory of the run named NAME (`<scenario>[-<case>]-<label>-<n>`),
+# live or archived, and fails when there is none: the run whose record (cmd_run) names it, or a run
+# recorded before the names left the world, whose directory is the name itself.
+run_named() {
+  local dir record
+  for dir in "$work/runs/$1" "$work/archive/runs/$1"; do
+    [ ! -e "$dir" ] && [ ! -L "$dir" ] || {
+      printf '%s\n' "$dir"
+      return 0
+    }
+  done
+  for record in "$work"/runs/*.json "$work"/archive/runs/*.json; do
+    [ -f "$record" ] && [ "$(jq -r .name "$record")" = "$1" ] && {
+      printf '%s\n' "${record%.json}"
+      return 0
+    }
+  done
+  return 1
+}
+
+# A run's directory is $work/runs/<id>, an id of no meaning (twelve hex digits), and every path,
+# variable and process its agents can read is built on that directory, so none of them names the
+# run's scenario, case or label: the run's name, `<scenario>[-<case>]-<label>-<n>`, named its
+# directory until 2026-11-16, and 16 of the 36 runs of the batch at c273084d reasoned from it.
+# What the run is — its scenario, case, label, number, name, batch, where it ran, and askgate's
+# mode where one is set — is its record, $work/runs/<id>.json beside the directory
+# (run-names.ts's RunRecord), written before anything of the run starts, which the run's
+# namespace covers with the rest of the work directory and which archive_run moves with it. Every
+# reader of a run's scenario, case or label reads the record (run-names.ts's `runIdentity`).
 cmd_run() {
   [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|reviewer-text-findings|threads-closed|brainstorm|askgate|spec-writing|spec-rewrite> <label> <n> <index> <start>"
-  local scenario=$1 n=$3 index=$4 start=$5 name run_case project
+  local scenario=$1 n=$3 index=$4 start=$5 id name run_case project taken mode=''
   load_label "$2"
   # A world whose push guard cannot find its check refuses every push, so it is refused before
   # anything of it is built (push_guard).
@@ -3264,24 +3503,32 @@ cmd_run() {
   # A cased scenario's run name carries its case, so each case's batches are numbered apart
   # (next_run) and no case's run takes another's name.
   run_case=$(scenario_case "$scenario") || exit 1
-  name=$scenario${run_case:+-$run_case}-${P##*/}-$n
-  R=$work/runs/$name
+  if [ "$scenario" = askgate ]; then
+    mode=${SKILL_SCENARIOS_ASKGATE_MODE:-}
+    case $mode in '' | warn | block) ;; *) fail "SKILL_SCENARIOS_ASKGATE_MODE is '$mode', not warn or block" ;; esac
+  fi
+  name=$scenario${run_case:+-$run_case}-${P##*/}-$((10#$n))
   # A run never replaces another: a run of this name, live or archived, is an earlier run's
   # evidence, so the run is refused, naming it, before anything of it starts, and its exit
   # handler (stop_run, which stops processes of $R and archives $R) is set only once `mkdir`
   # has made $R this run's own.
-  [ ! -e "$work/archive/runs/$name" ] && [ ! -L "$work/archive/runs/$name" ] ||
-    fail "run $name is already archived at $work/archive/runs/$name; a run never replaces another (a batch numbers its runs above each label's highest)"
+  if taken=$(run_named "$name"); then
+    fail "run $name is already at $taken; a run never replaces another (a batch numbers its runs above each label's highest)"
+  fi
+  id=$(openssl rand -hex 6)
+  R=$work/runs/$id
   mkdir -p "$work/runs"
   mkdir -- "$R" ||
-    fail "run $name could not be made at $R (mkdir says why above); a run never replaces another (a batch numbers its runs above each label's highest)"
+    fail "run $name could not be made at $R (mkdir says why above); a run never replaces another"
+  jq -n --arg run "$id" --arg scenario "$scenario" --arg case "$run_case" --arg label "${P##*/}" \
+    --argjson n "$((10#$n))" --arg name "$name" --arg batch "$tag-$start" --arg ran "$R" --arg mode "$mode" \
+    '{run:$run, scenario:$scenario, case:$case, label:$label, n:$n, name:$name, batch:$batch, ran:$ran}
+     + (if $mode == "" then {} else {mode:$mode} end)' >"$R.json"
   evidence=$R
   on_exit stop_run
   mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs"
   # What the shared scratch held before this run, so its exit records what the run made there.
   scratch_before
-  # The run's own record of its case, which the scorer holds to the name above.
-  [ -z "$run_case" ] || printf '%s\n' "$run_case" >"$R/case.txt"
   cp "$P/built-from" "$R/built-from"
   # What each service of the run comes from, beside what its label was built from, before any of
   # it starts (services_from): health.ts holds every service of the label's own to built-from's
@@ -3293,28 +3540,34 @@ cmd_run() {
   # publish on them, and a second computation of it that drifted from this one would leave every
   # send read as never made, with nothing anywhere saying so (start_recorder, worker_boot).
   project=$(run_project "$scenario" "$run_case" "${P##*/}" "$n" "$tag-$start")
+  # Each runner names the run's tmux sessions by its id (launch), as no agent reads them.
   case $scenario in
-  ask-on-message) run_ask_on_message "$name" ;;
-  measure-before-ask) run_measure_before_ask "$name" ;;
-  tester-proof) run_tester_proof "$name" "$project" "$index" "$start" ;;
-  reviewer-text-findings) run_reviewer_text_findings "$name" "$project" "$index" "$start" "$run_case" ;;
-  threads-closed) run_threads_closed "$name" "$project" "$index" "$start" "$run_case" ;;
-  brainstorm) run_brainstorm "$name" ;;
-  askgate) run_askgate "$name" "$run_case" ;;
-  spec-writing | spec-rewrite) run_spec "$scenario" "$name" ;;
+  ask-on-message) run_ask_on_message "$id" ;;
+  measure-before-ask) run_measure_before_ask "$id" ;;
+  tester-proof) run_tester_proof "$id" "$project" "$index" "$start" ;;
+  reviewer-text-findings) run_reviewer_text_findings "$id" "$project" "$index" "$start" "$run_case" ;;
+  threads-closed) run_threads_closed "$id" "$project" "$index" "$start" "$run_case" ;;
+  brainstorm) run_brainstorm "$id" ;;
+  askgate) run_askgate "$id" "$run_case" ;;
+  spec-writing | spec-rewrite) run_spec "$scenario" "$id" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
-  echo "$name: $(tail -n 1 "$R/out.txt")"
+  echo "$name ($id): $(tail -n 1 "$R/out.txt")"
 }
 
 # A batch's exit: its runs (each run's shell, daemon stand-in and fixture commands), the agents they
-# started, every process that carries a run's SKILL_SCENARIO_RUN, and the services.
+# started (each tmux session of a run whose record names this batch), every process whose HOME is
+# under the runs directory, and the services.
 # shellcheck disable=SC2329 # on_exit's trap runs it
 stop_batch() {
-  local s sessions=()
+  local s id sessions=() ids=()
   stop_tree "${runs_pid:-}"
+  mapfile -t ids < <(jq -r --arg batch "$tag-$batch_start" 'select(.batch == $batch) | .run' \
+    "$work"/runs/*.json "$work"/archive/runs/*.json 2>/dev/null || true)
   for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null || true); do
-    case $s in "$tag-$batch_scenario"-*) sessions+=("$s") ;; esac
+    for id in "${ids[@]}"; do
+      case $s in "$tag-$id" | "$tag-$id"-*) sessions+=("$s") ;; esac
+    done
   done
   for s in "${sessions[@]}"; do stop_panes "$s"; done
   stop_env_processes "$work/runs"
@@ -3323,7 +3576,7 @@ stop_batch() {
 
 cmd_batch() {
   [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|reviewer-text-findings|threads-closed|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
-  local runs=$2 label n index=0 start run_case first
+  local runs=$2 label n index=0 run_case first
   batch_scenario=$1
   case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | reviewer-text-findings | threads-closed | brainstorm | askgate | spec-writing | spec-rewrite) ;; *) fail "unknown scenario $batch_scenario" ;; esac
   # A cased scenario's case, refused here before any service starts, as each run refuses it. It
@@ -3361,7 +3614,7 @@ cmd_batch() {
   on_exit stop_batch
   # One listener per label, each built from that label's own checkout (services_up).
   services_up "$@"
-  start=$(date +%s)
+  batch_start=$(date +%s)
   # Each label's runs are numbered from one above that label's highest run, live or archived
   # (next_run), read once this batch holds the work directory (lock_services): a batch never gives
   # a run the name of an earlier one, which cmd_run would refuse and archive_run could not keep.
@@ -3369,7 +3622,7 @@ cmd_batch() {
     first=$(next_run "$batch_scenario${run_case:+-$run_case}" "$label")
     for n in $(seq "$first" $((first + runs - 1))); do
       index=$((index + 1))
-      printf '%s %s %s %s %s\n' "$batch_scenario" "$label" "$n" "$index" "$start"
+      printf '%s %s %s %s %s\n' "$batch_scenario" "$label" "$n" "$index" "$batch_start"
     done
   done | xargs -r -P "${SKILL_SCENARIOS_PARALLEL:-5}" -L 1 bash "$here/rig.sh" run &
   runs_pid=$!
@@ -3377,22 +3630,31 @@ cmd_batch() {
 }
 
 # cmd_world LABEL RUN prints the world of the run directory RUN of label LABEL as world_paths
-# declares it, from what the run recorded: its own directory as its pane file names it
-# (SKILL_SCENARIO_RUN; RUN itself for a run with no pane file), the work directory that holds it,
-# the label's profile there, the checkout its built-from names, its pane file, and the pin's
-# install where mise still has it. health.ts judges every run's tool calls by it.
+# declares it, from what the run recorded: its own directory as its record names it
+# (run-names.ts's `ran`; a run recorded before the names left the world names it in its pane
+# file's SKILL_SCENARIO_RUN; RUN itself for a run with neither), the work directory that holds it,
+# the label's install there, its pane file, and the pin's install where mise still has it. A run
+# with no record is read against the world such a run had, which showed its label's checkout (the
+# checkout its built-from names) and this script's own directory (world_paths' CO). health.ts
+# judges every run's tool calls by it.
 cmd_world() {
   [ $# = 2 ] || fail "usage: rig.sh world <label> <run dir>"
   [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"
-  local label=$1 dir=$2 R run_work P co pin_dir=''
-  R=$(pane_var SKILL_SCENARIO_RUN "$dir/pane.env")
+  local label=$1 dir=$2 R='' run_work P I co='' pin_dir=''
+  if [ -f "$dir.json" ]; then
+    R=$(jq -r .ran "$dir.json")
+  else
+    R=$(pane_var SKILL_SCENARIO_RUN "$dir/pane.env")
+    co=$(sed -n 's/^checkout //p' "$dir/built-from" 2>/dev/null | head -n 1) || co=''
+  fi
   [ -n "$R" ] || R=$(realpath -m -- "$dir")
   run_work=${R%/*/*}
   P=$run_work/profiles/$label
-  co=$(sed -n 's/^checkout //p' "$dir/built-from" 2>/dev/null | head -n 1) || co=''
-  [ -n "$co" ] || [ ! -f "$P/checkout" ] || co=$(<"$P/checkout")
+  I=$P
+  [ ! -f "$P/install" ] || I=$run_work/installs/$(<"$P/install")
+  [ -f "$dir.json" ] || [ -n "$co" ] || [ ! -f "$P/checkout" ] || co=$(<"$P/checkout")
   if [ -f "$P/pin" ] && command -v mise >/dev/null; then pin_dir=$(mise where "$(<"$P/pin")" 2>/dev/null) || pin_dir=''; fi
-  world_paths "$R" "$run_work" "$P" "$co" "$dir/pane.env" "$pin_dir"
+  world_paths "$R" "$run_work" "$I" "$dir/pane.env" "$pin_dir" "$co"
 }
 
 # Bash reads a script as it runs it, so the dispatch and its exit are one command line: a batch

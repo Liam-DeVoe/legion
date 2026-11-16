@@ -3564,6 +3564,9 @@ function reviewRun(
     {
       "out.txt": "exit=0\n",
       "world.json": world,
+      // The routes fixture_write leaves the gh stand-in, which every worker run has; the score
+      // replays the threads a round opened from them and its calls (gh-threads.ts).
+      "fixtures.json": JSON.stringify({ routes: [] }),
       "pushes.log": "",
       "handoffs.json": handoffs(reviewRecord),
       "daemon.log": calls(reviewDaemon),
@@ -3847,9 +3850,9 @@ reviewRun("reviewer-text-findings-text-only-head-11", {
   ),
 });
 // head-49: the approval the rule asks for, and a wake that names the head alone. Step 1 has the
-// reviewer name the approved head and each open thread; the threads of its own submission have no
-// node id in this world, so their paths are what it can name, and a message naming neither leaves
-// the implementer the whole diff to search for the work the merge waits for.
+// reviewer name the approved head and each open thread, by its node id or by the path its
+// finding is on, and a message naming neither leaves the implementer the whole diff to search for
+// the work the merge waits for.
 reviewRun("reviewer-text-findings-text-only-head-49", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([submission(approval())]),
@@ -3857,6 +3860,27 @@ reviewRun("reviewer-text-findings-text-only-head-49", {
     sentTo("implementer", `Approved ${head}: the two text threads are yours to close above it.`)
   ),
 });
+/** The submission as the gh stand-in records it once it has made the review: the review's own
+ * state and head (`call.review`), from which the world's threads are replayed (gh-threads.ts).
+ * Its two comments open the round's two threads, whose node ids the world's `reviewThreads`
+ * answers then list: the first comment's on docs/cli.md, the second's on the workflow. */
+const madeApproval = { ...submission(approval()), review: { state: "APPROVED", head } };
+const DOC_THREAD = "PRRT_kwDOAAAAAc4AAD9001";
+const WORKFLOW_THREAD = "PRRT_kwDOAAAAAc4AAD9002";
+// head-143: the wake names each finding by its thread's node id; head-144 one by its path and the
+// other by its node id; head-145 by two node ids no thread of the round has.
+for (const [name, findingNames] of [
+  ["head-143", `${DOC_THREAD} and ${WORKFLOW_THREAD}`],
+  ["head-144", `docs/cli.md and ${WORKFLOW_THREAD}`],
+  ["head-145", "PRRT_kwDOAAAAAc4AAD9003 and PRRT_kwDOAAAAAc4AAD9004"],
+] as const)
+  reviewRun(`reviewer-text-findings-text-only-${name}`, {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([madeApproval]),
+    "published.jsonl": bus(
+      sentTo("implementer", `Approved ${head}: ${findingNames} are yours to close above it.`)
+    ),
+  });
 // head-51, head-52 and head-53: the round that passes as head-1 does, each missing one of the
 // three records a worker run leaves. Nothing in the rig creates them: each is written by the
 // thing that keeps it, so an absent one is a record nothing ever wrote. It reads as an empty
@@ -7794,12 +7818,26 @@ test("reviewer-text-findings, text-only: a wake after the approval passes whatev
   );
 });
 // Catches: a wake that names the approved head and leaves out the work it asks for.
-// review-threads.md step 1 has the reviewer name the head and each open thread; the node ids of
-// the threads its own submission wrote are not in this world, so each finding's path is what it
-// can name, and a message naming the head alone sends the implementer looking for the findings.
+// review-threads.md step 1 has the reviewer name the head and each open thread, and a message
+// naming the head alone sends the implementer looking for the findings.
 test("reviewer-text-findings, text-only: a wake naming the head and neither finding fails", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-49\tpass=false\t.*toldImplementer=false /
+  );
+});
+// Catches: a wake read for the findings' paths alone, which fails a reviewer that names each
+// open thread by its node id, as review-threads.md step 1 asks and the world now lets it (the
+// threads its own submission opened are listed with their ids); and a node id read as a finding
+// whatever thread it is, which passes a wake naming threads the round never opened.
+test("reviewer-text-findings, text-only: a wake naming each finding by its thread's node id, or by its path, passes", () => {
+  for (const name of ["head-143", "head-144"])
+    expect(out).toMatch(
+      new RegExp(
+        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true toldImplementer=true `
+      )
+    );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-145\tpass=false\t.*toldImplementer=false /
   );
 });
 // Catches: a submission read off any repository's pull request. The gh stand-in answers a

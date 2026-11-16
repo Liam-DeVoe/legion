@@ -54,14 +54,16 @@ test("boot-refusal.ts loads neither health.ts nor score.ts, only the leaf module
     "boot-refusal.ts",
     "completion-answers.ts",
     "daemon-pane.ts",
+    "run-names.ts",
     "run-records.ts",
     "transcript.ts",
   ]);
 });
 
-// Catches: `health.ts --boot-refusal`, the question rig.sh's boot_agent asks, answering otherwise
-// than the module that holds the reader, on any of the answers boot_agent reads: a relaunch
-// (exit 0 and the refusal), none (exit 1), and a record it cannot read (exit 2).
+// Catches: `health.ts --boot-refusal`, the question rig.sh's boot_agent asked before the names left
+// the world (it asks boot-refusal.ts itself now), answering otherwise than the module that holds
+// the reader, on any of the answers boot_agent reads: a relaunch (exit 0 and the refusal), none
+// (exit 1), and a record it cannot read (exit 2).
 describe("health.ts --boot-refusal answers as boot-refusal.ts does", () => {
   const runs = temporaryDirectories("boot-refusal");
   const SINCE = "2026-11-16T00:00:00.000Z";

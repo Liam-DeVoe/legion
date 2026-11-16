@@ -5,8 +5,9 @@
 // calls against a stubbed fetch; the four handoff modes are seed-handoffs.ts's, and this file
 // runs them.
 //
-//   seed.ts project                        project LWEVAL, which each run's own issue is filed in;
-//                                          the world of every scenario but brainstorm
+//   seed.ts project                        project WORLD_PROJECT (run-names.ts), which each run's own
+//                                          issue is filed in; the world of every scenario but
+//                                          brainstorm
 //   seed.ts tester-proof <file>            one run's own issue, the greet() issue the tester's world
 //                                          implements; writes {issue} to <file>
 //   seed.ts implement-handoff <file> <body file> <commit>
@@ -59,7 +60,7 @@
 //                                          <run dir>); <file> is unread, kept for dispatch_session's
 //                                          one capture call shape
 //   seed.ts spec-writing <file> <source dir>
-//                                          one run's own issue in LWEVAL, filed by the person alice
+//                                          one run's own issue in WORLD_PROJECT, filed by the person alice
 //                                          with the source's title.txt and an empty spec. Then the
 //                                          source's input in time order: each entry of messages.md
 //                                          as a message by alice, and each answered question of
@@ -123,6 +124,7 @@ import {
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { parseInstant } from "./production-dispatch";
+import { WORLD_PROJECT } from "./run-names";
 import { captureHandoffs, phaseHandoff, type TesterFixture } from "./seed-handoffs";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
@@ -140,8 +142,16 @@ const EVENT_PAGE = 200;
 /** What `spec-writing` and `spec-rewrite` write, and every later spec mode reads. */
 const SpecFixture = z.object({ issue: z.string(), spec_artifact: z.string() });
 type SpecFixture = z.infer<typeof SpecFixture>;
-/** The session a seeded ask is opened as: another agent's, never the run's own. */
-export const SEED_ASKER = { kind: "session", id: "spec-source-agent" } as const;
+/** The session a seeded ask is opened as: another agent's, never the run's own, with the shape of
+ * any agent's session id (a UUIDv7). */
+export const SEED_ASKER = { kind: "session", id: "01a1b0d7-4e21-7b93-a5f8-6c3e9d0b2f47" } as const;
+/** The session every other agent-bearer write of a seed is made as: the architect's that files a
+ * phase worker's issue, a session id of the same shape. Without one, e2e/api.ts writes as its own
+ * seeding session, `e2e-seed`, which the issue's events show every agent that reads them. */
+export const FILER = {
+  as: "agent",
+  actor: { kind: "session", id: "01a1ad55-2b8c-7f04-9e61-3a7d5c0e8b29" },
+} as const;
 /** The person who files the run's issue, posts the source's input and answers every ask. */
 const PERSON = "alice";
 /** Dispatch's approval answer (packages/envoy/internal/dispatch/docs/approval_review.go). */
@@ -258,7 +268,7 @@ async function seedSpecIssue(file: string, source: string, spec?: string): Promi
   const asksFile = path.join(source, "asks.json");
   const asks = z.array(SourceAsk).parse(JSON.parse(readFileSync(asksFile, "utf8")));
   const issue = await createIssue(
-    { project: "LWEVAL", force: true, title, ...(spec === undefined ? {} : { spec }) },
+    { project: WORLD_PROJECT, force: true, title, ...(spec === undefined ? {} : { spec }) },
     { login: PERSON }
   );
   const person = { as: "user", login: PERSON } as const;
@@ -586,8 +596,8 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
 }
 
 async function seedProject(): Promise<void> {
-  await createProject({ key: "LWEVAL", name: "skill scenarios" });
-  console.log("seeded LWEVAL");
+  await createProject({ key: WORLD_PROJECT, name: "Widgets" });
+  console.log(`seeded ${WORLD_PROJECT}`);
 }
 
 /** `tester-proof <file>`: the run's own greet() issue, whose spec marks what rig.sh's
@@ -600,7 +610,7 @@ async function seedProject(): Promise<void> {
 export async function testerProofIssue(file: string): Promise<void> {
   const issue = await createIssue(
     {
-      project: "LWEVAL",
+      project: WORLD_PROJECT,
       force: true,
       title: "greet(): a greeting helper for the widgets CLI",
       spec: [
@@ -623,7 +633,7 @@ export async function testerProofIssue(file: string): Promise<void> {
         ":::",
       ].join("\n"),
     },
-    { as: "agent" }
+    FILER
   );
   await createIssueArtifact(
     issue.key,
@@ -637,7 +647,7 @@ export async function testerProofIssue(file: string): Promise<void> {
         ":::",
       ].join("\n"),
     },
-    { as: "agent" }
+    FILER
   );
   const fixture: z.infer<typeof TesterFixture> = { issue: issue.key };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
@@ -651,7 +661,7 @@ async function askOnMessage(file: string): Promise<void> {
   const owner = { as: "agent", actor: { kind: "session", id: "dispatch-owner" } } as const;
   const issue = await createIssue(
     {
-      project: "LWEVAL",
+      project: WORLD_PROJECT,
       force: true,
       title: "Make the Architecture page tell the truth: every issue attached to its components",
       spec: [
@@ -707,7 +717,7 @@ async function measureBeforeAsk(file: string): Promise<void> {
   const owner = { as: "agent", actor: { kind: "session", id: "dispatch-owner" } } as const;
   const issue = await createIssue(
     {
-      project: "LWEVAL",
+      project: WORLD_PROJECT,
       force: true,
       title: "Re-home the issues the retired billing-api component left stranded",
       spec: [
@@ -777,7 +787,7 @@ async function seedBrainstorm(): Promise<void> {
   ]) {
     const issue = await createIssue(
       { project: "TODO", force: true, title, spec: `## Problem\n\n${problem}` },
-      { as: "agent" }
+      FILER
     );
     console.log(`seeded ${issue.key}`);
   }
@@ -789,8 +799,8 @@ async function seedAskgate(file: string): Promise<void> {
   // branch and the comment's nightly export, so no case's write is off-topic for the issue. Every
   // run seeds the same issue, so `force` passes Dispatch's duplicate check.
   const issue = await createIssue(
-    { project: "LWEVAL", force: true, title: "Release and nightly job settings", spec: "" },
-    { as: "agent" }
+    { project: WORLD_PROJECT, force: true, title: "Release and nightly job settings", spec: "" },
+    FILER
   );
   const comment = await createComment(
     issue.key,

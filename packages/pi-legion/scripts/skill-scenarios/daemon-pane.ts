@@ -16,7 +16,7 @@
  * naming the fact, when one cannot be read, and 2 on a usage error or with no build or no work
  * directory named.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -490,8 +490,13 @@ export interface DaemonPane {
 }
 
 /** The stand-in for the claim's GitHub App token: `daemon-pane.go` renders it into the claim's gh
- * files, and the pane's own `gh auth token` prints it. A placeholder, never a secret. */
-export const RIG_GH_TOKEN = "ghs_rig_token";
+ * files, and the pane's own `gh auth token` prints it. It has the shape of an installation token,
+ * `ghs_` and 36 letters and digits, drawn afresh by each process, so no word of it is the rig's
+ * (it was `ghs_rig_token`) and no literal of one is in the source a push's leak check reads. A
+ * placeholder, never a secret: the gh stand-in reads no token. */
+export const RIG_GH_TOKEN = `ghs_${[...randomBytes(36)]
+  .map((byte) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[byte % 62])
+  .join("")}`;
 
 /** Where a worker pane runs: the run directory that stands for the daemon's state directory and
  * the issue's workspace, the stand-in daemon's port, and the Oh My Pi profile. */

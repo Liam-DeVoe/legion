@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { WORLD_PROJECT } from "./run-names";
 import type * as seedModule from "./seed";
 import type * as handoffSeedsModule from "./seed-handoffs";
 
@@ -25,6 +26,9 @@ beforeAll(async () => {
   seed = await import("./seed");
   handoffSeeds = await import("./seed-handoffs");
 });
+/** The key the stub gives the first issue a seed files in the world's project (run-names.ts's
+ * WORLD_PROJECT), which every row below reads its issue by. */
+const KEY = `${WORLD_PROJECT}-2`;
 let dirs = 0;
 function freshDir(name: string): string {
   const dir = path.join(work, `${name}-${++dirs}`);
@@ -162,7 +166,7 @@ class FakeDispatch {
       [
         /^POST \/api\/v1\/issues$/,
         () => {
-          const key = `LWEVAL-${this.issues.size + 2}`;
+          const key = `${String(body?.project)}-${this.issues.size + 2}`;
           const spec = this.issue(key, body?.title);
           const artifact = this.artifacts.find((a) => a.id === spec);
           if (artifact !== undefined && typeof body?.spec === "string") {
@@ -408,16 +412,16 @@ function runDir(): string {
   );
   return dir;
 }
-/** A fixture file for issue LWEVAL-2, with `seeded` written beside it as seeded.json. */
+/** A fixture file for issue KEY, with `seeded` written beside it as seeded.json. */
 function fixture(dir: string, spec: string, seeded: string[] = []): string {
   const file = path.join(dir, "fixture.json");
-  writeFileSync(file, `${JSON.stringify({ issue: "LWEVAL-2", spec_artifact: spec })}\n`);
+  writeFileSync(file, `${JSON.stringify({ issue: KEY, spec_artifact: spec })}\n`);
   writeFileSync(path.join(dir, "seeded.json"), `${JSON.stringify(seeded)}\n`);
   return file;
 }
 function ask(fields: Partial<FakeAsk> & Pick<FakeAsk, "id">): FakeAsk {
   return {
-    issue_key: "LWEVAL-2",
+    issue_key: KEY,
     author: runSession,
     kind: "question",
     question: `Question of ${fields.id}?`,
@@ -529,7 +533,7 @@ describe("spec-writing", () => {
     ]);
     const posts = dispatch.calls.filter((call) => call.method === "POST");
     expect(posts[0]?.body).toEqual({
-      project: "LWEVAL",
+      project: WORLD_PROJECT,
       force: true,
       title: "Make the widget faster",
     });
@@ -754,7 +758,7 @@ describe("state", () => {
   // Catches: a state that lists a seeded ask, an answered ask or an approval request as an open
   // question, misses the spec's approval request, or takes another document's for it.
   test("writes and prints each open question and the spec's open approval request", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     world(spec);
     const dir = runDir();
     const result = await seed.state(fixture(dir, spec, ["seeded-open"]), 3, dir);
@@ -780,7 +784,7 @@ describe("state", () => {
 
   // Catches: a state that reports an approval when the spec has none open.
   test("approval is null when no approval request on the spec is open", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     dispatch.asks.push(ask({ id: "agent-open" }));
     const dir = runDir();
     expect((await seed.state(fixture(dir, spec), 1, dir)).approval).toBeNull();
@@ -791,7 +795,7 @@ describe("answer", () => {
   // Catches: an answer posted as the agent, without the ask's current edited_at, or without the
   // stand-in's text.
   test("answers each line's ask as alice with its selection and text", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     dispatch.asks.push(ask({ id: "agent-open", edited_at: "2026-10-24T10:05:00Z" }));
     const dir = runDir();
     const answers = path.join(dir, "answers-1.jsonl");
@@ -816,7 +820,7 @@ describe("answer", () => {
 
   // Catches: a stand-in answer to a seeded ask, which would change the person's recorded input.
   test("refuses a line that answers a seeded ask, and posts nothing", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     dispatch.asks.push(ask({ id: "seeded-open" }));
     const dir = runDir();
     const answers = path.join(dir, "answers-1.jsonl");
@@ -832,7 +836,7 @@ describe("approve", () => {
   // Catches: an approval sent as the agent, with another label than Dispatch's Approve, or to
   // another document's request.
   test("answers the spec's open approval request as alice with Approve", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     dispatch.asks.push(
       ask({
         id: "approval-plan",
@@ -860,7 +864,7 @@ describe("approve", () => {
 
   // Catches: an approve that succeeds with nothing to approve.
   test("fails when the spec has no open approval request", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     const dir = runDir();
     await expect(seed.approve(fixture(dir, spec))).rejects.toThrow("no open approval request");
   });
@@ -868,7 +872,7 @@ describe("approve", () => {
 
 describe("capture-spec", () => {
   function world() {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     const artifact = dispatch.artifacts.find((a) => a.id === spec);
     if (artifact === undefined) throw new Error("no spec");
     artifact.markdown = "## Summary\n\nVersion two.";
@@ -888,7 +892,7 @@ describe("capture-spec", () => {
     ] as const) {
       dispatch.artifacts.push({
         id: dispatch.id("art"),
-        issue_key: "LWEVAL-2",
+        issue_key: KEY,
         name,
         slug,
         kind,
@@ -900,7 +904,7 @@ describe("capture-spec", () => {
     const alice = { kind: "user", id: "alice@example.invalid" };
     const message = (id: string, author: unknown, body: string, at: string) => ({
       id,
-      issue_key: "LWEVAL-2",
+      issue_key: KEY,
       author,
       body,
       created_at: at,
@@ -1007,10 +1011,10 @@ describe("capture-spec", () => {
   // Catches: captured texts sorted by Date.parse, which drops Dispatch's microseconds and keeps two
   // texts of one millisecond in the order the capture read them (asks, messages, comments).
   test("orders the run's texts at full precision", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     const at = (id: string, created_at: string) => ({
       id,
-      issue_key: "LWEVAL-2",
+      issue_key: KEY,
       author: runSession,
       body: id,
       created_at,
@@ -1028,7 +1032,7 @@ describe("capture-spec", () => {
 
   // Catches: a plan.md left from an earlier capture when the issue holds none now.
   test("writes no plan.md when the issue holds none", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     const dir = runDir();
     await seed.captureSpec(fixture(dir, spec), dir);
     expect(existsSync(path.join(dir, "plan.md"))).toBe(false);
@@ -1038,7 +1042,7 @@ describe("capture-spec", () => {
   // Catches: a capture that removes the plan.md or documents/ already in the run directory (it
   // started from `rm`), or writes over an earlier capture's spec.md.
   test("refuses a run directory that already holds what it writes, reads nothing, and keeps it", async () => {
-    const spec = dispatch.issue("LWEVAL-2");
+    const spec = dispatch.issue(KEY);
     const dir = runDir();
     const given = fixture(dir, spec);
     writeFileSync(path.join(dir, "plan.md"), "an earlier capture's plan\n");
@@ -1065,12 +1069,36 @@ describe("tester-proof", () => {
     await seed.testerProofIssue(file);
     const posts = dispatch.calls.filter((call) => call.method === "POST");
     expect(`${posts[0]?.who} ${posts[0]?.path}`).toBe("agent /api/v1/issues");
-    expect(posts[0]?.body).toMatchObject({ project: "LWEVAL", force: true });
+    expect(posts[0]?.body).toMatchObject({ project: WORLD_PROJECT, force: true });
     expect(String(posts[0]?.body?.spec)).toContain(":::requirement{#r1}");
     expect(String(posts[0]?.body?.spec)).not.toContain("## Acceptance");
-    expect(`${posts[1]?.who} ${posts[1]?.path}`).toBe("agent /api/v1/issues/LWEVAL-2/artifacts");
+    expect(`${posts[1]?.who} ${posts[1]?.path}`).toBe(`agent /api/v1/issues/${KEY}/artifacts`);
     expect(String(posts[1]?.body?.content)).toContain(':::check{#k1 surface="cli"');
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: "LWEVAL-2" });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: KEY });
+  });
+
+  // Catches: a seed write made as e2e/api.ts's own seeding session (`e2e-seed`), or under a
+  // session named for the rig (`rig-implementer`): the issue's events show each to every agent
+  // that reads them, and the batch at c273084d took 68 of the 107 sentences that called the world
+  // a test from `rig-<role>`. Every session a seed writes as has the shape of a role's, a UUIDv7.
+  test("every agent write of a seed names a session shaped like any role's, and none is the rig's", async () => {
+    const dir = freshDir("seed");
+    const file = path.join(dir, "fixture.json");
+    await seed.testerProofIssue(file);
+    for (const phase of ["implement", "test", "review"] as const) {
+      writeFileSync(
+        path.join(dir, `${phase}.json`),
+        JSON.stringify({ schemaVersion: 1, phase, issue: KEY })
+      );
+      await handoffSeeds.phaseHandoff(file, path.join(dir, `${phase}.json`), phase, "4".repeat(40));
+    }
+    const actors = dispatch.calls
+      .filter((call) => call.method === "POST" && call.who === "agent")
+      .map((call) => (call.body?.actor as Actor | undefined)?.id);
+    // The issue, its verification document, three handoffs and two results.
+    expect(actors).toHaveLength(7);
+    for (const id of actors)
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   // Catches: an implement record under the run's session (which the daemon would take as the
@@ -1080,13 +1108,13 @@ describe("tester-proof", () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
-    const body = { schemaVersion: 1, phase: "implement", issue: "LWEVAL-2" };
+    const body = { schemaVersion: 1, phase: "implement", issue: KEY };
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify(body));
     const commit = "1111111111111111111111111111111111111111";
     await handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", commit);
     expect(dispatch.handoffs).toEqual([
       expect.objectContaining({
-        issue_key: "LWEVAL-2",
+        issue_key: KEY,
         phase: "implement",
         version: 1,
         author: handoffSeeds.IMPLEMENTER,
@@ -1095,7 +1123,7 @@ describe("tester-proof", () => {
     ]);
     expect(dispatch.results).toEqual([
       expect.objectContaining({
-        issue_key: "LWEVAL-2",
+        issue_key: KEY,
         check: "k1",
         role: "implementer",
         verdict: "pass",
@@ -1105,7 +1133,7 @@ describe("tester-proof", () => {
     ]);
     expect(handoffSeeds.IMPLEMENTER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
-      issue: "LWEVAL-2",
+      issue: KEY,
       implement: { id: dispatch.handoffs[0]?.id, version: 1 },
     });
   });
@@ -1132,18 +1160,18 @@ describe("tester-proof", () => {
     writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
     const commit = "3333333333333333333333333333333333333333";
     await handoffSeeds.phaseHandoff(file, path.join(dir, "implement.json"), "implement", commit);
-    const body = { schemaVersion: 1, phase: "test", issue: "LWEVAL-2" };
+    const body = { schemaVersion: 1, phase: "test", issue: KEY };
     writeFileSync(path.join(dir, "test.json"), JSON.stringify(body));
     await handoffSeeds.phaseHandoff(file, path.join(dir, "test.json"), "test", commit);
     expect(dispatch.handoffs[1]).toMatchObject({
-      issue_key: "LWEVAL-2",
+      issue_key: KEY,
       phase: "test",
       version: 1,
       author: handoffSeeds.TESTER,
       body: JSON.stringify(body),
     });
     expect(dispatch.results[1]).toMatchObject({
-      issue_key: "LWEVAL-2",
+      issue_key: KEY,
       check: "k1",
       role: "tester",
       verdict: "pass",
@@ -1153,7 +1181,7 @@ describe("tester-proof", () => {
     expect(handoffSeeds.TESTER.id).not.toBe(handoffSeeds.IMPLEMENTER.id);
     expect(handoffSeeds.TESTER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
-      issue: "LWEVAL-2",
+      issue: KEY,
       implement: { id: dispatch.handoffs[0]?.id, version: 1 },
       test: { id: dispatch.handoffs[1]?.id, version: 1 },
     });
@@ -1180,12 +1208,12 @@ describe("tester-proof", () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
-    const body = { schemaVersion: 1, phase: "review", issue: "LWEVAL-2", decision: "approved" };
+    const body = { schemaVersion: 1, phase: "review", issue: KEY, decision: "approved" };
     writeFileSync(path.join(dir, "review.json"), JSON.stringify(body));
     await handoffSeeds.phaseHandoff(file, path.join(dir, "review.json"), "review");
     expect(dispatch.handoffs).toEqual([
       expect.objectContaining({
-        issue_key: "LWEVAL-2",
+        issue_key: KEY,
         phase: "review",
         version: 1,
         author: handoffSeeds.REVIEWER,
@@ -1195,7 +1223,7 @@ describe("tester-proof", () => {
     expect(dispatch.results).toEqual([]);
     expect(handoffSeeds.REVIEWER.id).not.toBe(runSession.id);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
-      issue: "LWEVAL-2",
+      issue: KEY,
       review: { id: dispatch.handoffs[0]?.id, version: 1 },
     });
   });
@@ -1215,7 +1243,7 @@ describe("tester-proof", () => {
     );
     dispatch.handoffs.push({
       id: "h-test",
-      issue_key: "LWEVAL-2",
+      issue_key: KEY,
       phase: "test",
       version: 1,
       author: runSession,

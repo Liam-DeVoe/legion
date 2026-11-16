@@ -469,6 +469,36 @@ function indexOf(cursor: unknown): number | undefined {
   return match === null ? undefined : Number(match[1]);
 }
 
+/** `value` as the call's `variables` give it: a variable its value (null where the call sends
+ * none), a list and an input object each of their values. */
+function evaluated(value: Value, variables: Readonly<Record<string, unknown>>): unknown {
+  switch (value.kind) {
+    case "var":
+      return variables[value.name] ?? null;
+    case "scalar":
+    case "enum":
+      return value.value;
+    case "list":
+      return value.values.map((one) => evaluated(one, variables));
+    case "object":
+      return Object.fromEntries(
+        Object.entries(value.fields).map(([key, field]) => [key, evaluated(field, variables)])
+      );
+  }
+}
+
+/** The arguments `field` is called with, as the call's `variables` give them: what the gh
+ * stand-in reads a mutation's `input` from (gh-standin.ts's `threadCall`), by the reading the
+ * executor below answers a query's arguments with. */
+export function argumentsOf(
+  field: Selection & { kind: "field" },
+  variables: Readonly<Record<string, unknown>>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(field.args).map(([key, value]) => [key, evaluated(value, variables)])
+  );
+}
+
 /** `operation` answered from `graph`, the world's state as GitHub's schema names it, with
  * `variables` the call's own. A list in the graph is a connection, paged as GitHub pages one
  * (`first`, `last`, `after`, `before`, `nodes`, `edges`, `pageInfo`, `totalCount`) and filtered by
@@ -497,21 +527,6 @@ export function executeGraphql(
     };
   const errors: { type: string; path: string[]; message: string }[] = [];
   const items = new WeakSet<unknown[]>();
-  const evaluate = (value: Value): unknown => {
-    switch (value.kind) {
-      case "var":
-        return variables[value.name] ?? null;
-      case "scalar":
-      case "enum":
-        return value.value;
-      case "list":
-        return value.values.map(evaluate);
-      case "object":
-        return Object.fromEntries(
-          Object.entries(value.fields).map(([key, field]) => [key, evaluate(field)])
-        );
-    }
-  };
   const project = (selections: readonly Selection[], value: Json, at: string[]): Json => {
     const out: Json = {};
     for (const selection of selections) {
@@ -533,9 +548,7 @@ export function executeGraphql(
     if (field.selections === undefined) return raw;
     if (Array.isArray(raw) && items.has(raw))
       return raw.map((item) => (isObject(item) ? project(field.selections ?? [], item, at) : item));
-    const args = Object.fromEntries(
-      Object.entries(field.args).map(([key, value]) => [key, evaluate(value)])
-    );
+    const args = argumentsOf(field, variables);
     const list = Array.isArray(raw)
       ? raw
       : isObject(raw) && Array.isArray(raw.nodes)
@@ -671,7 +684,7 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments",
-    answer: "the inline comments calls.jsonl records that review's create carrying",
+    answer: "the comments of that review's threads: the world's, and the ones its create carried",
     evidence: {
       run: "round17-forty/reviewer-text-findings-text-only-head-2/calls.jsonl:26",
       reason: "a reviewer reads back the inline comments of the review it created",
@@ -679,7 +692,8 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}/comments",
-    answer: "the inline comments calls.jsonl records the run's review creates carrying",
+    answer:
+      "every comment of the review threads: the world's, then each one calls.jsonl records the run making",
     evidence: {
       run: "round17-forty/reviewer-text-findings-text-only-head-2/calls.jsonl:25",
       reason: "a reviewer lists the pull request's inline comments beside its threads",
@@ -695,7 +709,7 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GET repos/{owner}/{repo}/commits/{ref}/check-runs",
-    answer: "the world's check runs of the head (its check-runs route)",
+    answer: "the world's check runs, reported on the ref the remote resolves, with its head_sha",
   },
   {
     route: "GET repos/{owner}/{repo}/commits/{ref}/status",
@@ -711,11 +725,11 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GET repos/{owner}/{repo}/rules/branches/{branch+}",
-    answer: "the base branch's rules",
+    answer: "the base branch's rulesets: none, or the one requiring conversation resolution",
   },
   {
     route: "GET repos/{owner}/{repo}/branches/{branch}/protection",
-    answer: "the base branch's protection, or 404 Branch not protected",
+    answer: "the base branch's protection: the checks it requires, and conversation resolution",
     evidence: {
       world:
         "GitHub's protection read of the base branch the merge gate reads, which a reviewer reaches for its required checks",
@@ -723,7 +737,7 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GET repos/{owner}/{repo}/branches/{branch+}",
-    answer: "the base branch and its protection",
+    answer: "the base branch, protected, with the checks its protection requires",
   },
   {
     route: "GET repos/{owner}/{repo}/compare/{basehead+}",
@@ -732,6 +746,14 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   {
     route: "GET repos/{owner}/{repo}/git/ref/{ref+}",
     answer: "the remote: the ref and the commit it points at, or 404",
+  },
+  {
+    route: "GET repos/{owner}/{repo}/contents/{path+}",
+    answer: "the remote: the file or directory at the ref, raw or as GitHub's JSON, or 404",
+    evidence: {
+      run: "not-counted-r24/threads-closed-text-fixes-head-3/calls.jsonl:16",
+      reason: "a head reviewer re-reads the fixed file at the head through the API",
+    },
   },
   {
     route: "GET user",
@@ -754,7 +776,7 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   { route: "GH run watch", answer: "gh's refusal: the world holds no workflow run" },
   {
     route: "GRAPHQL query repository.pullRequest.reviewThreads",
-    answer: "the world's review threads, paged as GitHub pages them",
+    answer: "the world's review threads and every call calls.jsonl records on them, paged",
   },
   { route: "GRAPHQL query viewer.login", answer: "world.json: the login the run's token acts as" },
   {
@@ -781,12 +803,13 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies",
-    answer: "the reply the call posts",
+    answer: "the reply, in the thread of the comment the path names, or 404",
     evidence: { world: "the REST form of the review-thread reply" },
   },
   {
     route: "POST repos/{owner}/{repo}/pulls/{number}/comments",
-    answer: "the write route's created object",
+    answer:
+      "the comment the call makes: a thread of its own, or a reply where it names in_reply_to",
     evidence: {
       run: "round17-forty/reviewer-text-findings-text-only-head-5/calls.jsonl:21",
       reason: "a reviewer posts an inline comment on its own",
@@ -814,11 +837,11 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GRAPHQL mutation resolveReviewThread",
-    answer: "success, as GitHub answers a role with write access",
+    answer: "the thread the call names, resolved, or GitHub's NOT_FOUND",
   },
   {
     route: "GRAPHQL mutation addPullRequestReviewThreadReply",
-    answer: "the reply the call posts",
+    answer: "the reply the call posts in the thread it names, or GitHub's NOT_FOUND",
     evidence: {
       run: "round17-forty/reviewer-text-findings-defect-base-5/calls.jsonl:34",
       reason: "a reviewer replies on a review thread through GraphQL",

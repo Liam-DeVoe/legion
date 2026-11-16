@@ -346,8 +346,23 @@ LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic ./rig.sh profile head <checkout
 ```
 
 A batch numbers each label's runs from one above that label's highest run of the scenario (and
-case), live or archived, so `rig.sh batch ask-on-message 1 head` twice gives
-`ask-on-message-head-1` and then `ask-on-message-head-2`.
+case), live or archived, so `rig.sh batch ask-on-message 1 head` twice gives the runs named
+`ask-on-message-head-1` and then `ask-on-message-head-2`. A run's name is in its record and
+nowhere its agents can read: its directory is `runs/<id>`, `<id>` twelve hex digits of no meaning,
+and its record is `runs/<id>.json` beside it, outside the run's namespace:
+
+```json
+{"run":"<id>","scenario":"threads-closed","case":"text-fixes","label":"head","n":1,
+ "name":"threads-closed-text-fixes-head-1","batch":"<tag>-<start>","ran":"<work>/runs/<id>"}
+```
+
+`case` is `""` for a scenario that takes none, `mode` is there for an askgate run given one, and
+`ran` is the directory the run had while it ran, which its transcripts name. The record moves with
+the run to `archive/runs/<id>.json`. `rig.sh score`, `rig.sh health`, `rig.sh judge` and
+`rig.sh world` read a run's scenario, case and label from it (`run-names.ts`'s `runIdentity`), and
+a run recorded before the record existed from its directory's name and its `case.txt`, as before.
+The labels' profiles are installed under `installs/<id>` (`profiles/<label>/install` holds the id),
+and every label's profile is named `legion`, so neither a path nor `OMP_PROFILE` names a label.
 
 The spec-writing and spec-rewrite scenarios measure how an agent writes a Dispatch spec:
 
@@ -355,7 +370,7 @@ The spec-writing and spec-rewrite scenarios measure how an agent writes a Dispat
 bun fetch-spec-sources.ts --out "$SKILL_SCENARIOS_WORK/sources" <issue key | dispatch://PROJECT/artifact/slug>
 SKILL_SCENARIOS_SUPERPOWERS=<superpowers plugin> ./rig.sh profile main <checkout>
 SKILL_SCENARIOS_SOURCE=<directory under sources/> ./rig.sh batch spec-writing 1 main
-./rig.sh judge "$SKILL_SCENARIOS_WORK"/archive/runs/spec-writing-main-<n>
+./rig.sh judge "$SKILL_SCENARIOS_WORK"/archive/runs/<id>   # the run whose record names spec-writing-main-<n>
 ./rig.sh score spec-writing
 ```
 
@@ -386,25 +401,61 @@ maps it back to the caller's uid), built from one declaration in `rig.sh`, `worl
 `rig.sh world <label> <run dir>` prints. It hides behind an empty tmpfs the scratch root the
 caller's `TMPDIR` names, the issue workspaces (`/legion/workspaces`, or `LEGION_WORKSPACE` three
 levels up), the work directory, every label's checkout, `/var/run/legion` and `/var/run/secrets`;
-it shows again the run's own directory, its label's profile and checkout (never the other
-label's), the batch's services, the rig's own directory and the one package its stand-ins import,
-and the tools the run's pane names (each directory on its PATH, mise's installs, the pin and the
-push guard's check), read-only but for the run and its model route's call record. `/tmp` is the
-run's own `<run>/tmp`, and `/proc` lists the run's own processes alone. `/var/run/model-gateway-key`
-and `/var/run/operator` stay: they are the model route's own credentials. So an agent can neither
-list nor read another run, another role's scratch, the other label's skills or the pod's
-credentials, nor leave a file in `/tmp` for another run. A host that refuses the namespace starts
+it shows again the run's own directory, its label's install (never the other label's), the
+batch's two tokens (`services/tokens/`), and the tools the run's pane names (each directory on its
+PATH, mise's installs, the pin and the push guard's check), read-only but for the run and its
+model route's call record. No checkout is shown, the label's own included, and not the rig's own
+directory either: the run's `gh` is a bundle of `gh-standin.ts` in `<run>/lib/gh.js`, which names
+the run it records under itself. `/tmp` is the run's own `<run>/tmp`, and `/proc` lists the run's
+own processes alone. `/var/run/model-gateway-key` and `/var/run/operator` stay: they are the model
+route's own credentials. So an agent can neither list nor read another run, another role's
+scratch, the other label's skills or the pod's credentials, nor leave a file in `/tmp` for another
+run. A run recorded before this world is read against the world it had (its own `namespace.txt`,
+or, with none, a world that showed its checkout, the rig's directory and the services).
+
+Nothing an agent can read names its run's scenario, case or label, or a name the rig once gave
+its world: before an agent starts, `launch` runs `run-names.ts guard`, which reads every variable
+of the pane (its name and its value: the profile, the Legion project, issue and role its Envoy
+topics are made of, HOME, TMPDIR, PATH), every mount of the namespace (each is a mount point and
+the host source `/proc/self/mountinfo` names, so the work directory's own path is held too), the
+working and session directories, the prompt and system prompt (`/proc/1`'s command line), and
+every regular file the world shows under the work directory (the run's own directory, its
+label's install and the batch's tokens; `bin/gh`, `bin/bun` and the `gh` bundle in `lib/` among
+them), up to 1 MiB and passing over a file with a NUL byte in its first 8 KiB, and the run fails,
+naming the word and the place (for a file, the file and the text around the word), where one is
+there. The services' logs (`<run>/logs/`) are hidden from the agent under an empty read-only
+tmpfs. The rig's records that are files at the top of the run's directory (`run-names.ts`'s
+`RECORDS`: `built-from`, `services-from`, `namespace.txt`, `launch.sh` and the rest) are not
+hidden, since a gVisor pod refuses a mount onto a file, and the guard passes them over, since
+`services-from` names the rig's own directory in every run: an agent can still read them, and
+hiding them needs them moved into a directory the namespace covers. The words are derived, never
+typed: every scenario and case of `run-names.ts`'s
+`SCENARIOS`, the rig's one scenario table, every label, and `REMOVED_NAMES` (`rig-`,
+`skill-scenario`, `lweval`, `e2e-seed`, `example/widgets`). So the work directory's default is
+`$TMPDIR/work`, the world's repository is `fernbrook/widgets`, its Dispatch project is `WID`, the
+seeded sessions have ids shaped as any role's session, and the Legion project is the repository's
+name and a digest. What stays a rig path: the work directory's layout (`<work>/runs/<id>/home`,
+`<work>/installs/<id>`) where a Legion worker has `/home/<user>`, `/legion/workspaces/<owner>/
+<repo>/<key>` and the issue volume's `TMPDIR`. Moving them there would have `rig.sh` rewrite the
+pane the label's daemon composes, `health.ts`'s world and credentials rules accept those paths
+under the covers they lie in, and `score.ts` read them as the run's own; that is a change of its
+own, so the paths are neutral in their words and not production's in their shape.
+
+A host that refuses the namespace starts
 nothing: `rig.sh run`, `batch` and `live-read` probe it first and exit 1 naming the host's refusal
 (a GitHub runner answers `unshare: write failed /proc/self/uid_map: Operation not permitted`), and
 the rig's namespace tests skip there with that text. When a run ends, the rig moves its directory
-from `$SKILL_SCENARIOS_WORK/runs/<run>` to `$SKILL_SCENARIOS_WORK/archive/runs/<run>`;
+from `$SKILL_SCENARIOS_WORK/runs/<id>` to `$SKILL_SCENARIOS_WORK/archive/runs/<id>`, its record
+with it;
 `rig.sh score` reads both directories, and `rig.sh judge` and `rig.sh health` take a run in
-either. No run removes or replaces another: a run whose name a live or archived run holds is
-refused before it starts, and a run whose name the archive took while it ran is refused at its
-end, naming both paths, and stays in `runs/`. The rig deletes only what the same run or command
+either. No run removes or replaces another: a run whose name a live or archived run's record (or,
+for a run from before the records, its directory) holds is refused before it starts, and a run
+whose id the archive took while it ran is refused at its end, naming both paths, and stays in
+`runs/`. The rig deletes only what the same run or command
 made, and refuses a file an earlier one left where it would write: a batch refuses the services
 files a batch killed outright left (each label's `services/env-<label>` and
-`services/services-from-<label>`, its tokens and each listener's `listener_<label>.port`) and
+`services/services-from-<label>`, its tokens under `services/tokens/` and each listener's
+`listener_<label>.port`) and
 removes only the containers it started; `judge-omp` refuses a directory
 holding an earlier judge's `out.txt` or `judge-model.txt`, or the key directory beside it; a
 judge-profile build an earlier call left unready is refused until removed; `rig.sh judge`
@@ -428,8 +479,9 @@ opening is read out of `packages/pi-shared/src/legion-claim-core.ts` in the chec
 `built-from` names (this checkout's `claim boot failed at <step> …`, main `ff2a10ef`'s `claim
 boot failed after claims/register registered …`). Round 23 lost
 `reviewer-text-findings-text-only-base-1` so, to the Envoy listener's refusal of a session that
-held no consumer. `health.ts --boot-refusal` decides it from what the run recorded, answered by
-`boot-refusal.ts`, the one reader of a claim boot refusal, which loads neither `health.ts` nor
+held no consumer. `boot_agent` runs `boot-refusal.ts` itself to decide it from what the run
+recorded (`health.ts --boot-refusal` answers the same, for a replay through the old entry);
+`boot-refusal.ts` is the one reader of a claim boot refusal, and loads neither `health.ts` nor
 `score.ts`: the stand-in's lines of that role since the launch began, the pane's `out.txt`, and
 the agent's transcripts, which must hold no turn, no model call and no tool call. The first
 attempt is kept whole under `<run>/boot-1/<role>/` (its `out.txt`, its `sessions/` and the
@@ -440,13 +492,15 @@ relaunches an agent up to
 its launch failure limit: a second refusal stands, and one after the agent's first turn is never
 relaunched, since a relaunch would not take that turn back. Each attempt is on the run's boot
 record, `<run>/booted`, before it starts: worker_boot writes `boot <role>` before the role's daemon
-stand-in starts and the relaunch writes it again, and where the rig decides not to boot a role of
-its scenario it writes `skip <role> <reason>`, with the one reason `completion-answers.ts`'s
-`SKIPS` declares for the scenario and case (today, threads-closed code-defect's reviewer: "the
-implementer sent the reviewer nothing"), read from that table.
+stand-in starts and the relaunch writes it again, each launch `boot_agent` asks the reader about
+is followed by `since <role> <time>`, the `since` it asked with, so a replay asks the reader with
+the call's own argument, and where the rig decides not to boot a role of its scenario it writes
+`skip <role> <reason>`, with the one reason `completion-answers.ts`'s `SKIPS` declares for the
+scenario and case (today, threads-closed code-defect's reviewer: "the implementer sent the
+reviewer nothing"), read from that table.
 
 `rig.sh health [--tmp-snapshot <file>] <run dir>...` says whether each run's world could take what
-its agents did, and whether the run stayed inside its own world. It reads sixteen things: the run
+its agents did, and whether the run stayed inside its own world. It reads seventeen things: the run
 finished: its boot record, `<run>/booted`, decides each role its scenario boots
 (`completion-answers.ts`'s `ANSWERS` `boots`) once, in that order, the first a `boot` of the first
 role and each other a `boot <role>` or a `skip <role> <reason>` whose reason
@@ -490,8 +544,13 @@ batch); no tool call names a path its world hides (by `rig.sh world`: under the 
 issue workspaces, the work directory or any label's checkout, the other runs' given included)
 outside its own directory, `/tmp` and what its world shows again; no tool call reads another
 process's `/proc/<n>/environ` or `cmdline`; no tool call names a path under `/var/run/legion` or
-`/var/run/secrets`, by either name; and no call reaches a host other than the loopback, the hosts
-its pane's URLs name and the model gateway its profile's `models.yml` names. A URL is text until
+`/var/run/secrets`, by either name; no call reaches a host other than the loopback, the hosts
+its pane's URLs name and the model gateway its profile's `models.yml` names; and no sentence of
+an agent's own text or thinking, in any transcript of the run, says the measurement: a scenario
+or case word with a character that is no letter or digit (`text-only`, `threads-closed`), a run's
+name in the old shape, or a case word beside a label word (`defect head`), by the same derived
+words as the guard's (`run-names.ts`'s `proseNames`); a plain word alone is the work's own
+(`head SHA`, `base branch`, `not a defect`), and the unhealthy line quotes the sentence. A URL is text until
 something runs it: every `web_search` reaches off the world; a `bash` command, a `read`, a
 `fetch`, an `eval` cell's code, a here-document an interpreter reads on stdin and a file the run
 wrote and then ran are read for the hosts they reach; an `eval` cell's `tool.<name>(…)` call is
@@ -521,7 +580,9 @@ way, so a run in a namespace is held to nothing another run's `/tmp`, or the mac
 run with no `<run>/namespace.txt` wrote and read the machine's `/tmp`, and is read so.
 Give a batch's runs in one call: given one run, `health` sees no other run's writes. It reads
 every transcript under each run's `sessions/`, every role's and every subagent's. It scores nothing
-and writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, naming
+and writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, keyed
+by the run's directory (its id), with the record's name last for a run with a record (`<id>
+healthy  (threads-closed-text-fixes-head-1)`), naming
 the evidence, then how many runs each rule flags, then how often the rig relaunched an agent at
 its boot, by label (`health: boot relaunches, <label>: <n> in <r> of <m> runs`: <n> relaunches,
 each a first attempt kept under `<run>/boot-1/<role>/`, in <r> of the label's <m> runs), then the
@@ -573,8 +634,8 @@ and the rig's own instrument, stays shared, and the table says why.
 | Worker pane (`worker-pane.ts`, then `daemon-pane.go pane`) | composed by the label's checkout's daemon module (`go run`); the composer, and the `@legion/envoy-client` settings reader it calls, are the rig's | the same, composed by the label's build of `daemon-pane.go` | label |
 | Daemon stand-in (`daemon-standin.ts`) | the rig's directory, answering by the label's daemon facts | the same | shared program: it stands in for the label's daemon from that daemon's own facts |
 | Dispatch server (`dispatch-e2e`) | the rig's checkout, built once per batch and given to the rig's `run-server.sh` as `DISPATCH_E2E_SERVER_BIN` for every label | `go build ./cmd/dispatch` in the label's checkout's `packages/envoy`, kept at `$SKILL_SCENARIOS_WORK/builds/<checkout>/dispatch-e2e`; each run's own Dispatch is started from its label's build by the rig's `run-server.sh` | label: what an agent reads of it differs across versions (above); `run-server.sh`, the harness that starts a build, is the rig's, and hands a build of either tree the same environment |
-| gh and bun stand-ins (`gh-standin.ts`, `$R/bin/bun`) | the rig's directory, and the bun the rig runs on | the same | shared: GitHub is one service for every version |
-| Seed and capture (`seed.ts`, `record-publishes.ts`, `score.ts published`, `health.ts --boot-refusal`) | the rig's directory, and its checkout's `packages/dispatch` e2e client | the same | shared: the instrument, one reading for every label |
+| gh and bun stand-ins (`gh-standin.ts`, bundled into `<run>/lib/gh.js`, and `$R/bin/bun`) | the rig's directory, and the bun the rig runs on | the same | shared: GitHub is one service for every version |
+| Seed, capture and the boot and world readers (`seed.ts`, `record-publishes.ts`, `score.ts published`, `boot-refusal.ts`, which `boot_agent` runs in every boot, and `run-names.ts`, whose guard `launch` runs before every agent) | the rig's directory, and its checkout's `packages/dispatch` e2e client | the same | shared: the instrument, one reading for every label |
 | NATS | a container pinned by digest, or `SKILL_SCENARIOS_NATS_URL` | the same | shared: production runs one NATS for every version |
 | Postgres | a container pinned by digest, or `SKILL_SCENARIOS_POSTGRES_URL` | the same | shared: production's one database server |
 | Leak guard | the caller's `git` and `jj` wrappers and `PUBLIC_LEAK_CHECK` | the same | shared: a pod's own tooling, outside any release of the plugins |
@@ -600,3 +661,40 @@ starts, reads with that build every fact a stand-in of any scenario boots on (`r
 `label_facts`, `bun daemon-pane.ts facts`): a fact that cannot be read fails the batch then,
 naming it. A boot reads each fact out of a file, and the stand-in and the worker pane run the
 label's build for anything else they read.
+
+### What the gh world keeps, and where it stops
+
+The gh stand-in answers GitHub from the world's seed and the effect of every call the run made,
+read from the run's own `calls.jsonl` (`gh-threads.ts`, one replay for the gh stand-in and the
+daemon stand-in). A thread a review's inline comment or a comment of its own opens is listed by
+`reviewThreads` and by the REST review comments; `resolveReviewThread` reads back
+`isResolved: true`; a reply, through GraphQL or the REST reply route, is its thread's last
+comment; and each comment's `databaseId` is its REST id. A base whose protection requires
+conversation resolution holds the pull request `BLOCKED` while any thread is open and reports it
+`CLEAN` once the last is resolved, and the daemon stand-in moves the record on that same state.
+Every world's base protection requires the checks the head reports (`test`, `lint`); the check runs
+are reported on the commit read (its `head_sha`, GitHub Actions as their App, their times counted
+from when that commit reached the run's remote). A `contents` read answers the file or directory
+at the ref it names, or on the default branch where it names none, raw or as GitHub's JSON.
+
+Each role commits as its App's bot, `<slug>[bot]` and
+`<id>+<slug>[bot]@users.noreply.github.com`, as production gives it (`packages/daemon/internal/appauth`'s
+`AppRoleFor` and `botIdentity`): the implement App for the implementer and the merger, the review
+App for every other role (`rig.sh`'s `role_identity`). A pane gets the six variables production's
+runtime sets (`role_env`), and adopts the shared workspace's working copy at its boot as production
+does (`adopt_workspace`); the implementer's seeded commit is the implement App's. The default
+branch's own history, and the brainstorm run's repository, are one developer's
+(`world_author_name`), which no role of Legion wrote.
+
+Stated limits, each known and kept so:
+
+- A just-pushed head's checks report `completed` at once, where GitHub would report them in
+  progress for as long as CI runs. Modelling that window would make the world's timing something
+  an agent waits on while the daemon stand-in sends no wake when CI settles, which is behaviour
+  production does not have here, so the window stays out.
+- The check runs name GitHub Actions as their App, while the world holds no workflow run
+  (`actions/runs` lists none, and `gh run view` refuses as for a run that is not there).
+- The REST reply route (`POST repos/<o>/<r>/pulls/<n>/comments/<id>/replies`) is answered in
+  GitHub's documented form. No recorded run made that call, since before the world gave a
+  thread's comment its `databaseId` no agent had an id to name, so its pin follows GitHub's
+  documentation rather than a recorded call.

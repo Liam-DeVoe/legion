@@ -146,7 +146,7 @@ export function flagValue(argv: readonly string[], flags: readonly string[]): st
  * `--raw-field` send `@path` as it is written. */
 const METHOD_FLAGS = ["-X", "--method"];
 export const FIELD_FLAGS = ["-f", "-F", "--field", "--raw-field"];
-const FILE_FIELD_FLAGS = ["-F", "--field"];
+export const FILE_FIELD_FLAGS = ["-F", "--field"];
 const BODY_FLAGS = [...FIELD_FLAGS, "--input"];
 
 /** The verb gh sends `argv` with: the method it names when it names one — `-X POST`, `-XPOST`,

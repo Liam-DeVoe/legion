@@ -25,10 +25,13 @@ export const TesterFixture = z.object({
   review: z.object({ id: z.string(), version: z.number().int() }).optional(),
 });
 /** The sessions the worker's predecessors wrote their handoffs as: the implementer's, and the
- * tester's and the reviewer's where a scenario seeds one, never the run's own. */
-export const IMPLEMENTER = { kind: "session", id: "rig-implementer" } as const;
-export const TESTER = { kind: "session", id: "rig-tester" } as const;
-export const REVIEWER = { kind: "session", id: "rig-reviewer" } as const;
+ * tester's and the reviewer's where a scenario seeds one, never the run's own. Each id has the
+ * shape of any role's session id (a UUIDv7, as Envoy registers one), since the issue's events
+ * show it to every agent that reads them: `rig-<role>` was the source of 68 of the 107 sentences
+ * of the batch at c273084d that called the world a test. */
+export const IMPLEMENTER = { kind: "session", id: "01a1b3f2-6c4e-7a18-9d2b-5e8f0c71a4d3" } as const;
+export const TESTER = { kind: "session", id: "01a1b402-1f7d-7c55-8a3e-2b6d9f04c812" } as const;
+export const REVIEWER = { kind: "session", id: "01a1b41e-93a0-7e2c-b647-0d5c8e2f1a96" } as const;
 
 /** Each phase a seed writes a handoff for: the predecessor's session, which records it, and the
  * role whose passing result on check `k1` goes with it, for the two phases whose role records
