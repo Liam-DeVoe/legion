@@ -40,7 +40,8 @@ type Result struct {
 	At  time.Time
 	Seq int64
 	// FaultAuthor wrote the fault of a failing example, and TestAuthors the test that ran on it
-	// (R9: "An agent that did not write the test writes the fault").
+	// (R9: "An agent that did not write the test writes the fault"). The failing example of a
+	// program check counts only when both are named and FaultAuthor is none of TestAuthors.
 	FaultAuthor string
 	TestAuthors []string
 	// TestCommit is the commit of the test that ran on the failing example of a program check

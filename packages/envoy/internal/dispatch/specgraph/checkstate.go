@@ -111,7 +111,9 @@ const (
 //     production or the graph, one whose TestCommit differs from S.Commit in no file of the tie
 //     (R9: "its test, as it is now"); for a query or an agent, the newest. None: unknown,
 //     no_failing_example; it did not fail: unknown, failing_example_missed; for a program check,
-//     its fault names no author or the author of the test: unknown, fault_by_test_author.
+//     its record does not show that an agent that did not write the test wrote the fault (R9): it
+//     names no author of the fault, no author of the test, or the author of the fault among the
+//     authors of the test: unknown, fault_by_test_author.
 //  8. The newest run of each leg passed: true, passed; each failed: false, failed (R7: "the latest
 //     counts, and a later failure cancels an earlier pass").
 func CheckStates(in Input) []CheckState {
@@ -235,7 +237,7 @@ func (j *checkJudge) state(c Check) CheckState {
 		return unknownCheck(reasonNoFailingExample, "")
 	case fault.Outcome != OutcomeFail:
 		return unknownCheck(reasonFailingExampleMissed, "")
-	case c.Procedure == ProcedureProgram && (fault.FaultAuthor == "" || slices.Contains(fault.TestAuthors, fault.FaultAuthor)):
+	case c.Procedure == ProcedureProgram && !byAnotherAgent(fault):
 		return unknownCheck(reasonFaultByTestAuthor, "")
 	}
 
@@ -251,6 +253,15 @@ func (j *checkJudge) state(c Check) CheckState {
 		return CheckState{State: checkTrue, Reason: reasonPassed, From: from}
 	}
 	return CheckState{State: checkFalse, Reason: reasonFailed, From: from}
+}
+
+// byAnotherAgent is whether the record of the failing example fault shows that an agent that did
+// not write the test wrote the fault (R9: "An agent that did not write the test writes the fault"):
+// it names the author of the fault and one or more authors of the test, and the author of the fault
+// is none of them. A record that names no author of one of the two cannot show it.
+func byAnotherAgent(fault Result) bool {
+	namesTestAuthor := slices.ContainsFunc(fault.TestAuthors, func(a string) bool { return a != "" })
+	return fault.FaultAuthor != "" && namesTestAuthor && !slices.Contains(fault.TestAuthors, fault.FaultAuthor)
 }
 
 // newestApproval is the statement, of statement and each statement above it in the approved spec,
