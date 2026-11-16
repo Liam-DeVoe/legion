@@ -3084,7 +3084,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
   a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files runs the comparison`.
   The instrument reads text: a command held in a variable, a line a YAML folded scalar joins, and a Go program that calls `specgraph.Compare` are outside it.
-  `ci.yaml`'s `envoy-go-checks` runs it over this repository (`go run ./cmd/spec-check guard --root ../..`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them runs the step.
+  `ci.yaml`'s `envoy-go-checks` runs it over this repository (`go run ./cmd/spec-check guard --root ../..`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
