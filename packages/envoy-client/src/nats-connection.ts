@@ -1,4 +1,8 @@
 import type { ConnectionOptions } from "nats";
+// Not part of nats.js's public surface; nats 2.29.x has it where its server list calls it. A
+// move would fail the typecheck here, and the rows that dial real nats.js (nats-connection-log
+// test) would fail on a change of what it returns.
+import { hostPort } from "nats/lib/nats-base-client/servers";
 import { natsAuthOptions } from "./nats-auth";
 import type { NatsCredential } from "./nats-credential";
 
@@ -59,6 +63,26 @@ const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/i;
 /** A label that is 16 or more hexadecimal characters alone: a token or key (a 128-bit hex token
  *  is 32), never a host name a log should print. */
 const HEX_CREDENTIAL = /^[0-9a-f]{16,}$/i;
+/** A label of 16 or more letters and digits that mixes upper and lower case with a digit: a
+ *  pasted token, since a host name is written in one case, never a name a log should print. */
+const MIXED_CREDENTIAL = /^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[A-Za-z0-9]{16,}$/;
+
+/**
+ * The host nats.js dials for `server`, as nats.js itself finds it: its own `hostPort`
+ * (servers.js), the function its server list calls for every entry. It takes what follows the
+ * last `://` and reads that as an http: URL, which ends the host at `\`, takes the last of a comma
+ * list written in one entry, percent-decodes, writes a Unicode name in punycode and lowercases;
+ * so a host a nats: URL parse names can differ from the one dialed, and the dialed one is what
+ * nats.js's resolver errors name. Undefined where nats.js cannot read the server either (a port
+ * out of range), which it refuses before it dials.
+ */
+export function natsDialedHost(server: string): string | undefined {
+  try {
+    return hostPort(server).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
 
 /** `server` parsed as nats.js dials it: a value written without a scheme is `nats://`. */
 function parsedServer(server: string): URL | undefined {
@@ -76,7 +100,10 @@ function readsAsHost(hostname: string): boolean {
     return true;
   return hostname
     .split(".")
-    .every((label) => HOST_LABEL.test(label) && !HEX_CREDENTIAL.test(label));
+    .every(
+      (label) =>
+        HOST_LABEL.test(label) && !HEX_CREDENTIAL.test(label) && !MIXED_CREDENTIAL.test(label)
+    );
 }
 
 /**
@@ -94,6 +121,11 @@ export function natsServerForLog(server: string): string {
   if (!["", "/"].includes(parsed.pathname) || parsed.search !== "" || parsed.hash !== "")
     return UNNAMED_NATS_SERVER;
   if (!readsAsHost(parsed.hostname)) return UNNAMED_NATS_SERVER;
+  // Named only where it is the host nats.js dials: the two reads part at a `\`, a comma list in
+  // one entry, a percent escape and a Unicode name, and there the dialed host is a credential's
+  // first part or a pasted seed.
+  if (natsDialedHost(server) !== parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase())
+    return UNNAMED_NATS_SERVER;
   return server.includes("://") ? `${parsed.protocol}//${parsed.host}` : parsed.host;
 }
 
@@ -141,6 +173,10 @@ export function natsUnnamedParts(servers: readonly string[]): string[] {
     }
     if (natsServerForLog(server) !== UNNAMED_NATS_SERVER) continue;
     parts.push(server, hostname);
+    // The host nats.js dials, which its resolver errors name: where it differs from the host a
+    // nats: URL parse finds, it is the part a credential or seed leaves in the text.
+    const dialed = natsDialedHost(server);
+    if (dialed !== undefined) parts.push(dialed);
   }
   return parts;
 }

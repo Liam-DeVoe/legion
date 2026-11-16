@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { connect, nkeys } from "nats";
+import { messageFor } from "../errors";
 import {
   NATS_ADDRESS_NOT_SHOWN,
+  natsDialedHost,
   natsErrorForLog,
   natsServerForLog,
   replaceEachOnce,
@@ -92,5 +96,113 @@ describe("natsServerForLog", () => {
     expect(natsServerForLog("0123456789abcdef:4222")).toBe(UNNAMED_NATS_SERVER);
     // The control: a short hexadecimal label is a host name.
     expect(natsServerForLog("nats://deadbeef.example:4222")).toBe("nats://deadbeef.example:4222");
+  });
+});
+
+/** What real nats.js says when it fails to connect to `server`: no server runs, so each of these
+ *  fails at the resolver or the socket, and the text is nats.js's own. */
+async function realFailure(server: string): Promise<string> {
+  const outcome = await connect({ servers: [server], reconnect: false, timeout: 5_000 }).then(
+    async (connection) => {
+      await connection.close();
+      return "connected";
+    },
+    (error: unknown) => messageFor(error)
+  );
+  if (outcome === "connected")
+    throw new Error(`${server} connected, which this row needs it not to`);
+  return outcome;
+}
+
+/** The failure line every caller writes: the server as a log names it, and nats.js's text. */
+const failureLine = (server: string, text: string) =>
+  `could not connect to NATS at ${natsServerForLog(server)}: ${natsErrorForLog(text, [server])}`;
+
+const canary = () => `canary${randomBytes(4).toString("hex")}`;
+
+// nats.js dials what follows the last `://` as an http: URL (servers.js `hostPort`), which ends the
+// host at `\`, reads a comma list in one entry as one server, percent-decodes and writes a Unicode
+// name in punycode. A nats: URL does none of these, so a log that parsed one named, or failed to
+// hide, the host nats.js dialed: a credential's first part, or a whole seed. Each row runs real
+// nats.js, holds that its own text carries the secret (the row can fail for the leak), and that
+// the failure line carries none of it.
+describe("a server nats.js dials apart from how it is written", () => {
+  const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
+  const tokens = { backslash: canary(), comma: canary(), percent: canary(), unicode: canary() };
+  const unicode = `nats://Grüße${tokens.unicode}Secret:4222`;
+  const rows: [label: string, server: string, secrets: readonly string[]][] = [
+    [
+      "a backslash in the user info",
+      `nats://${userinfo(`${tokens.backslash}\\en`)}127.0.0.1:4222`,
+      [tokens.backslash],
+    ],
+    [
+      "a comma list in one entry, a token in the second",
+      `nats://a.example:4222,nats://${userinfo(`${tokens.comma}/x`)}127.0.0.1:4222`,
+      [tokens.comma],
+    ],
+    [
+      "a comma list in one entry, a seed in the second",
+      `nats://a.example:4222,nats://${seed}:4222`,
+      [seed],
+    ],
+    [
+      "a percent escape in the user info",
+      `nats://${userinfo(`${tokens.percent}%41/x`)}127.0.0.1:4222`,
+      [tokens.percent],
+    ],
+    [
+      "a Unicode name",
+      unicode,
+      [`grüße${tokens.unicode}secret`, new URL(`http://Grüße${tokens.unicode}Secret`).hostname],
+    ],
+  ];
+  test.each(rows)(
+    "%s: the failure line carries none of it",
+    async (_, server, secrets) => {
+      const text = await realFailure(server);
+      const dialed = natsDialedHost(server) ?? "";
+      expect(secrets.some((secret) => dialed.includes(secret.toLowerCase()))).toBe(true);
+      expect(secrets.some((secret) => text.toLowerCase().includes(secret.toLowerCase()))).toBe(
+        true
+      );
+      expect(natsServerForLog(server)).toBe(UNNAMED_NATS_SERVER);
+      const line = failureLine(server, text).toLowerCase();
+      for (const secret of secrets) expect(line).not.toContain(secret.toLowerCase());
+    },
+    30_000
+  );
+});
+
+describe("a token pasted as the server", () => {
+  test("a mixed-case alphanumeric label of 16 or more characters is named in no failure line", async () => {
+    const token = `Xk3pQ9vT2mL8wR5n${randomBytes(3).toString("hex")}`;
+    const server = `nats://${token}:4222`;
+    const text = await realFailure(server);
+    expect(text.toLowerCase()).toContain(token.toLowerCase());
+    expect(natsServerForLog(server)).toBe(UNNAMED_NATS_SERVER);
+    expect(failureLine(server, text).toLowerCase()).not.toContain(token.toLowerCase());
+  }, 30_000);
+
+  test("a host name written in one case is still named", () => {
+    expect(natsServerForLog("nats://abcdefghij0123456789.example:4222")).toBe(
+      "nats://abcdefghij0123456789.example:4222"
+    );
+    expect(natsServerForLog("NATS-HUB-0123456789AB.EXAMPLE:4222")).toBe(
+      "NATS-HUB-0123456789AB.EXAMPLE:4222"
+    );
+  });
+});
+
+describe("natsDialedHost", () => {
+  test("is nats.js's own host: the servers a log names keep their names", () => {
+    expect(natsDialedHost(`nats://${userinfo("u", "p")}Host.Example:4222`)).toBe("host.example");
+    expect(natsServerForLog(`nats://${userinfo("u", "p")}Host.Example:4222`)).toBe(
+      "nats://Host.Example:4222"
+    );
+    expect(natsServerForLog("127.0.0.1:4223")).toBe("127.0.0.1:4223");
+    expect(natsServerForLog("nats://[::1]:4222")).toBe("nats://[::1]:4222");
+    expect(natsServerForLog("tls://nats.example:4443")).toBe("tls://nats.example:4443");
+    expect(natsDialedHost("nats://host:99999")).toBeUndefined();
   });
 });

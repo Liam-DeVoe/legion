@@ -96,6 +96,9 @@ describe("bridgeConfigFromEnvironment", () => {
       ["nats://ok.example:4222#nats://canary-g:4222", "canary-g"],
       ["nats://canary-h.example:4222,nats://canary-i.example:4222", "canary-"],
       ["nats://canary%zz.example:4222", "canary"],
+      // nats.js ends the host at a `\` (it reads the URL as an http: one), so this dials the bare
+      // name canary-j, which only a resolver's search domain completes
+      ["nats://canary-j\\en@envoy-nats.tailnet.example:4222", "canary-j"],
       ["::", "::"],
     ] as const) {
       const refusal = (() => {
@@ -147,6 +150,15 @@ describe("redactUpstream", () => {
       expect(redacted).toContain("SMOKE_UPSTREAM_NATS");
       expect(redacted.toLowerCase()).not.toContain("canary");
     }
+  });
+
+  test("puts the variable's name in place of the host nats.js dials, where it differs", () => {
+    // The bridge refuses such an upstream (above); a failure line that quotes it all the same
+    // names none of it.
+    const upstream = "nats://canary-q\\en@envoy-nats.tailnet.example:4222";
+    expect(redactUpstream("getaddrinfo EAI_AGAIN canary-q", upstream)).toBe(
+      "getaddrinfo EAI_AGAIN SMOKE_UPSTREAM_NATS"
+    );
   });
 
   test("leaves a message that does not quote the upstream as it is", () => {

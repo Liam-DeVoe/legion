@@ -11,6 +11,7 @@ import { githubSubject } from "../../../packages/contracts/src/subject";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
 import {
   NATS_ADDRESS_NOT_SHOWN,
+  natsDialedHost,
   natsServerForLog,
   natsUnnamedParts,
   replaceEachOnce,
@@ -70,7 +71,7 @@ export function bridgeConfigFromEnvironment(
   if (!downstreamUrl) throw new Error("SMOKE_RIG_NATS is required");
   const upstreamUrl = environment.SMOKE_UPSTREAM_NATS?.trim() ?? "";
   if (!upstreamUrl) throw new Error("SMOKE_UPSTREAM_NATS is required");
-  if (!upstreamNatsUrl.test(upstreamUrl)) {
+  if (!upstreamNatsUrl.test(upstreamUrl) || !dialsCheckedHost(upstreamUrl)) {
     throw new Error(
       "SMOKE_UPSTREAM_NATS is not one NATS URL naming a fully-qualified host: a bare alias resolves through whatever search domain the box has; name the production Envoy NATS as the operator's envoy.json does (envoy.natsUrls, nats://<host>.<tailnet>.ts.net:4222)"
     );
@@ -90,11 +91,20 @@ export function bridgeConfigFromEnvironment(
 const upstreamNatsUrl =
   /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/)?(?:([^@/?#,\s]+)@)?([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)(?::\d+)?\/?$/;
 
+// Whether the host nats.js dials (natsDialedHost, its own hostPort) is the host the pattern
+// checked. nats.js reads the URL as an http: one, which ends the host at a `\` in the user info,
+// so `nats://tok\x@<fqdn>` passes the pattern and dials the bare name `tok`.
+function dialsCheckedHost(upstreamUrl: string): boolean {
+  const [, , host] = upstreamNatsUrl.exec(upstreamUrl) ?? [];
+  return host !== undefined && natsDialedHost(upstreamUrl) === host.toLowerCase();
+}
+
 // The operator's upstream names production infrastructure, so a client error that quotes the
-// value, its user info or its host is printed with the variable's name in their place.
+// value, its user info, its host or the host nats.js dials is printed with the variable's name in
+// their place.
 function upstreamReplacements(upstreamUrl: string): (readonly [string, string])[] {
   const [, userInfo, host] = upstreamNatsUrl.exec(upstreamUrl) ?? [];
-  return [upstreamUrl, userInfo, host]
+  return [upstreamUrl, userInfo, host, natsDialedHost(upstreamUrl)]
     .filter((value): value is string => value !== undefined)
     .map((value) => [value, "SMOKE_UPSTREAM_NATS"] as const);
 }

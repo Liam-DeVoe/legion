@@ -1556,7 +1556,7 @@ export default function envoyExtension(pi: PiApi): void {
         // The frame carries the Dispatch message id, so the live view re-keys it over the
         // person's Dispatch turn instead of drawing the line twice.
         if (session !== "") {
-          agentStream.record(
+          agentStreamOf(session).record(
             agentStreamFramesSubject(session),
             {
               content: [{ text: report, type: "text" }],
@@ -1688,7 +1688,7 @@ export default function envoyExtension(pi: PiApi): void {
       .then(async (reply) => {
         // A `/model` or `/effort` has run by now: the viewer's header shows its result before the
         // reply that names it reaches the page.
-        refreshAgentStreamSettings(sessionID);
+        refreshAgentStreamSettings(hostSessionID());
         if (reply === undefined) return;
         await postTypedInputReply(delivery, replySessionID, reply);
       })
@@ -2590,10 +2590,35 @@ export default function envoyExtension(pi: PiApi): void {
   // capture, so nothing is retained by the bus; the Dispatch relay forwards them to a human
   // watching the session and writes none of it down. The publisher stays silent unless a viewer
   // is attached, so a session nobody has open puts no conversation on the wire at all.
-  const agentStream = new AgentStreamPublisher({
-    now: () => Date.now(),
-    publish: (subject, payload) => connection?.publish(subject, codec.encode(payload)),
-  });
+  //
+  // Each session has a ring of its own, so a replay answers its session's turns alone, however
+  // the host's moves and this process's passes interleave: a turn is kept in the ring of the
+  // session the host records it under (`recordAgentStreamMessage`), and a control subject replays
+  // and arms its own session's ring alone. A ring whose viewer still watches is kept after the
+  // host moves on, so what that session still records (a person's shell command it ran) reaches
+  // that viewer on its own subject; every other ring of a session this process no longer serves
+  // is dropped (`pruneAgentStreams`) when a ring is made and when the control subject moves. So at
+  // most the served session's, the host's live one and the rings still watched are held, and a
+  // watch lapses within AGENT_STREAM_WATCH_TTL_MS of its viewer's last ping.
+  const agentStreams = new Map<string, AgentStreamPublisher>();
+  /** Forgets the ring of every session but the `kept` ones, and those a viewer still watches. */
+  const pruneAgentStreams = (...kept: string[]): void => {
+    for (const [session, ring] of agentStreams) {
+      if (!kept.includes(session) && !ring.watched) agentStreams.delete(session);
+    }
+  };
+  const agentStreamOf = (session: string): AgentStreamPublisher => {
+    let ring = agentStreams.get(session);
+    if (ring === undefined) {
+      pruneAgentStreams(agentStreamControlSession);
+      ring = new AgentStreamPublisher({
+        now: () => Date.now(),
+        publish: (subject, payload) => connection?.publish(subject, codec.encode(payload)),
+      });
+      agentStreams.set(session, ring);
+    }
+    return ring;
+  };
   // The control subscription this session currently holds, and the id it was opened for.
   let agentStreamControl: Subscription | undefined;
   let agentStreamControlSession = "";
@@ -2646,7 +2671,7 @@ export default function envoyExtension(pi: PiApi): void {
         ...description,
       });
     }
-    agentStream.setCommands(agentStreamFramesSubject(session), commands);
+    agentStreamOf(session).setCommands(agentStreamFramesSubject(session), commands);
   };
 
   // The model and thinking level a viewer's header shows (`liveSessionSettings`). The host fires no
@@ -2658,7 +2683,7 @@ export default function envoyExtension(pi: PiApi): void {
   const refreshAgentStreamSettings = (session: string): void => {
     if (session === "") return;
     try {
-      agentStream.setSettings(
+      agentStreamOf(session).setSettings(
         agentStreamFramesSubject(session),
         liveSessionSettings(liveAgentSession(session))
       );
@@ -2692,7 +2717,7 @@ export default function envoyExtension(pi: PiApi): void {
   const publishAgentStreamContext = (session: string, usage: ContextUsage | undefined): void => {
     agentStreamContextRefreshedAt = Date.now();
     try {
-      agentStream.setContext(agentStreamFramesSubject(session), usage);
+      agentStreamOf(session).setContext(agentStreamFramesSubject(session), usage);
     } catch (error) {
       logger.warn("envoy: could not publish the agent stream's context frame", {
         error: messageFor(error),
@@ -2763,6 +2788,9 @@ export default function envoyExtension(pi: PiApi): void {
           if (typeof parsed !== "object" || parsed === null) continue;
           const request = parsed as AgentStreamControlMessage;
           if (request.type !== "replay" && request.type !== "watch") continue;
+          // A message already queued when the control subject moved belongs to a session whose
+          // ring was dropped: answered, it would make that ring again and arm it.
+          if (agentStreamControlSession !== session) continue;
           refreshAgentStreamSettings(session);
           const attached = agentStreamViewerAttached;
           if (
@@ -2785,19 +2813,21 @@ export default function envoyExtension(pi: PiApi): void {
             }
           }
           // The answer is taken before this message arms anything, so a bare replay request
-          // from a client that never attached a viewer gets an empty history, not the ring.
+          // from a client that never attached a viewer gets an empty history, not the ring. It is
+          // this session's own ring, which holds this session's turns alone.
+          const ring = agentStreamOf(session);
           const reply = message.reply;
           const answer =
             request.type === "replay" && reply !== undefined
-              ? JSON.stringify(agentStream.replay(session))
+              ? JSON.stringify(ring.replay(session))
               : undefined;
           // A viewer arming a session nobody was watching is sent the settings and commands as
           // they stand: what was read before it arrived was kept unpublished, and a page held open
           // while this session was relaunched gets no replay from this process (`publishState`).
-          const arming = !agentStream.watched;
-          agentStream.noteViewer();
+          const arming = !ring.watched;
+          ring.noteViewer();
           agentStreamViewerAttached = true;
-          if (arming) agentStream.publishState(agentStreamFramesSubject(session));
+          if (arming) ring.publishState(agentStreamFramesSubject(session));
           if (answer === undefined || reply === undefined) continue;
           connection?.publish(reply, codec.encode(answer));
         } catch (error) {
@@ -2825,10 +2855,11 @@ export default function envoyExtension(pi: PiApi): void {
     if (agentStreamControlSession === session && agentStreamControl !== undefined) return;
     agentStreamControl?.unsubscribe();
     agentStreamControl = undefined;
-    // A different session under the same extension instance is a different conversation: the
-    // ring still holds the previous one, and a viewer opening the new id must not be served it.
+    // A different session under the same extension instance is a different conversation: its
+    // ring is its own, and of the sessions this process served before only a ring a viewer still
+    // watches is kept, so a viewer opening the new id is served the new conversation alone.
     if (agentStreamControlSession !== session) {
-      agentStream.reset();
+      pruneAgentStreams(session);
       agentStreamViewerAttached = false;
       agentStreamCommandsRefreshedOnWatchAt = -Infinity;
       forgetAgentStreamContext();
@@ -2860,25 +2891,31 @@ export default function envoyExtension(pi: PiApi): void {
   /** One of this session's messages, on its way to whoever has the session open, tagged with the
    *  Dispatch message a user message delivered when it matches a person's turn this extension sent
    *  in. Only the top-level instance publishes: a `task` subagent's instance never learns a session
-   *  id, and its work reaches the viewer as the parent's tool call anyway. */
-  const recordAgentStreamMessage = (message: unknown, streaming: boolean): void => {
-    if (sessionID === "") return;
-    agentStream.record(
-      agentStreamFramesSubject(sessionID),
+   *  id, and its work reaches the viewer as the parent's tool call anyway. `host` is the session
+   *  the host records the message under, read from the event's own context: this instance's
+   *  `sessionID` trails a move with no event (a rollback) until the next pass, and a message kept
+   *  under it would be replayed to a viewer of a session it is not part of. */
+  const recordAgentStreamMessage = (message: unknown, streaming: boolean, host: string): void => {
+    if (sessionID === "" || host === "") return;
+    agentStreamOf(host).record(
+      agentStreamFramesSubject(host),
       message,
       streaming,
-      matchInjectedUserTurn(sessionID, message)
+      matchInjectedUserTurn(host, message)
     );
   };
+  /** The session the host is on as an event reports it, else as this instance last saw it. */
+  const eventSessionID = (context: SessionContext | undefined): string =>
+    context?.sessionManager.getSessionId() ?? hostSessionID();
 
-  pi.on("message_start", async (event) => {
+  pi.on("message_start", async (event, context) => {
     // A tagged message starts in the live session's transcript, so its pictures join that set.
     const shown = typedPictures.started(event.message);
     if (shown !== undefined) markPicturesShown(shownPictures(sessionID), shown);
-    recordAgentStreamMessage(event.message, true);
+    recordAgentStreamMessage(event.message, true, eventSessionID(context));
   });
-  pi.on("message_update", async (event) => {
-    recordAgentStreamMessage(event.message, true);
+  pi.on("message_update", async (event, context) => {
+    recordAgentStreamMessage(event.message, true, eventSessionID(context));
   });
 
   // The host writes a message to the transcript as it ends it: a card or a person's turn handed to
@@ -2888,10 +2925,11 @@ export default function envoyExtension(pi: PiApi): void {
   pi.on("message_end", async (event, context) => {
     const { message } = event;
     if (!shuttingDown) cardWake.messageEnd(message, context);
-    recordAgentStreamMessage(message, false);
+    const host = eventSessionID(context);
+    recordAgentStreamMessage(message, false, host);
     // Every message of a turn moves the context window's filling, and this is where the host has
     // finished one.
-    refreshAgentStreamContext(sessionID);
+    refreshAgentStreamContext(host);
     cardAges.written(message, context.sessionManager.getSessionId());
     await unwritten.written(message);
   });
@@ -2900,23 +2938,25 @@ export default function envoyExtension(pi: PiApi): void {
   // compaction is the one moment the figures fall rather than climb, so both refresh the ring.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
-    refreshAgentStreamContext(sessionID);
+    refreshAgentStreamContext(eventSessionID(context));
   });
-  pi.on("auto_compaction_end", async (event) => {
+  pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);
-    refreshAgentStreamContext(sessionID);
+    refreshAgentStreamContext(eventSessionID(context));
   });
   pi.on("auto_retry_end", async (event) => cardWake.autoRetryEnd(event));
 
   // A turn runs on the model and level set when it starts, and a retry's fallback moves the session
   // onto another model: either can follow a change no event announced. A subagent's instance knows
-  // no session id and publishes nothing.
-  pi.on("turn_start", async () => {
-    refreshAgentStreamSettings(sessionID);
-    refreshAgentStreamContext(sessionID);
+  // no session id and publishes nothing. Each frame goes to the ring of the session the host is on,
+  // which this instance's `sessionID` trails after a move with no event.
+  pi.on("turn_start", async (_event, context) => {
+    const host = eventSessionID(context);
+    refreshAgentStreamSettings(host);
+    refreshAgentStreamContext(host);
   });
-  pi.on("retry_fallback_applied", async () => {
-    refreshAgentStreamSettings(sessionID);
+  pi.on("retry_fallback_applied", async (_event, context) => {
+    refreshAgentStreamSettings(eventSessionID(context));
   });
 
   // The host's own session id. Oh My Pi moves its one session manager before it dispatches the
@@ -3592,15 +3632,15 @@ export default function envoyExtension(pi: PiApi): void {
     }
     // Another session's relay: its unsettled frames go back to the listener (`nak`).
     if (relay !== undefined && relay.sessionID !== host) closeRelay();
-    // Another session's agent-stream control subject: what the host records from here is this
-    // session's, and the ring is otherwise reset only once this session's own subject opens
-    // (`watchAgentStream`), which a failed move never reaches. Closed here, a viewer of the other
-    // session is answered nothing of this one.
+    // Another session's agent-stream control subject, closed here: a viewer of that session is
+    // answered nothing more, which a failed move to this one never reaches `watchAgentStream` to
+    // do. Its ring is kept only while that viewer still watches; this session's ring holds what
+    // the host recorded under it.
     if (agentStreamControlSession !== "" && agentStreamControlSession !== host) {
       agentStreamControl?.unsubscribe();
       agentStreamControl = undefined;
+      pruneAgentStreams(host);
       agentStreamControlSession = "";
-      agentStream.reset();
       agentStreamViewerAttached = false;
       agentStreamCommandsRefreshedOnWatchAt = -Infinity;
       forgetAgentStreamContext();
@@ -4166,6 +4206,7 @@ export default function envoyExtension(pi: PiApi): void {
       // (its instance never ran restoreLocalSessionState, so its `sessionID` stayed empty).
       const liveSessionID = context.sessionManager.getSessionId();
       forgetAgentStreamContext();
+      agentStreams.clear();
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
     }

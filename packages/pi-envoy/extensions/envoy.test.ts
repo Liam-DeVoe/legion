@@ -19348,6 +19348,43 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, next);
   }, 30_000);
 
+  test("after a rollback with no event, a viewer of the session left is replayed nothing of the one returned to", async () => {
+    // Two sessions of one host: it switches from A to B, B's viewer attaches, and the host then
+    // returns to A with no event. Until the next pass runs, A's control subject is closed and B's
+    // is still open; what the host records then is A's, and B's viewer must be replayed only B's.
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension } = await import("./envoy.ts?agent-stream-ring-per-session");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const first = sessionContext("ses_ring_a");
+    await fixture.handlers.get("session_start")?.({}, first);
+    const second = sessionContext("ses_ring_b");
+    await fixture.handlers.get("session_switch")?.({}, second);
+    const control = natsState.controls.get("agentstream.ses_ring_b.control");
+    expect(control?.active()).toBe(true);
+    const say = (text: string, timestamp: number) => ({
+      message: { content: [{ text, type: "text" }], role: "assistant", timestamp },
+    });
+    const ownTurn = "a turn of the session switched to";
+    await fixture.handlers.get("message_end")?.(say(ownTurn, 40), second);
+    // The host returns to A with no event, and records A's next turn.
+    const returnedTurn = "a turn of the session returned to";
+    await fixture.handlers.get("message_end")?.(say(returnedTurn, 50), first);
+
+    control?.push(JSON.stringify({ type: "watch", v: 1 }));
+    control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-viewer-of-b");
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    await Bun.sleep(50);
+    const replayed = natsState.published
+      .filter((each) => each.subject === "inbox-viewer-of-b")
+      .map((each) => new TextDecoder().decode(each.data))
+      .join("\n");
+    // The replay can carry a turn at all: B's own is in it.
+    expect(replayed).toContain(ownTurn);
+    expect(replayed).not.toContain(returnedTurn);
+    await fixture.handlers.get("session_shutdown")?.({}, first);
+  }, 30_000);
+
   test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {
     // Two-second tokens, so the keeper renews within the test: each renewal lands a new token,
     // and the connection reconnects to present it before the old one lapses. Shutdown stops it.
