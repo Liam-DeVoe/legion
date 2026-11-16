@@ -6,7 +6,6 @@ import { pageHeaderControl, pageInkText, pageQuietText } from "../../../theme/cl
 import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
-import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../../shell/useDialog";
 import { DetailsErrorLine } from "../details-error";
 import type { FocusedNode } from "../focused-node";
 import { useMarginDrawer } from "../margin-slot";
@@ -51,7 +50,6 @@ export function NodeReferences({
   reference: string | undefined;
 }): ReactNode {
   const drawer = useMarginDrawer();
-  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const panelId = useId();
   // Which row the reader opened the list on, so the focus moving to another row closes it:
   // the state is the row's own id and not a flag.
@@ -137,10 +135,6 @@ export function NodeReferences({
                     ) : (
                       <Link
                         className={`dispatch-inline-link min-w-0 flex-1 truncate ${ROW_LINK} ${pageInkText}`}
-                        onClick={() => {
-                          // On a phone Details covers the outline the link focuses a row of.
-                          if (phone) drawer?.setOpen(false);
-                        }}
                         to={buildReferencePath(route)}
                         {...(named ? authorText : pageChrome)}
                       >

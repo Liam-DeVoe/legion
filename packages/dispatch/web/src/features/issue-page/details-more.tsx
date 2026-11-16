@@ -6,11 +6,12 @@ import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import type { IssueDetails, UserState } from "../../api/types";
 import { pageInkText, pageRowBorder } from "../../theme/classes";
+import { stateForIssue } from "../issue/pins";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { DetailsErrorLine } from "./details-error";
-import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
+import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
@@ -31,11 +32,8 @@ export interface DetailsMoreProps {
 /** The history in Details (`IssueHistory.tsx`), which `t v` puts the focus in. */
 const HISTORY = '[data-testid="issue-history"]';
 
-/** The collaborators' row in Details, whose own control `t o` puts the focus on. */
-const COLLABORATORS_CONTROL = `[${DETAILS_ROW_ATTRIBUTE}="collaborators"] button`;
-
-/** How many frames a key waits for Details to draw what its address opened before it gives up
- *  on putting the focus there, as the view row's chords wait (`useIssueKeymap.ts`). */
+/** How many frames a key or an address waits for Details to draw what it opened before it gives
+ *  up on reaching it, as the view row's chords wait (`useIssueKeymap.ts`). */
 const DRAWING_FRAMES = 20;
 
 /**
@@ -135,12 +133,14 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  * keys that open Details at it.
  *
  * `/issues/<key>/activity`, and the address of a comment or a message of a thread agents wrote
- * among themselves, open Details at the history, that turn marked; `/issues/<key>/collaborators`
- * opens Details at the People section, whose list `DetailsPeople` opens. Each address opens
- * Details once per arrival at it, and the reader's own Close is the later word for as long as
- * they stay there. This place is drawn outside every section Details can collapse, so it is
- * mounted for the life of the panel and keeps that count. `t v` and `t o` open those two
- * addresses and put the focus in what they open.
+ * among themselves, open Details at the history - its heading brought into view, or that turn
+ * marked; `/issues/<key>/collaborators` opens Details at the collaborators' row of the People
+ * section (`useOpenDetailsAt`), whose list `DetailsPeople` opens. Each address opens Details once
+ * per arrival at it, and the reader's own Close is the later word for as long as they stay
+ * there. This place is drawn outside every section Details can collapse, so it is mounted for
+ * the life of the panel and keeps that count, and the reader's read mark for the visit, which
+ * the history is handed. `t v` and `t o` open those two addresses and put the focus in what
+ * they open.
  *
  * The history's log is read only while Details is open or an address opens it, so a load that
  * leaves Details shut costs no request for it (R21). The comments, messages and asks an item's
@@ -181,10 +181,11 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       ])
     : undefined;
   const opensHistory = route?.kind === "activity" || item !== undefined;
+  const opensCollaborators = route?.kind === "collaborators";
   const drawer = useMarginDrawer();
   const openDetails = drawer?.setOpen;
-  const panelAddress =
-    route?.kind === "collaborators" || opensHistory ? `${pathname}${search}` : undefined;
+  const openDetailsAt = useOpenDetailsAt();
+  const panelAddress = opensCollaborators || opensHistory ? `${pathname}${search}` : undefined;
   const openedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (panelAddress === undefined || openDetails === undefined) {
@@ -194,7 +195,27 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     if (openedFor.current === panelAddress) return;
     openedFor.current = panelAddress;
     openDetails(true);
-  }, [openDetails, panelAddress]);
+    // At the collaborators' row, its control focused, with the People section that holds it
+    // opened if the reader closed it. The panel hears that request only once it is placed in
+    // Details - on a fresh load, a commit or more after this one - so it is sent once Details
+    // draws this history, which stands in the same panel; and a frame on, outside this effect,
+    // where the section's own synchronous open could not run.
+    if (opensCollaborators) {
+      requestAnimationFrame(() => onceInDetails(HISTORY, () => openDetailsAt("collaborators")));
+    }
+  }, [openDetails, openDetailsAt, opensCollaborators, panelAddress]);
+  const drawsHistory = drawer?.open === true || opensHistory;
+  // The reader's read mark for this visit, where the history draws the line that says what is
+  // new (R2): where it stood when the history first drew for this issue, and lower once it has
+  // been moved back elsewhere, never higher. It is held here and not in the history, which is
+  // not drawn while Details is shut, so a close and an open of Details keep the line where the
+  // reader found it, however far the mark moved on in between.
+  const lastReadSeq = stateForIssue(state, issue.key).last_read_seq;
+  const visitMark = useRef<{ readonly issue: string; readonly seq: number } | undefined>(undefined);
+  const held = visitMark.current?.issue === issue.key ? visitMark.current : undefined;
+  if (state !== undefined && (held === undefined ? drawsHistory : lastReadSeq < held.seq)) {
+    visitMark.current = { issue: issue.key, seq: lastReadSeq };
+  }
   useKeymap("issue", [
     {
       id: "tab-activity",
@@ -212,29 +233,47 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       label: CONTROL_LABELS.open_collaborators,
       run: () => {
         navigate(buildIssuePath({ key: issue.key, kind: "collaborators" }));
-        openDetails?.(true);
-        requestAnimationFrame(() => reachInDetails(COLLABORATORS_CONTROL));
+        openDetailsAt("collaborators");
       },
     },
   ]);
-  if (drawer?.open !== true && !opensHistory) return null;
-  return <IssueHistory issue={issue} item={item} state={state} />;
+  if (!drawsHistory) return null;
+  return (
+    <IssueHistory
+      activityAddress={route?.kind === "activity" ? panelAddress : undefined}
+      issue={issue}
+      item={item}
+      state={state}
+      visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
+    />
+  );
 }
 
 /**
- * Puts the focus on what `selector` names inside Details, once Details has drawn it: a key
- * navigates and opens Details, and what that opens is on the page a frame or two later. A part
- * inside a hidden element takes no focus, and a page that never draws it leaves the focus where
- * it was.
+ * Runs `then` with what `selector` names inside Details, once Details has drawn it: a key or an
+ * address opens Details, and what that opens is on the page a frame or two later. A part inside
+ * a hidden element is not drawn, and a page that never draws it runs nothing.
  */
-function reachInDetails(selector: string, left = DRAWING_FRAMES): void {
+function onceInDetails(
+  selector: string,
+  then: (found: HTMLElement) => void,
+  left = DRAWING_FRAMES
+): void {
   const found = document.querySelector<HTMLElement>(`aside[${DETAILS_ATTRIBUTE}] ${selector}`);
   if (found === null || found.closest("[hidden]") !== null) {
-    if (left > 0) requestAnimationFrame(() => reachInDetails(selector, left - 1));
+    if (left > 0) requestAnimationFrame(() => onceInDetails(selector, then, left - 1));
     return;
   }
-  found.focus({ preventScroll: true });
-  found.scrollIntoView({ block: "nearest" });
+  then(found);
+}
+
+/** Puts the focus on what `selector` names inside Details, once Details has drawn it; a page
+ *  that never draws it leaves the focus where it was. */
+function reachInDetails(selector: string): void {
+  onceInDetails(selector, (found) => {
+    found.focus({ preventScroll: true });
+    found.scrollIntoView({ block: "nearest" });
+  });
 }
 
 /** One row of Details that its own control names, as `IssueMargin.tsx`'s `Row wide` draws it

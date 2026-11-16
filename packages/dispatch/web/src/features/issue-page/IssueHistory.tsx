@@ -23,8 +23,10 @@ import {
 } from "../../theme/classes";
 import { ActivityLine } from "../activity/ActivityLine";
 import { dateKey } from "../activity/activity-model";
+import { scrollElementToTop } from "../doc/scroll-block";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
+import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/routes";
@@ -79,25 +81,35 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
  * replied in a thread, the outline draws it and this list no longer does (R1).
  *
  * `/activity`, `t v` and the address of a comment or message of such a thread open Details here
- * (R20); `item` is the entry such an address names, which is marked and brought into view, its
- * day opened. It writes no read mark: the outline's end is the issue's one writer of it
- * (`IssueReadMark.tsx`), so the watermark this draws has one author - and the line that says
- * what is new holds for the visit, where the reader's mark stood as the history first drew, so
- * the outline's own write, a second after the page opens on a short outline, does not take the
- * line away under the reader who came to read it.
+ * (R20): at `/activity` the heading is brought into Details' view once for each arrival;
+ * `item` is the entry such an address names, which is marked and brought into view, its day
+ * opened. It writes no read mark. The line that says what is new is drawn at `visitMark`,
+ * where the reader's mark stood as the history first drew in this visit, which
+ * `DetailsHistory` holds while Details is shut and this list is not drawn: so a later move of
+ * the mark, from another page or tab, leaves the line where the reader found it.
  *
- * On a phone Details is a sheet over the page, so a link of the history that leaves it - a
- * file, a document, a row of the outline - closes it, as a turn's Reply does.
+ * On a phone Details is a sheet over the page, and a link followed in it closes it (part D's
+ * `Margin.tsx`), so a link of the history that leaves it - a file, a document, a row of the
+ * outline - closes it. A turn's own time is that turn's address, which opens Details here, so
+ * it keeps Details open (`KEEPS_DETAILS_ATTRIBUTE`); a turn's Reply, a button, closes it itself.
  */
 export function IssueHistory({
+  activityAddress,
   issue,
   item,
   state,
+  visitMark,
 }: {
+  /** The `/activity` address the reader is at, or undefined at any other: each arrival at it
+   *  brings the history's heading into Details' view once. */
+  activityAddress: string | undefined;
   issue: IssueDetails;
   /** The id of the comment or message the address names, which the list marks. */
   item: string | undefined;
   state: UserState | undefined;
+  /** The reader's read mark for this visit (`DetailsHistory`), where the line that says what is
+   *  new is drawn. */
+  visitMark: number;
 }): ReactNode {
   const issueKey = issue.key;
   const queryClient = useQueryClient();
@@ -135,17 +147,6 @@ export function IssueHistory({
     queryKey: ["asks", issueKey],
   });
   const issueState = stateForIssue(state, issueKey);
-  // The reader's read mark for this visit: where it stood when the history first drew for this
-  // issue, and lower once it has been moved back elsewhere, never higher - the page's own write
-  // of it is forwards.
-  const visitMark = useRef<{ readonly issue: string; readonly seq: number } | undefined>(undefined);
-  if (
-    state !== undefined &&
-    (visitMark.current?.issue !== issueKey || issueState.last_read_seq < visitMark.current.seq)
-  ) {
-    visitMark.current = { issue: issueKey, seq: issueState.last_read_seq };
-  }
-  const lastReadSeq = visitMark.current?.seq ?? issueState.last_read_seq;
   const events = useMemo(() => log.data?.pages.flat() ?? [], [log.data]);
   // When the oldest event read so far was made, while older pages remain: a thread that began
   // before it waits for its page (`HistoryInput.loadedFrom`).
@@ -171,7 +172,7 @@ export function IssueHistory({
         asks: [...(issue.open_asks ?? []), ...(asks.data ?? [])],
         comments: comments.data,
         events,
-        lastReadSeq,
+        lastReadSeq: visitMark,
         ...(loadedFrom === undefined ? {} : { loadedFrom }),
         messages: messages.data,
         today,
@@ -182,10 +183,10 @@ export function IssueHistory({
       events,
       issue.artifacts,
       issue.open_asks,
-      lastReadSeq,
       loadedFrom,
       messages.data,
       today,
+      visitMark,
     ]
   );
   // The days before today the reader opened; the day the address's entry is in is opened as
@@ -213,8 +214,30 @@ export function IssueHistory({
     landed.current = item;
     entry.scrollIntoView({ block: "center" });
   });
-  const drawer = useMarginDrawer();
-  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  // `/activity` opens Details at the history (R4): its heading is brought into Details' view
+  // once for each arrival at that address, on the first render it has a box - Details still
+  // closed around it, or the panel not yet placed in the drawer, gives it none - and leaving the
+  // address lets the next arrival bring it again. Only the box Details scrolls in moves, never
+  // the page under it; the reader's own scroll after that is theirs.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const headingLanded = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (activityAddress === undefined) {
+      headingLanded.current = undefined;
+      return;
+    }
+    const element = heading.current;
+    if (
+      headingLanded.current === activityAddress ||
+      element === null ||
+      element.getClientRects().length === 0
+    ) {
+      return;
+    }
+    headingLanded.current = activityAddress;
+    const box = scrollingAncestor(element);
+    if (box !== null) scrollElementToTop(element, box);
+  });
   // The history is newest first, so every event the feed prepends lands above a reader who is
   // down in it: the anchor holds the entry they are on where it was, in the box it scrolls in -
   // Details' own, or the document outside the shell. It follows each entry's own id
@@ -248,17 +271,9 @@ export function IssueHistory({
       aria-label={CONTROL_LABELS.history}
       className="flex min-w-0 flex-col gap-1 outline-none"
       data-testid="issue-history"
-      // On a phone Details covers the page, so a link that leaves the history closes it for the
-      // reader to see where the link went. A turn's own time is that turn's address, which
-      // opens Details here, so it stays.
-      onClickCapture={(event) => {
-        if (!phone || !(event.target instanceof Element)) return;
-        const link = event.target.closest("a[href]");
-        if (link !== null && !link.hasAttribute("data-history-time")) drawer?.setOpen(false);
-      }}
       tabIndex={-1}
     >
-      <h2 className={`text-sm font-semibold ${pageInkText}`} {...pageChrome}>
+      <h2 className={`text-sm font-semibold ${pageInkText}`} ref={heading} {...pageChrome}>
         {CONTROL_LABELS.history}
       </h2>
       {log.isPending ? (
@@ -497,6 +512,7 @@ function Turn({
           className={`dispatch-inline-link ${TIME} ${pageRowAct}`}
           data-history-time=""
           to={buildIssuePath({ id: turn.id, key: issueKey, kind: turn.kind })}
+          {...{ [KEEPS_DETAILS_ATTRIBUTE]: "" }}
         >
           <Timestamp at={turn.at} />
         </Link>

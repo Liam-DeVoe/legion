@@ -82,7 +82,7 @@ function installRowLayout(): { restore: () => void } {
 // into at the front of page 0 (`prependEventToLog`), and draws it newest first: each arrival
 // pushes a reader who is down in the history one entry further down unless something holds
 // their place, as the old Activity tab's `ViewportAnchor` did. Each entry carries
-// `data-event-seq`, the identity the anchor follows.
+// `data-history-entry`, its own id, the identity the anchor follows.
 test("an event arriving while the reader is in the history leaves their entry where it was", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue(
@@ -103,9 +103,11 @@ test("an event arriving while the reader is in the history leaves their entry wh
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
+            activityAddress={undefined}
             issue={issue}
             item={undefined}
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+            visitMark={99}
           />
         </QueryClientProvider>
       </MemoryRouter>
@@ -188,9 +190,11 @@ test("a reader on one of two threads whose events are unread keeps their entry w
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
+            activityAddress={undefined}
             issue={issue}
             item={undefined}
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+            visitMark={99}
           />
         </QueryClientProvider>
       </MemoryRouter>
@@ -250,9 +254,11 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
   }
   const history = (
     <IssueHistory
+      activityAddress={undefined}
       issue={issue}
       item={undefined}
       state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+      visitMark={99}
     />
   );
   let unmount: (() => void) | undefined;
