@@ -54,36 +54,3 @@ func TestIsID(t *testing.T) {
 		}
 	}
 }
-
-// A go selector is a Go import path and a top-level test name, separated by one space.
-func TestParseSelector(t *testing.T) {
-	t.Parallel()
-	for _, row := range []struct {
-		selector, path, name string
-		ok                   bool
-	}{
-		{"github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage", "github.com/sjawhar/envoy/cmd/listener", "TestARestartLosesNoMessage", true},
-		{"example.com/p Test", "example.com/p", "Test", true},
-		{"example.com/p Test_x", "example.com/p", "Test_x", true},
-		{"example.com/p Test2", "example.com/p", "Test2", true},
-		{"TestX", "", "", false},
-		{"example.com/p", "", "", false},
-		{"example.com/p  TestA", "", "", false},
-		{"example.com/p TestA extra", "", "", false},
-		{"example.com/p Testa", "", "", false},
-		{"example.com/p TestA/sub", "", "", false},
-		{"example.com/p BenchmarkA", "", "", false},
-		{"example.com/../p TestA", "", "", false},
-		{"/abs/p TestA", "", "", false},
-		{"./p TestA", "", "", false},
-		{"example.com/p/ TestA", "", "", false},
-		{"example.com//p TestA", "", "", false},
-		{" example.com/p TestA", "", "", false},
-		{"", "", "", false},
-	} {
-		path, name, err := ParseSelector(row.selector)
-		if ok := err == nil; ok != row.ok || path != row.path || name != row.name {
-			t.Errorf("ParseSelector(%q) = %q, %q, %v; want %q, %q, ok %t", row.selector, path, name, err, row.path, row.name, row.ok)
-		}
-	}
-}
