@@ -328,7 +328,7 @@ func (s *server) askRewriteSideQuestion(ctx context.Context, run askRewriteRun, 
 		slog.Warn("dispatch: write a rewrite's side question", "ask", run.askID, "error", err)
 		return reviewer.Answer{}, ""
 	}
-	message, _, err := s.createStoredMessage(ctx, nil, input, delivery, reviewerActor)
+	message, _, err := s.createStoredMessage(ctx, nil, input, delivery, false, reviewerActor)
 	if err != nil {
 		slog.Warn("dispatch: send a rewrite's side question", "ask", run.askID, "error", err)
 		return reviewer.Answer{}, ""

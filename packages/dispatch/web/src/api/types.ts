@@ -100,6 +100,7 @@ export type {
   DefineInput,
   Definition,
   DefinitionAgent,
+  DeliveryAttemptState,
   DeliveryCapability,
   DeliveryColorFacet,
   DeliveryComponent,

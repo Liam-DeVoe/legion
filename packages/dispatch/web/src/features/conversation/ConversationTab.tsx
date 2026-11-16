@@ -84,6 +84,7 @@ import {
   failureGuidance,
   isSafeRetry,
   MODE_LABELS,
+  queuedParts,
   withGuidance,
 } from "./delivery";
 import {
@@ -587,7 +588,13 @@ function CommentDeliveryList({
           >
             <span>
               <AgentParts parts={[recipient]} /> ·{" "}
-              {delivery.duplicate === true ? duplicateText : delivery.state}
+              {delivery.state === "queued" ? (
+                <AgentParts parts={queuedParts(recipient)} />
+              ) : delivery.duplicate === true ? (
+                duplicateText
+              ) : (
+                delivery.state
+              )}
               {delivery.error === null
                 ? ""
                 : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}

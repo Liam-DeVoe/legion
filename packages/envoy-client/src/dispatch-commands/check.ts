@@ -59,10 +59,9 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_whoami: true,
   dispatch_limits: true,
   dispatch_inbox: true,
-  dispatch_architecture_sync: true,
-  // A session's own conversation belongs to no issue: the call names none, and its strict
-  // schema refuses the one LEGION_ISSUE would add.
+  // A session's own conversation belongs to no issue, so the call names the session instead.
   dispatch_send_to_agent: true,
+  dispatch_architecture_sync: true,
   // A held text names its own place: the call names no issue, and its strict schema refuses
   // the one LEGION_ISSUE would add.
   dispatch_held: true,
