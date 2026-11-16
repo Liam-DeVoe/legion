@@ -1381,6 +1381,21 @@ composite to `classes.ts`, not inventing a shade inline. The document editor
 `styles.css` maps them to palette swatches under `.dispatch-doc .proof-editor` for both schemes,
 and those literals are what `styles-css-pin.test.ts` pins.
 
+The new issue page (dispatch://INFRA-1196, drawn only for a reader who turned it on; its
+outermost element carries `data-issue-page`) has a typeface, colours and words of its own, and
+each is an addition that no other page reads. Its typeface is Inter 4.1, shipped as
+`web/src/fonts/inter/InterVariable-subset.woff2` under the family name `Dispatch Inter`, which
+no component names. One rule of `styles.css`, `html:has([data-issue-page])`, applies that family
+to the whole document while the new page is drawn, so `main`'s `:root` stack, Tailwind's
+`font-sans` and every other page stay as they are, and no other page requests the file. Its
+colours are the `--color-page-*` and `--color-icon-rail*` tokens of the `@theme` block of
+`styles.css`, with their dark values in a `@media (prefers-color-scheme: dark)` block of their
+own; `classes.ts` names them in `PAGE_COLORS`, and `page-colours.test.ts` holds each token to the
+value of the approved design. Its words are the tables of `features/issue-page/page-words.ts`
+and `page-structure.ts` that `UNASKED_SOURCES` and `ANSWER_SOURCES` hold: each later part adds
+its words there and keeps no copy in a component, and one test of `page-words.test.ts` reads
+every phrase for an internal word.
+
 ## Document editor
 
 `features/doc/` adapts `@legion/proof-editor` to Dispatch: it owns the Hocuspocus/Yjs
