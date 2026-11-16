@@ -3257,7 +3257,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   It reads a program check as `unknown (fault_by_test_author)` when the record of its failing example names no author of the fault, no author of the test, or the author of the fault among the authors of the test (R9: "An agent that did not write the test writes the fault").
   It reads a statement that has no check where the tree rules ask for one as `unknown (no_check)`, each statement above it as `unknown`, and a wait on it as one that holds: a leaf (`leaf-without-check`, R6) or a statement that other statements serve (`supported-without-check`, R5), the pair that `Validate` asks a check of.
   It gives no clean state for a tree that the rules refuse: it runs `Validate` on the files (`refusals` in `internal/dispatch/specgraph/checkstate.go`), and each check and statement that a problem names reads `unknown (refused)` with the rule as its detail, each statement above such a statement `unknown (statement_refused)`, and a wait on it holds.
-  A problem that names no check and no statement refuses each check and statement of its file, or of the tree when its file holds none; the reasons above stay first where they apply.
+  A problem that names no check and no statement, such as a bad term or a bad component, refuses each check and statement of the tree, whatever file holds it, since a file is no relation of The Spec; the reasons above stay first where they apply.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.

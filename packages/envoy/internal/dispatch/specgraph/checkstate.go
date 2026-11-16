@@ -165,22 +165,20 @@ type checkJudge struct {
 // (the derivation gives no clean state for a tree that the rules refuse, since the pilot calls it
 // with no reader). A problem that names a check or a statement refuses that node. Any other
 // problem, of a component, an interface, a term or no node, refuses each check and statement of
-// its file, or of files when its file holds none. Validate runs with no Options, as the scenario
-// reader runs it: the files may still hold a node that the approved spec removed (Compare).
+// files: a file is no relation of The Spec, so the split of the tree into files changes no state.
+// Validate runs with no Options, as the scenario reader runs it: the files may still hold a node
+// that the approved spec removed (Compare).
 func refusals(files Tree) map[string]string {
 	problems := Validate(files, Options{})
 	if len(problems) == 0 {
 		return nil
 	}
-	held := map[string]bool{}
-	byFile := map[string][]string{}
+	nodes := make([]string, 0, len(files.Statements)+len(files.Checks))
 	for _, s := range files.Statements {
-		held[s.ID] = true
-		byFile[s.Pos.File] = append(byFile[s.Pos.File], s.ID)
+		nodes = append(nodes, s.ID)
 	}
 	for _, c := range files.Checks {
-		held[c.ID] = true
-		byFile[c.Pos.File] = append(byFile[c.Pos.File], c.ID)
+		nodes = append(nodes, c.ID)
 	}
 	refused := map[string]string{}
 	refuse := func(rule string, ids ...string) {
@@ -191,15 +189,10 @@ func refusals(files Tree) map[string]string {
 		}
 	}
 	for _, p := range problems {
-		switch {
-		case held[p.Node]:
+		if slices.Contains(nodes, p.Node) {
 			refuse(p.Rule, p.Node)
-		case len(byFile[p.Pos.File]) > 0:
-			refuse(p.Rule, byFile[p.Pos.File]...)
-		default:
-			for _, ids := range byFile {
-				refuse(p.Rule, ids...)
-			}
+		} else {
+			refuse(p.Rule, nodes...)
 		}
 	}
 	return refused
