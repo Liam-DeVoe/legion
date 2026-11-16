@@ -44,8 +44,10 @@
 // hold is approved; 5 of 7 approved statements are in the files at their current text" and one
 // line for each other approved statement, "spec-check: statement <id>: not in the files" or
 // "spec-check: statement <id>: the files hold approved version 1, and version 2 is current". It
-// exits 2, and makes no comparison, for files that do not parse or a directory that holds no spec
-// file. The comparison does not judge the tree, which is tree's work. No CI job runs compare (R2):
+// exits 2, and makes no comparison, for files that do not parse, a directory that holds no spec
+// file, or an approved.json that ReadApproved refuses: JSON that is not UTF-8, or that gives a
+// member that the format does not name in its own letters or one member two times, is one of them.
+// The comparison does not judge the tree, which is tree's work. No CI job runs compare (R2):
 // Dispatch makes the comparison at each push. So compare exits 2, before it reads an argument,
 // when GITHUB_ACTIONS or CI is "true", with the one line "spec-check: compare does not run in a CI
 // job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)",
@@ -80,7 +82,9 @@
 // waits: none". --json prints the states as one line of JSON instead, []State, or with units.json
 // {"states":[…],"cycle":[…]}. It exits 0 for a scenario it reads, and 2, with one line on standard
 // error naming the file and the fault, for one it does not: a file or a field that the format does
-// not hold, a missing file, or a spec file that does not parse.
+// not hold (JSON that is not UTF-8, or a member written in other letters or given two times, too),
+// a missing file, spec files that do not parse or that the rules of tree refuse, or a loop of parent
+// and support relations in the approved spec.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage. Each entry of a directory that is

@@ -4,13 +4,13 @@ import "slices"
 
 // StatementState is the state of one statement at the subject (R10): State "not_built", "met",
 // "not_met" or "unknown", with the Reason code of the rule that decided it and Detail, the id that
-// the reason names: the statement that is not built, the check that is false or unknown, or the
-// supporter, and "" for "checks_true". HeldVersion is the approved version of the statement that
-// the files hold, 0 when they hold none, and EarlierText marks a version that is not the current
-// one (R10: "Where the files hold the text of an earlier approval, the page says so").
-// PartlyChecked marks a met statement whose checks decide only part of it, as the reviewer of its
-// level judged (R10). Own is the state over the statement's own checks alone, which a wait on the
-// statement reads (R29).
+// the reason names: the statement that is not built, the check that is false or unknown, the
+// supporter, or the leaf with no check, and "" for "checks_true". HeldVersion is the approved
+// version of the statement that the files hold, 0 when they hold none, and EarlierText marks a
+// version that is not the current one (R10: "Where the files hold the text of an earlier approval,
+// the page says so"). PartlyChecked marks a met statement whose checks decide only part of it, as
+// the reviewer of its level judged (R10). Own is the state over the statement's own checks that
+// read the subject, which a wait on the statement reads (R29).
 type StatementState struct {
 	ID            string `json:"id"`
 	State         string `json:"state"`
@@ -38,6 +38,7 @@ const (
 	reasonCheckUnknown      = "check_unknown"
 	reasonSupporterUnknown  = "supporter_unknown"
 	reasonSupporterNotBuilt = "supporter_not_built"
+	reasonNoCheck           = "no_check"
 	reasonChecksTrue        = "checks_true"
 )
 
@@ -134,12 +135,17 @@ func (j *statementJudge) state(id string) StatementState {
 // byChecks is the state, reason and detail of the statement id, whose files hold its current text
 // and the current text of each statement under it, in under: its own checks and the checks of each
 // statement under it that read the subject, in the search order, then its supporters by id. A
-// supporter that id supports in its turn, directly or through other supporters, is in a loop of
-// supporters, which Validate refuses: it reads unknown, so that no state depends on the order of
-// the derivation.
+// statement of under that the approved spec gives no statement under it and no check, a leaf with
+// no check, is unknown, no_check, in its place of the search order (R6: "Each leaf statement has
+// one or more checks"; R7: "silence is not a pass"). A supporter that id supports in its turn,
+// directly or through other supporters, is in a loop of supporters, which Validate refuses: it
+// reads unknown, so that no state depends on the order of the derivation.
 func (j *statementJudge) byChecks(id string, under []string) (state, reason, detail string) {
 	var notMet, unknown finding
 	for _, s := range under {
+		if len(j.own[s]) == 0 && len(j.children[s]) == 0 {
+			unknown.keep(reasonNoCheck, s)
+		}
 		for _, c := range j.own[s] {
 			switch cs, reads := j.checks[c]; {
 			case !reads:
@@ -204,30 +210,22 @@ func (j *statementJudge) supportedBy(statement, target string) bool {
 	return false
 }
 
-// ownState is the state of the statement id over its own checks alone (R29): not built when the
-// files do not hold its current text; met when it has no check; unknown when none of its checks
-// reads the subject; else not met when one is false, unknown when one is unknown, and met when all
-// are true.
+// ownState is the state of the statement id over those of its own checks that read the subject
+// (R29, with R10: "Only the checks that read the subject count"): not built when the files do not
+// hold its current text; else not met when one of them is false, unknown when one is unknown, and
+// met when all are true, also when it has no check or none of its checks reads the subject.
 func (j *statementJudge) ownState(id string) string {
 	if j.notBuilt(id) {
 		return statementNotBuilt
 	}
-	state, read := statementMet, false
+	state := statementMet
 	for _, c := range j.own[id] {
-		cs, reads := j.checks[c]
-		if !reads {
-			continue
-		}
-		read = true
-		switch cs.State {
+		switch j.checks[c].State { // a check that does not read the subject has no state here
 		case checkFalse:
 			return statementNotMet
 		case checkUnknown:
 			state = statementUnknown
 		}
-	}
-	if len(j.own[id]) > 0 && !read {
-		return statementUnknown
 	}
 	return state
 }

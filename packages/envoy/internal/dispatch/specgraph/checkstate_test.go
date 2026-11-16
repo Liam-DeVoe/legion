@@ -195,6 +195,26 @@ func TestCheckState(t *testing.T) {
 			}
 			c.Results = c.Results[:1]
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		// R9: "And a check whose current text has no failing example that failed when it should."
+		// A text that names no failing example has none: the pilot builds the approved spec from the
+		// store and calls CheckStates with no reader, so CheckStates itself reads it unknown.
+		{name: "R9: the approved text of the check names no failing example, whatever its results", change: func(c *checkCase) {
+			bare := checkStateCheck
+			bare.FailingExample = ""
+			c.replace(bare)
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		{name: "R9: the approved text of the check names no failing example, and it has no result", change: func(c *checkCase) {
+			bare := checkStateCheck
+			bare.FailingExample = ""
+			c.replace(bare)
+			c.Results = nil
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		{name: "R9: the approved text of the check names no failing example, and its run fails", change: func(c *checkCase) {
+			bare := checkStateCheck
+			bare.FailingExample = ""
+			c.replace(bare)
+			c.Results[0].Outcome = OutcomeFail
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "v-state 18: a merge changes a file that the test reads", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/testdata/a.json")
 			c.Subject.Commit = "c2"

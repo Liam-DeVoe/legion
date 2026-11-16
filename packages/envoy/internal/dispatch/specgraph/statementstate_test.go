@@ -114,7 +114,7 @@ func TestStatementState(t *testing.T) {
 		}, want: []StatementState{missing(L2), held(T, "not_built", "not_built", L2, "met"), met(L1)}},
 		{name: "B3: a top statement Q whose only check reads production; subject the head of a branch", change: func(s *checkCase) {
 			s.addNodes(statementFast, statementFastCheck)
-		}, want: []StatementState{held(Q, "met", "checks_true", "", "unknown"), met(T)}},
+		}, want: []StatementState{held(Q, "met", "checks_true", "", "met"), met(T)}},
 		{name: "B3: the same, subject c9 under deploy d2, its check true there", change: func(s *checkCase) {
 			s.addNodes(statementFast, statementFastCheck)
 			s.commit("c9", "c1")
@@ -145,11 +145,23 @@ func TestStatementState(t *testing.T) {
 			s.remove(CT)
 			s.Subject.Branch = "main"
 		}, want: []StatementState{met(T)}, waits: map[string]bool{T: true, "a-statement-the-spec-never-held": false}},
-		{name: "T's only own check reads production; subject the head of main", change: func(s *checkCase) {
+		// R29 with R10: "Only the checks that read the subject count." At the head of main, an own
+		// check of production decides nothing, so it holds no wait: the wait reads the own checks that
+		// read main, and here there is none.
+		{name: "R29: T's only own check reads production; subject the head of main, where the wait ends", change: func(s *checkCase) {
 			s.remove(CT)
 			s.addNodes(statementTopProduction)
 			s.Subject.Branch = "main"
-		}, want: []StatementState{held(T, "met", "checks_true", "", "unknown")}, waits: map[string]bool{T: false}},
+		}, want: []StatementState{met(T)}, waits: map[string]bool{T: true}},
+		{name: "R29: T's own code check is true and its own production check has no result; subject the head of main", change: func(s *checkCase) {
+			s.addNodes(statementTopProduction)
+			s.Subject.Branch = "main"
+		}, want: []StatementState{met(T)}, waits: map[string]bool{T: true}},
+		{name: "R29: T's own code check is false beside its own production check; subject the head of main, where the wait holds", change: func(s *checkCase) {
+			s.addNodes(statementTopProduction)
+			s.runOutcome(CT, OutcomeFail)
+			s.Subject.Branch = "main"
+		}, want: []StatementState{held(T, "not_met", "check_false", CT, "not_met")}, waits: map[string]bool{T: false}},
 		{name: "R29 at another branch: T's own check is true; subject the head of branch b", change: func(*checkCase) {},
 			want: []StatementState{met(T)}, waits: map[string]bool{T: false}},
 		{name: "L1's check is unknown", change: func(s *checkCase) { s.runOutcome(C1, OutcomeCouldNotRun) },
@@ -166,7 +178,22 @@ func TestStatementState(t *testing.T) {
 			fast.Serves = []string{T}
 			s.addNodes(fast, statementFastCheck)
 			s.runOutcome(CT, OutcomeFail)
-		}, want: []StatementState{held(Q, "unknown", "supporter_unknown", T, "unknown"), held(T, "not_met", "check_false", CT, "not_met")}},
+		}, want: []StatementState{held(Q, "unknown", "supporter_unknown", T, "met"), held(T, "not_met", "check_false", CT, "not_met")}},
+		// R6: "Each leaf statement has one or more checks." R7: "silence is not a pass." A leaf that
+		// the approved spec gives no check reads unknown when the files hold its text, and so does
+		// each statement above it that it would otherwise leave met.
+		{name: "R6: L2, a leaf with no check, reads unknown, and so does T above it", change: func(s *checkCase) { s.remove(C2) },
+			want: []StatementState{held(L2, "unknown", "no_check", L2, "met"), held(T, "unknown", "no_check", L2, "met"), met(L1)}},
+		{name: "R6: P, a supporter with no check, reads unknown, and T reads its supporter unknown", change: func(s *checkCase) { s.remove(CP) },
+			want: []StatementState{held(P, "unknown", "no_check", P, "met"), held(T, "unknown", "supporter_unknown", P, "met")}},
+		{name: "precedence: L1 false, L2 a leaf with no check", change: func(s *checkCase) {
+			s.runOutcome(C1, OutcomeFail)
+			s.remove(C2)
+		}, want: []StatementState{held(T, "not_met", "check_false", C1, "met"), held(L2, "unknown", "no_check", L2, "met")}},
+		{name: "precedence: L2 a leaf with no check that the files do not hold", change: func(s *checkCase) {
+			s.remove(C2)
+			s.drop(L2)
+		}, want: []StatementState{missing(L2), held(T, "not_built", "not_built", L2, "met")}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()

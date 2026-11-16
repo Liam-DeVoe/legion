@@ -2,7 +2,6 @@ package specgraph
 
 import (
 	"cmp"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,21 +40,17 @@ type Approved struct {
 //
 //	{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}
 //
-// It refuses a field it does not know, text after the object, a node with no id, an id on two
-// nodes, a node with no version, version numbers that do not go up from 1, a version with no time
-// or older than the one before it, and a block that is not its node's one block as Print writes
-// it. The error names the node and the version.
+// It refuses what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is
+// written in other letters, a field that one object gives two times, text after the object), a
+// node with no id, an id on two nodes, a node with no version, version numbers that do not go up
+// from 1, a version with no time or older than the one before it, and a block that is not its
+// node's one block as Print writes it. The error names the node and the version.
 func ReadApproved(r io.Reader) (Approved, error) {
-	dec := json.NewDecoder(r)
-	dec.DisallowUnknownFields()
 	var file struct {
 		Nodes []ApprovedNode `json:"nodes"`
 	}
-	if err := dec.Decode(&file); err != nil {
+	if err := decodeJSONFrom(r, &file); err != nil {
 		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return Approved{}, errors.New("specgraph: approved spec: text after the approved spec")
 	}
 	a := Approved{Nodes: make(map[string]ApprovedNode, len(file.Nodes))}
 	for _, n := range file.Nodes {
