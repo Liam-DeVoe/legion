@@ -12,7 +12,6 @@ import { ApiError, api } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
 import type {
   ArchitectureSource,
-  Artifact,
   ArtifactApproval,
   Issue,
   IssueDetails,
@@ -27,12 +26,15 @@ import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import type { StepEntry } from "../issue/gated-steps";
 import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
+import { IssueLabels, labelsControlName } from "../issue/IssueLabels";
 import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
 import { writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
+import { CONTROL_LABELS } from "./page-words";
+import { doc, draw, SPEC_ID, undraw, VERIFICATION_ID } from "./shared-controls-fixture";
 import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /** What the new issue page's header and Details share (dispatch://INFRA-3935 R8 and R10). */
@@ -284,6 +286,35 @@ test("the four control names are main's", async () => {
   }
 });
 
+// dispatch://INFRA-3935 R2 and R8: the new issue page's add menu, its `l` key and its rows find
+// the labels control by the name it carries inside `NoTooltips`, which `labelsControlName`
+// builds: the words it draws, then the issue's key, while it has no label; `main`'s name once it
+// has one.
+test("labelsControlName names the labels control as it is drawn", () => {
+  expect(labelsControlName([], "CORE-1", CONTROL_LABELS)).toBe("Add a label to CORE-1");
+  expect(labelsControlName(["api"], "CORE-1", CONTROL_LABELS)).toBe("Edit labels");
+
+  const view = draw(
+    createElement(IssueLabels, {
+      disabled: false,
+      issueKey: "CORE-1",
+      labels: [],
+      onSave: async () => undefined,
+      project: "CORE",
+      saving: false,
+    }),
+    "inside"
+  );
+  try {
+    const control = within(view.container).getByRole("button", {
+      name: labelsControlName([], "CORE-1", CONTROL_LABELS),
+    });
+    expect(control.textContent).toBe(CONTROL_LABELS.add_label);
+  } finally {
+    undraw(view);
+  }
+});
+
 // dispatch://INFRA-3935 R8: the header and Details are two callers of the hook on one page, and
 // each reads the status the other is saving, from the first moment of its write to its answer.
 test("two callers of useIssueHeaderWrites read the status either one is saving", async () => {
@@ -366,58 +397,18 @@ test("statusPickOnly is true for a status alone", () => {
   expect(statusPickOnly(undefined)).toBe(false);
 });
 
-const SPEC_ID = "artifact-spec";
-const VERIFICATION_ID = "artifact-verification";
-
-/** A document of the issue (`ApprovalSteps.test.tsx`'s `doc`). */
-function stepDocument(id: string, name: string, approval: ArtifactApproval): Artifact {
-  return {
-    approval,
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    id,
-    issue_key: "CORE-1",
-    kind: "doc",
-    name,
-    primary: id === SPEC_ID,
-    project: "CORE",
-    ref_key: `CORE-1/${name}`,
-    session_id: null,
-    slug: name.replace(".", "-"),
-    versions: [],
-  };
+/** The list's entry for `step`. */
+function entryOf(view: RenderResult, step: string): HTMLElement {
+  const item = view.container.querySelector<HTMLElement>(`[data-approval-step="${step}"]`);
+  if (item === null) throw new Error(`no entry for ${step}`);
+  return item;
 }
 
-// dispatch://INFRA-3935 R10: given `actionsOn`, each entry whose document's approval request
-// waits on the reader carries its own Approve and Request changes, which review that entry's
-// document, and no other entry carries any; not given, the primary document's entry alone
-// carries them, as on `main`.
-test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn and on no other", async () => {
-  const entries: StepEntry[] = [
-    {
-      document: stepDocument(SPEC_ID, "spec.md", {
-        by: { id: "bob", kind: "user" },
-        latest_version: 1,
-        reason: "The second requirement names no owner.",
-        state: "changes_requested",
-        version: 1,
-      }),
-      label: "Spec",
-      step: "spec",
-    },
-    {
-      document: stepDocument(VERIFICATION_ID, "verification.md", {
-        latest_version: 1,
-        state: "awaiting",
-        waiting_on: "human",
-      }),
-      label: "Verification",
-      step: "criteria",
-    },
-  ];
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockResolvedValue({
+/** Records the reader's every review as Dispatch answers an approval of `artifactId`. */
+function answerReviews(artifactId: string) {
+  return spyOn(api, "createArtifactReview").mockResolvedValue({
     actor: { id: "alice", kind: "user" },
-    artifact_id: VERIFICATION_ID,
+    artifact_id: artifactId,
     ask_id: null,
     content_sha256: null,
     content_sha256_source: null,
@@ -428,6 +419,36 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
     state: "approved",
     version: 1,
   });
+}
+
+// dispatch://INFRA-3935 R10: given `actionsOn`, each entry whose document's approval request
+// waits on the reader carries its own Approve and Request changes, which review that entry's
+// document, and no other entry carries any; not given, the primary document's entry alone
+// carries them, as on `main`.
+test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn and on no other", async () => {
+  const entries: StepEntry[] = [
+    {
+      document: doc(SPEC_ID, "spec.md", {
+        by: { id: "bob", kind: "user" },
+        latest_version: 1,
+        reason: "The second requirement names no owner.",
+        state: "changes_requested",
+        version: 1,
+      }),
+      label: "Spec",
+      step: "spec",
+    },
+    {
+      document: doc(VERIFICATION_ID, "verification.md", {
+        latest_version: 1,
+        state: "awaiting",
+        waiting_on: "human",
+      }),
+      label: "Verification",
+      step: "criteria",
+    },
+  ];
+  const createArtifactReview = answerReviews(VERIFICATION_ID);
   const user = userEvent.setup();
   const drawSteps = (actionsOn: readonly string[] | undefined) =>
     renderWithQueries(
@@ -437,13 +458,8 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
         createElement(ApprovalSteps, { actionsOn, entries, primaryArtifactId: SPEC_ID })
       )
     );
-  const entry = (view: RenderResult, step: string) => {
-    const item = view.container.querySelector<HTMLElement>(`[data-approval-step="${step}"]`);
-    if (item === null) throw new Error(`no entry for ${step}`);
-    return item;
-  };
   const buttonsOf = (view: RenderResult, step: string) =>
-    within(entry(view, step))
+    within(entryOf(view, step))
       .queryAllByRole("button")
       .map((button) => button.textContent);
 
@@ -458,7 +474,7 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
       expect(buttonsOf(waitingOnReader, "spec")).toEqual(["Changes requested"]);
 
       await user.click(
-        within(entry(waitingOnReader, "criteria")).getByRole("button", { name: "Approve" })
+        within(entryOf(waitingOnReader, "criteria")).getByRole("button", { name: "Approve" })
       );
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       expect(createArtifactReview.mock.calls[0]?.[0]).toBe(VERIFICATION_ID);
@@ -477,6 +493,107 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
       expect(buttonsOf(primaryAlone, "criteria")).toEqual(["Awaiting approval"]);
     } finally {
       primaryAlone.unmount();
+    }
+  } finally {
+    createArtifactReview.mockRestore();
+  }
+});
+
+// Decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md (dispatch://INFRA-3935 R10):
+// where `actionsOn` names two or more documents the list holds two Approve and two Request
+// changes, so inside `NoTooltips` each is named by the words it draws and then the document it
+// reviews, in the page's words, and a voice user says what they read (WCAG 2.5.3). A stale
+// approval's Approve draws its version, and its name says the version of the document. Naming
+// one document, each action is named by its words alone, as on `main`.
+test("ApprovalSteps names each document's actions when actionsOn holds two documents", async () => {
+  const awaiting: ArtifactApproval = { latest_version: 1, state: "awaiting", waiting_on: "human" };
+  const stepsWith = (specApproval: ArtifactApproval): StepEntry[] => [
+    { document: doc(SPEC_ID, "spec.md", specApproval), label: "Spec", step: "spec" },
+    {
+      document: doc(VERIFICATION_ID, "verification.md", awaiting),
+      label: "Verification",
+      step: "criteria",
+    },
+  ];
+  const drawSteps = (entries: StepEntry[], actionsOn: readonly string[]) =>
+    draw(
+      createElement(ApprovalSteps, { actionsOn, entries, primaryArtifactId: SPEC_ID }),
+      "inside"
+    );
+  /** Each named action of the list: the entry it is drawn in, its name and the words it draws,
+   *  and whether the name begins with those words. */
+  const actionsOf = (view: RenderResult, named: readonly (readonly [string, string])[]) =>
+    named.map(([step, name]) => {
+      const word = within(entryOf(view, step)).getByRole("button", { name }).textContent ?? "";
+      return { begins: name === word || name.startsWith(`${word} `), name, step, word };
+    });
+  const createArtifactReview = answerReviews(VERIFICATION_ID);
+  const user = userEvent.setup();
+
+  try {
+    const both = drawSteps(stepsWith(awaiting), [SPEC_ID, VERIFICATION_ID]);
+    try {
+      expect(
+        actionsOf(both, [
+          ["spec", "Approve the spec"],
+          ["spec", "Request changes to the spec"],
+          ["criteria", "Approve the verification"],
+          ["criteria", "Request changes to the verification"],
+        ])
+      ).toEqual([
+        { begins: true, name: "Approve the spec", step: "spec", word: "Approve" },
+        {
+          begins: true,
+          name: "Request changes to the spec",
+          step: "spec",
+          word: "Request changes",
+        },
+        { begins: true, name: "Approve the verification", step: "criteria", word: "Approve" },
+        {
+          begins: true,
+          name: "Request changes to the verification",
+          step: "criteria",
+          word: "Request changes",
+        },
+      ]);
+
+      await user.click(
+        within(both.container).getByRole("button", { name: "Approve the verification" })
+      );
+      await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+      expect(createArtifactReview.mock.calls[0]?.[0]).toBe(VERIFICATION_ID);
+      expect(createArtifactReview.mock.calls[0]?.[1]).toEqual({ state: "approved" });
+    } finally {
+      undraw(both);
+    }
+
+    const stale = drawSteps(stepsWith({ latest_version: 5, state: "stale", version: 3 }), [
+      SPEC_ID,
+      VERIFICATION_ID,
+    ]);
+    try {
+      expect(actionsOf(stale, [["spec", "Approve v5 of the spec"]])).toEqual([
+        { begins: true, name: "Approve v5 of the spec", step: "spec", word: "Approve v5" },
+      ]);
+    } finally {
+      undraw(stale);
+    }
+
+    const one = drawSteps(stepsWith(awaiting), [VERIFICATION_ID]);
+    try {
+      expect(
+        actionsOf(one, [
+          ["criteria", "Approve"],
+          ["criteria", "Request changes"],
+        ])
+      ).toEqual([
+        { begins: true, name: "Approve", step: "criteria", word: "Approve" },
+        { begins: true, name: "Request changes", step: "criteria", word: "Request changes" },
+      ]);
+      // Named by its words alone, it carries no name of its own, as on `main`.
+      expect(one.container.querySelectorAll("button[aria-label]")).toHaveLength(0);
+    } finally {
+      undraw(one);
     }
   } finally {
     createArtifactReview.mockRestore();

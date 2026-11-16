@@ -21,7 +21,12 @@ export interface PageWords {
     | "add_label"
     | "add_priority"
     | "advances_inherited"
+    | "approval_document_criteria"
+    | "approval_document_decisions"
+    | "approval_document_spec"
     | "approval_latest"
+    | "approval_request_changes_to"
+    | "approval_version_of"
     | "cancel"
     | "choose_priority"
     | "components_inherited_from"
@@ -47,9 +52,7 @@ export interface PageWords {
     | "unresponsive_since"
     | "version"
   >;
-  readonly PROPERTY_LABELS: Words<
-    "advances" | "claim" | "components" | "labels" | "priority" | "repository"
-  >;
+  readonly PROPERTY_LABELS: Words<"advances" | "claim" | "components" | "priority" | "repository">;
   readonly STATE_LINES: Words<"advances_at_cap" | "github_unreadable" | "subscription_wider">;
   /** The mark of an element whose text is the page's own words (`data-page-chrome`). */
   readonly pageChrome: Readonly<Record<string, string>>;
