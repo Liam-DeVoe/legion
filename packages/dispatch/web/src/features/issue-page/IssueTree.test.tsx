@@ -1,20 +1,27 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { jump, realClock } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
-import { buildDispatchReference } from "../refs/routes";
+import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { IssueTree, ZOOMED_TREE_QUERY } from "./IssueTree";
+import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
 import { OutlineRequestProvider, useAskOutline, useOutlineRequest } from "./outline-request";
-import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
+import {
+  type Landing,
+  type OutlineWriter,
+  OutlineWriterProvider,
+  useOutlineWriter,
+} from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import type { NodeType } from "./page-words";
 
@@ -215,8 +222,8 @@ function renderPageTree(root: TreeNode, reader = "alice") {
   return {
     ask: (id: string | undefined, focusBranch: boolean) =>
       act(async () => held.ask?.(id, focusBranch)),
-    land: (under: string) =>
-      act(async () => held.writer?.land({ to: "newest", under: { id: under, kind: "comment" } })),
+    land: (under: string, to: Landing["to"] = "newest") =>
+      act(async () => held.writer?.land({ to, under: { id: under, kind: "comment" } })),
     redraw: (drawn: TreeNode) => view.rerender(draw(drawn)),
     show: (shown: boolean) => act(async () => held.show?.(shown)),
     view,
@@ -798,6 +805,163 @@ test("a write that lands under a folded branch unfolds it and gives the reader's
   await waitFor(() => expect(focusedRow(container)).toBe("comment-3"));
   expect(rowsFor(container, "comment-2")).toHaveLength(1);
   expect(tree.writer()?.landing).toBeUndefined();
+});
+
+// The reviewer's finding on the landing: one the writer already holds as the tree mounts was
+// asked for while no outline was drawn - under a view drawn in the tree's place, or before a
+// reload - and the reader has been elsewhere since. Drawing the outline ends it and takes them
+// nowhere: not to the row an answer or an edit was made on, which a landing reaches at once,
+// and not to their newest node once the late fallback's wait is out.
+test("a landing made while the outline was not drawn moves no focus when the outline is drawn", async () => {
+  setViewport(1440);
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({
+        children: [
+          node({
+            at: "2026-11-16T09:00:00Z",
+            author: { id: "alice", kind: "user" },
+            id: "comment-3",
+            text: "My reply.",
+            type: "comment",
+          }),
+        ],
+        held: 1,
+        id: "comment-2",
+        text: "A thread.",
+        type: "comment",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const tree = renderPageTree(root, "alice");
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  // An answer or an edit, which lands on the row it was made on.
+  await tree.show(false);
+  await tree.land("comment-2", "self");
+  await tree.show(true);
+  expect(focusedRow(container)).not.toBe("comment-2");
+  expect(tree.writer()?.landing).toBeUndefined();
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  // A reply, which lands on the reader's newest node under what it answered: here the late
+  // fallback's, since no read draws a new one.
+  await tree.show(false);
+  await tree.land("comment-2");
+  jest.useFakeTimers();
+  try {
+    await tree.show(true);
+    expect(tree.writer()?.landing).toBeUndefined();
+    await jump(LANDING_WAIT_MS);
+    expect(focusedRow(container)).toBe("comment-1");
+    expect(rowsFor(container, "comment-3")).toHaveLength(0);
+  } finally {
+    realClock();
+  }
+});
+
+// The late fallback takes the reader to their newest node where no read draws the new one, and
+// only while the focus is still the page's to place: a key, a press, a wheel or a touch after
+// the landing is the reader going somewhere of their own, and the fallback leaves them there.
+test("a landing's late fallback leaves the focus where the reader moved it", async () => {
+  setViewport(1440);
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const tree = renderPageTree(root, "alice");
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    // A reply under the first comment, whose node no read draws.
+    await tree.land("comment-1");
+    await user.keyboard("j");
+    expect(focusedRow(container)).toBe("comment-2");
+    await jump(LANDING_WAIT_MS);
+    expect(focusedRow(container)).toBe("comment-2");
+    expect(tree.writer()?.landing).toBeUndefined();
+  } finally {
+    realClock();
+  }
+});
+
+// R9: `r` sets the line at the foot to reply to the focused row, and `a` sets it to answer the
+// focused open question (`useTreeKeymap.ts`'s `tree-reply` and `tree-answer`). A comment takes
+// no answer, so `a` on one leaves the line as it was and says nothing at the row.
+test("r and a on the focused row set the page's writer", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const bob = { id: "bob", kind: "user" } as const;
+  const root = node({
+    children: [
+      node({
+        author: bob,
+        id: "comment-1",
+        reference: buildDispatchReference({ id: "comment-1", key: KEY, kind: "comment" }),
+        text: "The first words.",
+        type: "comment",
+      }),
+      node({
+        author: bob,
+        id: "ask-1",
+        question: true,
+        reference: buildDispatchReference({ id: "ask-1", key: KEY, kind: "ask" }),
+        state: "open",
+        text: "Which flag?",
+        type: "ask",
+        waiting: true,
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const tree = renderPageTree(root, "alice");
+  const { container } = tree.view;
+  // The page opens on the question that waits on the reader (R7).
+  await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
+
+  await user.keyboard("k");
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+  await user.keyboard("r");
+  await waitFor(() =>
+    expect(tree.writer()?.reply).toMatchObject({
+      actor: bob,
+      excerpt: "The first words.",
+      id: "comment-1",
+      parentKind: "comment",
+      to: buildIssuePath({ id: "comment-1", key: KEY, kind: "comment" }),
+    })
+  );
+  expect(tree.writer()?.answer).toBeUndefined();
+
+  const reply = tree.writer()?.reply;
+  await user.keyboard("a");
+  expect(tree.writer()?.reply).toBe(reply);
+  expect(tree.writer()?.answer).toBeUndefined();
+  expect(rowReport(container)).toBeUndefined();
+
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
+  await user.keyboard("a");
+  await waitFor(() =>
+    expect(tree.writer()?.answer).toEqual({
+      askId: "ask-1",
+      multiple: false,
+      nodeId: "ask-1",
+      selected: [],
+    })
+  );
+  expect(tree.writer()?.reply).toBeNull();
 });
 
 // The architect's ruling 1: a crumb draws one line for a node, so it is R1's first line, cut at a

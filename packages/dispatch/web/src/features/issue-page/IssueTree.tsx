@@ -500,8 +500,13 @@ export function IssueTree({
   // send has landed when the line asks, but the read that draws it is still out, so the nodes
   // of theirs already under it are noted first and the one that is new is gone to once a read
   // draws it. A read that never draws one where it was looked for - a filter's view that holds
-  // no such row - leaves the reader on their newest node there, or on the row they wrote under.
+  // no such row - leaves the reader on their newest node there, or on the row they wrote under,
+  // unless they have acted since the landing (`READER_ACTS`): the focus is then where they put
+  // it, and the fallback only ends the landing. A landing the writer already holds as the tree
+  // mounts was asked for while no outline was drawn - under a view drawn in its place, or before
+  // a reload - so the reader has been elsewhere since, and it ends with the focus where it is.
   const landing = writer?.landing;
+  const heldAtMount = useRef(landing);
   const landedFrom = useRef<
     { readonly before: ReadonlySet<string>; readonly landing: object } | undefined
   >(undefined);
@@ -510,6 +515,10 @@ export function IssueTree({
   useEffect(() => {
     const { writer: line } = latest.current;
     if (landing === undefined || line === undefined) return;
+    if (landing === heldAtMount.current) {
+      line.landed();
+      return;
+    }
     const parent = landingParent(root, landing.under);
     if (parent === undefined) {
       line.landed();
@@ -534,11 +543,16 @@ export function IssueTree({
     reach(made.id);
   }, [landing, reach, reader, root]);
   useEffect(() => {
-    if (landing === undefined) return;
+    if (landing === undefined || landing === heldAtMount.current) return;
+    const acted = new AbortController();
+    for (const type of READER_ACTS) {
+      window.addEventListener(type, () => acted.abort(), { capture: true, signal: acted.signal });
+    }
     const late = window.setTimeout(() => {
       const now = latest.current;
-      const parent = landingParent(now.root, landing.under);
       now.writer?.landed();
+      if (acted.signal.aborted) return;
+      const parent = landingParent(now.root, landing.under);
       if (parent === undefined) return;
       const newest = parent.children
         .filter(
@@ -554,7 +568,10 @@ export function IssueTree({
         );
       now.reach((newest ?? parent).id);
     }, LANDING_WAIT_MS);
-    return () => window.clearTimeout(late);
+    return () => {
+      window.clearTimeout(late);
+      acted.abort();
+    };
   }, [landing]);
 
   // The tree is one tab stop, and it rests where the reader last stood: before they have
@@ -643,7 +660,7 @@ const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
 /** How long a write's landing waits for the read that draws it before it takes the reader to
  *  their newest node where it looked, in milliseconds: the line's send has landed and its read
  *  is a request away, so a read that has not drawn the node by then is not going to. */
-const LANDING_WAIT_MS = 10_000;
+export const LANDING_WAIT_MS = 10_000;
 
 /** The node a write was made under, by the item the line wrote to; the tree's own root for a
  *  write on the issue itself; undefined where the view the tree draws holds no such node. */
