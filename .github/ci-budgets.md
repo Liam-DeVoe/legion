@@ -39,9 +39,9 @@ docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 ## Caches
 
 Caches: one step of the jobs this workflow calls saves an Actions cache entry itself, dispatch-two-builds' `Cache the previous build` (ci-job-dispatch-two-builds.yaml), which keeps the build of the previous commit that job compares against;
-one action its jobs call can, architecture-check, and in a dispatched run alone;
-setup-bun saves only on a push to main, which is no event of this workflow (both at this section's end).
-setup-go caches nothing here (`cache: false` on every step, the architecture-check action's included).
+two actions its jobs call can, architecture-check and spec-check, and in a dispatched run alone;
+setup-bun saves only on a push to main, which is no event of this workflow (all three at this section's end).
+setup-go caches nothing here (`cache: false` on every step, the two check actions' included).
 The jobs that cache Go restore, in steps of their own, one of six Go families with actions/cache/restore:
 go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which build the same listener and natsd, listener-server-change and envoy-go-checks, which build the listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which builds the test binary of every package of the envoy module, and the binaries, multiprocess and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real broker's commands out of that same set), go-envoy-infra (envoy-infra-go) and go-notices (lint's notices step).
 Every family but go-docs is filled by .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
@@ -50,7 +50,7 @@ Each Go family keeps one entry, keyed on the Go version its job's setup-go insta
 A go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a stale entry costs a run only what changed;
 a key on the go.sum files left a whole entry, up to a gigabyte, per change for seven days.
 The fallback by prefix, when the exact key misses, now applies on every run, a dispatched one on main included:
-it was held off main so that the entry a run saved after a Go bump held nothing the older Go built, and no step of this workflow saves a family any more (the architecture-check action below falls back only to an entry of its own Go version, so an entry it saves holds nothing an older Go built).
+it was held off main so that the entry a run saved after a Go bump held nothing the older Go built, and no step of this workflow saves a family any more (the two check actions below fall back only to an entry of their own Go version, so an entry one saves holds nothing an older Go built).
 There is no browser cache beside the Go families any more:
 dispatch-browser.yaml's shard and alone jobs run in the image this repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a ~/.cache/ms-playwright restore would carry nothing they do not already have, and ci-caches.yaml's browsers job, the only writer of that entry, is gone with the restores (dispatch://INFRA-1443).
 A seventh family, bun, holds ~/.bun/bin:
@@ -62,10 +62,10 @@ The browsers job called that action on every one of those pushes until it went, 
 — each on a push its own `paths:` selects, where the browsers job took every push to main.
 The restore is made in every job but tool-fallback and tool-fallback-arm:
 that action reads the id of the job that called it and holds its restore back for those two on every ref, so a restored Bun cannot stand in for the install each of their cases is a reading of.
-An eighth family, architecture-check-<os>-<arch>-go<version>-<hash>, is the composite action .github/actions/architecture-check's own, which envoy-go-checks runs:
-the action restores it and saves it itself, from $RUNNER_TEMP/architecture-check and not from the Go caches above, keyed on the Go version its own setup-go installed and on the SHA-256 of packages/envoy/go.sum (a miss restores the newest entry of that Go version), and ci-caches.yaml's architecture-check job fills it on main.
-The action saves only in a push, schedule or workflow_dispatch run, so within this workflow, which runs on no push and no schedule, only a dispatched run can save it (the bypass check dispatches one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched on.
-check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a composite action's, so this section is the one record of the action's restore and save.
+An eighth family, architecture-check-<os>-<arch>-go<version>-<hash>, is the composite action .github/actions/architecture-check's own, and a ninth, spec-check-<os>-<arch>-go<version>-<hash>, is .github/actions/spec-check's; envoy-go-checks runs both.
+Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own setup-go installed and on the SHA-256 of packages/envoy/go.sum (a miss restores the newest entry of that Go version), and the ci-caches.yaml job of the action's name fills it on main.
+Each action saves only in a push, schedule or workflow_dispatch run, so within this workflow, which runs on no push and no schedule, only a dispatched run can save it (the bypass check dispatches one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched on.
+check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a composite action's, so this section is the one record of the two actions' restores and saves.
 
 ## The Retries note
 
@@ -92,12 +92,12 @@ packages/daemon 81 s, packages/envoy 77 s, each on an empty module cache on 2026
 That last bound is the tightest of the four against its measurement, and it is the one that can afford to be:
 an attempt its bound kills leaves what it fetched in the module cache and the next attempt resumes from there, so a `go mod download` heals itself across a retry where a tarball fetch starts its bytes over.
 Every other bound is derived from its own step's measured maximum and names it beside the call.
-The test job's tmux install retries both apt phases through .github/scripts/ci-retry.sh, in e2e.yaml's spelling for the same runner image and the same indexes: five attempts, the last starting 150 s after the first.
+The test job's tmux install, and dispatch-ui's zsh install (main's #4158), retry both apt phases through .github/scripts/ci-retry.sh, in e2e.yaml's spelling for the same runner image and the same indexes: five attempts, the last starting 150 s after the first.
 What bounds an attempt is the inner `sudo timeout`, not `timeout sudo`, so the signal reaches apt-get itself rather than a sudo holding it;
 retry_fetch's own bound sits five seconds above it and backstops the sudo alone.
 90 s for the index read and 120 s for one package of a few megabytes, both derived in .github/workflows/e2e.yaml's own apt step, which names the jobs those rates were measured in;
 that derivation was .github/scripts/playwright-install.sh's head until the browser suite moved into an image this repository builds and took the script with it (cybermonklabs/legion#2938), and e2e.yaml is where it lives now.
-The tmux step cites it rather than repeating it.
+The tmux and zsh steps cite it rather than repeating it.
 The unpack after the download takes no network and stays bare, so an attempt the bound kills never stops a dpkg run part way.
 The index read carries `-o APT::Update::Error-Mode=any`, which makes a failed index read fail the command instead of warning and exiting 0:
 without it retry_fetch has nothing to retry.
