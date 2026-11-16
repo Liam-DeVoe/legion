@@ -99,9 +99,10 @@ import { documentWord, RowText } from "./RowText";
  * fold and the pin have the arrow keys and `o`, and Keep, Change and a chip's link have keys of
  * their own (`useTreeKeymap.ts`).
  *
- * A view that no tree's keys reach - the conversation's rows, before part I's outline replaces
- * them (`ConversationRows.tsx`) - passes `tabStops`, and every control the row draws keeps its
- * place in the tab order instead, so a reader on the keyboard alone Tabs to each (R9).
+ * A view that no tree's keys reach - the conversation's rows until part I's outline replaces
+ * them, part V's Verification view and part J's Spec view - passes `tabStops`, and every control
+ * the row draws keeps its place in the tab order instead, so a reader on the keyboard alone Tabs
+ * to each (R9).
  */
 export function NodeRow({
   answerer,
@@ -1017,30 +1018,39 @@ export function NodeEdges({
  * until then by its first words, cut at a word within 32 characters (`chipWords`), as the link a
  * reader follows to it; a whole document by the page's word for one, because today's model
  * holds no title for a document and its name is its file name (`documentWord`, part G's R4). No
- * address, slug or document name is drawn in its place (R22). A target nothing answers to now
- * says so. A chip whose target the batched reference read has not named yet draws nothing until
- * it does - "the names come last and all at once" (`useIssueTree.ts`) - and neither does one the
- * read named with no words at all: there is nothing to name it by. A target's name is plain words
- * already (`tree-drafts.ts`'s `treeContext`, which names a block by the words of the server's
- * reading of it), so it is drawn as it stands, with no markdown pass (decision 66): a pass would
- * read "1. Stand the harness up." as a list and draw it without its number.
+ * address, slug or document name is drawn in its place (R22), save one: a short reference that
+ * two or more targets answer to (`ambiguous`) names no one target, so it is drawn as its author
+ * wrote it, as words with no link, and never as a target deleted (decision 62). A target nothing
+ * answers to now says so. A chip whose target the batched reference read has not named yet
+ * draws nothing until it does - "the names come last and all at once" (`useIssueTree.ts`) - and
+ * neither does one the read named with no words at all: there is nothing to name it by. A
+ * target's name is plain words already (`tree-drafts.ts`'s `treeContext` names every kind of
+ * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
+ * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
+ *
+ * `ambiguous` is part F's `NodeChip.ambiguous`, which its `chipOf` sets where the read answers
+ * `ReferenceTarget.ambiguous` (decision 89); the prop names it until F's head that carries it
+ * is merged here.
  */
 function Chip({
   chip,
   label,
   tabStops,
 }: {
-  chip: NodeChip;
+  chip: NodeChip & { readonly ambiguous?: true };
   label?: string;
   tabStops: boolean;
 }): ReactNode {
   // A chip names a node the page may not be drawing, and the old page's decision cards reached
-  // each one by its words (R18, c-nothing-lost). A target nothing answers to now, or a reference
-  // the grammar cannot read, is text: there is nowhere to go.
+  // each one by its words (R18, c-nothing-lost). A target nothing answers to now, one of several
+  // a short reference names, or a reference the grammar cannot read, is text: there is nowhere
+  // to go.
+  const ambiguous = chip.ambiguous === true;
+  const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
-  const word = documentWord(target);
-  const words = word ?? chipWords(chip.name);
-  if (!chip.gone && words === "") return null;
+  const word = ambiguous ? undefined : documentWord(target);
+  const words = ambiguous ? chip.ref : (word ?? chipWords(chip.name));
+  if (!gone && words === "") return null;
   const route = chip.gone ? undefined : target;
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
@@ -1049,10 +1059,11 @@ function Chip({
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
       {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
-      {chip.gone ? (
+      {gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
       ) : route === undefined ? (
-        <span className="whitespace-nowrap" data-chip-name="" {...marks}>
+        // An address as written may run longer than the line, so it alone may wrap.
+        <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>
           {words}
         </span>
       ) : (

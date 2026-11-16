@@ -12,7 +12,8 @@ import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import type { TreeNode } from "./issue-tree";
+import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
+import type { NodeChip, TreeNode } from "./issue-tree";
 import { NodeOptions, NodeRow } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -26,6 +27,7 @@ import {
 } from "./page-words";
 import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
+import { ProvidersSlot } from "./slots/providers";
 
 /**
  * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R1, R6, R9,
@@ -550,7 +552,7 @@ test("a decision whose text quotes a typed block draws none of its source lines"
 });
 
 // R9: the tree is one tab stop and nothing inside a row takes one; a key reaches a row's links
-// (`useTreeKeymap.ts`'s `rowLinks`). Words drawn from a reading hold real links, and each is
+// (`useTreeKeymap.ts`'s `rowStops`). Words drawn from a reading hold real links, and each is
 // out of the tab order too.
 test("the links a row's words draw are out of the tab order", async () => {
   const text =
@@ -661,6 +663,35 @@ test("a chip named as a numbered step draws its number", () => {
   }
 });
 
+// Decisions 62 and 89: a short reference that two or more targets answer to names no one target,
+// and the read answers it gone and ambiguous. Its chip draws the reference as its author wrote
+// it, as words with no link, and never as a target deleted.
+test("a chip of an ambiguous short reference draws the reference as written, not as deleted", () => {
+  const ambiguous: NodeChip & { readonly ambiguous: true } = {
+    ambiguous: true,
+    answered: true,
+    gone: true,
+    name: "",
+    ref: "dispatch://CORE-1/comment/c1",
+  };
+  const view = renderRow(
+    node({
+      chips: [ambiguous],
+      id: "decisions-md#b-d1",
+      text: "Keep one reading.",
+      type: "decision",
+    }),
+    { body: false }
+  );
+  try {
+    const chip = view.container.querySelector("[data-node-chip]");
+    expect(chip?.textContent).toBe("dispatch://CORE-1/comment/c1");
+    expect(chip?.querySelector("a"), "an ambiguous reference is a link to one target").toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The names the page's one batched read brought, published as the page publishes them. */
 function Named({
   children,
@@ -675,18 +706,32 @@ function Named({
 
 // F18 and decision 66 in a node's words: a chip in place is named from the batched read, which
 // the page publishes as plain words (`useIssueTree.ts`), so it draws them with no markdown pass,
-// as the chip at the end of the words does, a numbered step's number kept.
+// as the chip at the end of the words does, a numbered step's number kept. The words are drawn
+// under the page's own providers (`ProvidersSlot`), as the page draws them, so a second reading
+// of the names mounted there would fail on the number.
 test("a chip in a node's words draws its target's plain words, a numbered step's number kept", async () => {
   const target = "dispatch://CORE-1/artifact/plan-md#b-t1";
   const text = `It follows ${target}.`;
   const names = new Map([[target, "1. Stand the harness up and read the rows"]]);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  // The reads the page's writer makes (`outline-writer.tsx`), answered before it mounts.
+  for (const key of [
+    ["asks", KEY],
+    ["comments", KEY],
+    ["issue-messages", KEY],
+  ]) {
+    queryClient.setQueryData(key, []);
+  }
   const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ReferenceNamesProvider>
           <Named names={names}>
-            <RowText markdown={text} tree={displayTree(text)} />
+            <ProvidersSlot issue={issueDetails()} route={{ key: KEY, kind: "issue" }}>
+              <RowText markdown={text} tree={displayTree(text)} />
+            </ProvidersSlot>
           </Named>
         </ReferenceNamesProvider>
       </MemoryRouter>

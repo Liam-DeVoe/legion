@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 
-import type { ArtifactBlock, Decision, DecisionLink } from "../../../api/types";
+import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
+import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
 import {
@@ -566,6 +567,58 @@ test("each entry carries its address in the conversation and its parent's line",
   expect(conversationPath({ reference: decisionRef("d1") })).toBe(`/issues/${KEY}#b-d1`);
   expect(conversationPath({})).toBeUndefined();
   expect(conversationPath({ reference: `dispatch://${KEY}` })).toBeUndefined();
+});
+
+// R1 and R22: the filter's one line for a parent and for a statement a decision shaped is cut as
+// every one-line drawing of a node is (`lineWords`, `drawnLine`): from the words of the node's
+// first block, so a heading never runs into the paragraph after it; with an ellipsis where the
+// cut ends inside a sentence; and a node with no words is named by its kind's word, never by its
+// id.
+test("a parent's line and a statement's line are cut from the node's first block", () => {
+  const words = Array.from({ length: 30 }, (_unused, at) => `word${at + 1}`).join(" ");
+  // A question whose reading opens on a heading, then a paragraph.
+  const headed: DisplayTree = {
+    content: [
+      {
+        attrs: { level: 2 },
+        content: [{ text: "Where the box sits", type: "text" }],
+        type: "heading",
+      },
+      {
+        content: [{ text: "On a phone, the box sits under the rows.", type: "text" }],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const parts = partsOf(
+    [
+      statement("s1", { text: `The page draws ${words} at last.` }),
+      statement("s2", { text: "" }),
+      openAsk("q1", true, {
+        children: [decisionNode("headed")],
+        text: "## Where the box sits\n\nOn a phone, the box sits under the rows.",
+        tree: headed,
+      }),
+      openAsk("q2", true, { children: [decisionNode("wordless")], text: "" }),
+    ],
+    [
+      decision("headed", { links: [shaped(specRef("s1")), shaped(specRef("s2"))] }),
+      decision("wordless", { links: [shaped(specRef("s1"))] }),
+    ]
+  );
+  const entry = (block: string) => parts.review.find((one) => one.node.id === D(block));
+
+  expect(entry("headed")?.parent).toEqual({ id: "q1", line: "Where the box sits", type: "ask" });
+  expect(entry("wordless")?.parent).toEqual({
+    id: "q2",
+    line: NODE_TYPE_NAMES.ask,
+    type: "ask",
+  });
+  expect(entry("headed")?.shapes.map((one) => one.line)).toEqual([
+    "The page draws word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13…",
+    NODE_TYPE_NAMES.requirement,
+  ]);
 });
 
 // R1, R4: a node drawn under more than one parent is one node, and the filter draws it once, at
