@@ -2292,7 +2292,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // awaited: the transport is already reading stdin, and an await here would let the client's
   // first tool call arrive before the session below exists. A session whose link cannot bind
   // runs exactly as it does today, the mod finding nothing and staying silent.
-  void startModLink({
+  // Kept, so a start that fails still waits for the bind and closes what it bound (the `finally`
+  // below): a link bound after the failure would otherwise hold its socket for a dead session.
+  const linking = startModLink({
     // The id Claude Code gave this process, which is what the mod reads as `$.session.id()`;
     // the ENVOY_SESSION_ID override names an Envoy identity, never a Claude Code session.
     sessionId: claudeSessionId({ CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"] }),
@@ -2462,6 +2464,13 @@ export async function runEnvoyChannelServer(): Promise<void> {
     if (stopping) await session.shutdown()
     await stopped.promise
   } finally {
+    // A start that failed ends here as an asked-for stop does: every part it started stops, a
+    // session it registered deregisters, and a mod link still binding is closed once bound
+    // (`stopping` makes the bind close it), so no socket outlives the session. A stop already
+    // under way makes `stop` a no-op.
+    stop()
+    await stopped.promise
+    await linking
     stopNatsKeeper()
     await modLink?.close().catch(() => undefined)
     if (session === undefined && connection !== undefined) {
