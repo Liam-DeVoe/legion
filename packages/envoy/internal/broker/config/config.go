@@ -520,9 +520,10 @@ type Config struct {
 	// default account is refused, as is an account listed twice. The broker refuses to boot,
 	// naming this setting and BROKER_EXCHANGE_K8S_ISSUER, for an entry that names an issuer
 	// BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or names none while
-	// BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer, and for any issuer name while
-	// BROKER_K8S_OIDC_ISSUER is one bare URL. Needs BROKER_K8S_OIDC_ISSUER and
-	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. Unset, no account exchanges.
+	// BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer, and, naming this setting and
+	// BROKER_K8S_OIDC_ISSUER, for any issuer name while BROKER_K8S_OIDC_ISSUER is one bare URL.
+	// Needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods
+	// present. Unset, no account exchanges.
 	ExchangeAccounts []exchange.AccountEntry
 	// BROKER_EXCHANGE_WORKFLOWS: the GitHub workflows whose runs exchange their token,
 	// whitespace-separated <repository>=<workflow path>=<ref>=<project>=<person>[=<session>]

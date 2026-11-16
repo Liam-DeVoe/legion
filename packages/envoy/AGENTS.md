@@ -6546,7 +6546,7 @@ so a fixed session that holds `=` needs the issuer field after it.
 A namespace's `default` account and an account listed twice are refused.
 The exchange takes the account's token only from the issuers its entry names (`exchange.AccountEntry.Issuers`, `exchange.Set.Pod`, `ErrIssuerNotNamed`), and an entry that names none takes the first issuer of `BROKER_K8S_OIDC_ISSUER` alone, so an entry written for one cluster keeps its meaning;
 a token of an issuer its entry does not name is `400 invalid_request`.
-The boot is refused, naming this setting and `BROKER_EXCHANGE_K8S_ISSUER`, for an entry that names an issuer `BROKER_EXCHANGE_K8S_ISSUER` does not name, names one twice, or names none while `BROKER_EXCHANGE_K8S_ISSUER` leaves out the list's first issuer (`exchangeAccountIssuers`), and for any issuer name while `BROKER_K8S_OIDC_ISSUER` is one bare URL;
+The boot is refused, naming this setting and `BROKER_EXCHANGE_K8S_ISSUER`, for an entry that names an issuer `BROKER_EXCHANGE_K8S_ISSUER` does not name, names one twice, or names none while `BROKER_EXCHANGE_K8S_ISSUER` leaves out the list's first issuer (`exchangeAccountIssuers`), and, naming this setting and `BROKER_K8S_OIDC_ISSUER`, for any issuer name while `BROKER_K8S_OIDC_ISSUER` is one bare URL;
 such a refusal of an entry's issuer names says where the issuer field goes.
 Needs `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`;
 unset, no account exchanges), `BROKER_EXCHANGE_WORKFLOWS` (optional;
