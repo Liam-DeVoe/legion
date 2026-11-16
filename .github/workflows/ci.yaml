@@ -2814,6 +2814,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/outbox_load_steps_test.go'
+              - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
@@ -2849,6 +2850,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
               - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
               - '!packages/envoy/cmd/dispatch/memory_test.go'
+              - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
@@ -2948,6 +2950,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/memory_test.go'
               - '!packages/envoy/cmd/dispatch/multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/outbox_load_steps_test.go'
+              - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/write_cost_test.go'
@@ -3046,6 +3049,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/memory_test.go'
               - '!packages/envoy/cmd/dispatch/multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/outbox_load_steps_test.go'
+              - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/write_cost_test.go'
@@ -3117,6 +3121,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/files/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              # internal/dispatch/docs runs the decisions step's backfill through graphcensus
+              # (decision_step.go).
+              - 'packages/envoy/internal/dispatch/graphcensus/*'
               - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -4061,6 +4068,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/*'
               - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/*'
               - 'packages/envoy/internal/dispatch/pmdoc/pmdoctest/*'
+              # internal/dispatch/docs names a decision block's attributes in the store by
+              # pmdoc/schemanodes.StoreName (decision_blocks.go).
+              - 'packages/envoy/internal/dispatch/pmdoc/schemanodes/*'
               # The two schema files internal/dispatch/pmdoc embeds.
               - 'packages/envoy/internal/dispatch/pmdoc/schema/block-node-types.json'
               - 'packages/envoy/internal/dispatch/pmdoc/schema/blocks.json'
@@ -4240,6 +4250,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/store/searchtest/*'
               - 'packages/envoy/internal/dispatch/store/storetest/*'
+              # docs/decision_step_test.go proves its lock order through the lock-step prover.
+              - 'packages/envoy/internal/dispatch/store/storetest/lockstep/*'
               - 'packages/envoy/internal/dispatch/testlimits/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'

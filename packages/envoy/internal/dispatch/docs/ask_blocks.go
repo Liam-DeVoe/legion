@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
@@ -1196,12 +1197,14 @@ func loadAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string) (map[strin
 // createAskBlock writes the ask a settled document's new ask block opens: its node first, in the
 // project of the document that holds the block, then its row, then its author's follow. The
 // project is the owner's where the caller read it with the document's own row
-// (lockArtifactOwner), so the node then costs one statement and no read of its own; an owner a
-// caller built without it (ask_lifecycle's) has it read off the document (graphstore.ScopeOf).
-// The ask's id is drawn here, as the row's default would draw it, because the node goes in
-// first. The ask.opened that records this ask is appended with the settlement's other events,
-// after this, so the ask's node and the author's node are made at the sentinel and learn it then
-// (causeFollows).
+// (lockArtifactOwner), so the node reads no scope of its own; an owner a caller built without it
+// (ask_lifecycle's) has it read off the document (graphstore.ScopeOf). The ask's id is drawn here,
+// as the row's default would draw it, because the node goes in first; its time is read here too,
+// the transaction's now() the insert gives the row's created_at by default, so the node and its
+// relations are dated as graph_edges' old arm dates the row (graphstore.AskFacts) and by the
+// database's clock, never a host's. The ask.opened that records this ask is appended with the
+// settlement's other events, after this, so the ask's node and the author's node are made at the
+// sentinel and learn it then (causeFollows).
 func createAskBlock(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1222,18 +1225,16 @@ func createAskBlock(
 	if owner.IssueKey == nil {
 		ownerArtifactID = new(artifactID)
 	}
-	// The ask's id and created_at, drawn before anything is written, as the ask routes draw them:
-	// the node goes in before the row, dated by the default the insert gives created_at.
-	var ask model.Ask
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&ask.ID, &createdAt); err != nil {
-		return model.Ask{}, openedFollow{}, fmt.Errorf("draw the id of a new ask block: %w", err)
-	}
+	ask := model.Ask{ID: uuid.NewString()}
 	project, parties := owner.Project, []string(nil)
 	if project == "" {
 		if project, parties, err = graphstore.ScopeOf(ctx, tx, owner.IssueKey, &artifactID); err != nil {
 			return model.Ask{}, openedFollow{}, err
 		}
+	}
+	var createdAt time.Time
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&createdAt); err != nil {
+		return model.Ask{}, openedFollow{}, fmt.Errorf("read the created_at of a new ask block: %w", err)
 	}
 	// The ask is anchored to and part of the document holding its block, and belongs to that
 	// document where it is on no issue (graphstore.AskFacts).

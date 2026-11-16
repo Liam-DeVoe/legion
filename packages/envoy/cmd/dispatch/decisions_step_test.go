@@ -13,11 +13,13 @@ import (
 )
 
 // /healthz answers what the decisions step's last pass found owed, `decisions_step_owed`, and
-// nothing before a pass has run: a step that has not run - as DISPATCH_TEST_HOLD_DECISIONS_STEP
-// keeps a server's from running at boot and on its tick - answers no member at all. Once a pass
-// has run over a database with nothing owed, the member reads each part and the total zero, and
-// once a project stores a list of gated steps that holds `decisions`, the next pass reads that
-// list, and the total, as one.
+// nothing before a pass of its tick has run: a step that has not run - as
+// DISPATCH_TEST_HOLD_DECISIONS_STEP keeps a server's from running at boot and on its tick -
+// answers no member at all, and neither does a step whose boot pass alone has run, since the boot
+// counts nothing (docs.DecisionStep.Boot: the count reads tables the boot must not wait on). Once
+// the first tick has run over a database with nothing owed, the member reads each part and the
+// total zero, and once a project stores a list of gated steps that holds `decisions`, the next
+// tick reads that list, and the total, as one.
 func TestHealthzAnswersWhatTheDecisionsStepOwes(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -51,10 +53,16 @@ func TestHealthzAnswersWhatTheDecisionsStepOwes(t *testing.T) {
 	if err := step.Boot(ctx); err != nil {
 		t.Fatalf("run the step's boot pass: %v", err)
 	}
-	empty := owed("after a pass over a database with nothing owed")
+	if member, present := probe()["decisions_step_owed"]; present {
+		t.Fatalf("/healthz answers decisions_step_owed %v after the step's boot pass, which counts nothing, want the member absent until its first tick", member)
+	}
+	if err := step.Tick(ctx); err != nil {
+		t.Fatalf("run the step's first tick: %v", err)
+	}
+	empty := owed("after a tick over a database with nothing owed")
 	for _, part := range []string{"decisions_documents", "answers_left_spec", "gated_steps_lists", "total"} {
 		if empty[part] != float64(0) {
-			t.Errorf("after a pass over a database with nothing owed, decisions_step_owed.%s = %v, want 0", part, empty[part])
+			t.Errorf("after a tick over a database with nothing owed, decisions_step_owed.%s = %v, want 0", part, empty[part])
 		}
 	}
 

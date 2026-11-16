@@ -4594,6 +4594,8 @@ Each item below names a path with its method and identity, then its purpose.
   Nothing is written on a push: a push that moves a pull request's head leaves the result at the old head standing at no basis, by itself.
   An issue with no Verification document answers no checks.
 
+- `/api/v1/issues/{key}/results`, its POST (the route of the item above)
+
   POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
   What it takes, and what it refuses:
 

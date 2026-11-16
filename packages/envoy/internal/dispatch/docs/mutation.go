@@ -34,6 +34,10 @@ type versionWrite struct {
 	authors          []model.Actor
 	capture          *authorCapture
 	docUpdateVersion *int64
+	// settled is who introduced each credited block of the document as the settlement writing the
+	// version read it (askBlockSources), which the version's typed nodes take their authors from
+	// (typedSources); nil for a version no settlement writes.
+	settled *askBlockSources
 	// closedIssue is set by a settlement of a closed issue's document (settlement.issueClosed),
 	// whose version moves no approval request and carries no approval (writeVersionTx): a move
 	// rewrites an open request and appends its ask.edited, a carry appends an artifact.approved in
@@ -52,10 +56,6 @@ type versionWrite struct {
 	// as the reopen's own move does (moveApprovalAsk, which takes those versions to hold that
 	// editor's text, since no stored version says whose text each added).
 	keptEditor *model.Actor
-	// settled is who introduced each credited block of the document as the settlement writing the
-	// version read it (askBlockSources), which the version's typed nodes take their authors from
-	// (typedSources); nil for a version no settlement writes.
-	settled *askBlockSources
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or

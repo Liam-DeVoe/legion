@@ -653,13 +653,13 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}
+	if err := reconciliation.reconcileDecisionBlocks(ctx, st.tx, st.room, st.reconciled); err != nil {
+		return settleDone, st.abandon(err)
+	}
 	if st.issueClosed {
 		for index := range reconciliation.events {
 			reconciliation.events[index].Actor = SettlementActor
 		}
-	}
-	if err := reconciliation.reconcileDecisionBlocks(ctx, st.tx, st.room, st.reconciled); err != nil {
-		return settleDone, st.abandon(err)
 	}
 	st.reconciliation = reconciliation
 	if s.afterSettleReconcile != nil {
@@ -891,10 +891,10 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,
+			settled:          &st.reconciliation.sources,
 			closedIssue:      st.issueClosed,
 			settlement:       true,
 			keptEditor:       keptEditor,
-			settled:          &st.reconciliation.sources,
 		})
 		if writeErr != nil {
 			// The version a human approved holds an element this build does not know: the version
@@ -976,8 +976,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.causeOpenedAskTies(ctx, tx, st.published); err != nil {
 		return settleDone, st.abandon(err)
 	}
-	// The copies among the document's ask blocks, once the version's blocks are nodes.
-	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.actor, time.Now().UTC(), copiesCause); err != nil {
+	// The copies among the document's ask blocks, once the version's blocks are nodes, in the name
+	// the version itself carries (versionActor), the event their claims are caused by.
+	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.versionActor(), time.Now().UTC(), copiesCause); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the

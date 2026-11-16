@@ -2499,7 +2499,8 @@ Go and `@legion/contracts`' `parseBlockPointerValue` are both tested against `DI
 The attribute's name is the kind of the edges it makes:
 it matches `^[a-z][a-z0-9_]*$` and is none of `model.GraphEdgeKinds`, and two types declaring one name make one edge kind (`pmdoc.LinkKinds`, which `GET /api/v1/references?kind=` accepts beside the structural kinds; any other name has no edges there and is listed in the answer's `unknown_kinds`, which the read still answers `200` with the edges of the kinds it knows).
 Its `targets`, which no other kind may carry, limit the types of the blocks of documents it points at, each a type the schema declares or a built-in block the link graph holds (`builtInBlockNode`:
-not a list item or a table's row or cell); absent or empty, it points at any block of a document. They limit no item its `items` admit.
+not a list item or a table's row or cell); absent or empty, it points at any block of a document.
+They limit no item its `items` admit.
 Its default is absent or `[]`.
 
 Three rules enforce `targets` and `items`.
