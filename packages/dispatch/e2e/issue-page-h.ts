@@ -41,6 +41,8 @@ import { seedFakeGithub } from "./fake-github-helpers";
  *   and opens it, with `aria-expanded`.
  * - **A row** of a section: the label column and the value, found by the label's words.
  * - **Pinned** `[data-testid="issue-pins"]`.
+ * - **Files and documents** `[data-testid="issue-files"]`, the list of the issue's documents
+ *   and files inside the panel, one link each.
  */
 
 /** The details slot's panel, inside Details. */
@@ -74,6 +76,11 @@ export function pinsList(page: Page): Locator {
   return page.getByTestId("issue-pins");
 }
 
+/** Files and documents' list, inside the panel: one entry, a link, for each. */
+export function filesList(page: Page): Locator {
+  return marginSlot(page).getByTestId("issue-files");
+}
+
 /** The project every issue of the seed is in. */
 export const PROJECT = "DET";
 /** The repository ONE carries, which the fake GitHub serves with one pull request. */
@@ -100,7 +107,8 @@ export const TWENTY_LABELS = Array.from(
 export const UNPINNED_COMMENT = "An unpinned comment of ONE, which Details never draws.";
 /** ONE's question, waiting on alice, which Details never draws. */
 export const QUESTION = "Which width does Details open at?";
-/** The first line of ONE's pinned comment, which Pinned draws as its link. */
+/** The first line of ONE's pinned comment, which Pinned draws as its link: the words of the
+ *  server's reading of the comment's text, with none of the `**` its body marks them with. */
 export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
@@ -128,9 +136,10 @@ export interface DetailsSeed {
  *
  * - **ONE** has a parent, the twenty labels, a repository, a pull request and one other link, a
  *   component, the planner's claim, the route `role:architect`, an advanced priority, eleven
- *   documents, eleven issues it blocks, a spec approval request handed on to bob, an unpinned
- *   comment, a question waiting on alice, a pinned comment and a pinned line of its history, and
- *   it is blocked by THREE.
+ *   documents, eleven issues it blocks, a spec approval request handed on to bob and a task list
+ *   of two items, one checked, an unpinned comment, a question waiting on alice, a pinned
+ *   comment whose first line starts with a mark and a pinned line of its history, and it is
+ *   blocked by THREE.
  * - **TWO** has no parent, route, label, blocker or priority, and an approval request waiting on
  *   alice, the project's default assignee.
  * - **THREE**'s spec carries bob's request for changes with the reason `CHANGES_REASON`.
@@ -180,7 +189,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     force: true,
     parent: parent.key,
     project: PROJECT,
-    spec: "ONE's spec, which waits on bob's approval.",
+    spec: "ONE's spec, which waits on bob's approval.\n\n- [x] Read it.\n- [ ] Approve it.\n",
     title: "ONE holds every property Details draws",
   });
   await patchIssue(one.key, {
@@ -226,7 +235,7 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   await createComment(one.key, { body: UNPINNED_COMMENT });
   await createAsk(one.key, { question: QUESTION }, asPlanner);
   const pinned = await createComment(one.key, {
-    body: `${PINNED_FIRST_LINE}\nIts second line, which Pinned does not draw.`,
+    body: "**The pinned** comment's first line.\nIts second line, which Pinned does not draw.",
   });
   const events = await getIssueEvents(one.key);
   const event = events[0];

@@ -1,20 +1,32 @@
 import AxeBuilder from "@axe-core/playwright";
-import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
+import { CONTROL_LABELS, PROGRESS_NOUNS } from "../web/src/features/issue-page/page-words";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
-import { getIssue } from "./api";
-import { closeDetails, gotoIssue, marginShell, openDetails, openMenu, phase } from "./issue-page";
+import { getIssue, patchIssue } from "./api";
+import {
+  closeDetails,
+  filterRow,
+  gotoIssue,
+  issueRead,
+  marginShell,
+  openDetails,
+  openMenu,
+  phase,
+} from "./issue-page";
 import {
   addControl,
   CHANGES_REASON,
   COMPONENT_TITLE,
   detailsRow,
   ELEVEN,
+  filesList,
   marginSection,
   marginSectionDisclosure,
   marginSlot,
   OTHER_LINK,
   PINNED_FIRST_LINE,
   PLANNER_TITLE,
+  PRIORITY_TITLE,
   PROJECT,
   PULL_NUMBER,
   pinsList,
@@ -35,30 +47,42 @@ import { assertWhole } from "./unclipped";
  */
 
 /** Development's rows, in the order R2 of the part gives them, as ONE holds them: ONE's spec
- *  holds no task list, so it draws no Tasks row. */
+ *  holds a task list, so its last row is `PROPERTY_LABELS.tasks`. */
 const ONE_DEVELOPMENT_ROWS = [
-  "Status",
-  "Priority",
-  "Assignee",
-  "Labels",
-  "Advances",
-  "Parent",
-  "Blocked by",
-  "Blocks",
-  "Repository",
-  "Pull request",
-  "Links",
-  "Claimed by",
-  "Messages go to",
-  "Components",
+  PROPERTY_LABELS.status,
+  PROPERTY_LABELS.priority,
+  PROPERTY_LABELS.assignee,
+  PROPERTY_LABELS.labels,
+  PROPERTY_LABELS.advances,
+  PROPERTY_LABELS.parent,
+  PROPERTY_LABELS.blocked_by,
+  PROPERTY_LABELS.blocks,
+  PROPERTY_LABELS.repository,
+  PROPERTY_LABELS.pull_request,
+  PROPERTY_LABELS.external_links,
+  PROPERTY_LABELS.claim,
+  PROPERTY_LABELS.route,
+  PROPERTY_LABELS.components,
+  PROPERTY_LABELS.tasks,
 ];
 
 /** The tags `e2e/accessibility.e2e.ts` holds the dashboard to. */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
-/** The page's ink and the grey of a link's underline, as the prototype's `.lnk` draws them. */
+/** The page's ink, the grey of a link's underline, as the prototype's `.lnk` draws them, and
+ *  the quieter grey of a row's name. */
 const INK = "rgb(28, 25, 23)";
 const UNDERLINE = "rgb(168, 162, 158)";
+const QUIET = "rgb(120, 113, 108)";
+
+/** Two frames of the page, in which a key's work has been drawn if it did any. */
+function twoFrames(page: Page): Promise<void> {
+  return page.evaluate(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    return promise;
+  });
+}
 
 /** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
 function viewportAt(width: number): { height: number; width: number } {
@@ -102,6 +126,36 @@ async function expectInsideSideways(page: Page, locator: Locator, what: string):
     (box?.x ?? 0) + (box?.width ?? 0),
     `${what} ends right of the viewport`
   ).toBeLessThanOrEqual(width + 1);
+}
+
+/**
+ * `assertWhole` on each of `locators` in Details, with the window made tall enough at its width
+ * for every surface that scrolls between them and the document to hold its content whole, as
+ * `approval.e2e.ts` holds a card: Details scrolls as it is meant to wherever it is taller than
+ * the window, so what is left to flag is a clip. The window's own height is put back after.
+ */
+async function assertWholeInDetails(page: Page, locators: readonly Locator[]): Promise<void> {
+  const viewport = page.viewportSize();
+  if (viewport === null) throw new Error("the page has no viewport");
+  let taller = 0;
+  for (const locator of locators) {
+    const hidden = await locator.evaluate((element) => {
+      let most = 0;
+      for (let node = element.parentElement; node !== null; node = node.parentElement) {
+        if (getComputedStyle(node).overflowY !== "visible") {
+          most = Math.max(most, node.scrollHeight - node.clientHeight);
+        }
+      }
+      return most;
+    });
+    taller = Math.max(taller, hidden);
+  }
+  await page.setViewportSize({ height: viewport.height + taller + 16, width: viewport.width });
+  try {
+    for (const locator of locators) await assertWhole(locator);
+  } finally {
+    await page.setViewportSize(viewport);
+  }
 }
 
 /** The first element with a box that Details draws under its head, the element that holds
@@ -190,7 +244,9 @@ test("Details opens on the properties and holds no conversation @phone", async (
         marginShell(page).locator("[title]"),
         "an element of Details carries a title"
       ).toHaveCount(0);
-      const editLabels = detailsRow(page, "Labels").getByRole("button", { name: "Edit labels" });
+      const editLabels = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+        name: "Edit labels",
+      });
       await editLabels.click();
       await expect(page.getByRole("combobox", { name: "Search or create label" })).toBeVisible();
       await expect(
@@ -199,12 +255,15 @@ test("Details opens on the properties and holds no conversation @phone", async (
       ).toHaveCount(0);
       await page.keyboard.press("Escape");
 
-      // (3) The two pins, each a link to its own address with its Unpin.
+      // (3) The two pins, each a link to its own address with its Unpin, the comment's by the
+      // words of its first line and none of the marks its body writes them with.
       const commentPin = pinsList(page).getByRole("link", { exact: true, name: PINNED_FIRST_LINE });
       await expect(commentPin).toHaveAttribute(
         "href",
         buildIssuePath({ id: seeded.pinnedCommentId, key: one, kind: "comment" })
       );
+      await expect(commentPin).toHaveText(PINNED_FIRST_LINE);
+      await expect(commentPin, "the comment's pin draws its body's marks").not.toContainText("*");
       const historyPin = pinsList(page).getByRole("link", {
         exact: true,
         name: CONTROL_LABELS.history,
@@ -230,7 +289,9 @@ test("Details opens on the properties and holds no conversation @phone", async (
       await marginShell(page).evaluate((drawer) => drawer.scrollWidth <= drawer.clientWidth),
       "Details scrolls sideways at 390 px"
     ).toBe(true);
-    await pinsList(page).getByRole("link", { exact: true, name: PINNED_FIRST_LINE }).click();
+    const phonePin = pinsList(page).getByRole("link", { exact: true, name: PINNED_FIRST_LINE });
+    await assertWholeInDetails(page, [phonePin]);
+    await phonePin.click();
     await expect(marginShell(page), "a pin's link left Details open on a phone").toBeHidden();
     await expect(page).toHaveURL(
       buildIssuePath({ id: seeded.pinnedCommentId, key: one, kind: "comment" })
@@ -262,44 +323,82 @@ test("every property with a value is visible in Details at every width @phone", 
         await rowLabels(marginSection(page, "development")),
         `Development's rows are out of order at ${width} px`
       ).toEqual(ONE_DEVELOPMENT_ROWS);
-      const labels = detailsRow(page, "Labels").locator("[data-author-text]");
+      const labels = detailsRow(page, PROPERTY_LABELS.labels).locator("[data-author-text]");
       await expect
         .poll(async () =>
           (await labels.allTextContents()).filter((label) => TWENTY_LABELS.includes(label))
         )
         .toEqual(TWENTY_LABELS);
-      for (const label of TWENTY_LABELS) {
-        await assertWhole(detailsRow(page, "Labels").getByText(label, { exact: true }));
+      await assertWholeInDetails(
+        page,
+        TWENTY_LABELS.map((label) =>
+          detailsRow(page, PROPERTY_LABELS.labels).getByText(label, { exact: true })
+        )
+      );
+      // The checklist of ONE's spec: one of its two items checked.
+      await expect(
+        detailsRow(page, PROPERTY_LABELS.tasks).getByTestId("issue-progress-tasks"),
+        `the ${PROPERTY_LABELS.tasks} row does not count the spec's items at ${width} px`
+      ).toHaveText(`1/2 ${PROGRESS_NOUNS.tasks}`);
+      // The status, the priority and the assignee are the header's to change: their rows only
+      // say them.
+      for (const label of [
+        PROPERTY_LABELS.status,
+        PROPERTY_LABELS.priority,
+        PROPERTY_LABELS.assignee,
+      ]) {
+        await expect(
+          detailsRow(page, label).locator('button, select, input, [role="combobox"]'),
+          `the ${label} row holds a control at ${width} px`
+        ).toHaveCount(0);
       }
+      // The rows a control elsewhere on the page opens Details at (`details-rows.ts`).
+      for (const [label, row] of [
+        [PROPERTY_LABELS.labels, "labels"],
+        [PROPERTY_LABELS.parent, "parent"],
+        [PROPERTY_LABELS.route, "route"],
+      ] as const) {
+        await expect(detailsRow(page, label)).toHaveAttribute("data-details-row", row);
+      }
+      const pullRequest = detailsRow(page, PROPERTY_LABELS.pull_request).getByRole("link", {
+        name: new RegExp(`#${PULL_NUMBER}\\b`),
+      });
       const values: readonly (readonly [string, Locator])[] = [
-        ["the repository", detailsRow(page, "Repository").getByText(REPOSITORY).first()],
         [
-          "the pull request",
-          detailsRow(page, "Pull request").getByRole("link", {
-            name: new RegExp(`#${PULL_NUMBER}\\b`),
-          }),
+          "the repository",
+          detailsRow(page, PROPERTY_LABELS.repository).getByText(REPOSITORY).first(),
         ],
-        ["the other link", detailsRow(page, "Links").locator(`a[href="${OTHER_LINK}"]`)],
-        ["the component", detailsRow(page, "Components").getByText(COMPONENT_TITLE)],
+        ["the pull request", pullRequest],
+        [
+          "the other link",
+          detailsRow(page, PROPERTY_LABELS.external_links).locator(`a[href="${OTHER_LINK}"]`),
+        ],
+        ["the component", detailsRow(page, PROPERTY_LABELS.components).getByText(COMPONENT_TITLE)],
         [
           "the claim's holder",
-          detailsRow(page, "Claimed by").getByRole("link", { exact: true, name: PLANNER_TITLE }),
+          detailsRow(page, PROPERTY_LABELS.claim).getByRole("link", {
+            exact: true,
+            name: PLANNER_TITLE,
+          }),
         ],
         [
           "the release",
-          detailsRow(page, "Claimed by").getByRole("button", {
+          detailsRow(page, PROPERTY_LABELS.claim).getByRole("button", {
             name: `Release the claim on ${one}`,
           }),
         ],
         [
           "the route's control",
-          detailsRow(page, "Messages go to").getByRole("button", {
+          detailsRow(page, PROPERTY_LABELS.route).getByRole("button", {
             name: "Messages default to role:architect",
           }),
         ],
-        ["the priority's link", detailsRow(page, "Advances").getByRole("link").first()],
-        ["who opened it", detailsRow(page, "Opened by")],
-        ["the approval step", detailsRow(page, "Approval")],
+        [
+          "the priority's link",
+          detailsRow(page, PROPERTY_LABELS.advances).getByRole("link").first(),
+        ],
+        ["who opened it", detailsRow(page, PROPERTY_LABELS.opened_by)],
+        ["the approval step", detailsRow(page, PROPERTY_LABELS.approval)],
         [
           "Referenced by's count",
           marginSection(page, "references").getByRole("button", { name: /Referenced by/ }),
@@ -313,86 +412,144 @@ test("every property with a value is visible in Details at every width @phone", 
         await expect(at, `${what} is not drawn in Details at ${width} px`).toBeVisible();
         await expectInsideSideways(page, at, `${what} at ${width} px`);
       }
-      await expect(detailsRow(page, "Blocked by")).toContainText(three);
-      await expect(detailsRow(page, "Blocked by")).toContainText(seeded.titles.three);
-      for (const label of [...ONE_DEVELOPMENT_ROWS, "Opened by", "Approval"]) {
+      await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(three);
+      await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(seeded.titles.three);
+      for (const label of [
+        ...ONE_DEVELOPMENT_ROWS,
+        PROPERTY_LABELS.opened_by,
+        PROPERTY_LABELS.approval,
+      ]) {
         await expect(
           detailsRow(page, label).getByText(label, { exact: true }),
           `the ${label} row draws its name other than once at ${width} px`
         ).toHaveCount(1);
       }
+      if (width === 390) {
+        // On a phone the claim's words and the pull request's link wrap, and nothing cuts them.
+        await assertWholeInDetails(page, [
+          detailsRow(page, PROPERTY_LABELS.claim).getByTestId("issue-claim"),
+          pullRequest,
+        ]);
+      }
+      // Each of ONE's eight properties the add control would list has a value.
+      await expect(addControl(page), `ONE draws the add control at ${width} px`).toHaveCount(0);
       await closeDetails(page);
     }
 
     // (6) Blocks, and Files and documents, fold after ten behind Show all with the count.
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
-    const blocking = detailsRow(page, "Blocks").getByRole("link");
+    const blocking = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link");
     await expect(blocking).toHaveCount(10);
-    await detailsRow(page, "Blocks")
+    await detailsRow(page, PROPERTY_LABELS.blocks)
       .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ELEVEN}` })
       .click();
     await expect(blocking).toHaveCount(ELEVEN);
     for (const key of blocks) {
-      const link = detailsRow(page, "Blocks").getByRole("link", { exact: true, name: key });
+      const link = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link", {
+        exact: true,
+        name: key,
+      });
       expect(
         Number(await link.evaluate((element) => getComputedStyle(element).fontWeight)),
         `${key} is not bold in Blocks`
       ).toBeGreaterThanOrEqual(600);
     }
-    await expect(detailsRow(page, "Blocks")).toContainText(`Waits on ONE (${ELEVEN})`);
-    const documents = marginSection(page, "references").locator('a[href*="/artifacts/"]');
+    await expect(detailsRow(page, PROPERTY_LABELS.blocks)).toContainText(
+      `Waits on ONE (${ELEVEN})`
+    );
+    const documents = filesList(page).getByRole("link");
     await expect(documents).toHaveCount(10);
     await marginSection(page, "references")
       .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ELEVEN}` })
       .click();
     await expect(documents).toHaveCount(ELEVEN);
+    const firstDocument = (await getIssue(one)).artifacts?.[0];
+    expect(firstDocument, `${one} holds no document`).toBeDefined();
+    await expect(documents.first()).toHaveAttribute(
+      "href",
+      buildIssuePath({ key: one, kind: "artifact", slug: firstDocument?.slug ?? "" })
+    );
+    // Referenced by's count opens the list of what references ONE.
+    const referencedBy = marginSection(page, "references").getByRole("button", {
+      name: /Referenced by/,
+    });
+    await expect(referencedBy).toHaveAttribute("aria-expanded", "false");
+    await referencedBy.click();
+    await expect(referencedBy).toHaveAttribute("aria-expanded", "true");
+    const referencesPanel = page.locator(
+      `[id="${await referencedBy.getAttribute("aria-controls")}"]`
+    );
+    await expect(referencesPanel.getByRole("listitem").first()).toBeVisible();
 
     if (!desktopProject) return;
     // (7) At 1440 px, the prototype's sizes and the page's own colours.
     await page.setViewportSize(viewportAt(1440));
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
-    const row = await detailsRow(page, "Parent").evaluate((element) => {
+    const row = await detailsRow(page, PROPERTY_LABELS.parent).evaluate((element) => {
       const style = getComputedStyle(element);
-      const name = element.firstElementChild?.getBoundingClientRect().width ?? 0;
+      const name = element.firstElementChild;
       return {
+        borderBottomWidth: style.borderBottomWidth,
+        columnGap: style.columnGap,
         fontSize: style.fontSize,
         lineHeight: style.lineHeight,
-        name: Math.round(name),
+        name: Math.round(name?.getBoundingClientRect().width ?? 0),
+        nameColour: name === null ? "" : getComputedStyle(name).color,
         paddingBottom: style.paddingBottom,
         paddingTop: style.paddingTop,
       };
     });
     expect(row).toEqual({
+      borderBottomWidth: "1px",
+      columnGap: "10px",
       fontSize: "14px",
       lineHeight: "20px",
       name: 112,
+      nameColour: QUIET,
       paddingBottom: "8px",
       paddingTop: "8px",
     });
-    const chip = await detailsRow(page, "Labels")
+    const chip = await detailsRow(page, PROPERTY_LABELS.labels)
       .getByText(TWENTY_LABELS[0] ?? "", { exact: true })
       .evaluate((element) => {
         const style = getComputedStyle(element);
         return {
+          border: [
+            style.borderTopWidth,
+            style.borderRightWidth,
+            style.borderBottomWidth,
+            style.borderLeftWidth,
+          ],
           fontSize: style.fontSize,
           fontWeight: style.fontWeight,
           lineHeight: style.lineHeight,
+          paddingLeft: style.paddingLeft,
+          paddingRight: style.paddingRight,
           radius: style.borderTopLeftRadius,
         };
       });
     expect(chip).toEqual({
+      border: ["1px", "1px", "1px", "1px"],
       fontSize: "12px",
       fontWeight: "500",
       lineHeight: "18px",
+      paddingLeft: "7px",
+      paddingRight: "7px",
       radius: "6px",
     });
     const links: readonly (readonly [string, Locator])[] = [
-      ["the parent", detailsRow(page, "Parent").getByRole("link", { exact: true, name: parent })],
+      [
+        "the parent",
+        detailsRow(page, PROPERTY_LABELS.parent).getByRole("link", { exact: true, name: parent }),
+      ],
       [
         "a blocker's key",
-        detailsRow(page, "Blocked by").getByRole("link", { exact: true, name: three }),
+        detailsRow(page, PROPERTY_LABELS.blocked_by).getByRole("link", {
+          exact: true,
+          name: three,
+        }),
       ],
       ["a key of Blocks", blocking.first()],
       ["a pin", pinsList(page).getByRole("link").first()],
@@ -400,10 +557,15 @@ test("every property with a value is visible in Details at every width @phone", 
     for (const [what, link] of links) {
       const colours = await link.evaluate((element) => {
         const style = getComputedStyle(element);
-        return { colour: style.color, underline: style.textDecorationColor };
+        return {
+          colour: style.color,
+          offset: style.textUnderlineOffset,
+          underline: style.textDecorationColor,
+        };
       });
-      expect(colours, `${what} is not the ink, underlined in the grey`).toEqual({
+      expect(colours, `${what} is not the ink, underlined in the grey 3 px under it`).toEqual({
         colour: INK,
+        offset: "3px",
         underline: UNDERLINE,
       });
     }
@@ -411,7 +573,13 @@ test("every property with a value is visible in Details at every width @phone", 
       await documents.first().evaluate((element) => getComputedStyle(element).color),
       "a document's entry in Details is not the ink"
     ).toBe(INK);
-    const approve = detailsRow(page, "Approval").getByRole("button", {
+    expect(
+      await documents.evaluateAll((entries) =>
+        entries.map((entry) => getComputedStyle(entry).textDecorationLine)
+      ),
+      "a document's entry in Details is underlined"
+    ).toEqual(Array.from({ length: 10 }, () => "none"));
+    const approve = detailsRow(page, PROPERTY_LABELS.approval).getByRole("button", {
       exact: true,
       name: "Approve",
     });
@@ -440,7 +608,10 @@ test("each control in Details saves and reads back", async ({ browser }) => {
 
     // (8) The labels: one removed and one added, then `l` from a closed Details.
     await reopen(one);
-    const editLabels = detailsRow(page, "Labels").getByRole("button", { name: "Edit labels" });
+    const editLabels = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+      name: "Edit labels",
+    });
+    await expect(editLabels, "Details draws no Edit labels").toBeVisible();
     await editLabels.click();
     await page.getByRole("option", { exact: true, name: "label-20" }).click();
     const search = page.getByRole("combobox", { name: "Search or create label" });
@@ -455,71 +626,121 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await reopen(one);
     await expect
       .poll(async () =>
-        (await detailsRow(page, "Labels").locator("[data-author-text]").allTextContents()).filter(
-          (label) => label.startsWith("label-")
-        )
+        (
+          await detailsRow(page, PROPERTY_LABELS.labels)
+            .locator("[data-author-text]")
+            .allTextContents()
+        ).filter((label) => label.startsWith("label-"))
       )
       .toEqual(relabelled);
     await closeDetails(page);
     await page.keyboard.press("l");
     await expect(marginShell(page), "l did not open Details").toBeVisible();
     await expect(
-      detailsRow(page, "Labels").getByRole("button", { name: "Edit labels" }),
+      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", { name: "Edit labels" }),
       "l did not open Details at Edit labels"
     ).toHaveAttribute("aria-expanded", "true");
     await page.keyboard.press("Escape");
+    // The list of keys Keys opens names `l` by what it does.
+    await closeDetails(page);
+    await filterRow(page).getByRole("button", { exact: true, name: CONTROL_LABELS.keys }).click();
+    const keyList = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await expect(keyList).toBeVisible();
+    await expect(
+      keyList.getByRole("listitem").filter({ hasText: "Edit labels" }).locator("kbd"),
+      "the list of keys does not name l Edit labels"
+    ).toHaveText(["l"]);
+    await page.keyboard.press("Escape");
+    await expect(keyList).toBeHidden();
 
     // (9) TWO's parent, from Add, then the priority it inherits.
     await reopen(two);
-    await expect(detailsRow(page, "Parent")).toContainText(CONTROL_LABELS.none);
-    await expect(detailsRow(page, "Parent").getByRole("button").first()).toHaveText(
+    await expect(detailsRow(page, PROPERTY_LABELS.parent)).toContainText(CONTROL_LABELS.none);
+    await expect(detailsRow(page, PROPERTY_LABELS.parent).getByRole("button").first()).toHaveText(
       CONTROL_LABELS.set_parent
     );
     await addControl(page).click();
     const entries = await openMenu(page).getByRole("menuitem").allTextContents();
-    expect(entries.slice(0, 4), "the Add menu lists TWO's empty fields out of order").toEqual([
-      "Parent",
-      "Labels",
-      "Messages go to",
-      "Blocked by",
+    // The assignee is listed where the header draws its control, which the menu presses.
+    const headerAssignee = await page.locator(`[aria-label="Assignee of ${two}"]`).count();
+    expect(entries, "the Add menu lists other than TWO's empty fields, in R5's order").toEqual([
+      PROPERTY_LABELS.parent,
+      ...(headerAssignee > 0 ? [PROPERTY_LABELS.assignee] : []),
+      PROPERTY_LABELS.labels,
+      PROPERTY_LABELS.route,
+      PROPERTY_LABELS.blocked_by,
+      PROPERTY_LABELS.repository,
+      PROPERTY_LABELS.components,
+      PROPERTY_LABELS.advances,
     ]);
-    expect(
-      entries.slice(4).filter((entry) => !["Repository", "Components", "Advances"].includes(entry)),
-      "the Add menu lists a field R5 does not name"
-    ).toEqual([]);
-    expect(entries, "the Add menu lists the header's Assignee").not.toContain("Assignee");
-    await openMenu(page).getByRole("menuitem", { exact: true, name: "Parent" }).click();
-    await detailsRow(page, "Parent").getByLabel("Parent", { exact: true }).fill(one);
-    await detailsRow(page, "Parent").getByRole("button", { name: "Save parent" }).click();
+    await openMenu(page)
+      .getByRole("menuitem", { exact: true, name: PROPERTY_LABELS.parent })
+      .click();
+    // The editor and what it holds outlive a close and an open of Details.
+    const parentBox = detailsRow(page, PROPERTY_LABELS.parent).getByLabel(PROPERTY_LABELS.parent, {
+      exact: true,
+    });
+    await parentBox.fill(one);
+    await closeDetails(page);
+    await openDetails(page);
+    await expect(parentBox, "closing Details threw the parent's draft away").toHaveValue(one);
+    await detailsRow(page, PROPERTY_LABELS.parent)
+      .getByRole("button", { name: CONTROL_LABELS.save_parent })
+      .click();
     await expect.poll(async () => (await getIssue(two)).parent).toBe(one);
     await reopen(two);
-    const parentRow = detailsRow(page, "Parent");
+    const parentRow = detailsRow(page, PROPERTY_LABELS.parent);
     await expect(parentRow.getByRole("button").first()).toHaveText(CONTROL_LABELS.edit_parent);
     await expect(parentRow.getByRole("link", { exact: true, name: one })).toBeVisible();
-    await expect(detailsRow(page, "Advances")).toContainText(CONTROL_LABELS.advances_inherited);
+    const advancesRow = detailsRow(page, PROPERTY_LABELS.advances);
+    await expect(advancesRow).toContainText(PRIORITY_TITLE);
+    await expect(advancesRow).toContainText(CONTROL_LABELS.advances_inherited);
+    await expect(
+      advancesRow.getByRole("button", { name: /^Remove / }),
+      "TWO can remove the priority it inherits from ONE"
+    ).toHaveCount(0);
+    // An editor open on TWO is not carried to the issue a link moves the page to.
+    const routeRow = detailsRow(page, PROPERTY_LABELS.route);
+    const routeBox = routeRow.getByLabel(PROPERTY_LABELS.route, { exact: true });
+    await routeRow.getByRole("button", { name: "Messages default to no route" }).click();
+    await expect(routeBox).toBeVisible();
+    await page.evaluate(() => {
+      (window as Window & { detailsStayed?: boolean }).detailsStayed = true;
+    });
+    await parentRow.getByRole("link", { exact: true, name: one }).click();
+    await expect(page).toHaveURL(buildIssuePath({ key: one, kind: "issue" }));
+    await issueRead(page);
+    expect(
+      await page.evaluate(() => (window as Window & { detailsStayed?: boolean }).detailsStayed),
+      "the parent's link loaded the page rather than moving it"
+    ).toBe(true);
+    await openDetails(page);
+    await expect(
+      routeRow.getByRole("button", { name: "Messages default to role:architect" })
+    ).toBeVisible();
+    await expect(routeBox, `${one} opened with TWO's route editor`).toHaveCount(0);
+    await reopen(two);
 
     // (10) TWO's route, and whether it reaches anyone.
-    await detailsRow(page, "Messages go to")
-      .getByRole("button", { name: "Messages default to no route" })
-      .click();
-    await detailsRow(page, "Messages go to")
-      .getByLabel("Messages go to", { exact: true })
-      .fill("role:implementer");
-    await detailsRow(page, "Messages go to").getByRole("button", { name: "Save route" }).click();
+    const noRoute = routeRow.getByRole("button", { name: "Messages default to no route" });
+    await expect(noRoute).toHaveText(CONTROL_LABELS.none);
+    await noRoute.click();
+    await routeBox.fill("role:implementer");
+    await routeRow.getByRole("button", { name: CONTROL_LABELS.save_route }).click();
     await expect.poll(async () => (await getIssue(two)).route).toBe("role:implementer");
     await reopen(two);
     await expect(
-      detailsRow(page, "Messages go to").getByRole("button", {
+      routeRow.getByRole("button", {
         name: "Messages default to role:implementer",
       })
     ).toBeVisible();
-    const reach = (await getIssue(two)).route_status;
-    await expect(marginSlot(page).getByTestId("issue-details-route-unreachable")).toHaveCount(
-      reach === "no_holder" ? 1 : 0
+    expect((await getIssue(two)).route_status, "a live session holds role:implementer").toBe(
+      "no_holder"
     );
+    await expect(page.getByTestId("issue-details-route-unreachable")).toHaveCount(1);
 
     // (11) TWO's blockers: a refused key keeps the editor open, then THREE.
-    const blockedBy = detailsRow(page, "Blocked by");
+    const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
     await blockedBy.getByRole("button", { name: `Add issues ${two} waits on` }).click();
     const keys = blockedBy.getByLabel(`Issues ${two} waits on`, { exact: true });
     await keys.fill(`${PROJECT}-9999`);
@@ -530,16 +751,19 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await blockedBy.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }).click();
     await expect.poll(async () => (await getIssue(two)).blocked_by).toEqual([three]);
     await reopen(two);
-    const blocker = detailsRow(page, "Blocked by").getByRole("link", { exact: true, name: three });
+    const blocker = detailsRow(page, PROPERTY_LABELS.blocked_by).getByRole("link", {
+      exact: true,
+      name: three,
+    });
     await expect(blocker).toBeVisible();
     expect(
       Number(await blocker.evaluate((element) => getComputedStyle(element).fontWeight))
     ).toBeGreaterThanOrEqual(600);
-    await expect(detailsRow(page, "Blocked by")).toContainText(seeded.titles.three);
+    await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(seeded.titles.three);
 
     // (12) THREE's priority, added and removed.
     await reopen(three);
-    await expect(detailsRow(page, "Advances")).toHaveCount(0);
+    await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     await marginSlot(page)
       .getByRole("button", { name: `${CONTROL_LABELS.add_priority} to ${three}` })
       .click();
@@ -552,22 +776,22 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       .click();
     await expect.poll(async () => (await getIssue(three)).advances?.length ?? 0).toBe(1);
     await reopen(three);
-    const added = detailsRow(page, "Advances").getByRole("link");
+    const added = detailsRow(page, PROPERTY_LABELS.advances).getByRole("link");
     await expect(added).toHaveCount(1);
     await added.click();
     await expect(page).toHaveURL(`/priorities/${seeded.priorityId}`);
     await reopen(three);
-    await detailsRow(page, "Advances")
+    await detailsRow(page, PROPERTY_LABELS.advances)
       .getByRole("button", { name: /^Remove / })
       .click();
     await expect.poll(async () => (await getIssue(three)).advances?.length ?? 0).toBe(0);
     await reopen(three);
-    await expect(detailsRow(page, "Advances")).toHaveCount(0);
+    await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
 
     // (13) Approval: its two controls where no request waits on alice, and bob's reason.
-    await expect(detailsRow(page, "Approval")).toContainText(CHANGES_REASON);
+    await expect(detailsRow(page, PROPERTY_LABELS.approval)).toContainText(CHANGES_REASON);
     await reopen(one);
-    const approval = detailsRow(page, "Approval");
+    const approval = detailsRow(page, PROPERTY_LABELS.approval);
     await expect(approval.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
     await approval.getByRole("button", { exact: true, name: "Request changes" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
@@ -575,17 +799,19 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await reopen(two);
     await expect(
-      detailsRow(page, "Approval").getByRole("button", { name: /^(Approve|Request changes)$/ })
+      detailsRow(page, PROPERTY_LABELS.approval).getByRole("button", {
+        name: /^(Approve|Request changes)$/,
+      })
     ).toHaveCount(0);
 
     // (14) The claim, released.
     await reopen(one);
-    await detailsRow(page, "Claimed by")
+    await detailsRow(page, PROPERTY_LABELS.claim)
       .getByRole("button", { name: `Release the claim on ${one}` })
       .click();
     await expect.poll(async () => (await getIssue(one)).claim).toBeNull();
     await reopen(one);
-    await expect(detailsRow(page, "Claimed by")).toContainText(CONTROL_LABELS.none);
+    await expect(detailsRow(page, PROPERTY_LABELS.claim)).toContainText(CONTROL_LABELS.none);
 
     // (15) Every section opened on each load so far, and one closed is kept for the next issue.
     await reopen(two);
@@ -594,7 +820,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "true"
     );
     await marginSectionDisclosure(page, "development").click();
-    await expect(detailsRow(page, "Repository")).toHaveCount(0);
+    await expect(detailsRow(page, PROPERTY_LABELS.repository)).toHaveCount(0);
     expect(
       await page.evaluate(() => localStorage.getItem("dispatch.issue.margin-sections:alice"))
     ).toBe("development");
@@ -603,5 +829,24 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "aria-expanded",
       "false"
     );
+    await marginSectionDisclosure(page, "development").click();
+    await expect(marginSectionDisclosure(page, "development")).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+
+    // Last, a closed issue: `l` leaves Details shut, and Details offers nothing to write.
+    await patchIssue(two, { status: "done" });
+    await reopen(two);
+    await closeDetails(page);
+    await page.keyboard.press("l");
+    await twoFrames(page);
+    await expect(marginShell(page), "l opened Details on a closed issue").toBeHidden();
+    await openDetails(page);
+    await expect(
+      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", { name: "Edit labels" }),
+      "a closed issue's labels can be edited"
+    ).toBeDisabled();
+    await expect(addControl(page), "a closed issue draws the add control").toHaveCount(0);
   });
 });
