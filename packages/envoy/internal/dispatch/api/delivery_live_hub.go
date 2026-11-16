@@ -39,11 +39,12 @@ type deliverySubscription struct {
 
 // Subscribe answers one subscribe frame on conn, and reports whether conn's sub now follows the
 // frame's view. The socket has refused a frame with no sub (subscribeLive). A view the matching GET
-// route would refuse is an INVALID_QUERY error frame naming the sub, a malformed view or a resume
-// seq that is not a decimal change position INVALID_FRAME, and a sub id conn already holds is then
-// left as it was. Otherwise conn's sub follows the view from now on: it is answered a snapshot, or,
-// on a resume, the delta against the revisions the page holds (a snapshot when the page applied
-// nothing since before the oldest kept change, OldestChangeSeq() - 1), and later only the deltas.
+// route would refuse is an error frame naming the sub and carrying the code that route answers; a
+// malformed view, or a resume seq that is not a decimal change position, is INVALID_FRAME; and a
+// sub id conn already holds is then left as it was. Otherwise conn's sub follows the view from now
+// on: it is answered a snapshot, or, on a resume, the delta against the revisions the page holds
+// (a snapshot when the page applied nothing since before the oldest kept change,
+// OldestChangeSeq() - 1), and later only the deltas.
 // Right after that first answer, or where it would be for a resume with nothing to catch up, conn
 // is sent the freshness verdict the hub knows: the hub sends its open pages a verdict only when it
 // changes, and a page keeps the last one it was sent, so a socket that was down at a change, or a

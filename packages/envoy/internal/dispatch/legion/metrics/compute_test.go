@@ -110,7 +110,7 @@ func TestTheSevenBarsOfAnIssueAddUpToItsWorkTime(t *testing.T) {
 				t.Fatalf("the bars are %v, want %v", hoursPerBar, one.bars)
 			}
 			if whole != row.Hours {
-				t.Fatalf("the seven bars hold %g hours against a work time of %g: the two cards of one page disagree",
+				t.Fatalf("the seven bars hold %g hours against a work time of %g: metric 2's bars and metric 1's work time disagree",
 					whole, row.Hours)
 			}
 		})
@@ -135,10 +135,10 @@ func TestAnIssueThatClosedWithNoLegionWorkIsNotCounted(t *testing.T) {
 	}
 }
 
-// TestTheScopeTogglePicksRootsOrChildren: a tree's root and its child, each counted alone under
+// TestTheScopePicksRootsOrChildren: a tree's root and its child, each counted alone under
 // its own scope and both under all. The root is read from the parent chain, since no daemon has
 // sent a `tree` yet.
-func TestTheScopeTogglePicksRootsOrChildren(t *testing.T) {
+func TestTheScopePicksRootsOrChildren(t *testing.T) {
 	root := newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(9))
 	child := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(1)).closedAt(hour(8))
 	// An issue under a parent no Legion session ever worked is a root of its own: a Legion tree
@@ -689,14 +689,14 @@ func TestEachClassOfFiledIssue(t *testing.T) {
 	}
 }
 
-// TestTheScopeToggleNarrowsTheFilingsByTheIssueFiled: the splitting table's rows and each week's
-// four class counts follow the scope toggle, read by the issue each filing created — the one
-// implementer files a child of its own tree and a follow-up that is a root, and the toggle keeps
-// one or the other, whichever session filed them. That week's finished count and the table's root
-// figures stand where they are: "These root figures count the project's finished roots whatever
-// the all, roots or children toggle says, since they describe roots, while the weekly counts
-// follow the toggle" (the spec's metric 4).
-func TestTheScopeToggleNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
+// TestTheScopeNarrowsTheFilingsByTheIssueFiled: the splitting table's rows and each week's four
+// class counts follow the scope, read by the issue each filing created — the one implementer
+// files a child of its own tree and a follow-up that is a root, and `roots` keeps one and
+// `children` the other, whichever session filed them. That week's finished count and the table's
+// root figures stand where they are: "These root figures count the project's finished roots
+// whatever the all, roots or children toggle says, since they describe roots, while the weekly
+// counts follow the toggle" (the spec's metric 4).
+func TestTheScopeNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 	// The root and its two children finish in the window's second week, so the week the filings
 	// fall in has no finished issue of either kind and its finished count is the same under every
 	// scope, while the filings in it are not.
@@ -752,7 +752,7 @@ func TestTheScopeToggleNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 					one.scope, week.Finished)
 			}
 			if report.Splitting.FinishedRoots != 1 || report.Splitting.ChildrenPerRoot != 2 {
-				t.Errorf("scope %s answers %d finished roots with %g children each, want the one root with its two children: the root figures are the project's whatever the toggle says",
+				t.Errorf("scope %s answers %d finished roots with %g children each, want the one root with its two children: the root figures are the project's under every scope",
 					one.scope, report.Splitting.FinishedRoots, report.Splitting.ChildrenPerRoot)
 			}
 			if report.Splitting.MedianHoursRootsWithChildren != 100 || report.Splitting.MedianHoursRootsNoChildren != 0 {

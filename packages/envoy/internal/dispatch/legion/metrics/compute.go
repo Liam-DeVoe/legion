@@ -31,7 +31,7 @@ const (
 // so the seven bars of an issue add up to its work time (phaseTime).
 const barNoRole = "no_role"
 
-// bars are the seven stacked bars in the order the card draws them. The merger's three phases
+// bars are the seven bars, in the order PhaseTime.Bars lists them. The merger's three phases
 // are the one declaration of that grouping (legion.MergerPhases).
 var bars = []struct {
 	Role   string
@@ -54,7 +54,8 @@ const (
 	ClassByTheController = "by_the_controller"
 )
 
-// classes is every class, in the order the card lists them.
+// classes is every class: each week's Filed map counts all four, a class nothing was filed in as
+// zero (splitting).
 var classes = []string{ClassInTreeAtDesign, ClassInTreeLater, ClassOutOfTree, ClassByTheController}
 
 // Report is one answer of the metrics computation: the window, the issues that finished in it,
@@ -65,7 +66,7 @@ type Report struct {
 	Project    string    `json:"project"`
 	From       time.Time `json:"from"`
 	To         time.Time `json:"to"`
-	Scope      Scope     `json:"scope" enum:"all,roots,children"`
+	Scope      Scope     `json:"scope"`
 	ComputedAt time.Time `json:"computed_at"`
 	// Finished is how many issues finished in the window under this scope: every metric's
 	// population.
@@ -106,10 +107,9 @@ type PhaseTime struct {
 }
 
 // RoleBar is one worker type's bar. Role is one of Legion's six worker types or `no_role`, the
-// seventh bar (bars, barNoRole); the enum is what makes the generated type carry that set rather
-// than a bare string.
+// seventh bar (bars, barNoRole).
 type RoleBar struct {
-	Role string `json:"role" enum:"architect,planner,implementer,tester,reviewer,merger,no_role"`
+	Role string `json:"role"`
 	// Hours is the bar's whole time across the finished issues.
 	Hours float64 `json:"hours"`
 	// Issues is how many finished issues hold hours on this bar. The median is taken over every
@@ -144,7 +144,8 @@ type ReworkIssue struct {
 // Splitting is metric 4: what Legion sessions filed in the window, by class and week, against the
 // issues that finished per week. The rows and the weeks' class counts are narrowed to the scope
 // by the issue each filing created, as the finished population is narrowed by the issue that
-// finished (inScope); the four root figures below are the project's whatever the toggle says.
+// finished (inScope); the four root figures below are the project's whatever scope the caller
+// names.
 type Splitting struct {
 	Weeks []SplittingWeek `json:"weeks"`
 	Filed []FiledIssue    `json:"filed"`
@@ -164,24 +165,23 @@ type SplittingWeek struct {
 }
 
 // FiledIssue is one issue a Legion session created in the window. Three of its fields carry a
-// closed set the server decides — the four classes, the filer (one of Legion's six worker types
-// or the controller, which works no issue) and the phase the filer's issue was in, named by the
-// bar it falls on (tablePhase) — so each states its set as an enum and the generated type carries
-// it rather than a bare string.
+// closed set the computation decides: Class is one of the four classes, Filer one of Legion's six
+// worker types or the controller, which works no issue, and FilerPhase the phase the filer's issue
+// was in, named by the bar it falls on (tablePhase).
 type FiledIssue struct {
 	Key   string    `json:"key"`
 	Title string    `json:"title"`
 	At    time.Time `json:"at"`
-	Class string    `json:"class" enum:"in_tree_at_design,in_tree_later,out_of_tree,by_the_controller"`
+	Class string    `json:"class"`
 	// Filer is the role that filed it and the issue that role was working, or the controller.
-	Filer      string `json:"filer" enum:"architect,planner,implementer,tester,reviewer,merger,controller"`
+	Filer      string `json:"filer"`
 	FilerIssue string `json:"filer_issue"`
 	// FilerPhase is the phase the filer's issue was in when it filed, named by the bar it falls
 	// on (tablePhase): the seven bar words, the three a timeline holds that are on no bar
 	// (`queued`, `awaiting_person` and `held`), `done` for an issue the daemon has finished and
 	// Dispatch has not closed, and the empty string for a moment the issue's timeline does not
 	// cover, which is what every filing by the controller carries.
-	FilerPhase string `json:"filer_phase" enum:",queued,design,planning,implementing,testing,reviewing,accepting,merging,awaiting_person,held,done"`
+	FilerPhase string `json:"filer_phase"`
 }
 
 // Compute is the metrics answer for a population. It reads nothing: a caller hands it a
@@ -281,14 +281,14 @@ func (c *computation) isRoot(key string) bool {
 	return c.treeRoot(key) == key
 }
 
-// inScope is the scope toggle itself, written once because two rules read it: the finished
-// population (finished) and the filings of the splitting table (splitting) are narrowed the same
-// way, so a reader of either number is reading the same rule. In `roots` an issue that is a root
-// of its tree counts, in `children` one that is not, and in `all` every issue.
+// inScope is what the scope a caller names keeps, written once because two rules read it: the
+// finished population (finished) and the filings of the splitting table (splitting) are narrowed
+// the same way, so a reader of either number is reading the same rule. In `roots` an issue that
+// is a root of its tree counts, in `children` one that is not, and in `all` every issue.
 //
 // It takes a key rather than an issue because the row of the splitting table is the issue that
 // was filed: a filing is read by the tree the new issue is in, not by the filer's, so one filer's
-// filings can fall on either side of the toggle.
+// filings can fall under either scope, `roots` or `children`.
 func (c *computation) inScope(key string) bool {
 	switch c.scope {
 	case ScopeRoots:
@@ -386,8 +386,8 @@ func (c *computation) workedSpansOf(issue *Issue) []Span {
 
 // barSpansOf is the hours of an issue its seven bars share out: the work time metric 1 reports,
 // less the time it sat in the queue, which is on no bar. Metric 2's bars and metric 3's hours
-// after the first review are both the measure of these spans, so no table of a card counts an
-// hour the card's own bars leave out.
+// after the first review are both the measure of these spans, so metric 3 counts no hour that
+// metric 2's bars leave out.
 func (c *computation) barSpansOf(issue *Issue) []Span {
 	return subtract(c.workedSpansOf(issue), phaseSpansOf(c.phasesOf(issue), phaseQueued))
 }
@@ -617,7 +617,7 @@ func (c *computation) splitting(finished []*Issue) Splitting {
 		weeks[start] = fresh
 		return fresh
 	}
-	// The toggle reads each filed issue's tree as it stands now (inScope), while its class reads
+	// The scope reads each filed issue's tree as it stands now (inScope), while its class reads
 	// the parent it had when it was filed (classify); a filing into another project has no tree
 	// here and counts as a root.
 	for _, filed := range c.population.Filed {
@@ -637,8 +637,8 @@ func (c *computation) splitting(finished []*Issue) Splitting {
 	}
 	slices.SortFunc(metric.Weeks, func(a, b SplittingWeek) int { return a.Week.Compare(b.Week) })
 
-	// The roots that finished in the window, whatever scope the reader picked: the table's last
-	// two numbers are about roots by name, so the toggle does not change them.
+	// The roots that finished in the window, whatever scope the caller named: the four root
+	// figures are about roots by name, so no scope changes them.
 	var withChildren, withoutChildren []float64
 	var children int
 	for _, key := range c.population.Keys {
@@ -723,13 +723,12 @@ func phaseAt(timeline []PhaseSpan, at time.Time) string {
 // declaration of that grouping), so a filer in any of them is named merging, and every other
 // phase is named as the timeline names it.
 //
-// The whole of what it answers, which packages/contracts/src/dispatch-api.ts declares as
-// `LegionTablePhase`: the seven words of the bars — `design`, `planning`, `implementing`,
-// `testing`, `reviewing`, `accepting` and `merging`; the three words a timeline holds that are
-// on no role's bar — `queued`, which is the waiting line, and `awaiting_person` and `held`,
-// which are the "no role" bar's; `done`, which an issue the daemon has finished and Dispatch
-// has not closed yet holds; and "" for a moment no span of the timeline covers, which is what a
-// filing by the controller carries, since the controller works no issue.
+// The whole of what it answers: the seven words of the bars — `design`, `planning`,
+// `implementing`, `testing`, `reviewing`, `accepting` and `merging`; the three words a timeline
+// holds that are on no role's bar — `queued`, which is the waiting line, and `awaiting_person`
+// and `held`, which are the "no role" bar's; `done`, which an issue the daemon has finished and
+// Dispatch has not closed yet holds; and "" for a moment no span of the timeline covers, which is
+// what a filing by the controller carries, since the controller works no issue.
 func tablePhase(phase string) string {
 	if legion.IsMergerPhase(phase) {
 		return legion.PhaseMerging

@@ -2479,7 +2479,9 @@ func TestALegionBoardOfAProjectWithNoDaemonIsRefusedOnce(t *testing.T) {
 }
 
 // TestALegionViewNamesItsProjectAndNothingElse: the kind's shape is held where every other kind's
-// is, so a frame of another kind's shape is refused before anything is subscribed.
+// is, so a frame of another kind's shape is refused before anything is subscribed. A badly spelled
+// project is refused as GET /api/v1/projects/{key}/legion/board refuses it, code and words alike,
+// so the two doors to one board name one refusal.
 func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 	window := DeliveryLiveWindow{Preset: new(7)}
 	project := "INFRA"
@@ -2496,8 +2498,14 @@ func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 		}
 	}
 	notAKey := "infra"
-	if _, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: legionBoardView, Project: &notAKey}); refusal == nil || refusal.Code != "INVALID_QUERY" {
-		t.Errorf("a legion view of %q: refusal = %+v, want INVALID_QUERY", notAKey, refusal)
+	routed := dispatchRequest(t, newTestHandler(t), http.MethodGet, "/api/v1/projects/"+notAKey+"/legion/board", nil, "alice")
+	answer := decodeBody[refusalAnswer](t, routed)
+	if routed.Code != http.StatusBadRequest || answer.Code != "LEGION_SETTING_INPUT" {
+		t.Fatalf("GET the board of %q: status=%d body=%s, want 400 LEGION_SETTING_INPUT", notAKey, routed.Code, routed.Body.String())
+	}
+	_, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: legionBoardView, Project: &notAKey})
+	if refusal == nil || refusal.Code != answer.Code || refusal.Message != answer.Error {
+		t.Errorf("a legion view of %q: refusal = %+v, want the board route's %+v", notAKey, refusal, answer)
 	}
 	spec, refusal := parseDeliveryLiveView(legionView("INFRA"))
 	if refusal != nil {
