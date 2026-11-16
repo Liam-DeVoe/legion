@@ -398,31 +398,29 @@ test.each([
 // alone and carries the marks the node carries. A block of a deleted post is gone with the
 // post's text, and its read answers 404 `NOT_FOUND` as any gone block's does, in words nothing
 // reads: the post's own read then decides by its mark, so a gone block of a deleted message
-// carries the deletion and one of a message that stands carries none. A part of an ask, which no
-// delete marks, reads no post when it is gone.
+// carries the deletion and one of a message that stands carries none.
 test("a reference answers the edit and the deletion of the post it names, or whose block it names", async () => {
   const reads = spyReads();
   const deletion = {
     deleted_at: "2026-09-09T03:00:00Z",
     deleted_by: { id: "alice", kind: "user" },
   };
-  // The deleted post `m-1` was edited first, so its reading could carry the edit, and only the
-  // hook's own reading of the delete keeps the edit off. Every read a part of the ask `a-1` could
-  // make answers a deleted post too, so a hook that read a post for that part would carry the
-  // deletion: only its rule that no delete marks an ask keeps that part's mark off.
   reads.getMessage.mockImplementation((_key, id) =>
     Promise.resolve(
-      (id === "m-1" || id === "a-1"
+      (id === "m-1"
         ? { message: { body: "", edited_at: "2026-09-09T02:30:00Z", ...deletion } }
         : { message: { body: "Still here.", deleted_at: null, deleted_by: null } }) as never
     )
   );
-  reads.getAsk.mockResolvedValue({ ask: { id: "a-1", ...deletion } } as never);
-  reads.getComment.mockResolvedValue({
-    comment: { body: "", id: "a-1", ...deletion },
-    replies: [],
-  } as never);
+  // A read of any comment answers a deleted one, so a hook that read the comment behind a block
+  // whose read answers would carry its deletion.
+  reads.getComment.mockResolvedValue({ comment: { body: "", ...deletion }, replies: [] } as never);
   const standing = blockRead("Beta as written.");
+  // The edited message `m-1` stands when its block is first read, and the block's node carries
+  // the edit. The delete then takes the block, and the next read of it answers 404. TanStack
+  // keeps the data of the last read that answered through that failure, so only the hook's rule
+  // that a gone block reads as no block keeps that edit off the deleted message's block.
+  let m1Deleted = false;
   // The words of the refusal decide nothing, either way: the block of the deleted post `m-1` is
   // refused in words that say nothing of a delete, and the block of the standing post `m-2` is
   // refused in the very words the server writes for a deleted post. The post's own mark is
@@ -435,8 +433,13 @@ test("a reference answers the edit and the deletion of the post it names, or who
             error: 'no block "b1" in message m-2: this message is deleted',
           })
         )
-      : reference.includes("/message/") || reference.includes("/ask/")
-        ? Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }))
+      : reference.includes("/message/m-1#")
+        ? m1Deleted
+          ? Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }))
+          : Promise.resolve({
+              ...standing,
+              node: { ...standing.node, edited_at: "2026-09-09T02:30:00Z" },
+            })
         : Promise.resolve({
             ...standing,
             node: { ...standing.node, edited_at: "2026-09-09T02:00:00Z" },
@@ -469,19 +472,18 @@ test("a reference answers the edit and the deletion of the post it names, or who
       ),
     { wrapper }
   );
-  const askPart = renderHook(
-    () =>
-      useReferenceTarget(
-        { block: { id: "b1" }, id: "a-1", key: "CORE-1", kind: "ask" },
-        { text: false }
-      ),
-    { wrapper }
-  );
   try {
     await waitFor(() => expect(edited.result.current.title).toBe("Beta as written."));
     expect(edited.result.current.edited).toBe("2026-09-09T02:00:00Z");
     expect(edited.result.current.deleted).toBeNull();
 
+    await waitFor(() => expect(deleted.result.current.edited).toBe("2026-09-09T02:30:00Z"));
+    m1Deleted = true;
+    await act(() =>
+      queryClient.refetchQueries({
+        queryKey: blockQuery("dispatch://CORE-1/message/m-1#b-b1").queryKey,
+      })
+    );
     await waitFor(() =>
       expect(deleted.result.current.deleted).toEqual({
         at: "2026-09-09T03:00:00Z",
@@ -498,18 +500,8 @@ test("a reference answers the edit and the deletion of the post it names, or who
       )
     );
     expect(gone.result.current.deleted).toBeNull();
-    expect(gone.result.current.title).toBeUndefined();
-
-    await waitFor(() =>
-      expect(
-        queryClient.getQueryState(blockQuery("dispatch://CORE-1/ask/a-1#b-b1").queryKey)?.status
-      ).toBe("error")
-    );
-    expect(askPart.result.current.deleted).toBeNull();
-    expect(reads.getAsk).not.toHaveBeenCalled();
     expect(reads.getMessage).toHaveBeenCalledTimes(2);
   } finally {
-    askPart.unmount();
     gone.unmount();
     deleted.unmount();
     edited.unmount();

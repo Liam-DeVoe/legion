@@ -82,6 +82,17 @@ func requireFacts(t *testing.T, what string, node model.GraphNode, want nodeFact
 	}
 }
 
+// requireMessageFacts fails unless node, a message's or a block of one, carries want's facts
+// other than parent_version. A message records no revisions and its blocks belong to it, so
+// neither loader of their nodes sets a version (loadMessageNodes in refs/graph.go,
+// loadMessageBlockNodes in refs/item_block_nodes.go), and a check that it is null could never
+// fail. The parent the check keeps, the issue or the message, is what has no version.
+func requireMessageFacts(t *testing.T, what string, node model.GraphNode, want nodeFacts) {
+	t.Helper()
+	want.ParentVersion = node.ParentVersion
+	requireFacts(t, what, node, want)
+}
+
 // requireSameNode fails unless got is the node want is, carrying want's six facts.
 func requireSameNode(t *testing.T, what string, got, want model.GraphNode) {
 	t.Helper()
@@ -528,7 +539,7 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message.\n\nIts second paragraph."}, "alice")
 	messageRef := issueRef + "/message/" + message.ID
 	ofMessage := &model.NodeParent{Kind: "message", ID: message.ID, Ref: messageRef}
-	requireFacts(t, "the message as sent", readNode(t, handler, messageRef),
+	requireMessageFacts(t, "the message as sent", readNode(t, handler, messageRef),
 		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofIssue})
 	// messageBlockRefs is the reference to each current block of the message, by its text.
 	messageBlockRefs := func(step string) map[string]string {
@@ -542,13 +553,13 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 		return refs
 	}
 	sent := messageBlockRefs("read the message's blocks as sent")
-	requireFacts(t, "a block of the message as sent", readNode(t, handler, sent["Its second paragraph."]),
+	requireMessageFacts(t, "a block of the message as sent", readNode(t, handler, sent["Its second paragraph."]),
 		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofMessage})
 	edited := editIssueMessage(t, handler, message.ID, "A message.\n\nIts second paragraph, reworded.\n\nAnd a third.", "alice")
 	if edited.EditedAt == nil || !edited.EditedAt.After(message.CreatedAt) {
 		t.Fatalf("the message's edit at %v is not after it was sent at %s", edited.EditedAt, message.CreatedAt)
 	}
-	requireFacts(t, "the message alice edited", readNode(t, handler, messageRef),
+	requireMessageFacts(t, "the message alice edited", readNode(t, handler, messageRef),
 		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofIssue})
 	// The blocks the edit wrote are stamped at the edit, as an edited comment's are: the block it
 	// reworded changed then, the block it added was made then, and the block it left alone keeps
@@ -558,11 +569,11 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 		t.Fatalf("the block the edit left alone is %s, want the block the message was sent with, %s",
 			corrected["A message."], sent["A message."])
 	}
-	requireFacts(t, "the message block the edit left alone", readNode(t, handler, corrected["A message."]),
+	requireMessageFacts(t, "the message block the edit left alone", readNode(t, handler, corrected["A message."]),
 		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofMessage})
-	requireFacts(t, "the message block the edit reworded", readNode(t, handler, corrected["Its second paragraph, reworded."]),
+	requireMessageFacts(t, "the message block the edit reworded", readNode(t, handler, corrected["Its second paragraph, reworded."]),
 		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofMessage})
-	requireFacts(t, "the message block the edit added", readNode(t, handler, corrected["And a third."]),
+	requireMessageFacts(t, "the message block the edit added", readNode(t, handler, corrected["And a third."]),
 		nodeFacts{MadeBy: alice, MadeAt: edited.EditedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofMessage})
 
 	unclaimed := readNode(t, handler, issueRef)

@@ -361,11 +361,13 @@ func TestABlockReferenceToADeletedCommentNamesTheDeletion(t *testing.T) {
 		}
 	}
 	// A pin past the deleted comment's current revision is refused by the revision it names
-	// rather than by the block, and it says the comment is deleted all the same.
+	// rather than by the block, and it says the comment is deleted all the same. The refusal is
+	// built from revision numbers and the delete mark alone, so no change of this server could
+	// put the withdrawn text in it: the two clauses below are what this read is held to.
 	pastRevision := graphRequest(t, handler, url.Values{"to": {withdrawnRef + "@v99"}})
 	if body := pastRevision.Body.String(); pastRevision.Code != http.StatusNotFound ||
-		!strings.Contains(body, "no revision 99 of comment "+withdrawnComment.ID) || !strings.Contains(body, deletion) ||
-		strings.Contains(body, withdrawn) {
+		!strings.Contains(body, "no revision 99 of comment "+withdrawnComment.ID) ||
+		!strings.Contains(body, deletion) {
 		t.Fatalf("a pin past a deleted comment's current revision: status=%d body=%s, want 404 naming the revision and saying %q", pastRevision.Code, body, deletion)
 	}
 

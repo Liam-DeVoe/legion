@@ -137,8 +137,9 @@ test("the issue page and the document margin mark an edited message and a delete
       citingTurn.locator(`a[data-dispatch-ref="dispatch://${issue.key}/message/${message.id}"]`)
     ).toHaveText("Corrected: the export runs at 02:00 UTC. · edited");
 
-    // The margin draws the mark the server projects into the document, which carries the
-    // thread's text rather than the comment row: the delete has to clear that too.
+    // The margin card draws the comment row's own body, so this row holds two layers at once:
+    // the delete clears that body on the server, and the card draws the deleted line in place
+    // of whatever body it is given. It fails only when both are cut (dispatch://INFRA-1523).
     await openSpec(page, issue.key, spec);
     const card = marginCard(page, comment.id);
     await expect(deletedLine(card)).toHaveText(/^Deleted by alice · /);

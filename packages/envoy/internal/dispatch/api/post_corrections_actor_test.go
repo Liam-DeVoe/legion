@@ -78,7 +78,10 @@ func TestAPersonsOwnTokenCorrectsTheirOwnPostAndNobodyElses(t *testing.T) {
 			named.Code, named.Body.String())
 	}
 
-	deletedComment := agentRequest(t, handler, http.MethodDelete, "/api/v1/comments/"+comment.ID, map[string]any{}, token.Token)
+	// Each delete names the agent beside her through ?session=, which the person arm takes for
+	// her act (actingPerson): the token proves no session, so that parameter is the only place
+	// the act can take one from, and the mark must carry it.
+	deletedComment := agentRequest(t, handler, http.MethodDelete, "/api/v1/comments/"+comment.ID+"?session="+actingSession, map[string]any{}, token.Token)
 	if deletedComment.Code != http.StatusOK {
 		t.Fatalf("alice's token deletes her own comment: status=%d body=%s, want 200",
 			deletedComment.Code, deletedComment.Body.String())
@@ -89,7 +92,7 @@ func TestAPersonsOwnTokenCorrectsTheirOwnPostAndNobodyElses(t *testing.T) {
 	}
 	requireDeletedByAlicesToken(t, "comment", withdrawnComment.DeletedBy, token)
 
-	deletedMessage := agentRequest(t, handler, http.MethodDelete, "/api/v1/messages/"+message.ID, map[string]any{}, token.Token)
+	deletedMessage := agentRequest(t, handler, http.MethodDelete, "/api/v1/messages/"+message.ID+"?session="+actingSession, map[string]any{}, token.Token)
 	if deletedMessage.Code != http.StatusOK {
 		t.Fatalf("alice's token deletes her own message: status=%d body=%s, want 200",
 			deletedMessage.Code, deletedMessage.Body.String())
@@ -102,12 +105,13 @@ func TestAPersonsOwnTokenCorrectsTheirOwnPostAndNobodyElses(t *testing.T) {
 }
 
 // requireDeletedByAlicesToken fails t unless the delete was recorded as alice herself with the
-// token that made it named beside her, which is what actingPerson records of a person's own
-// credential and what tells this path apart from a session's own correction.
+// token that made it and the session the delete named beside her, which is what actingPerson
+// records of a person's own credential and what tells this path apart from a session's own
+// correction.
 func requireDeletedByAlicesToken(t *testing.T, kind string, deletedBy *model.Actor, token agentTokenResponse) {
 	t.Helper()
 	if deletedBy == nil || deletedBy.Kind != "user" || deletedBy.ID != "alice" {
 		t.Fatalf("the deleted %s was deleted by %#v, want alice herself", kind, deletedBy)
 	}
-	requireActingToken(t, "the deleted "+kind+"'s deleted_by", deletedBy.Act, "", token, model.ScopePerson)
+	requireActingToken(t, "the deleted "+kind+"'s deleted_by", deletedBy.Act, actingSession, token, model.ScopePerson)
 }

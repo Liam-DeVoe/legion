@@ -94,7 +94,11 @@ func TestTheFourCorrectionEventsCarryTheirBodiesAndTheirMarks(t *testing.T) {
 	}
 
 	// A delete carries the fields of the post's own create event except every body: they are
-	// what the outbox reads to compute its destinations.
+	// what the outbox reads to compute its destinations. These posts are short and the comment
+	// has no suggestion, so no event of either ever carried body_truncated or a suggestion, and
+	// the body is all there is to check here. The two tests below check body_truncated on a
+	// deleted post's events, and a suggestion on a deleted comment's, with posts whose events
+	// carried them while they stood.
 	commentDeleted := onePayloadOfType(t, handler, issue.Key, "comment.deleted")
 	requireNoBody(t, "comment.deleted", commentDeleted)
 	requirePayloadKeys(t, "comment.deleted", commentDeleted, "id", "issue_key", "author", "reply_to", "ask_id")
@@ -112,17 +116,20 @@ func TestTheFourCorrectionEventsCarryTheirBodiesAndTheirMarks(t *testing.T) {
 	requireDeletedMark(t, "message.deleted", messageDeleted, "alice")
 }
 
-// requireNoBody fails t when the payload gives any part of the post's body.
-func requireNoBody(t *testing.T, eventType string, payload map[string]any) {
+// requireNoBody fails t when the payload gives the post's body, or carries any of the keys named
+// in more, each of which gives part of the body too: body_truncated says the body was cut short,
+// and a comment's suggestion holds replacement text its author wrote. A caller names only the
+// keys its post's own events carried while the post stood: a key no event of the post ever
+// carried is absent whatever the read does, so a check of it could never fail.
+func requireNoBody(t *testing.T, eventType string, payload map[string]any, more ...string) {
 	t.Helper()
 	if body, present := payload["body"]; present && body != "" {
 		t.Fatalf("the %s payload body = %v, want no body at all", eventType, body)
 	}
-	if truncated, present := payload["body_truncated"]; present && truncated != false {
-		t.Fatalf("the %s payload says body_truncated = %v, which names a body it must not carry", eventType, truncated)
-	}
-	if suggestion := payload["suggestion"]; suggestion != nil {
-		t.Fatalf("the %s payload carries the suggestion %v, which is the comment's text too", eventType, suggestion)
+	for _, key := range more {
+		if value, present := payload[key]; present && value != nil && value != false {
+			t.Fatalf("the %s payload carries %s = %v, which gives part of the body it must not carry", eventType, key, value)
+		}
 	}
 }
 
@@ -199,7 +206,7 @@ func TestEveryEventOfADeletedCommentGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 	frozen := 0
 	for _, event := range decodedIssueEvents(t, handler, issue.Key) {
 		if event.Payload["id"] == comment.ID {
-			requireNoBody(t, event.Type, event.Payload)
+			requireNoBody(t, event.Type, event.Payload, "body_truncated", "suggestion")
 			requireDeletedMark(t, event.Type, event.Payload, "alice")
 			continue
 		}
@@ -222,22 +229,41 @@ func TestEveryEventOfADeletedCommentGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 
 // The message twin: every event of a deleted message reads with the mark and no body, and the
 // reply_body a reply's own event froze stays.
+//
+// The message's body is too long for one event, so while it stands its creation carries a body
+// and body_truncated. A message has no suggestion, so those two are every key of its events that
+// gives the body. The test reads both before the delete, so each check after it can fail.
 func TestEveryEventOfADeletedMessageGivesNoBodyAndKeepsTheReplysFrozenPreview(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A deleted message's events", "A spec")
 	const phrase = "the withdrawn message no reader may meet again"
-	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": phrase}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": phrase + "\n\n" + paragraphBody(3, 15_000)}, "alice")
 	editIssueMessage(t, handler, message.ID, phrase+", corrected once", "alice")
 	reply := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "the reply that quotes it", "in_reply_to": message.ID,
 	}, "bob")
+	carried := map[string]bool{}
+	for _, event := range decodedIssueEvents(t, handler, issue.Key) {
+		if event.Payload["id"] != message.ID {
+			continue
+		}
+		if body, _ := event.Payload["body"].(string); body != "" {
+			carried["body"] = true
+		}
+		if event.Payload["body_truncated"] == true {
+			carried["body_truncated"] = true
+		}
+	}
+	if !carried["body"] || !carried["body_truncated"] {
+		t.Fatalf("the standing message's events carry %v, want a body and body_truncated", carried)
+	}
 
 	deleteIssueMessage(t, handler, message.ID, "alice")
 
 	frozen := 0
 	for _, event := range decodedIssueEvents(t, handler, issue.Key) {
 		if event.Payload["id"] == message.ID {
-			requireNoBody(t, event.Type, event.Payload)
+			requireNoBody(t, event.Type, event.Payload, "body_truncated")
 			requireDeletedMark(t, event.Type, event.Payload, "alice")
 			continue
 		}

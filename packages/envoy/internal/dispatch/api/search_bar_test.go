@@ -662,11 +662,11 @@ func TestSearchMeaningHitOfADeletedPostCarriesItsDeleteMark(t *testing.T) {
 		}
 	}
 
+	// The keyword leg alone finds none of the four posts, so each hit below, the two standing
+	// posts' among them, is the meaning leg's: a search that fell back to keywords alone, the one
+	// that answers Degraded, would find none of them.
 	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	page := searchResponse(t, handler, "q=wibbleflorp")
-	if page.Degraded != "" {
-		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", page.Degraded)
-	}
 	for _, want := range []struct {
 		kind, id string
 		at       *time.Time
@@ -783,17 +783,18 @@ func TestDeleteDropsThePostsWindowsBeforeAnyTick(t *testing.T) {
 				post.ownerKey, windows)
 		}
 	}
+	// The keyword leg alone finds none of the four posts (requireNoKeywordHit above), so the
+	// standing posts found here are the meaning leg's: this search reached that leg, where a
+	// search that fell back to keywords alone, the one that answers Degraded, would miss the
+	// deleted posts whatever became of their windows.
 	after := searchResponse(t, handler, "q=wibbleflorp")
-	if after.Degraded != "" {
-		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", after.Degraded)
+	for _, post := range kept {
+		searchHit(t, after, post.kind, post.id)
 	}
 	for _, post := range deleted {
 		if hit := searchResultOf(after, post.kind, post.id); hit != nil {
 			t.Fatalf("the meaning arm still returns the deleted %s %s after its delete: %#v", post.kind, post.id, hit)
 		}
-	}
-	for _, post := range kept {
-		searchHit(t, after, post.kind, post.id)
 	}
 }
 

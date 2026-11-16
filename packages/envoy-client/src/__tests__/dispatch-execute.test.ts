@@ -16711,6 +16711,11 @@ for (const [tool, args, named] of [
 // A reference names the post's issue as well, and the same `not found` comes back for a post
 // that is gone and for an issue that was never there. So the refusal of a reference says which
 // of the two Dispatch does not hold, reading the issue once on this failing path.
+//
+// The fixture answers every write as a server without the route does, so a command that went on
+// to the write after the read's `not found` would say that the server predates post corrections.
+// The row that says the refusal does not say it can fail on its own fixture, and the row after
+// it is the same fixture with the read of the post answered, which does say it.
 for (const [name, tool, args, issueKey, issueStands, named] of [
   [
     "a comment of an issue that stands",
@@ -16740,54 +16745,43 @@ for (const [name, tool, args, issueKey, issueStands, named] of [
     "this Dispatch holds no issue NOPE-9",
   ],
 ] as const) {
-  test(`${tool} names what it could not find for ${name}`, async () => {
-    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+  /** A Dispatch where the read of an issue answers CORE-1 where `issueStands` and Dispatch's own
+   *  `not found` where not, and the read of the post answers `postRead`: the post on `issueKey`,
+   *  or Dispatch's own `not found`. Every other request, the write among them, gets the router's
+   *  no-route 404. */
+  const postFixture =
+    (postRead: "served" | "not found") =>
+    async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const post = "11111111-2222-4333-8444-555555555555";
+      const method = init?.method ?? "GET";
       const { pathname } = new URL(String(url));
-      if (/^\/api\/v1\/issues\/[^/]+$/.test(pathname)) {
+      if (method === "GET" && /^\/api\/v1\/issues\/[^/]+$/.test(pathname)) {
         return issueStands
           ? response({ issue: { key: "CORE-1", title: "An issue", status: "todo" } })
           : response({ code: "NOT_FOUND", error: "not found" }, 404);
       }
-      return response({ code: "NOT_FOUND", error: "not found" }, 404);
+      const comment = pathname === `/api/v1/comments/${post}`;
+      if (method === "GET" && (comment || pathname === `/api/v1/messages/${post}`)) {
+        if (postRead === "not found") {
+          return response({ code: "NOT_FOUND", error: "not found" }, 404);
+        }
+        return comment
+          ? response({ comment: commentRow({ id: post, issue_key: issueKey }), replies: [] })
+          : response({ message: messageRow({ id: post, issue_key: issueKey }), replies: [] });
+      }
+      return response({ code: "NOT_FOUND", error: `no route for ${method} ${pathname}` }, 404);
     };
-    const error: unknown = await executeDispatchTool({
-      tool,
-      args,
-      cwd: "/workspace",
-      host: "omp",
-      sessionId: "session-42",
-      config,
-      env: {},
-      exec: repoExec("owner/repo"),
-      sleep: async () => {},
-      fetchImpl: fetchImpl as typeof fetch,
-    }).then(
-      () => undefined,
-      (caught: unknown) => caught
-    );
+
+  test(`${tool} names what it could not find for ${name}`, async () => {
+    const error = await runWithFixture(tool, args, postFixture("not found"));
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain(named);
     expect((error as Error).message).not.toContain("predates post corrections");
   });
 
-  // The positive control of the row above: the same reference, where Dispatch answers the read
-  // of the post on that issue and answers the write as a server without the route does, says the
-  // sentence that row says is absent.
   test(`${tool} for ${name}, answered no route for the write, says the server predates post corrections`, async () => {
-    const post = "11111111-2222-4333-8444-555555555555";
-    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const method = init?.method ?? "GET";
-      const { pathname } = new URL(String(url));
-      if (method === "GET" && pathname === `/api/v1/comments/${post}`) {
-        return response({ comment: commentRow({ id: post, issue_key: issueKey }), replies: [] });
-      }
-      if (method === "GET" && pathname === `/api/v1/messages/${post}`) {
-        return response({ message: messageRow({ id: post, issue_key: issueKey }), replies: [] });
-      }
-      return response({ code: "NOT_FOUND", error: `no route for ${method} ${pathname}` }, 404);
-    };
-    const error = await runWithFixture(tool, args, fetchImpl);
+    const error = await runWithFixture(tool, args, postFixture("served"));
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("predates post corrections");
