@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -117,4 +118,70 @@ func awaitArmed(t *testing.T, clk *clocktest.Fake, what string, matches func(tim
 // fake stood at when the code was started and the bound's length.
 func armedAt(want time.Time) func(time.Time) bool {
 	return func(deadline time.Time) bool { return deadline.Equal(want) }
+}
+
+// awaitArmedBeforeReturn waits until clk's pending deadlines are the ones the test is about
+// (ready), as awaitArmed and clocktest's AwaitArmed do, unless the code that is to arm them has
+// returned first, which returned reports along with what it returned. Code that has returned arms
+// nothing more, so a wait for its timers alone would end only at the test binary's deadline, and
+// take every later row of the binary with it; a return first fails the test at once, naming what
+// the code returned. The deadlines are read before the return, so code that armed them and is
+// waiting on them is never taken for code that returned.
+func awaitArmedBeforeReturn(t *testing.T, clk *clocktest.Fake, what string, ready func([]time.Time) bool, returned func() (string, bool)) []time.Time {
+	t.Helper()
+	var outcome string
+	var first bool
+	armed := testwait.Until(t, what+", or the return of the code that arms it", func() ([]time.Time, bool) {
+		armed := clk.Armed()
+		if ready(armed) {
+			return armed, true
+		}
+		outcome, first = returned()
+		return armed, first
+	})
+	if first {
+		t.Fatalf("the code returned before it armed %s: %s", what, outcome)
+	}
+	return armed
+}
+
+// timersArmed is ready once at least n deadlines are pending, what clocktest's AwaitArmed waits for.
+func timersArmed(n int) func([]time.Time) bool {
+	return func(armed []time.Time) bool { return len(armed) >= n }
+}
+
+// deadlineArmed is ready once a pending deadline matches, what awaitArmed waits for.
+func deadlineArmed(matches func(time.Time) bool) func([]time.Time) bool {
+	return func(armed []time.Time) bool { return slices.ContainsFunc(armed, matches) }
+}
+
+// answerReturned reports a route's return once its answer is in answers, which holds one, with the
+// answer's status and body. It takes the answer, since the test fails on it.
+func answerReturned(answers <-chan *httptest.ResponseRecorder) func() (string, bool) {
+	return func() (string, bool) {
+		select {
+		case recorder := <-answers:
+			return fmt.Sprintf("it answered %d: %s", recorder.Code, recorder.Body.String()), true
+		default:
+			return "", false
+		}
+	}
+}
+
+// closeReturned reports the code's return once done is closed, with what describe reads of what it
+// returned then.
+func closeReturned(done <-chan struct{}, describe func() string) func() (string, bool) {
+	return func() (string, bool) {
+		select {
+		case <-done:
+			return describe(), true
+		default:
+			return "", false
+		}
+	}
+}
+
+// recorderAnswer is what describe reads of a route that wrote its answer into recorder.
+func recorderAnswer(recorder *httptest.ResponseRecorder) func() string {
+	return func() string { return fmt.Sprintf("it answered %d: %s", recorder.Code, recorder.Body.String()) }
 }

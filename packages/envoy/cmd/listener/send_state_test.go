@@ -461,10 +461,10 @@ func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
 	_, standing := pastBudget()
 	answered := rig.sendInBackground(t, quiet, nil)
 	msg := testwait.Receive(t, "the silent subscriber to hear the send's probe", heard)
-	testwait.Until(t, "the probe's second, and RequestCore's own bound past the send's budget, to be armed on the fake", func() ([]time.Time, bool) {
-		armed, past := pastBudget()
-		return armed, slices.ContainsFunc(armed, probeEnds.Equal) && past > standing
-	})
+	awaitArmedBeforeReturn(t, fake, "the probe's second, and RequestCore's own bound past the send's budget, to be armed on the fake", func(armed []time.Time) bool {
+		_, past := pastBudget()
+		return slices.ContainsFunc(armed, probeEnds.Equal) && past > standing
+	}, answerReturned(answered))
 	select {
 	case recorder := <-answered:
 		t.Fatalf("the send answered %s while the probe's second was still to run", recorder.Body.String())

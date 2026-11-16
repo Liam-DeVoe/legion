@@ -110,7 +110,7 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 					})))
 				close(answered)
 			}()
-			awaitArmed(t, held, "the publish route's budget for its read of the stalled role bucket", armedAt(stoodStill.Add(sendRequestBudget)))
+			awaitArmedBeforeReturn(t, held, "the publish route's budget for its read of the stalled role bucket", deadlineArmed(armedAt(stoodStill.Add(sendRequestBudget))), closeReturned(answered, recorderAnswer(recorder)))
 			select {
 			case <-answered:
 				t.Fatalf("the route answered %d before its budget was spent: %s", recorder.Code, recorder.Body.String())
@@ -185,7 +185,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 				roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 				close(answered)
 			}()
-			awaitArmed(t, held, "the lookup route's budget for its read of the stalled role bucket", armedAt(stoodStill.Add(sendRequestBudget)))
+			awaitArmedBeforeReturn(t, held, "the lookup route's budget for its read of the stalled role bucket", deadlineArmed(armedAt(stoodStill.Add(sendRequestBudget))), closeReturned(answered, recorderAnswer(recorder)))
 			select {
 			case <-answered:
 				t.Fatalf("the lookup answered %d before its budget was spent: %s", recorder.Code, recorder.Body.String())

@@ -121,7 +121,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		t.Helper()
 		at := frozen.Now()
 		answers := serving(handler, path)
-		awaitArmed(t, frozen, "the budget "+path+" gives its read of the silent bus", armedAt(at.Add(sendRequestBudget)))
+		awaitArmedBeforeReturn(t, frozen, "the budget "+path+" gives its read of the silent bus", deadlineArmed(armedAt(at.Add(sendRequestBudget))), answerReturned(answers))
 		select {
 		case recorder := <-answers:
 			t.Fatalf("%s answered %d before its own budget was spent: %s", path, recorder.Code, recorder.Body.String())

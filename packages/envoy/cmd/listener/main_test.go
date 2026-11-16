@@ -516,23 +516,17 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 		response <- recorder
 	}()
 
-	select {
-	case <-published:
-		if armed := clock.AwaitArmed(t, "the publish's acknowledgement deadline", 1); armed[0].After(start.Add(5 * time.Second)) {
-			t.Fatalf("publish acknowledgement deadline %s is past 5s", armed[0].Sub(start))
-		}
-		clock.Advance(5 * time.Second)
-	case <-t.Context().Done():
-		t.Fatal("publish did not reach the acknowledgement wait")
+	// A route that answered before it armed its acknowledgement deadline fails here naming its
+	// answer, rather than leaving the wait for a deadline nothing will arm.
+	armed := awaitArmedBeforeReturn(t, clock, "the publish's acknowledgement deadline", timersArmed(1), answerReturned(response))
+	if armed[0].After(start.Add(5 * time.Second)) {
+		t.Fatalf("publish acknowledgement deadline %s is past 5s", armed[0].Sub(start))
 	}
-
-	select {
-	case recorder := <-response:
-		if recorder.Code != http.StatusOK && recorder.Code < http.StatusInternalServerError {
-			t.Fatalf("publish status = %d, want 200 or 5xx", recorder.Code)
-		}
-	case <-t.Context().Done():
-		t.Fatal("publish handler did not return when its acknowledgement deadline expired")
+	testwait.Receive(t, "the publish to reach the core subscriber holding its subject, which sends no acknowledgement", published)
+	clock.Advance(5 * time.Second)
+	recorder := testwait.Receive(t, "the publish route's answer once its acknowledgement deadline was spent", response)
+	if recorder.Code != http.StatusOK && recorder.Code < http.StatusInternalServerError {
+		t.Fatalf("publish status = %d, want 200 or 5xx", recorder.Code)
 	}
 }
 
@@ -2572,10 +2566,29 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 	return old, holder
 }
 
-// bindOutcome is what a bindListenerDurable run in a goroutine returned.
+// bindOutcome is what a bindListenerDurable run in a goroutine returned. The bind rows below run
+// the bind's interval and deadline on clocktest.New, which stands still until the test moves it,
+// and not on clocktest.Held, whose Now reads the machine's clock too: the bind measures what it
+// has waited as clk.Now() less its start, so on Held the machine's time spent in its attempts
+// counts against the deadline, and a loaded machine spends a 200 ms deadline before the test's
+// own moves do, so the bind gives up before it arms the wait the test expects next.
 type bindOutcome struct {
 	bind durableBind
 	err  error
+}
+
+// bindReturned reports the bind's return once outcomes, which holds one, has it, with what it
+// returned: for awaitArmedBeforeReturn, so a bind that bound, was refused or gave up before it armed
+// the wait a test expects fails naming that outcome.
+func bindReturned(outcomes chan bindOutcome) func() (string, bool) {
+	return func() (string, bool) {
+		select {
+		case outcome := <-outcomes:
+			return fmt.Sprintf("the bind returned after %d attempts in %s: %v", outcome.bind.attempts, outcome.bind.waited, outcome.err), true
+		default:
+			return "", false
+		}
+	}
 }
 
 // The replacement polls the durable while the old task holds it, so it binds within one interval of
@@ -2592,7 +2605,7 @@ func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
 	}
 	t.Cleanup(replacement.Close)
 
-	now := clocktest.Held()
+	now := clocktest.New(time.Now())
 	done := make(chan bindOutcome, 1)
 	go func() {
 		bind, err := bindListenerDurable(context.Background(), now, replacement, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
@@ -2602,9 +2615,9 @@ func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
 	// Two refused attempts while the old task holds the durable. Between them the bind waits on
 	// the fake, so it cannot return without this test moving it: the state read below is the
 	// proof that it did not return while the durable was held.
-	now.AwaitArmed(t, "the bind's first retry interval while the old task holds the durable", 1)
+	awaitArmedBeforeReturn(t, now, "the bind's first retry interval while the old task holds the durable", timersArmed(1), bindReturned(done))
 	now.Advance(50 * time.Millisecond)
-	now.AwaitArmed(t, "the bind's second retry interval while the old task holds the durable", 1)
+	awaitArmedBeforeReturn(t, now, "the bind's second retry interval while the old task holds the durable", timersArmed(1), bindReturned(done))
 	select {
 	case outcome := <-done:
 		t.Fatalf("the replacement returned while the old task held the durable: %+v", outcome)
@@ -2643,18 +2656,19 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 	}
 	t.Cleanup(replacement.Close)
 
-	// The bind's interval and deadline run on a fake clock this test moves, so the give-up comes
-	// of the deadline being spent rather than of the machine's clock reaching it: four waits of
-	// the interval spend the 200 ms deadline, and the fifth attempt is the one that gives up.
-	now := clocktest.Held()
+	// The bind's interval and deadline run on a fake clock this test moves, and which stands still
+	// otherwise (bindOutcome), so the give-up comes of the deadline being spent rather than of the
+	// machine's clock reaching it: four waits of the interval spend the 200 ms deadline, and the
+	// fifth attempt is the one that gives up.
+	now := clocktest.New(time.Now())
 	outcomes := make(chan bindOutcome, 1)
 	go func() {
 		bind, err := bindListenerDurable(context.Background(), now, replacement, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
 			logging.NewWithWriter("test", io.Discard), 50*time.Millisecond, 200*time.Millisecond)
 		outcomes <- bindOutcome{bind: bind, err: err}
 	}()
-	for range 4 {
-		now.AwaitArmed(t, "the bind's next retry interval", 1)
+	for wait := 1; wait <= 4; wait++ {
+		awaitArmedBeforeReturn(t, now, fmt.Sprintf("the bind's retry interval %d of the 4 its 200 ms deadline holds", wait), timersArmed(1), bindReturned(outcomes))
 		now.Advance(50 * time.Millisecond)
 	}
 	outcome := testwait.Receive(t, "the bind to give up once its deadline was spent", outcomes)
@@ -2667,6 +2681,9 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 	}
 	if bind.attempts != 5 {
 		t.Fatalf("the bind made %d attempts over its 200 ms deadline at a 50 ms interval, want the 5 that deadline holds", bind.attempts)
+	}
+	if bind.waited != 200*time.Millisecond {
+		t.Fatalf("the bind gave up having waited %s on its clock, want its 200 ms deadline: four moves of its 50 ms interval", bind.waited)
 	}
 	if !holder.IsValid() {
 		t.Fatal("the old task's subscription is gone")
@@ -2696,14 +2713,14 @@ func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	now := clocktest.Held()
+	now := clocktest.New(time.Now())
 	done := make(chan bindOutcome, 1)
 	go func() {
 		bind, err := bindListenerDurable(ctx, now, replacement, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
 			logging.NewWithWriter("test", io.Discard), 2*time.Second, 10*time.Second)
 		done <- bindOutcome{bind: bind, err: err}
 	}()
-	now.AwaitArmed(t, "the bind's wait for its next attempt", 1)
+	awaitArmedBeforeReturn(t, now, "the bind's wait for its next attempt", timersArmed(1), bindReturned(done))
 	cancel()
 	outcome := testwait.Receive(t, "the bind to return once the context ended", done)
 	if !errors.Is(outcome.err, context.Canceled) {

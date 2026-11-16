@@ -340,7 +340,7 @@ func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
 		recorder, _ := publishThrough(deps, `{"topic":"`+contracts.RoleTopicPrefix+role+`","message":"through a frozen hub"}`)
 		answers <- recorder
 	}()
-	now.AwaitArmed(t, "the publish route's own bound on its reads of the frozen hub", 1)
+	awaitArmedBeforeReturn(t, now, "the publish route's own bound on its reads of the frozen hub", timersArmed(1), answerReturned(answers))
 	select {
 	case recorder := <-answers:
 		t.Fatalf("the route answered %d before its budget was spent: %s", recorder.Code, recorder.Body.String())

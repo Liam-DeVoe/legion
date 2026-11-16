@@ -82,9 +82,10 @@ func (rig *writeRouteRig) serve(method, path, body string) *httptest.ResponseRec
 
 // serveFrozen runs the request against the silent bus and gives its answer. The route must bound
 // its bus work with a budget of its own, armed on rig.clock: a route that left the call to
-// nats.go's own 10 s MaxWait arms nothing here and AwaitArmed fails naming the bound. The answer
-// must not come before the move, and must come once the fake has passed sendRequestBudget, so
-// what ends the request is the route's budget and not the machine's clock.
+// nats.go's own 10 s MaxWait arms nothing here, and the wait for its bound fails naming the bound,
+// or the answer the route gave without arming it. The answer must not come before the move, and
+// must come once the fake has passed sendRequestBudget, so what ends the request is the route's
+// budget and not the machine's clock.
 func (rig *writeRouteRig) serveFrozen(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	answers := make(chan *httptest.ResponseRecorder, 1)
@@ -93,7 +94,7 @@ func (rig *writeRouteRig) serveFrozen(t *testing.T, method, path, body string) *
 		rig.mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
 		answers <- recorder
 	}()
-	rig.clock.AwaitArmed(t, method+" "+path+"'s own bound on its work against the silent bus", 1)
+	awaitArmedBeforeReturn(t, rig.clock, method+" "+path+"'s own bound on its work against the silent bus", timersArmed(1), answerReturned(answers))
 	select {
 	case recorder := <-answers:
 		t.Fatalf("%s %s answered %d before its budget was spent: %s", method, path, recorder.Code, recorder.Body.String())

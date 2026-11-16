@@ -160,7 +160,7 @@ func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 		{"check_run", checkRun},
 	} {
 		recorder, done := serveDeliveryOnGoroutine(handler, githubDelivery(delivery.event, "delivery-frozen-"+delivery.event, delivery.body))
-		recordClock.AwaitArmed(t, "a "+delivery.event+" delivery's CI record wait on the frozen bus", 1)
+		awaitArmedBeforeReturn(t, recordClock, "a "+delivery.event+" delivery's CI record wait on the frozen bus", timersArmed(1), closeReturned(done, recorderAnswer(recorder)))
 		recordClock.Advance(cistore.RecordWait)
 		testwait.Receive(t, "a "+delivery.event+" delivery's answer once the record wait was spent", done)
 		wantDeliveryFailed(t, "a "+delivery.event+" delivery", recorder)
@@ -216,7 +216,7 @@ func TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait(t *testing.T)
 	frozen.freeze(t)
 	t.Run("slack", func(t *testing.T) {
 		recorder, done := serveDeliveryOnGoroutine(slack, slackDelivery(slackEvent("Ev_frozen")))
-		armed := slackClock.AwaitArmed(t, "the Slack route's own answer budget on the frozen bus", 1)
+		armed := awaitArmedBeforeReturn(t, slackClock, "the Slack route's own answer budget on the frozen bus", timersArmed(1), closeReturned(done, recorderAnswer(recorder)))
 		if d := armed[0].Sub(slackClock.Now()); d > slackWithin {
 			t.Fatalf("the Slack route's answer budget is %s out, past the %s Slack waits before it takes an event as failed", d, slackWithin)
 		}
@@ -239,10 +239,10 @@ func TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait(t *testing.T)
 			_, before := publishBounds()
 			ctx, cancel := context.WithCancel(context.Background())
 			recorder, done := serveDeliveryOnGoroutine(route.handler, route.req.WithContext(ctx))
-			testwait.Until(t, route.name+"'s publish to arm its bound on the frozen bus, "+bus.PublishBound.String()+" out", func() ([]time.Time, bool) {
-				armed, at := publishBounds()
-				return armed, at > before
-			})
+			awaitArmedBeforeReturn(t, busClock, route.name+"'s publish to arm its bound on the frozen bus, "+bus.PublishBound.String()+" out", func([]time.Time) bool {
+				_, at := publishBounds()
+				return at > before
+			}, closeReturned(done, recorderAnswer(recorder)))
 			cancel()
 			testwait.Receive(t, route.name+"'s answer once its caller gave up", done)
 			wantDeliveryFailed(t, route.name, recorder)

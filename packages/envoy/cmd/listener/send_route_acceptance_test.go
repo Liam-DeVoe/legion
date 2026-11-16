@@ -65,9 +65,10 @@ func serveRecorded(t *testing.T, build func(*logging.Logger) http.HandlerFunc, r
 
 // serveRecordedOnGoroutine serves request on a goroutine, so a test may drive a fake clock while
 // the handler is in flight, and returns a finish func the test calls to wait for the answer and
-// read it with its one record line. The log is parsed by finish, on the test's own goroutine, so
-// a request that writes other than one line still fails from there.
-func serveRecordedOnGoroutine(t *testing.T, build func(*logging.Logger) http.HandlerFunc, request *http.Request) func() (*httptest.ResponseRecorder, map[string]any) {
+// read it with its one record line, and the handler's return as awaitArmedBeforeReturn reads it.
+// The log is parsed by finish, on the test's own goroutine, so a request that writes other than
+// one line still fails from there.
+func serveRecordedOnGoroutine(t *testing.T, build func(*logging.Logger) http.HandlerFunc, request *http.Request) (func() (*httptest.ResponseRecorder, map[string]any), func() (string, bool)) {
 	t.Helper()
 	logs := &cmdtest.LockedBuffer{}
 	recorder := httptest.NewRecorder()
@@ -76,7 +77,7 @@ func serveRecordedOnGoroutine(t *testing.T, build func(*logging.Logger) http.Han
 		defer close(done)
 		build(logging.NewWithWriter("test", logs)).ServeHTTP(recorder, request)
 	}()
-	return func() (*httptest.ResponseRecorder, map[string]any) {
+	finish := func() (*httptest.ResponseRecorder, map[string]any) {
 		t.Helper()
 		testwait.Receive(t, "the handler's answer once the test moved its clock", done)
 		written := strings.TrimSpace(logs.String())
@@ -90,6 +91,7 @@ func serveRecordedOnGoroutine(t *testing.T, build func(*logging.Logger) http.Han
 		}
 		return recorder, record
 	}
+	return finish, closeReturned(done, recorderAnswer(recorder))
 }
 
 // assertRecordFields compares the named fields of one record line, field by field, as the
@@ -236,7 +238,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	// calls to the down bus to nats.go's own timeout would arm nothing here.
 	answers := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answers <- send() }()
-	now.AwaitArmed(t, "the send's own budget on its calls to the unreachable bus", 1)
+	awaitArmedBeforeReturn(t, now, "the send's own budget on its calls to the unreachable bus", timersArmed(1), answerReturned(answers))
 	now.Advance(sendRequestBudget)
 	recorder := testwait.Receive(t, "the send's answer once its budget was spent", answers)
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -337,7 +339,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			relay.arm("\r\n", 1)
 			answers := make(chan *httptest.ResponseRecorder, 1)
 			go func() { answers <- serve() }()
-			now.AwaitArmed(t, "the "+route.name+"'s own budget on its calls to the frozen bus", 1)
+			awaitArmedBeforeReturn(t, now, "the "+route.name+"'s own budget on its calls to the frozen bus", timersArmed(1), answerReturned(answers))
 			now.Advance(sendRequestBudget)
 			recorder := testwait.Receive(t, "the "+route.name+"'s answer once its budget was spent", answers)
 			if recorder.Code != http.StatusServiceUnavailable {
@@ -436,7 +438,14 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 		// read would still be waiting when it is received below. A stamp whose every row is cached
 		// (cached) arms nothing the test must move and answers with the clock held where it is.
 		if want.windows > 0 {
-			now.AwaitArmed(t, "the stamp of "+want.sender+"'s one read window on the frozen bus", 1)
+			awaitArmedBeforeReturn(t, now, "the stamp of "+want.sender+"'s one read window on the frozen bus", timersArmed(1), func() (string, bool) {
+				select {
+				case stamp := <-stamps:
+					return fmt.Sprintf("the stamp returned %+v", stamp), true
+				default:
+					return "", false
+				}
+			})
 			now.Advance(senderStampReadTimeout)
 		}
 		stamp := testwait.Receive(t, "the stamp of "+want.sender, stamps)
@@ -812,10 +821,10 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	// The read's own bound (sendSessionReadTimeout) is what ends this request, a fraction of the
 	// whole send budget: both run on the fake clock, so the 503 comes when this test moves the
 	// clock past that read window and not past the budget. A handler that waited the bucket out
-	// would arm no window of its own shorter than the budget, so AwaitArmed below would never see
+	// would arm no window of its own shorter than the budget, so the wait below would never see
 	// the two deadlines, and advancing one window would not answer it.
-	finish := serveRecordedOnGoroutine(t, build, request())
-	now.AwaitArmed(t, "the send's own budget and the shorter window of its target read", 2)
+	finish, returned := serveRecordedOnGoroutine(t, build, request())
+	awaitArmedBeforeReturn(t, now, "the send's own budget and the shorter window of its target read", timersArmed(2), returned)
 	now.Advance(sendSessionReadTimeout)
 	unanswered, unansweredRecord := finish()
 	if unanswered.Code != http.StatusServiceUnavailable {

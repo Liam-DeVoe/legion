@@ -1130,7 +1130,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 			serve(recorder)
 			recorders <- recorder
 		}()
-		now.AwaitArmed(t, what+"'s own bound on the stalled session read", 1)
+		awaitArmedBeforeReturn(t, now, what+"'s own bound on the stalled session read", timersArmed(1), answerReturned(recorders))
 		select {
 		case recorder := <-recorders:
 			t.Fatalf("%s answered %d before its bound was spent: %s", what, recorder.Code, recorder.Body.String())
@@ -1221,7 +1221,9 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 			defer close(delivered)
 			coreNATSDeliveryHandler(cfg)(&nats.Msg{Data: marshalListenerEnvelope(t, item)})
 		}()
-		now.AwaitArmed(t, "the role delivery's own bound on the stalled session read", 1)
+		awaitArmedBeforeReturn(t, now, "the role delivery's own bound on the stalled session read", timersArmed(1), closeReturned(delivered, func() string {
+			return fmt.Sprintf("the delivery returned having forwarded %d times", forwards.Load())
+		}))
 		now.Advance(roleHolderReadTimeout)
 		testwait.Receive(t, "the role delivery to give up once its bound was spent", delivered)
 		cfg.roleForwards.settled(t)
@@ -1846,7 +1848,7 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 				strings.NewReader(`{"session_id":"ses_claimant","role":"unread-predecessor","soft":true,"previous_session_id":"ses_pred"}`)))
 			recorders <- recorder
 		}()
-		now.AwaitArmed(t, "the soft claim's own bound on the stalled predecessor read", 1)
+		awaitArmedBeforeReturn(t, now, "the soft claim's own bound on the stalled predecessor read", timersArmed(1), answerReturned(recorders))
 		select {
 		case recorder := <-recorders:
 			t.Fatalf("the soft claim answered %d before its bound was spent: %s", recorder.Code, recorder.Body.String())
@@ -4064,7 +4066,7 @@ func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer
 	// is spent rather than when the machine's clock reaches it.
 	answers := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answers <- sessionEntryRoute(t, observer, "ses_unread") }()
-	now.AwaitArmed(t, "the registry route's own bound on the stalled session read", 1)
+	awaitArmedBeforeReturn(t, now, "the registry route's own bound on the stalled session read", timersArmed(1), answerReturned(answers))
 	select {
 	case answer := <-answers:
 		t.Fatalf("GET /v1/registry/ses_unread answered %d before its bound was spent: %s", answer.Code, answer.Body.String())
