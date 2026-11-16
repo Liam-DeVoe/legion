@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { DispatchEvent, IssueDetails, MessageRead } from "../../api/types";
+import { dateKey } from "../activity/activity-model";
 import { IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { CONTROL_LABELS } from "./page-words";
@@ -296,6 +297,60 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
       expect(writer?.reply).toMatchObject({ id: "m-turn", parentKind: "message" })
     );
     expect(writer?.editing).toBeUndefined();
+  } finally {
+    unmount?.();
+    getIssueEvents.mockRestore();
+    listComments.mockRestore();
+    listIssueMessages.mockRestore();
+    listIssueAsks.mockRestore();
+  }
+});
+
+// R4 of dispatch://INFRA-3948: the address of a turn in a day before today opens that day with
+// the turn marked, and the day's line is then the reader's like any other: a press on it closes
+// the day the address opened (review 4581663780).
+test("a day the address opened closes when the reader presses its line", async () => {
+  const earlier = agentMessage("m-earlier", 2 * 24 * 60 * 60);
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([claim(1)]);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([earlier]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+  const dayLine = () =>
+    document.querySelector<HTMLElement>(
+      `[data-history-day="${dateKey(earlier.message.created_at)}"] > button`
+    );
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <IssueHistory
+            activityAddress={undefined}
+            issue={issue}
+            item="m-earlier"
+            state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+            visitMark={99}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    ).unmount;
+    await waitFor(() => expect(dayLine()?.getAttribute("aria-expanded")).toBe("true"));
+    expect(
+      document.querySelector('[data-history-item="m-earlier"]')?.getAttribute("aria-current")
+    ).toBe("true");
+
+    const line = dayLine();
+    if (line === null) throw new Error("the earlier day draws no line");
+    await userEvent.click(line);
+
+    expect(dayLine()?.getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelector('[data-history-item="m-earlier"]')).toBeNull();
   } finally {
     unmount?.();
     getIssueEvents.mockRestore();

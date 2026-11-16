@@ -333,3 +333,46 @@ test("a delivery and a resolution of an agents' thread are lines of the history"
   ).flatMap((entry) => (entry.kind === "event" ? [entry.event.type] : []));
   expect(lines).toEqual(["comment.resolved", "comment.delivery"]);
 });
+
+// A delivery's line names where it went by the attempt's target, an address - `session:<id>`, or
+// `role:<token>` for a role a session held - which no reader names an agent by: the history
+// draws the agent it went to as the page names an agent (`AgentName`), from the session the
+// attempt reached, else the one its target names (dispatch://INFRA-3948 D6).
+test("a delivery of an agents' thread names its agent, never its address", () => {
+  seq = 0;
+  const among = comment("among", "2026-11-15T09:00:00Z", AGENT);
+  const delivery = (at: string, target: string, sessionId: string | null) =>
+    event("comment.delivery", at, {
+      attempt: 1,
+      comment_id: "among",
+      delivery: "btw",
+      duplicate: false,
+      reply_id: null,
+      session_id: sessionId,
+      state: "sent",
+      target,
+    });
+  const events = [
+    event("comment.created", "2026-11-15T09:00:00Z", { id: "among" }),
+    delivery("2026-11-15T09:01:00Z", "session:reviewer", null),
+    delivery("2026-11-15T09:02:00Z", "role:legion-p-core-1-tester", "tester-7"),
+  ];
+  const lines = flat(
+    buildHistory({
+      artifacts: [],
+      asks: [],
+      comments: [among],
+      events,
+      lastReadSeq: 0,
+      messages: [],
+      today: "2026-11-15",
+    })
+  ).flatMap((entry) => (entry.kind === "event" ? [entry.description] : []));
+  expect(lines).toEqual([
+    ["delivered a comment mention to ", { sessionId: "tester-7", storedTitle: undefined }],
+    ["delivered a comment mention to ", { sessionId: "reviewer", storedTitle: undefined }],
+  ]);
+  expect(
+    lines.flat().filter((piece) => typeof piece === "string" && /session:|role:/u.test(piece))
+  ).toEqual([]);
+});

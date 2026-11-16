@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
 import { collaboratorSections, IssueCollaboratorList } from "./IssueCollaboratorList";
+import { CONTROL_LABELS } from "./page-words";
 
 function legionAgent(
   sessionId: string,
@@ -149,7 +150,7 @@ test("the collaborators split Legion agents into role sections and keep the serv
       within(people)
         .getAllByRole("listitem")
         .map((row) => row.textContent)
-    ).toEqual([expect.stringContaining("bobposted"), "aliceassignee, claimed"]);
+    ).toEqual([expect.stringContaining("bobwrote here"), "aliceassigned, claimed it"]);
     expect(within(people).queryByRole("link")).toBeNull();
     expect(screen.queryByText("No one has worked this issue yet.")).toBeNull();
   } finally {
@@ -186,6 +187,34 @@ test("the collaborators say when Legion's record could not be read, and when nob
     expect(empty.read).toHaveBeenCalledWith("CORE-1");
   } finally {
     empty.restore();
+  }
+});
+
+// R5 of dispatch://INFRA-3948: how someone worked the issue reaches the page as the server's
+// token - `assignee`, `claimed`, `posted`, `answered` - and the list draws the page's word for
+// it, for a person and for an agent alike, so no reader is shown the token itself.
+test("a collaborator's reasons are the page's words, never their tokens", async () => {
+  const words = CONTROL_LABELS.collaborator_reasons;
+  // A word that is its own token would let a list that draws the token pass this case.
+  expect([words.claimed, words.posted]).not.toEqual(["claimed", "posted"]);
+  const list = renderCollaborators({
+    agents: [otherAgent("writer", null)],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [{ kind: "user", last_at: null, login: "carol", reasons: ["claimed", "posted"] }],
+  });
+  /** The line under each row's name that says how that one worked the issue. */
+  const reasonsIn = (region: HTMLElement) =>
+    [...region.querySelectorAll("[data-collaborator]")].map(
+      (name) => name.nextElementSibling?.textContent ?? ""
+    );
+  try {
+    const people = await screen.findByRole("region", { name: "People" });
+    expect(reasonsIn(people)).toEqual([`${words.claimed}, ${words.posted}`]);
+    expect(reasonsIn(screen.getByRole("region", { name: "Other agents" }))).toEqual([words.posted]);
+    expect(reasonsIn(people).flatMap((line) => line.split(", "))).not.toContain("posted");
+  } finally {
+    list.restore();
   }
 });
 

@@ -839,16 +839,16 @@ export const CONTROL_LABELS = freeze({
   /** Closes the issue, from the identity block's one actions control (R11). */
   close_issue: "Close issue",
   /** The words of the list of who worked the issue, in Details' People section
-   *  (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5), as the Collaborators tab drew
-   *  them: its three lists, of Legion's agents, of every other agent and of people; how a person
-   *  or an agent worked the issue, by the server's `reasons`; each Legion role's list, by the
-   *  role's token; and what a Legion agent says of when it started and of the agent that
-   *  replaced it. */
+   *  (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5): its three lists, of Legion's
+   *  agents, of every other agent and of people, as the Collaborators tab drew them; how a
+   *  person or an agent worked the issue, a reader's words for each of the server's `reasons`
+   *  tokens, which that tab drew as they came; each Legion role's list, by the role's token; and
+   *  what a Legion agent says of when it started and of the agent that replaced it. */
   collaborator_reasons: {
     answered: "answered",
-    assignee: "assignee",
-    claimed: "claimed",
-    posted: "posted",
+    assignee: "assigned",
+    claimed: "claimed it",
+    posted: "wrote here",
   },
   collaborator_replaced_by: "replaced by",
   collaborator_roles: {
