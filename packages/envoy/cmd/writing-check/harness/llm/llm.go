@@ -56,8 +56,8 @@ type Request struct {
 	// System is the system prompt.
 	System string
 	// Shared is the start of the user's turn, each element a text block of its own: the part
-	// that other calls send the same, such as a case's record and session part. It goes as the
-	// call's history. Mark puts a cache mark of five minutes at its end, and nowhere else
+	// that other calls send the same, such as a case's record. It goes as the call's history.
+	// Mark puts a cache mark of five minutes at its end, and nowhere else
 	// (agentloop's HistoryMarkOnly), so a later call within those minutes that sends the same
 	// model, system prompt, schema and Shared, also marked, reads them from the provider's cache,
 	// and no call pays the cache write on its own part. A call that sets no Mark, or sends no
@@ -69,11 +69,6 @@ type Request struct {
 	User   string
 	// Schema is the JSON schema the reply must be one object of; nil asks for free text.
 	Schema json.RawMessage
-	// Shape, where set, refuses a reply that is an object of Schema but not of the shape the
-	// call asks for: a schema that several kinds of call share admits each kind's reply. Such
-	// a reply is asked again at once, as a reply out of its schema is, and counts in the
-	// Response's OtherShape.
-	Shape func(json.RawMessage) error
 	// MaxTokens bounds the reply; zero is DefaultMaxTokens.
 	MaxTokens int
 }
@@ -90,8 +85,6 @@ type Response struct {
 	// Attempts is how many attempts the call took, and Elapsed how long they took in all.
 	Attempts int
 	Elapsed  time.Duration
-	// OtherShape is how many replies the request's Shape refused.
-	OtherShape int
 	// Marked says the call carried the cache mark: it set Mark and sent Shared.
 	Marked bool
 }
@@ -346,16 +339,6 @@ func (r *Runner) Run(ctx context.Context, model agentloop.Model, req Request) (r
 			replies++
 			continue
 		}
-		if req.Shape != nil {
-			if err := req.Shape(resp.Value); err != nil {
-				resp.OtherShape++
-				if replies >= replyRetries {
-					return fail(agentloop.FaultMalformed, "the reply is not of the call's own shape: "+err.Error(), nil)
-				}
-				replies++
-				continue
-			}
-		}
 		return resp, nil
 	}
 }
@@ -410,9 +393,9 @@ type Foundry struct {
 	runner *Runner
 }
 
-// NewFoundry is the client of deployment id at the config's endpoint, signed in with tokens and
-// priced at price.
-func NewFoundry(cfg FoundryConfig, tokens func(context.Context) (string, error), id string, price agentloop.Price, runner *Runner) *Foundry {
+// NewFoundry is the client of deployment id at the config's endpoint, signed in with tokens, asked
+// for the reasoning effort effort in agentloop's words ("" sends none), and priced at price.
+func NewFoundry(cfg FoundryConfig, tokens func(context.Context) (string, error), id, effort string, price agentloop.Price, runner *Runner) *Foundry {
 	var query url.Values
 	if cfg.APIVersion != "" {
 		query = url.Values{"api-version": {cfg.APIVersion}}
@@ -421,6 +404,7 @@ func NewFoundry(cfg FoundryConfig, tokens func(context.Context) (string, error),
 		model: agentloop.Model{
 			Endpoint: agentloop.Endpoint{Kind: agentloop.OpenAIChat, BaseURL: strings.TrimRight(cfg.Endpoint, "/"), Query: query, Token: tokens},
 			ID:       id,
+			Effort:   effort,
 			Price:    price,
 		},
 		runner: runner,

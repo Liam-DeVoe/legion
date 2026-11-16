@@ -88,6 +88,9 @@ type prober struct {
 	tokens  func(context.Context) (string, error)
 }
 
+// call makes one probe call on m. A Foundry candidate that sets its effort is asked for it, as
+// agentloop asks Chat Completions (`off` sent as `none`), so the probe finds a deployment that
+// refuses the effort. A Claude probe asks for no thinking.
 func (p *prober) call(ctx context.Context, m ModelEntry) probeCall {
 	started := time.Now()
 	var req *http.Request
@@ -105,7 +108,14 @@ func (p *prober) call(ctx context.Context, m ModelEntry) probeCall {
 			req.Header.Set("Anthropic-Version", "2023-06-01")
 		}
 	case llm.FamilyFoundry:
-		body, _ := json.Marshal(map[string]any{"model": m.ID, "max_tokens": 64, "messages": []map[string]string{{"role": "user", "content": probePrompt}}})
+		request := map[string]any{"model": m.ID, "max_tokens": 64, "messages": []map[string]string{{"role": "user", "content": probePrompt}}}
+		if effort := m.Effort; effort != "" {
+			if effort == "off" {
+				effort = "none"
+			}
+			request["reasoning_effort"] = effort
+		}
+		body, _ := json.Marshal(request)
 		target := strings.TrimRight(p.foundry.Endpoint, "/") + "/chat/completions"
 		if p.foundry.APIVersion != "" {
 			target += "?api-version=" + url.QueryEscape(p.foundry.APIVersion)
@@ -147,9 +157,10 @@ func (p *prober) call(ctx context.Context, m ModelEntry) probeCall {
 	return c
 }
 
-// probeRow sums a model's calls into its row and decides whether it passes.
+// probeRow sums a model's calls into its row, named as the candidate is (ModelEntry.Name), and
+// decides whether it passes.
 func probeRow(m ModelEntry, role string, calls []probeCall) ProbeRow {
-	row := ProbeRow{Model: m.ID, Family: m.Family, Role: role, Calls: len(calls), Statuses: map[int]int{}, Served: map[string]int{}}
+	row := ProbeRow{Model: m.Name(), Family: m.Family, Role: role, Calls: len(calls), Statuses: map[int]int{}, Served: map[string]int{}}
 	var secs []float64
 	var whys []string
 	for _, c := range calls {

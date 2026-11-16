@@ -29,7 +29,9 @@ const standInToken = "stand-in"
 // beside the stand-in model presents no credential of its own. An anthropic group asks for no
 // thinking (effort "off"). An azure group sends no reasoning effort at all: agentloop sends "off"
 // as `none`, which a Foundry chat deployment refuses (measured on grok-4.7, as the detector's
-// reader found: writingcheck.ReaderNoEffort). It reads no file and calls nothing.
+// reader found: writingcheck.ReaderNoEffort). A test model whose name asks for an effort
+// (`<id>:<effort>`, DISPATCH_TEST_MODELS) asks for that one on either kind. It reads no file and
+// calls nothing.
 func (g modelGroup) agentloopModel() (agentloop.Model, error) {
 	var token func(context.Context) (string, error)
 	switch {
@@ -68,6 +70,9 @@ func (g modelGroup) agentloopModel() (agentloop.Model, error) {
 		endpoint.Kind = agentloop.AnthropicMessages
 	default:
 		return agentloop.Model{}, fmt.Errorf("a model group of kind %q calls no model", g.Kind)
+	}
+	if g.Effort != "" {
+		effort = g.Effort
 	}
 	return agentloop.Model{Endpoint: endpoint, ID: g.Deployment, Effort: effort}, nil
 }

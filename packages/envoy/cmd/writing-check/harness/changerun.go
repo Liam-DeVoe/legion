@@ -123,14 +123,14 @@ func instanceRules(inst LocalInstance, plan changePlan) ([]reviewer.RuleSet, err
 	return rules, nil
 }
 
-// candidateModel is the candidate as agentloop calls it, for the component and the detector's
-// reader: a Claude model at the gateway, or a Foundry deployment.
-func (m *modelFlags) candidateModel(cfg Config, id string, runner *llm.Runner) (*claude.Client, *llm.Foundry, error) {
-	i := slices.IndexFunc(cfg.Models.Candidates, func(e ModelEntry) bool { return e.ID == id })
-	if i < 0 {
-		return nil, nil, fmt.Errorf("%q is no candidate of candidates.yaml", id)
+// candidateModel is the candidate name names (ModelEntry.Name) as agentloop calls it, for the
+// component and the detector's reader: a Claude model at the gateway, or a Foundry deployment, at
+// the candidate's effort and the price of its id.
+func (m *modelFlags) candidateModel(cfg Config, name string, runner *llm.Runner) (*claude.Client, *llm.Foundry, error) {
+	entry, ok := cfg.Candidate(name)
+	if !ok {
+		return nil, nil, fmt.Errorf("%q is no candidate of candidates.yaml", name)
 	}
-	entry := cfg.Models.Candidates[i]
 	if entry.Family == llm.FamilyClaude {
 		c, err := m.claudeClient(cfg, entry, runner)
 		return c, nil, err
@@ -139,7 +139,7 @@ func (m *modelFlags) candidateModel(cfg Config, id string, runner *llm.Runner) (
 	if err != nil {
 		return nil, nil, err
 	}
-	return nil, llm.NewFoundry(m.foundryConfig(), tokens, id, cfg.Prices.Prices[id].agentloop(), runner), nil
+	return nil, llm.NewFoundry(m.foundryConfig(), tokens, entry.ID, entry.Effort, cfg.Prices.Prices[entry.ID].agentloop(), runner), nil
 }
 
 // connect gives the run what its lanes share: the writer, the local Dispatch, its fake Envoy and
@@ -152,7 +152,7 @@ func (r *changeRun) connect(ctx context.Context, m *modelFlags, inst LocalInstan
 		if err != nil {
 			return err
 		}
-		r.writer = &Writer{Model: model, Calls: r.plan.writerCalls(r.rounds)}
+		r.writer = &Writer{Model: model, Calls: r.plan.writerCalls(r.rounds), Order: r.writerOrder}
 	}
 	if !r.plan.local() {
 		return nil

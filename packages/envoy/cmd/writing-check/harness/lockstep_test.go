@@ -143,10 +143,11 @@ func TestALockstepRunWritesTheRunOfOneModelForEachModel(t *testing.T) {
 }
 
 // The grading calls of a case are planned over every lane before the first is sent. Under change
-// 7a the question case's undefined judgement is the one call of a run of one model that reads the
-// case's record and session part, so it goes unmarked. In a lockstep of two models the two lanes'
-// undefined calls send that prefix byte for byte, so the plan counts two calls of it, and both are
-// marked: the first writes the prefix and the second reads it.
+// 7a the question case's undefined judgement is one call in a run of one model, so its prefix (its
+// prompt, its schema and the case's parts that it reads, the session part last) goes unmarked. In
+// a lockstep of two models the two lanes' undefined calls send that prefix byte for byte, so the
+// plan counts two calls of it, and both are marked: the first writes the prefix and the second
+// reads it.
 func TestALockstepRunMarksAPrefixItsModelsShare(t *testing.T) {
 	build, sessions := writeFixture(t)
 	stand := modeltest.New(t, lockstepRules(t, nil)...)
@@ -187,11 +188,11 @@ func TestALockstepRunMarksAPrefixItsModelsShare(t *testing.T) {
 	}
 	for i, w := range calls {
 		b := w.blocks(t)
-		if w.marks != 1 || len(b) != 4 || !reflect.DeepEqual(b[2].CacheControl, fiveMinuteMark) {
-			t.Errorf("call %d carries %d marks, its blocks %+v; want the session part marked", i, w.marks, b)
+		if w.marks != 1 || len(b) != 2 || !strings.HasSuffix(b[0].Text, "</writer_session>\n") || !reflect.DeepEqual(b[0].CacheControl, fiveMinuteMark) || b[1].CacheControl != nil {
+			t.Errorf("call %d carries %d marks, its blocks %+v; want the parts' block, which ends with the session part, marked", i, w.marks, b)
 		}
 	}
-	if !reflect.DeepEqual(calls[0].blocks(t)[:3], calls[1].blocks(t)[:3]) {
+	if !reflect.DeepEqual(calls[0].blocks(t)[:1], calls[1].blocks(t)[:1]) || !reflect.DeepEqual(calls[0].System, calls[1].System) {
 		t.Error("the two models' undefined calls send different prefixes")
 	}
 }
@@ -199,7 +200,7 @@ func TestALockstepRunMarksAPrefixItsModelsShare(t *testing.T) {
 // The writer's calls count over the lanes that make the change of a case, as the grader's do.
 // Change 7a calls the writer once for a case whose check found something: a run of one model
 // leaves that call unmarked, and in a lockstep of two models the two lanes' calls send the same
-// record and session part, so both are marked, and the second reads the prefix the first wrote.
+// prompt and record, so both are marked, and the second reads the prefix the first wrote.
 // Change 5's side answer, which one call makes for every lane, stays unmarked.
 func TestALockstepRunMarksTheWritersPrefixItsModelsShare(t *testing.T) {
 	writerCalls := func(stand *modeltest.Model, from int, marker string) []wireTurn {
@@ -235,11 +236,12 @@ func TestALockstepRunMarksTheWritersPrefixItsModelsShare(t *testing.T) {
 	}
 	for i, w := range calls {
 		b := w.blocks(t)
-		if w.marks != 1 || len(b) != 3 || !strings.HasPrefix(b[1].Text, "<writer_session>") || !reflect.DeepEqual(b[1].CacheControl, fiveMinuteMark) {
-			t.Errorf("lane %d's writer call carries %d marks, its blocks %+v; want the session part marked", i, w.marks, b)
+		if w.marks != 1 || len(b) != 2 || !strings.HasPrefix(b[0].Text, "<record>") || !reflect.DeepEqual(b[0].CacheControl, fiveMinuteMark) ||
+			!strings.HasPrefix(b[1].Text, "<your_text>") || b[1].CacheControl != nil {
+			t.Errorf("lane %d's writer call carries %d marks, its blocks %+v; want the record marked", i, w.marks, b)
 		}
 	}
-	if !reflect.DeepEqual(calls[0].blocks(t)[:2], calls[1].blocks(t)[:2]) || !reflect.DeepEqual(calls[0].System, calls[1].System) {
+	if !reflect.DeepEqual(calls[0].blocks(t)[:1], calls[1].blocks(t)[:1]) || !reflect.DeepEqual(calls[0].System, calls[1].System) {
 		t.Error("the two lanes' writer calls send different prefixes")
 	}
 

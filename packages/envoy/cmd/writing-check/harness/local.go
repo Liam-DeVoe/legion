@@ -292,11 +292,12 @@ func localEnv(base []string, dbURL string, settings map[string]string, keep bool
 const testTokensPerMinute = "10000000"
 
 // testModelSettings are the settings `harness local --test-models` gives the server: each
-// candidate of candidates.yaml a test model (DISPATCH_TEST_MODELS), a Claude one at the gateway
-// and a Foundry one at the account the model flags name with their sign-in; the reviewer's and
-// Rewrite and Define's groups at the gateway, on the first Claude candidate, so the routes the
-// harness calls answer (each request names its model); and the records job off, so no model is
-// called in the background.
+// candidate of candidates.yaml a test model (DISPATCH_TEST_MODELS) by its name (ModelEntry.Name),
+// so a candidate at an effort is a test model that asks its id for that effort; a Claude one at
+// the gateway and a Foundry one at the account the model flags name with their sign-in; the
+// reviewer's and Rewrite and Define's groups at the gateway, on the first Claude candidate's id,
+// so the routes the harness calls answer (each request names its model); and the records job
+// off, so no model is called in the background.
 func testModelSettings(cfg Config, m *modelFlags) (map[string]string, error) {
 	if m.gateway == "" || m.keyFile == "" {
 		return nil, errors.New("--test-models needs the gateway (--gateway or ANTHROPIC_BASE_URL) and its key file")
@@ -311,7 +312,7 @@ func testModelSettings(cfg Config, m *modelFlags) (map[string]string, error) {
 		} else if firstClaude == "" {
 			firstClaude = c.ID
 		}
-		listed = append(listed, c.ID+"="+kind)
+		listed = append(listed, c.Name()+"="+kind)
 	}
 	if firstClaude == "" {
 		return nil, errors.New("--test-models: candidates.yaml holds no Claude candidate for the groups")

@@ -98,16 +98,24 @@ func phraseCandidates(text string) []phraseCandidate {
 // phraseChunk bounds the candidates one call judges.
 const phraseChunk = 30
 
+// candidatesOpen opens the tag of a phrases call's candidates, and it is the call's Shared: the
+// first block of its user turn. The call's system prompt is the phrases prompt, the same for
+// every text. agentloop puts a cache mark only at the end of a call's Shared, so this block lets
+// the call mark a prefix that holds that prompt. The two blocks of the user turn hold the text
+// the turn has always held, tag("candidates", ...), cut after the tag's first line.
+const candidatesOpen = "<candidates>\n"
+
 // phraseCalls is how many calls the phrases judgement makes for n candidates: one for each
 // phraseChunk of them, and none for no candidate.
 func phraseCalls(n int) int { return (n + phraseChunk - 1) / phraseChunk }
 
 // gradeSentences gives the phrases judgement sentence by sentence: the candidates of in.Text,
-// each judged by the spec's prompt, which base holds as its Shared with the reply's schema; the
-// sentences the grader finds vacuous are the findings, each quoted whole. The calls of the
-// chunks are summed into one Call. Every call of the judgement sends the same prompt, whatever
-// its text, so where the run's plan holds two or more phrases calls (Plan), the first marked
-// call of the run writes the prompt to the provider's cache and the others read it.
+// each judged by the spec's prompt, which base holds as its system prompt with the reply's
+// schema; the sentences the grader finds vacuous are the findings, each quoted whole. The calls
+// of the chunks are summed into one Call. Every call of the judgement sends the same prompt and
+// the same Shared, whatever its text, so where the run's plan holds two or more phrases calls
+// (Plan), the first marked call of the run writes the prompt to the provider's cache and the
+// others read it.
 // A sentence judgement reads only its candidates, so its input mode is always trimmed.
 func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in GradeInput, base llm.Request) Grade {
 	grade := Grade{Inputs: InputsTrimmed}
@@ -123,7 +131,7 @@ func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in Grad
 		chunk := cands[start:min(start+phraseChunk, len(cands))]
 		list, _ := json.MarshalIndent(chunk, "", " ")
 		req := base
-		req.User = tag("candidates", string(list))
+		req.User = strings.TrimPrefix(tag("candidates", string(list)), candidatesOpen)
 		marked := req
 		done := g.mark(ctx, &marked, key)
 		resp, err := g.Model.Call(ctx, marked)
@@ -170,8 +178,8 @@ func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in Grad
 	return grade
 }
 
-// addCall is the sum of two calls' tokens, cost, attempts, replies in another shape, marked and
-// unmarked calls and time, with b's model.
+// addCall is the sum of two calls' tokens, cost, attempts, marked and unmarked calls and time,
+// with b's model.
 func addCall(a, b Call) Call {
 	b.Input += a.Input
 	b.Output += a.Output
@@ -179,7 +187,6 @@ func addCall(a, b Call) Call {
 	b.CacheRead += a.CacheRead
 	b.CostUSD += a.CostUSD
 	b.Attempts += a.Attempts
-	b.OtherShape += a.OtherShape
 	b.Marked += a.Marked
 	b.Unmarked += a.Unmarked
 	b.Seconds += a.Seconds

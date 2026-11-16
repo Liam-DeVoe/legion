@@ -1,4 +1,4 @@
-{{define "grade-added"}}You check a text against its inputs. The original text is the text that the agent wrote. The new text is the text that the reader sees after a change to the original text. The change had these inputs: the original text, the record{{if .HasSession}}, the session of the writer agent{{end}}{{if .WriterAnswer}} and the answer of the writer agent{{end}}.
+{{define "grade-added"}}You check a text against its inputs. {{template "dispatch" .}} The original text is the text that the agent wrote. The new text is the text that the reader sees after a change to the original text. The change had these inputs: the original text, the record{{if .HasSession}}, the session of the writer agent{{end}}{{if .WriterAnswer}} and the answer of the writer agent{{end}}.
 
 Find each fact of the new text that its inputs do not hold.
 
@@ -8,6 +8,8 @@ Find each fact of the new text that its inputs do not hold.
 - "new_text": the new text.
 {{- template "question-tag" .}}
 {{- template "context-tags" .}}
+
+{{template "data" .}}
 
 ## How to find an added fact
 

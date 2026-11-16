@@ -5,6 +5,11 @@
 # a chat deployment of Dispatch's Azure AI Foundry account. The endpoints and the sign-in are flags
 # of the harness, not part of this file.
 #
+# A candidate with an effort is the model at that reasoning effort, a candidate of its own named
+# <id>:<effort> (for example Kimi-K3.1-Pro:off). `score --model` and `--models` take that name, and
+# `local --test-models` lists it in DISPATCH_TEST_MODELS. It has the price of its id. Without an
+# effort a Foundry candidate sends none, and a Claude candidate asks for no thinking.
+#
 # No role is a candidate, and the grader does not play the writer (R2).
 roles:
   # The grading model: it reads every text, Dispatch's record and the writer's session. Each
@@ -28,6 +33,9 @@ roles:
 candidates:
   - {family: foundry, id: grok-4.7}
   - {family: foundry, id: Kimi-K3.1-Pro}
+  # The architect's measurement of Kimi-K3.1-Pro with reasoning off, 2026-11-16: a development
+  # candidate. Its result decides whether the held-out run scores it.
+  - {family: foundry, id: Kimi-K3.1-Pro, effort: "off"}
   - {family: claude, id: claude-haiku-4-5-20251001}
   - {family: claude, id: claude-haiku-5-5}
   - {family: claude, id: claude-sonnet-5-5}

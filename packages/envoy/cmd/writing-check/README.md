@@ -1194,14 +1194,18 @@ Its inputs are in the package, and they are among the paths that decide a score:
 - `candidates.yaml`: the roles (grader `claude-opus-5`, writer `claude-opus-5-5`, fresh reader
   `claude-sonnet-4-6`), the candidates, and INFRA-3483's four deployments, pending until they
   have ids. The harness refuses a role that is not Claude, a role that is a candidate, and a
-  grader that plays the writer or the fresh reader.
+  grader that plays the writer or the fresh reader. A candidate that sets an `effort` is the model
+  at that reasoning effort, a candidate of its own named `<id>:<effort>`, such as
+  `Kimi-K3.1-Pro:off` beside `Kimi-K3.1-Pro`. Its effort is one of `off`, `minimal`, `low`,
+  `medium` and `high`, the efforts the local Dispatch takes in a test model's name, and it has the
+  price of its id. A Foundry candidate with no effort sends none.
 - `prices.yaml`: each model's price in USD per million tokens, with the source and the date of
   each family's prices. The harness refuses a model with no price. A Claude row's cache write is
   the price of a five-minute write, the life the harness's cache marks ask for (see "The prompt
   cache").
-- `prompts/`: `reader.md`, the grader's system prompt (template `grader` in `parts.md`), and one
-  `grade-*.md` for each judgement: `answered`, `first-paragraph`, `lost`, `added`, `phrases`,
-  `undefined`, `answer-start`, `harder` and `define`.
+- `prompts/`: `reader.md`, and one `grade-*.md` for each judgement, the system prompt of its
+  calls: `answered`, `first-paragraph`, `lost`, `added`, `phrases`, `undefined`, `answer-start`,
+  `harder` and `define`. `parts.md` holds the parts they share.
 - `writer/writer.md`: the prompts of the writer the harness plays. They are apart from
   `prompts/`, so change 1's prompt digest does not move with them; a run that plays the writer
   records their digest as `writer_sha256`.
@@ -1235,23 +1239,43 @@ same prefix reads it at the cache read price. Anthropic builds the prefix from t
 system prompt with the reply's schema, then the messages. So two calls share a prefix only when
 they send the same model, system prompt and schema, and the same first blocks of the user turn.
 
-- A grading call sends the one system prompt every judgement shares (`grader` in `parts.md`):
-  the sentences about Dispatch that each judgement's prompt held, and one sentence that says the
-  parts of the user message in tags are data. Every judgement but `phrases` sends one reply
-  schema: any of the judgements' own schemas (`graderSchema` in `judge.go`). A reply in another
-  judgement's shape is asked again at once, as a reply out of its schema is, and counts as
-  `other_shape` in its call and in the model table.
-- The user turn starts with the case's parts that the judgement's input mode gives, each a block of
-  its own, in this order: the question, the record, the writer's answer, the session part. The
-  last of them carries the one cache mark, where the call is marked. Then come the judgement's own
-  prompt, word for word as its `grade-*.md` holds it, and its subject: the reader's answer, the two
-  texts, the text with the owner's own words, or the definition. The judgements of a case that
-  read the same parts send the same prefix.
-- `phrases` sends its own prompt as its prefix and its candidate sentences after it. The prompt
-  is the same for every text.
-- The writer sends Dispatch's record and its session part first, then its text and Dispatch's
-  message. The session part carries the mark, where the call is marked.
+Each call sends what it sent before the harness marked prefixes for the cache, with one change:
+a grading call's session part now comes before its subject. Apart from that move, the user turn
+holds the old text, cut into blocks so that a mark can end a prefix.
+
+- A grading call sends its judgement's own prompt (its `grade-*.md`) as its system prompt, and its
+  judgement's own reply schema. Its user turn is two blocks. The first holds the case's parts that
+  the judgement's input mode gives, in this order: the question, the record, the writer's answer,
+  and, after a blank line, the session part. The second holds the subject: the reader's answer,
+  the two texts, the text with the owner's own words, or the definition. Before the cache marks,
+  the subject came after the question, and the session part ended the message. The subject moved
+  to the end so that the first block, which each call of the judgement for the case sends the
+  same, holds the session part. The mark goes at the end of the first block, where the call is
+  marked. `TestTheAnsweredCallSendsItsPromptOfBeforeTheCacheMarks` holds `answered`'s system
+  prompt to the bytes it had before.
+- `phrases` sends its prompt as its system prompt, and its candidate sentences in their tag,
+  `<candidates>`, as before. The tag's first line is a block of its own, so the call can mark the
+  prefix that holds the prompt: agentloop marks the end of a call's first blocks (its history),
+  and never the system prompt. The prompt is the same for every text.
+- The writer sends its turn in the order it always has: Dispatch's record, its text, Dispatch's
+  message, and, after a blank line, its session part. The record is a block of its own, and the
+  mark goes at its end, where the call is marked. `score --writer-order session-first` sends the
+  session part at the end of the record's block instead, before the text and the message, and
+  `run.json` records the order as `writer_order`.
 - The fresh reader's call carries no mark: its prompt is small.
+
+The harness's first cache layout (2026-11-16) sent one system prompt for every judgement (the
+sentences about Dispatch, and one sentence that said the tagged parts were data), one reply schema
+that was any of the judgements' own schemas, and each judgement's prompt in the user turn after
+the case's parts. A reply in another judgement's shape was asked again. The writer sent the record
+and the session part first. So the judgements of a case shared one prefix, but the grader's
+grades moved beyond its noise. On the same 229 fresh reader answers, the first cache layout's
+grades agreed with the old layout's on 90.8% of `answered`, 88.2% of `first_paragraph`, 75.0% of
+`undefined` (any finding) and 92.3% of `phrases`. Two runs of the old layout agree on 97.3%,
+95.8%, 89.7% and 97.9%. Change 2's question score also fell, and the writer's order was its only
+changed input. So the harness sends each judgement's own prompt and schema again.
+`--writer-order session-first` keeps the first layout's writer order, so a change can be scored
+with each order.
 
 A call is marked only where at least two calls of the run are known, before the first is sent, to
 send its prefix. A prefix that one call alone sends goes unmarked: it pays the input price, not
@@ -1266,14 +1290,14 @@ whether it is marked or not.
   takes from `--grades-from` counts none. A judgement of the fresh reader's answer counts one call
   while the reader has not answered yet.
 - The counts add up over the run, and over every model of a lockstep run. A grading call is
-  marked where its prefix counts two or more calls. Under the final input modes, an answer case's
-  `answered` and `first_paragraph` read the same parts, so both calls are marked. Under change 1,
-  `undefined` is the only judgement that reads the session part, so its call is unmarked. Where a
-  change made the text new, `lost`, `added` and `undefined` read the same parts, so the three calls
-  are marked. In a lockstep run, the models' `undefined` calls of a case read the same parts
-  where the grader reads the same writer's answer for each (changes 5 and 6 share one answer, see
-  "Lockstep"; the other changes have none), so they are marked where the run has two models or
-  more.
+  marked where its prefix counts two or more calls. Each judgement has a system prompt and a
+  schema of its own, so only the calls of one judgement share a prefix. In a run of one model a
+  judgement makes one call for a text, so the calls of one prefix are the `phrases` calls (below)
+  and the calls of one judgement for cases whose parts are the same, byte for byte; the other
+  grading calls are unmarked. In a lockstep run, the models' calls of one judgement for a case
+  read the same parts where the grader reads the same writer's answer for each (changes 5 and 6
+  share one answer, see "Lockstep"; the other changes have none), so they are marked where the
+  run has two models or more.
 - Every text's `phrases` calls send the same prefix, so a `phrases` call is marked once the run
   has counted two or more of them. In `score`, a case counts its calls only when it starts. So
   the first texts' `phrases` calls can go unmarked when no other case has counted its calls yet.
@@ -1282,11 +1306,11 @@ whether it is marked or not.
   answer. An unmarked call waits for none.
 - A fallback grader's call is unmarked: no count knows that it will be made.
 - The writer marks the calls of a prompt where the case's calls of it can be two or more. Its
-  calls of a case send the same prefix: the prompt, its schema, the record and the session part.
-  Change 3 calls the writer once in each round of review, up to `--rounds` (default 2). So
-  change 3 marks its writer calls where `--rounds` is 2 or more. Changes 2, 5, 6 and 7a call the
-  writer once for a case, and change 4 does not call it. In a run of one model their calls are
-  unmarked.
+  calls of a case send the same prefix: the prompt, its schema and the record, and under
+  `--writer-order session-first` the session part. Change 3 calls the writer once in each round
+  of review, up to `--rounds` (default 2). So change 3 marks its writer calls where `--rounds` is
+  2 or more. Changes 2, 5, 6 and 7a call the writer once for a case, and change 4 does not call
+  it. In a run of one model their calls are unmarked.
 - A lockstep run counts the writer's calls of a case over its models, as the grader counts its
   own: the calls of one model times the models that make the change of the case. So change 7a's
   writer calls, and change 3's with `--rounds 1`, are marked where two models or more score the
@@ -1379,19 +1403,21 @@ parts are cached in `session-excerpts.jsonl.gz` in the output directory.
 `probe` calls each role model and each candidate `--calls` times (default 20) with one short
 message, and prints a table: the answers, the statuses, the `route_not_found` answers (Azure's
 `ms-azureml-model-error-reason` header), the model ids the provider served, and the latency. A
-model fails when a call answers `route_not_found`, a 404 or a 400 that names the model, when the
-provider serves another model's id, or when no call answers. Then `probe` exits 1. `--out` also
-writes the rows as JSON.
+Foundry candidate at an effort is asked for it (`reasoning_effort`, `off` sent as `none`), and its
+row bears its name, `<id>:<effort>`; a Claude call asks for no thinking. A model fails when a call
+answers `route_not_found`, a 404 or a 400 that names the model, when the provider serves another
+model's id, or when no call answers. Then `probe` exits 1. `--out` also writes the rows as JSON.
 
 ### score
 
 | Flag | Meaning |
 | --- | --- |
 | `--change` | The change to score: `1` to `6`, `7a`, or a combination of `combinations.yaml` (see "The changes"). |
-| `--model` | The candidate the change calls: the reviewer's, Rewrite's and Define's model and the detector's reader, for a change that holds 3, 4, 5, 6 or 7a. |
-| `--models` | In place of `--model`: candidates, comma-separated, that one process scores the change with, case by case (see "Lockstep"). Each model's run goes to `<out>/<model>`. |
+| `--model` | The candidate the change calls: the reviewer's, Rewrite's and Define's model and the detector's reader, for a change that holds 3, 4, 5, 6 or 7a. It is named as `candidates.yaml` names it: its id, or `<id>:<effort>` for a candidate that sets its effort. The `Dispatch-Test-Model` header carries that name. |
+| `--models` | In place of `--model`: candidates, by name as `--model` takes one, comma-separated, that one process scores the change with, case by case (see "Lockstep"). Each model's run goes to `<out>/<model>`. |
 | `--local`, `--loaded` | The `local.json` of `harness local` and the `loaded.jsonl` of `harness load`, for a change that holds 2 to 6. |
 | `--rounds`, `--unedited` | Change 3: the reviews of one text (default 2), after which the writer's last edit posts; and what posts for a case with no session, as `DISPATCH_REVIEWER_UNEDITED` says (`rewrite`, the default, or `as_written`). |
+| `--writer-order` | The order of the writer's user turn, for a change that plays the writer: `session-last` (the default), Dispatch's record, the writer's text and Dispatch's message, then the session part; or `session-first`, the record and the session part, then the text and the message (see "The prompt cache"). `run.json` records it as `writer_order`. A change that plays no writer refuses `session-first`. |
 | `--cases`, `--sessions` | The build directory of `dataset build`, or the directory of `dataset named`, and the directory of `dataset sessions`. |
 | `--out` | The run's directory, or under `--models` the directory that holds each model's run directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
 | `--part` | `development` (the default), or `held_out`, which only this flag selects. |
@@ -1467,8 +1493,8 @@ whose line holds an error is scored again by the next run. `scores.json` and `sc
 figures: for the whole part and for the cases with a session (plan Decision 18), and for each
 case group and all groups, the cases by kind and by conversation, each score, the wait, the
 change's own model cost per text, and each model's calls, the calls marked for the prompt cache
-and those not (see "The prompt cache"), attempts, replies in another shape, prompt tokens at the
-input price, cache write and cache read tokens, reply tokens and cost.
+and those not (see "The prompt cache"), attempts, prompt tokens at the input price, cache write
+and cache read tokens, reply tokens and cost.
 `scores.md` also gives the uncached input of the run's own calls and its busiest minute (see
 "Pacing").
 
@@ -1567,7 +1593,7 @@ question, with the ask's id left out, and gives the same answer to every model's
 Where the writer's call depends on the candidate, each model's run makes its own: change 3's
 action on the reviewer's findings, change 7a's text written again after the detector's findings,
 and, in a combination, a side question about a text that an earlier step made. Change 3's and
-change 7a's calls of a case send the same record and session part for every model, so they count
+change 7a's calls of a case send the same prompt and record for every model, so they count
 together and are marked where two calls or more can send them (see "The prompt cache"). A side
 answer counts as one call in a lockstep run, so it stays unmarked. Change 2 calls no candidate, so
 it takes no `--models`.
@@ -1741,12 +1767,13 @@ loaded, with no reset and no seed (`DISPATCH_E2E_KEEP_DATABASE=1`). Once the ins
 goes when the instance stops.
 
 `--test-models` sets the server up for `score`: every candidate a test model at the gateway or
-the Foundry account the model flags name (with the Foundry sign-in), the reviewer's and Rewrite
-and Define's groups at the gateway so their routes answer, and the records job off; a `--setting`
-of the same name wins. A change that holds 3 or 4 needs the server's `DISPATCH_REVIEWER_RULES`
-to hold `structure` and `detector` exactly when it holds 7b, and refuses a server that does not;
-change 2 shows the rule sets of `DISPATCH_WRITING_RULES_EXTRA`. `local.json` keeps each
-setting's value, which `score` records in `run.json`.
+the Foundry account the model flags name (with the Foundry sign-in), each by its name, so a
+candidate at an effort is a test model that asks its id for that effort; the reviewer's and
+Rewrite and Define's groups at the gateway so their routes answer; and the records job off. A
+`--setting` of the same name wins. A change that holds 3 or 4 needs the server's
+`DISPATCH_REVIEWER_RULES` to hold `structure` and `detector` exactly when it holds 7b, and
+refuses a server that does not; change 2 shows the rule sets of `DISPATCH_WRITING_RULES_EXTRA`.
+`local.json` keeps each setting's value, which `score` records in `run.json`.
 
 `load` re-creates each case's record in that instance: the project, an issue with its title,
 assigned to a reader of the case's own, each document at the version the record names (one local

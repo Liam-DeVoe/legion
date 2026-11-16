@@ -3,8 +3,11 @@ package harness
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 )
 
 func TestTheCandidateListAndThePriceTable(t *testing.T) {
@@ -16,8 +19,8 @@ func TestTheCandidateListAndThePriceTable(t *testing.T) {
 	if roles.Grader.ID != "claude-opus-5" || roles.Writer.ID != "claude-opus-5-5" || roles.Reader.ID != "claude-sonnet-4-6" {
 		t.Errorf("the roles of Decision 20: %+v", roles)
 	}
-	if len(cfg.Models.Candidates) != 6 || len(cfg.Models.Pending) != 4 {
-		t.Errorf("six candidates today and INFRA-3483's four pending: %d, %d", len(cfg.Models.Candidates), len(cfg.Models.Pending))
+	if len(cfg.Models.Candidates) != 7 || len(cfg.Models.Pending) != 4 {
+		t.Errorf("seven candidates today, Kimi-K3.1-Pro at reasoning off among them, and INFRA-3483's four pending: %d, %d", len(cfg.Models.Candidates), len(cfg.Models.Pending))
 	}
 	for _, bad := range []struct{ name, candidates string }{
 		{"a role that is a candidate", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: claude, id: claude-opus-4-8}", 1)},
@@ -25,10 +28,60 @@ func TestTheCandidateListAndThePriceTable(t *testing.T) {
 		{"the grader playing the writer", strings.Replace(string(candidatesFile), "writer: {family: claude, id: claude-opus-5-5}", "writer: {family: claude, id: claude-opus-5}", 1)},
 		{"the grader playing the reader", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: claude, id: claude-opus-5}", 1)},
 		{"a model with no price", strings.Replace(string(candidatesFile), "id: claude-haiku-5-5", "id: claude-haiku-9", 1)},
+		{"an effort the local Dispatch refuses", strings.Replace(string(candidatesFile), `effort: "off"`, `effort: "max"`, 1)},
+		{"a candidate at one effort named twice", strings.Replace(string(candidatesFile), "  - {family: foundry, id: grok-4.7}\n", "  - {family: foundry, id: grok-4.7}\n  - {family: foundry, id: Kimi-K3.1-Pro, effort: \"off\"}\n", 1)},
 	} {
 		if _, err := parseConfig([]byte(bad.candidates), pricesFile); err == nil {
 			t.Errorf("%s was let through", bad.name)
 		}
+	}
+}
+
+// A candidate at an effort is a candidate of its own, named <id>:<effort>: candidates.yaml's
+// Kimi-K3.1-Pro:off is a test model of `local --test-models` beside Kimi-K3.1-Pro, `score --model`
+// and `--models` take its name, and its lane calls deployment Kimi-K3.1-Pro at effort off, at
+// Kimi-K3.1-Pro's price, and names the candidate in the Dispatch-Test-Model header. Kimi-K3.1-Pro
+// alone sends no effort, as before; a name candidates.yaml does not hold is refused.
+func TestACandidateAtAnEffortIsACandidateOfItsOwn(t *testing.T) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := cfg.Candidate("Kimi-K3.1-Pro:off"); !ok || got != (ModelEntry{Family: llm.FamilyFoundry, ID: "Kimi-K3.1-Pro", Effort: "off"}) {
+		t.Errorf("the candidate Kimi-K3.1-Pro:off = %+v (%t)", got, ok)
+	}
+	if got, ok := cfg.Candidate("Kimi-K3.1-Pro"); !ok || got.Effort != "" || got.Name() != "Kimi-K3.1-Pro" {
+		t.Errorf("the candidate Kimi-K3.1-Pro = %+v (%t), want it at no effort", got, ok)
+	}
+
+	mf := &modelFlags{gateway: "http://gateway.example:4000", keyFile: "/var/run/model-gateway-key/key",
+		foundry: "https://foundry.example/models", apiVersion: defaultAPIVersion, tenant: "tenant-id", clientID: "client-id", tokenFile: defaultTokenFile, scope: "scope"}
+	set, err := testModelSettings(cfg, mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := strings.Split(set["DISPATCH_TEST_MODELS"], ",")
+	if len(listed) != len(cfg.Models.Candidates) || !slices.Contains(listed, "Kimi-K3.1-Pro:off=azure") || !slices.Contains(listed, "Kimi-K3.1-Pro=azure") {
+		t.Errorf("DISPATCH_TEST_MODELS = %q, want each candidate by its name, Kimi-K3.1-Pro:off=azure and Kimi-K3.1-Pro=azure among them", set["DISPATCH_TEST_MODELS"])
+	}
+
+	run := &changeRun{cfg: cfg, runner: &llm.Runner{}}
+	lanes, err := run.withCandidates(mf, []string{"Kimi-K3.1-Pro:off", "Kimi-K3.1-Pro"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	price := cfg.Prices.Prices["Kimi-K3.1-Pro"].agentloop()
+	for i, want := range []struct{ name, effort string }{{"Kimi-K3.1-Pro:off", "off"}, {"Kimi-K3.1-Pro", ""}} {
+		lane := lanes[i].(*changeRun)
+		if m := lane.candModel; m.ID != "Kimi-K3.1-Pro" || m.Effort != want.effort || m.Price != price {
+			t.Errorf("the lane of %s calls %q at effort %q, priced %+v; want Kimi-K3.1-Pro at %q, priced %+v", want.name, m.ID, m.Effort, m.Price, want.effort, price)
+		}
+		if got := lane.testModel().Get("Dispatch-Test-Model"); got != want.name {
+			t.Errorf("the lane of %s names %q in the Dispatch-Test-Model header", want.name, got)
+		}
+	}
+	if _, err := run.withCandidates(mf, []string{"Kimi-K3.1-Pro:low"}, false); err == nil {
+		t.Error("Kimi-K3.1-Pro:low, which candidates.yaml does not hold, was let through")
 	}
 }
 

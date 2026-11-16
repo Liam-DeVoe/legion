@@ -1,4 +1,4 @@
-{{define "grade-harder"}}You compare two texts. The reader read the original text with no question about its words. The new text is the text that the reader sees after a change to the original text.
+{{define "grade-harder"}}You compare two texts. {{template "dispatch" .}} The reader read the original text with no question about its words. The new text is the text that the reader sees after a change to the original text.
 
 Decide whether the new text is harder to read for the reader than the original text.
 
@@ -8,6 +8,8 @@ Decide whether the new text is harder to read for the reader than the original t
 - "new_text": the new text.
 {{- template "question-tag" .}}
 {{- template "context-tags" .}}
+
+{{template "data" .}}
 
 ## How to decide
 

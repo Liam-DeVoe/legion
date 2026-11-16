@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -11,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,7 +29,7 @@ var promptFiles embed.FS
 
 var prompts = template.Must(template.New("prompts").ParseFS(promptFiles, "prompts/*.md"))
 
-// promptData is what a prompt is filled from.
+// promptData is what a system prompt is filled from.
 type promptData struct {
 	// FirstParagraph says the reader read only the text's first paragraph.
 	FirstParagraph bool
@@ -251,52 +249,6 @@ func (s judgementSpec) schema() json.RawMessage {
 	})...))
 }
 
-// graderSchema is the one reply schema of every grading call but a sentence judgement's: any of
-// the judgements' own reply schemas, each once. The provider puts a call's schema before its
-// messages, in the prefix it caches, so a schema of each judgement's own would let no two
-// judgements of a case read the case's shared parts from the cache. Each reply is then held to
-// its own judgement's shape (judgementSpec.shape).
-var graderSchema = unionSchema()
-
-func unionSchema() json.RawMessage {
-	var members []json.RawMessage
-	for _, j := range Judgements {
-		spec := judgementSpecs[j]
-		if spec.sentences {
-			continue
-		}
-		s := spec.schema()
-		if !slices.ContainsFunc(members, func(m json.RawMessage) bool { return bytes.Equal(m, s) }) {
-			members = append(members, s)
-		}
-	}
-	out, err := json.Marshal(map[string][]json.RawMessage{"anyOf": members})
-	if err != nil {
-		panic(err)
-	}
-	return out
-}
-
-// shape refuses a reply whose fields are not those of the judgement's own schema: a reply of
-// graderSchema in another judgement's shape.
-func (s judgementSpec) shape(value json.RawMessage) error {
-	var own struct {
-		Properties map[string]json.RawMessage `json:"properties"`
-	}
-	if err := json.Unmarshal(s.schema(), &own); err != nil {
-		return err
-	}
-	var reply map[string]json.RawMessage
-	if err := json.Unmarshal(value, &reply); err != nil {
-		return err
-	}
-	got, want := slices.Sorted(maps.Keys(reply)), slices.Sorted(maps.Keys(own.Properties))
-	if !slices.Equal(got, want) {
-		return fmt.Errorf("the reply's fields are %v, not %v", got, want)
-	}
-	return nil
-}
-
 // GradeInput is what one judgement may read: its subject, and the case's context. The grader's
 // input modes (GraderInputs) decide which context parts a call reads.
 type GradeInput struct {
@@ -341,28 +293,33 @@ func (in GradeInput) parts(c contextParts) contextParts {
 	}
 }
 
-// shared are the context parts p that a judgement's call sends first, before its prompt, each a
-// block of its own and in the order a call has always read them: the question, the record and
-// the writer's answer. The session part, where the call reads one, comes after them
-// (claude.Client.CallWithSession). The judgements of a case that read the same parts send the
-// same blocks, so where two or more of them do (Grader.Plan), each call after the first reads
-// them from the provider's cache.
+// shared is the start of a judgement's user turn: the context parts p, in the order the user
+// message has always held them (the question, the record, the writer's answer), as one block, or
+// none where p holds none of them. The session part, where the call reads one, ends that block
+// (claude.SessionEndsShared), and the subject comes after it (subject). So the calls of one
+// judgement of one case send the same prefix whatever text they grade, such as the calls of a
+// lockstep's models, and where two or more of them do (Grader.Plan), each call after the first
+// reads it from the provider's cache. Before the cache marks, the subject came after the
+// question; it moved to the end of the turn so that the prefix can hold the session part.
 func (in GradeInput) shared(p contextParts) []string {
-	var out []string
+	var b strings.Builder
 	if p.Question {
-		out = append(out, tag("question", in.Question))
+		b.WriteString(tag("question", in.Question))
 	}
 	if p.Record {
-		out = append(out, in.Record)
+		b.WriteString(in.Record)
 	}
 	if p.WriterAnswer {
-		out = append(out, tag("writer_answer", in.WriterAnswer))
+		b.WriteString(tag("writer_answer", in.WriterAnswer))
 	}
-	return out
+	if b.Len() == 0 {
+		return nil
+	}
+	return []string{b.String()}
 }
 
-// subject is what the judgement grades, which its call sends after its prompt: the fresh
-// reader's answer, the original and the new text, the text with the person's own words, or the
+// subject is what the judgement grades, which ends its call's user turn: the fresh reader's
+// answer, the original and the new text, the text with the person's own words, or the
 // definition.
 func (in GradeInput) subject() string {
 	var b strings.Builder
@@ -385,13 +342,12 @@ func (in GradeInput) subject() string {
 
 // Call is one model call as the outputs record it: its prompt tokens read at the input price
 // (input_tokens), written to the provider's cache and read from it, priced at the model's
-// prices in prices.yaml (cost_usd). OtherShape counts the replies in another judgement's shape
-// that the call asked again (llm.Request's Shape). Marked and Unmarked count the model calls
-// it holds that the harness sent with the cache mark and with none (llm.Request's Mark): one
-// for most calls, one for each chunk of a phrases judgement. A candidate call, whose marks the
-// local Dispatch, the reviewer component or the detector's reader set, is in neither. SharedFrom
-// names the model of a lockstep run (score --models) whose run made the call: the writer's answer
-// to a side question that does not depend on the candidate, which this run took (sharedAnswers).
+// prices in prices.yaml (cost_usd). Marked and Unmarked count the model calls it holds that the
+// harness sent with the cache mark and with none (llm.Request's Mark): one for most calls, one
+// for each chunk of a phrases judgement. A candidate call, whose marks the local Dispatch, the
+// reviewer component or the detector's reader set, is in neither. SharedFrom names the model of
+// a lockstep run (score --models) whose run made the call: the writer's answer to a side
+// question that does not depend on the candidate, which this run took (sharedAnswers).
 type Call struct {
 	Model      string  `json:"model"`
 	Served     string  `json:"served,omitempty"`
@@ -401,7 +357,6 @@ type Call struct {
 	CacheRead  int     `json:"cache_read_tokens"`
 	CostUSD    float64 `json:"cost_usd"`
 	Attempts   int     `json:"attempts"`
-	OtherShape int     `json:"other_shape,omitempty"`
 	Marked     int     `json:"marked_calls,omitempty"`
 	Unmarked   int     `json:"unmarked_calls,omitempty"`
 	Seconds    float64 `json:"seconds"`
@@ -412,7 +367,7 @@ func callOf(r llm.Response) Call {
 	c := Call{
 		Model: r.Requested, Served: r.Served, Input: r.Usage.Input, Output: r.Usage.Output,
 		CacheWrite: r.Usage.CacheWrite, CacheRead: r.Usage.CacheRead, CostUSD: r.Usage.CostUSD,
-		Attempts: r.Attempts, OtherShape: r.OtherShape, Seconds: r.Elapsed.Seconds(),
+		Attempts: r.Attempts, Seconds: r.Elapsed.Seconds(),
 	}
 	if r.Marked {
 		c.Marked = 1
@@ -612,22 +567,19 @@ func (g *Grader) Plan(ins []GradeInput, done map[Judgement][]*Grade) {
 	}
 }
 
-// request is the judgement's request and the context parts it reads. Every judgement's system
-// prompt is the one "grader" prompt. A judgement's call sends the case's context parts first,
-// as Shared (GradeInput.shared), then its own prompt and its subject. A sentence judgement sends
-// its own prompt as Shared, which every call of it sends the same, and its User is the text,
-// whose candidate sentences its calls read in its place (gradeSentences).
+// request is the judgement's request and the context parts it reads: the judgement's own system
+// prompt and reply schema, and a user turn of the context parts (GradeInput.shared), to which the
+// call adds the session part where it reads one (gradeOnce), then the subject
+// (GradeInput.subject). A sentence judgement's system prompt is its prompt, which is the same for
+// every text, and its Shared opens the tag of its candidates (candidatesOpen); its User is the
+// text, whose candidate sentences its calls send in its place (gradeSentences).
 func (g *Grader) request(spec judgementSpec, in GradeInput) (llm.Request, contextParts, error) {
 	req := llm.Request{Purpose: "grade:" + string(in.Judgement), MaxTokens: graderMaxTokens}
 	var p contextParts
-	system, err := render("grader", promptData{})
-	if err != nil {
-		return req, p, err
-	}
-	req.System = system
+	var err error
 	if spec.sentences {
-		prompt, err := render(spec.prompt, promptData{Phrases: g.phrases})
-		req.Shared, req.User, req.Schema = []string{prompt}, in.Text, phraseSchema(spec.verdicts)
+		req.Shared, req.User, req.Schema = []string{candidatesOpen}, in.Text, phraseSchema(spec.verdicts)
+		req.System, err = render(spec.prompt, promptData{Phrases: g.phrases})
 		return req, p, err
 	}
 	p = in.parts(g.Inputs.context(in.Judgement))
@@ -635,8 +587,8 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (llm.Request, contex
 		HasQuestion: p.Question, HasRecord: p.Record, HasSession: p.Session, WriterAnswer: p.WriterAnswer,
 		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases,
 	}
-	prompt, err := render(spec.prompt, data)
-	req.Shared, req.User, req.Schema, req.Shape = in.shared(p), prompt+"\n"+in.subject(), graderSchema, spec.shape
+	req.System, err = render(spec.prompt, data)
+	req.Shared, req.User, req.Schema = in.shared(p), in.subject(), spec.schema()
 	return req, p, err
 }
 
@@ -722,7 +674,7 @@ func (g *Grader) mark(ctx context.Context, req *llm.Request, key string) (done f
 func (g *Grader) gradeOnce(ctx context.Context, c gradeCall, in GradeInput) Grade {
 	call := func(model *claude.Client, req llm.Request) (llm.Response, error) {
 		if c.parts.Session {
-			return model.CallWithSession(ctx, req, in.Session)
+			return model.CallWithSession(ctx, req, in.Session, claude.SessionEndsShared)
 		}
 		return model.Call(ctx, req)
 	}

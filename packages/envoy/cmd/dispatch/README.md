@@ -3362,7 +3362,12 @@ The browser suite starts `packages/dispatch/e2e/fake-model.ts` and hands its URL
 `DISPATCH_TEST_MODELS`, read only under `DISPATCH_TEST_HOOKS=1`, lists the models a test request may name in its `Dispatch-Test-Model` header: `name=kind,…`, kind `azure` or `anthropic`.
 A draft review (`POST /api/v1/reviewer/draft`), a person's Rewrite of an ask and a person's Define that name one call it, the detector's reader included, in place of the reviewer's or Rewrite and Define's group, with that group's bounds.
 This is how `writing-check harness` measures each change with each candidate model against one server.
-The models of a kind are read as one model group of that kind, `DISPATCH_TEST_MODELS_AZURE_*` (`_ENDPOINT`, `_API_VERSION`, `_SCOPE`, `_TOKENS_PER_MINUTE`, with the shared Azure sign-in) or `DISPATCH_TEST_MODELS_ANTHROPIC_*` (`_ENDPOINT`, `_KEY_FILE`, `_TOKENS_PER_MINUTE`), each model's name being the deployment its requests name; beside `DISPATCH_TEST_MODEL_URL` they call the stand-in and take only `_TOKENS_PER_MINUTE`.
+The models of a kind are read as one model group of that kind, `DISPATCH_TEST_MODELS_AZURE_*` (`_ENDPOINT`, `_API_VERSION`, `_SCOPE`, `_TOKENS_PER_MINUTE`, with the shared Azure sign-in) or `DISPATCH_TEST_MODELS_ANTHROPIC_*` (`_ENDPOINT`, `_KEY_FILE`, `_TOKENS_PER_MINUTE`), each model's name, or its id where the name holds an effort, being the deployment its requests name; beside `DISPATCH_TEST_MODEL_URL` they call the stand-in and take only `_TOKENS_PER_MINUTE`.
+A name may also be `<id>:<effort>`, such as `Kimi-K3.1-Pro:off`: that test model calls deployment `<id>` and asks it for that reasoning effort, one of `off`, `minimal`, `low`, `medium` and `high`, the words agentloop takes; any other effort refuses the boot, naming it.
+A name of the id alone asks for its kind's own effort, as a model group does: no thinking on `anthropic`, no reasoning effort at all on `azure`.
+So one list can hold a model at its own effort and at another, each under its own name, and the header picks one by its whole name.
+The detector's reader asks for the effort it always asks for, whatever the name says.
+No model group takes an effort setting.
 The test models serve the reviewer's calls and Rewrite and Define's, so each kind's `_TOKENS_PER_MINUTE`, and the quota that paces a test model's deployment, is held to the reply bound of those calls as a group's is.
 A request that names a model the list does not hold is refused 400 `TEST_MODEL_REFUSED`, and so is any request with the header on a server without the test hooks, so a deployment's own model never answers a request that asked for another.
 

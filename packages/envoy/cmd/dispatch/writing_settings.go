@@ -136,7 +136,8 @@ type writingSettings struct {
 	TestModelURL string
 	// TestModels are the models a test request may name in its Dispatch-Test-Model header
 	// (DISPATCH_TEST_MODELS), read only under the test hooks, by name: each is the group of its
-	// kind's DISPATCH_TEST_MODELS_<KIND>_* settings with the name as its Deployment.
+	// kind's DISPATCH_TEST_MODELS_<KIND>_* settings with the name's id as its Deployment and the
+	// name's effort, if it names one, as its Effort.
 	TestModels map[string]modelGroup
 }
 
@@ -165,6 +166,10 @@ type modelGroup struct {
 	FederatedToken string
 	// StandIn says Endpoint is DISPATCH_TEST_MODEL_URL's stand-in, called with no credential.
 	StandIn bool
+	// Effort is the reasoning effort a test model's name asks for (`<id>:<effort>`,
+	// DISPATCH_TEST_MODELS), one of testModelEfforts. It is "" for a model group and for a test
+	// model named by its id alone, which ask for their kind's own (agentloopModel).
+	Effort string
 }
 
 // resolveWritingSettings reads the settings of the work on agents' texts and refuses, naming the
@@ -444,10 +449,18 @@ func testModelsWhose(kind string) string {
 	return "the " + kind + " test models'"
 }
 
+// testModelEfforts are the reasoning efforts a test model's name may ask for: the words agentloop
+// reads on each protocol it speaks. off asks for no reasoning (OpenAI's protocols send it as
+// `none`, Anthropic's turn thinking off), minimal is Anthropic's low, and low, medium and high are
+// each provider's own.
+var testModelEfforts = []string{"off", "minimal", "low", "medium", "high"}
+
 // resolveTestModels reads DISPATCH_TEST_MODELS: a comma list of name=kind, each name once, kind
-// azure or anthropic, refused without the test hooks. The test models of one kind are that kind's
+// azure or anthropic, refused without the test hooks. A name is a model's id, or `<id>:<effort>`
+// with effort one of testModelEfforts, which asks that model for that effort; an effort not in
+// that list is refused, naming it. The test models of one kind are that kind's
 // DISPATCH_TEST_MODELS_<KIND>_* settings read as a model group of the kind (resolveTestModelKind),
-// each with its own name as the deployment its requests name. The settings of a kind that no
+// each with its name's id as the deployment its requests name. The settings of a kind that no
 // listed model has are refused. Unset, it is nil.
 func resolveTestModels(env settingValues, testHooksEnabled bool, testModelURL string) (map[string]modelGroup, error) {
 	raw := strings.TrimSpace(env.get(testModelsSetting))
@@ -462,9 +475,14 @@ func resolveTestModels(env settingValues, testHooksEnabled bool, testModelURL st
 		}
 		name, kind, found := strings.Cut(entry, "=")
 		name, kind = strings.TrimSpace(name), strings.TrimSpace(kind)
+		id, effort, named := strings.Cut(name, ":")
 		prefix, known := testModelPrefixes[kind]
-		if !found || name == "" || !known {
+		if !found || id == "" || !known {
 			return nil, fmt.Errorf("%s names %q (expected a comma list of name=kind, each a model's name and its kind, azure or anthropic)", testModelsSetting, entry)
+		}
+		if named && !slices.Contains(testModelEfforts, effort) {
+			return nil, fmt.Errorf("%s names %s, whose effort %q is not one agentloop takes (expected <id> or <id>:<effort>, the effort one of %s)",
+				testModelsSetting, name, effort, strings.Join(testModelEfforts, ", "))
 		}
 		if _, twice := models[name]; twice {
 			return nil, fmt.Errorf("%s names %s twice", testModelsSetting, name)
@@ -477,7 +495,7 @@ func resolveTestModels(env settingValues, testHooksEnabled bool, testModelURL st
 			}
 			kinds[kind] = group
 		}
-		group.Deployment = name
+		group.Deployment, group.Effort = id, effort
 		models[name] = group
 	}
 	for kind, prefix := range testModelPrefixes {

@@ -1,4 +1,4 @@
-{{define "grade-define"}}You grade a definition. The reader selected words in the text and asked what they mean. A definition of those words was written for him.
+{{define "grade-define"}}You grade a definition. {{template "dispatch" .}} The reader selected words in the text and asked what they mean. A definition of those words was written for him.
 
 Decide whether the definition answers the question of the reader.
 
@@ -7,6 +7,8 @@ Decide whether the definition answers the question of the reader.
 - "question": the question of the reader, with the words he selected.
 - "definition": the definition that the reader sees.
 {{- template "context-tags" .}}
+
+{{template "data" .}}
 
 ## How to decide
 

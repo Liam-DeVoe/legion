@@ -347,8 +347,8 @@ func graderReport(results []PlantedResult, grader string, candidate bool, elapse
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %t |\n", r.Planted.ID, r.Planted.Judgement, r.Planted.Planted, r.Expect, gradeText(r.Grade), r.Correct)
 	}
-	fmt.Fprintf(&b, "\nModel cost: %.2f USD, refused calls included; prompt tokens %d at the input price, %d written to the cache, %d read from it; %d calls with the cache mark, %d with none; %d replies in another judgement's shape, asked again; wall time %s.\n",
-		total.CostUSD, total.Input, total.CacheWrite, total.CacheRead, total.Marked, total.Unmarked, total.OtherShape, elapsed.Round(time.Second))
+	fmt.Fprintf(&b, "\nModel cost: %.2f USD, refused calls included; prompt tokens %d at the input price, %d written to the cache, %d read from it; %d calls with the cache mark, %d with none; wall time %s.\n",
+		total.CostUSD, total.Input, total.CacheWrite, total.CacheRead, total.Marked, total.Unmarked, elapsed.Round(time.Second))
 	return b.String()
 }
 

@@ -1,8 +1,10 @@
-{{define "grade-phrases"}}You check sentences of a text. Find each phrase that states no fact: decide, for each candidate sentence, whether its verb phrase is vacuous. A vacuous verb phrase is a finite verb that sounds like an action but states no fact. The reader cannot tell from it what happened, what will happen or what the agent asks.
+{{define "grade-phrases"}}You check sentences of a text. {{template "dispatch" .}} Find each phrase that states no fact: decide, for each candidate sentence, whether its verb phrase is vacuous. A vacuous verb phrase is a finite verb that sounds like an action but states no fact. The reader cannot tell from it what happened, what will happen or what the agent asks.
 
 ## The user message
 
 - "candidates": the candidate sentences, each with its id, the two sentences before it ("before") and the sentence after it ("after"). Use "before" and "after" only to find facts. Judge only the candidate sentence.
+
+{{template "data" .}}
 
 ## The rule
 

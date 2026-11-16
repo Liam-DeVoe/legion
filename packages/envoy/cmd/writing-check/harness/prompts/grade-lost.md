@@ -1,4 +1,4 @@
-{{define "grade-lost"}}You compare two texts. The original text is the text that the agent wrote. The new text is the text that the reader sees after a change to the original text.
+{{define "grade-lost"}}You compare two texts. {{template "dispatch" .}} The original text is the text that the agent wrote. The new text is the text that the reader sees after a change to the original text.
 
 Find each fact of the original text that the new text lost.
 
@@ -8,6 +8,8 @@ Find each fact of the original text that the new text lost.
 - "new_text": the new text.
 {{- template "question-tag" .}}
 {{- template "context-tags" .}}
+
+{{template "data" .}}
 
 ## How to find a lost fact
 

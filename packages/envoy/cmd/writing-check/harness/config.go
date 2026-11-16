@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,9 +27,27 @@ var pricesFile []byte
 type ModelEntry struct {
 	Family string `yaml:"family" json:"family"`
 	ID     string `yaml:"id" json:"id"`
-	// Effort is a Claude model's reasoning effort (low, medium or high); empty is none.
+	// Effort is the reasoning effort the model is asked for. For a Claude model it is off, low,
+	// medium or high, empty being off. A candidate that sets it is the model at that effort, named
+	// `<id>:<effort>` (Name), one of candidateEfforts; a Foundry candidate that sets none sends
+	// none.
 	Effort string `yaml:"effort,omitempty" json:"effort,omitempty"`
 }
+
+// Name is the name a candidate goes by: its id, or `<id>:<effort>` for a candidate that sets its
+// effort. `score --model` and `--models` name it, the Dispatch-Test-Model header carries it, and
+// `local --test-models` lists it in DISPATCH_TEST_MODELS, whose test model of that name asks the
+// deployment <id> for that effort.
+func (m ModelEntry) Name() string {
+	if m.Effort == "" {
+		return m.ID
+	}
+	return m.ID + ":" + m.Effort
+}
+
+// candidateEfforts are the efforts a candidate may set: the ones the local Dispatch takes in a test
+// model's name (cmd/dispatch's testModelEfforts), which refuses to start on any other.
+var candidateEfforts = []string{"off", "minimal", "low", "medium", "high"}
 
 // PendingEntry is a candidate that has no id yet: one of INFRA-3483's deployments, by the stack
 // output that will name it.
@@ -109,8 +128,9 @@ func parseConfig(candidates, prices []byte) (Config, error) {
 }
 
 // check refuses a role that is not Claude, a role that is a candidate, a grader that plays the
-// writer or the reader, a model of an unknown family, a model named twice, and a model with no
-// price.
+// writer or the reader, a model of an unknown family, a candidate whose effort the local Dispatch
+// would refuse, a model named twice, and a model with no price. A candidate at an effort is a
+// candidate of its own, named apart (Name), and has the price of its id.
 func (c Config) check() error {
 	roles := c.roles()
 	for _, r := range roles {
@@ -144,10 +164,12 @@ func (c Config) check() error {
 		switch {
 		case m.Family != llm.FamilyClaude && m.Family != llm.FamilyFoundry:
 			return fmt.Errorf("candidates.yaml: %q has family %q, not %s or %s", m.ID, m.Family, llm.FamilyClaude, llm.FamilyFoundry)
-		case seen[m.ID] && !c.isRole(m.ID):
-			return fmt.Errorf("candidates.yaml: %q is named twice", m.ID)
+		case m.Effort != "" && !c.isRole(m.ID) && !slices.Contains(candidateEfforts, m.Effort):
+			return fmt.Errorf("candidates.yaml: the candidate %q asks for effort %q, which the local Dispatch refuses: an effort is one of %s", m.ID, m.Effort, strings.Join(candidateEfforts, ", "))
+		case seen[m.Name()] && !c.isRole(m.ID):
+			return fmt.Errorf("candidates.yaml: %q is named twice", m.Name())
 		}
-		seen[m.ID] = true
+		seen[m.Name()] = true
 		p, ok := c.Prices.Prices[m.ID]
 		if !ok {
 			return fmt.Errorf("prices.yaml: %q has no price", m.ID)
@@ -188,9 +210,18 @@ func (c Config) WithGrader(id string, candidate bool) (Config, error) {
 	return c, nil
 }
 
-// IsCandidate is whether id is a candidate of candidates.yaml.
+// IsCandidate is whether id is the model of a candidate of candidates.yaml, at any effort.
 func (c Config) IsCandidate(id string) bool {
 	return slices.ContainsFunc(c.Models.Candidates, func(m ModelEntry) bool { return m.ID == id })
+}
+
+// Candidate is the candidate of candidates.yaml that name names (ModelEntry.Name).
+func (c Config) Candidate(name string) (ModelEntry, bool) {
+	i := slices.IndexFunc(c.Models.Candidates, func(m ModelEntry) bool { return m.Name() == name })
+	if i < 0 {
+		return ModelEntry{}, false
+	}
+	return c.Models.Candidates[i], true
 }
 
 type namedRole struct {

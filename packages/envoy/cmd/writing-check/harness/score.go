@@ -414,8 +414,10 @@ type RunParams struct {
 	GradesFrom       []string `json:"grades_from,omitempty"`
 	VocabularySHA256 string   `json:"vocabulary_sha256,omitempty"`
 	PromptsSHA256    string   `json:"prompts_sha256"`
-	// WriterSHA256 is the writer's prompts' digest, for a change that plays the writer.
+	// WriterSHA256 is the writer's prompts' digest, and WriterOrder the order of the writer's
+	// user turn (--writer-order), for a change that plays the writer.
 	WriterSHA256 string `json:"writer_sha256,omitempty"`
+	WriterOrder  string `json:"writer_order,omitempty"`
 	CasesSHA256  string `json:"cases_sha256"`
 	SessionsSHA  string `json:"sessions_counts_sha256"`
 	SessionChars int    `json:"session_chars"`
@@ -531,12 +533,13 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs := flag.NewFlagSet("writing-check harness score", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	changeFlag := fs.String("change", "1", "the change to score: 1 to 6, 7a, or a combination of combinations.yaml")
-	modelFlag := fs.String("model", "", "the candidate of candidates.yaml the change calls (changes 3 to 7a, and a combination that holds one)")
-	modelsFlag := fs.String("models", "", "in place of --model, candidates of candidates.yaml, comma-separated, that one process scores the change with in lockstep: case by case, the change with each, then the grading of all of them together; each model's run goes to <out>/<model>")
+	modelFlag := fs.String("model", "", "the candidate of candidates.yaml the change calls, by its name: its id, or <id>:<effort> for a candidate that sets its effort (changes 3 to 7a, and a combination that holds one)")
+	modelsFlag := fs.String("models", "", "in place of --model, candidates of candidates.yaml, by name as --model names one, comma-separated, that one process scores the change with in lockstep: case by case, the change with each, then the grading of all of them together; each model's run goes to <out>/<model>")
 	localPath := fs.String("local", "", "the local.json of `harness local`: the local Dispatch the change calls (changes 2 to 6)")
 	loadedPath := fs.String("loaded", "", "the loaded.jsonl of `harness load` into that local Dispatch")
 	rounds := fs.Int("rounds", 2, "change 3: the reviews of one text, the first and those of the writer's edits; the last edit posts")
 	unedited := fs.String("unedited", uneditedRewrite, "change 3 with no writer session: what posts, as DISPATCH_REVIEWER_UNEDITED says: rewrite or as_written")
+	writerOrder := fs.String("writer-order", writerSessionLast, "the order of the writer's user turn: session-last, Dispatch's record, the writer's text and Dispatch's message, then the session part; or session-first, the record and the session part, then the text and the message")
 	casesDir := fs.String("cases", "", "the dataset build directory: cases.jsonl.gz and documents.jsonl.gz (required)")
 	sessionsDir := fs.String("sessions", "", "the directory `writing-check dataset sessions` wrote: session-rows.jsonl.gz, places.jsonl, sessions-counts.json (required)")
 	out := fs.String("out", "", "the run's output directory, or under --models the directory of each model's run; a run continues the cases it holds no result for (required; keep it under $TMPDIR)")
@@ -615,6 +618,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return usage(fmt.Sprintf("change %s calls the local Dispatch: give --local and --loaded", change.Name()))
 	case *rounds < 1 || (*unedited != uneditedRewrite && *unedited != uneditedAsWritten):
 		return usage("--rounds must be at least 1, and --unedited rewrite or as_written")
+	case *writerOrder != writerSessionLast && *writerOrder != writerSessionFirst:
+		return usage("--writer-order is session-last or session-first")
+	case *writerOrder != writerSessionLast && (plan == nil || !plan.writer()):
+		return usage(fmt.Sprintf("change %s plays no writer: give no --writer-order", change.Name()))
 	case mf.uncachedPerMinute < 0:
 		return usage("--uncached-input-per-minute must not be below 0")
 	}
@@ -694,11 +701,12 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if plan != nil {
 		run = change.(*changeRun)
 		run.cfg, run.rounds, run.unedited, run.tries, run.backoff, run.poll = cfg, *rounds, *unedited, changeTries, changeBackoff, changePoll
+		run.writerOrder = *writerOrder
 		if plan.writer() {
 			models[RoleWriter] = cfg.Models.Roles.Writer.ID
 		}
 		for _, m := range candidates {
-			if m != "" && !slices.ContainsFunc(cfg.Models.Candidates, func(e ModelEntry) bool { return e.ID == m }) {
+			if _, ok := cfg.Candidate(m); m != "" && !ok {
 				return usage(fmt.Sprintf("%s %q is no candidate of candidates.yaml", candidateFlag, m))
 			}
 		}
@@ -730,7 +738,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			params.Changes = plan.changes()
 		}
 		if plan.writer() {
-			params.WriterSHA256 = WriterDigest()
+			params.WriterSHA256, params.WriterOrder = WriterDigest(), *writerOrder
 		}
 		if plan.has(changeFindings) {
 			params.Rounds, params.Unedited = *rounds, *unedited

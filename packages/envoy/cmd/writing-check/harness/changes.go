@@ -132,10 +132,11 @@ var stepPrompts = map[string]string{
 }
 
 // writerCalls are the most calls of each of the writer's prompts that the plan makes for one
-// case. Those calls send the same prefix: the prompt, its schema, and the case's record and
-// session part. Change 3 calls the writer once in each round of review, up to rounds; each other
-// step calls it at most once. The writer marks a prompt's calls where the case's calls of it,
-// over the lanes that make the change of the case, can be two or more (Writer.marked).
+// case. Those calls send the same prefix: the prompt, its schema and the case's record, and in
+// the writer's order session-first its session part. Change 3 calls the writer once in each
+// round of review, up to rounds; each other step calls it at most once. The writer marks a
+// prompt's calls where the case's calls of it, over the lanes that make the change of the case,
+// can be two or more (Writer.marked).
 func (p changePlan) writerCalls(rounds int) map[string]int {
 	calls := map[string]int{}
 	for _, s := range p.steps {
@@ -203,6 +204,8 @@ type changeRun struct {
 	rounds   int
 	unedited string
 	sessions map[string]claude.SessionText
+	// writerOrder is the order of the writer's user turn (score --writer-order).
+	writerOrder string
 	// answers are the writer's answers that the lanes of a lockstep run share, nil outside one.
 	answers *sharedAnswers
 	// tries and backoff bound the retries of a call that met a provider's failure; poll is how

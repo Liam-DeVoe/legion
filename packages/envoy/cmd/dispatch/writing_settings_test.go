@@ -182,6 +182,44 @@ func TestAnAzureGroupSendsNoReasoningEffort(t *testing.T) {
 	}
 }
 
+// A test model's name may ask for a reasoning effort, `<id>:<effort>`: that model calls deployment
+// <id> at that effort, of either kind, beside the same id named alone, which asks for its kind's
+// own as before. An effort agentloop does not take refuses the boot, naming it, and so does a
+// name with no id.
+func TestATestModelNamedWithAnEffortAsksForIt(t *testing.T) {
+	models := resolveWith(t, testModelsEnv(map[string]string{
+		"DISPATCH_TEST_MODELS": "Kimi-K3.1-Pro=azure,Kimi-K3.1-Pro:off=azure,claude-haiku-5-5:high=anthropic",
+	})).Writing.TestModels
+	plain := modelGroup{Kind: "azure", Endpoint: "https://models.example/models", Deployment: "Kimi-K3.1-Pro", Scope: embed.DefaultEntraScope,
+		TokensPerMinute: 60000, TenantID: "tenant-id", ClientID: "client-id", FederatedToken: "/var/run/secrets/azure-federation/token"}
+	off := plain
+	off.Effort = "off"
+	high := modelGroup{Kind: "anthropic", Endpoint: "http://model-gateway.example:4000", Deployment: "claude-haiku-5-5",
+		KeyFile: "/var/run/model-gateway-key/key", TokensPerMinute: 40000, Effort: "high"}
+	if want := map[string]modelGroup{"Kimi-K3.1-Pro": plain, "Kimi-K3.1-Pro:off": off, "claude-haiku-5-5:high": high}; !maps.Equal(models, want) {
+		t.Errorf("TestModels = %+v, want %+v", models, want)
+	}
+	for name, want := range map[string]struct{ id, effort string }{
+		"Kimi-K3.1-Pro":         {"Kimi-K3.1-Pro", ""},
+		"Kimi-K3.1-Pro:off":     {"Kimi-K3.1-Pro", "off"},
+		"claude-haiku-5-5:high": {"claude-haiku-5-5", "high"},
+	} {
+		model, err := models[name].agentloopModel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if model.ID != want.id || model.Effort != want.effort {
+			t.Errorf("%s calls %q at effort %q, want %q at %q", name, model.ID, model.Effort, want.id, want.effort)
+		}
+	}
+
+	for name, effort := range map[string]string{"Kimi-K3.1-Pro:max": "max", "Kimi-K3.1-Pro:": "", "Kimi-K3.1-Pro:off:low": "off:low", "Kimi-K3.1-Pro:OFF": "OFF"} {
+		refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS": name + "=azure,claude-haiku-5-5=anthropic"}),
+			"DISPATCH_TEST_MODELS names "+name+", whose effort "+strconv.Quote(effort)+" is not one agentloop takes (expected <id> or <id>:<effort>, the effort one of off, minimal, low, medium, high)")
+	}
+	refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS": ":off=azure,claude-haiku-5-5=anthropic"}), `DISPATCH_TEST_MODELS names ":off=azure"`)
+}
+
 // DISPATCH_TEST_MODELS is a test process's alone: without DISPATCH_TEST_HOOKS=1 it refuses the
 // boot. Under the hooks each listed model is its kind's group, named as its own deployment; beside
 // the stand-in model every one calls the stand-in with no credential. A kind's settings with no
