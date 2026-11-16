@@ -41,6 +41,24 @@ func TestNoQueueOrParkedHourEntersTheWorkTime(t *testing.T) {
 	}
 }
 
+// TestTimeInIceboxIsParkedAndOutOfTheWorkTime: the work time leaves out "any time in `backlog` or
+// `icebox`", and "A park runs from its `backlog` or `icebox` status write until the next status
+// write" (the spec's metric 1 and "A park and role events"). The issue below sat in icebox for
+// three of the eight hours from its first worker event to its close.
+func TestTimeInIceboxIsParkedAndOutOfTheWorkTime(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(8)).
+		statusAt(hour(0), "in_progress").
+		statusAt(hour(2), "icebox").
+		statusAt(hour(5), "in_progress")
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if len(report.WorkTime.Issues) != 1 {
+		t.Fatalf("work-time rows = %d, want the one issue", len(report.WorkTime.Issues))
+	}
+	if row := report.WorkTime.Issues[0]; row.Hours != 5 || row.ParkedHours != 3 {
+		t.Fatalf("work time = %g hours with %g parked, want 5 with the 3 in icebox parked", row.Hours, row.ParkedHours)
+	}
+}
+
 // TestTheSevenBarsOfAnIssueAddUpToItsWorkTime: "An hour that work time to merge leaves out is on
 // no bar of phase time: an hour in `backlog` or `icebox`, an hour back in the queue, and any hour
 // before the issue's first worker event. So the bars of an issue add up to its work time, and the
@@ -119,13 +137,21 @@ func TestTheSevenBarsOfAnIssueAddUpToItsWorkTime(t *testing.T) {
 
 // TestAnIssueThatClosedWithNoLegionWorkIsNotCounted: the population is the issues that closed in
 // the window with Legion phase work — an event of a session titled `Legion <role> · <KEY>` for
-// their own key, or a handoff — and nothing else that closed.
+// their own key, or a handoff — and nothing else that closed. An issue the daemon reports is a
+// Legion issue of its tree and still not one that finished: that rule "still needs Legion phase
+// work" (the spec's "The top issue of a tree").
 func TestAnIssueThatClosedWithNoLegionWorkIsNotCounted(t *testing.T) {
 	worked := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(2))
 	handedOff := newIssue("INFRA-2").handedOff("plan", hour(1)).closedAt(hour(3))
 	bare := newIssue("INFRA-3").closedAt(hour(4))
 	early := newIssue("INFRA-4").worked("implementer", hour(-100)).closedAt(hour(-50))
-	report := Compute(fixture(hour(-24), hour(24), worked, handedOff, bare, early), ScopeAll, hour(24))
+	reported := newIssue("INFRA-5").observeString(legion.FieldPhase, hour(1), "implementing").closedAt(hour(5))
+	report := Compute(fixture(hour(-24), hour(24), worked, handedOff, bare, early, reported), ScopeAll, hour(24))
+	// Finished is every metric's population. The work-time rows below are not: an issue with no
+	// worker event has none, whether or not it is counted.
+	if report.Finished != 2 {
+		t.Fatalf("%d issues finished, want the worked issue and the one with a handoff", report.Finished)
+	}
 	var counted []string
 	for _, row := range report.WorkTime.Issues {
 		counted = append(counted, row.Key)
@@ -414,6 +440,21 @@ func TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone(t *testing.T) {
 	}
 }
 
+// TestARolesMedianCountsAnIssueItNeverWorkedAsZero: "Each role's median runs over every finished
+// issue of the window, and an issue no worker of that role touched counts as zero hours, so a role
+// that works few issues reads a low median" (the spec's metric 2). The tester worked one of the
+// three issues below, for three hours, so its median is the middle of 0, 0 and 3.
+func TestARolesMedianCountsAnIssueItNeverWorkedAsZero(t *testing.T) {
+	tested := newIssue("INFRA-1").worked("implementer", hour(0)).worked("tester", hour(1)).closedAt(hour(4))
+	untested := newIssue("INFRA-2").worked("implementer", hour(0)).closedAt(hour(4))
+	alsoUntested := newIssue("INFRA-3").worked("implementer", hour(0)).closedAt(hour(4))
+	bar := barOf(t, Compute(fixture(hour(-24), hour(24), tested, untested, alsoUntested), ScopeAll, hour(24)), "tester")
+	if bar.Hours != 3 || bar.MedianHoursPerIssue != 0 {
+		t.Fatalf("the tester's bar = %g hours with a median of %g per issue, want 3 hours and a median of 0: two of the three finished issues held no testing hour",
+			bar.Hours, bar.MedianHoursPerIssue)
+	}
+}
+
 // TestAfterASendBackTheDispatchStatusSetsThePhase: "After a send-back, the Dispatch status sets
 // the phase: `in_progress` after `testing` or `needs_review` is implementing, `testing` is
 // testing, and `needs_review` is reviewing until the `review` handoff of that round, then
@@ -471,6 +512,26 @@ func TestAfterASendBackTheDispatchStatusSetsThePhase(t *testing.T) {
 	if row.ImplementingHoursAfterFirst != 1 || row.TestingHoursAfterFirst != 1 {
 		t.Fatalf("after the first review: %g implementing and %g testing hours, want the hour of each the second round holds",
 			row.ImplementingHoursAfterFirst, row.TestingHoursAfterFirst)
+	}
+}
+
+// TestARolesFirstEventAfterItsPhaseHasPassedLeavesThePhaseUnchanged: "A role's first event starts
+// that role's phase only when that phase is later in the workflow than the furthest phase the
+// issue has yet reached; otherwise the event is passed over and the phase is unchanged" (the
+// spec's "No re-entry by a first event"). The statuses below took the issue through testing into
+// reviewing before its tester first wrote on it, during the review: the review runs on to its
+// handoff, and no hour of it goes back to testing.
+func TestARolesFirstEventAfterItsPhaseHasPassedLeavesThePhaseUnchanged(t *testing.T) {
+	issue := newIssue("INFRA-1").
+		worked("implementer", hour(0)).
+		statusAt(hour(2), "testing").
+		statusAt(hour(3), "needs_review").
+		worked("tester", hour(4)).
+		handedOff("review", hour(5)).
+		closedAt(hour(6))
+	want := []string{"implementing 0-2", "testing 2-3", "reviewing 3-5", "accepting 5-6"}
+	if got := timelineOf(fixture(hour(-24), hour(24), issue), issue); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the fallback timeline is %v, want %v: the tester's first event during the review is passed over", got, want)
 	}
 }
 
@@ -706,6 +767,24 @@ func TestReviewRoundsAndSendBacksComeFromThePhaseTimeline(t *testing.T) {
 	}
 }
 
+// TestAReviewStillRunningAtTheFirstObservationIsOneRound: review rounds are "entries into
+// `reviewing`, or into status `needs_review` before observations" (the spec's metric 3). The issue
+// below entered `needs_review` before the sampler's first read, and that read found it still in
+// review: one entry, the status's, and the observed stretch that carries the same review on is no
+// second one.
+func TestAReviewStillRunningAtTheFirstObservationIsOneRound(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(5)).
+		statusAt(hour(0), "in_progress").
+		statusAt(hour(1), "testing").
+		statusAt(hour(2), "needs_review").
+		observeString(legion.FieldPhase, hour(3), "reviewing").
+		observeString(legion.FieldPhase, hour(4), "accepting")
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if rounds := report.Rework.Issues[0].ReviewRounds; rounds != 1 {
+		t.Fatalf("the issue has %d review rounds, want the one its needs_review opened at hour 2, which the sampler saw go on from hour 3", rounds)
+	}
+}
+
 // TestASendBackOutOfRetroIsCountedOnTheObservedTimeline: metric 3 counts "a move from `testing`,
 // `reviewing`, `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`". A head that
 // starts conflicting with its base sends the issue back out of any of them (the daemon workflow's
@@ -738,6 +817,23 @@ func TestASendBackOutOfRetroIsCountedOnTheObservedTimeline(t *testing.T) {
 	}
 	if report.Rework.SentBackShare != 0.5 {
 		t.Errorf("sent-back share = %g, want 0.5", report.Rework.SentBackShare)
+	}
+}
+
+// TestAMoveFromTestingBackToImplementingIsASendBackOnTheObservedTimeline: metric 3's share sent
+// back counts "a move from `testing`, `reviewing`, `accepting` `retro`, `merging` or
+// `awaiting_merge` to `implementing`". A change its tester fails goes from testing straight back
+// to implementing, with no review between.
+func TestAMoveFromTestingBackToImplementingIsASendBackOnTheObservedTimeline(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(5)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(1), "testing").
+		// The tester failed the change.
+		observeString(legion.FieldPhase, hour(2), "implementing").
+		observeString(legion.FieldPhase, hour(3), "testing")
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if row := report.Rework.Issues[0]; !row.SentBack {
+		t.Fatalf("sent_back = %t, want the move from testing back to implementing at hour 2 counted", row.SentBack)
 	}
 }
 
@@ -823,6 +919,25 @@ func TestEachClassOfFiledIssue(t *testing.T) {
 	}
 }
 
+// TestAFilingUnderAnotherTreeIsOutOfTheFilersTree: "Out of the tree: any other issue an architect
+// or phase worker filed", where "The new issue is in the filer's tree when both walks reach the
+// same top issue" (the spec's metric 4 and "The tree of a filed issue"). The implementer below
+// files an issue under the root of another tree: the filing has a parent, and that parent's walk
+// reaches another top issue than the filer's.
+func TestAFilingUnderAnotherTreeIsOutOfTheFilersTree(t *testing.T) {
+	filer := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(20))
+	otherRoot := newIssue("INFRA-5").worked("architect", hour(0))
+	filed := newIssue("INFRA-6").under("INFRA-5")
+	population := fixture(hour(-24), hour(48), filer, otherRoot, filed)
+	population.Filed = []Filed{
+		{Key: "INFRA-6", At: hour(6), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}, Parent: "INFRA-5", Ancestors: []string{"INFRA-5"}},
+	}
+	report := Compute(population, ScopeAll, hour(48))
+	if len(report.Splitting.Filed) != 1 || report.Splitting.Filed[0].Class != ClassOutOfTree {
+		t.Fatalf("the filings are %+v, want INFRA-6 out of the filer's tree: its parent INFRA-5 tops a tree of its own", report.Splitting.Filed)
+	}
+}
+
 // TestTheScopeNarrowsTheFilingsByTheIssueFiled: the splitting table's rows and each week's four
 // class counts follow the scope, read by the issue each filing created — the one implementer
 // files a child of its own tree and a follow-up that is a root, and `roots` keeps one and
@@ -894,6 +1009,47 @@ func TestTheScopeNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 					one.scope, report.Splitting.MedianHoursRootsWithChildren, report.Splitting.MedianHoursRootsNoChildren)
 			}
 		})
+	}
+}
+
+// TestEachWeeksFinishedCountFollowsTheScope: metric 4 counts each week's filings "against issues
+// finished per week", and "the weekly counts follow the toggle" (the spec's metric 4). A root and
+// its child finish in one week, which counts both under all, the root under roots and the child
+// under children.
+func TestEachWeeksFinishedCountFollowsTheScope(t *testing.T) {
+	root := newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(10))
+	child := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(1)).closedAt(hour(8))
+	population := fixture(hour(-24), hour(24), root, child)
+	for _, one := range []struct {
+		scope    Scope
+		finished int
+	}{
+		{ScopeAll, 2},
+		{ScopeRoots, 1},
+		{ScopeChildren, 1},
+	} {
+		t.Run(string(one.scope), func(t *testing.T) {
+			weeks := Compute(population, one.scope, hour(24)).Splitting.Weeks
+			if len(weeks) != 1 || weeks[0].Finished != one.finished {
+				t.Fatalf("scope %s answers the weeks %+v, want one week that finished %d", one.scope, weeks, one.finished)
+			}
+		})
+	}
+}
+
+// TestChildrenPerRootCountsEveryIssueOfTheTreeUnderItsRoot: children per root is "the mean over
+// the finished roots (every issue of the tree under its root, not only direct children ...)" (the
+// spec's metric 4). The root below has a child, and the child an issue of its own: two issues of
+// the tree under one root.
+func TestChildrenPerRootCountsEveryIssueOfTheTreeUnderItsRoot(t *testing.T) {
+	root := newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(10))
+	// The child carries Legion phase work, so the walk from the grandchild climbs through it.
+	child := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(1))
+	grandchild := newIssue("INFRA-3").under("INFRA-2")
+	report := Compute(fixture(hour(-24), hour(24), root, child, grandchild), ScopeAll, hour(24))
+	if report.Splitting.FinishedRoots != 1 || report.Splitting.ChildrenPerRoot != 2 {
+		t.Fatalf("%d finished roots with %g children each, want the one root with its child and its grandchild",
+			report.Splitting.FinishedRoots, report.Splitting.ChildrenPerRoot)
 	}
 }
 

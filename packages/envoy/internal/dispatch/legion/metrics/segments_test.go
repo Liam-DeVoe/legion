@@ -196,3 +196,23 @@ func TestAChildMakesItsRootWaitOnlyThroughItsOwnWorkTime(t *testing.T) {
 			bar.Hours, bar.Segments)
 	}
 }
+
+// TestAChildInDesignDoesNotMakeItsRootWaitOnChildren: segment 4 holds while "the issue is a root
+// with a child in a phase from planning to awaiting merge" (the spec's metric 2), so a child's
+// design is not among them. The child below, which a sub-architect titled by its own key gives a
+// design phase, is in design for an hour of its root's planning and in planning for the next: only
+// the second is the root waiting on its children.
+func TestAChildInDesignDoesNotMakeItsRootWaitOnChildren(t *testing.T) {
+	root := newIssue("INFRA-1").worked("planner", hour(0)).closedAt(hour(4)).
+		observeString(legion.FieldPhase, hour(0), "planning").
+		observeString(legion.FieldPhase, hour(4), "done")
+	child := newIssue("INFRA-2").under("INFRA-1").
+		worked("architect", hour(1)).
+		worked("planner", hour(2)).
+		closedAt(hour(3))
+	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root, child), ScopeRoots, hour(24)), "planner")
+	if bar.Hours != 4 || bar.Segments.WaitingOnChildren != 1 || bar.Segments.Idle != 3 {
+		t.Fatalf("the root's planner bar = %g hours, %+v, want one hour waiting on the child's planning and three idle, its design hour among them",
+			bar.Hours, bar.Segments)
+	}
+}

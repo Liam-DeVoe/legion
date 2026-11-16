@@ -445,12 +445,17 @@ func newFakeLegionDaemon(t *testing.T, handler http.Handler, project string) *fa
 	return daemon
 }
 
-// pass serves body and runs one pass of the sampler over it.
-func (d *fakeLegionDaemon) pass(t *testing.T, database *store.Store, body string) {
-	t.Helper()
+// serves sets the state document the daemon answers from its next read on.
+func (d *fakeLegionDaemon) serves(body string) {
 	d.mu.Lock()
 	d.body = body
 	d.mu.Unlock()
+}
+
+// pass serves body and runs one pass of the sampler over it.
+func (d *fakeLegionDaemon) pass(t *testing.T, database *store.Store, body string) {
+	t.Helper()
+	d.serves(body)
 	legion.NewSampler(database.Pool).Pass(t.Context())
 }
 
@@ -623,6 +628,87 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 		}
 		if board.Header.QueueLength != 3 {
 			t.Errorf("%s's queue is %d long, want its own three", project, board.Header.QueueLength)
+		}
+	}
+}
+
+// TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics is the spec's A4, "A test with two
+// projects, each with a fake daemon, answers each project its own board and metrics", read
+// through one pass of the sampler over two daemons. Two facts here cross from LINUX to INFRA, and
+// neither is INFRA's: a LINUX worker files an issue into INFRA, which is a LINUX session's filing,
+// and the LINUX daemon's state names an INFRA issue in review, which is LINUX's record and nothing
+// INFRA's daemon reported. So each board shows its own daemon's read, and each project's metrics
+// count its own issue, its own sessions' filings and its own daemon's observations.
+func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA", "LINUX")
+	infra := newFakeLegionDaemon(t, handler, "INFRA")
+	linux := newFakeLegionDaemon(t, handler, "LINUX")
+	start := time.Now().UTC()
+	seedLegionIssue(t, database, "INFRA", 1, "INFRA's issue", "a", nil, "")
+	seedLegionIssue(t, database, "LINUX", 1, "LINUX's issue", "a", nil, "")
+	seedLegionRoleEvent(t, database, "INFRA-1", "s-infra-1", "implementer", "INFRA-1", start.Add(-2*time.Hour))
+	seedLegionRoleEvent(t, database, "LINUX-1", "s-linux-1", "implementer", "LINUX-1", start.Add(-2*time.Hour))
+	// The cross-project filing: LINUX-1's implementer creates INFRA-2.
+	seedLegionIssue(t, database, "INFRA", 2, "Filed by LINUX's implementer", "b", nil, "")
+	legionExec(t, database, `insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('INFRA-2', 1, 'issue.created', $1::jsonb, '{"status":"triage"}', false, $2)`,
+		`{"kind":"session","id":"s-linux-1","origin":{"session_title":"Legion implementer · LINUX-1"}}`, start.Add(-time.Hour))
+
+	infra.serves(`{"issues":{
+		"INFRA-1":{"key":"INFRA-1","phase":"implementing","workers":{"implementer":{"claim":{"state":"working"}}}}}}`)
+	linux.serves(`{"issues":{
+		"LINUX-1":{"key":"LINUX-1","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}},
+		"INFRA-1":{"key":"INFRA-1","phase":"reviewing","workers":{"reviewer":{"claim":{"state":"working"}}}}}}`)
+	legion.NewSampler(database.Pool).Pass(t.Context())
+
+	infraBoard := legionBoardOf(t, handler, "INFRA")
+	if got := legionColumnKeys(t, infraBoard, legionColumnImplementing); !slices.Equal(got, []string{"INFRA-1"}) {
+		t.Errorf("INFRA's implementing column holds %v, want INFRA-1 as INFRA's daemon reports it", got)
+	}
+	if got := legionColumnKeys(t, infraBoard, legionColumnReviewing); len(got) != 0 {
+		t.Errorf("INFRA's reviewing column holds %v, want none: LINUX's daemon put INFRA-1 there, and it is no source of INFRA's board", got)
+	}
+	if roles := legionCard(t, infraBoard, "INFRA-1").Roles; !slices.Equal(roles, []string{"implementer"}) {
+		t.Errorf("INFRA-1's roles on INFRA's board are %v, want INFRA's implementer alone", roles)
+	}
+	linuxBoard := legionBoardOf(t, handler, "LINUX")
+	if got := legionColumnKeys(t, linuxBoard, legionColumnTesting); !slices.Equal(got, []string{"LINUX-1"}) {
+		t.Errorf("LINUX's testing column holds %v, want LINUX-1 as LINUX's daemon reports it", got)
+	}
+	if roles := legionCard(t, linuxBoard, "LINUX-1").Roles; !slices.Equal(roles, []string{"tester"}) {
+		t.Errorf("LINUX-1's roles on LINUX's board are %v, want LINUX's tester alone", roles)
+	}
+
+	// Each project's issue closes after the reads, so the observations stand inside its life.
+	closeLegionIssue(t, database, "INFRA-1", time.Now().UTC())
+	closeLegionIssue(t, database, "LINUX-1", time.Now().UTC())
+	now := time.Now().UTC()
+	for _, one := range []struct {
+		project string
+		issue   string
+		filed   []string
+	}{
+		{"INFRA", "INFRA-1", nil},
+		{"LINUX", "LINUX-1", []string{"INFRA-2 by implementer of LINUX-1, " + metrics.ClassOutOfTree}},
+	} {
+		population, err := metrics.Read(t.Context(), database.Pool, nil, one.project, start.Add(-24*time.Hour), now.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("read %s's metrics population: %v", one.project, err)
+		}
+		report := metrics.Compute(population, metrics.ScopeAll, now)
+		if report.Finished != 1 || len(report.Rework.Issues) != 1 || report.Rework.Issues[0].Key != one.issue {
+			t.Fatalf("%s's report finished %d issues, %+v, want its own %s alone", one.project, report.Finished, report.Rework.Issues, one.issue)
+		}
+		if rounds := report.Rework.Issues[0].ReviewRounds; rounds != 0 {
+			t.Errorf("%s's %s has %d review rounds, want none: %s's daemon never reported it in review", one.project, one.issue, rounds, one.project)
+		}
+		var filed []string
+		for _, row := range report.Splitting.Filed {
+			filed = append(filed, fmt.Sprintf("%s by %s of %s, %s", row.Key, row.Filer, row.FilerIssue, row.Class))
+		}
+		if !slices.Equal(filed, one.filed) {
+			t.Errorf("%s's report holds the filings %v, want %v: a filing belongs to the project of the session that filed it", one.project, filed, one.filed)
 		}
 	}
 }
