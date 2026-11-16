@@ -1,8 +1,8 @@
 // Package exchange decides what a verified subject token entitles its holder to write in
 // Dispatch: the claims a minted Dispatch access token carries — the session that is writing, the
 // person it acts for or the service it is, and which projects it may write, either the one it
-// names or every one its person may write — and, beside them, the principal the session name
-// belongs to.
+// names, every one its person may write, or none at all for a token that only reads — and,
+// beside them, the principal the session name belongs to.
 //
 // It is the policy half of the RFC 8693 token exchange and nothing else. It verifies no token,
 // reads no configuration, takes no clock and makes no call: it is handed entries someone else
@@ -13,8 +13,9 @@
 // Five kinds of subject token reach it, and what decides each one's claims differs:
 //
 //   - a pod's Kubernetes service-account token, where an entry keyed on the account subject
-//     (system:serviceaccount:<namespace>:<name>) gives the project and the person, and the token
-//     must carry the pod it is bound to;
+//     (system:serviceaccount:<namespace>:<name>) gives the project and the person, or a read
+//     entry keyed on it gives a service and the session its token reads as, and the token must
+//     carry the pod it is bound to;
 //   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
 //     repository, the workflow's path and the ref it ran on gives the project and the person;
 //   - a machine's Google identity token, where an entry keyed on the account's email address
@@ -113,6 +114,13 @@ const (
 	// write, and names none. It is what a person's own credential gets, because a person reaches
 	// whichever projects they may reach.
 	ProjectScopePerson
+	// ProjectScopeNone is a token that may write no project and names none: it holds the OAuth
+	// scope oauthwire.ScopeRead and nothing else, so it reads only the routes a resource server
+	// lists for that scope, and only on a resource server that serves it. It is what a read
+	// entry's pod gets, and no other decision answers it. Its String differs from
+	// ProjectScopeUnset's, because 'writes nothing' is a decision this package made and 'never
+	// decided' is not one.
+	ProjectScopeNone
 )
 
 // ComputeEngine is the instance a Google identity token was minted on, the `google` →
@@ -316,6 +324,8 @@ func (s ProjectScope) String() string {
 		return "one named project"
 	case ProjectScopePerson:
 		return "every project the person may write"
+	case ProjectScopeNone:
+		return "no project: reads only"
 	default:
 		return "no project scope"
 	}
@@ -331,14 +341,17 @@ type Claims struct {
 	// is set.
 	Person string
 	// Service is the service a token that names no person is: the fleet a machine belongs to,
-	// which is what a machine whose entry names no person gets instead of a person. It is empty
-	// for every other decision, each of which acts for a person.
+	// which is what a machine whose entry names no person gets instead of a person, or the
+	// service a read entry names. It is empty for every other decision, each of which acts for a
+	// person.
 	Service string
-	// Scope is what Project means, and is always one of ProjectScopeNamed or ProjectScopePerson:
-	// every constructor sets it, so a reader never has to read an empty Project as either.
+	// Scope is what Project means, and is always one of ProjectScopeNamed, ProjectScopePerson or
+	// ProjectScopeNone: every constructor sets it, so a reader never has to read an empty Project
+	// as any of them. ProjectScopeNone is a read entry's, and is the one scope under which the
+	// minted token holds the OAuth scope oauthwire.ScopeRead.
 	Scope ProjectScope
 	// Project is the one project key the token may write, and is empty for a
-	// ProjectScopePerson token, which names no project.
+	// ProjectScopePerson or ProjectScopeNone token, neither of which names a project.
 	Project string
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
@@ -352,9 +365,9 @@ type Claims struct {
 	// Instance is which caller of that principal is asking, and is not a claim of the minted
 	// token either: it is the pod uid a registration has to name for this exchange to be made
 	// (oauthstore.Store.PodSessionRegistered), and is empty for every caller no registration
-	// separates from the others of its principal — a pod whose entry fixes the session, a
-	// workflow run, and a dev box session, each of which writes under a name its configuration or
-	// its person already decides.
+	// separates from the others of its principal — a pod whose entry fixes the session, which
+	// every read entry does, a workflow run, and a dev box session, each of which writes under a
+	// name its configuration or its person already decides.
 	Instance string
 	// Fleet is the service a machine's Google account is listed for (GoogleEntry.Service),
 	// whether or not the token names it, and is empty for every other decision. Like Principal
@@ -395,6 +408,29 @@ type AccountEntry struct {
 	// request naming any other is refused. It is how a long-running service keeps writing under
 	// one name it does not get to choose per request. The name is one of the set's Reservations,
 	// held for the account however many of its pods exchange and refused to every other caller.
+	Session string
+}
+
+// ReadEntry lists one Kubernetes service account whose pods may read and may write nothing: the
+// token they are minted holds the OAuth scope oauthwire.ScopeRead and the project scope
+// ProjectScopeNone, names Service and Session, and names no person and no project. Every field is
+// required. A resource server accepts such a token only where it asks to, and Dispatch serves it
+// on the routes its read list names and nowhere else.
+//
+// It is a list of its own, BROKER_EXCHANGE_READ_ACCOUNTS, rather than a kind of AccountEntry, so
+// that a broker of a build that predates it reads none of its entries and mints such an account
+// nothing, where the same entry in BROKER_EXCHANGE_ACCOUNTS would read as a project and a person.
+type ReadEntry struct {
+	// Account is the subject a pod's projected token carries,
+	// system:serviceaccount:<namespace>:<name>, named exactly, as AccountEntry.Account is.
+	Account string
+	// Service is the service the minted token names in place of a person: the one a resource
+	// server reads to decide what the caller is.
+	Service string
+	// Session is the session name every token minted for this account carries, and a request
+	// naming any other is refused. It is required because a token that names no person has
+	// nobody whose session a request could name, and it is one of the set's Reservations, held
+	// for the account as AccountEntry.Session is.
 	Session string
 }
 
@@ -463,6 +499,7 @@ type workflowKey struct{ repository, workflow, ref string }
 // so every Pod, Workflow, Google, Person and Machine on it is a pure function of its arguments.
 type Set struct {
 	accounts     map[string]AccountEntry
+	reads        map[string]ReadEntry
 	workflows    map[workflowKey]WorkflowEntry
 	google       map[string]GoogleEntry
 	signInDomain string
@@ -479,14 +516,21 @@ type Set struct {
 // nothing clear about which machines it means, and one that names a person without a project, or
 // a project without a person, says nothing clear about what they may write.
 //
+// reads are the read entries, which list Kubernetes service accounts as accounts does. An
+// account both lists name is refused, naming its read entry, for the reason an identity listed
+// twice is: it would have two answers, a token that writes a project and one that only reads. A
+// read entry's session is required as well as usable, and is reserved for the account as an
+// account entry's fixed one is.
+//
 // signInDomain is the Google Workspace domain BROKER_SIGNIN_DOMAIN names, which Person holds a
 // signing-in person's own token to. It is a field of the set rather than an argument of that
 // decision because it is configuration exactly as the entries are, and it is refused nothing
 // here: an empty one admits nobody (oidc.WorkspaceLogin), which is what a broker told about no
 // domain should do with a person's token.
-func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []GoogleEntry, signInDomain string) (*Set, error) {
+func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntry, machines []GoogleEntry, signInDomain string) (*Set, error) {
 	set := &Set{
 		accounts:     make(map[string]AccountEntry, len(accounts)),
+		reads:        make(map[string]ReadEntry, len(reads)),
 		workflows:    make(map[workflowKey]WorkflowEntry, len(workflows)),
 		google:       make(map[string]GoogleEntry, len(machines)),
 		signInDomain: signInDomain,
@@ -518,6 +562,28 @@ func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []Googl
 			return nil, err
 		}
 		set.accounts[entry.Account] = entry
+	}
+	for i, entry := range reads {
+		where := fmt.Sprintf("read entry %d, %q", i+1, entry.Account)
+		if !accountPattern.MatchString(entry.Account) {
+			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
+		}
+		if strings.TrimSpace(entry.Service) == "" {
+			return nil, fmt.Errorf("exchange: %s: the service is required, since a read entry's token names its service and no person", where)
+		}
+		if !validSession(entry.Session) {
+			return nil, fmt.Errorf("exchange: %s: the session is required, since a read entry fixes the session its token names, and %s", where, sessionRule)
+		}
+		if _, listed := set.reads[entry.Account]; listed {
+			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account reads as one identity", where)
+		}
+		if _, listed := set.accounts[entry.Account]; listed {
+			return nil, fmt.Errorf("exchange: %s: an account entry lists the same account, and one account mints one kind of token", where)
+		}
+		if err := reserve(where, entry.Session, AccountPrincipal(entry.Account)); err != nil {
+			return nil, err
+		}
+		set.reads[entry.Account] = entry
 	}
 	for i, entry := range workflows {
 		where := fmt.Sprintf("workflow entry %d, %q", i+1, entry.Repository+"/"+entry.Workflow+"@"+entry.Ref)
@@ -583,8 +649,8 @@ func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []Googl
 }
 
 // Reservations are the session names the entries fix, each with the principal it belongs to, in
-// the order the entries were listed: accounts first, then workflows, then Google accounts. The
-// slice is the caller's own, so the set stays immutable.
+// the order the entries were listed: accounts first, then read entries, then workflows, then
+// Google accounts. The slice is the caller's own, so the set stays immutable.
 func (s *Set) Reservations() []Reservation {
 	return slices.Clone(s.reservations)
 }
@@ -628,20 +694,28 @@ func checkGrant(where, project, person, session string) error {
 // uid registered for the same name rather than a refusal. An entry that fixes a session answers
 // no Instance and needs no registration, because the name it writes under is the configuration's
 // and every pod of the account writes under it.
+//
+// A read entry always fixes its session, so its pods are answered the same way, with the claims
+// of a token that writes nothing: the entry's service and session, ProjectScopeNone, and no
+// person, no project and no Instance.
 func (s *Set) Pod(token map[string]any, session string) (Claims, error) {
 	account, err := claimString(token, "sub")
 	if err != nil {
 		return Claims{}, err
 	}
 	uid := podUID(token)
-	entry, err := s.podEntry(account, uid)
+	listing, err := s.podEntry(account, uid)
 	if err != nil {
 		return Claims{}, err
 	}
-	name, err := resolveSession(entry.Session, session, account)
+	name, err := resolveSession(listing.fixed(), session, account)
 	if err != nil {
 		return Claims{}, err
 	}
+	if listing.readOnly {
+		return Claims{Session: name, Service: listing.read.Service, Scope: ProjectScopeNone, Principal: AccountPrincipal(account)}, nil
+	}
+	entry := listing.account
 	claims := Claims{Session: name, Person: entry.Person, Scope: ProjectScopeNamed, Project: entry.Project, Principal: AccountPrincipal(account)}
 	if entry.Session == "" {
 		claims.Instance = uid
@@ -649,36 +723,56 @@ func (s *Set) Pod(token map[string]any, session string) (Claims, error) {
 	return claims, nil
 }
 
+// podListing is the entry that lists a pod's account: its AccountEntry, or, when readOnly is set,
+// its ReadEntry. NewSet refuses an account both lists name, so exactly one of them answers.
+type podListing struct {
+	account  AccountEntry
+	read     ReadEntry
+	readOnly bool
+}
+
+// fixed is the session name the listing fixes: a read entry's always, an account entry's when it
+// fixes one, and empty for an account entry that leaves the name to the request.
+func (l podListing) fixed() string {
+	if l.readOnly {
+		return l.read.Session
+	}
+	return l.account.Session
+}
+
 // podEntry is the reading of a pod's identity that Pod and Registration both begin with: the
 // pod uid the token must carry, refused first because a token bound to no pod proves only that
-// the account exists, and then the entry that lists the account. Both refuse in this order, in
-// these words, because they are this one helper: a registrar and the exchange that reads its
-// row refuse the same pods for the same reasons, which Registration's doc promises.
-func (s *Set) podEntry(account, uid string) (AccountEntry, error) {
+// the account exists, and then the entry that lists the account, an account entry or a read
+// entry. Both refuse in this order, in these words, because they are this one helper: a
+// registrar and the exchange that reads its row refuse the same pods for the same reasons, which
+// Registration's doc promises.
+func (s *Set) podEntry(account, uid string) (podListing, error) {
 	if uid == "" {
-		return AccountEntry{}, fmt.Errorf("%w: %s presented a token bound to no pod, which proves only that the account exists", ErrNoPodBinding, account)
+		return podListing{}, fmt.Errorf("%w: %s presented a token bound to no pod, which proves only that the account exists", ErrNoPodBinding, account)
 	}
-	entry, listed := s.accounts[account]
-	if !listed {
-		return AccountEntry{}, fmt.Errorf("%w: no entry lists the service account %s", ErrNoEntry, account)
+	if entry, listed := s.accounts[account]; listed {
+		return podListing{account: entry}, nil
 	}
-	return entry, nil
+	if entry, listed := s.reads[account]; listed {
+		return podListing{read: entry, readOnly: true}, nil
+	}
+	return podListing{}, fmt.Errorf("%w: no entry lists the service account %s", ErrNoEntry, account)
 }
 
 // Registration refuses what a pod-session registration must refuse before it is written: a token
 // bound to no pod, an account no entry lists, and an entry that fixes a session, which needs no
-// registration because its name is the configuration's. The first two refusals are podEntry,
-// the one reading of a pod's identity Pod makes too, so a registrar and the exchange that reads
-// its row refuse the same pods for the same reasons; what it does not decide is whether the
-// name belongs to the account, which only the claim on the name answers
-// (oauthstore.Store.BindSession).
+// registration because its name is the configuration's. A read entry is always that last: it
+// fixes the session its token names. The first two refusals are podEntry, the one reading of a
+// pod's identity Pod makes too, so a registrar and the exchange that reads its row refuse the
+// same pods for the same reasons; what it does not decide is whether the name belongs to the
+// account, which only the claim on the name answers (oauthstore.Store.BindSession).
 func (s *Set) Registration(account, podUID, session string) error {
-	entry, err := s.podEntry(account, podUID)
+	listing, err := s.podEntry(account, podUID)
 	if err != nil {
 		return err
 	}
-	if entry.Session != "" {
-		return fmt.Errorf("%w: %s writes as %s, which every pod of it may do, so its pods are registered for no name", ErrSessionFixed, account, entry.Session)
+	if fixed := listing.fixed(); fixed != "" {
+		return fmt.Errorf("%w: %s writes as %s, which every pod of it may do, so its pods are registered for no name", ErrSessionFixed, account, fixed)
 	}
 	if !validSession(session) {
 		return fmt.Errorf("%w: the registration of %s names a session of %d bytes; %s", ErrSessionInvalid, account, len(session), sessionRule)
