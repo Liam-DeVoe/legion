@@ -67,10 +67,12 @@ func storeEnvelopeOfSize(t *testing.T, rig *relayRig, subject string, size int) 
 // acknowledges such a message, writes one WARN naming the session, the event and the stream
 // sequence, and goes on, so the session's next message arrives. Before, the relay restarted at
 // the ack floor at each refusal, and the session received nothing after that message until the
-// stream's retention took it (dispatch://INFRA-3918). The control: a message half the limit is
-// relayed as any other, with no WARN.
+// stream's retention took it (dispatch://INFRA-3918). The refused frame never went out, so the
+// relay waits for no receipt of it: under a receipt wait shorter than the row's own wait, the
+// relay does not pause the session. The control: a message half the limit is relayed as any
+// other, with no WARN.
 func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
-	rig := newRelayRig(t)
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 500*time.Millisecond)
 	limit := int(rig.harness.client.Conn.MaxPayload())
 
 	t.Run("a message 64 bytes under the limit is acknowledged with one WARN", func(t *testing.T) {
@@ -90,6 +92,13 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		}
 		if line := "session relay could not publish a frame"; strings.Contains(rig.harness.logs.String(), line) {
 			t.Fatalf("the relay logged %q, want the message acknowledged rather than sent again", line)
+		}
+		for line := range strings.SplitSeq(rig.harness.logs.String(), "\n") {
+			var record relayTooLargeRecord
+			if json.Unmarshal([]byte(line), &record) == nil && record.SessionID == sessionID &&
+				strings.HasPrefix(record.Msg, "session relay paused: the session answered no frame") {
+				t.Fatalf("the relay paused the session: %s; want no receipt wait for a frame that never went out", line)
+			}
 		}
 	})
 

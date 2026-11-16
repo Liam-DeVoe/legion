@@ -85,7 +85,8 @@ const SessionWireSchema = z.object({
   // listener it last registered through. The session's owner is the listener its stored
   // subscription names (the one store.Registry.Match fans its topics out on), else the one on
   // machine_id; the owner relays the session's consumer, and any other listener leaves inbox
-  // messages to it silently (session.HandleAgentResult.OwnedElsewhere). No delivery reads host.
+  // messages to it silently (session.AgentOwnedElsewhere), since a wake it reported would be one
+  // more report for each listener that does not own the session. No delivery reads host.
   // Optional here only for a listener predating the field — the live listener always fills it in,
   // falling back to machine_id itself (session.SessionEntry.HostOrMachine).
   host: z.string().optional(),

@@ -3370,6 +3370,19 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 			return
 		}
 		logger.Info("listener unsubscribe", slog.String("session_id", body.SessionID), slog.Any("topics", body.Topics))
+		// A hand-back from a process a newer registration superseded is refused before anything
+		// is removed, as its registration and its role claim are (supersededBy): its removal
+		// would take topics out of the newer process's interest row and refollow that process's
+		// consumer on what was left. A request that names no process is never refused.
+		cached, _ := d.sessions.Lookup(body.SessionID)
+		if newer, superseded := d.supersededBy(logger, body.SessionID, body.ClientInstanceID, cached); superseded {
+			writeJSON(w, http.StatusConflict, supersededRefusal{
+				Error:            supersededError(body.SessionID, body.ClientInstanceID, newer),
+				Reason:           supersededReason,
+				ClientInstanceID: newer,
+			})
+			return
+		}
 		// The removal runs within sendRequestBudget of the request's own context, as subscribe's
 		// write does, and store work that did not answer is the bus-unavailable 503.
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -96,18 +97,23 @@ func (r *twoProcessRig) claimedBy(t *testing.T) string {
 	return claim.ClientInstanceID
 }
 
-// warnedConflicts is every WARN line naming the session that also names instance.
-func (r *twoProcessRig) warnedConflicts(instance string) []map[string]any {
-	var found []map[string]any
-	for _, record := range warnLinesNaming(r.harness.logs.String(), r.sessionID) {
-		for _, value := range record {
-			if value == instance {
-				found = append(found, record)
-				break
-			}
-		}
-	}
-	return found
+// supersededWarning is the WARN line the listener logs when it refuses the older of two processes
+// under one session id.
+const supersededWarning = "listener refused the older of two processes under one session id: a newer process registered the session after it"
+
+// warnedConflicts is every supersededWarning line of the rig's session whose attributes also hold
+// each value of where.
+func (r *twoProcessRig) warnedConflicts(where map[string]any) []map[string]any {
+	where["level"] = "WARN"
+	where["session_id"] = r.sessionID
+	return linesIn(r.harness.logs.String(), supersededWarning, where)
+}
+
+// unsubscribe is the clean stop a process makes: POST /v1/interests/unsubscribe with no topics,
+// which removes every interest of the session and frees the role claims naming that process.
+func (r *twoProcessRig) unsubscribe(instance string) *httptest.ResponseRecorder {
+	return r.send(http.MethodPost, "/v1/interests/unsubscribe",
+		fmt.Sprintf(`{"session_id":%q,"topics":[],"client_instance_id":%q}`, r.sessionID, instance))
 }
 
 // TestTwoProcessesUnderOneSessionDoNotTakeItsRelayInTurns is check l13 of dispatch://INFRA-3589
@@ -115,8 +121,9 @@ func (r *twoProcessRig) warnedConflicts(instance string) []map[string]any {
 // instance id, the newer registration takes the session and its relay, so a process that
 // restarts after a crash with a new instance id registers at once and takes its role back at
 // once. From then on the older instance is refused 409, naming the session and the newer
-// instance, with one WARN line naming both; it gets no relay and takes no role claim. A clean
-// hand-off removes the older registration first, and the registration after it is refused nothing.
+// instance, with one WARN line naming both; it gets no relay, takes no role claim and hands back
+// none of the session's interests. A clean hand-off removes the older registration first, and the
+// registration after it is refused nothing.
 //
 // The relay subject is the session's own, so any process that holds it open receives what the
 // listener relays there. What moves the relay is a registration: one with a new epoch restarts the
@@ -212,6 +219,27 @@ func TestTwoProcessesUnderOneSessionDoNotTakeItsRelayInTurns(t *testing.T) {
 		if got := rig.claimedBy(t); got != rig.instanceA {
 			t.Fatalf("the claim names %q after A's refused claim, want A's %s still", got, rig.instanceA)
 		}
+		// Nor does it hand the session's interests back: its clean stop, which would remove every
+		// interest of the session and free the claim naming it, is refused and removes nothing.
+		before, err := rig.harness.registry.Get(context.Background(), rig.sessionID)
+		if err != nil {
+			t.Fatalf("read the interest record of %s: %v", rig.sessionID, err)
+		}
+		if recorder := rig.unsubscribe(rig.instanceA); recorder.Code != http.StatusConflict ||
+			!strings.Contains(recorder.Body.String(), `"reason":"superseded_instance"`) ||
+			!strings.Contains(recorder.Body.String(), `"client_instance_id":"`+rig.instanceB+`"`) {
+			t.Fatalf("A's unsubscribe after B's registration: status %d %s, want 409 superseded_instance naming %s", recorder.Code, recorder.Body.String(), rig.instanceB)
+		}
+		after, err := rig.harness.registry.Get(context.Background(), rig.sessionID)
+		if err != nil {
+			t.Fatalf("read the interest record of %s after A's refused unsubscribe: %v", rig.sessionID, err)
+		}
+		if !slices.Equal(after.Topics, before.Topics) {
+			t.Fatalf("the interest record of %s holds %v after A's refused unsubscribe, want %v as before it", rig.sessionID, after.Topics, before.Topics)
+		}
+		if got := rig.claimedBy(t); got != rig.instanceA {
+			t.Fatalf("the claim names %q after A's refused unsubscribe, want A's %s still", got, rig.instanceA)
+		}
 		if recorder := rig.claim(rig.instanceB); recorder.Code != http.StatusOK {
 			t.Fatalf("B's claim of %s: status %d %s, want 200", rig.role, recorder.Code, recorder.Body.String())
 		}
@@ -231,12 +259,9 @@ func TestTwoProcessesUnderOneSessionDoNotTakeItsRelayInTurns(t *testing.T) {
 		}
 		awaitAcked(t, rig.consumers, rig.sessionID, roleFrame.seq)
 
-		warned := rig.warnedConflicts(rig.instanceA)
-		if len(warned) != 1 {
-			t.Fatalf("%d WARN lines name %s's older instance %s, want one for the conflict however often it retried: %v", len(warned), rig.sessionID, rig.instanceA, warned)
-		}
-		if len(rig.warnedConflicts(rig.instanceB)) != 1 {
-			t.Fatalf("the WARN line %v does not name the newer instance %s", warned[0], rig.instanceB)
+		conflict := map[string]any{"client_instance_id": rig.instanceA, "newer_client_instance_id": rig.instanceB}
+		if warned := rig.warnedConflicts(conflict); len(warned) != 1 {
+			t.Fatalf("%d WARN lines name %s's older instance %s and its newer instance %s, want one for the conflict however often it retried: %v", len(warned), rig.sessionID, rig.instanceA, rig.instanceB, warned)
 		}
 	})
 
@@ -275,12 +300,26 @@ func TestTwoProcessesUnderOneSessionDoNotTakeItsRelayInTurns(t *testing.T) {
 		}
 		standIn := startSessionStandIn(t, rig.url, rig.sessionID, answerDone)
 		rig.registered(t, rig.instanceB, "epoch-b")
+		// B's registration found no entry, so it superseded nothing.
+		entry, err := rig.harness.sessions.Get(rig.sessionID)
+		if err != nil {
+			t.Fatalf("read the entry of %s: %v", rig.sessionID, err)
+		}
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("encode the entry of %s: %v", rig.sessionID, err)
+		}
+		if strings.Contains(string(encoded), `"superseded_instances"`) {
+			t.Fatalf("the entry of %s after a clean hand-off is %s, want no superseded instance", rig.sessionID, encoded)
+		}
 		stored, seq := rig.storeEvent(t, agent)
 		requireFrames(t, standIn.collect(t, 1, 10*time.Second), stored)
 		awaitAcked(t, rig.consumers, rig.sessionID, seq)
 
-		if warned := rig.warnedConflicts(rig.instanceA); len(warned) != 0 {
-			t.Fatalf("%d WARN lines name A's instance %s after a clean hand-off, want none: %v", len(warned), rig.instanceA, warned)
+		// A registers again under the same session id, and nothing refuses it.
+		rig.registered(t, rig.instanceA, "epoch-a-again")
+		if warned := rig.warnedConflicts(map[string]any{}); len(warned) != 0 {
+			t.Fatalf("%d WARN lines refuse a process of %s after a clean hand-off, want none: %v", len(warned), rig.sessionID, warned)
 		}
 	})
 }

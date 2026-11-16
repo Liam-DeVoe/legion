@@ -1,6 +1,7 @@
 // The policy for a message on the agent subject of a session this listener finds no record of:
-// the one wait before the session's wake is reported, the set that caps how many such messages
-// wait at once and expires a slot whose message never comes back, and the report itself.
+// the one wait before the session's wake is reported, the set that caps how many first deliveries
+// of such messages wait at once and expires a slot whose message never comes back, and the report
+// itself.
 
 package main
 
@@ -13,14 +14,17 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
-// unplaceableDeferralCap bounds how many agent messages this listener holds back for the agent
-// wait at one time, across every handler it builds (unplaceableDeferrals). A message that waits is
-// NAKed rather than ACKed, so it keeps one of the durable's MaxAckPending slots
-// (consumerMaxAckPending, durable.go: 256) for the whole wait instead of giving it back at once:
-// without a bound, enough messages to sessions with no record would hold every slot this
+// unplaceableDeferralCap bounds how many first deliveries of agent messages this listener holds
+// back for the agent wait at one time, across every handler it builds (unplaceableDeferrals). A
+// message that waits is NAKed rather than ACKed, so it keeps one of the durable's MaxAckPending
+// slots (consumerMaxAckPending, durable.go: 256) for the whole wait instead of giving it back at
+// once: without a bound, enough messages to sessions with no record would hold every slot this
 // machine's durable has and stall it for every topic. A quarter of the budget leaves three
-// quarters for that traffic. A message that arrives while the cap is reached reports its wake at
-// once. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins the relation.
+// quarters for that traffic. A first delivery that arrives while the cap is reached reports its
+// wake at once. A message sent back after a report the stream did not store, or after a read of
+// the record that did not answer, takes a free slot when there is one and is sent back whether or
+// not it got one (reportNoRecordWake, unreadAgentDelivery), so the cap bounds the first
+// deliveries' waits alone. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins the relation.
 const unplaceableDeferralCap = consumerMaxAckPending / 4
 
 // defaultUnplaceableRetryWindow is the agent wait main.go uses when ENVOY_UNPLACEABLE_RETRY_WINDOW
@@ -59,9 +63,10 @@ func unplaceableDeferralExpiry(window time.Duration) time.Duration {
 // What the set guarantees: it never holds more than unplaceableDeferralCap live slots, and a slot
 // is added only by a wait this listener started. A slot leaves by one of two routes: that same
 // message's next delivery releases it, or it expires unplaceableDeferralExpiry after the delivery
-// that took it, and the next take or size sweeps it out. So at any moment the messages this
-// process holds back, within that bound, number at most the cap. What it cannot know, since it is
-// this process's memory and not the stream's:
+// that took it, and the next take or size sweeps it out. So at any moment the first deliveries
+// this process holds back, within that bound, number at most the cap. A message the not-stored
+// and unread paths send back is sent back whether or not it got a slot, so the cap does not bound
+// those messages. What it cannot know, since it is this process's memory and not the stream's:
 //   - a listener restart forgets it. The previous process's waiting messages stay pending in the
 //     durable until each one's NAK delay ends and it is redelivered; until then the durable can
 //     hold the old process's cap beside the new one's, which

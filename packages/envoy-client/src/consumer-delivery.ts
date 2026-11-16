@@ -866,7 +866,8 @@ export function inboundUnavailableNoticeText(why: string, reason?: string): stri
 export interface InboundUnavailable {
   /**
    * A registration was refused or failed: tells the session, through the host's `tell`, unless
-   * this outage already told it.
+   * this outage already told it. A refusal for `SUPERSEDED_INSTANCE_REASON` is told once of its
+   * own, even when this outage already told another refusal.
    */
   refused(error: unknown): void;
   /** A registration was accepted: the next outage tells the session again. */
@@ -877,23 +878,33 @@ export interface InboundUnavailable {
  * Says once per outage that the session receives nothing. The listener refuses a registration it
  * can give no consumer, and the host registers again at every heartbeat, so a host that told the
  * session each time would tell it every tick for as long as the outage lasts; one that never told
- * it again would leave a second outage silent. `tell` takes the listener's own message
- * (`messageFor`) and the reason the listener refused with (`EnvoyApiError.reason`, undefined for a
- * failure that names none), which each host words with `inboundUnavailableNoticeText` and shows
- * where it shows a gap notice.
+ * it again would leave a second outage silent. A refusal for `SUPERSEDED_INSTANCE_REASON` has a
+ * telling of its own: it says another process holds the session, which a refusal told earlier in
+ * the same outage did not say. `tell` takes the listener's own message (`messageFor`) and the
+ * reason the listener refused with (`EnvoyApiError.reason`, undefined for a failure that names
+ * none), which each host words with `inboundUnavailableNoticeText` and shows where it shows a gap
+ * notice.
  */
 export function inboundUnavailable(
   tell: (why: string, reason: string | undefined) => void
 ): InboundUnavailable {
   let told = false;
+  let supersededTold = false;
   return {
     refused(error) {
-      if (told) return;
-      told = true;
-      tell(messageFor(error), error instanceof EnvoyApiError ? error.reason : undefined);
+      const reason = error instanceof EnvoyApiError ? error.reason : undefined;
+      if (reason === SUPERSEDED_INSTANCE_REASON) {
+        if (supersededTold) return;
+        supersededTold = true;
+      } else {
+        if (told) return;
+        told = true;
+      }
+      tell(messageFor(error), reason);
     },
     accepted() {
       told = false;
+      supersededTold = false;
     },
   };
 }

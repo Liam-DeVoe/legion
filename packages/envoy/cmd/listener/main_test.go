@@ -3697,7 +3697,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 // skipped. On the session's agent subject the same entry is a record, and a message there is the
 // session's own consumer's whatever that consumer holds now: the consumer the session's next
 // registration starts delivers it. So the agent subject counts it skipped, and reports no wake.
-func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t *testing.T) {
+func TestListenerDeliveryHandler_PortlessSelfSubscribedEntryIsSkippedOnlyOnItsAgentSubject(t *testing.T) {
 	for _, tc := range []struct {
 		topic string
 		// skipped is the skipped series' count, -1 for no series at all.

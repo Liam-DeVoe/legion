@@ -4761,9 +4761,10 @@ Each item below names an endpoint and its method, then its contract, and an item
   From then on a registration of a superseded instance is refused before anything is stored, while the newer instance's record is live (`session.SessionRegistry.NewerInstance`, read from the session cache):
   `409 {"error":"another process holds session <id>: client instance <newer> registered it after this process (client instance <older>). The listener refuses the registrations and role claims of this process while that process runs. Stop this process, or run it under a session id of its own","reason":"superseded_instance","client_instance_id":"<newer>"}`.
   The older process gets no consumer call, no interest write, no entry write and no renewal, so its epoch never restarts the relay, and its role claims are refused too (`/v1/roles/set` above).
+  Its hand-back of interests is refused the same way, with the same 409 (`/v1/interests/unsubscribe`), so it removes no topic from the row the newer process's consumer filters on and frees no role claim.
   The listener logs one WARN line per conflict, `listener refused the older of two processes under one session id: a newer process registered the session after it`, with `session_id`, the refused `client_instance_id` and `newer_client_instance_id`: it remembers each conflict it logged for the 24 hours the record keeps the instance, at most 1,024 of them (`supersededWarnings`), so a refused process that registers again at every heartbeat costs one line, and a listener restart or another listener logs it once more.
   A brand-new instance is never refused, and neither is any instance once the newer one's record is past the live window: the newer process has stopped answering, so the one still registering takes the session back, with the instance it took it from superseded in turn.
-  A clean hand-off removes the older registration first (`DELETE /v1/sessions/<id>?client_instance_id=<older>`, as claude-envoy's `adoptHandoff` does), which deletes the record and its list, so the registration that follows is refused nothing and logs no WARN.
+  A process that stops cleanly deletes its own registration before the next process registers (`DELETE /v1/sessions/<id>?client_instance_id=<its own>`, as pi-envoy's stop does), which deletes the record and its list, so the registration that follows is refused nothing and logs no WARN.
   The check and the write after it are not one step: two registrations racing at the very moment of a takeover can leave either instance holding the session, and the other's next heartbeat is then the refused one.
   The relay subject is the session's own, so a refused process that keeps it open receives what the listener relays there for the newer one.
   The plugins' shared consumer delivery drops each such frame with no answer while its registration is refused for this reason (`ConsumerDelivery.setSuperseded`, which `registerWithRelay` sets on that refusal and clears at the next accepted registration), so the older process gets no relay and the newer one's answers are the ones the listener takes.
@@ -4812,9 +4813,9 @@ Each item below names an endpoint and its method, then its contract, and an item
   the session entry is still written on every registration, since its bucket's `MaxAge` is the liveness clock.
   A session's owner is the listener its stored subscription names, the one `Match` delivers on, else, with no subscription stored, the listener it registered through (the entry's `machine_id`);
   a session neither names is every listener's (`session.HandleAgentMessage`).
-  A non-owner leaves inbox messages to the owner silently (`HandleAgentResult.OwnedElsewhere`:
-  no delivery, no exception, no NAK, one DEBUG line):
-  every listener on the bus reads each inbox message from its own durable, so a second listener would deliver the same message again, while the owner always has the message.
+  A non-owner leaves inbox messages to the owner silently (`session.AgentOwnedElsewhere`:
+  no delivery, no exception, no NAK, no wake report, one DEBUG line):
+  every listener on the bus reads each inbox message from its own durable, and the owner decides it from its copy, so a wake a non-owner reported would be one more report for each listener that does not own the session.
   The recorded `host` goes into no connection, since the listener opens none to a session, so it is stored as it is sent.
   A stored subscription this build cannot decode (`store.ErrMalformedInterest`) is replaced by the one the registration names, with this listener's `machine_id`, not merged with it, and the registry logs `registry replaced an interest record it cannot decode` at WARN naming the session;
   its role claims, in the role bucket, are kept.
@@ -5985,7 +5986,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   Only the user of the listener that receives GitHub's webhook publishes GitHub's lane, `notifications.github.>`, from that listener's webhook route and CI summary loop.
   So the server refuses a `/v1/messages/publish` to Dispatch's lane on every listener but the one beside `envoy-dispatch`, which shares Dispatch's user, and to GitHub's lane on every listener but the webhook's, and the route answers `403`.
 
-- A failed control delivery publishes `notifications.envoy.exceptions.<original-topic>`, and so does a role send the publish route refused 404 because no live session holds the role (`publishRefusalException`).
+- A failed role delivery, or a fan-out's terminal capability refusal on any topic (a delivery mode the session does not advertise, or one that cannot be read unambiguously), publishes `notifications.envoy.exceptions.<original-topic>`, and so does a role send the publish route refused 404 because no live session holds the role (`publishRefusalException`).
 
 ## Secrets broker
 

@@ -1204,6 +1204,7 @@ describe("one registration", () => {
     await expect(register()).rejects.toBe(refusal);
 
     expect(told).toEqual([{ why: refusal.message, reason: SUPERSEDED_INSTANCE_REASON }]);
+    expect(relay.superseded).toEqual([true, true]);
     const notice = inboundUnavailableNoticeText(told[0]?.why ?? "", told[0]?.reason);
     expect(notice).toContain("Another process holds this session");
     expect(notice).toContain("client instance b registered it after this process");
@@ -1211,6 +1212,47 @@ describe("one registration", () => {
     expect(inboundUnavailableNoticeText("no_grant", "no_grant")).toContain(
       "Envoy inbound unavailable"
     );
+  });
+
+  test("a superseded refusal after another refusal in the same outage is told too", async () => {
+    const relay = fakeRelay();
+    const told: (string | undefined)[] = [];
+    const outage = inboundUnavailable((_why, reason) => told.push(reason));
+    const grantless = new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error: "no grant", reason: "no_grant" }),
+    });
+    const superseded = new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 409,
+      responseBody: JSON.stringify({
+        error: "another process holds session ses_a",
+        reason: SUPERSEDED_INSTANCE_REASON,
+        client_instance_id: "b",
+      }),
+    });
+    let refusal = grantless;
+    const register = () =>
+      registerWithRelay({
+        relay,
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage,
+        send: () => Promise.reject(refusal),
+        answered: () => undefined,
+      });
+
+    await expect(register()).rejects.toBe(grantless);
+    refusal = superseded;
+    await expect(register()).rejects.toBe(superseded);
+    // The next heartbeat's superseded refusal says nothing more.
+    await expect(register()).rejects.toBe(superseded);
+
+    expect(told).toEqual(["no_grant", SUPERSEDED_INSTANCE_REASON]);
+    expect(relay.superseded).toEqual([true, true]);
   });
 
   test("a superseded process drops the relay until a registration of its own is accepted again", async () => {

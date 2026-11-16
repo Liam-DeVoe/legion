@@ -145,10 +145,10 @@ readonly interrupt_side_count=1000
 readonly boot_count=40000
 # recreate-live: same and chg sessions of this many each in the old bucket, which is created with
 # this MaxAge (the listener adopts a bucket's, so the renewed session's old record expires within a
-# minute rather than five); that record expires this long after the recreate; NATS is stopped this
-# long from the watcher's finding, well under the 10 s the listener's JetStream requests wait, so
-# the read of the new bucket comes after that expiry; the longer shape writes same and chg this many
-# times more.
+# minute rather than the 2 hours of a bucket the listener creates, session.BucketMaxAge); that
+# record expires this long after the recreate; NATS is stopped this long from the watcher's
+# finding, well under the 10 s the listener's JetStream requests wait, so the read of the new
+# bucket comes after that expiry; the longer shape writes same and chg this many times more.
 readonly live_count=1000
 readonly live_ttl_seconds=60
 readonly live_renewed_expiry_ms=3500

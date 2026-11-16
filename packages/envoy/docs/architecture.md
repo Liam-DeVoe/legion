@@ -560,20 +560,24 @@ listener logs WARN `listener agent record unread` once for that message, and at 
 it reports the wake as for no record. A wait at or below zero, a core delivery and a durable
 message whose metadata does not parse report at once.
 
-At most 64 messages wait at once — a quarter of the durable's 256 ack-pending slots, one of which
-a waiting message holds for its whole wait — and a first delivery that finds that cap reached
-reports its wake at once. The 64 is one budget for the whole listener: a single set, made once at
-start and shared by every delivery handler built from it, the one a self-health rebind builds
-after a NATS flap included, so a rebind opens no second budget beside the first. The set is keyed
-on each message's JetStream stream sequence, so only that message's next delivery gives its slot
-back, and a redelivery of a message this listener never sent back (an expired ack wait) frees
-nothing. A slot whose message never comes back here (the stream dropped or purged it, or its
-redelivery reached another subscriber) expires after the wait plus two 60 s ack waits, 180 s at
-the default, the longest a waiting message can stay pending, so such slots cannot hold the budget
-for longer than that.
+At most 64 first deliveries wait at once — a quarter of the durable's 256 ack-pending slots, one
+of which a waiting message holds for its whole wait — and a first delivery that finds that cap
+reached reports its wake at once. A message sent back after a report the stream did not store, or
+after a read that did not answer, takes a free slot when there is one and is sent back whether or
+not it got one, so the 64 bounds the first deliveries' waits alone. The 64 is one budget for the
+whole listener: a single set, made once at start and shared by every delivery handler built from
+it, the one a self-health rebind builds after a NATS flap included, so a rebind opens no second
+budget beside the first. The set is keyed on each message's JetStream stream sequence, so only
+that message's next delivery gives its slot back, and a redelivery of a message this listener
+never sent back (an expired ack wait) frees nothing. A slot whose message never comes back here
+(the stream dropped or purged it, or its redelivery reached another subscriber) expires after the
+wait plus two 60 s ack waits, 180 s at the default, the longest a waiting message can stay
+pending, so such slots cannot hold the budget for longer than that.
 
 A role lane publishes its exception on the attempt itself, since nothing redelivers a core message.
-No path NAKs a message because its exception could not be published: such a failure logs ERROR
-`listener exception publish failed` and nothing else. Role exceptions use core NATS with the role
-lane. A team topic's exception keeps JetStream, since the stream captures its lane. Exception
-topics do not produce further exception events.
+No path NAKs a message because its exception could not be published. Such a failure logs ERROR
+`listener exception publish failed`. A fan-out refusal whose exception failed also clears the
+attempt record the refusal wrote, so an identical redelivery decides the refusal again and
+publishes its exception, where it would otherwise be skipped as already attempted. Role
+exceptions use core NATS with the role lane. A team topic's exception keeps JetStream, since the
+stream captures its lane. Exception topics do not produce further exception events.

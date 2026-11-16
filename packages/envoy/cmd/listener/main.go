@@ -175,14 +175,14 @@ const defaultSessionReapInterval = time.Minute
 //
 // It is not the session reaper's period, short though that is. A session's record reads gone
 // when the session bucket expires its key as well as when its last registration passes the gone
-// horizon. A bucket this listener creates keeps a record an hour past the horizon
-// (session.BucketMaxAge). A bucket an older build created keeps one five minutes until
-// ENVOY_SESSION_MAX_AGE raises it (dispatch://INFRA-3590), so there a stalled session's key is
-// gone five minutes after its last heartbeat and the reaper then finds its holder gone. Judged
-// every minute, such a stalled holder would lose its role up to five times sooner than the fixed
-// pass this change replaces, which is the opposite of what this change is for. The grace a
-// restored claim gets - and a claim the hand-back marked gets none, since no registration renews
-// a marked claim - is measured from the listener's own start against the live window
+// horizon. A bucket this listener creates keeps a record for 2 hours (session.BucketMaxAge, a
+// constant: the default gone horizon plus one hour). A bucket an older build created keeps one
+// five minutes until ENVOY_SESSION_MAX_AGE raises it (dispatch://INFRA-3590), so there a stalled
+// session's key is gone five minutes after its last heartbeat and the reaper then finds its holder
+// gone. Judged every minute, such a stalled holder would lose its role up to five times sooner
+// than the fixed pass this change replaces, which is the opposite of what this change is for. The
+// grace a restored claim gets - and a claim the hand-back marked gets none, since no registration
+// renews a marked claim - is measured from the listener's own start against the live window
 // (store.Registry.releaseReadExpiredRoleClaim, which the reaper's pass hands the claim it read),
 // not counted in passes, so the period does not move it; what the period decides is how long
 // after a holder is gone its role is free.
@@ -1317,10 +1317,10 @@ func main() {
 		slog.String("reap_interval", sessionReapInterval.String()),
 		slog.String("role_claim_reap_interval", roleClaimReapInterval.String()))
 
-	// A bucket that keeps a record no longer than the gone horizon drops a stalled session's
-	// record before the session reads gone. A bucket this listener creates outlives the horizon
-	// (session.BucketMaxAge), but one an older build created keeps 5 minutes until the deployment
-	// sets ENVOY_SESSION_MAX_AGE, so say it once at each start, naming both values.
+	// A bucket this listener creates keeps a record for 2 hours (session.BucketMaxAge, a constant:
+	// the default gone horizon plus one hour), which a configured horizon of 2 hours or more
+	// reaches. A bucket an older build created keeps 5 minutes until the deployment sets
+	// ENVOY_SESSION_MAX_AGE. So say it once at each start, naming both values.
 	if maxAge := sessions.TTL(); maxAge <= sessionGoneHorizon {
 		logger.Warn("session store keeps a record no longer than the gone horizon; a stalled session's record ends before it reads gone; raise ENVOY_SESSION_MAX_AGE",
 			slog.String("session_max_age", maxAge.String()),

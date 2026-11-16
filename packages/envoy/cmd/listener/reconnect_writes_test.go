@@ -125,8 +125,8 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		}
 		return kv
 	}
+	// answers is every answer a call below had, which the end of the test reads.
 	var answers []reconnectWritesAnswer
-	var answersMu sync.Mutex
 	// call makes calls at once, each on a goroutine of its own, and returns their answers in order
 	// once all have answered.
 	call := func(calls ...func() reconnectWritesAnswer) []reconnectWritesAnswer {
@@ -140,9 +140,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		answersMu.Lock()
 		answers = append(answers, got...)
-		answersMu.Unlock()
 		return got
 	}
 	// waitedOrNamed fails the test unless answer is a success or a 503 naming the reconnect.
@@ -156,21 +154,21 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 	t.Run("a role claim refresh and a publish during an outage wait for the server or fail by name", func(t *testing.T) {
 		const role, topic = "reconnect-writes-waited", "notifications.team.reconnect-writes-waited"
 		stop(t)
-		restarted := make(chan struct{})
+		// The calls run on a goroutine, so the server is started again on the test's own.
+		answered := make(chan []reconnectWritesAnswer, 1)
 		go func() {
-			defer close(restarted)
-			time.Sleep(time.Second)
-			server.Start(t)
+			answered <- call(
+				func() reconnectWritesAnswer {
+					return reconnectWritesCall(listener.port, "/v1/roles/set", claim(role), answerWithin)
+				},
+				func() reconnectWritesAnswer {
+					return reconnectWritesCall(listener.port, "/v1/messages/publish", publishBody(topic), answerWithin)
+				},
+			)
 		}()
-		got := call(
-			func() reconnectWritesAnswer {
-				return reconnectWritesCall(listener.port, "/v1/roles/set", claim(role), answerWithin)
-			},
-			func() reconnectWritesAnswer {
-				return reconnectWritesCall(listener.port, "/v1/messages/publish", publishBody(topic), answerWithin)
-			},
-		)
-		<-restarted
+		time.Sleep(time.Second)
+		server.Start(t)
+		got := <-answered
 		t.Logf("during a 1 s outage the role claim refresh answered %s and the publish %s", got[0], got[1])
 		waitedOrNamed(t, "the role claim refresh", got[0])
 		waitedOrNamed(t, "the publish", got[1])
@@ -244,18 +242,15 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		}
 	})
 
-	t.Run("no answer or log line holds nats.go's buffer refusal", func(t *testing.T) {
-		answersMu.Lock()
-		defer answersMu.Unlock()
-		for _, answer := range answers {
-			if strings.Contains(answer.body, reconnectBufferRefusal) {
-				t.Errorf("an answer names nats.go's buffer refusal rather than the reconnect: %s", answer)
-			}
+	// No answer and no log line holds nats.go's buffer refusal.
+	for _, answer := range answers {
+		if strings.Contains(answer.body, reconnectBufferRefusal) {
+			t.Errorf("an answer names nats.go's buffer refusal rather than the reconnect: %s", answer)
 		}
-		for line := range strings.SplitSeq(listener.Output.String(), "\n") {
-			if strings.Contains(line, reconnectBufferRefusal) {
-				t.Errorf("a log line names nats.go's buffer refusal rather than the reconnect: %s", line)
-			}
+	}
+	for line := range strings.SplitSeq(listener.Output.String(), "\n") {
+		if strings.Contains(line, reconnectBufferRefusal) {
+			t.Errorf("a log line names nats.go's buffer refusal rather than the reconnect: %s", line)
 		}
-	})
+	}
 }

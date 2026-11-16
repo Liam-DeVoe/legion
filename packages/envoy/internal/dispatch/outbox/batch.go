@@ -377,7 +377,8 @@ type batchEvent struct {
 	mentionPending bool
 	// incomplete is that the list ends at a recipient read that failed (unansweredRecipients): the
 	// sessions that read would add are unknown, so the event holds its owner's later events back
-	// from every session key its list neither names nor it already reached (planChains).
+	// from every session key its list neither names nor it already reached or had refused
+	// (planChains).
 	incomplete bool
 	sends      []*chainSend
 	// held are the earlier events of the owner that held a destination of this one back without a
@@ -491,17 +492,18 @@ type chain struct {
 // (batchEvent.incomplete): its list ends at the read, so it may be bound for any session the read
 // would name. Every later event of its owner is held back from each session key - an agent
 // subject, or a role route's key - that the incomplete event neither names in its list nor already
-// reached (batchEvent.delivered), behind a blocker that falls due when the incomplete event is
-// tried again: the event itself when it is due, whose back-off or release its outcome carries,
-// and its nextAttempt when it is not. A key the list names and the event has not reached chains as
-// any other, and a key the event already reached holds nothing back: a destination reached counts
-// by the subject it recorded, not by its key now, so a role route reached names its role topic and
-// not the agent subject of whoever holds the role in this batch, a session the failed read may yet
-// name. The owner's topic comes before every read (eventDestinations), so the owner's topic family
-// is never held this way. So a recipient read that fails holds back, until the retry of the event
-// that asked it, its owner's later session copies on the keys that event could still owe, and
-// nothing else; an event whose reads all answered holds back only the destinations it has not
-// reached.
+// reached or had refused (batchEvent.delivered: its published_destinations and its
+// refused_destinations), behind a blocker that falls due when the incomplete event is tried again:
+// the event itself when it is due, whose back-off or release its outcome carries, and its
+// nextAttempt when it is not. A key the list names and the event has not reached chains as any
+// other, and a key the event already reached or had refused holds nothing back: such a
+// destination counts by the subject it recorded, not by its key now, so a role route reached names
+// its role topic and not the agent subject of whoever holds the role in this batch, a session the
+// failed read may yet name. The owner's topic comes before every read (eventDestinations), so the
+// owner's topic family is never held this way. So a recipient read that fails holds back, until the
+// retry of the event that asked it, its owner's later session copies on the keys that event could
+// still owe, and nothing else; an event whose reads all answered holds back only the destinations
+// it has neither reached nor had refused.
 //
 // The order is kept per destination key, not per session: a session that subscribes to an issue's
 // topic family and is also routed to by its events receives on two keys, so when event N's topic
@@ -648,9 +650,9 @@ func planChains(events []*batchEvent) []*chain {
 
 // sendChains runs chains through sender, one window: the first send of every chain at once, in the
 // order the chains were planned, and each chain's next send as soon as the answer to the one before
-// it came back as reached, so the chains proceed side by side and each one in order. A role route
-// is forwarded to its holder with a Request (roleForward.send), or answered at once with why it
-// stays pending. A failed send holds back the rest of its chain. A send that meets a lost
+// it came back as reached or refused, so the chains proceed side by side and each one in order. A
+// role route is forwarded to its holder with a Request (roleForward.send), or answered at once with
+// why it stays pending. A failed send holds back the rest of its chain. A send that meets a lost
 // connection or a passed deadline (bus.ErrUnavailable; bus.ErrWindowDeadline, the window refusing
 // a send past the publisher hold's deadline) stops the batch: no further send of any chain is
 // made. So does ctx ending; the answers already in are still read, and every other send in flight
@@ -731,9 +733,10 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			// Refused the same way however often it is retried (the envelope is past the server's
 			// max payload, or its subject past NATS's limit or holding whitespace, as an unbounded
 			// document slug or a bearer's session id can make it). It did not reach NATS, so it is
-			// counted a refusal and logged once per event: a stand-in refused in its turn is the
-			// same event's one refusal, already counted when NATS refused the payload it was made
-			// of, and counting it again would count one event twice.
+			// counted a refusal and logged. A stand-in refused in its turn is the same refusal,
+			// already counted when NATS refused the payload it was made of, and counting it again
+			// would count one event twice. A batch that stops before the stand-in goes counts and
+			// logs the refusal again on the next scan, which sends the event again.
 			if send.standIn != nil {
 				slog.Error("dispatch outbox: the stand-in was refused too",
 					"event_id", send.event.event.ID, "topic", send.dest.subject, "error", err)

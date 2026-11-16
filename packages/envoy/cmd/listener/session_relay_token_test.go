@@ -58,6 +58,7 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	sessions := [2]string{"ses_token_reader", "ses_token_victim"}
 	runs := [2]*relayRun{{sessionID: sessions[0]}, {sessionID: sessions[1]}}
 	reader := testnats.Connect(t, rig.url)
+	t.Cleanup(reader.Close)
 	sent, err := reader.SubscribeSync(bus.DeliverSubjectPrefix + ">")
 	if err != nil {
 		t.Fatalf("subscribe to the relay subjects: %v", err)
@@ -139,6 +140,7 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	victim := publish(1, victimAcker)
 	finished := publish(1, finishedAcker)
 	forger := testnats.Connect(t, rig.url)
+	t.Cleanup(forger.Close)
 	done := func(subject string) {
 		t.Helper()
 		if err := forger.Publish(subject, []byte(relayReplyDone)); err != nil {

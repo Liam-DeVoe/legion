@@ -15,24 +15,26 @@ import (
 // the live entry names supersedes that instance (session.SessionRegistry.SupersededAfter), so a
 // process that restarts after a crash with a new instance id registers at once. From then on the
 // older instance is refused while the newer one's entry is live
-// (session.SessionRegistry.NewerInstance): its registration (subscribeHandler) and its role claim
-// (roleSetHandler) are each answered 409, naming the session and the newer instance. So the older
-// process moves nothing of the relay - no consumer call, no entry, no epoch restart - and takes no
-// role claim, and the two processes do not take the session's relay in turns. The relay subject is
-// the session's own, so an older process that keeps it open receives the frames the listener
-// relays there for the newer one; the plugins' shared consumer delivery drops them unanswered
-// while its registration is refused for this reason (@legion/envoy-client's setSuperseded). A
-// clean hand-off deletes the older registration first (DELETE
+// (session.SessionRegistry.NewerInstance): its registration (subscribeHandler), its hand-back of
+// interests (POST /v1/interests/unsubscribe) and its role claim (roleSetHandler) are each answered
+// 409, naming the session and the newer instance. So the older process moves nothing of the relay
+// (no consumer call, no entry, no epoch restart, no change to the interest row the consumer
+// filters on) and takes no role claim, and the two processes do not take the session's relay in
+// turns. The relay subject is the session's own, so an older process that keeps it open receives
+// the frames the listener relays there for the newer one; the plugins' shared consumer delivery
+// drops them unanswered while its registration is refused for this reason (@legion/envoy-client's
+// setSuperseded). A clean hand-off deletes the older registration first (DELETE
 // /v1/sessions/<id>?client_instance_id=<older>), and the registration that follows finds no entry
 // and is refused nothing.
 
-// supersededReason is the reason a registration or a role claim of an older instance is refused
-// with (supersededRefusal), short and machine-readable.
+// supersededReason is the reason a registration, an interest hand-back or a role claim of an older
+// instance is refused with (supersededRefusal), short and machine-readable.
 const supersededReason = "superseded_instance"
 
-// supersededRefusal is the 409 answer to a registration of a client instance that a newer
-// instance's registration superseded. The registration is refused before anything is written, so
-// it leaves the session's entry, interest row, consumer and relay as the newer instance left them.
+// supersededRefusal is the 409 answer to a registration or an interest hand-back of a client
+// instance that a newer instance's registration superseded. The request is refused before anything
+// is written, so it leaves the session's entry, interest row, consumer and relay as the newer
+// instance left them.
 type supersededRefusal struct {
 	Error  string `json:"error"`
 	Reason string `json:"reason"`
@@ -40,7 +42,8 @@ type supersededRefusal struct {
 	ClientInstanceID string `json:"client_instance_id"`
 }
 
-// supersededError is the sentence both refusals carry, which the plugin shows its agent.
+// supersededError is the sentence every refusal of an older instance carries, which the plugin
+// shows its agent.
 func supersededError(sessionID, older, newer string) string {
 	return fmt.Sprintf("another process holds session %s: client instance %s registered it after this process (client instance %s). "+
 		"The listener refuses the registrations and role claims of this process while that process runs. "+

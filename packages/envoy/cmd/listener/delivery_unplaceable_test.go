@@ -94,16 +94,23 @@ func TestAnOrphanedDeferralSlotIsReclaimedAtItsExpiry(t *testing.T) {
 	}
 
 	// The mark that an unanswered read was logged for a message lasts as a slot does: it is set
-	// once and kept while the message keeps coming back, so the line is logged once per message,
-	// and it goes at its expiry like an orphaned slot.
+	// once and kept while the message keeps coming back, its expiry counted again from each
+	// delivery, so the line is logged once per message, and it goes at its expiry like an orphaned
+	// slot.
+	first := clock
 	if !set.firstUnread(7) {
 		t.Fatal("the first unanswered read of a message was not the first")
 	}
-	clock = clock.Add(expiry - time.Nanosecond)
+	clock = first.Add(expiry - time.Nanosecond)
 	if set.firstUnread(7) {
 		t.Fatal("a second unanswered read of the same message, inside the expiry, was taken as the first: the line would be logged again")
 	}
-	clock = clock.Add(expiry)
+	last := first.Add(expiry)
+	clock = last
+	if set.firstUnread(7) {
+		t.Fatal("an unanswered read past the first read's expiry was taken as the first: the second read did not count the expiry again from its own time")
+	}
+	clock = last.Add(expiry)
 	if !set.firstUnread(7) {
 		t.Fatal("an unanswered read of a message whose mark expired was not taken as a first one")
 	}

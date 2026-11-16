@@ -177,12 +177,13 @@ func publishWakeReport(lifetime context.Context, client *bus.Client, logger *log
 
 // storeAgentWake publishes one agent wake report for sessionID on bus.LegionWakeTopic and waits
 // for the stream to store it, for at most wakeReportAttempt. It is the agent delivery's report
-// (noRecordAgentDelivery), made inside the delivery and under no lifetime but its own bound: the
-// delivery acknowledges its message only once this answers nil, and a report the stream did not
-// store sends the message back, so the next delivery tries again. It makes one attempt, and each
-// attempt is a report with an event id of its own: the daemon takes the first wake of a released
-// role and no second one (TakePodWake). A report wakeReportEnvelope cannot build answers an error,
-// as one the stream did not store does.
+// (reportNoRecordWake, reached from noRecordAgentDelivery and from unreadAgentDelivery), made
+// inside the delivery and under no lifetime but its own bound: the delivery acknowledges its
+// message only once this answers nil, and a report the stream did not store sends the message
+// back, so the next delivery tries again. It makes one attempt, and each attempt is a report with
+// an event id of its own: the daemon takes the first wake of a released role and no second one
+// (TakePodWake). A report wakeReportEnvelope cannot build answers an error, as one the stream did
+// not store does.
 func storeAgentWake(client *bus.Client, logger *logging.Logger, sessionID string) error {
 	eventID := id.New()
 	report := wakeReport{Kind: wakeKindAgent, Session: sessionID, At: contracts.NowMillis()}
@@ -190,9 +191,7 @@ func storeAgentWake(client *bus.Client, logger *logging.Logger, sessionID string
 	if !ok {
 		return errors.New("the agent wake report of session " + sessionID + " could not be built")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), wakeReportAttempt)
-	defer cancel()
-	return client.PublishWithin(ctx, item)
+	return publishWithinBudget(context.Background(), client, item)
 }
 
 // publishWithinBudget makes one publish attempt, bounded by wakeReportAttempt and by what is

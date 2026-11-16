@@ -326,7 +326,7 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 	stream := "KV_" + bucket
 	info, err := js.StreamInfo(stream)
 	if err != nil {
-		return 0, fmt.Errorf("raise %s: %w", stream, err)
+		return 0, fmt.Errorf("raise %s: %w", stream, Reconnecting(err))
 	}
 	if info.Config.Replicas >= replicas {
 		return 0, nil
@@ -334,7 +334,7 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 	raised := info.Config
 	raised.Replicas = replicas
 	if err := updateStream(js, &raised, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas }); err != nil {
-		return 0, fmt.Errorf("raise %s: %w", stream, refusedSettings(err, &info.Config, &raised))
+		return 0, fmt.Errorf("raise %s: %w", stream, refusedSettings(Reconnecting(err), &info.Config, &raised))
 	}
 	return info.Config.Replicas, nil
 }
@@ -352,15 +352,16 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 // worse than a start that does not come up: the webhook redelivery sweep reads its records the
 // moment this call answers, and a stale miss there asks GitHub for a redelivery it already made.
 //
-// A read that fails is returned as it is, since the stream is there: this runs only after a raise
-// of it answered.
+// A read that fails is returned, since the stream is there: this runs only after a raise of it
+// answered. A read refused while the bus reconnects says so (Reconnecting), as every other bucket
+// call's error does.
 func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int) error {
 	stream := "KV_" + bucket
 	start := time.Now()
 	for attempt := 1; ; attempt++ {
 		info, err := js.StreamInfo(stream)
 		if err != nil {
-			return fmt.Errorf("raise %s: read the raised stream: %w", stream, err)
+			return fmt.Errorf("raise %s: read the raised stream: %w", stream, Reconnecting(err))
 		}
 		behind := copiesBehind(info, replicas)
 		if behind == "" {
@@ -425,7 +426,7 @@ func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Dura
 	stream := "KV_" + bucket
 	info, err := js.StreamInfo(stream)
 	if err != nil {
-		return 0, fmt.Errorf("set %s max age: %w", stream, err)
+		return 0, fmt.Errorf("set %s max age: %w", stream, Reconnecting(err))
 	}
 	if info.Config.MaxAge == maxAge {
 		return maxAge, nil
@@ -433,7 +434,7 @@ func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Dura
 	aged := info.Config
 	aged.MaxAge = maxAge
 	if err := updateStream(js, &aged, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge }); err != nil {
-		return 0, fmt.Errorf("set %s max age: %w", stream, err)
+		return 0, fmt.Errorf("set %s max age: %w", stream, Reconnecting(err))
 	}
 	return maxAge, nil
 }

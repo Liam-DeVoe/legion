@@ -280,8 +280,9 @@ const (
 	// instead leaves the consumer standing with those messages on it for as long as it stands:
 	// the reaper judges the records the cache holds, and a record whose bucket age is under the
 	// gone horizon leaves that cache before a pass of it judges the session gone. A bucket this
-	// listener creates outlives the horizon (session.BucketMaxAge, session.GoneHorizon), but one
-	// an older build created keeps a record five minutes until ENVOY_SESSION_MAX_AGE raises it.
+	// listener creates keeps a record for 2 hours (session.BucketMaxAge), past the default
+	// horizon (session.GoneHorizon), but one an older build created keeps a record five minutes
+	// until ENVOY_SESSION_MAX_AGE raises it.
 	// The sweep is what ends such a consumer, one pass after the record left the bucket
 	// (sessionConsumerSweep), and the stream's inactive threshold
 	// (bus.SessionConsumerInactiveThreshold) is the backstop behind the sweep; until one of them
@@ -1070,18 +1071,20 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			return relayRetry
 		}
 		if err := m.publishFrame(ctx, run, msg, streamID, gap); err != nil {
+			// A frame too large to relay is passed even when the run is ending, so its message is
+			// acknowledged and not left unsettled.
+			if errors.Is(err, bus.ErrTooLarge) {
+				if !m.passTooLarge(run, msg, streamID, err) {
+					return relayRetry
+				}
+				// No frame went out, so the gap, if any, goes on the next one.
+				continue
+			}
 			if ctx.Err() != nil {
 				return relayEnded
 			}
-			if !errors.Is(err, bus.ErrTooLarge) {
-				m.logger.Warn("session relay could not publish a frame; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
-				return relayRetry
-			}
-			if !m.passTooLarge(run, msg, streamID, err) {
-				return relayRetry
-			}
-			// No frame went out, so the gap, if any, goes on the next one.
-			continue
+			m.logger.Warn("session relay could not publish a frame; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+			return relayRetry
 		}
 		gap = false
 	}

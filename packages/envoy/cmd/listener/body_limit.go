@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -23,11 +24,17 @@ const apiBodyLimit = 4 << 20
 var apiBodyTooLarge = fmt.Sprintf("body too large: the limit is %d bytes (%d MiB)", apiBodyLimit, apiBodyLimit>>20)
 
 // readAPIBody decodes the JSON body of a /v1 request into into. It reads the body through
-// http.MaxBytesReader, so it reads and parses no more than apiBodyLimit bytes of it. When the body
-// does not decode, it returns the refusal the route answers: 413 naming the limit for a body past
-// it, and 400 "invalid json" for any other. The status is 0 when the body decoded.
+// http.MaxBytesReader, so it reads and parses no more than apiBodyLimit bytes of it. The decode
+// stops after the first JSON value, so the rest of the body is then read through the same limit
+// and dropped: a small value followed by more than the limit is refused as a body past it. When
+// the body does not decode, it returns the refusal the route answers: 413 naming the limit for a
+// body past it, and 400 "invalid json" for any other. The status is 0 when the body decoded.
 func readAPIBody(w http.ResponseWriter, r *http.Request, into any) (status int, message string) {
-	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, apiBodyLimit)).Decode(into)
+	body := http.MaxBytesReader(w, r.Body, apiBodyLimit)
+	err := json.NewDecoder(body).Decode(into)
+	if err == nil {
+		_, err = io.Copy(io.Discard, body)
+	}
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):

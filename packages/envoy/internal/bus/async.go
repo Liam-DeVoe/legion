@@ -567,13 +567,14 @@ func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt tim
 // unsent names nats.go's refusal to send a message of size bytes: ErrUnavailable when the
 // connection is not connected (the client keeps no reconnect buffer, so nats.go sends nothing then)
 // or more acknowledgements are pending than nats.go takes, and otherwise as refused names it. A
-// refusal while nats.go reconnects is named ErrReconnecting beside ErrUnavailable (Reconnecting),
-// so its text says the bus is reconnecting rather than that a buffer is full.
+// refusal while nats.go reconnects is named ErrReconnecting (Reconnecting), and still wraps
+// ErrUnavailable: its text is `bus: NATS is reconnecting`, which says the bus is reconnecting
+// rather than that a buffer is full.
 func (w *window) unsent(err error, size int) error {
 	if !w.current() || errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrConnectionDraining) ||
 		errors.Is(err, nats.ErrConnectionReconnecting) || errors.Is(err, nats.ErrReconnectBufExceeded) ||
 		errors.Is(err, nats.ErrTooManyStalledMsgs) {
-		return fmt.Errorf("bus: %w: %w", ErrUnavailable, Reconnecting(err))
+		return Reconnecting(fmt.Errorf("bus: %w: %w", ErrUnavailable, err))
 	}
 	return w.client.refused(err, size)
 }

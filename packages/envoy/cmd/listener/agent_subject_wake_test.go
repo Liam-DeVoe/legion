@@ -290,8 +290,8 @@ func putRecord(t *testing.T, client *bus.Client, sessionID string, entry session
 	}
 }
 
-// aloneDeliveries is what a delivery rig's handler saw: the delivery count of each delivery that
-// reached it, in order, and the time each reached it.
+// aloneDeliveries is what a delivery rig's handler saw: the delivery count of each delivery it
+// took, in order, the time the handler had settled each, and the stream sequence of the last.
 type aloneDeliveries struct {
 	mu    sync.Mutex
 	count []uint64
@@ -579,14 +579,24 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		}
 		rig.requireAcknowledged(t, storedMsg.Sequence)
 		counted := time.Now()
+		durableA := bus.ListenerDurable(aloneMachineA)
+		deliveredByA := func() uint64 {
+			t.Helper()
+			info, err := rig.publisher.JS().ConsumerInfo(bus.Stream, durableA)
+			if err != nil {
+				t.Fatalf("read the durable %s: %v", durableA, err)
+			}
+			return info.Delivered.Consumer
+		}
+		acknowledged := deliveredByA()
 
 		standIn := startSessionStandIn(t, rig.uri, sessionID, answerDone)
 		postListener(t, rig.a.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2"))
 		requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
 		t.Parallel()
 		standIn.none(t, time.Until(counted.Add(10*time.Second)))
-		if got := aloneReceived(rig.a, item.EventID); got != 2 {
-			t.Errorf("listener A's durable delivered the message %d times ten seconds after it was acknowledged, want still 2", got)
+		if later := deliveredByA(); later != acknowledged {
+			t.Errorf("listener A's durable had made %d deliveries when the message was acknowledged and %d ten seconds later, want no more", acknowledged, later)
 		}
 	})
 
@@ -744,7 +754,6 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 				return true
 			}, nil)
 			seen.awaitSeen(t, 2, 45*time.Second)
-			time.Sleep(time.Second)
 
 			count, _, seq := seen.seen()
 			if len(count) != 2 || count[0] != consumerMaxDeliver-1 || count[1] != consumerMaxDeliver {

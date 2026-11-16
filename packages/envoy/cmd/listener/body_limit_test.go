@@ -175,7 +175,8 @@ type bodyLimitRow struct {
 // summary of the message. Each webhook route has its own. The rows are every route that reads a
 // body: /v1/messages/send and publish, /v1/interests/subscribe and unsubscribe, /v1/roles/set, the
 // two Legion agent PUTs, and the GitHub, Slack and Ghost Wispr webhooks. The listener's other
-// routes read no body.
+// routes read no body. A /v1 body is read to the limit whole, past its first JSON value too: a
+// small send followed by more than the limit of spaces is refused as a body past it.
 func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 	rig := newBodyLimitRig(t)
 	const (
@@ -436,6 +437,23 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("send: a small value followed by more than the limit", func(t *testing.T) {
+		small := marshalled(t, map[string]any{"target_session": sendTarget, "source": "agent", "message": "a send followed by spaces"})
+		request := v1Request(http.MethodPost, "/v1/messages/send", small+strings.Repeat(" ", v1BodyLimit))
+		before := rig.storedState(t)
+		logged := rig.logs.Len()
+		answer := rig.serve(request)
+		if answer.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("a send of %d bytes followed by %d spaces: status %d, body %.300s; want 413", len(small), v1BodyLimit, answer.Code, answer.Body.String())
+		}
+		if after := rig.storedState(t); !maps.Equal(before, after) {
+			t.Fatalf("the send refused its body and still wrote or published: the account's streams went from %v to %v", before, after)
+		}
+		wantRecord(t, rig.logs.String()[logged:], "listener send", map[string]any{
+			"outcome": "too_large", "status": float64(http.StatusRequestEntityTooLarge),
+		})
+	})
 }
 
 // wantServed serves request and asserts the route served it as it serves any request: 200, with

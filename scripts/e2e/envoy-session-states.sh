@@ -78,8 +78,9 @@
 # proved at all. Raising it is the rollout this issue's sibling carries (dispatch://INFRA-887), and
 # check 8 is its proof: the two running listeners leave ENVOY_SESSION_MAX_AGE unset, so neither
 # writes the bucket's age and both adopt what the bucket carries (applyMaxAge, on every reaper
-# pass), and a listener of the run's own writes it — 2h at setup, then in check 8 the older 5m,
-# the raise back to 2h, and the rollback to 5m.
+# pass). The run's store is new, so listener A creates the bucket at 2h (session.BucketMaxAge),
+# and the setup checks that both listeners read that age. Only in check 8 does a listener of the
+# run's own write the age: the older 5m, the raise back to 2h, and the rollback to 5m.
 #
 # ---- the named checks ---------------------------------------------------------------------------
 # Each prints `PASS <name>` or `FAIL <name>: <reason>`, every selected check runs whatever the one
@@ -745,12 +746,13 @@ set_max_age() {
   maxage_pid=
 }
 
-set_max_age "$max_age"
-until_true 120 "both listeners to read the bucket's $max_age maximum age" \
+# The run's store is new, so listener A created the session bucket, at the 2h a listener of this
+# build gives a new bucket. Both listeners must read that age before any check runs.
+until_true 120 "listener A to read the new bucket's $max_age maximum age" \
   healthz_max_age_is "$port_a" "$max_age_shown"
-until_true 120 "listener B to read the bucket's $max_age maximum age" \
+until_true 120 "listener B to read the new bucket's $max_age maximum age" \
   healthz_max_age_is "$port_b" "$max_age_shown"
-note "the session bucket's maximum age is $max_age, written by a listener of the run's own"
+note "the session bucket's maximum age is $max_age, the age listener A created it with"
 watch_exceptions
 
 if [ -n "$needs_dispatch" ]; then
