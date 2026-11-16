@@ -556,8 +556,10 @@ sign_in() { # <box dir> <person>
     sleep 0.5
   done
   [ -n "$code" ] || setup_fail "$person's agent-secrets login printed no code: $(tr '\n' ' ' <"$dir/login.err")"
+  # hd is the account's Google Workspace domain, as Google's own ID token carries it: the broker's
+  # exchange admits a person only from BROKER_SIGNIN_DOMAIN, read from that claim.
   curl -sf -X POST "$ISSUER_URL/_dev/sign-in-as" -H 'Content-Type: application/json' \
-    -d "$(jq -cn --arg p "$person" '{sub: $p, email: $p, email_verified: true}')" >/dev/null ||
+    -d "$(jq -cn --arg p "$person" '{sub: $p, email: $p, email_verified: true, hd: ($p | split("@")[1])}')" >/dev/null ||
     setup_fail "the issuer would not queue $person's sign-in"
   curl -sf -X POST "$ISSUER_URL/_dev/approve-device-code" -H 'Content-Type: application/json' \
     -d "$(jq -cn --arg c "$code" '{user_code: $c}')" >/dev/null ||

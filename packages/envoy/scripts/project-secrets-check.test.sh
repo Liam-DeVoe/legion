@@ -442,7 +442,12 @@ if [ -n "$proxy" ]; then
   exit 0
 fi
 case "$url" in
-  */_dev/sign-in-as) jq -r .email <<<"$data" >"$state/queued" ;;
+  */_dev/sign-in-as)
+    # The real broker admits a person only when the token's hd is the sign-in domain, so a queued
+    # sign-in without the email's own domain in hd is one the real run would refuse.
+    [ "$(jq -r '.hd // ""' <<<"$data")" = "$(jq -r '.email | split("@")[1]' <<<"$data")" ] || exit 22
+    jq -r .email <<<"$data" >"$state/queued"
+    ;;
   */_dev/approve-device-code)
     [ -s "$state/queued" ] || exit 22
     mv "$state/queued" "$state/approved-$(jq -r .user_code <<<"$data")"
