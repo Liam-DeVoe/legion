@@ -7147,6 +7147,7 @@ The Postgres-backed tests skip, rather than fail, when `BROKER_TEST_DATABASE_URL
 one refresh token and one device code each raced against both processes, both migrating one empty database at once, a retag one process is told to reread being enforced by the other through the fan-out, that fan-out spending no rate-limit token on the pod it reaches, and a signalled process failing readiness while it serves a request out past the old ten-second shutdown budget.
 CI's `broker-multiprocess` job runs them
 — `go test -tags multiprocess -count=1 -timeout 20m ./cmd/broker` in `packages/envoy` — in a job of its own, since each row waits out tens of seconds and `envoy-go`'s unit step runs under go test's default ten-minute package deadline.
+That command runs the package's untagged tests beside the two-process tests, so its 20 minutes are 2.2 times the two together over CI's 20 newest green merge-group runs up to 2026-11-15: 477.995 s in `envoy-go`'s unit step (run 43687633216) and 60.731 s in `broker-multiprocess` (run 43582507175), whose own step runs the two-process tests alone under the same 20 minutes.
 The job runs only when a file its `broker_multiprocess` filter in `.github/workflows/ci.yaml` names changes;
 see Critical conventions for what keeps that filter current.
 Every client-facing lane's own test mounts the real broker handlers (`api.Register` with real, Postgres-backed services) rather than a hand-rolled fake standing in for broker behavior

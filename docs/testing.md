@@ -434,10 +434,10 @@ With a long test name and a socket under it, or under a directory made from it (
 ## Go's package deadline
 
 `go test` panics a package that runs longer than its `-timeout`, ten minutes by default (`panic: test timed out after 10m0s`), which reads as a failure of the change under test.
-Each Go command of `.github/workflows/ci.yaml` passes a `-timeout` of at least twice its slowest package over the job's 20 newest green merge-group runs, and the step's comment there gives that reading (R5).
-Up to 2026-11-15 the guards and their readings were:
+Each Go command of `.github/workflows/ci.yaml` passes a `-timeout` of at least twice its slowest package over the job's 20 newest green merge-group runs (for the `test` job's two Go steps, its 15 since main's memory guard landed), and the step's comment there gives that reading (R5).
+The guards and their readings, each read up to the date its item names or up to 2026-11-15 where it names none, were:
 
-- `test`, "Test the Go daemon": 15 minutes, against `internal/store`'s 294.064 s; the race step: 30 minutes, against `internal/daemon`'s 770.102 s under `-race`.
+- `test`, "Test the Go daemon": 15 minutes, against `internal/store`'s 342.597 s; the race step: 30 minutes, against `internal/daemon`'s 833.358 s under `-race`; both over the job's 15 green merge-group runs from 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to 2026-11-16T05:39Z.
 
 - `envoy-go`: 20 minutes for the unit step, against `cmd/broker`'s 477.995 s; 10 minutes for each plain run of what the race build cannot run, against `internal/dispatch/docs`'s 49.044 s; 10 and 5 minutes for natslive's `internal/testnats` and `internal/bus` (3.538 s and 5.029 s); 300 s for the integration step (7.683 s).
 
@@ -486,7 +486,7 @@ together they share one database service and the machine's CPU, and on a small m
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package.
 The test job runs it only under the race detector, in its race step, once per job;
 the plain step ("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector.
-Under `-race` it took up to 770.102 s over the race step's 20 newest green merge-group runs up to 2026-11-15, and 908 s on a shared devbox, so a command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 35m`:
+Under `-race` it took up to 833.358 s over the race step's 15 green merge-group runs from 2026-11-15T20:47Z to 2026-11-16T05:39Z, and 908 s on a shared devbox, so a command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 35m`:
 
 ```sh
 cd packages/daemon

@@ -3855,12 +3855,13 @@ jobs:
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.test == 'true') }}
     runs-on: ubuntu-24.04
     # Each guarded step's -timeout, --timeout or proof_guard must fire before the runner cancels the
-    # job, so a hung test prints what it was waiting on. The limit is the job's sum over its 20
-    # newest green merge-group runs up to 2026-11-15: every step at its longest green duration, 489 s
-    # for the steps that run no guarded command and 7 s the job's clock holds over its steps, and
-    # each guarded step's longest green duration plus its guard - the plain Go step 536 s + 900 s,
-    # the race step 930 s + 1800 s, the Stage 1 proof 6 s + 240 s, and the eight bare `bun test`
-    # steps 155 s + 110 s - which is 5173 s, or 87 minutes.
+    # job, so a hung test prints what it was waiting on. The limit is the job's sum over its 15
+    # green merge-group runs from 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to
+    # 2026-11-16T05:39Z: every step at its longest green duration, 504 s for the steps that run no
+    # guarded command and 6 s the job's clock holds over its steps, and each guarded step's longest
+    # green duration plus its guard - the plain Go step 597 s + 900 s, the race step 997 s + 1800 s,
+    # the Stage 1 proof 6 s + 240 s, and the eight bare `bun test` steps 155 s + 110 s - which is
+    # 5315 s, or 89 minutes.
     timeout-minutes: 90
     services:
       postgres:
@@ -4222,9 +4223,9 @@ jobs:
       # The step runs every package of the module except the three the race step below tests, so
       # each of those runs once per job, under the detector. `set -o pipefail` is what makes a
       # failed go list, or a pattern that matches every package, fail the step rather than pass it
-      # with nothing tested. Its -timeout 15m is three times its slowest package over this job's
-      # 20 newest green merge-group runs up to 2026-11-15: internal/store, 294.064 s (run
-      # 43675808276).
+      # with nothing tested. Its -timeout 15m is 2.6 times its slowest package over this job's 15
+      # green merge-group runs from 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to
+      # 2026-11-16T05:39Z: internal/store, 342.597 s (run 43767908385).
       - name: Test the Go daemon
         run: |
           set -o pipefail
@@ -4245,9 +4246,10 @@ jobs:
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
       # test's ten-minute default, internal/daemon, by far the slowest of the three packages, ran
       # the ten minutes out on main at job 125691048644 (run 41562777668). No single test dominates
-      # it: a local run timed 648 tests one after another, the slowest at 44 s. Over this job's 20
-      # newest green merge-group runs up to 2026-11-15 it took at most 770.102 s (run 43685022971),
-      # and the 30 minutes are 2.3 times that.
+      # it: a local run timed 648 tests one after another, the slowest at 44 s. Over this job's 15
+      # green merge-group runs from 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to
+      # 2026-11-16T05:39Z it took at most 833.358 s (run 43760034112), and the 30 minutes are 2.2
+      # times that.
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon

@@ -972,6 +972,11 @@ bash packages/envoy/scripts/build-dispatch-build.sh --commit edb69e0d7588ec03784
 env DISPATCH_TEST_DATABASE_URL=… DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
 ```
 
+That command is the `dispatch-two-builds` job's own step, which passes no `-run`, so there too it
+runs the package's untagged tests beside the two-build tests: its 30 minutes are 3.1 times that
+step's slowest run over the job's 8 green merge-group runs up to 2026-11-15, which are all it has
+had since it landed, 575.933 s (run 43717090111).
+
 A developer who runs only the block above runs none of the tagged suites, which is why each is
 named here: the evidence for anything about two processes serving one database is in the
 multiprocess suite, and for two builds serving it, in the two-build suite.
