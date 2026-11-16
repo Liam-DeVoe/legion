@@ -26,12 +26,14 @@ import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import type { StepEntry } from "../issue/gated-steps";
 import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
+import { IssueLabels, labelsControlName } from "../issue/IssueLabels";
 import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
 import { writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
+import { CONTROL_LABELS } from "./page-words";
 import { doc, draw, SPEC_ID, undraw, VERIFICATION_ID } from "./shared-controls-fixture";
 import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
@@ -281,6 +283,35 @@ test("the four control names are main's", async () => {
   } finally {
     view.unmount();
     sources.mockRestore();
+  }
+});
+
+// dispatch://INFRA-3935 R2 and R8: the new issue page's add menu, its `l` key and its rows find
+// the labels control by the name it carries inside `NoTooltips`, which `labelsControlName`
+// builds: the words it draws, then the issue's key, while it has no label; `main`'s name once it
+// has one.
+test("labelsControlName names the labels control as it is drawn", () => {
+  expect(labelsControlName([], "CORE-1", CONTROL_LABELS)).toBe("Add a label to CORE-1");
+  expect(labelsControlName(["api"], "CORE-1", CONTROL_LABELS)).toBe("Edit labels");
+
+  const view = draw(
+    createElement(IssueLabels, {
+      disabled: false,
+      issueKey: "CORE-1",
+      labels: [],
+      onSave: async () => undefined,
+      project: "CORE",
+      saving: false,
+    }),
+    "inside"
+  );
+  try {
+    const control = within(view.container).getByRole("button", {
+      name: labelsControlName([], "CORE-1", CONTROL_LABELS),
+    });
+    expect(control.textContent).toBe(CONTROL_LABELS.add_label);
+  } finally {
+    undraw(view);
   }
 });
 
