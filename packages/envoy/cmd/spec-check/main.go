@@ -1,12 +1,13 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
-// of package specgraph, and lists what changed between two such directories. It reads the
-// directory as the Dispatch server's importer reads .dispatch/architecture: notes.ReadSet takes
-// each .md file directly in it, within the size bound, and passes over every other entry. Every
-// rule is specgraph's (Parse and Validate); the command states none of its own.
+// of package specgraph and the form and the terms of package specform, and lists what changed
+// between two such directories. It reads the directory as the Dispatch server's importer reads
+// .dispatch/architecture: notes.ReadSet takes each .md file directly in it, within the size bound,
+// and passes over every other entry. Every rule is specgraph's (Parse and Validate) or specform's
+// (Check); the command states none of its own.
 //
 // Usage:
 //
-//	spec-check tree --dir <dir> [--allow-empty] [--retired <file>]
+//	spec-check tree --dir <dir> [--allow-empty] [--retired <file>] [--people <file>] [--projects <file>] [--server-url <url>]
 //	spec-check changes --base <dir> --dir <dir>
 //	spec-check checks --dir <dir> --job <job>
 //
@@ -18,6 +19,15 @@
 // spec file is the empty tree, exit 0, ending "; the tree is empty"; without it, exit 2. --retired
 // names a file of the ids the approved spec removed, one id a line, "#" lines and blank lines
 // passed over; without it, a line on standard error says that no id was checked against them.
+//
+// tree also judges each text of the tree by specform.Check: the text of a statement, the claim,
+// the procedure and the failing example of a check, the name and the purpose of a component, and
+// the definition of a term. The node of a finding on a definition is the name of its term. Three
+// flags say what Check knows of the system, and each one that is absent gives one line on standard
+// error that says what is not checked: --people names a file of the emails of the people who signed
+// in (without it, no name of a person is checked), --projects a file of the project keys (without
+// it, no key is a project), each read as --retired is, and --server-url the address of the Dispatch
+// server, with a scheme and a host (without it, no full address is a link).
 //
 // changes prints one line for each statement that only one of the two directories holds, or whose
 // text, parent, relations or checks differ between them, "spec-check: <id>: text, checks", or
@@ -51,7 +61,7 @@ import (
 	"github.com/sjawhar/envoy/internal/runnerlog"
 )
 
-const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <file>]
+const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <file>] [--people <file>] [--projects <file>] [--server-url <url>]
        spec-check changes --base <dir> --dir <dir>
        spec-check checks --dir <dir> --job <job>`
 
@@ -169,11 +179,16 @@ func judge(stderr io.Writer, dir string, o specgraph.Options) (judged, error) {
 	}
 	tree, problems := specgraph.Parse(set.Files)
 	problems = append(problems, specgraph.Validate(tree, o)...)
+	sortProblems(problems)
+	return judged{dir: dir, tree: tree, problems: problems, files: len(set.Files)}, nil
+}
+
+// sortProblems sorts problems by file, line, node, rule and detail.
+func sortProblems(problems []specgraph.Problem) {
 	slices.SortFunc(problems, func(a, b specgraph.Problem) int {
 		return cmp.Or(cmp.Compare(a.Pos.File, b.Pos.File), cmp.Compare(a.Pos.Line, b.Pos.Line), cmp.Compare(a.Node, b.Node),
 			cmp.Compare(a.Rule, b.Rule), cmp.Compare(a.Detail, b.Detail))
 	})
-	return judged{dir: dir, tree: tree, problems: problems, files: len(set.Files)}, nil
 }
 
 // sayProblems writes one line of stderr for each problem: "<dir>/<file>:<line>: <node>: <detail>".

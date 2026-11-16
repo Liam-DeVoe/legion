@@ -3155,14 +3155,23 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `ReadGoTestJSON` reads a `go test -json` report and `MatchTests` matches a check's selector to its one test:
   a test that go test killed, or that started and has no end, could not run and never reads as a failure.
 
-- `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
+- `cmd/spec-check` runs those rules, and the form and the terms of `internal/dispatch/specform`, over directories of spec files on disk (`cmd/spec-check/main.go`).
   It reads each directory with `notes.ReadSet`, so the entries it reads and the 1 MiB bound are the architecture importer's.
-  `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
+  `spec-check tree --dir <dir> [--allow-empty] [--retired <file>] [--people <file>] [--projects <file>] [--server-url <url>]` judges one directory:
   a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one and an interface being a component with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
   with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
   `--retired` names a file of the ids the approved spec removed, one id a line;
   without it, a line on stderr says that no id was checked against them.
+  `tree` also gives each text of the tree to `specform.Check`, the one function that decides the form of a text of The Spec: the text of a statement, the claim, the procedure and the failing example of a check, the name and the purpose of a component, and the definition of a term.
+  Each finding is one problem line whose rule is the finding's rule, such as `sentences`, `ste100-semicolon` or `dispatch-link`, and the node of a finding on a definition is the name of its term.
+  `--people` names a file of the emails of the people who signed in, one email a line, so that a text that names one of them is refused;
+  without it, the list is empty, and a line on stderr says that no text is checked for a person's name.
+  `--projects` names a file of the project keys, one key a line, so that a bare issue key of one of them is a link;
+  without it, no key is a project, and a line on stderr says that no text is checked for a project key.
+  `--server-url` is the address of the Dispatch server, with a scheme and a host, so that a full address on that server is a link;
+  without it, no full address is a link, and a line on stderr says so.
+  An address with no scheme or no host is exit 2.
   `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`.
   `spec-check checks --dir <dir> --job <job>` prints the program checks that name the job as one line of JSON, `[]` for none.
   Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read and for arguments it does not take.
@@ -3172,6 +3181,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - The composite action `.github/actions/spec-check` runs `spec-check tree` as `.github/actions/architecture-check` runs its command (its own `README.md` is the caller's guide):
   it builds `cmd/spec-check` from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, removes setup-go's `go` problem matcher, runs over its `path` input (default `.dispatch/spec`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number of statements to the caller as its `count` output, on exit 0 and on exit 1.
+  It gives the command none of `--retired`, `--people`, `--projects` and `--server-url`, so its log holds the four lines that say what was not checked.
   Its cache entry is `spec-check-<os>-<arch>-go<version>-<hash>`, saved only on a miss in a `push`, `schedule` or `workflow_dispatch` run, and `ci-caches.yaml`'s `spec-check` job, a job of its own, fills it on every push to main.
   `ci.yaml`'s `envoy-go-checks` runs the tests of `specgraph` and of `cmd/spec-check` with the architecture-note ones, and runs the action over this repository's `.dispatch/spec` right after the architecture-note action, before the job's own setup-go, with `allow-empty: 'true'` while main holds no spec file;
   a pull request whose spec files break a rule fails that job with one line for each fault, naming its file, its line and its node, and the next step fails unless `count` is a whole number.

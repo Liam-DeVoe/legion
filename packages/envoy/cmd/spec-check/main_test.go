@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,9 +15,23 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
-// noList is the line tree writes after the directory when it reads no --retired list: the
-// instrument says what it did not read.
-const noList = ": no --retired list, so no id is checked against the ids the approved spec removed\n"
+// notChecked is the lines tree writes on stderr for dir after its warnings, one for each list it
+// was not given, in this order: --retired, --people, --projects and --server-url, less each flag
+// that given names. The instrument says what it did not read.
+func notChecked(dir string, given ...string) string {
+	var lines strings.Builder
+	for _, list := range []struct{ flag, line string }{
+		{"retired", "no --retired list, so no id is checked against the ids the approved spec removed"},
+		{"people", "no --people list, so no text is checked for a person's name"},
+		{"projects", "no --projects list, so no text is checked for a project key"},
+		{"server-url", "no --server-url, so a link to a Dispatch server by its full address is not checked"},
+	} {
+		if !slices.Contains(given, list.flag) {
+			lines.WriteString("spec-check: " + dir + ": " + list.line + "\n")
+		}
+	}
+	return lines.String()
+}
 
 // plantedFaults is each fixture tree of specgraph's TestEachPlantedFaultIsNamed with the one
 // problem the command must name, and the counts of the blocks it holds. The counts come from the
@@ -53,8 +68,64 @@ var plantedFaults = []struct {
 	{"structure-statement-without-about", "spec.md", 1, "legion-reads-issues-only-through-dispatch", "no-about: a statement of kind structure names its components or interfaces", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
 }
 
+// formFaults is each fixture tree under testdata, the texts of the controls of v-form and v-terms
+// (R49 and R50). Each row runs tree over one tree with the lists the row gives and wants exactly
+// the lines it names, each "<file>:<line>: <node>: <rule>: <detail>" after the directory, and the
+// counts, which come from the opening lines of the fixture; a row with no line wants the tree
+// taken. A row with waits needs a rule of the terms that specform.Check does not decide yet: it is
+// skipped while tree takes its tree, and held to its lines whole as soon as tree prints anything
+// else.
+var formFaults = []struct {
+	name, dir string
+	// people and projects are the content of the --people and --projects files, and serverURL is
+	// --server-url; the row gives each flag only when its value is not empty.
+	people, projects, serverURL string
+	lines                       []string
+	counts                      string
+	waits                       string
+}{
+	{name: "a statement of three sentences", dir: "form-three-sentences", counts: oneOfEach,
+		lines: []string{"spec.md:1: a-claim-survives-a-restart: sentences: it has 3 sentences, and a statement has one or two"}},
+	{name: "a sentence of 26 words", dir: "form-sentence-of-26-words", counts: oneOfEach,
+		lines: []string{`spec.md:1: a-claim-survives-a-restart: sentence-words: a sentence has 26 words, and a sentence has at most 25: "Legion keeps the claim of each issue in"`}},
+	{name: "two sentences of 25 words each pass", dir: "form-two-sentences-of-25-words", counts: oneOfEach},
+	{name: "one hard finding of ASD-STE100", dir: "form-ste100-finding", counts: oneOfEach,
+		lines: []string{`spec.md:1: a-claim-survives-a-restart: ste100-semicolon: ASD-STE100 does not permit a semicolon: ";"`}},
+	{name: "a dispatch link to an issue", dir: "form-dispatch-link", counts: oneOfEach,
+		lines: []string{`spec.md:1: a-claim-survives-a-restart: dispatch-link: it links to a record of Dispatch: "dispatch://ACME-12"`}},
+	// specgraph's code-in-text names every address with a path, so the full address of an issue
+	// is refused with or without --server-url, and only --server-url names it a link.
+	{name: "a link to an issue by its full address with --server-url", dir: "form-full-address-link", serverURL: "https://dispatch.example.com", counts: oneOfEach,
+		lines: []string{
+			"spec.md:1: a-claim-survives-a-restart: code-in-text: text names code: https://dispatch.example.com/issues/ACME-12",
+			`spec.md:1: a-claim-survives-a-restart: dispatch-link: it links to a record of Dispatch: "https://dispatch.example.com/issues/ACME-12"`,
+		}},
+	{name: "a link to an issue by its full address without --server-url is no link", dir: "form-full-address-link", counts: oneOfEach,
+		lines: []string{"spec.md:1: a-claim-survives-a-restart: code-in-text: text names code: https://dispatch.example.com/issues/ACME-12"}},
+	{name: "a bare issue key of a listed project with --projects", dir: "form-project-key", projects: "ACME\n", counts: oneOfEach,
+		lines: []string{`spec.md:1: a-claim-survives-a-restart: dispatch-link: it links to a record of Dispatch: "ACME-12"`}},
+	{name: "a bare issue key without --projects passes", dir: "form-project-key", counts: oneOfEach},
+	{name: "an incident id", dir: "form-incident", counts: oneOfEach,
+		lines: []string{`spec.md:1: a-claim-survives-a-restart: incident: it names an incident: "INC-42"`}},
+	{name: "a pull request number", dir: "form-pull-request", counts: oneOfEach,
+		lines: []string{`spec.md:1: a-claim-survives-a-restart: pull-request: it names a pull request: "pull request 42"`}},
+	{name: "a person's name in a claim with --people", dir: "form-person-in-a-claim", people: "# Each person who signed in.\nada.lovelace@example.com\n", counts: oneOfEach,
+		lines: []string{`spec.md:5: a-lost-claim-is-reported: person: it names a person: "Ada Lovelace"`}},
+	{name: "a person's name in a claim without --people passes", dir: "form-person-in-a-claim", counts: oneOfEach},
+	{name: "a second definition of a term", dir: "terms-second-definition", counts: "0 statements, 0 checks, 0 components, 0 interfaces, 2 terms",
+		lines: []string{"b.md:1: work unit: term-second-definition: this document defines this term 2 times. Keep one definition"},
+		waits: "specform.Check has no rule term-second-definition of R50 yet: it judges each definition alone, and never against another definition of the same term"},
+	{name: "a definition of two sentences", dir: "terms-two-sentence-definition", counts: "0 statements, 0 checks, 0 components, 0 interfaces, 1 term",
+		lines: []string{"spec.md:1: work unit: definition-sentences: the definition has 2 sentences, and a definition has one"},
+		waits: "specform.Check has no rule definition-sentences of R50 yet: it counts the sentences of a statement and of no other text"},
+}
+
+// oneOfEach is the counts of a form fixture: one statement and the one check that serves it.
+const oneOfEach = "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"
+
 // TestTheBuiltBinary builds the command once and runs it as a process over specgraph's fixture
-// trees, each row asserting the exit status and both streams byte for byte.
+// trees and the command's own (testdata), each row asserting the exit status and both streams
+// byte for byte.
 func TestTheBuiltBinary(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -78,7 +149,7 @@ func TestTheBuiltBinary(t *testing.T) {
 				expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
 					code:   1,
 					stdout: "spec-check: " + dir + ": " + row.counts + "; the tree is refused\n",
-					stderr: "spec-check: " + dir + noList + "spec-check: " + filepath.Join(dir, row.file) + ":" + strconv.Itoa(row.line) + ": " + row.node + ": " + row.detail + "\n",
+					stderr: notChecked(dir) + "spec-check: " + filepath.Join(dir, row.file) + ":" + strconv.Itoa(row.line) + ": " + row.node + ": " + row.detail + "\n",
 				})
 			})
 		}
@@ -90,14 +161,14 @@ func TestTheBuiltBinary(t *testing.T) {
 	})
 	t.Run("tree over the valid tree exits 0", func(t *testing.T) {
 		t.Parallel()
-		expect(t, runBinary(t, binary, "", "tree", "--dir", valid), result{stdout: validLine(valid), stderr: "spec-check: " + valid + noList})
+		expect(t, runBinary(t, binary, "", "tree", "--dir", valid), result{stdout: validLine(valid), stderr: notChecked(valid)})
 	})
 	t.Run("tree over a program check with its test part exits 0", func(t *testing.T) {
 		t.Parallel()
 		dir := fixture(t, "trees", "program-check-test-part")
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
 			stdout: "spec-check: " + dir + ": 1 statement, 1 check, 0 components, 0 interfaces, 0 terms; the tree is valid\n",
-			stderr: "spec-check: " + dir + noList,
+			stderr: notChecked(dir),
 		})
 	})
 	t.Run("tree over a CRLF copy of the valid tree prints the same count line", func(t *testing.T) {
@@ -110,7 +181,7 @@ func TestTheBuiltBinary(t *testing.T) {
 			}
 			writeFile(t, filepath.Join(dir, name), []byte(strings.ReplaceAll(string(content), "\n", "\r\n")))
 		}
-		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{stdout: validLine(dir), stderr: "spec-check: " + dir + noList})
+		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{stdout: validLine(dir), stderr: notChecked(dir)})
 	})
 	t.Run("tree with --retired names a retired id", func(t *testing.T) {
 		t.Parallel()
@@ -120,7 +191,7 @@ func TestTheBuiltBinary(t *testing.T) {
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir, "--retired", retired), result{
 			code:   1,
 			stdout: "spec-check: " + dir + ": 1 statement, 1 check, 0 components, 0 interfaces, 0 terms; the tree is refused\n",
-			stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":1: gone-statement: retired-id: the approved spec removed this id\n",
+			stderr: notChecked(dir, "retired") + "spec-check: " + filepath.Join(dir, "spec.md") + ":1: gone-statement: retired-id: the approved spec removed this id\n",
 		})
 	})
 	t.Run("tree without --retired says so and checks no id", func(t *testing.T) {
@@ -128,15 +199,25 @@ func TestTheBuiltBinary(t *testing.T) {
 		dir := fixture(t, "trees", "retired-id")
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
 			stdout: "spec-check: " + dir + ": 1 statement, 1 check, 0 components, 0 interfaces, 0 terms; the tree is valid\n",
-			stderr: "spec-check: " + dir + noList,
+			stderr: notChecked(dir),
 		})
 	})
-	t.Run("tree with a --retired file it cannot read exits 2", func(t *testing.T) {
+	t.Run("tree with a list file it cannot read exits 2", func(t *testing.T) {
 		t.Parallel()
-		missing := filepath.Join(t.TempDir(), "retired.txt")
-		got := runBinary(t, binary, "", "tree", "--dir", valid, "--retired", missing)
-		want := "spec-check: " + missing + ": cannot be read: open " + missing + ": no such file or directory\n"
-		expect(t, got, result{code: 2, stderr: want})
+		for _, flag := range []string{"retired", "people", "projects"} {
+			missing := filepath.Join(t.TempDir(), flag+".txt")
+			got := runBinary(t, binary, "", "tree", "--dir", valid, "--"+flag, missing)
+			want := "spec-check: " + missing + ": cannot be read: open " + missing + ": no such file or directory\n"
+			expect(t, got, result{code: 2, stderr: want})
+		}
+	})
+	t.Run("tree with a --server-url that is no address exits 2", func(t *testing.T) {
+		t.Parallel()
+		for _, address := range []string{"dispatch.example.com", "https://", "https://dispatch.example.com:port"} {
+			got := runBinary(t, binary, "", "tree", "--dir", valid, "--server-url", address)
+			want := "spec-check: tree: --server-url " + strconv.Quote(address) + " is not an address with a scheme and a host\n" + usage + "\n"
+			expect(t, got, result{code: 2, stderr: want})
+		}
 	})
 	t.Run("tree over an empty directory exits 2 without --allow-empty", func(t *testing.T) {
 		t.Parallel()
@@ -148,7 +229,7 @@ func TestTheBuiltBinary(t *testing.T) {
 		dir := t.TempDir()
 		expect(t, runBinary(t, binary, "", "tree", "--allow-empty", "--dir", dir), result{
 			stdout: "spec-check: " + dir + ": 0 statements, 0 checks, 0 components, 0 interfaces, 0 terms; the tree is empty\n",
-			stderr: "spec-check: " + dir + noList,
+			stderr: notChecked(dir),
 		})
 	})
 	t.Run("tree over a missing directory exits 2 without --allow-empty", func(t *testing.T) {
@@ -161,7 +242,7 @@ func TestTheBuiltBinary(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "missing")
 		expect(t, runBinary(t, binary, "", "tree", "--allow-empty", "--dir", dir), result{
 			stdout: "spec-check: " + dir + ": 0 statements, 0 checks, 0 components, 0 interfaces, 0 terms; the tree is empty\n",
-			stderr: "spec-check: " + dir + noList,
+			stderr: notChecked(dir),
 		})
 	})
 	t.Run("tree warns of each entry that is not a spec file", func(t *testing.T) {
@@ -182,13 +263,13 @@ func TestTheBuiltBinary(t *testing.T) {
 			stdout: validLine(dir),
 			stderr: "spec-check: warning: " + filepath.Join(dir, "nested.md") + ": not a spec file (directory); the importer passes over it\n" +
 				"spec-check: warning: " + filepath.Join(dir, "notes.txt") + ": not a spec file (file); the importer passes over it\n" +
-				"spec-check: " + dir + noList,
+				notChecked(dir),
 		})
 	})
 	t.Run("tree names a relative directory by its absolute path", func(t *testing.T) {
 		t.Parallel()
 		parent := filepath.Dir(valid)
-		expect(t, runBinary(t, binary, parent, "tree", "--dir", "valid"), result{stdout: validLine(valid), stderr: "spec-check: " + valid + noList})
+		expect(t, runBinary(t, binary, parent, "tree", "--dir", "valid"), result{stdout: validLine(valid), stderr: notChecked(valid)})
 	})
 	t.Run("tree refuses a parse problem and a rule problem together, in file and line order", func(t *testing.T) {
 		t.Parallel()
@@ -197,8 +278,68 @@ func TestTheBuiltBinary(t *testing.T) {
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
 			code:   1,
 			stdout: "spec-check: " + dir + ": 1 statement, 0 checks, 0 components, 0 interfaces, 0 terms; the tree is refused\n",
-			stderr: "spec-check: " + dir + noList +
+			stderr: notChecked(dir) +
 				"spec-check: " + filepath.Join(dir, "a.md") + ":1: a-claim-survives-a-restart: leaf-without-check: no statement is under it and no check serves it\n" +
+				"spec-check: " + filepath.Join(dir, "a.md") + ":4: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n",
+		})
+	})
+	t.Run("tree applies the form and the terms to each text", func(t *testing.T) {
+		t.Parallel()
+		entries, err := os.ReadDir("testdata")
+		if err != nil {
+			t.Fatal(err)
+		}
+		covered := map[string]bool{}
+		for _, row := range formFaults {
+			covered[row.dir] = true
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				dir, err := filepath.Abs(filepath.Join("testdata", row.dir))
+				if err != nil {
+					t.Fatal(err)
+				}
+				args, given := []string{"tree", "--dir", dir}, []string{}
+				for _, list := range []struct{ flag, content string }{{"people", row.people}, {"projects", row.projects}} {
+					if list.content != "" {
+						path := filepath.Join(t.TempDir(), list.flag+".txt")
+						writeFile(t, path, []byte(list.content))
+						args, given = append(args, "--"+list.flag, path), append(given, list.flag)
+					}
+				}
+				if row.serverURL != "" {
+					args, given = append(args, "--server-url", row.serverURL), append(given, "server-url")
+				}
+				taken := result{stdout: "spec-check: " + dir + ": " + row.counts + "; the tree is valid\n", stderr: notChecked(dir, given...)}
+				want := taken
+				if len(row.lines) > 0 {
+					want = result{code: 1, stdout: "spec-check: " + dir + ": " + row.counts + "; the tree is refused\n", stderr: taken.stderr}
+					for _, line := range row.lines {
+						want.stderr += "spec-check: " + dir + string(filepath.Separator) + line + "\n"
+					}
+				}
+				got := runBinary(t, binary, "", args...)
+				if row.waits != "" && got == taken {
+					t.Skip("waits: " + row.waits)
+				}
+				expect(t, got, want)
+			})
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && !covered[entry.Name()] {
+				t.Errorf("testdata/%s is in no row", entry.Name())
+			}
+		}
+	})
+	t.Run("tree refuses a form finding and a rule problem together, in file and line order", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "a.md"), []byte(":::requirement{#a-claim-survives-a-restart kind=\"behavior\"}\nLegion keeps each claim. The daemon reads it. The daemon reports it.\n:::\nA line outside a block.\n"))
+		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
+			code:   1,
+			stdout: "spec-check: " + dir + ": 1 statement, 0 checks, 0 components, 0 interfaces, 0 terms; the tree is refused\n",
+			stderr: notChecked(dir) +
+				"spec-check: " + filepath.Join(dir, "a.md") + ":1: a-claim-survives-a-restart: leaf-without-check: no statement is under it and no check serves it\n" +
+				"spec-check: " + filepath.Join(dir, "a.md") + ":1: a-claim-survives-a-restart: sentences: it has 3 sentences, and a statement has one or two\n" +
 				"spec-check: " + filepath.Join(dir, "a.md") + ":4: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n",
 		})
 	})

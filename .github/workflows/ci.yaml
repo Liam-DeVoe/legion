@@ -3875,6 +3875,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
               - '!packages/envoy/internal/dispatch/routes/**/*_test.go'
               - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/specform/**/*_test.go'
               - '!packages/envoy/internal/dispatch/specgraph/**/*_test.go'
               - '!packages/envoy/internal/dispatch/startup/**/*_test.go'
               - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'

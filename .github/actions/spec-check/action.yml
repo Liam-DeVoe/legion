@@ -1,10 +1,10 @@
 name: Check Dispatch spec files
 description: >-
-  Checks a repository's Dispatch spec files by the rules of package specgraph: which entries of the
-  directory are spec files, how large one may be, and whether the tree of statements, checks,
-  components and terms they hold is valid. It builds packages/envoy's spec-check command from this
-  repository, with the Go that packages/envoy/go.mod names, and runs `spec-check tree` over a
-  directory of the caller's checkout.
+  Checks a repository's Dispatch spec files by the rules of the packages specgraph and specform:
+  which entries of the directory are spec files, how large one may be, whether the tree of
+  statements, checks, components and terms they hold is valid, and the form of each text. It builds
+  packages/envoy's spec-check command from this repository, with the Go that packages/envoy/go.mod
+  names, and runs `spec-check tree` over a directory of the caller's checkout.
 
   Other repositories call it, pinned by a full commit SHA, in a job without `container:`. Its
   README.md says why, and gives the inputs, the output, the exit statuses and a job to copy.

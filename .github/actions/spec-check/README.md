@@ -1,6 +1,6 @@
 # Spec-file check
 
-This composite action checks the Dispatch spec files of a repository by the rules of the package `specgraph`.
+This composite action checks the Dispatch spec files of a repository by the rules of the packages `specgraph` and `specform`.
 A repository that calls the action runs it in a workflow job, after a checkout of its own tree.
 The action builds the `spec-check` command (`packages/envoy/cmd/spec-check`) from this repository at the commit the caller pins.
 Then it runs `spec-check tree` over the spec directory of the caller's checkout.
@@ -12,7 +12,7 @@ Add a new item next to the item it belongs with, never at the end of a list unle
 
 ## What it checks
 
-The command takes every rule from the package `packages/envoy/internal/dispatch/specgraph`.
+The command takes every rule from the packages `packages/envoy/internal/dispatch/specgraph` and `packages/envoy/internal/dispatch/specform`.
 
 - **Which entries are spec files.**
   A spec file is a regular file whose name ends in `.md`, directly in the directory.
@@ -30,11 +30,18 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
   These rules include ids (one id on two nodes, an id that is not lower-case words joined by hyphens), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a check without its parts, and a name of code in a text.
   `go doc ./internal/dispatch/specgraph Validate` in `packages/envoy` lists each rule.
 
+- **The form and the terms of each text.**
+  `specform.Check` reads the text of each statement, the claim, the procedure and the failing example of each check, the name and the purpose of each component, and the definition of each term.
+  It refuses a statement of more than two sentences, a sentence of more than 25 words, and a hard finding of the ASD-STE100 program.
+  It also refuses a link to a record of Dispatch, the name of an incident, the number of a pull request, an email address and an `@` handle.
+  The line of each finding names its rule, for example `sentences`, `ste100-semicolon` or `dispatch-link`.
+
 ## What it does not check
 
-- An id that the approved spec removed.
-  `spec-check tree` checks ids against such a list only with `--retired <file>`, and the action gives no list.
-  So the log of each run holds the line `spec-check: <directory>: no --retired list, so no id is checked against the ids the approved spec removed`.
+- An id that the approved spec removed, the name of a person, a bare issue key and the full address of a record of Dispatch.
+  `spec-check tree` checks these only with the flags `--retired <file>`, `--people <file>`, `--projects <file>` and `--server-url <url>`, and the action gives none of them.
+  So the log of each run holds one line for each flag, for example `spec-check: <directory>: no --retired list, so no id is checked against the ids the approved spec removed`.
+  The full address of a record has a path, so the rule on a name of code still refuses it.
 
 - Whether the statements are the statements that a person approved.
   The action reads only the files of the caller's checkout.
@@ -78,7 +85,8 @@ Each line that the command prints about the directory or an entry of it names th
   The log holds the line `spec-check: <directory>: 0 statements, 0 checks, 0 components, 0 interfaces, 0 terms; the tree is empty`.
 
 - **Exit 1: the tree is refused.**
-  The log holds one line for each problem, `spec-check: <directory>/<file>:<line>: <node>: <rule>: <detail>`, which names the file, the line and the id of the node.
+  The log holds one line for each problem, `spec-check: <directory>/<file>:<line>: <node>: <rule>: <detail>`, which names the file, the line, the node and the rule.
+  The node is the id of the block, or the name of the term for a finding on a definition.
   Then it holds the line `spec-check: <directory>: <counts>; the tree is refused`.
 
 - **Exit 2: the command did not judge the tree.**
