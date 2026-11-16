@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 
+import type { DisplayTree } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
-import type { NodeType, Preset } from "./page-words";
+import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
@@ -255,4 +256,110 @@ test("a parent line carries the parent's own address", () => {
     },
     { id: "comment-1", line: "comment-1", type: "comment" },
   ]);
+});
+
+// R1, R2 and the architect's ruling 1: a parent's line is drawn as a row's first line is
+// (`drawnLine`), with an ellipsis where the cut ended inside a sentence and none where the line
+// is a whole sentence, whose own mark ends it.
+test("a parent's line draws its ellipsis only where the cut ended inside a sentence", () => {
+  // The words R1's limit keeps of one sentence of 114 characters: it is cut at the last word
+  // that fits.
+  const kept = [
+    "Which of the three layouts does the page take when a reader opens",
+    "an issue that holds many asks and",
+  ].join(" ");
+  const root = node("CORE-1", "issue", [
+    node("ask-1", "ask", [node("spec#b-r1", "requirement")], {
+      state: "answered",
+      text: `${kept} many comments?`,
+    }),
+    node("ask-2", "ask", [node("spec#b-r2", "requirement")], {
+      state: "answered",
+      text: "Which layout does the page take? The three pictures show it.",
+    }),
+  ]);
+  const view = presetView(root, "spec", "");
+  expect(drawn(root, "spec")).toEqual(["spec#b-r1", "spec#b-r2"]);
+  const [long, short] = view.root.children.map((row) => row.parentLine?.line);
+  // The one sentence runs past the limit, so the line stops inside it and says it carries on.
+  expect(long).toEndWith("…");
+  expect(long).toBe(`${kept}…`);
+  // Two short sentences: the line is the first, whole, and its own mark ends it.
+  expect(short).toBe("Which layout does the page take?");
+});
+
+// A parent's line is cut from the parent's first block (`lineWords`), so a parent whose reading
+// opens with a heading draws that heading alone, and never the heading run into the paragraph
+// after it. A parent with no reading is read the same way from its stored text, whose heading
+// marker is markup.
+test("a parent whose reading opens with a heading draws that heading alone as its line", () => {
+  const heading = "Which layout the page takes";
+  const reading: DisplayTree = {
+    content: [
+      { attrs: { level: 2 }, content: [{ text: heading, type: "text" }], type: "heading" },
+      { content: [{ text: "The three pictures show it.", type: "text" }], type: "paragraph" },
+    ],
+    type: "doc",
+  };
+  const text = `## ${heading}\n\nThe three pictures show it.`;
+  const root = node("CORE-1", "issue", [
+    node("ask-1", "ask", [node("spec#b-r1", "requirement")], {
+      state: "answered",
+      text,
+      tree: reading,
+    }),
+    node("ask-2", "ask", [node("spec#b-r2", "requirement")], { state: "answered", text }),
+  ]);
+  expect(parentLines(presetView(root, "spec", "").root)).toEqual({
+    "spec#b-r1": `ask: ${heading}`,
+    "spec#b-r2": `ask: ${heading}`,
+  });
+});
+
+// R22: an id is no name a reader reads. A parent a filter draws as no row and that holds no
+// words - no text at all, or a reading none of whose blocks holds a word - is drawn on its
+// child's row as the page's word for its kind, never as its id.
+test("a parent with no words is drawn on its child's row as its kind's word, never its id", () => {
+  const ruled: DisplayTree = { content: [{ type: "horizontal_rule" }], type: "doc" };
+  const root = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [node("plan#b-t1", "plan_task")], { text: "" }),
+    node("comment-1", "comment", [node("plan#b-t2", "plan_task")], { text: "---", tree: ruled }),
+    node("ask-1", "ask", [node("plan#b-t3", "plan_task")], { state: "answered", text: "" }),
+  ]);
+  const view = presetView(root, "plan", "");
+  expect(drawn(root, "plan")).toEqual(["plan#b-t1", "plan#b-t2", "plan#b-t3"]);
+  expect(parentLines(view.root)).toEqual({
+    "plan#b-t1": `requirement: ${NODE_TYPE_NAMES.requirement}`,
+    "plan#b-t2": `comment: ${NODE_TYPE_NAMES.comment}`,
+    "plan#b-t3": `ask: ${NODE_TYPE_NAMES.ask}`,
+  });
+  for (const row of view.root.children) {
+    expect(row.parentLine?.line).not.toBe(row.parentLine?.id);
+  }
+});
+
+// The words filter read a node's stored source, so a comment drawn as "bold text" and stored as
+// `**bold** text` was missed by `?q=bold text` and found by `?q=**`, which no word it draws holds.
+// It reads the node's words (`nodeWords`, R4).
+test("the words filter matches the words a node draws, never its stored source", () => {
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [
+          { marks: [{ type: "strong" }], text: "bold", type: "text" },
+          { text: " text", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const root = node("CORE-1", "issue", [
+    node("comment-1", "comment", [], { text: "**bold** text", tree: reading }),
+  ]);
+  expect(presetView(root, "conversation", "bold text").matches).toBe(1);
+  expect(drawn(root, "conversation", "bold text")).toEqual(["CORE-1", "comment-1"]);
+  const markup = presetView(root, "conversation", "**");
+  expect(markup.matches).toBe(0);
+  expect(markup.root.children).toEqual([]);
 });

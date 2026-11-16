@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
@@ -178,6 +178,31 @@ test("a Change sent and left before Dispatch answers comes back closed", async (
         .getByRole("button", { name: CONTROL_LABELS.change_decision })
         .getAttribute("aria-expanded")
     ).toBe("false");
+  } finally {
+    body.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A Change that Dispatch refuses keeps its words: the refusal gives them back to the draft, so a
+// body that closes after it opens again with the Change and the words the reader wrote.
+test("a Change that Dispatch refuses keeps its words when the body closes and opens again", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(409, { code: "QUOTE_NOT_FOUND", error: "the quote is not in the document" })
+  );
+  const user = userEvent.setup();
+  const body = renderBody();
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await screen.findByRole("alert");
+    expect(createComment).toHaveBeenCalledTimes(1);
+    body.close();
+    body.open();
+    const field = screen.queryByLabelText(CONTROL_LABELS.your_change);
+    expect(field, "the refused Change came back closed, its words lost").not.toBeNull();
+    expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Keep one preset.");
   } finally {
     body.unmount();
     createComment.mockRestore();

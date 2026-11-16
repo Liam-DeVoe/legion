@@ -1,18 +1,34 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
-import type { Actor, Ask, CheckBlock, Decision, DisplayTree, IssueChild } from "../../api/types";
-import { compareTimestamps } from "../../lib/timestamps";
+import { primarySpec } from "../../api/issue-cache";
+import type {
+  Actor,
+  Artifact,
+  ArtifactWithTrees,
+  Ask,
+  CheckBlock,
+  CheckResult,
+  Decision,
+  DisplayTree,
+  IssueChild,
+  IssueDetails,
+  ReferenceTarget,
+} from "../../api/types";
+import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
+import { wordsOf } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
   type ChangeComment,
+  decisionChangeComments,
   decisionChanges,
   decisionsDocumentId,
   inReviewList,
 } from "./decision-review";
+import { artifactsBySlug } from "./issue-artifacts";
 import type {
   IssueTreeReads,
   NodeAnswer,
@@ -30,9 +46,11 @@ import {
   type DecisionState,
   type GapKind,
   NODE_STATE_WORDS,
+  NODE_TYPE_NAMES,
   NODE_TYPES,
   type NodeState,
   type NodeType,
+  PRESET_NAMES,
 } from "./page-words";
 
 /**
@@ -125,6 +143,8 @@ export const ROOT_ORDER = {
   /** The first block of the issue's spec; every other document's blocks follow, one whole
    *  number per document (`documentRanks`), which keeps them under the decisions' `1000`. */
   block: 0,
+  /** The group of child issues, each a fraction of one past it in the issue read's order, so
+   *  however many children an issue has none reaches the conversation's orders. */
   child: 3000,
   /** A question of the issue's own and a turn: `orderConversation` counts up from here. */
   conversation: 4000,
@@ -135,8 +155,15 @@ export const ROOT_ORDER = {
 /** What every builder needs of the reads: how this issue addresses a node, and what a reference
  *  points at. Held as one value so the placement and the names are read the same way everywhere. */
 export interface TreeContext {
-  /** A chip naming what `reference` points at, by the one batched reference read. */
+  /** A chip naming what `reference` points at, by the one batched reference read and the
+   *  issue's own documents (`treeContext`). */
   readonly chipOf: (reference: string) => NodeChip;
+  /** The words of the stored excerpt the batched reference read names `reference`'s target by
+   *  (`ReferenceTarget.name`), with a typed block's directive left out (`blockWords`); `""` for
+   *  a target the read has not answered for and for one nothing answers to now. It is a block's
+   *  source, cut at 480 runes and unread, so no chip draws it: it is where a node's citations
+   *  are read from beside its words, and a block's words where the read sent no reading. */
+  readonly excerptOf: (reference: string) => string;
   readonly key: string;
   /** The node `reference` names, as this issue addresses it; undefined for anything else. */
   readonly nodeIdOf: (reference: string) => string | undefined;
@@ -152,12 +179,53 @@ export interface TreeContext {
   readonly viewer: string | undefined;
 }
 
-export function treeContext(reads: IssueTreeReads): TreeContext {
+/**
+ * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
+ * for a node draws, from the server's reading of the node's words: `buildIssueTree` gives R1's
+ * rule over the words of the reading's first block (`lineWords`, `drawnLine(firstLineOf(…))`),
+ * which this module cannot import, since `issue-tree.ts` imports it, and a caller that reads no
+ * chip's name gives none, which names a block by the whole reading's words (`wordsOf`).
+ *
+ * A chip names its target by the words a reader reads it by, and never by markup:
+ *
+ * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone.
+ * - **A block** - the reference names one, or the read answers that its target is one - by
+ *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`). Where the read
+ *   answered and sent no reading, or one that holds no words, a block of this issue whose
+ *   document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`), never
+ *   by its id (R22); another issue's block, whose kind no read of this page gives, by `""`. A
+ *   block the read has not answered for yet is `""` too, which the chip draws as not yet named
+ *   (`NodeChip.answered`). The read's `name` for a block is its stored excerpt, which is the
+ *   block's source: a typed block's directive and the markdown its words are written in are
+ *   markup and no word of it (R21).
+ * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
+ *   word for it (`documentWord`), and never by its file name.
+ * - **Anything else** - an issue, an ask, a comment, a message - by the read's `name` for it.
+ */
+export function treeContext(
+  reads: IssueTreeReads,
+  lineOf: (reading: DisplayTree) => string = wordsOf
+): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
-  const specSlug = artifacts.find((artifact) => artifact.primary)?.slug ?? "";
+  const documents = artifactsBySlug(reads.issue);
+  const spec = specOf(reads.issue);
+  const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
+  // The kind of each typed block of the documents the tree read, by its node id, which is all a
+  // chip can say of a block of this issue the read sent no words for.
+  const types: readonly string[] = NODE_TYPES;
+  const kinds = new Map<string, NodeType>();
+  for (const document of reads.documents ?? []) {
+    const slug = slugs.get(document.artifactId);
+    if (slug === undefined) continue;
+    for (const block of document.blocks) {
+      if (types.includes(block.type)) {
+        kinds.set(blockNodeId(slug, block.id), block.type as NodeType);
+      }
+    }
+  }
   const nodeIdOf = (reference: string): string | undefined => {
     const route = parseNodeReference(reference);
     if (route === undefined || !("key" in route) || route.key !== key) return undefined;
@@ -173,6 +241,25 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
     }
     return route.kind === "issue" ? key : undefined;
   };
+  const nameOf = (reference: string, target: ReferenceTarget | undefined): string => {
+    const route = parseNodeReference(reference);
+    const block = route !== undefined && "block" in route ? route.block : undefined;
+    if (block !== undefined || target?.kind === "block") {
+      const reading = target?.text_tree;
+      const line = reading === undefined ? "" : lineOf(reading);
+      if (line !== "" || target === undefined) return line;
+      const kind = kinds.get(nodeIdOf(reference) ?? "");
+      return kind === undefined ? "" : NODE_TYPE_NAMES[kind];
+    }
+    // Another issue's document is named by no role of this issue's.
+    if (route?.kind === "spec") {
+      return documentWord(reads.issue, route.key === key ? spec : undefined);
+    }
+    if (route?.kind === "artifact") {
+      return documentWord(reads.issue, route.key === key ? documents.get(route.slug) : undefined);
+    }
+    return blockWords(target?.name ?? "");
+  };
   return {
     chipOf: (reference: string): NodeChip => {
       const target = names.get(reference);
@@ -180,9 +267,13 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
       return {
         answered: target !== undefined,
         gone,
-        name: gone ? "" : blockWords(target?.name ?? ""),
+        name: gone ? "" : nameOf(reference, target),
         ref: reference,
       };
+    },
+    excerptOf: (reference: string): string => {
+      const target = names.get(reference);
+      return target === undefined || target.gone ? "" : blockWords(target.name);
     },
     key,
     nodeIdOf,
@@ -193,17 +284,62 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
   };
 }
 
+/**
+ * The issue's spec: the document the issue read names by its id (`primarySpec`), the one the
+ * tree reads the blocks of (`useIssueTree.ts`), so a reference to the spec resolves against the
+ * document whose blocks are drawn. The document's own flag answers only where the issue names
+ * no spec (`""`), as `documentWord` reads it.
+ */
+function specOf(issue: IssueDetails): Artifact | undefined {
+  return issue.primary_artifact_id === ""
+    ? issue.artifacts?.find((artifact) => artifact.primary)
+    : primarySpec(issue);
+}
+
+/**
+ * The page's word for one document of the issue, which a chip naming the whole document draws:
+ * the name of the filter that draws what it holds (`PRESET_NAMES`) for the spec and for the
+ * plan, Verification and decisions documents, and the page's word for a document
+ * (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`). A
+ * document's own name is its file name, `spec.md`, which is no word a reader reads it by (R21).
+ *
+ * Which document plays which part is the issue read's answer, the id it names for each
+ * (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
+ * `decisions_artifact_id`), the same ids the tree reads the documents' blocks by
+ * (`useIssueTree.ts`): the artifact's own `role` is absent on a document a rolling deploy left
+ * with none, which the server still finds by its slug. The document's own flag and role answer
+ * only where the issue names no id for that part: no spec (`""`), and a Dispatch older than
+ * document roles (absent).
+ */
+function documentWord(
+  issue: IssueDetails,
+  document: Pick<ArtifactWithTrees, "id" | "primary" | "role"> | undefined
+): string {
+  if (document === undefined) return NODE_TYPE_NAMES.document;
+  const spec = issue.primary_artifact_id;
+  if (spec === "" ? document.primary : document.id === spec) return PRESET_NAMES.spec;
+  for (const [role, id] of [
+    ["plan", issue.plan_artifact_id],
+    ["verification", issue.verification_artifact_id],
+    ["decisions", issue.decisions_artifact_id],
+  ] as const) {
+    if (id === undefined ? document.role === role : document.id === id) return PRESET_NAMES[role];
+  }
+  return NODE_TYPE_NAMES.document;
+}
+
 /** A directive's own opening line, `:::plan_task{#t1 serves="…"}`, and its closing fence. */
 const DIRECTIVE_OPENER = /^:{3,}[a-z_]/;
 const DIRECTIVE_FENCE = /^:{3,}\s*$/;
 
 /**
- * The words a target is named by. The reference read names a document's block by its stored
- * excerpt, which is the block's source: a typed block is a directive, so its excerpt opens on
- * the directive's line - its type and its attributes - and, where the excerpt holds the whole
- * block, ends on its closing fence. Both are markup and no word of the block (R21), so they are
- * left out, as the head's three sentences leave them out of the callout they read
- * (`IssueThreeThings.tsx`). Any other name is its own words already.
+ * The words of the name the batched reference read gives a target (`ReferenceTarget.name`).
+ * The read names a document's block by its stored excerpt, which is the block's source: a typed
+ * block is a directive, so its excerpt opens on the directive's line - its type and its
+ * attributes - and, where the excerpt holds the whole block, ends on its closing fence. Both are
+ * markup and no word of the block (R21), so they are left out, as the head's three sentences
+ * leave them out of the callout they read (`IssueThreeThings.tsx`). Any other name is its own
+ * words already.
  */
 export function blockWords(name: string): string {
   const lines = name.trimEnd().split("\n");
@@ -219,8 +355,20 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addDocumentBlocks(drafts, reads, context);
   addChildren(drafts, reads);
   const asks = addAsks(drafts, reads, context);
-  const changes = decisionChanges(reads.decisions, reads.comments, reads.issue.artifacts);
-  addTurns(drafts, reads, context, asks, changes);
+  const placed = decisionChangeComments(
+    reads.decisions,
+    reads.comments,
+    reads.issue.artifacts,
+    reads.documents
+  );
+  const changes = decisionChanges(
+    reads.decisions,
+    reads.comments,
+    reads.issue.artifacts,
+    reads.documents,
+    placed
+  );
+  addTurns(drafts, reads, context, asks, placed);
   orderConversation(drafts);
   addDecisions(drafts, reads, context, asks, changes);
   addRequirements(drafts, reads, context);
@@ -270,24 +418,25 @@ function orderConversation(drafts: Map<string, Draft>): void {
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
  * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip is
- * named by the document's name, which the issue's own read carries, and addresses the document
- * as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec filter's address. A
- * citation of one block of a document names that block, which the text's own link opens, and
- * no chip.
+ * named by the page's word for the document, as every chip naming a whole document is
+ * (`documentWord`): the filter's name for the spec and for the plan, Verification and decisions
+ * documents, and "document" for any other, never the file name the issue's own read carries. It
+ * addresses the document as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec
+ * filter's address. A citation of one block of a document names that block, which the text's
+ * own link opens, and no chip.
  */
 function addDocumentChips(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
   context: TreeContext
 ): void {
-  const artifacts = reads.issue.artifacts ?? [];
-  if (artifacts.length === 0) return;
-  const bySlug = new Map(artifacts.map((artifact) => [artifact.slug, artifact]));
+  const bySlug = artifactsBySlug(reads.issue);
+  if (bySlug.size === 0) return;
   for (const draft of drafts.values()) {
     // The words a node is drawn by can leave a citation out - the coverage read drops every
-    // `://` word of a requirement (`blockWords`, `api/results.go`) - so the node's own source,
-    // which the reference read names it by, is read as well.
-    const source = draft.reference === undefined ? "" : context.chipOf(draft.reference).name;
+    // `://` word of a requirement (`api/results.go`'s `blockWords`) - so the node's own source,
+    // the excerpt the reference read names it by, is read as well.
+    const source = draft.reference === undefined ? "" : context.excerptOf(draft.reference);
     for (const span of [
       ...referenceSpans(draft.text, "dispatch://"),
       ...referenceSpans(source, "dispatch://"),
@@ -301,18 +450,22 @@ function addDocumentChips(
       if (artifact === undefined) continue;
       const ref = buildDispatchReference({ key: context.key, kind: "artifact", slug });
       if (draft.chips.some((chip) => chip.ref === ref)) continue;
-      draft.chips = [...draft.chips, { answered: true, gone: false, name: artifact.name, ref }];
+      draft.chips = [
+        ...draft.chips,
+        { answered: true, gone: false, name: documentWord(reads.issue, artifact), ref },
+      ];
     }
   }
 }
 
-/** Where each document of the issue stands among its own, by its artifact id: the spec first
- *  and the rest in the order the issue carries them, which is the order their blocks are drawn
- *  in under the issue (`ROOT_ORDER.block`). */
+/** Where each document of the issue stands among its own, by its artifact id: the spec
+ *  (`specOf`) first and the rest in the order the issue carries them, which is the order their
+ *  blocks are drawn in under the issue (`ROOT_ORDER.block`). */
 function documentRanks(reads: IssueTreeReads): ReadonlyMap<string, number> {
+  const specId = specOf(reads.issue)?.id;
   const ranks = new Map<string, number>();
   (reads.issue.artifacts ?? []).forEach((artifact, index) => {
-    ranks.set(artifact.id, artifact.primary ? 0 : index + 1);
+    ranks.set(artifact.id, artifact.id === specId ? 0 : index + 1);
   });
   return ranks;
 }
@@ -383,9 +536,9 @@ function addDocumentBlocks(
       const draft = add(drafts, blank(blockNodeId(slug, block.id), block.type as NodeType, order));
       draft.pointers = pointers;
       draft.reference = reference;
-      draft.text = context.chipOf(reference).name;
+      draft.text = context.excerptOf(reference);
       // The block's own words whole, as the server reads them, where the reference read sent
-      // them: the name above is the stored excerpt, cut at 480 runes and unread.
+      // them: the excerpt above is the block's stored source, cut at 480 runes and unread.
       const tree = context.treeOf(reference);
       if (tree !== undefined) {
         draft.tree = tree;
@@ -409,8 +562,10 @@ function addDocumentBlocks(
  * child's own tree is its own page, so a child holds no node below it.
  */
 function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
-  (reads.issue.children ?? []).forEach((child, index) => {
-    const draft = add(drafts, blank(child.key, "child_issue", ROOT_ORDER.child + index));
+  const children = reads.issue.children ?? [];
+  children.forEach((child, index) => {
+    const order = ROOT_ORDER.child + index / children.length;
+    const draft = add(drafts, blank(child.key, "child_issue", order));
     draft.child = child;
     draft.text = child.title;
   });
@@ -539,10 +694,13 @@ interface Turn {
  * `comments.answers` existed (migration 20261105014808) carries none, and its thread's head is
  * then the one entry it names. A reply to an ask names the ask alone (`ask_id`) and is drawn
  * under the ask's node, whatever state the ask is in, a resolved one included
- * (dispatch://INFRA-3677). A message carries no such column, so its thread stays as
+ * (dispatch://INFRA-3677). An approval request is no node (`addAsks`), so the replies under one
+ * are no node either where only agents wrote them, and sit under the issue once a person has
+ * written among them. A message carries no such column, so its thread stays as
  * `in_reply_to` holds it. A comment that is a change a person asked of a decision, and answers
- * nothing else, is drawn under that decision (`decision-review.ts`'s `decisionChanges`), so the
- * change stands tied to the decision it changes.
+ * nothing else, is drawn under that decision: every change newer than the decision's words, and
+ * not only the newest, which `changeOf` holds by the comment's id (`decision-review.ts`'s
+ * `decisionChangeComments`), so each change stands tied to the decision it changes.
  *
  * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
  * `?comment=`) is therefore an address of a row of this tree.
@@ -552,10 +710,14 @@ function addTurns(
   reads: IssueTreeReads,
   context: TreeContext,
   asks: ReadonlyMap<string, string>,
-  changes: ReadonlyMap<string, ChangeComment>
+  changeOf: ReadonlyMap<string, string>
 ): void {
-  const history = agentsOnlyIds(reads.comments, reads.messages);
-  const changeOf = new Map([...changes].map(([ref, comment]) => [comment.id, ref]));
+  // The asks `addAsks` drew its nodes from, which is what tells a reply under a question the
+  // tree draws from one under an approval request, which it does not.
+  const history = agentsOnlyIds(reads.comments, reads.messages, [
+    ...(reads.issue.open_asks ?? []),
+    ...(reads.asks ?? []),
+  ]);
   const turns: Turn[] = [
     ...(reads.comments ?? []).map((comment) => ({
       at: comment.created_at,
@@ -627,12 +789,19 @@ function addDecisions(
     const draft = add(drafts, blank(id, "decision", ROOT_ORDER.decision + index));
     const answers = decision.asks ?? [];
     // A target with no address of its own is named by nothing, so there is no chip to draw for
-    // it (`GraphNode.ref` is optional).
+    // it (`GraphNode.ref` is optional). The section links a block once for each of its
+    // paragraphs that links it, and names an ask once for each that cites it
+    // (`api/decisions.go`), so each target is one chip, stale where any of its links is.
+    const linked = new Map<string, NodeChip>();
+    for (const link of decision.links ?? []) {
+      const ref = link.to.ref;
+      if (ref === undefined) continue;
+      const stale = link.stale || linked.get(ref)?.stale === true;
+      linked.set(ref, { ...context.chipOf(ref), stale });
+    }
     draft.chips = [
-      ...(decision.links ?? []).flatMap((link) =>
-        link.to.ref === undefined ? [] : [{ ...context.chipOf(link.to.ref), stale: link.stale }]
-      ),
-      ...answers
+      ...linked.values(),
+      ...[...new Set(answers)]
         .filter((ask) => !asks.has(ask))
         .map((ask) =>
           context.chipOf(buildDispatchReference({ id: ask, key: context.key, kind: "ask" }))
@@ -691,16 +860,16 @@ function addRequirements(
   reads: IssueTreeReads,
   context: TreeContext
 ): void {
-  const shapedBy = new Map<string, number>();
+  const shapedBy = new Set<string>();
   for (const decision of reads.decisions?.decisions ?? []) {
     for (const link of decision.links ?? []) {
       const shaped = link.to.ref === undefined ? undefined : context.nodeIdOf(link.to.ref);
       if (shaped === undefined) continue;
-      shapedBy.set(shaped, (shapedBy.get(shaped) ?? 0) + 1);
+      shapedBy.add(shaped);
     }
   }
   // The spec, which a statement's words are a block of and its references resolve against.
-  const specId = (reads.issue.artifacts ?? []).find((artifact) => artifact.primary)?.id;
+  const specId = specOf(reads.issue)?.id;
   (reads.coverage?.requirements ?? []).forEach((requirement, index) => {
     const id = blockNodeId(context.specSlug, requirement.block_id);
     const held = drafts.get(id);
@@ -710,7 +879,7 @@ function addRequirements(
     const draft = add(drafts, blank(id, "requirement", ROOT_ORDER.requirement + index));
     draft.chips = held?.chips ?? [];
     draft.counts = { checks: requirement.checks, planTasks: requirement.plan_tasks };
-    draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapedBy.get(id) ?? 0);
+    draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapedBy.has(id));
     draft.parents = origin === undefined || drafts.get(origin)?.type === "decision" ? [] : [origin];
     draft.pointers = held?.pointers ?? {};
     draft.reference = requirement.ref;
@@ -730,13 +899,13 @@ function addRequirements(
 function requirementGaps(
   coverage: readonly string[],
   origin: string | undefined,
-  shaped: number
+  shaped: boolean
 ): GapKind[] {
   const gaps = coverage.flatMap((line): GapKind[] => {
     const kind = coverageGapKind(line);
     return kind === undefined ? [] : [kind];
   });
-  if (origin !== undefined && shaped > 0) gaps.push("shaped_disagreement");
+  if (origin !== undefined && shaped) gaps.push("shaped_disagreement");
   return gaps;
 }
 
@@ -744,11 +913,16 @@ function requirementGaps(
  * Each check of the issue's Verification document with the results recorded against it: the
  * check's own words, how it stands and the four attributes its body draws, and one node per
  * result under the check it was recorded against (R4, "a result under its check"), each with
- * what that result recorded (`check-facts.ts`). The check's `serves` is no part of this read
- * (`CheckBlock` carries none), so its placement is the block's own pointer, below.
+ * what that result recorded (`check-facts.ts`). How it stands is the page's one reading of it,
+ * at the one commit the page names for the issue's results (`checkStanding`), so the row, the
+ * fold's frontier, the Verification filter's failing count and its body read one state. The
+ * check's `serves` is no part of this read (`CheckBlock` carries none), so its placement is the
+ * block's own pointer, below.
  */
 function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
-  for (const check of reads.results?.checks ?? []) {
+  const checks = reads.results?.checks ?? [];
+  const commit = namedCommit(checks);
+  for (const check of checks) {
     const slug = context.slugOf(check.artifact_id);
     if (slug === undefined) continue;
     const id = blockNodeId(slug, check.block_id);
@@ -758,7 +932,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     draft.parents = held?.parents ?? [];
     draft.pointers = held?.pointers ?? {};
     draft.reference = check.ref;
-    draft.state = checkState(check);
+    draft.state = checkStanding(check, commit).state;
     draft.text = check.text;
     const tree = check.text_tree ?? held?.tree;
     if (tree !== undefined) {
@@ -806,8 +980,9 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
  * whatever commit the withdrawn pass ran at.
  *
- * It is the one reading of a check's state the page has: the Verification filter draws the
- * node, the head's checks line draws the same states, and each is told apart by a word and a shape (R15,
+ * It is how a check stands against the basis the check itself carries, and the page draws it as
+ * `checkStanding` turns it over at the one commit the page names for the issue's results, so
+ * one check reads one state wherever it is drawn, each told apart by a word and a shape (R15,
  * R21). `e2e/issue-layout-seed-support.ts` waits on seeded checks by this function, so a seed
  * waits for the states the page draws rather than for a copy of this rule.
  */
@@ -831,6 +1006,106 @@ export function checkState(check: CheckStateReads): CheckState {
 export type CheckStateReads = Pick<CheckBlock, "results"> & {
   readonly pass_stands?: CheckBlock["pass_stands"];
 };
+
+/**
+ * The one commit the page names for the issue's results: the commit of the newest result
+ * recorded against any check of the issue that still stands and names one. A result nobody
+ * withdrew is the evidence the page reads, so a withdrawn result names no commit here, and a
+ * result recorded with no commit at all names none either.
+ *
+ * It is the Verification filter's commit (R17, `verification-filter/statement-state.ts`, which
+ * exports it), read here because the tree reads every check's state at it (`checkStanding`),
+ * and this module cannot import that one, which imports this.
+ */
+export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
+  const named = checks.flatMap((check) =>
+    standingResults(check).filter((result) => result.commit_sha !== "")
+  );
+  return newestFirst(named)[0]?.commit_sha;
+}
+
+/** How one check stands at the commit the page names for the issue's results. */
+export interface CheckStanding {
+  /** How it stands, in the states `NODE_STATE_WORDS.check` names. */
+  readonly state: CheckState;
+  /** The result that state stands on: the fail at the named commit; else, for a check that
+   *  passed, the newest pass that still stands, since a pass recorded before a later fail is
+   *  what the server's `pass_stands` answered over; and for every other check the newest result
+   *  that stands at all. Absent where none stands. */
+  readonly stands?: CheckResult;
+}
+
+/**
+ * How a check stands at `commit`, the one commit the page names for the issue's results
+ * (`namedCommit`): the page's one reading of a check's state (R10, R17). The tree's check node
+ * holds it (`addChecks`), so the outline's row, the fold's frontier (`tree-fold.ts`) and the
+ * Verification filter's failing count (`presets.ts`'s `filterSignals`) read it, and so does
+ * the Verification filter's body (`statement-state.ts`'s `checkReading`): one check never reads
+ * Passed on its row and Failed in the filter.
+ *
+ * It is `checkState`'s answer with two turns, because R17 reads every result of the issue
+ * against the one commit the page names and `checkState` compares a result with the basis its
+ * own check carries:
+ *
+ * - **A fail at the named commit is a fail.** Where the newest result that stands and ran at
+ *   that commit failed, the check reads Failed there, whatever older pass the server still
+ *   counts as standing (`pass_stands` says yes for any pass at a basis, later fails or not), so
+ *   its statement is Not met and not Unknown behind an "Out of date". A fail recorded against
+ *   words the check no longer has turns nothing over: it stands for nothing, as `checkState`
+ *   and the server's `standingCommit` (`results_comparison.go`) read it, since it is evidence
+ *   about a check that no longer reads that way.
+ * - **A pass or a fail at another commit is out of date.** Otherwise a pass or a fail whose
+ *   result was recorded against another commit reads "Out of date", because that result no
+ *   longer speaks for the work the rest of the page is read against, and R17 says such a result
+ *   makes its statement Unknown. A result that names no commit at all turns nothing over: the
+ *   page has no ground to call it older, and it is no evidence at the named commit either.
+ *
+ * Where no commit is named - no result that stands names one - it is `checkState`'s answer.
+ */
+export function checkStanding(check: CheckStateReads, commit: string | undefined): CheckStanding {
+  const standing = newestFirst(standingResults(check));
+  const here =
+    commit === undefined ? undefined : standing.find((result) => result.commit_sha === commit);
+  const failedHere = here?.verdict === "fail" && here.check_words_moved !== true;
+  const state = failedHere ? "failed" : checkState(check);
+  const stands = failedHere
+    ? here
+    : state === "passed"
+      ? standing.find(({ verdict }) => verdict === "pass")
+      : standing[0];
+  const elsewhere =
+    commit !== undefined &&
+    stands !== undefined &&
+    stands.commit_sha !== "" &&
+    stands.commit_sha !== commit;
+  return {
+    state: elsewhere && (state === "passed" || state === "failed") ? "older" : state,
+    ...(stands === undefined ? {} : { stands }),
+  };
+}
+
+/** Every result of `check` nobody withdrew, which is every result that stands as evidence. */
+function standingResults(check: CheckStateReads): readonly CheckResult[] {
+  return (check.results ?? []).filter((result) => result.retracted === undefined);
+}
+
+/** `results` newest first, by the time each was recorded. The server already answers newest
+ *  first; this reads the times themselves, so the order is the model's own and no caller
+ *  depends on the order a read happened to arrive in. */
+export function newestFirst(results: readonly CheckResult[]): readonly CheckResult[] {
+  return [...results].sort(newerFirst);
+}
+
+/** Orders two results newest first by the time each was recorded, to the microsecond the server
+ *  writes (`compareTimestamps`), which `Date.parse` would cut to the millisecond and so tie. A
+ *  time that cannot be read (`isTimestamp`) is the oldest possible, so a result with no readable
+ *  time never outranks one that has one, two such tie, and no time throws. */
+function newerFirst(first: CheckResult, second: CheckResult): number {
+  const firstRead = isTimestamp(first.created_at);
+  const secondRead = isTimestamp(second.created_at);
+  if (firstRead && secondRead) return compareTimestamps(second.created_at, first.created_at);
+  return Number(secondRead) - Number(firstRead);
+}
 
 /**
  * A check and a plan task sit under each requirement their `serves` names, edited under the
