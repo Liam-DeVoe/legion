@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { DispatchEvent } from "../../api/types";
+import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { eventDescription } from "../issue/event-description";
@@ -16,8 +16,9 @@ import {
 } from "../issue/pins";
 import { AgentParts } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/routes";
+import { wordsOf } from "../refs/tree-fragment";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
-import { firstLineOf } from "./issue-tree";
+import { drawnLine, firstLineOf } from "./issue-tree";
 import { useMarginDrawer } from "./margin-slot";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
@@ -34,9 +35,10 @@ import { ROW_LINK } from "./row-references";
  * focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
  * The words come from the reads the outline and the history are drawn from, under their keys, so
- * the list costs no request of its own. Where a read has not answered, has failed, or holds no
- * words for a pin - a handoff, an event older than the history has read - the pin is drawn by
- * the page's word for its kind and never by its id (R17).
+ * the list costs no request of its own: a record's words from the server's reading of its text,
+ * as its row draws them, and its first line whole, wrapping rather than cut. Where a read has
+ * not answered, has failed, or holds no words for a pin - a handoff, an event older than the
+ * history has read - the pin is drawn by the page's word for its kind and never by its id (R17).
  */
 export function IssuePins({
   dismissed,
@@ -73,13 +75,20 @@ export function IssuePins({
     queryKey: ["events", issueKey],
   });
   const events = log.data?.pages.flat() ?? [];
-  const wordsOf = (kind: string, id: string): string | undefined => {
-    if (kind === "ask") return asks.data?.find((ask) => ask.id === id)?.question;
-    if (kind === "comment") return comments.data?.find((comment) => comment.id === id)?.body;
+  const pinWords = (kind: string, id: string): string | undefined => {
+    if (kind === "ask") {
+      const ask = asks.data?.find((one) => one.id === id);
+      return ask === undefined ? undefined : recordWords(ask.question, ask.question_tree);
+    }
+    if (kind === "comment") {
+      const comment = comments.data?.find((one) => one.id === id);
+      return comment === undefined ? undefined : recordWords(comment.body, comment.body_tree);
+    }
     if (kind !== "message") return undefined;
-    return (messages.data ?? [])
+    const message = (messages.data ?? [])
       .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
-      .find((message) => message.id === id)?.body;
+      .find((one) => one.id === id);
+    return message === undefined ? undefined : recordWords(message.body, message.body_tree);
   };
   // On a phone Details covers the page the link lands on.
   const leave = () => {
@@ -99,11 +108,12 @@ export function IssuePins({
         <ul className="mt-1 flex min-w-0 flex-col gap-0.5">
           {pins.map((pin) => {
             const id = conversationItemId(pin.kind, pin.id);
-            const words = wordsOf(pin.kind, pin.id);
+            const words = pinWords(pin.kind, pin.id);
+            const line = words === undefined ? "" : drawnLine(firstLineOf(words));
             return (
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 <Link
-                  className={`min-w-0 flex-1 truncate ${link}`}
+                  className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${link}`}
                   onClick={leave}
                   to={
                     pin.kind === "handoff"
@@ -111,10 +121,10 @@ export function IssuePins({
                       : buildIssuePath({ id: pin.id, key: issueKey, kind: pin.kind })
                   }
                 >
-                  {words === undefined ? (
+                  {line === "" ? (
                     <span {...pageChrome}>{NODE_TYPE_NAMES[pin.kind]}</span>
                   ) : (
-                    <span {...authorText}>{firstLineOf(words).line}</span>
+                    <span {...authorText}>{line}</span>
                   )}
                 </Link>
                 <PinButton
@@ -132,7 +142,10 @@ export function IssuePins({
             return (
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 {event === undefined ? null : (
-                  <span className={`min-w-0 flex-1 truncate ${pageMutedText}`} {...authorText}>
+                  <span
+                    className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${pageMutedText}`}
+                    {...authorText}
+                  >
                     <AgentParts parts={[{ actor: event.actor }, " ", ...eventDescription(event)]} />
                   </span>
                 )}
@@ -157,4 +170,11 @@ export function IssuePins({
       )}
     </section>
   );
+}
+
+/** A pinned record's words as its row in the outline reads them (`issue-tree.ts`'s `nodeWords`):
+ *  the words of the server's reading of its text where the read sent one, so the line holds
+ *  none of the symbols its body draws as formatting, and its text as stored otherwise. */
+function recordWords(text: string, tree: DisplayTree | undefined): string {
+  return tree === undefined ? text : wordsOf(tree);
 }

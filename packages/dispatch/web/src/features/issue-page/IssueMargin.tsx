@@ -5,7 +5,6 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserState } from "../../api/types";
-import { QueryError } from "../../components/QueryError";
 import {
   pageAvatar,
   pageFailedText,
@@ -28,6 +27,7 @@ import { AgentName } from "../refs/AgentName";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { BlockedByControl, IssueLine } from "./BlockedByControl";
+import { DetailsErrorLine } from "./details-error";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
@@ -305,7 +305,7 @@ export function IssueMarginPanel({
           {/* The blockers are drawn by their keys where their titles could not be read, and the
               row says so rather than drawing keys alone as though they had none. */}
           {blockerTitles.isError ? (
-            <QueryError
+            <DetailsErrorLine
               error={blockerTitles.error}
               message="Could not read the titles of these issues."
               onRetry={() => void blockerTitles.refetch()}
@@ -318,7 +318,7 @@ export function IssueMarginPanel({
             what it holds. */}
         <Row glyph="⊙" label={PROPERTY_LABELS.blocks}>
           {blocking.isError ? (
-            <QueryError
+            <DetailsErrorLine
               error={blocking.error}
               message="Could not read what this issue blocks."
               onRetry={() => void blocking.refetch()}
@@ -451,7 +451,7 @@ export function IssueMarginPanel({
           {artifacts.length === 0 ? (
             none
           ) : (
-            <ul className="flex w-full min-w-0 flex-col">
+            <ul className="flex w-full min-w-0 flex-col" data-testid="issue-files">
               {files.map((artifact) => (
                 <li key={artifact.id}>
                   <Link

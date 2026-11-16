@@ -21,7 +21,7 @@ import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
-import { PROPERTY_LABELS } from "./page-structure";
+import { MARGIN_SECTION_NAMES, PROPERTY_LABELS } from "./page-structure";
 import { BLOCKED_BY_REFUSALS, CONTROL_LABELS, issueStatusWord } from "./page-words";
 import { DetailsSlot } from "./slots/details";
 import { blockedByRefusal } from "./useIssueBlockedBy";
@@ -237,7 +237,7 @@ test("the blocked-by editor stays open on a refusal and says what Dispatch refus
     const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
     await user.click(keys);
     await user.paste("CORE-9");
-    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith(
@@ -276,7 +276,7 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
 
     await user.clear(keys);
     await user.paste("core-3");
-    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith(
         "CORE-1",
@@ -292,7 +292,7 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
 
     await user.click(await screen.findByRole("button", { name: "Edit issues CORE-1 waits on" }));
     await user.clear(await screen.findByLabelText("Issues CORE-1 waits on"));
-    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { blocked_by: [] }, keyedAttempt)
     );
@@ -594,7 +594,9 @@ test("the margin's own cards are drawn only while a document's editor is on the 
   );
 
   try {
-    const development = await screen.findByRole("button", { name: "Development" });
+    const development = await screen.findByRole("button", {
+      name: MARGIN_SECTION_NAMES.development,
+    });
     expect(
       screen.queryByText("A thread anchored in the document"),
       "Details draws a card of the margin with no document's editor on the page"
@@ -612,7 +614,7 @@ test("the margin's own cards are drawn only while a document's editor is on the 
       expect(screen.queryByText("A thread anchored in the document")).not.toBeInTheDocument()
     );
     expect(
-      screen.getByRole("button", { name: "Development" }),
+      screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }),
       "the panel was drawn again when the margin's cards went"
     ).toBe(development);
   } finally {

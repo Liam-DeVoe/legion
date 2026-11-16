@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 
 import type { IssueDetails } from "../../api/types";
-import { QueryError } from "../../components/QueryError";
 import { pageHeaderControl, pageQuietText } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
+import { DetailsErrorLine } from "./details-error";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -42,7 +42,7 @@ export function IssueClaimControl({
         {releaseClaim.isPending ? ANSWER_LINES.saving_release : CONTROL_LABELS.release_claim}
       </button>
       {releaseClaim.isError ? (
-        <QueryError
+        <DetailsErrorLine
           message="Could not release this claim."
           onRetry={() => releaseClaim.mutate()}
           retrying={releaseClaim.isPending}
