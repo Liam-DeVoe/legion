@@ -124,6 +124,15 @@ function StepState({
     page === null || versions === undefined
       ? undefined
       : approvalLinkVersion(document, versions.asks);
+  // Where `actionsOn` names two or more documents the list holds more than one Approve and
+  // Request changes, so each says the document it reviews, in the new issue page's words
+  // (WCAG 2.5.3, decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside
+  // `NoTooltips` no caller passes `actionsOn` today, so there each keeps `main`'s name
+  // (dispatch://INFRA-3935 R1), as it does with one document or none given.
+  const actionsDocument =
+    page === null || actionsOn === undefined || actionsOn.length < 2
+      ? undefined
+      : page.CONTROL_LABELS[`approval_document_${entry.step}` as const];
   return (
     // The chip is reached only for a document with an approval that is not a draft - the only
     // approval `ApprovalChip` draws anything for - so the only thing left to decide here is whether
@@ -134,6 +143,7 @@ function StepState({
     // entry's document, the one its chip is drawn for (dispatch://INFRA-3935 R10).
     <>
       <ApprovalChip
+        actionsDocument={actionsDocument}
         artifact={document}
         keepActionsTogether={actionsTogether}
         layout="contents"
@@ -232,7 +242,10 @@ export function ApprovalSteps({
    *  documents' entries carries its own Approve and Request changes, which review that entry's
    *  document, and every other entry carries none; not given, the primary document's entry
    *  alone carries them, as on `main`. Part P's header passes it, from the asks that wait on
-   *  the reader (dispatch://INFRA-3935 R10). */
+   *  the reader (dispatch://INFRA-3935 R10). Naming two or more, inside `NoTooltips` each
+   *  action's name says its document, "Approve the spec", "Request changes to the
+   *  verification" (`ApprovalChip`'s `actionsDocument`, decision 99 of
+   *  dispatch://INFRA-1196/artifact/part-decisions-md). */
   actionsOn?: readonly string[];
   entries: StepEntry[];
   /** `block` draws the list and each entry as boxes of their own, each wrapping within itself,

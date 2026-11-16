@@ -64,6 +64,10 @@ export interface IssueLabelsProps {
    *  new issue page's Details draws the prototype's `.lchip`). Given, the labels wrap. */
   readonly chipClassName?: string;
   readonly disabled: boolean;
+  /** The issue's key, which ends the name of the control of an issue with no label inside
+   *  `NoTooltips`: "Add a label to CORE-1", as the priority's is "Add a priority to CORE-1".
+   *  Outside `NoTooltips` it changes nothing. */
+  readonly issueKey?: string;
   readonly labels: readonly string[];
   readonly onSave: (labels: string[]) => Promise<unknown>;
   readonly project: string;
@@ -77,6 +81,7 @@ export interface IssueLabelsProps {
 export function IssueLabels({
   chipClassName,
   disabled,
+  issueKey,
   labels,
   onSave,
   project,
@@ -104,6 +109,17 @@ export function IssueLabels({
     [draft, issues.data, labels]
   );
   const displayLabels = open ? draft : labels;
+  // Inside `NoTooltips` the control of an issue with no label draws "Add a label" (below), so its
+  // name begins with those words, as the priority's "Add a priority to CORE-1" does: a voice user
+  // says what they read (WCAG 2.5.3 Label in Name; dispatch://INFRA-3935 R2, decision 91 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). With a label, while it saves, and
+  // everywhere outside, it is `main`'s name (R1).
+  const triggerName =
+    page === null || saving || displayLabels.length > 0
+      ? "Edit labels"
+      : issueKey === undefined
+        ? page.CONTROL_LABELS.add_label
+        : `${page.CONTROL_LABELS.add_label} to ${issueKey}`;
 
   const setOpenState = useCallback(
     (next: boolean) => {
@@ -196,7 +212,7 @@ export function IssueLabels({
           options={options}
           searchLabel="Search or create label"
           selected={draft}
-          triggerAriaLabel="Edit labels"
+          triggerAriaLabel={triggerName}
           // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935
           // R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): a label above is
           // its label chip (the prototype's `.lchip`), and this trigger its secondary control, the

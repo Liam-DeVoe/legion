@@ -1020,12 +1020,16 @@ const MOUNTS: readonly Mount[] = [
     node: () => (
       <IssueLabels
         disabled={false}
+        issueKey="CORE-1"
         labels={["api", "frontend"]}
         onSave={async () => undefined}
         project="CORE"
         saving={false}
       />
     ),
+    // With a label the control draws "+", and its name is `main`'s on both surfaces, key given
+    // or not (dispatch://INFRA-3935 R1); only an issue with no label is named by the words it
+    // draws (`labelsEmptyAndSaving`).
     settle: pressing("Edit labels"),
   },
   {
@@ -1307,6 +1311,7 @@ const labelsEmptyAndSaving: Mount = {
     <>
       <IssueLabels
         disabled={false}
+        issueKey="CORE-1"
         labels={[]}
         onSave={async () => undefined}
         project="CORE"
@@ -2122,6 +2127,17 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       [CONTROL_LABELS.add_label, "page-chrome"],
       [ANSWER_LINES.saving_labels, "page-chrome"],
       ["api", "author-text"],
+    ]);
+    // The control of an issue with no label is named by the words it draws, then the issue's
+    // key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one with a label, here saving, keeps `main`'s
+    // name (R1), as the control the mount above opens does.
+    expect(
+      within(view.container)
+        .getAllByRole("button", { name: /labels?\b/iu })
+        .map((control) => [control.getAttribute("aria-label"), control.textContent])
+    ).toEqual([
+      [`${CONTROL_LABELS.add_label} to CORE-1`, CONTROL_LABELS.add_label],
+      ["Edit labels", ANSWER_LINES.saving_labels],
     ]);
   });
 
