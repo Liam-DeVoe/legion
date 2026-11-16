@@ -430,8 +430,9 @@ jobs:
       # under the detector, and so is internal/integration, which the integration call tests, and
       # internal/textcheck, whose tests are the text-check job's: that job runs them in a job
       # with no database and no Bun, and a change to only what they read must not start this
-      # one. So are internal/dispatch/architecture/notes and cmd/architecture-check, which
-      # envoy-go-checks tests on every push (ARCHITECTURE_CHECK_PACKAGES). The pattern is built
+      # one. So are internal/dispatch/architecture/notes, internal/runnerlog,
+      # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
+      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES). The pattern is built
       # in .github/scripts/ci_job_reads.py from the same lists those jobs' own steps are built
       # from, so what the list leaves out and what the other jobs run cannot drift apart. What is
       # left is the rest of the module less the routes package, internal/dispatch/events and
@@ -496,7 +497,7 @@ jobs:
           github.com/sjawhar/envoy/internal/dispatch/outbox
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/agent-secrets"
-          rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/cmd/architecture-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
+          rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' -timeout 23m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
