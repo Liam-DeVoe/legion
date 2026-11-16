@@ -1,10 +1,65 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* A screen too narrow or too short for a wide sticky panel: a phone in either orientation, or a
+   tablet-width window below `md`. The Agents broadcast composer compacts under it (and further
+   under `short`, where two stacked rows of controls would still take half the height). The
+   height clause is what catches a phone in landscape. `short` is registered after
+   `narrow-or-short`, so its utilities win where both match. */
+@custom-variant narrow-or-short {
+  @media (max-width: 767px), (max-height: 500px) {
+    @slot;
+  }
+}
+
+@custom-variant short {
+  @media (max-height: 500px) {
+    @slot;
+  }
+}
+
+/* A control that cannot be pressed: `disabled`, or refused with `aria-disabled` so it stays in the
+   tab order and its reason reaches a keyboard (`components/RefusableButton.tsx`). The button
+   composites in `theme/classes.ts` paint both through this one state, so a hover written
+   `not-refused:hover:` never lights a refused button, and no look has to be stated twice. */
+@custom-variant refused (&:is(:disabled, [aria-disabled="true"]));
+
+/* Dispatch has no theme toggle: every surface follows the OS `prefers-color-scheme`, which is
+   exactly Tailwind v4's default `dark:` variant (a `@media (prefers-color-scheme: dark)` query,
+   built into `@import "tailwindcss"` with no `@custom-variant` override here). Components import
+   named color composites from `web/src/theme/classes.ts`; this pre-hydration fallback is outside
+   that mechanism and stays in exact sync with the canvas/primary-text swatches so the document
+   edge does not flash the wrong scheme before React mounts. */
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #0f172b; /* slate-900 */
+  background: #f8fafc; /* slate-50 */
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f1f5f9; /* slate-100 */
+    background: #020618; /* slate-950 */
+  }
+}
+
+body {
+  margin: 0;
+}
+
+button,
+a {
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease;
+}
+
 /* The new issue page's typeface: Inter, the face every width of that page's spec and pictures
    is measured in (dispatch://INFRA-1196 R36), shipped in the bundle so that no reader of it is
    drawn in whatever face their machine happens to hold. It is declared under a family name of
-   its own, `Dispatch Inter`, which only that page's stack names (the rule after the root's,
+   its own, `Dispatch Inter`, which only that page's stack names (the rule after the palette,
    below): every other page keeps the root's stack, whose `Inter` can only be a face the reader's
    machine holds, and requests no font file. `fonts/inter/subset.sh` cuts the file from
    rsms/inter's release 4.1 to the weights 400 to 700 and to the characters `unicode-range`
@@ -233,49 +288,6 @@
   }
 }
 
-/* A screen too narrow or too short for a wide sticky panel: a phone in either orientation, or a
-   tablet-width window below `md`. The Agents broadcast composer compacts under it (and further
-   under `short`, where two stacked rows of controls would still take half the height). The
-   height clause is what catches a phone in landscape. `short` is registered after
-   `narrow-or-short`, so its utilities win where both match. */
-@custom-variant narrow-or-short {
-  @media (max-width: 767px), (max-height: 500px) {
-    @slot;
-  }
-}
-
-@custom-variant short {
-  @media (max-height: 500px) {
-    @slot;
-  }
-}
-
-/* A control that cannot be pressed: `disabled`, or refused with `aria-disabled` so it stays in the
-   tab order and its reason reaches a keyboard (`components/RefusableButton.tsx`). The button
-   composites in `theme/classes.ts` paint both through this one state, so a hover written
-   `not-refused:hover:` never lights a refused button, and no look has to be stated twice. */
-@custom-variant refused (&:is(:disabled, [aria-disabled="true"]));
-
-/* Dispatch has no theme toggle: every surface follows the OS `prefers-color-scheme`, which is
-   exactly Tailwind v4's default `dark:` variant (a `@media (prefers-color-scheme: dark)` query,
-   built into `@import "tailwindcss"` with no `@custom-variant` override here). Components import
-   named color composites from `web/src/theme/classes.ts`; this pre-hydration fallback is outside
-   that mechanism and stays in exact sync with the canvas/primary-text swatches so the document
-   edge does not flash the wrong scheme before React mounts. */
-:root {
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  color: #0f172b; /* slate-900 */
-  background: #f8fafc; /* slate-50 */
-  color-scheme: light dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f1f5f9; /* slate-100 */
-    background: #020618; /* slate-950 */
-  }
-}
-
 /* The new issue page's one stack. `[data-issue-page]` is the attribute that page's outermost
    element carries, so the rule matches only while the page is in the document, and the whole
    document then draws in the stack: the selector is on `html` and not on that element, because a
@@ -289,18 +301,6 @@ html:has([data-issue-page]) {
     "Dispatch Inter", "Inter fallback", "Inter fallback DejaVu", ui-sans-serif, system-ui,
     sans-serif;
   font-family: var(--font-sans);
-}
-
-body {
-  margin: 0;
-}
-
-button,
-a {
-  transition:
-    color 150ms ease,
-    background-color 150ms ease,
-    border-color 150ms ease;
 }
 
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized

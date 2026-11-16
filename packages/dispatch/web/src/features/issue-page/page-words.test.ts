@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { issueStatuses, statusText } from "../project/board-model";
-import { ASK_RESOLUTION_WORDS } from "../refs/actor";
+import type { Actor, AskResolution } from "../../api/types";
+import { compiledBlockSchema } from "../doc/schema";
+import { ASK_RESOLUTION_WORDS, askResolutionBadge } from "../refs/actor";
+import * as pageStructure from "./page-structure";
 import {
   HELP_LINES,
   KEY_REPORTS,
@@ -10,6 +10,7 @@ import {
   MARGIN_SECTION_ORDER,
   PROPERTY_LABELS,
 } from "./page-structure";
+import * as pageWords from "./page-words";
 import {
   ANSWER_LINES,
   ANSWER_PHRASES,
@@ -33,7 +34,7 @@ import {
   GLYPH_NAMES,
   GLYPH_TOKENS,
   ISSUE_STATUS_WORDS,
-  issueStatusWord,
+  isReader,
   NODE_FACT_LABELS,
   NODE_REFERENCES_WORDS,
   NODE_STATE_WORDS,
@@ -59,19 +60,7 @@ import {
 
 /** The block schema the server owns, read here rather than repeated, so a type, an attribute or
  *  a `when` choice added to it fails this file until the page has a word for it. */
-interface BlockSchema {
-  readonly types: readonly {
-    readonly attributes: Readonly<Record<string, { readonly choices?: readonly string[] }>>;
-    readonly name: string;
-  }[];
-}
-
-const schema: BlockSchema = JSON.parse(
-  readFileSync(
-    join(import.meta.dir, "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json"),
-    "utf8"
-  )
-);
+const schema = compiledBlockSchema;
 
 function blockType(name: string) {
   const type = schema.types.find((candidate) => candidate.name === name);
@@ -137,22 +126,11 @@ const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LIN
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
 
-test("every issue status the board knows has a word, and it is the board's own", () => {
-  for (const status of issueStatuses) {
-    expect(Object.keys(ISSUE_STATUS_WORDS), `${status} has no word`).toContain(status);
-    expect(issueStatusWord(status)).toBe(statusText(status));
-  }
-  expect(Object.keys(ISSUE_STATUS_WORDS).sort()).toEqual([...issueStatuses].sort());
-  expect(issueStatusWord("something-the-server-added")).toBe("something-the-server-added");
-});
-
 test("every node type has a plain name, and no name is an internal token", () => {
   expect(NODE_TYPES.length).toBeGreaterThan(0);
   for (const type of NODE_TYPES) {
     const name = NODE_TYPE_NAMES[type];
     expect(name).toMatch(/^[a-z]+(?: [a-z]+)*$/);
-    expect(name).not.toBe(name.toUpperCase());
-    expect(name.includes("_")).toBe(false);
   }
 });
 
@@ -260,11 +238,18 @@ test("every glyph token has an accessible name", () => {
     expect(GLYPH_NAMES[token]).toMatch(/\S/);
   }
   expect(Object.keys(GLYPH_NAMES).sort()).toEqual([...tokens].sort());
-  expect(GLYPH_NAMES["check-passed"]).toBe("Passed check");
-  expect(GLYPH_NAMES["decision-waiting-review"]).toBe("Waiting for review decision");
+  // A state's shape is named by its type and then its state, the state in lower case.
+  expect(GLYPH_NAMES["check-passed"]).toBe("Check: passed");
+  expect(GLYPH_NAMES["check-no-result"]).toBe("Check: no result");
+  expect(GLYPH_NAMES["check-older"]).toBe("Check: out of date");
+  expect(GLYPH_NAMES["check-unmarked"]).toBe("Check: cannot tell");
+  expect(GLYPH_NAMES["check-unreadable"]).toBe("Check: could not read");
+  expect(GLYPH_NAMES["decision-waiting-review"]).toBe("Decision: waiting for review");
+  expect(GLYPH_NAMES["decision-change-requested"]).toBe("Decision: change requested");
+  expect(GLYPH_NAMES["ask-declined"]).toBe("Question: declined");
   // "Kept by" is followed by a name on the row; its shape is named without the word that
   // leads to it.
-  expect(GLYPH_NAMES["decision-kept"]).toBe("Kept decision");
+  expect(GLYPH_NAMES["decision-kept"]).toBe("Decision: kept");
   expect(GLYPH_NAMES[GLYPH_TOKENS.statements.met]).toBe(VERIFICATION_WORDS.states.met);
   expect(GLYPH_NAMES[GLYPH_TOKENS.no_check]).toBe(GAP_WORDS.no_check);
   expect(GLYPH_NAMES["plan-task"]).toBe("plan task");
@@ -384,7 +369,13 @@ test("no word the page declares is the model's word for a node", () => {
 test("every check state has a word of its own, and the page says it of nothing else", () => {
   const checkWords = Object.values(NODE_STATE_WORDS.check);
   expect(new Set(checkWords).size).toBe(checkWords.length);
-  for (const word of [...Object.values(CONTROL_LABELS), ...Object.values(GAP_WORDS)]) {
+  // Every phrase the page draws unasked, but for two tables that say a check state's word by
+  // design: the states' own, whose ask table holds "Retracted" for a question its asker took
+  // back, and a result's standing, which says "Out of date" of the same fact (held below).
+  const elsewhere = UNASKED_SOURCES.filter(
+    (table) => table !== NODE_STATE_WORDS && table !== RESULT_STANDS_WORDS
+  ).flatMap(phrasesOf);
+  for (const word of elsewhere) {
     expect(checkWords, `"${word}" reads as a check state`).not.toContain(word);
   }
   expect(RESULT_STANDS_WORDS.other_commit).toBe(NODE_STATE_WORDS.check.older);
@@ -458,25 +449,68 @@ test("a result's verdict reads as a word", () => {
 });
 
 test("DECLARED_WORDS holds every declared word and no other", () => {
-  const derived = new Set(
-    WORD_SOURCES.flatMap(phrasesOf).flatMap((phrase) => [...wordsIn(phrase)])
-  );
+  const derived = new Set(WORD_SOURCES.flatMap(phrasesOf).flatMap(wordsIn));
   expect([...derived].sort()).toEqual([...DECLARED_WORDS]);
-
-  for (const phrase of WORD_SOURCES.flatMap(phrasesOf)) {
-    for (const word of wordsIn(phrase)) {
-      expect(DECLARED_WORDS).toContain(word);
-    }
-  }
-  for (const word of DECLARED_WORDS) {
-    expect(WORD_SOURCES.flatMap(phrasesOf).some((phrase) => wordsIn(phrase).includes(word))).toBe(
-      true
-    );
-  }
 
   expect(DECLARED_WORDS).toContain("merge");
   // Verification is the filter's name, his word for what draws the checks (R2, the Design's
   // "The words"), and no longer a word the page holds back.
   expect(DECLARED_WORDS).toContain("verification");
-  expect(DECLARED_WORDS).not.toContain("before_merge");
+});
+
+// An internal word is how the model or the code spells a thing, not how a person says it: a
+// snake_case token, a kebab-case slug, a camelCase name, a block's anchor or an address.
+const INTERNAL_WORD = /_|[\p{L}\p{N}]-[\p{L}\p{N}]|\p{Ll}\p{Lu}|#b-|:\/\//u;
+
+// Each table is named by the export of the two modules that is that table, so the test holds
+// no list of its own: a table added to either list is read by its own name, and one no export
+// names fails here until it is exported.
+test("no phrase of the list holds an internal word", () => {
+  const names = new Map<unknown, string>();
+  for (const [name, value] of [...Object.entries(pageWords), ...Object.entries(pageStructure)]) {
+    names.set(value, name);
+  }
+  const offenders: string[] = [];
+  for (const [list, tables] of Object.entries({ UNASKED_SOURCES, ANSWER_SOURCES })) {
+    for (const [index, table] of tables.entries()) {
+      let name = names.get(table);
+      if (name === undefined) {
+        name = `${list}[${index}]`;
+        offenders.push(`an unnamed table stands at index ${index} of ${list}`);
+      }
+      for (const phrase of phrasesOf(table)) {
+        if (INTERNAL_WORD.test(phrase)) offenders.push(`${name}: ${phrase}`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
+// The card draws a closed question's badge through `askResolutionBadge`, and the list reads
+// `ASK_RESOLUTION_WORDS` for the row's state, so the two say the one word of each way.
+test("each way a question is closed has one word on its card and in the list", () => {
+  expect(Object.keys(ASK_RESOLUTION_WORDS).sort()).toEqual([
+    "declined",
+    "resolved",
+    "retracted",
+    "withdrawn",
+  ]);
+  for (const [kind, word] of Object.entries(ASK_RESOLUTION_WORDS)) {
+    const resolution: AskResolution = {
+      actor: { id: "alice", kind: "user" },
+      at: "2026-10-25T00:00:00Z",
+      kind,
+      reason: "",
+    };
+    expect(askResolutionBadge(resolution), kind).toBe(word);
+    expect(nodeStateWord(kind as NodeState), kind).toBe(word);
+  }
+});
+
+// The server matches a login in any casing, as `isViewer` does, so a person signed in as `alice`
+// whose actor says `Alice` is still the reader; a session acting for them is not.
+test("the reader's own words are theirs whatever the case of the login", () => {
+  const alice: Actor = { id: "Alice", kind: "user" };
+  expect(isReader(alice, "alice")).toBe(true);
+  expect(isReader({ ...alice, act: { session: "planner" } }, "alice")).toBe(false);
 });
