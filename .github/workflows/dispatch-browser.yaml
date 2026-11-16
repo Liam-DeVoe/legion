@@ -484,6 +484,7 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-each-reading-goes-to-the-step-summary-and-to-the-log
       - name: Reading one, the rows
         if: always()
+        # 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
         timeout-minutes: 3
         run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ github.token }}"
       # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row

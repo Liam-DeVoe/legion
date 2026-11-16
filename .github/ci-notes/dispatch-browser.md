@@ -3,8 +3,8 @@
 The derivations and the history of `.github/workflows/dispatch-browser.yaml`, which points into
 this file. Each `# why:` line of that workflow names the section below that holds the derivation
 or the record its step, its job or its key rests on, and the sections stand in the order their
-comment blocks stood in the workflow file. A job budget's own arithmetic stays beside the
-budget, in the workflow file.
+comment blocks stood in the workflow file. A budget's own arithmetic stays beside the budget, in
+the workflow file, where the comment that derived it held one.
 
 ## The suite, its two lanes and the budget rule every job follows
 
