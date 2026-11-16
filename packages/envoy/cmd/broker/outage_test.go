@@ -36,9 +36,11 @@ import (
 // sweep, and no drain. Both brokers are reached at one address a TCP forwarder the test owns
 // holds across the restart, as a Service's is: BROKER_PUBLIC_URL and AGENT_SECRETS_URL both name
 // it, so a proof's htu is as good after the restart as before, and while no broker runs the
-// forwarder refuses every connection at once. The outage runs from the first broker's exit until
-// a lease, the three sweeps the broker tolerates between two records that it serves, and the
-// renewer's longest retry wait have all passed.
+// forwarder refuses every connection at once. The outage starts at the first broker's exit, and
+// it is longer than a lease, the three sweeps the broker tolerates between two records that it
+// serves and the renewer's longest retry wait together by construction: every record of when a
+// broker served and of when a lease runs out is moved that far into the past. It ends once the
+// survivor's renewer has had a renewal refused in it and has said it retries.
 //
 // Four pods of one service, enrolled by its launcher and granted its agent-tier secret with no
 // approver, prove one thing each. The survivor is the outage itself: keyed by `agent-secrets
@@ -220,13 +222,36 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		t.Fatalf("the first broker's exit = %v, want a clean one:\n%s", err, first.Log())
 	}
 	stopped := time.Now()
+	// The outage is the test's own. Once the first broker has exited, so that no beat of its can
+	// move its row on again, every record the outage rule reads is moved outage into the past:
+	// broker_serving's last_serving_at, when a broker last served, and each enrollment's
+	// lease_expires_at. That is the database an outage of that length leaves: no broker has
+	// served since its last record for longer than a lease, the three sweeps a broker tolerates
+	// between two records and the renewer's longest retry wait together, and every lease still
+	// running at the stop ran out after that record. The second broker's beat, which gives the gap
+	// back, and enrollment_lease_live, which holds such a lease live until it does, compare
+	// PostgreSQL's now() with those two columns and read no other clock (migration 0024). This row
+	// once waited the outage out in real time instead, and with that wait cut short the second
+	// broker found no gap and gave nothing back.
 	outage := lease + notServing + renewerLongestWait
-	t.Logf("the first broker exited; no broker serves for %s", outage)
-	testwait.Span(t, outage, "the outage's own length is this row's subject: it runs until a whole lease, the three "+
-		"sweeps a broker tolerates between two records that it serves, and the renewer's longest retry wait have all "+
-		"passed with nothing serving. Nothing the renewer or the database writes marks its end, since what must hold "+
-		"is that the renewer has NOT exited meanwhile, and both run over a real socket and a real PostgreSQL, so "+
-		"neither synctest nor a later action's effect reaches them")
+	for _, age := range []string{
+		`update broker_serving set last_serving_at = last_serving_at - $1::interval`,
+		`update enrollments set lease_expires_at = lease_expires_at - $1::interval`,
+	} {
+		if _, err := db.Exec(ctx, age, outage); err != nil {
+			t.Fatalf("%s: %v", age, err)
+		}
+	}
+	t.Logf("the first broker exited; every record of when a broker served and of when a lease runs out is moved %s into the past", outage)
+	// What the renewer meets in the outage is real: its next renewal, due on its own clock within a
+	// third of a lease of its last one, finds no broker, and it says it retries rather than exiting.
+	// That report, and no span, is the end of the outage.
+	inOutage := renewer.Output.Len()
+	testwait.Until(t, "the survivor's renewer to say a renewal in the outage failed and it retries", func() (string, bool) {
+		renewerRunning("during the outage")
+		said := renewer.Output.String()[inOutage:]
+		return said, strings.Contains(said, "; retrying in ")
+	})
 	renewerRunning("during the outage")
 
 	t.Log("--- a second broker serves the same database at the same address")
