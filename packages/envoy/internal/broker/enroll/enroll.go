@@ -703,8 +703,10 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // unchecked could name a project its person may not see; so is any list, empty or not, when
 // Dispatch refused the broker's own account or the broker could not read its token
 // (projectaccess.ErrBrokerRefused), a deployment that has not listed the broker, through which no
-// caller enrolls, and when Dispatch answered a member kind the broker does not know
-// (projectaccess.ErrUnknownMemberKind). Each refusal wraps the project-access error it met.
+// caller enrolls. An empty list is refused too when Dispatch answered a member kind the broker
+// does not know (projectaccess.ErrUnknownMemberKind), since the kind is what an empty list asks; a
+// list naming projects asks only whether the person may see each, and no kind. Each refusal wraps
+// the project-access error it met.
 func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
 	if err := oauthwire.ValidProjects(in.Projects); err != nil {
 		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)

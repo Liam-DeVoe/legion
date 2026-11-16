@@ -301,6 +301,11 @@ type fakeRequests struct {
 	// applyTakes how long ApplyJudgeDecision's reads before its transaction take: like the
 	// real reads of Dispatch, they give up when the context ends first.
 	writeTakes, applyTakes time.Duration
+	// commitTakes is how long ApplyJudgeDecision's transaction takes before it commits, ended
+	// with the context's own error when the context ends first, as a stopping broker's does;
+	// wrote is what LogJudged answers it did, JudgedWritten when empty.
+	commitTakes time.Duration
+	wrote       requests.JudgedWrite
 	// bounded is, for each call to a method that reads Dispatch in the real machine
 	// (JudgePolicy and JudgeProject), the method's name and whether its context was one
 	// requests.JudgeDispatch made.
@@ -382,13 +387,22 @@ func (f *fakeRequests) transact(ctx context.Context) error {
 
 func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID string, judged map[string]any) (requests.Decision, error) {
 	f.mu.Lock()
-	reads := f.applyTakes
+	reads, commit := f.applyTakes, f.commitTakes
 	f.mu.Unlock()
 	if reads > 0 {
 		select {
 		case <-time.After(reads):
 		case <-ctx.Done():
 			return requests.Decision{}, fmt.Errorf("%w: %v", requests.ErrProjectAccessUnavailable, ctx.Err())
+		}
+	}
+	if commit > 0 {
+		// The transaction itself, which a cancelled context ends with the context's own error,
+		// as pgx's does.
+		select {
+		case <-time.After(commit):
+		case <-ctx.Done():
+			return requests.Decision{}, ctx.Err()
 		}
 	}
 	if err := f.transact(ctx); err != nil {
@@ -403,14 +417,22 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 	return requests.Decision{RequestID: recordID, State: "granted", GrantID: "grant-" + modelID}, nil
 }
 
-func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) error {
+// LogJudged writes the row, or answers what wrote answers in its place: JudgedAlreadyApplied
+// writes nothing, as the machine does when the approval's own row is there.
+func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) (requests.JudgedWrite, error) {
 	if err := f.transact(ctx); err != nil {
-		return err
+		return "", err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.logged = append(f.logged, judged)
-	return f.logErr
+	wrote := f.wrote
+	if wrote == "" {
+		wrote = requests.JudgedWritten
+	}
+	if wrote != requests.JudgedAlreadyApplied {
+		f.logged = append(f.logged, judged)
+	}
+	return wrote, f.logErr
 }
 
 // rows is what the judge wrote: the details it approved with and the details it logged alone.

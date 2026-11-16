@@ -561,11 +561,14 @@ request whose reason names the issue keys of more than 16 projects is refused wh
 (`400 REQUEST_INVALID`, naming the bound), so the reads one request costs are bounded. A request
 stored before that rule whose reason names more is still shown: its keys are not read and count
 as naming no project, as every reader saw it when it was written, while its secrets' tags and its
-credential's projects are still asked, and the broker's log names its row once. While Dispatch
-cannot answer, a request it must ask about is left out of the pending and grant lists, with a
-line in the broker's log naming its record; its page answers 503 and shows only its record id,
-and an approval of it decides nothing. Every other request is listed and decided as before. The
-model judge leaves every private project's request to a person
+credential's projects are still asked, and the broker's log names its row, once every 30 seconds
+however often it is read. While Dispatch cannot answer, a request it must ask about is left out of
+the pending and grant lists, with a line in the broker's log naming its record; its page answers
+503 and shows only its record id, and an approval of it decides nothing. Every other request is
+listed and decided as before. A decision reads the projects of both credentials a request has had:
+the one that asked, which the lists and the page read, and the one it hangs off now, which a
+session that moved to another box makes it; a person either would hide it from does not decide
+it. The model judge leaves every private project's request to a person
 ([the model judge](#the-model-judge)), and its approval asks Dispatch again, afresh and not from
 the 30 seconds of answers the broker keeps, before it is written, so a project that turned private
 while the judge was reading, or a session that took the request over and names a private project,
@@ -1052,10 +1055,12 @@ and the project of each issue key in the signed reason. The issue check makes tw
 and the text of its spec document, with the broker's own projected ServiceAccount token, read
 again from its file once the copy it holds is 30 seconds old. A read the bound cuts short fails
 its check, and the request waits for its person. An approval asks Dispatch again before it is
-written, under the same 5 seconds and ending a second before the run does, so a Dispatch slow to
-answer then fails the approval, and the request waits for its person. A run with a verdict writes
-its `request.judged` row on a context of its own, which the run's deadline does not cancel, so an
-approval that failed late still leaves its row. The broker writes nothing in Dispatch — no ask, no comment, no
+written, under a 5-second bound of its own that ends a second before the run does, so a Dispatch
+slow to answer then fails the approval, and the request waits for its person. A run with a
+verdict writes its `request.judged` row on a context of its own, which the run's deadline does not
+cancel, so an approval that failed late still leaves its row; one whose answer was lost after it
+applied leaves only the row it wrote itself, and where even that cannot be read, the row it writes
+says `applied` `unknown`. The broker writes nothing in Dispatch — no ask, no comment, no
 status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
 settings name, presenting the broker machine's own Google identity token for the audience they
 name. Those settings are all-or-none, and the

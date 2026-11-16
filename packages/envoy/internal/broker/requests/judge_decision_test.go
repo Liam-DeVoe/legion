@@ -217,7 +217,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
 
-	if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "the reason does not say what it reads"}); err != nil {
+	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "the reason does not say what it reads"}); err != nil {
 		t.Fatalf("LogJudged: %v", err)
 	}
 
@@ -234,7 +234,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	// A verdict a caller left nil is a row all the same: audit.detail is NOT NULL, so it is
 	// written as the empty object rather than refused.
 	bare := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key too", 600, "SHARED_KEY")
-	if err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
+	if _, err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
 		t.Fatalf("LogJudged(no detail): %v", err)
 	}
 	if judged := readJudged(t, m, *bare.RecordID); len(judged) != 1 || judged[0].actor != judge || judged[0].verdict != "" {

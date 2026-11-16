@@ -89,7 +89,7 @@ func TestTheJudgedRowIsWrittenWhenTheDecisionsDispatchReadIsSlow(t *testing.T) {
 			if !c.granted && !errors.Is(err, ErrProjectAccessUnavailable) {
 				t.Errorf("the judge's approval failed with %v; want ErrProjectAccessUnavailable: its Dispatch read was cut short", err)
 			}
-			if err := m.LogJudged(ctx, *req.RecordID, judgeModel, map[string]any{"verdict": "approve"}); err != nil {
+			if _, err := m.LogJudged(ctx, *req.RecordID, judgeModel, map[string]any{"verdict": "approve"}); err != nil {
 				t.Errorf("LogJudged on the run's context = %v; want the row written in the time the approval left it", err)
 			}
 			if judged := readJudged(t, m, *req.RecordID); len(judged) != c.rows {

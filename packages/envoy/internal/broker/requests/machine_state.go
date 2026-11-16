@@ -337,6 +337,13 @@ type Machine struct {
 	// deterministically move the request to another enrollment in that window, which is where an
 	// adoption's commit lands; no production caller sets it.
 	testAdoptionHook func()
+	// testCommitCut, when set, runs right after a decision's transaction has committed, and an
+	// error it returns is what the decision answers: a COMMIT the server applied whose answer
+	// the network then lost. testLandedRead, when set, is what LogJudged's read of whether an
+	// approval's own row is there fails with. Both exist only so a test can cut a judge's
+	// approval after it applied, and fail that read; no production caller sets them.
+	testCommitCut  func() error
+	testLandedRead func() error
 }
 
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
@@ -1122,10 +1129,31 @@ const judgedKind = "request.judged"
 // then refused — a record the rules do not let the judge decide, one a person already decided,
 // one that expired — where that transaction rolled back and wrote nothing at all. The reasoning
 // is worth keeping either way: it is the record of what the judge was asked and what it answered.
-func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) error {
+//
+// A row that says an approval was not applied (applied false) can be wrong: the approval's COMMIT
+// may have applied on the server and only its answer been lost, and then its own row is already
+// there, saying applied. So LogJudged first reads whether it is (approvalLanded), on ctx, before
+// any transaction: when it is, it writes nothing (JudgedAlreadyApplied), so the trail holds the
+// one row that says what happened; when that read fails, it writes the row with applied
+// AppliedUnknown and the read's error under applied_unknown (JudgedAppliedUnknown), never a false
+// it could not check. Any other row is written as given (JudgedWritten).
+func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedWrite, error) {
+	detail := judgedDetail(judged)
+	wrote := JudgedWritten
+	if applied, ok := detail["applied"].(bool); ok && !applied {
+		landed, err := m.approvalLanded(ctx, recordID)
+		switch {
+		case err != nil:
+			detail["applied"] = AppliedUnknown
+			detail["applied_unknown"] = record.Sanitize(err.Error(), record.MaxReasonRunes)
+			wrote = JudgedAppliedUnknown
+		case landed:
+			return JudgedAlreadyApplied, nil
+		}
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer tx.Rollback(ctx)
 	// The enrollment is the one the request hangs off now, never the one the record froze, as
@@ -1138,19 +1166,55 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 		from requests req join enrollments e on e.id = req.enrollment_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`, recordID).
 		Scan(&requestID, &enr.ID, &enr.Kind, &enr.Operator, &enr.Service, &enr.RuntimeID, &enr.SessionID); err != nil {
-		return err
+		return "", err
 	}
-	detail := judgedDetail(judged)
 	actor := record.JudgeActor(modelID)
 	if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nil, actor, detail); err != nil {
-		return err
+		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return err
+		return "", err
 	}
 	logGrantRow(judgedKind, actor, enr, requestID, "", rawJSON(detail))
-	return nil
+	return wrote, nil
 }
+
+// approvalLanded reports whether the request recordID names carries the request.judged row an
+// approval's own transaction writes (decider.judgedRow): one whose applied is a boolean that
+// transaction set, and which says nothing of why it was not applied. Every row LogJudged writes
+// for an approval says why (not_applied), and a referral's says nothing of applied at all, so only
+// an approval that committed leaves such a row, and a request is approved at most once.
+func (m *Machine) approvalLanded(ctx context.Context, recordID string) (bool, error) {
+	if m.testLandedRead != nil {
+		if err := m.testLandedRead(); err != nil {
+			return false, err
+		}
+	}
+	var landed bool
+	err := m.Store.Pool.QueryRow(ctx, `select exists(select 1 from audit a join requests r on r.id = a.request_id
+		where r.record_id=$1 and a.kind=$2 and jsonb_typeof(a.detail->'applied')='boolean' and not (a.detail ? 'not_applied'))`,
+		recordID, judgedKind).Scan(&landed)
+	return landed, err
+}
+
+// JudgedWrite is what LogJudged did with the row it was given.
+type JudgedWrite string
+
+const (
+	// JudgedWritten is a row written as it was given.
+	JudgedWritten JudgedWrite = "written"
+	// JudgedAlreadyApplied is nothing written: the row said an approval was not applied, and
+	// that approval's own request.judged row is there, so its COMMIT applied and only the
+	// answer to it was lost.
+	JudgedAlreadyApplied JudgedWrite = "already-applied"
+	// JudgedAppliedUnknown is a row written with applied AppliedUnknown, since whether the
+	// approval it reports applied could not be read.
+	JudgedAppliedUnknown JudgedWrite = "applied-unknown"
+)
+
+// AppliedUnknown is the applied of a request.judged row whose approval may or may not have
+// applied: the approval's answer was lost, and so was the read of whether its own row is there.
+const AppliedUnknown = "unknown"
 
 // judgedDetail is a caller's verdict as the audit row holds it: a copy of what the caller gave,
 // and never nil. Never nil because audit.detail is NOT NULL and a nil map is a null parameter,
@@ -1550,6 +1614,11 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Decision{}, false, err
+	}
+	if m.testCommitCut != nil {
+		if err := m.testCommitCut(); err != nil {
+			return Decision{}, false, err
+		}
 	}
 	// The service the policy verified for this request is on its own request.created row, and
 	// its secrets are in request_secrets; neither is in hand here, so the line leaves both to

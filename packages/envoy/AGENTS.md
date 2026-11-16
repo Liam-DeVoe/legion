@@ -6924,7 +6924,7 @@ The unauthenticated `POST /v1/oauth/device_authorization` spends its source addr
 `person:<login>`, the person the `login_hint` names; a request naming a service is refused `400 SERVICE_LOGS_IN_WITH_TOKEN` before any per-login bucket.
 An attacker naming a specific victim operator repeatedly can still lock out that operator's machine logins at a low rate;
 this is inherent to a per-login limit on an unauthenticated route and is an accepted risk, not a bug.
-A request object `LoginDevice` refuses (a person's login with no `login_hint`, or `anyone`, a replayed `jti`) is `400 REQUEST_INVALID`.
+A request object `LoginDevice` refuses (a person's login with no `login_hint`, or `anyone`, a replayed `jti`, a reason naming the issue keys of more than `record.MaxReasonProjects` projects) is `400 REQUEST_INVALID`; `POST /v1/requests` answers a secret request's reason past that bound the same way (`record.CheckReasonProjects`, a creation rule that `VerifyRequestObject` never applies, so a stored request keeps verifying).
 `POST /v1/launcher-credentials/token`, a service's token login, spends its source address's bucket before the token verifies (`refuseAddress`), whatever account the token claims, since a refused token signature makes the verifier fetch the issuer's keys again;
 a verified account then spends an `account:<subject>` bucket of the per-login limit (`refuseAccount`), the same address-then-key pair the device-code route spends.
 A token login the broker could not complete (5xx, such as the database being away) gives back what it spent of both buckets, since the daemon retries it every few seconds through an outage and the broker decided nothing about the token;

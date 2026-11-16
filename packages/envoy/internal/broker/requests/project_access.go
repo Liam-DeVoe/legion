@@ -380,7 +380,7 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name, reason s
 	if err != nil {
 		return false, err
 	}
-	may, err := m.judgeMayDecide(ctx, "enrollment "+enrollmentID, facts.states, enr, reason)
+	may, err := m.judgeMayDecide(ctx, "enrollment "+enrollmentID, facts.states, m.namedProjects(enr), reason)
 	return !may, err
 }
 
@@ -488,17 +488,18 @@ func (m *Machine) maySee(ctx context.Context, row, login string, projects []stri
 
 // judgeMayDecide is the model judge's project rule, the one its run checks before the model
 // (JudgeProject) and its decision checks again before the transaction (decisionFacts). states is
-// what Dispatch holds of each project the request's secrets are tagged with, and of those alone;
-// the request is the judge's only when each is public and the person rule shows it to a reader
-// naming no person, which Dispatch answers by visibility alone. The judge's own token names no
-// person, so it may see no private project.
-func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[string]policy.ProjectState, enr enrollmentRow, reason string) (bool, error) {
+// what Dispatch holds of each project the request's secrets are tagged with, and of those alone,
+// and named the projects its credential names; the request is the judge's only when each tagged
+// project is public and the person rule shows it to a reader naming no person, which Dispatch
+// answers by visibility alone. The judge's own token names no person, so it may see no private
+// project.
+func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[string]policy.ProjectState, named []string, reason string) (bool, error) {
 	for _, state := range states {
 		if state != policy.ProjectPublic {
 			return false, nil
 		}
 	}
-	return m.maySee(ctx, row, "", m.namedProjects(enr), reason)
+	return m.maySee(ctx, row, "", named, reason)
 }
 
 // namedProjects is the projects e's credential names: a person's session's enrollment list, the
@@ -533,11 +534,14 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // The model judge may when the request is still of no private project (judgeMayDecide, over the
 // tagged projects' states alone, the ones its run's check read), which its run checked before the
 // model, and which a project turning private during the run or an adoption by an enrollment
-// naming a private project can have changed since. For the judge every read is under
-// JudgeDispatch, so a slow Dispatch leaves the run the time its row needs, and asked of Dispatch
-// afresh (projectaccess.Fresh): the run's own check filled the cache well inside
-// projectaccess.CacheTTL, and an answer read back from it could not show a change made since.
-// A refusal is record.ErrNotApprover.
+// naming a private project can have changed since. Both rules read the projects of two
+// credentials: the one the request hangs off now, which an adoption rewrites, and the one that
+// asked, which the append-only record names and the pending lists and the approval page read, so a
+// request either of them would hide from a reader is one that reader does not decide. For the
+// judge every read is under JudgeDispatch, so a slow Dispatch leaves the run the time its row
+// needs, and asked of Dispatch afresh (projectaccess.Fresh): the run's own check filled the cache
+// well inside projectaccess.CacheTTL, and an answer read back from it could not show a change made
+// since. A refusal is record.ErrNotApprover.
 func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre decisionRead, set *policy.Set) (projectFacts, error) {
 	if who.isJudge() {
 		bounded, cancel := JudgeDispatch(ctx)
@@ -548,15 +552,16 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 	if err != nil {
 		return projectFacts{}, err
 	}
+	named := slices.Concat(m.namedProjects(pre.enr), pre.asked)
 	var may bool
 	if who.isJudge() {
 		tagged := make(map[string]policy.ProjectState)
 		for _, project := range taggedProjects(set, pre.names) {
 			tagged[project] = facts.states[project]
 		}
-		may, err = m.judgeMayDecide(ctx, "record "+recordID, tagged, pre.enr, pre.reason)
+		may, err = m.judgeMayDecide(ctx, "record "+recordID, tagged, named, pre.reason)
 	} else {
-		may, err = m.mayDecide(ctx, "record "+recordID, who.login, facts, m.namedProjects(pre.enr), pre.reason)
+		may, err = m.mayDecide(ctx, "record "+recordID, who.login, facts, named, pre.reason)
 	}
 	switch {
 	case err != nil:
@@ -580,10 +585,13 @@ func (m *Machine) maySeeRecord(ctx context.Context, row, login string, names, se
 }
 
 // decisionRead is what the approve path reads of a record on the pool before its transaction: the
-// enrollment the request hangs off now, the names it asks for, and its signed reason, from which
-// projectFacts and mayDecide resolve what Dispatch holds before any lock is taken.
+// enrollment the request hangs off now, the projects the credential that asked names (the
+// enrollment the record froze, read through credentialColumns as the pending lists read it), the
+// names the request asks for, and its signed reason, from which projectFacts and mayDecide resolve
+// what Dispatch holds before any lock is taken.
 type decisionRead struct {
 	enr    enrollmentRow
+	asked  []string
 	names  []string
 	reason string
 }
@@ -591,10 +599,16 @@ type decisionRead struct {
 // readDecision is the record's decisionRead, or pgx.ErrNoRows for a record no request names.
 func (m *Machine) readDecision(ctx context.Context, recordID string) (decisionRead, error) {
 	var d decisionRead
+	var asked enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, e.subject, c.service, e.projects, r.reason,
-			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}')
+			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
+			`+credentialColumns+`
 		from requests r join enrollments e on e.id = r.enrollment_id
-		left join launcher_credentials c on c.id = e.launcher_credential_id where r.record_id=$1`, recordID).
-		Scan(&d.enr.ID, &d.enr.Kind, &d.enr.Operator, &d.enr.Subject, &d.enr.Service, &d.enr.Projects, &d.reason, &d.names)
+		left join launcher_credentials c on c.id = e.launcher_credential_id
+		left join credential_requests cr on cr.id = r.record_id
+		left join enrollments enr on enr.id = cr.enrollment_id where r.record_id=$1`, recordID).
+		Scan(&d.enr.ID, &d.enr.Kind, &d.enr.Operator, &d.enr.Subject, &d.enr.Service, &d.enr.Projects, &d.reason, &d.names,
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects)
+	d.asked = m.namedProjects(asked)
 	return d, err
 }

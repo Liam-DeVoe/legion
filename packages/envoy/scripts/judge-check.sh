@@ -556,6 +556,7 @@ judged_summary() { # <request id>
 		(if has("not_pending") then " not_pending=" + .not_pending else "" end) +
 		(if has("applied") then " applied=" + (.applied|tostring) else "" end) +
 		(if has("not_applied") then " not_applied=" + .not_applied else "" end) +
+		(if has("applied_unknown") then " applied_unknown=" + .applied_unknown else "" end) +
 		(if has("error") then " error=" + .error else "" end) +
 		(if has("raw_answer") then " raw_answer=" + .raw_answer else "" end)'
 }
