@@ -71,22 +71,29 @@
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts, and names each line that runs the comparison
-// (ciFilesThatCompare: each literal word of a line, quoted or not, and each run: value of a YAML
-// file as YAML reads it) on standard error, "spec-check: <dir>/<path>:<line>: this line runs the
-// comparison of the files with the approved spec, which no CI job does (R2)", with "spec-check:
-// <dir>: <n> lines of CI files run the comparison" on standard output, exit 1. It exits 1 with
-// "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file, since an
-// instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line
-// of <k> CI files runs the comparison". It does not expand a brace, a glob, a variable or a
-// command substitution, and the reviewer of a change to the CI files reads those. A step can run
-// the comparison from a file it does not read, such as a package script or a make target:
-// compare's refusal covers that route when the step passes the runner's environment on, and
-// nothing covers it when the step does not.
+// (ciFilesThatCompare, which also reads each run: value of a YAML file as YAML reads it) on
+// standard error, "spec-check: <dir>/<path>:<line>: this line runs the comparison of the files
+// with the approved spec, which no CI job does (R2)", with "spec-check: <dir>: <n> lines of CI
+// files run the comparison" on standard output, exit 1. It exits 1 with "spec-check: <dir>: read
+// no workflow" when <dir>/.github/workflows holds no file, since an instrument that read nothing
+// has not passed, and 0 otherwise, with "spec-check: <dir>: no line of <k> CI files runs the
+// comparison". The guard names each line that runs spec-check, under any path, with compare as
+// its first argument, after Bash's quote removal and line continuation. It expands nothing and
+// runs no nested shell. For each other form, such as a brace, a glob, a variable, a command
+// substitution, a nested shell or a quote that an earlier line leaves open, the refusal of
+// compare itself stops the comparison in a step that keeps GITHUB_ACTIONS. Of the lines that the
+// guard reads, only a line that both writes the word in such a form and drops that variable
+// passes both, and no program finds it. A step can run the comparison from a file it does not
+// read, such as a package script or a make target: compare's refusal covers that route when the
+// step passes the runner's environment on, and nothing covers it when the step does not.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
-// does not take, with one line naming the case, or the usage, and for a standard output that
-// does not take all of its text, its product, with the line "spec-check: <subcommand>: cannot
-// write standard output: <error>" on standard error. Each entry of a directory that is
+// does not take, with one line naming the case, or the usage, and for a file or a device on
+// standard output that does not take all of its text, its product, such as a full disk, with the
+// line "spec-check: <subcommand>: cannot write standard output: <error>" on standard error. A pipe
+// whose reader has gone ends the command by SIGPIPE instead, with no line. A standard output that
+// is closed at the start reads as /dev/null, since the Go runtime opens /dev/null on it before the
+// program starts, so the text is lost as with >/dev/null. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
 // Paths are printed absolute. Every line but the usage, the JSON of checks and the blocks of print
 // is written by runnerlog.Say with the prefix "spec-check: ", so no text a file name, a file or an
@@ -138,7 +145,8 @@ func main() {
 
 // run runs the subcommand args name and answers its exit status, or 2 with the usage for no
 // subcommand or one it does not know. The subcommand writes its standard output through output,
-// so a write that stdout does not take in full is one line on stderr and exit 2.
+// so a write to stdout that fails, or takes part of its text, is one line on stderr and exit 2. A
+// write to a pipe whose reader has gone does not return: SIGPIPE ends the process.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usage)

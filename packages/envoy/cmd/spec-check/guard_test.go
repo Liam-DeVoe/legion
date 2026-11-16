@@ -105,6 +105,33 @@ func testGuard(t *testing.T, binary string) {
 			stderr: "spec-check: " + workflow + ":5" + line + "spec-check: " + workflow + ":6" + line + "spec-check: " + workflow + ":7" + line,
 		})
 	})
+	// Bash removes a backslash and the line break after it before it reads the words, so a step
+	// that splits $ from its quote that way runs spec-check compare, and env -u takes it past the
+	// refusal of compare. Inside single quotes the two stay, and that word is no compare.
+	t.Run("guard names a subcommand that a line continuation splits", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		workflow := filepath.Join(root, ".github", "workflows", "spec.yaml")
+		writeFile(t, workflow, []byte("on: pull_request\njobs:\n  spec:\n    steps:\n"+
+			"      - run: |\n"+
+			"          env -u GITHUB_ACTIONS spec-check $\\\n"+
+			"          'com\\x70are' --dir .dispatch/spec --approved a.json\n"+
+			"      - run: |\n"+
+			"          env -u GITHUB_ACTIONS spec-check $\\\n"+
+			"          \"compare\" --dir .dispatch/spec --approved a.json\n"+
+			"      - run: |\n"+
+			"          spec-check 'com\\\n"+
+			"          pare' --dir .dispatch/spec\n"))
+		line := ": this line runs the comparison of the files with the approved spec, which no CI job does (R2)\n"
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+			code:   1,
+			stdout: "spec-check: " + root + ": 2 lines of CI files run the comparison\n",
+			stderr: "spec-check: " + workflow + ":6" + line + "spec-check: " + workflow + ":9" + line,
+		})
+	})
 	t.Run("guard does not pass when it reads no workflow", func(t *testing.T) {
 		t.Parallel()
 		root := ciFiles(t, "no-workflow")
