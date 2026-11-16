@@ -485,16 +485,35 @@ func headerWayBack(t *testing.T, version int) string {
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
-// leftStandingVersion is the highest migration neither way back deletes,
-// 20261114031356_merge_queue_removal (dispatch://INFRA-3274, which main carries above the phase
-// entry), which is the version the store reports once both ways back have run.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
 	entryVerbatimVersion  = 20261114061900
-	leftStandingVersion   = 20261114031356
 )
+
+// leftStandingVersion is the version the store reports once both ways back have run: the highest
+// embedded migration that is none of the five rows the two blocks delete, this migration's and
+// the four the constants above name. It is derived from the migrations the binary ships rather
+// than pinned, since a migration a branch adds above main's newest is one neither way back
+// deletes, and a pinned value broke on the one this branch adds. The five are named here rather
+// than read from the blocks, so the value never follows a block that forgot one of its deletes,
+// which the roll-forward then catches by applying one migration fewer than the five it wants.
+func leftStandingVersion(t *testing.T) int {
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	deleted := []int{architectUpgradeVersion, stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion, phaseEntryVersion}
+	highest := 0
+	for _, migration := range all {
+		if migration.Version > highest && !slices.Contains(deleted, migration.Version) {
+			highest = migration.Version
+		}
+	}
+	return highest
+}
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
 // upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
@@ -603,10 +622,10 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
-				if version != leftStandingVersion || marksTable || handshakeColumn || markColumn {
+				if leftStanding := leftStandingVersion(t); version != leftStanding || marksTable || handshakeColumn || markColumn {
 					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
 						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
-						version, marksTable, handshakeColumn, markColumn, leftStandingVersion)
+						version, marksTable, handshakeColumn, markColumn, leftStanding)
 				}
 			}
 

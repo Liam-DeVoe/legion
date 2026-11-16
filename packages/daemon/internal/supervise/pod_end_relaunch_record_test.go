@@ -170,6 +170,45 @@ func TestATurnOfRealWorkWhileTheRecordAwaitsItsResultEndsTheRun(t *testing.T) {
 	}
 }
 
+// The daemon restarts in the middle of a turn of the claim's own work that a message starts while
+// the relaunch record, its own turn ended, still waits for its prompt's result. The rebuilt machine
+// holds no answer for the turn, so its end reads the claim it stored: the record, still pending
+// and confirmed, but confirmed before the turn began, so the turn is not the record's, and it ends
+// the run and the deaths as it would have without the restart. Read as the record's turn because
+// the stored claim holds a confirmed record, every turn of real work a restart split in that
+// window would leave both standing, and an end from outside the pod after it would be charged
+// against work that got through.
+func TestARestartInATurnOfRealWorkWhileTheRelaunchRecordAwaitsItsResultEndsTheRun(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
+	h.relaunched()
+	record := h.pending()
+	if !record.Relaunch() {
+		t.Fatalf("the relaunched claim holds %+v, want the relaunch's record", record)
+	}
+	h.must(StreamTurnStart{Claim: h.token})
+	h.advance(time.Minute)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
+
+	h.advance(time.Minute)
+	h.must(StreamTurnStart{Claim: h.token})
+	h.restart()
+	h.wantState(StateWorking)
+	if p := h.pending(); p.ID != record.ID || p.ConfirmedAt.IsZero() {
+		t.Fatalf("the rebuilt claim holds %+v, want the record %s confirmed and waiting for its prompt's result", p, record.ID)
+	}
+	h.advance(time.Minute)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+	if got, stored := h.budgets(), h.store.load(h.token).Budgets; got.PodEndsNotOurs != 0 || got.Deaths != 0 ||
+		stored.PodEndsNotOurs != 0 || stored.Deaths != 0 {
+		t.Fatalf("the turn of real work, split by a restart while the record waits, left budgets %+v (%+v stored), "+
+			"want the run and the deaths ended", got, stored)
+	}
+}
+
 // recordTurnEnd is one of the two ends of a claim's process the turns of its relaunch record are
 // walked under (recordTurnEnds), read as reading: its pod ended from outside it
 // (runtime.PodEndNotOurs), or its own death, an end the runtime read neither way. counted is the
