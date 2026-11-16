@@ -17,6 +17,9 @@ import {
   linkText,
   liveDotBg,
   offlineDotBorder,
+  pageInkText,
+  pageSegmentDoneBg,
+  pageStateText,
   stalledDotBorder,
   unknownDotBorder,
 } from "../../theme/classes";
@@ -125,6 +128,12 @@ type AgentNameProps = AgentSubject &
 
 const LINK_CLASS = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
 
+/** `LINK_CLASS` inside `NoTooltips`: the new issue page's link, in the ink with its underline,
+ *  since ink beside ink says link by the underline alone; the focus ring stays `main`'s, the
+ *  application's one focus indicator (dispatch://INFRA-3935 R6, decisions 56 and 58 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md). */
+const PAGE_LINK_CLASS = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing} ${pageInkText} underline`;
+
 const MARK_CLASS = "mr-1 inline-block h-2 w-2 shrink-0 rounded-full align-middle";
 
 const AGENT_SPAN_CLASS = "min-w-0 [overflow-wrap:anywhere]";
@@ -135,6 +144,16 @@ const STATE_MARK_CLASS: Record<AgentState, string> = {
   running: `${MARK_CLASS} ${liveDotBg}`,
   unknown: `${MARK_CLASS} border border-dashed ${unknownDotBorder}`,
   unresponsive: `${MARK_CLASS} border-2 border-solid ${stalledDotBorder}`,
+};
+
+/** `STATE_MARK_CLASS` inside `NoTooltips`, in the new issue page's colours (R6, decision 56):
+ *  running is the passed green, unresponsive the waiting orange, and not running or unknown the
+ *  not-run grey, in the same shapes, which say the state without colour. */
+const PAGE_STATE_MARK_CLASS: Record<AgentState, string> = {
+  "not-running": `${MARK_CLASS} border-2 border-solid border-page-not-run`,
+  running: `${MARK_CLASS} ${pageSegmentDoneBg}`,
+  unknown: `${MARK_CLASS} border border-dashed border-page-not-run`,
+  unresponsive: `${MARK_CLASS} border-2 border-solid border-page-waiting`,
 };
 
 const STATE_LABEL: Record<AgentState, string> = {
@@ -175,7 +194,7 @@ function AgentStateMark({
   return (
     <span
       aria-label={tooltips ? STATE_LABEL[state] : reading}
-      className={STATE_MARK_CLASS[state]}
+      className={(tooltips ? STATE_MARK_CLASS : PAGE_STATE_MARK_CLASS)[state]}
       role="img"
       title={tooltips ? reading : undefined}
     />
@@ -205,7 +224,8 @@ export function AgentUnresponsiveNote({
   const seen = lastSeen === undefined ? undefined : new Date(lastSeen).toISOString();
   return (
     <span
-      className={`${className === undefined ? "" : `${className} `}shrink-0 text-xs ${inlineWarningText}`}
+      // Inside `NoTooltips` the words are the new issue page's warning, its waiting orange (R6).
+      className={`${className === undefined ? "" : `${className} `}shrink-0 text-xs ${tooltips ? inlineWarningText : pageStateText.waiting}`}
       data-testid="agent-unresponsive"
       title={
         tooltips
@@ -300,6 +320,7 @@ function SessionAgentName({
   const fallbackMark = authored?.unnamed === true ? page?.pageChrome : undefined;
   const shownName = fallbackMark === undefined ? name : <span {...fallbackMark}>{name}</span>;
   const state = registry.state(sessionId);
+  const linkClass = tooltips ? LINK_CLASS : PAGE_LINK_CLASS;
   const to = generatePath(AGENT_LIVE_PATH, { sessionId: encodeURIComponent(sessionId) });
 
   let named: ReactNode;
@@ -310,7 +331,7 @@ function SessionAgentName({
     liveLink = (
       <Link
         aria-label={openLabel}
-        className={`ml-1 px-1 ${LINK_CLASS}`}
+        className={`ml-1 px-1 ${linkClass}`}
         title={tooltips ? openLabel : undefined}
         to={to}
       >
@@ -326,7 +347,7 @@ function SessionAgentName({
     // colour on its own would be the only thing marking it a link (axe's `link-in-text-block`).
     named = (
       <Link
-        className={inline ? `${LINK_CLASS} dispatch-inline-link underline` : LINK_CLASS}
+        className={inline ? `${linkClass} dispatch-inline-link underline` : linkClass}
         onClick={variant.onNavigate}
         replace={variant.replace === true}
         to={to}
