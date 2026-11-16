@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
@@ -14,7 +16,6 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/natsgrant"
 )
 
 const (
@@ -30,10 +31,12 @@ const (
 	globalAccount = "$G"
 	// connectionName is the name the service's own connection carries in the server's listings.
 	connectionName = "envoy-broker-callout"
-	// concurrentDecisions bounds the decisions one replica makes at once: a reconnect storm after
-	// a server restart sends every connection's request together.
-	concurrentDecisions = 64
 )
+
+// concurrentDecisions bounds the decisions one replica makes at once: a reconnect storm after a
+// server restart sends every connection's request together. It is a var so a test can make
+// requests queue for a slot with a handful of them (queue_test.go).
+var concurrentDecisions = 64
 
 // decideBudget is how long one decision may take. A Go client fails its connect when the server's
 // answer arrives later than two seconds: nats.go sets one deadline of Opts.Timeout, 2 s by
@@ -49,10 +52,15 @@ const (
 var decideBudget = 1500 * time.Millisecond
 
 // budgetRefusal is what a decision that ran past decideBudget is refused with, naming the step it
-// was in. Its label in the decision counter is "budget" (reasonLabel).
+// was in. Its label in the decision counter is labelBudget.
 func budgetRefusal(kind, step string) *Refusal {
-	return refuse(kind, fmt.Sprintf("decision exceeded its %s budget at %s", decideBudget, step))
+	return refuse(kind, labelBudget, fmt.Sprintf("decision exceeded its %s budget at %s", decideBudget, step))
 }
+
+// drainBound bounds how long Close waits for the requests this replica already holds. Each one
+// past its budget is refused at once without a decision (answer), so a long queue drains in far
+// less than this.
+const drainBound = 5 * time.Second
 
 // Settings is where the service connects and the keys it holds.
 type Settings struct {
@@ -79,6 +87,59 @@ type Service struct {
 	// heldDone is closed once they have ended.
 	stopHeld context.CancelFunc
 	heldDone chan struct{}
+	// beat is when the heartbeat last took a decision slot, in Unix nanoseconds, and done ends
+	// the heartbeat at Close.
+	beat      atomic.Int64
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// livenessTick is how often the heartbeat tries to take a decision slot, and livenessBound how
+// old its last beat may be before the service reads as stalled. Vars so a test can make a stall
+// read stale in milliseconds (liveness_test.go).
+var (
+	livenessTick  = time.Second
+	livenessBound = 10 * time.Second
+)
+
+// beatWhileTurning is the heartbeat: every livenessTick it takes a decision slot and gives it back,
+// and records the time it did. When the loop turns a slot is free within a tick, idle or busy, so
+// the beat stays fresh; when every slot is held by a decision that never ends, no request can be
+// decided and the beat goes stale, which LivenessHandler reports. A process stopped outright never
+// answers the probe at all, which a liveness probe also reads as a failure.
+func (s *Service) beatWhileTurning() {
+	s.beat.Store(time.Now().UnixNano())
+	ticker := time.NewTicker(livenessTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+		}
+		select {
+		case s.slots <- struct{}{}:
+			<-s.slots
+			s.beat.Store(time.Now().UnixNano())
+		case <-s.done:
+			return
+		}
+	}
+}
+
+// LivenessHandler answers 200 while the callout loop turned within livenessBound and 503 once it
+// has not, so a liveness probe kills a replica whose loop has stalled: its connection to the hub
+// then resets and it leaves the queue group, where a stalled replica would keep being sent
+// requests it never answers. The broker serves it at GET /livez on its metrics port.
+func (s *Service) LivenessHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		age := time.Since(time.Unix(0, s.beat.Load()))
+		if age > livenessBound {
+			http.Error(w, fmt.Sprintf("the NATS auth service's loop last turned %s ago", age.Round(time.Second)), http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok\n"))
+	})
 }
 
 // decideFunc is how the service decides a request: Decide, unless a test of the guard replaces
@@ -128,7 +189,7 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
-	s := &Service{conn: conn, slots: make(chan struct{}, concurrentDecisions), stopHeld: func() {}, heldDone: make(chan struct{})}
+	s := &Service{conn: conn, slots: make(chan struct{}, concurrentDecisions), done: make(chan struct{}), stopHeld: func() {}, heldDone: make(chan struct{})}
 	// Dispatch's answers about the projects of the entries held to their exchange projects are
 	// asked for in the background from now on, so no decision waits on Dispatch (scopeGrant).
 	if deps.held = newHeldAccess(deps, settings.Services); deps.held != nil {
@@ -140,11 +201,24 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 	}
 	answer := &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide}
 	s.sub, err = conn.QueueSubscribe(authSubject, queueGroup, func(msg *nats.Msg) {
-		s.slots <- struct{}{}
+		// The budget counts from here. The callback never blocks: nats.go delivers one message
+		// at a time on this goroutine, so a callback that waited here for a slot would hold back
+		// the next request's arrival too, and that request's budget would start late. Each
+		// request waits for its slot on a goroutine of its own, and one still waiting when its
+		// budget is spent is answered with a refusal without one (answer).
+		received := time.Now()
+		// Added on the delivery goroutine Close waits out, so every Add happens before its Wait.
 		s.wait.Add(1)
 		go func() {
-			defer func() { <-s.slots; s.wait.Done() }()
-			answer.answer(msg)
+			defer s.wait.Done()
+			wait := time.NewTimer(decideBudget)
+			select {
+			case s.slots <- struct{}{}:
+				wait.Stop()
+				defer func() { <-s.slots }()
+			case <-wait.C:
+			}
+			answer.answer(msg, received)
 		}()
 	})
 	if err != nil {
@@ -153,13 +227,28 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 		conn.Close()
 		return nil, fmt.Errorf("natscallout: subscribe %s: %w", authSubject, err)
 	}
+	go s.beatWhileTurning()
 	return s, nil
 }
 
-// Close stops answering: it leaves the queue group, so the server sends the next request to
-// another replica, waits for the decisions in flight to answer, and closes the connection.
+// Close stops answering. It drains the subscription: that leaves the queue group at once, so the
+// server sends the next request to another replica, and still delivers every request the server
+// had already routed here, which an unsubscribe would drop and leave each of those clients waiting
+// out the server's whole authorization timeout. Once the subscription is no longer valid every
+// held request has reached the callback, so the wait that follows covers every decision started,
+// and then the connection closes.
 func (s *Service) Close() {
-	_ = s.sub.Unsubscribe()
+	s.closeOnce.Do(s.close)
+}
+
+// close is Close's body, which runs once however many times Close is called: a caller that stops
+// a replica early and a cleanup that stops it at the end may both call Close.
+func (s *Service) close() {
+	close(s.done)
+	_ = s.sub.Drain()
+	for deadline := time.Now().Add(drainBound); s.sub.IsValid() && time.Now().Before(deadline); {
+		time.Sleep(readyPoll)
+	}
 	s.wait.Wait()
 	s.stopHeld()
 	<-s.heldDone
@@ -220,11 +309,16 @@ type answerer struct {
 	decide       decideFunc
 }
 
-// answer opens msg, decides it and answers it, sealed to the server's key when the server sealed
-// the request. A request it cannot open or read is not answered: the server refuses that
-// connection at its authorization timeout, and the broker's log says why.
-func (a *answerer) answer(msg *nats.Msg) {
-	began := time.Now()
+// answer opens msg, decides it and answers it, sealed to the server's key. Its budget counts from
+// received, when the request reached the subscription, so the time it waited for a decision slot
+// is spent from it; a request past its deadline before its decision starts is refused at once,
+// without asking the broker anything. The request's own expiry is not used: the server writes it
+// in whole seconds (server/auth_callout.go, claim.Expires), so it can name a moment up to a second
+// before the server actually gives up, and would cut a budget of 1.5 s by as much. A request it
+// cannot open or read is not answered: the server refuses that connection at its authorization
+// timeout, and the broker's log says why.
+func (a *answerer) answer(msg *nats.Msg, received time.Time) {
+	deadline := received.Add(decideBudget)
 	serverXKey := msg.Header.Get(serverXKeyHeader)
 	data := msg.Data
 	if serverXKey != "" {
@@ -245,26 +339,43 @@ func (a *answerer) answer(msg *nats.Msg) {
 		Nonce: claims.ClientInformation.Nonce, Token: claims.ConnectOptions.Token, Sig: claims.ConnectOptions.SignedNonce,
 		User: claims.ConnectOptions.Username, Password: claims.ConnectOptions.Password, Host: claims.ClientInformation.Host,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), decideBudget)
-	defer cancel()
-	decision, refusal := a.decide(ctx, a.deps, a.services, req)
-	// A decision that ran past the budget is refused, whatever it decided: the client is at or
-	// past the point its connect gives up, and admitting it there would hand the server a user
-	// for a connection that is no longer waiting.
-	if took := time.Since(began); took > decideBudget && refusal == nil {
-		refusal = budgetRefusal(credentialKind(req), "the answer")
-	}
-	reason := ""
-	if refusal != nil {
-		reason = refusal.Error()
-		var refused *Refusal
-		if !errors.As(refusal, &refused) {
-			refusal = refuse(credentialKind(req), "the service failed: "+reason)
+	kind := credentialKind(req)
+	var decision Decision
+	var refused *Refusal
+	switch {
+	case serverXKey == "":
+		// The service always holds a curve key, and a hub configured with it seals every request,
+		// so a request in the clear means the hub's callout lost its xkey and every token and proof
+		// is crossing the wire unencrypted. Refused, and said loudly.
+		refused = refuse(kind, labelUnsealed, "the authorization request was not sealed to the service's key")
+		if a.deps.Log != nil {
+			a.deps.Log.Error("natscallout: an authorization request arrived in the clear; the hub's auth_callout names no xkey, so every token and proof crosses the wire unencrypted", "host", req.Host)
 		}
-		a.log("natscallout: refused a NATS connection", "reason", refusal.Error(), "host", req.Host, "kind", credentialKind(req))
+	case !time.Now().Before(deadline):
+		refused = budgetRefusal(kind, "the wait for a decision slot")
+	default:
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		var err error
+		decision, err = a.decide(ctx, a.deps, a.services, req)
+		cancel()
+		refused = asRefusal(kind, err)
+		// A decision that ran past the deadline is refused, whatever it decided: the client is at
+		// or past the point its connect gives up, and admitting it there would hand the server a
+		// user for a connection that is no longer waiting.
+		if refused == nil && time.Now().After(deadline) {
+			refused = budgetRefusal(kind, "the answer")
+		}
 	}
-	a.deps.Metrics.record(credentialKind(req), reason, time.Since(began))
-	encoded, err := encodeAnswer(a.issuer, req, decision, refusal)
+	user, refused := admit(req, decision, refused)
+	if refused != nil {
+		fields := []any{"reason", refused.Reason, "label", refused.Label, "host", req.Host, "kind", kind}
+		if refused.Cause != nil {
+			fields = append(fields, "cause", refused.Cause.Error())
+		}
+		a.log("natscallout: refused a NATS connection", fields...)
+	}
+	a.deps.Metrics.record(kind, refused, time.Since(received))
+	encoded, err := sign(a.issuer, req, user, refused)
 	if err != nil {
 		a.log("natscallout: an answer could not be encoded", "error", err.Error(), "host", req.Host)
 		return
@@ -287,27 +398,31 @@ func (a *answerer) log(message string, args ...any) {
 	}
 }
 
-// encodeAnswer is the authorization response the server reads for req, signed by issuer: the user
-// decision admits, as a user JWT signed by issuer for req's user key, in the global account, named
-// decision.Name and expiring at decision.Expires, with decision.Grant as its publish and subscribe
-// allow lists; or, when refusal is not nil, refusal's one line as the response's error.
-func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal error) (string, error) {
-	response := jwt.NewAuthorizationResponseClaims(req.UserNkey)
-	if response == nil {
-		return "", errors.New("natscallout: the request names no user key")
+// asRefusal is err as the refusal it answers: itself when it is one, and a refusal naming the
+// service's own failure, with err as its cause, when it is not.
+func asRefusal(kind string, err error) *Refusal {
+	if err == nil {
+		return nil
 	}
-	response.Audience = req.ServerID
-	// The one place every answer passes, so the last guard is here: a grant with an empty allow
-	// list in either direction would be every subject in that direction (natsgrant.OpenDirection),
-	// and it is answered as a refusal naming that direction, never encoded as a user.
-	if refusal == nil {
-		if direction, open := natsgrant.OpenDirection(decision.Grant); open {
-			refusal = errors.New(openDirectionReason(direction))
-		}
+	var refused *Refusal
+	if errors.As(err, &refused) {
+		return refused
 	}
-	if refusal != nil {
-		response.Error = refusal.Error()
-		return response.Encode(issuer)
+	return refuse(kind, labelServiceFailed, "the service failed").because(err)
+}
+
+// admit is the verdict an answer carries, settled before it is counted: refused when the decision
+// refused, and otherwise the user decision admits, after the grant guard (guard) and a check of
+// the lists that user actually encodes. jwt drops a blank entry when it adds one (StringList.Add),
+// so a grant of blank entries would pass a check of the grant and still encode an empty allow
+// list, which is every subject; the check here is of what is encoded, so no grant can.
+func admit(req Request, decision Decision, refused *Refusal) (*jwt.UserClaims, *Refusal) {
+	if refused != nil {
+		return nil, refused
+	}
+	kind := credentialKind(req)
+	if refused := guard(kind, decision.Grant); refused != nil {
+		return nil, refused
 	}
 	user := jwt.NewUserClaims(req.UserNkey)
 	user.Audience = globalAccount
@@ -315,10 +430,41 @@ func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal 
 	user.Expires = decision.Expires.Unix()
 	user.Pub.Allow.Add(decision.Grant.Publish...)
 	user.Sub.Allow.Add(decision.Grant.Subscribe...)
+	user.Pub.Deny.Add(decision.Grant.PublishDeny...)
+	user.Sub.Deny.Add(decision.Grant.SubscribeDeny...)
+	switch {
+	case len(user.Pub.Allow) == 0:
+		return nil, refuse(kind, labelOpenDirection, openDirectionReason("publish"))
+	case len(user.Sub.Allow) == 0:
+		return nil, refuse(kind, labelOpenDirection, openDirectionReason("subscribe"))
+	}
+	return user, nil
+}
+
+// sign is the authorization response for req, signed by issuer: user, signed by issuer for req's
+// user key, or, when refused is not nil, refused's one line as the response's error.
+func sign(issuer nkeys.KeyPair, req Request, user *jwt.UserClaims, refused *Refusal) (string, error) {
+	response := jwt.NewAuthorizationResponseClaims(req.UserNkey)
+	if response == nil {
+		return "", errors.New("natscallout: the request names no user key")
+	}
+	response.Audience = req.ServerID
+	if refused != nil {
+		response.Error = refused.Reason
+		return response.Encode(issuer)
+	}
 	userJWT, err := user.Encode(issuer)
 	if err != nil {
 		return "", err
 	}
 	response.Jwt = userJWT
 	return response.Encode(issuer)
+}
+
+// encodeAnswer is the authorization response the server reads for req, signed by issuer: the
+// verdict admit settles, signed. It is admit and sign as answer runs them, for a caller that holds
+// a decision and no answerer.
+func encodeAnswer(issuer nkeys.KeyPair, req Request, decision Decision, refusal error) (string, error) {
+	user, refused := admit(req, decision, asRefusal(credentialKind(req), refusal))
+	return sign(issuer, req, user, refused)
 }

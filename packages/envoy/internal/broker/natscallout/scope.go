@@ -52,26 +52,26 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 		return grant, nil
 	}
 	if deps.Exchange == nil || deps.Access == nil {
-		return natsgrant.Permissions{}, refuse(credentialService, "held to exchange projects, which this broker cannot read: service "+entry.name())
+		return natsgrant.Permissions{}, refuse(credentialService, labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.name())
 	}
 	projects, listed := deps.Exchange(entry.Account)
 	if !listed {
-		return natsgrant.Permissions{}, refuse(credentialService, "account has no exchange entry: "+entry.Account)
+		return natsgrant.Permissions{}, refuse(credentialService, labelNoExchangeEntry, "account has no exchange entry: "+entry.Account)
 	}
 	var repositories []string
 	for _, project := range projects {
 		held, known := deps.held.answer(project)
 		switch {
 		case !known:
-			return natsgrant.Permissions{}, refuse(credentialService, "project access not yet known: "+project)
+			return natsgrant.Permissions{}, refuse(credentialService, labelProjectNotKnown, "project access not yet known: "+project)
 		case held.notFound:
-			return natsgrant.Permissions{}, refuse(credentialService, "project not found: "+project)
+			return natsgrant.Permissions{}, refuse(credentialService, labelProjectNotFound, "project not found: "+project)
 		}
 		repositories = append(repositories, held.answer.Repositories...)
 	}
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Repositories: repositories, Identity: entry.Account})
 	if err != nil {
-		return natsgrant.Permissions{}, refuse(credentialService, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
+		return natsgrant.Permissions{}, refuse(credentialService, labelNotHeldToProjects, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
 	}
 	return scoped, nil
 }

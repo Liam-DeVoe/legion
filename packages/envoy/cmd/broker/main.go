@@ -682,10 +682,11 @@ func main() {
 		airlockProxy.Store(proxy)
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
-	// every metric above is built on, and nothing else (metricsHandler). Its timeouts are the
-	// API's, since a scraper is a caller like any other to the server.
+	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its
+	// timeouts are the API's, since a scraper is a caller like any other to the server.
+	var callout atomic.Pointer[natscallout.Service]
 	metricsServer := &http.Server{
-		Handler:           metricsHandler(registry),
+		Handler:           metricsHandler(registry, &callout),
 		ReadHeaderTimeout: srv.ReadHeaderTimeout,
 		ReadTimeout:       srv.ReadTimeout,
 		WriteTimeout:      srv.WriteTimeout,
@@ -729,7 +730,6 @@ func main() {
 	// The NATS auth service starts once the broker serves, so a connection it admits can trade
 	// and introspect against a broker that answers; it answers in the replicas' queue group until
 	// the drain begins.
-	var callout *natscallout.Service
 	if cfg.NATS.Enabled() {
 		// A service held to its exchange projects is held by the exchange list this broker trades
 		// by and by Dispatch's answers about those projects, which the service asks for in the
@@ -739,7 +739,7 @@ func main() {
 		if exchangeConfig.Projects != nil {
 			projectAccess = exchangeConfig.Projects.Access
 		}
-		callout, err = natscallout.Start(ctx, natscallout.Settings{
+		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
 			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
 		}, natscallout.Deps{
@@ -748,8 +748,9 @@ func main() {
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
 		})
 		fatal(err)
+		callout.Store(service)
 		go func() {
-			if err := callout.Ready(ctx); err == nil {
+			if err := service.Ready(ctx); err == nil {
 				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(natsServices))
 			}
 		}()
@@ -758,8 +759,8 @@ func main() {
 	<-ctx.Done()
 	// The auth service leaves the queue group first, so the hub sends the next authorization to
 	// a replica that is not draining.
-	if callout != nil {
-		callout.Close()
+	if service := callout.Load(); service != nil {
+		service.Close()
 	}
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
 	// proxy port to drain".
@@ -1079,12 +1080,24 @@ func peerReread(current *policy.Current, dropAirlockName func(string)) func(cont
 
 // metricsHandler is what the metrics port serves: registry's scrape at GET /metrics in the
 // Prometheus text format (the pattern takes HEAD too, as every GET pattern of a ServeMux does),
-// and nothing else - every other path is 404 and every method there but GET and HEAD is 405 - so
-// a scraper reaches no route of the API through it, and no caller of the API reaches the scrape
-// (the API's mux registers no /metrics).
-func metricsHandler(registry *metrics.Registry) http.Handler {
+// and GET /livez, the NATS auth service's liveness, and nothing else - every other path is 404 and
+// every method there but GET and HEAD is 405 - so a scraper or a probe reaches no route of the API
+// through it, and no caller of the API reaches either (the API's mux registers neither).
+//
+// /livez answers 503 while the auth service's loop has not turned for its staleness bound
+// (natscallout.Service.LivenessHandler), so the Deployment's liveness probe kills a replica whose
+// loop has stalled and its connection to the hub resets; and 200 when this broker runs no auth
+// service, or has not started it yet, since nothing then can stall.
+func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscallout.Service]) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", registry.Handler())
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
+		if service := callout.Load(); service != nil {
+			service.LivenessHandler().ServeHTTP(w, r)
+			return
+		}
+		_, _ = w.Write([]byte("ok\n"))
+	})
 	return mux
 }
 
