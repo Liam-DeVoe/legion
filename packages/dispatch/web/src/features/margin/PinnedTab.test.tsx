@@ -271,10 +271,10 @@ test("a pinned message event of a post edited and then deleted reads as deleted,
       target: null,
     },
   };
-  // A standing post beside it, whose own body draws a list: the markdown of this render is
-  // asynchronous, so the assertions below wait for that list before they read either card.
-  // Without the wait they run while no body has drawn at all, and the one that says the
-  // deleted card holds no body is green whatever the card does (dispatch://INFRA-1523).
+  // A standing post beside it, whose own body is what the assertions below wait for: the
+  // markdown of this render is asynchronous, so without that wait they run while no body has
+  // drawn at all, and the one that says the deleted card holds no body is green whatever the
+  // card does (dispatch://INFRA-1523).
   const standing: DispatchEvent = {
     ...messageEvent,
     id: 2,

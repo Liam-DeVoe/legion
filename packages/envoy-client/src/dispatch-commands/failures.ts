@@ -1,9 +1,5 @@
-import {
-  type DispatchClient,
-  DispatchGatewayError,
-  DispatchNoRouteError,
-  DispatchServiceError,
-} from "../dispatch-http";
+import { DispatchGatewayError, DispatchNoRouteError, DispatchServiceError } from "../dispatch-http";
+import type { Owner } from "../dispatch-owner";
 import { messageFor } from "../errors";
 
 /**
@@ -162,34 +158,31 @@ function dispatchNotFound(error: unknown): error is DispatchServiceError {
 
 /**
  * The refusal a reference's own read of a post or an ask earns when Dispatch answers
- * `404 NOT_FOUND`: its `not found` names neither the item nor the issue, so a reader cannot tell
- * an item that is not there from an issue that is not (dispatch://INFRA-1523). The issue is read
- * once, on this failing path alone, to say which: a reference whose issue Dispatch does not hold
- * names that issue, and one whose issue stands names the item it holds no row of. A reference
- * naming a document has no issue to read, so that case keeps Dispatch's own answer. Every caller
- * that resolves a `dispatch://KEY/<kind>/<id>` reference runs it: the four correction commands,
- * `dispatch resolve-comment`, and `dispatch read` of a comment, a message or an ask reference.
+ * `404 NOT_FOUND`: its `not found` names neither the item nor its owner, so a reader cannot tell
+ * an item that is not there from an issue or a document that is not (dispatch://INFRA-1523).
+ * The owner is read once, on this failing path alone, by `readOwner`, which the caller builds of
+ * the reference's own owner: a reference whose issue Dispatch does not hold is refused in those
+ * words, one whose document it does not hold meets that read's own refusal, which names the
+ * document and lists the project's, and one whose owner stands names the item that owner holds
+ * no row of. Every caller that resolves a `dispatch://` reference runs it: the four correction
+ * commands, `dispatch resolve-comment`, and `dispatch read` of a comment, a message or an ask
+ * reference.
  */
 export async function refuseMissingOfRef(
-  client: DispatchClient,
   error: unknown,
   kind: "ask" | "comment" | "message",
   id: string,
-  owner: { readonly kind: "issue"; readonly issue: string } | { readonly kind: "project" },
-  ownerName: string
+  owner: Owner,
+  ownerName: string,
+  readOwner: () => Promise<unknown>
 ): Promise<unknown> {
   if (!dispatchNotFound(error)) return error;
-  if (owner.kind === "issue") {
-    const issueStands = await client
-      .getIssue(owner.issue)
-      .then(() => true)
-      .catch((caught: unknown) => {
-        if (dispatchAnswered(caught, 404)) return false;
-        throw caught;
-      });
-    if (!issueStands) {
-      return refusalWithCode(error, `this Dispatch holds no issue ${owner.issue}`);
-    }
-  }
-  return refusalWithCode(error, `${ownerName} holds no ${kind} ${id}`);
+  const missingOwner = await readOwner().then(
+    () => undefined,
+    (caught: unknown) =>
+      owner.kind === "issue" && (dispatchNotFound(caught) || dispatchAnswered(caught, 404))
+        ? refusalWithCode(error, `this Dispatch holds no issue ${owner.issue}`)
+        : caught
+  );
+  return missingOwner ?? refusalWithCode(error, `${ownerName} holds no ${kind} ${id}`);
 }

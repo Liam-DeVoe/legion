@@ -1,5 +1,7 @@
 kind: Fixed
 body: |-
   dispatch read of a comment, a message or an ask reference, and dispatch resolve-comment, now
-  say which of the two Dispatch does not hold, the issue or the item, where each answered "not
-  found" alone. A reference naming a document keeps that answer, since it names no issue to read.
+  say which of the two Dispatch does not hold, the owner or the item, where each answered "not
+  found" alone. A reference naming a project document reads that document the same way: a
+  document Dispatch does not hold is refused in its own words, which list the project's
+  documents, and one that stands is named as holding no item of that id.

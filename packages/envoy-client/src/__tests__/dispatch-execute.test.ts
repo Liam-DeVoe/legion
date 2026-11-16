@@ -15827,7 +15827,7 @@ test("refuses to resolve a comment named by an ask reference", async () => {
       exec: repoExec("owner/repo"),
       fetchImpl,
     })
-  ).rejects.toThrow("comment must be a bare comment id or a dispatch://.../comment/<id> reference");
+  ).rejects.toThrow("comment must be a bare comment id");
   expect(requests).toBe(0);
 });
 
@@ -16481,29 +16481,56 @@ for (const [tool, args] of [
 // /api/v1/comments/ or /api/v1/ and earns the same no-route 404 this release reads as an older
 // server. So the rule is the server's own shape rule - a whole uuid, or a prefix of at least
 // eight hex characters - and anything else is refused before a request is sent.
+//
+// The fixture answers every request as a router with no such route does, in the words
+// `isNoRoute` reads, so it can produce the older-server sentence: the positive control below
+// drives an id of the right shape through the same fixture and meets that sentence. Without it,
+// the claim that the refusal says nothing of the server's age would hold whatever the command
+// did, since no answer of the fixture could say it (dispatch://INFRA-1523).
+const noRouteFixture = () => {
+  const requests: string[] = [];
+  const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? "GET";
+    const { pathname } = new URL(String(url));
+    requests.push(`${method} ${pathname}`);
+    return response({ code: "NOT_FOUND", error: `no route for ${method} ${pathname}` }, 404);
+  };
+  return { requests, fetchImpl };
+};
+
+const runWithFixture = async (
+  tool: string,
+  args: Record<string, unknown>,
+  fetchImpl: (url: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+): Promise<unknown> =>
+  executeDispatchTool({
+    tool,
+    args,
+    cwd: "/workspace",
+    host: "omp",
+    sessionId: "session-42",
+    config,
+    env: {},
+    exec: repoExec("owner/repo"),
+    sleep: async () => {},
+    fetchImpl: fetchImpl as typeof fetch,
+  }).then(
+    () => undefined,
+    (caught: unknown) => caught
+  );
+
+const commentIdArgs = (tool: string, comment: string): Record<string, unknown> =>
+  tool === "dispatch_edit_comment" ? { comment, body: "x" } : { comment };
+
 for (const value of [".", "..", "../..", "not-a-uuid", "1234"]) {
-  for (const tool of ["dispatch_edit_comment", "dispatch_delete_comment"] as const) {
+  for (const tool of [
+    "dispatch_edit_comment",
+    "dispatch_delete_comment",
+    "dispatch_resolve_comment",
+  ] as const) {
     test(`${tool} refuses the comment id ${JSON.stringify(value)} without calling Dispatch`, async () => {
-      const requests: string[] = [];
-      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-        requests.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
-        return response({ code: "NOT_FOUND", error: "no route" }, 404);
-      };
-      const error: unknown = await executeDispatchTool({
-        tool,
-        args: tool === "dispatch_edit_comment" ? { comment: value, body: "x" } : { comment: value },
-        cwd: "/workspace",
-        host: "omp",
-        sessionId: "session-42",
-        config,
-        env: {},
-        exec: repoExec("owner/repo"),
-        sleep: async () => {},
-        fetchImpl: fetchImpl as typeof fetch,
-      }).then(
-        () => undefined,
-        (caught: unknown) => caught
-      );
+      const { requests, fetchImpl } = noRouteFixture();
+      const error = await runWithFixture(tool, commentIdArgs(tool, value), fetchImpl);
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain("comment must be a bare comment id");
@@ -16511,6 +16538,73 @@ for (const value of [".", "..", "../..", "not-a-uuid", "1234"]) {
       expect(requests).toEqual([]);
     });
   }
+}
+
+// The positive control of the five rows above: an id of the right shape reaches that same
+// fixture, whose no-route answer is what a server without the correction routes gives, and the
+// command then says exactly the sentence those rows say is absent.
+test("an id of the right shape reaches the fixture, which answers as a server without the routes", async () => {
+  const { requests, fetchImpl } = noRouteFixture();
+  const error = await runWithFixture(
+    "dispatch_edit_comment",
+    commentIdArgs("dispatch_edit_comment", "11111111-2222-4333-8444-555555555555"),
+    fetchImpl
+  );
+
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("predates post corrections");
+  expect(requests).not.toEqual([]);
+});
+
+// A router's no-route 404 is no answer about the post, so it is never rewritten as a post this
+// Dispatch does not hold: `dispatch resolve-comment`, which no older-server wrapper covers,
+// meets the client's own rolling-release sentence instead.
+test("a no-route answer is not read as a comment the Dispatch does not hold", async () => {
+  const { fetchImpl } = noRouteFixture();
+  const error = await runWithFixture(
+    "dispatch_resolve_comment",
+    { comment: "11111111-2222-4333-8444-555555555555" },
+    fetchImpl
+  );
+
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).not.toContain("holds no comment");
+  expect((error as Error).message).toContain("a new release of Dispatch is in progress");
+});
+
+// A reference naming a project document is read the same way as one naming an issue: the
+// document is read on this failing path, so the refusal says whether the document or the item
+// is what Dispatch does not hold.
+for (const [name, documents, named] of [
+  [
+    "a document that stands",
+    [{ id: "artifact-1", name: "Runbook", slug: "runbook" }],
+    "CORE/runbook holds no comment 11111111-2222-4333-8444-555555555555",
+  ],
+  ["a document Dispatch does not hold", [], 'document "runbook" not found by slug'],
+] as const) {
+  test(`dispatch_read names what it could not find under ${name}`, async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/projects/CORE/artifacts/runbook") {
+        return documents.length === 0
+          ? response({ code: "NOT_FOUND", error: "not found" }, 404)
+          : response({ artifact: documents[0] });
+      }
+      if (pathname === "/api/v1/projects/CORE/artifacts") {
+        return response(documents);
+      }
+      return response({ code: "NOT_FOUND", error: "not found" }, 404);
+    };
+    const error = await runWithFixture(
+      "dispatch_read",
+      { ref: "dispatch://CORE/artifact/runbook/comment/11111111-2222-4333-8444-555555555555" },
+      fetchImpl
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(named);
+  });
 }
 
 // Dispatch answers a correction of a post it does not hold `404 NOT_FOUND` with the word

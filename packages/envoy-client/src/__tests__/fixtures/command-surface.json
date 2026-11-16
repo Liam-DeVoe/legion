@@ -1735,7 +1735,7 @@
       "outcome": "error",
       "text": [
         "dispatch resolve-comment was not called: 1 problem",
-        "- comment must be a bare comment id or a dispatch://.../comment/<id> reference",
+        "- comment must be a bare comment id - a whole uuid, or a prefix of at least 8 hex characters - or a dispatch://.../comment/<id> reference",
         "- Allowed flags: --comment, --comment-file, --help, --dry-run",
         "- Example: dispatch resolve-comment --comment 01234567-0000-4000-8000-000000000001"
       ]

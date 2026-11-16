@@ -24,7 +24,7 @@ import {
   stringArg,
 } from "./context";
 import { resolveMessageArgument } from "./conversation";
-import { approvalLine, documentListLines } from "./document-targets";
+import { approvalLine, documentListLines, readRefOwner } from "./document-targets";
 import { dispatchAnswered, refuseMissingOfRef, throughPostCorrections } from "./failures";
 import { messageIdOf, refOwnerName, refTarget, refuseItemOffRef, resolveIdPrefix } from "./refs";
 import {
@@ -145,14 +145,20 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     const ref = ownerArguments.ref;
     // The same undecidable `not found` the corrections and the two post reads met, one arm
     // over: a reference whose issue Dispatch does not hold reads the same as one whose ask it
-    // does not. A reference naming a document has no issue to read, so that case keeps the
-    // bare answer, as a comment on a document does.
+    // does not. A reference naming a project document is read the same way, by the document.
     const askRead = await readAskRef(input.tool, ref.id, refOwnerName(ref), client, async () =>
       ref.owner.kind === "issue"
         ? client.listIssueAsks(ref.owner.issue)
         : client.getArtifactAsks(await documentIdOf(ref), "all")
     ).catch(async (error: unknown) => {
-      throw await refuseMissingOfRef(client, error, "ask", ref.id, ref.owner, refOwnerName(ref));
+      throw await refuseMissingOfRef(
+        error,
+        "ask",
+        ref.id,
+        ref.owner,
+        refOwnerName(ref),
+        readRefOwner(client, ref.owner, ref.artifact)
+      );
     });
     await refuseItemOffRef(input.tool, "ask", ref, stringArg(args, "ref"), askRead.ask, () =>
       documentIdOf(ref)
@@ -182,7 +188,14 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     // The same undecidable `not found` the corrections met: a reader of this read must be able
     // to tell a post that is gone from an issue that was never there (dispatch://INFRA-1523).
     const comment = await client.getComment(id).catch(async (error: unknown) => {
-      throw await refuseMissingOfRef(client, error, "comment", id, ref.owner, refOwnerName(ref));
+      throw await refuseMissingOfRef(
+        error,
+        "comment",
+        id,
+        ref.owner,
+        refOwnerName(ref),
+        readRefOwner(client, ref.owner, ref.artifact)
+      );
     });
     await refuseItemOffRef(
       input.tool,
@@ -255,12 +268,12 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       .getMessage(messageIssue, named.id)
       .catch(async (error: unknown) => {
         throw await refuseMissingOfRef(
-          client,
           error,
           "message",
           named.id,
           { kind: "issue", issue: messageIssue },
-          messageIssue
+          messageIssue,
+          readRefOwner(client, { kind: "issue", issue: messageIssue }, undefined)
         );
       });
     const messageRef = dispatchChildRef(

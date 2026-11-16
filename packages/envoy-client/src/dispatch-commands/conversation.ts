@@ -17,7 +17,7 @@ import { ToolInputError } from "../tool-input-errors";
 import { renderAdvice } from "./advice";
 import { movedApprovalLine, resolveReplyToAsk } from "./asks";
 import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
-import { anchor, resolveArtifact } from "./document-targets";
+import { anchor, readRefOwner, resolveArtifact } from "./document-targets";
 import { refuseMissingOfRef, throughPostCorrections } from "./failures";
 import {
   itemReplyTo,
@@ -66,7 +66,14 @@ export async function resolveCommentArgument(
     );
   }
   const read = await client.getComment(id).catch(async (error: unknown) => {
-    throw await refuseMissingOfRef(client, error, "comment", id, ref.owner, refOwnerName(ref));
+    throw await refuseMissingOfRef(
+      error,
+      "comment",
+      id,
+      ref.owner,
+      refOwnerName(ref),
+      readRefOwner(client, ref.owner, ref.artifact)
+    );
   });
   await refuseItemOffRef(tool, "comment", ref, reference, read.comment, async () =>
     document === undefined ? "" : document.id
@@ -109,7 +116,14 @@ export async function resolveMessageArgument(
   const read = await client
     .getMessageThread(id, session === "" ? undefined : session)
     .catch(async (error: unknown) => {
-      throw await refuseMissingOfRef(client, error, "message", id, ref.owner, issueKey);
+      throw await refuseMissingOfRef(
+        error,
+        "message",
+        id,
+        ref.owner,
+        issueKey,
+        readRefOwner(client, ref.owner, undefined)
+      );
     });
   await refuseItemOffRef(
     tool,

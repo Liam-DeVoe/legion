@@ -30,7 +30,8 @@ export function normalizeUUID(value: string): string | undefined {
 
 export const askIdProblem = "ask must be a bare ask id or a dispatch://.../ask/<id> reference";
 export const commentIdProblem =
-  "comment must be a bare comment id or a dispatch://.../comment/<id> reference";
+  "comment must be a bare comment id - a whole uuid, or a prefix of at least 8 hex characters - " +
+  "or a dispatch://.../comment/<id> reference";
 export const messageIdProblem =
   "in_reply_to must be a full message id (uuid), a dispatch://KEY/message/<id> reference, or a block of one (dispatch://KEY/message/<id>#b-<block id>)";
 
