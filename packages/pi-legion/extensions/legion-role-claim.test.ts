@@ -9,7 +9,10 @@ import {
 } from "@legion/envoy-client/envoy-settings";
 import type { ZodNumberProperty } from "@legion/pi-shared/pi-types";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
 import type { resetNatsConnectForTests as ResetNatsConnectForTests } from "../../pi-envoy/extensions/envoy";
 import type legionEntryDefault from "./legion";
@@ -58,6 +61,10 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 // it, and everything the module body did there would outlive the run.
 const envoyConfigDirectory = temporaryDirectory("legion-role-claim-envoy-config");
 const envoyConfigFile = join(envoyConfigDirectory, "envoy.json");
+
+/** The pane's state directory (`LEGION_STATE_DIR`, where its boot writes the jj overlay) and its
+ *  working directory: the row's own, removed after it, never a fixed path another run writes. */
+const paneDirectory = temporaryDirectories("legion-role-claim-pane");
 
 /** The Envoy and Legion entries, each loaded once the environment below is in place. The one row
  *  of this file reads them from its own body, and nothing starts a pane before the `beforeAll`
@@ -195,7 +202,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   process.env.ENVOY_URL = "http://envoy.test";
   process.env.LEGION_DAEMON_URL = "http://daemon.test";
   process.env.LEGION_BOOT_TOKEN = "claim-heartbeat";
-  process.env.LEGION_STATE_DIR = "/tmp/legion-state";
+  process.env.LEGION_STATE_DIR = paneDirectory("state");
   process.env.LEGION_TREE = tree;
   process.env.LEGION_ROLE = "architect";
   process.env.LEGION_ISSUE = tree;
@@ -272,7 +279,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   const envoyPi = createPi();
   const legionPi = createPi();
   const context: Context = {
-    cwd: "/tmp/legion-workspace",
+    cwd: paneDirectory("workspace"),
     sessionManager: {
       getSessionId: () => sessionID,
       getSessionFile: () => "/tmp/legion-root.jsonl",

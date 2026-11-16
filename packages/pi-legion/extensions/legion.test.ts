@@ -374,6 +374,11 @@ const originalFetch = globalThis.fetch;
 const temporaryPaths: string[] = [];
 const paneStateDirectory = temporaryDirectories("legion-pane-state");
 const controllerStateDirectory = temporaryDirectories("legion-controller");
+/** The working directory of every pane and context a test makes, and its `LEGION_WORKSPACE`: one
+ * of the test's own, removed after it, since the capability report's disk row reads a pane's
+ * repository and the jj overlay resolves its workspace, and a fixed path is one another row or
+ * another run can write. */
+const paneWorkspaceDirectory = temporaryDirectories("legion-pane-workspace");
 
 /** The home the suite's one `jj git init` runs under, so no configuration of the developer's
  * decides what the template holds. */
@@ -564,7 +569,7 @@ function createPi(
   });
   const optional = property;
   process.env.ENVOY_NATS_URL = "nats://nats-under-test:4222";
-  process.env.LEGION_STATE_DIR ??= "/tmp/legion-state";
+  process.env.LEGION_STATE_DIR ??= paneStateDirectory();
   // Nothing under the caller's own home reaches the fixture.
   process.env.HOME = "/nonexistent-home-for-legion-tests";
   const pi: TestPi = {
@@ -697,10 +702,11 @@ function sessionContext(
   sessionID: string,
   sessionFile = "/tmp/session.jsonl",
   ensureOnDisk: () => Promise<void> = async () => undefined,
-  title?: HostTitle
+  title?: HostTitle,
+  cwd: string = paneWorkspaceDirectory()
 ): SessionContext {
   return {
-    cwd: "/tmp/legion-workspace",
+    cwd,
     hasUI: true,
     taskDepth: 0,
     sessionManager: {
@@ -938,7 +944,7 @@ async function claimPane(options: {
   const tree = options.tree ?? "REPO-42";
   const issue = options.issue ?? "REPO-43";
   const sessionId = options.sessionId ?? `ses_${options.role}`;
-  const workspace = options.workspace ?? "/tmp/legion-workspace";
+  const workspace = options.workspace ?? paneWorkspaceDirectory();
   const claimToken = roleToken("omp", issue, options.role);
   const registration = {
     claimToken,
@@ -1039,7 +1045,8 @@ async function claimPane(options: {
     sessionId,
     options.sessionFile ?? `/tmp/${sessionId}.jsonl`,
     options.ensureOnDisk,
-    fixture.title
+    fixture.title,
+    workspace
   );
   const context: SessionContext = {
     ...base,
@@ -1061,7 +1068,6 @@ async function claimPane(options: {
       hasProvider: () => true,
       isSelectorSuppressed: (selector) => fixture.models.suppressed.has(selector),
     },
-    cwd: workspace,
     setInterval: (callback) => {
       intervals.push(callback);
     },
@@ -1252,7 +1258,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     await expect(
       claimCommand.handler("", {
-        cwd: "/tmp/legion-workspace",
+        cwd: paneWorkspaceDirectory(),
         sessionManager: {
           getSessionId: () => "ses_interactive",
           getSessionFile: () => "/tmp/session.jsonl",
@@ -3589,8 +3595,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       const budgets = { checkMs: 20, reportMs: 500 };
       setLegionCapabilityBudgetsForTests(budgets);
       const measuredFrom = Date.UTC(2026, 10, 14, 9, 30);
-      const workspace = await mkdtemp(path.join(os.tmpdir(), "legion-capability-workspace-"));
-      temporaryPaths.push(workspace);
+      const workspace = paneWorkspaceDirectory();
       const skill = path.join(workspace, ".omp", "skills", "probe", "SKILL.md");
       await mkdir(path.dirname(skill), { recursive: true });
       await writeFile(skill, "---\nname: probe\ndescription: a skill the disk row finds\n---\n");
@@ -7255,7 +7260,7 @@ describe("the model fallback", () => {
     );
     if (claimCommand === undefined) throw new Error("controller claim command was not registered");
     const context: CommandContext = {
-      cwd: "/tmp/legion-workspace",
+      cwd: paneWorkspaceDirectory(),
       sessionManager: {
         getSessionId: () => "ses_controller_command",
         getSessionFile: () => "/tmp/ses_controller_command.jsonl",
