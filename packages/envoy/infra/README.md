@@ -925,6 +925,21 @@ configuration names it, so the hub and the broker change in the same deploy as t
   auth service refuses both connections, naming the account, as
   `service not listed: system:serviceaccount:<namespace>:<hostname>`.
 
+With `natsAudience`, where the app Deployment rolls (`replicas` above one, so `RollingUpdate` with
+`maxUnavailable: 0`) and `natsInCluster` is set, `envoy-dispatch`'s start waits for its first NATS
+connect. Its startup probe runs
+`curl -fsS --max-time 8 http://127.0.0.1:8766/healthz | grep -qF '"nats":true'` under `/bin/sh -c`
+in place of the `/livez` one, in the same 30 minutes (180 tries 10 seconds apart), so it passes
+only once `/healthz` answers 200 with `"nats":true`. So a pod whose NATS credential the auth service
+refuses never goes ready, and the rollout stalls while the old pods serve. A startup probe that
+has passed runs no more, so a later NATS outage does not unready a started pod: readiness stays
+`/healthz`, whose `ok` is the database alone, and liveness stays `/livez`. Everywhere else the
+startup probe is the `/livez` one, and a refused credential shows only as `"nats":false` on
+`/healthz` of a pod that goes ready. At one replica the Deployment is `Recreate`, which stops the
+old pod first, so a start that waited would leave no pod serving. Without `natsInCluster` the
+first connect goes through the front door's SOCKS5 proxy, which the app's start must not wait on
+during a cutover (the ordering under the resources table above).
+
 `listenerAudience` (plain), unset by default, moves the app's calls to its listener onto the
 app's own identity, so no caller of the listener holds a shared bearer. The app pod gets a
 projected volume `listener-account-token`, whose one source is a `serviceAccountToken` of
@@ -1349,8 +1364,10 @@ seconds, and three missed answers in a row restart the container.
 Startup asks the same question for longer before liveness takes over: 30 minutes for
 `envoy-dispatch` (180 tries 10 seconds apart), since it migrates the database before it listens
 and nothing bounds a migration's run time, and 5 minutes for `envoy-listener` (60 tries 5 seconds
-apart). The `cloud-sql-proxy` sidecar runs with `--health-check` and serves its health endpoints
-on port 9801: its startup probe (`/startup`, once a second for up to a minute) gates
+apart). The one startup probe that reads a dependency is `envoy-dispatch`'s with `natsAudience` on
+a rolling app with `natsInCluster`, which waits for the first NATS connect (`natsAudience` under
+[Inputs](#inputs-1)). The `cloud-sql-proxy` sidecar runs with `--health-check` and serves its
+health endpoints on port 9801: its startup probe (`/startup`, once a second for up to a minute) gates
 `envoy-dispatch`'s start, and its liveness probe (`/liveness`, every 10 seconds, three failures)
 restarts a hung proxy rather than leaving the pod unready for ever. The kubelet probes from the
 pod's own node, which the app's NetworkPolicy does not fence, and no other pod reaches port 9801.
