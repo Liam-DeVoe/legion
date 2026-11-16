@@ -14,8 +14,9 @@
 # no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. With --listeners it
 # reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
 # envoy-cluster/Pulumi.prod.yaml `envoyImage`, and dispatch/Pulumi.prod.yaml `listenerImage`, which
-# that stack's program sets on its listener in place of `envoyImage` (dispatch/main.go,
-# pinListenerImage), or `envoyImage` where it sets none.
+# that stack's program sets on its listener in place of `envoyImage`, the Dispatch server's
+# (dispatch/main.go, pinListenerImage). A dispatch stack that sets no `listenerImage` is UNKNOWN:
+# its deployment requires that key, and the listener runs no other image.
 #
 # Each pin's org.opencontainers.image.source and .revision labels are read with `docker buildx
 # imagetools inspect`. A single image is read whole; an OCI image index, which carries no image
