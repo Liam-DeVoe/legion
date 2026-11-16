@@ -663,7 +663,7 @@ const visualProjects = [
 ] satisfies Project[];
 
 /**
- * The ask card's 23 pictures (INFRA-3231's check b5ee93c7): one row, which seeds the demo's
+ * The ask card's 29 pictures (INFRA-3231's check b5ee93c7): one row, which seeds the demo's
  * fixtures into the real stack and takes each picture the design names at the demo's own sizes,
  * 1440x900 here and 390x844 for the two phone pictures, and lays each beside the demo's.
  *

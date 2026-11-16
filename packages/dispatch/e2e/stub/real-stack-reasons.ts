@@ -71,6 +71,8 @@ export const realStackReasons: Record<string, string> = {
     "each key of the card writes or reads the server: a rewrite through the stand-in, an ask back, a hand-on, a decline, and the Reaches list the server and the fake Envoy answer",
   "ask-card-pictures.e2e.ts":
     "it takes the design's pictures from the build against the server, the stand-in and the reviewer's server, which make every rewrite and definition it shows",
+  "ask-card-quote.e2e.ts":
+    "the asks, comments, messages and documents it quotes are seeded through the server, and the answer it sends with a quote is read back from it",
   "ask-card-reviewer.e2e.ts":
     "the reviewer's server holds each text and posts it on its own sweep, and the open page shows it over the live socket with no reload",
   "ask-card-rewrite.e2e.ts":

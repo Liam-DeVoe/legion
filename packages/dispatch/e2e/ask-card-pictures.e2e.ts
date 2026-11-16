@@ -2,15 +2,18 @@ import { existsSync } from "node:fs";
 
 import { setInterests, setLiveSessions } from "./agents";
 import {
+  answerAsk,
   createAsk,
   createComment,
   createIssue,
   createIssueArtifact,
+  createMessage,
   createProject,
   editArtifact,
   getArtifact,
   getAsk,
   getHeld,
+  markThreadRead,
   patchIssue,
   replyToMessageDelivery,
   requestApproval,
@@ -19,6 +22,10 @@ import {
 } from "./api";
 import { framesTo, REWRITE_DEFINE_MODEL, rewriteText, selectWords } from "./ask-card";
 import {
+  ANSWERED,
+  ANSWERED_QUOTE,
+  APPEND_QUOTE,
+  APPEND_TYPED,
   AUDIT_ORIGINAL,
   AUDIT_REWRITTEN,
   asSession,
@@ -28,10 +35,12 @@ import {
   COLD_START_ORIGINAL,
   COLD_START_REWRITTEN,
   COMMENT_ORIGINAL,
+  COMMENT_QUOTE,
   COMMENT_REWRITTEN,
   type DemoDefinition,
   type DemoSession,
   DRY_RUN_ORIGINAL,
+  DRY_RUN_QUOTE,
   DRY_RUN_REWRITTEN,
   FLIP,
   FLIP_AUDIT,
@@ -43,10 +52,12 @@ import {
   LEDGER_APPROVAL_SUMMARY,
   LEDGER_ROLLOUT_VERSIONS,
   liveSession,
+  MESSAGE_QUOTE,
   MIRROR,
   ORDER,
   ORDER_ASK,
   ORDER_BROKEN_REWRITE,
+  ORDER_MESSAGE,
   PEOPLE,
   PICTURES,
   type Picture,
@@ -72,7 +83,7 @@ import type { Locator, Page } from "./test";
 import { asUser } from "./users";
 
 /**
- * The ask card's 23 pictures (INFRA-3231's check b5ee93c7, Decision 22 of its plan): the demo's
+ * The ask card's 29 pictures (INFRA-3231's check b5ee93c7, Decision 22 of its plan): the demo's
  * fixture text (`ask-card-fixtures.ts`) seeded into the real stack, with the stand-in model and
  * the fake Envoy in place of the prototype's stub, and each picture the spec's Design names taken
  * again from the build, at the demo's own sizes - 1440x900, and 390x844 for the two phone
@@ -117,6 +128,8 @@ interface Seeded {
   readonly coldStart: string;
   readonly handedOn: string;
   readonly comment: string;
+  /** The rollout architect's note on PANE-3, which Quote reply's picture 28 quotes. */
+  readonly message: string;
   /** When the seeding ended, in milliseconds: the moment every age was written against. */
   readonly seededAt: number;
 }
@@ -308,6 +321,7 @@ async function seedDemo(
     asSession(ORDER)
   );
   await setAskedOf(handedOn.id, "bruno", { login: "dana" });
+  const message = await createMessage("PANE-3", { body: ORDER_MESSAGE.body }, asSession(ORDER));
 
   // The decision block of PANE-6's spec, as its agent wrote it, and a person's Rewrite of it,
   // which writes the new version of the document the check's rewrite would.
@@ -364,6 +378,7 @@ async function seedDemo(
     `UPDATE asks SET asked_of_at = now() - interval '20 minutes' WHERE id = ${sqlLiteral(handedOn.id)}`
   );
   await writtenAgo("comments", "id", comment.id, 40);
+  await writtenAgo("messages", "id", message.id, ORDER_MESSAGE.minutesAgo);
   for (const issue of ISSUES) await writtenAgo("issues", "key", issue.key, issue.openedMinutesAgo);
   await writtenAgo("issues", "key", auditKey, 12);
   // PANE-1's spec versions, a day apart, the last one yesterday.
@@ -382,6 +397,7 @@ async function seedDemo(
     comment: comment.id,
     flip: flip.id,
     handedOn: handedOn.id,
+    message: message.id,
     order: order.id,
     seededAt: Date.now(),
   };
@@ -474,9 +490,97 @@ async function phoneCard(page: Page, id: string): Promise<Locator> {
   return card;
 }
 
+/** The bar over words selected outside a document. */
+const BAR = "[data-selection-bar]";
+
+/** The bar's actions, each as it reads: its name and then its key. */
+async function barActions(page: Page): Promise<string[]> {
+  await expect(page.locator(BAR)).toBeVisible();
+  return page
+    .locator(`${BAR} [data-selection-action]`)
+    .evaluateAll((actions) => actions.map((action) => action.textContent ?? ""));
+}
+
+/** Selects with the mouse, as a reader's drag does and as the demo's run selected, from the start
+ *  of `from` to the end of `to`, each in the first text under `scope` that holds it, and waits
+ *  for the bar over the words. */
+async function drag(page: Page, scope: Locator, from: string, to: string): Promise<void> {
+  const ends = await scope.evaluate(
+    (root, words) => {
+      const find = (wanted: string, start: boolean) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+          const at = node.textContent?.indexOf(wanted) ?? -1;
+          if (at < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, start ? at : at + wanted.length - 1);
+          range.setEnd(node, start ? at + 1 : at + wanted.length);
+          const box = range.getBoundingClientRect();
+          return { x: start ? box.left + 1 : box.right - 1, y: box.top + box.height / 2 };
+        }
+        throw new Error(`no text holds ${JSON.stringify(wanted)}`);
+      };
+      return { from: find(words.from, true), to: find(words.to, false) };
+    },
+    { from, to }
+  );
+  await page.mouse.move(ends.from.x, ends.from.y);
+  await page.mouse.down();
+  await page.mouse.move(ends.to.x, ends.to.y, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator(BAR)).toBeVisible();
+  // The demo's pictures were taken 400 ms after its bar stood over the words; so are these.
+  await page.waitForTimeout(400);
+}
+
+/** That `box` holds `value` exactly, has the focus, and has the cursor at its end. */
+async function expectQuoted(box: Locator, value: string): Promise<void> {
+  await expect(box).toHaveValue(value);
+  await expect(box).toBeFocused();
+  await expect
+    .poll(() =>
+      box.evaluate((field) => {
+        const area = field as HTMLTextAreaElement;
+        return area.selectionStart === area.value.length && area.selectionEnd === area.value.length;
+      })
+    )
+    .toBe(true);
+}
+
+/** The answered question Quote reply's last picture reads, written once the Inbox's pictures are
+ *  taken: its thread gives the reader a Reply row, which the demo's Inbox did not list. Each age is
+ *  the demo's, counted back from `seededAt`, the moment every picture reads, and the reader has
+ *  read the reply, as the demo's Inbox count of 6 says. */
+async function seedAnsweredThread(seededAt: number): Promise<string> {
+  const answered = await createAsk(
+    "PANE-2",
+    { options: [], question: ANSWERED.question, urgency: "low" },
+    asSession(TOOL)
+  );
+  await answerAsk(answered.id, { expected_edited_at: null, selected: [], text: ANSWERED.answer });
+  const reply = await createComment(
+    "PANE-2",
+    { ask_id: answered.id, body: ANSWERED.reply },
+    asSession(TOOL)
+  );
+  const before = (minutes: number) =>
+    `to_timestamp(${seededAt / 1000}) - interval '${minutes} minutes'`;
+  await sql(
+    `UPDATE asks SET created_at = ${before(ANSWERED.askedMinutesAgo)}, answer = jsonb_set(answer, '{at}', to_jsonb(${before(ANSWERED.answeredMinutesAgo)})) WHERE id = ${sqlLiteral(answered.id)}`
+  );
+  await sql(
+    `UPDATE comments SET created_at = ${before(ANSWERED.repliedMinutesAgo)} WHERE id = ${sqlLiteral(reply.id)}`
+  );
+  await markThreadRead(
+    answered.id,
+    new Date(seededAt - (ANSWERED.repliedMinutesAgo - 1) * 60_000).toISOString()
+  );
+  return answered.id;
+}
+
 // SLOW(>=2s): seeds a project of seven issues through two servers, waits for three reviews and a
-// rewrite, then takes 23 pictures, each in a fresh context.
-test("the design's 23 pictures, taken from the build beside the demo's", async ({
+// rewrite, then takes 29 pictures, each in a fresh context.
+test("the design's 29 pictures, taken from the build beside the demo's", async ({
   browser,
   reviewer,
 }, testInfo) => {
@@ -494,10 +598,14 @@ test("the design's 23 pictures, taken from the build beside the demo's", async (
   const taken = new Set<Picture>();
 
   /** One picture: a fresh context at `viewport`, signed in as the reader, where `take` brings the
-   *  page to the picture's state and `shoot` takes it. */
+   *  page to the picture's state and `shoot` takes it, with the text cursor drawn where the
+   *  picture is of where it waits (`caret`). */
   async function picture(
     viewport: { height: number; width: number },
-    take: (page: Page, shoot: (name: Picture) => Promise<void>) => Promise<void>
+    take: (
+      page: Page,
+      shoot: (name: Picture, options?: { caret?: boolean }) => Promise<void>
+    ) => Promise<void>
   ): Promise<void> {
     const context = await asUser(browser, READER, { viewport });
     try {
@@ -505,8 +613,14 @@ test("the design's 23 pictures, taken from the build beside the demo's", async (
       // Each age is read at the moment the seeding ended, as the demo read every age at its own
       // fixed moment, so a picture taken a minute later says what the first one says.
       await page.clock.install({ time: seeded.seededAt });
-      await take(page, async (name) => {
-        await page.screenshot({ path: `${out}/${name}.png` });
+      await take(page, async (name, { caret = false } = {}) => {
+        if (caret) {
+          // A still picture of where the cursor waits draws it steadily, as the demo's did.
+          await page.addStyleTag({ content: "textarea { caret-animation: manual; }" });
+          // The style applies on the next frame; a tenth of a second is several frames.
+          await page.waitForTimeout(100);
+        }
+        await page.screenshot({ caret: caret ? "initial" : "hide", path: `${out}/${name}.png` });
         taken.add(name);
       });
     } finally {
@@ -709,6 +823,93 @@ test("the design's 23 pictures, taken from the build beside the demo's", async (
       await page.waitForTimeout(500);
       await shoot("ask-card-23-issue-rewritten");
     }));
+  await test.step("ask-card-24-quote-select", () =>
+    picture(DESKTOP, async (page, shoot) => {
+      const card = await inbox(page, seeded.checked);
+      await drag(
+        page,
+        card.locator("[data-ask-question]"),
+        "The R3 audit decides",
+        "only out of date for a week."
+      );
+      expect(await barActions(page)).toEqual(["Quote replyq", "Defined"]);
+      await rest(page);
+      await shoot("ask-card-24-quote-select");
+    }));
+  await test.step("ask-card-25-quote-ask", () =>
+    picture(DESKTOP, async (page, shoot) => {
+      const card = await inbox(page, seeded.checked);
+      await drag(
+        page,
+        card.locator("[data-ask-question]"),
+        "The R3 audit decides",
+        "only out of date for a week."
+      );
+      await page.keyboard.press("q");
+      await expectQuoted(card.locator("[data-ask-answer]"), DRY_RUN_QUOTE);
+      await expect(page.locator(BAR)).toHaveCount(0);
+      await rest(page);
+      await shoot("ask-card-25-quote-ask", { caret: true });
+    }));
+  await test.step("ask-card-26-quote-comment", () =>
+    picture(DESKTOP, async (page, shoot) => {
+      const comment = await openComment(page, seeded.comment);
+      await drag(
+        page,
+        comment.locator(".dispatch-markdown").first(),
+        "Of last week's 412 refused leases",
+        "so a retry wins back very little."
+      );
+      await page.keyboard.press("q");
+      await expectQuoted(comment.getByRole("textbox", { name: "Reply" }), COMMENT_QUOTE);
+      await rest(page);
+      await shoot("ask-card-26-quote-comment", { caret: true });
+    }));
+  await test.step("ask-card-27-quote-append", () =>
+    picture(DESKTOP, async (page, shoot) => {
+      // The answer box holds a line the reader typed; the quote of the question's words follows.
+      const card = await inbox(page, seeded.flip);
+      const answer = card.locator("[data-ask-answer]");
+      const action = card.locator("[data-ask-action]");
+      await answer.fill(APPEND_TYPED);
+      await expect(action).toBeDisabled();
+      await drag(
+        page,
+        card.locator("[data-ask-question]"),
+        "go with B per the train?",
+        "go with B per the train?"
+      );
+      await page.keyboard.press("q");
+      await expectQuoted(answer, APPEND_QUOTE);
+      // The quote ends in a question mark and the typed line does not: Answer stands as the
+      // typed line alone leaves it, refused until an option is picked.
+      await expect(action).toBeDisabled();
+      await rest(page);
+      await shoot("ask-card-27-quote-append", { caret: true });
+    }));
+  await test.step("ask-card-28-quote-message", () =>
+    picture(DESKTOP, async (page, shoot) => {
+      const message = page.locator(`[data-turn="message:${seeded.message}"] .dispatch-markdown`);
+      await open(page, "/issues/PANE-3/conversation", message);
+      // The tab's top, as a reader who opened it stands: the issue's header above the composer.
+      await page.evaluate(() => window.scrollTo(0, 0));
+      // The scroll lands over a frame or two; the drag waits for the page to stand still.
+      await page.waitForTimeout(400);
+      await drag(page, message.first(), "The mirror can move", "on Thursday.");
+      // The bar's own button this time, rather than `q`.
+      await page.locator(`${BAR} [data-selection-action="Quote reply"]`).click();
+      const composer = page
+        .getByRole("form", { name: "Comment composer" })
+        .filter({ has: page.getByRole("textbox", { exact: true, name: "Comment" }) });
+      await expectQuoted(
+        composer.getByRole("textbox", { exact: true, name: "Comment" }),
+        MESSAGE_QUOTE
+      );
+      // The composer replies to the message the words were quoted from.
+      await expect(composer).toContainText(ORDER.title);
+      await rest(page);
+      await shoot("ask-card-28-quote-message", { caret: true });
+    }));
   await test.step("ask-card-06-rewrite-failed", () =>
     picture(DESKTOP, async (page, shoot) => {
       const card = await inbox(page, seeded.order);
@@ -756,6 +957,33 @@ test("the design's 23 pictures, taken from the build beside the demo's", async (
       // The help opens with a short transition; the picture waits for it to stand still.
       await page.waitForTimeout(300);
       await shoot("ask-card-13-shortcut-help");
+    }));
+
+  // Quote reply's last picture reads an answered question written now, after the last picture of
+  // the Inbox, whose list its thread would change.
+  const answered = await seedAnsweredThread(seeded.seededAt);
+  await test.step("ask-card-29-quote-answered-thread", () =>
+    picture(DESKTOP, async (page, shoot) => {
+      const record = page.locator(`main [data-testid="ask-${answered}"]`).first();
+      const thread = page.locator(`main [data-testid="thread-${answered}"]`).first();
+      await open(page, "/issues/PANE-2/conversation", thread.locator(".dispatch-markdown"));
+      // The answered question under the tab's composer, the agent's reply under its answer.
+      await record.evaluate((element) => element.scrollIntoView({ block: "start" }));
+      // The scroll lands over a frame or two; the drag waits for the page to stand still.
+      await page.waitForTimeout(400);
+      await drag(page, thread, "skip", "the skipped leases too.");
+      expect(await barActions(page)).toEqual(["Quote replyq"]);
+      await page.keyboard.press("q");
+      await expectQuoted(
+        page.locator(`main [data-turn="ask:${answered}"]`).getByRole("textbox", { name: "Reply" }),
+        ANSWERED_QUOTE
+      );
+      // The card above the answered question out of the window, the Reply button well inside it.
+      await page.evaluate(() => window.scrollBy(0, 36));
+      // The scroll lands over a frame or two; the picture waits for the page to stand still.
+      await page.waitForTimeout(300);
+      await rest(page);
+      await shoot("ask-card-29-quote-answered-thread", { caret: true });
     }));
 
   expect([...taken].sort()).toEqual([...PICTURES].sort());

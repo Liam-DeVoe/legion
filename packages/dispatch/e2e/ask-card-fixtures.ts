@@ -1,8 +1,9 @@
 /** The ask card demo's fixture text (INFRA-3231's Decision 22), ported from the prototype's
  *  `web/src/demo/fixtures.ts` and `document-fixtures.ts` (branch `prototype/infra-3231-ask-card`
- *  at 50ba690369): one invented project, PANE, with the questions, documents, rewrites and
- *  definitions the design's 23 pictures show. `ask-card-pictures.e2e.ts` seeds it into the real
- *  stack and takes those pictures again from the build.
+ *  at 50ba690369, and at b11c671eba for Quote reply's message and answered question): one
+ *  invented project, PANE, with the questions, documents, rewrites and definitions the design's
+ *  29 pictures show. `ask-card-pictures.e2e.ts` seeds it into the real stack and takes those
+ *  pictures again from the build.
  *
  *  Every word here is invented; no production read went into it, as in the prototype. What the
  *  prototype's stub answered by itself - a rewrite, a definition, the asking agent's answer, the
@@ -10,7 +11,7 @@
  *  answers or the agent sends, so the server does the work the stub faked. */
 import type { FakeSession } from "./agents";
 
-/** The design's 23 pictures (INFRA-3231's spec, "The design as it runs"), each named as the
+/** The design's 29 pictures (INFRA-3231's spec, "The design as it runs"), each named as the
  *  demo's picture of the same screen is, at 1440x900 and, for the two phone ones, 390x844. */
 export const PICTURES = [
   "ask-card-01-closed-inbox",
@@ -36,6 +37,12 @@ export const PICTURES = [
   "ask-card-21-comment-rewritten",
   "ask-card-22-comment-original",
   "ask-card-23-issue-rewritten",
+  "ask-card-24-quote-select",
+  "ask-card-25-quote-ask",
+  "ask-card-26-quote-comment",
+  "ask-card-27-quote-append",
+  "ask-card-28-quote-message",
+  "ask-card-29-quote-answered-thread",
 ] as const;
 export type Picture = (typeof PICTURES)[number];
 
@@ -358,6 +365,41 @@ export const HANDED_ON: Wording = {
 export const COMMENT_ORIGINAL = "R3 audit done: 9/412 came good <30s, so B per the train. see ask.";
 export const COMMENT_REWRITTEN =
   "The flip audit is done. Of last week's 412 refused leases, 9 went through on a retry, all within 30 seconds, so a retry wins back very little. I recommend Flip in the open question: hand a refused lease back at once and ask again on the next cycle.";
+
+/** Quote reply's pictures (24 to 29): what each quote puts in its box, as the demo's run checked
+ *  it. Two paragraphs of the rewritten dry-run question, the recommendation's bold kept. */
+export const DRY_RUN_QUOTE =
+  "> The R3 audit decides whether the mirror retries a refused lease or hands it back at once, so until it closes the flag prints today's retries.\n>\n> **Recommended: ship it as is.** It writes nothing, so the audit cannot make it wrong, only out of date for a week.\n\n";
+/** A sentence of the rewritten comment, in its thread's reply box. */
+export const COMMENT_QUOTE =
+  "> Of last week's 412 refused leases, 9 went through on a retry, all within 30 seconds, so a retry wins back very little.\n\n";
+/** The line the reader typed in the flip audit's answer box before quoting its question. */
+export const APPEND_TYPED = "Flip. One thing I can't read here:";
+export const APPEND_QUOTE = `${APPEND_TYPED}\n\n> go with B per the train?\n\n`;
+
+/** The rollout architect's note on PANE-3's Conversation tab, written 95 minutes before the
+ *  pictures' moment, and its middle paragraph quoted in the tab's composer. */
+export const ORDER_MESSAGE = {
+  body: "The cluster team moved the window. The ledger can move on Monday only before 10:00; after that, its next slot is Thursday.\n\nThe mirror can move on any day, so if the ledger misses Monday morning, the mirror goes first and the ledger follows on Thursday.\n\nI will keep the order the open question settles on unless the ledger misses its slot.",
+  minutesAgo: 95,
+};
+export const MESSAGE_QUOTE =
+  "> The mirror can move on any day, so if the ledger misses Monday morning, the mirror goes first and the ledger follows on Thursday.\n\n";
+
+/** The question on PANE-2 the reader answered in her own words three hours ago, asked an hour
+ *  before that, and the lease-tool implementer's reply under the answer an hour after it, whose
+ *  list, code and bold a Quote reply keeps. */
+export const ANSWERED = {
+  answer: "One line for each: why the tool leaves it alone, and the lease's id.",
+  answeredMinutesAgo: 60 * 3,
+  askedMinutesAgo: 60 * 4,
+  question: "What should `--dry-run` print for a lease the tool leaves alone?",
+  reply:
+    "Done in the next build. After the leases it would hand back, `--dry-run` now prints:\n\n- `skip` and the lease's id, for a lease another holder has\n- `stale` and the id, for a lease past its renewal\n\n**One thing changed:** the summary line counts the skipped leases too.",
+  repliedMinutesAgo: 60 * 2,
+};
+export const ANSWERED_QUOTE =
+  "> - `skip` and the lease's id, for a lease another holder has\n>\n> - `stale` and the id, for a lease past its renewal\n>\n> **One thing changed:** the summary line counts the skipped leases too.\n\n";
 
 /** The issue the lease-tool implementer opened, whose title and spec the check rewrote: its own
  *  and the check's. */
