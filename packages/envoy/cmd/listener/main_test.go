@@ -3360,14 +3360,15 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 	}
 }
 
-// A control topic with no holder: an agent subject nobody has is still the no_holder exception,
-// while a role nobody holds is kept for the role's next holder and raises none.
-func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.T) {
+// A control topic with no holder raises no exception. An agent subject nobody has reports the
+// session's wake, at once since the harness sets no agent wait, and a role nobody holds is kept
+// for the role's next holder.
+func TestListenerDeliveryHandler_NoHolderKeepsARoleAndWakesAnAgent(t *testing.T) {
 	cases := []struct {
 		name  string
 		topic string
 		// role is the role a kept copy is read back under; empty for the agent subject, which
-		// keeps nothing.
+		// keeps nothing and reports a wake.
 		role string
 	}{
 		{name: "role", topic: contracts.RoleTopicPrefix + "unheld", role: "unheld"},
@@ -3382,6 +3383,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 			item.Payload = `{"reason":"no_holder"}`
 			item.SourceSession = "ses_source_" + tc.name
 			exceptionTopic := "notifications.envoy.exceptions." + tc.topic
+			wakes := agentWakeProbe(t, harness)
 			probe, err := harness.client.Conn.SubscribeSync(exceptionTopic)
 			if err != nil {
 				t.Fatalf("subscribe exception probe: %v", err)
@@ -3409,7 +3411,8 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 
 			// Then
 			if tc.role == "" {
-				assertDeliveryException(t, probe, item, "no_holder")
+				awaitAgentWake(t, wakes, strings.TrimPrefix(tc.topic, contracts.AgentTopicPrefix))
+				noException(t, probe)
 				return
 			}
 			kept := waitForKeptRoleMessage(t, harness.client, tc.role, item.EventID)
@@ -3686,16 +3689,25 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 	}
 }
 
-// An entry the previous build wrote for a portless self-subscribed session is unreachable now:
-// no consumer of its own holds its messages and no subscription of its own takes them, so the
-// delivery fails (session.ErrNoSessionRecord) instead of counting as skipped, on a followed
-// topic and on the session's agent subject alike. Only a message a consumer holds is skipped.
+// An entry the previous build wrote for a portless self-subscribed session is unreachable on a
+// followed topic: no consumer of its own holds its messages and no subscription of its own takes
+// them, so the fan-out's delivery fails (session.ErrNoSessionRecord) instead of counting as
+// skipped. On the session's agent subject the same entry is a record, and a message there is the
+// session's own consumer's whatever that consumer holds now: the consumer the session's next
+// registration starts delivers it. So the agent subject counts it skipped, and reports no wake.
 func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t *testing.T) {
-	for _, topic := range []string{"notifications.github.owner.repo.issue.1", contracts.AgentSubject("ses_omp")} {
-		t.Run(topic, func(t *testing.T) {
+	for _, tc := range []struct {
+		topic string
+		// skipped is the skipped series' count, -1 for no series at all.
+		skipped int64
+	}{
+		{"notifications.github.owner.repo.issue.1", -1},
+		{contracts.AgentSubject("ses_omp"), 1},
+	} {
+		t.Run(tc.topic, func(t *testing.T) {
 			// Given
 			harness := newListenerDeliveryHarness(t)
-			item := listenerTestEnvelope(topic, "self-subscribed-unreachable")
+			item := listenerTestEnvelope(tc.topic, "self-subscribed-unreachable")
 			if _, err := harness.registry.Upsert(store.Interest{
 				SessionID: "ses_omp",
 				MachineID: "test-machine",
@@ -3711,11 +3723,13 @@ func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t
 
 			// Then
 			body := deliveredMetrics(t, harness)
-			if strings.Contains(body, `test_messages_delivered{delivery_status="skipped"}`) {
-				t.Fatalf("expected no skipped delivery metric, got %s", body)
+			if got := counterValue(t, body, deliveredSeries("skipped")); got != tc.skipped {
+				t.Fatalf("%s = %d, want %d; metrics %s", deliveredSeries("skipped"), got, tc.skipped, body)
 			}
-			if strings.Contains(body, `test_messages_delivered{delivery_status="delivered"}`) {
-				t.Fatalf("expected no delivered metric for an unreachable session, got %s", body)
+			for _, status := range []string{"delivered", "wake_reported"} {
+				if strings.Contains(body, `test_messages_delivered{delivery_status="`+status+`"}`) {
+					t.Fatalf("expected no %s metric for a session on no consumer, got %s", status, body)
+				}
 			}
 		})
 	}
@@ -3853,9 +3867,10 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		messagesNAKed:     met.NewCounter("test_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("test_delivery_duration", "test", metrics.DefaultBuckets),
 		roleKeptExpired:   met.NewCounter("test_role_kept_expired", "test"),
-		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
-		// main.go's always has both; the harness's two handlers share these as main.go's do.
-		deferredUnplaceable: newUnplaceableDeferrals(),
+		// The handler refuses a config without its set of held-back agent messages or its
+		// kept-lane drain guards, as main.go's always has both; the harness's two handlers share
+		// these as main.go's do. The harness sets no agent wait, so its set is built for none.
+		deferredUnplaceable: newUnplaceableDeferrals(0),
 		roleKeepDrains:      newRoleKeepGuards(),
 	}
 	// The role lane's forwards run on the role forwarder, as main.go wires them: it is the one

@@ -370,22 +370,20 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 }
 
 // durableNeedsDelivery reports whether the stored message on subject, stored at stream sequence
-// storedSeq, may need this listener's durable path, read from the subject alone, and when it does
-// not, how many sessions of this machine hold it in a consumer of their own
-// (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in no
-// consumer, and the durable path does not deliver it; which message it NAKs, defers or skips, and
-// what it logs, is decided by agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go).
-// A role lane's subject always needs it. A session's agent subject does unless the session's
-// consumer holds it or the session is another listener's (agentSubjectNeedsDelivery). Any other
-// subject does when it matches a topic of an interest of this machine (the registry's subject
-// index) whose session's consumer does not hold it; with none, the fan-out would deliver it to
-// nobody and report nothing.
+// storedSeq, may need this listener's delivery handler, read from the subject alone, and when it
+// does not, how many sessions of this machine take it another way. A role lane's subject always
+// needs it. A session's agent subject does unless the session has a record or is another
+// listener's (agentSubjectNeedsDelivery). Any other subject does when it matches a topic of an
+// interest of this machine (the registry's subject index) whose session's consumer does not hold
+// it (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in
+// no consumer, and fanoutDelivery in cmd/listener/delivery.go decides it); with none, the fan-out
+// would deliver it to nobody and report nothing.
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0
 	}
 	if sessionID, ok := strings.CutPrefix(subject, contracts.AgentTopicPrefix); ok {
-		return agentSubjectNeedsDelivery(cfg, sessionID, storedSeq)
+		return agentSubjectNeedsDelivery(cfg, sessionID)
 	}
 	for _, interest := range cfg.registry.Match(cfg.machineID, subject) {
 		entry, err := cfg.sessions.Get(interest.SessionID)
@@ -397,15 +395,17 @@ func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, sto
 	return false, skipped
 }
 
-// agentSubjectNeedsDelivery is durableNeedsDelivery for sessionID's agent subject: not needed when
-// the session's live entry holds it in its own consumer (one skipped delivery), nor when its
-// cached interest names another listener, which delivers it (session.HandleAgentMessage's
-// OwnedElsewhere). Everything else is decoded and delivered: a session of this machine whose
-// entry records no consumer of its own holding it - an entry the previous build wrote for a
-// session on the core path, or one whose read did not answer - for which the path raises its
-// unreachable exception, and a session nobody has, for which it raises no_holder.
-func agentSubjectNeedsDelivery(cfg listenerDeliveryHandlerConfig, sessionID string, storedSeq uint64) (needed bool, skipped int) {
-	if entry, err := cfg.sessions.Get(sessionID); err == nil && entry.ConsumerHoldsStored(storedSeq) {
+// agentSubjectNeedsDelivery is durableNeedsDelivery for sessionID's agent subject. The session's
+// own consumer delivers every message on it, so this listener has nothing to deliver. It
+// acknowledges the message, counting one skipped delivery, when its cached record of the session
+// reads live or unresponsive, whatever that consumer holds: the consumer delivers the message, or
+// the consumer that the session's next registration starts does. A record past the gone horizon
+// counts as none. It acknowledges the message with no count when its cached interest row names
+// another listener, which decides the message itself (session.AgentOwnedElsewhere). Every other
+// message goes to agentSubjectDelivery, which reads the session bucket itself, since this cache
+// trails it, and waits once before it reports a wake.
+func agentSubjectNeedsDelivery(cfg listenerDeliveryHandlerConfig, sessionID string) (needed bool, skipped int) {
+	if _, state := cfg.sessions.Lookup(sessionID); notGone(state) {
 		return false, 1
 	}
 	interest, cached := cfg.registry.CachedInterest(sessionID)

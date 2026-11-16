@@ -131,9 +131,10 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		// process and passes it through deliveryConfig, so a durable rebound after a flap draws on
 		// the budget its predecessor held rather than opening a second one. This rig needs one only
 		// because listenerDeliveryHandler refuses a config without it: its unplaceableRetryWindow
-		// is zero, so nothing here is ever deferred, and these tests cover Dispatch resolution and
-		// delivery rather than the retry policy (INFRA-141).
-		deferredUnplaceable: newUnplaceableDeferrals(),
+		// is zero, so a message to a session with no record reports its wake at once and nothing
+		// here waits, and these tests cover Dispatch resolution and delivery rather than that wait
+		// (INFRA-141).
+		deferredUnplaceable: newUnplaceableDeferrals(0),
 		// The guards two drains of one role take inside one listener, which main.go keeps one set
 		// of for the process. This rig needs one for the same reason as the set above: the handler
 		// refuses a config without it, and nothing here keeps a role message.

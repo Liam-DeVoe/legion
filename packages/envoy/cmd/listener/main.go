@@ -65,9 +65,9 @@ type listenerDeps struct {
 	consumers *sessionDelivery
 	// caches lists the stores above that are open, for the sites that treat every cache alike.
 	caches []listenerCache
-	// wakes publishes the wake reports a role send with no holder and an unplaceable agent
-	// message raise, off those paths and under the listener's own lifetime (wakeReporter); nil
-	// in a test that builds the deps without it, which reports no wake.
+	// wakes publishes the wake reports a role send with no holder and a send to a session with no
+	// record raise, off those paths and under the listener's own lifetime (wakeReporter); nil in a
+	// test that builds the deps without it, which reports no wake.
 	wakes *wakeReporter
 	// consumer names the durable whose lag /healthz reports.
 	consumer   string
@@ -320,10 +320,7 @@ func rebuildListenerDependencies(
 const disconnectedFailureThreshold = 20
 
 // attemptCacheTTL is how long the attempt cache (below) remembers a (dedupe_key, session_id)
-// pair it recorded before a delivery. It bounds the unplaceable retry window in
-// unplaceable_delivery.go, which clears and re-records one entry per attempt: a window that
-// reached this TTL could let a message's own retries outlive the entry that keeps its redelivery
-// from being swallowed.
+// pair it recorded before a delivery.
 const attemptCacheTTL = 5 * time.Minute
 
 // runSelfHealthMonitor leaves transient dependency timeouts degraded while
@@ -1361,31 +1358,24 @@ func main() {
 	// than a second delivery. Keyed by DedupeKey (not EventID) because fan-out normalization can
 	// produce multiple envelopes with the same EventID but distinct DedupeKeys. The existing
 	// dedupeCache records only successful deliveries (post-delivery) and cannot catch that case.
-	//
-	// attemptCacheTTL is named because the unplaceable retry below is bounded against it: a
-	// message whose retries outlived its attempt entry would have each redelivery recorded
-	// afresh instead of clearing one, so the bound is pinned by a test
-	// (TestUnplaceableRetryWindowFitsTheBoundsItDependsOn).
 	attemptCache := dedupe.New(attemptCacheTTL)
 
-	// The window an agent delivery this listener cannot place is retried within before it is
-	// given up with a record (unplaceable_delivery.go). Zero is a value an operator may mean
-	// here - retry nothing - so it is read through envconf.Duration and not refused.
+	// The one wait a message on the agent subject of a session with no record takes before this
+	// listener reports the session's wake (unplaceable_delivery.go). Zero is a value an operator
+	// may mean here - no wait - so it is read through envconf.Duration and not refused.
 	unplaceableRetryWindow := envconf.Duration(logger.Slog(), os.LookupEnv, "ENVOY_UNPLACEABLE_RETRY_WINDOW", defaultUnplaceableRetryWindow)
 
 	// /healthz handler was registered early (before NATS) — no re-registration needed.
 
-	// Wake reports are published off the paths that raise them, under a lifetime of the
-	// listener's own — the shutdown ends every retry still running — and a cap on how many
-	// retry at once (wakeReporter). It is built here because the delivery handlers below copy
-	// this configuration by value, so every seam of it must be set before they are built.
+	// Wake reports the send routes raise are published off those routes, under a lifetime of the
+	// listener's own — the shutdown ends every retry still running — and a cap on how many retry
+	// at once (wakeReporter).
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
 	wakes := newWakeReporter(wakesCtx, client)
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
-		wakes:             wakes,
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
 		sessions:          sessions,
@@ -1402,17 +1392,17 @@ func main() {
 		fanoutUnresponsiveSkips: fanoutUnresponsiveSkips,
 
 		unplaceableRetryWindow: unplaceableRetryWindow,
-		// One deferral set for the life of the process, shared by construction by the three
-		// handlers built from this one value below - the role lane's, the durable's and the one
-		// the self-health rebind builds - so a rebind after a NATS flap draws on the budget the
-		// handler it replaces was holding rather than opening a second one beside it
-		// (unplaceableDeferrals, unplaceable_delivery.go).
-		deferredUnplaceable: newUnplaceableDeferrals(),
+		// One set of agent messages held back for the wait, for the life of the process, shared
+		// by construction by the three handlers built from this one value below - the role lane's,
+		// the durable's and the one the self-health rebind builds - so a rebind after a NATS flap
+		// draws on the budget the handler it replaces was holding rather than opening a second
+		// one beside it (unplaceableDeferrals, unplaceable_delivery.go).
+		deferredUnplaceable: newUnplaceableDeferrals(unplaceableRetryWindow),
 		// One guard per role for the life of the process, held for a whole handover of that
 		// role's kept lane, so the handovers a claim, a keep and the sweep start never walk the
 		// lane together, and the sweep can tell a lane this listener is draining already
 		// (roleKeepGuards, role_keep.go). Every handler and route built from this one value
-		// shares it, as they share the deferral set above.
+		// shares it, as they share the set above.
 		roleKeepDrains: newRoleKeepGuards(),
 	}
 	// The role lane's forwards run off its handler (roleForwarder): the handler resolves each

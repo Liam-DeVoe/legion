@@ -49,9 +49,9 @@ type SessionEntry struct {
 	// Delivery is DeliveryConsumer when the session registered for consumer delivery and the
 	// listener it registered through holds its session consumer (bus.SessionConsumers): the
 	// session's stored messages reach it from that consumer, relayed by the listener that owns it,
-	// so the durable path acknowledges them with nothing to deliver and no exception
-	// (Resolve). Empty for a session on the core path: a plugin that did not ask, an older
-	// listener, or a hub that refused the consumer.
+	// so the topic fan-out acknowledges them with nothing to deliver and no exception (Resolve).
+	// Empty for a session on the core path: a plugin that did not ask, an older listener, or a
+	// hub that refused the consumer.
 	Delivery string `json:"delivery,omitempty"`
 	// Epoch is the session's delivery epoch while Delivery is DeliveryConsumer: a random string per
 	// plugin NATS connection, so a new one tells the relay the session reconnected and its consumer
@@ -59,26 +59,25 @@ type SessionEntry struct {
 	Epoch string `json:"epoch,omitempty"`
 	// ConsumerStart is the stream sequence the session's consumer starts at, as the registration
 	// that wrote this entry read it (bus.SessionConsumers.Ensure). Every stored message at or after
-	// it is the consumer's to deliver. One below it is in no consumer, and since a session receives
-	// only what its own consumer relays, the durable path does not deliver it; which message it
-	// NAKs, defers or skips, and what it logs, is decided by agentSubjectDelivery and
-	// fanoutDelivery in cmd/listener/delivery.go (Resolve, ConsumerHoldsStored). A restart of the
-	// consumer normally moves its start forward, to the sequence after its ack floor, past messages
-	// it has acked, so a start recorded before that restart still names a sequence the consumer
-	// covers from. Only a registration writes this field (cmd/listener sessionEntryFromSubscribe),
-	// though, so a repair or a relay restart that creates the consumer below it leaves it above the
-	// consumer's real start until the session's next registration rewrites it. A create that clamps
-	// a start past the stream's end to the stream's first sequence does that where an earlier build
-	// or a restored stream left a start past the end here, and so does a restart at an ack floor
-	// the server lowered after the stream lost data, or at the stream's first sequence after its
-	// sequences went back (bus.SessionConsumers.create, bus.SessionConsumers.RestartAtFloor). Until
-	// then a message between the two starts reads as in no consumer, so the durable path does not
-	// deliver it; which message it NAKs, defers or skips, and what it logs, is decided by
-	// agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go. The consumer holds that
-	// message all the same and its relay delivers it, and once the next registration has rewritten
-	// the start, ConsumerHoldsStored answers that the consumer holds it. Zero for a session on the
-	// core path, and for one whose entry an earlier release wrote, which the durable path reads as
-	// today: the consumer holds every stored message of it.
+	// it is the consumer's to deliver. One below it is in no consumer, and the topic fan-out
+	// counts it as a delivery that failed (fanoutDelivery in cmd/listener/delivery.go; Resolve,
+	// ConsumerHoldsStored). A message on the session's own agent subject is not judged by this
+	// field: the listener acknowledges it while the session has a record (cmd/listener's
+	// agentSubjectNeedsDelivery). A restart of the consumer normally moves its start forward, to
+	// the sequence after its ack floor, past messages it has acked, so a start recorded before that
+	// restart still names a sequence the consumer covers from. Only a registration writes this
+	// field (cmd/listener sessionEntryFromSubscribe), though, so a repair or a relay restart that
+	// creates the consumer below it leaves it above the consumer's real start until the session's
+	// next registration rewrites it. A create that clamps a start past the stream's end to the
+	// stream's first sequence does that where an earlier build or a restored stream left a start
+	// past the end here, and so does a restart at an ack floor the server lowered after the stream
+	// lost data, or at the stream's first sequence after its sequences went back
+	// (bus.SessionConsumers.create, bus.SessionConsumers.RestartAtFloor). Until then a message
+	// between the two starts reads as in no consumer to the topic fan-out. The consumer holds
+	// that message all the same and its relay delivers it, and once the next registration has
+	// rewritten the start, ConsumerHoldsStored answers that the consumer holds it. Zero for a
+	// session on the core path, and for one whose entry an earlier release wrote, which the
+	// fan-out reads as today: the consumer holds every stored message of it.
 	ConsumerStart uint64 `json:"consumer_start,omitempty"`
 	// Plugin is the npm package the session registered through and PluginVersion that plugin's
 	// build; both empty for a session whose plugin predates the fields.
@@ -121,12 +120,13 @@ const DeliveryConsumer = "consumer"
 
 // ConsumerHoldsStored reports whether the session's own consumer holds the stored message of stream
 // sequence storedSeq, so no delivery path owes it anything: a session on consumer delivery is held
-// every message at or after the sequence its consumer starts at (ConsumerStart). A durable message
-// below that start is in no consumer — one NAKed, or deferred, before the consumer was created, and
-// redelivered after it — and the durable path does not deliver it; which message it NAKs, defers or
-// skips, and what it logs, is decided by agentSubjectDelivery and fanoutDelivery in
-// cmd/listener/delivery.go. storedSeq 0 names a message that is not the durable's copy of a stored
-// one (a core frame), whose stored copy the consumer holds whatever its sequence.
+// every message at or after the sequence its consumer starts at (ConsumerStart). A stored message
+// below that start is in no consumer, and the topic fan-out counts it as a delivery that failed
+// (fanoutDelivery in cmd/listener/delivery.go). A message on the session's own agent subject is
+// not judged here: the listener acknowledges it while the session has a record, whatever its
+// consumer holds (cmd/listener's agentSubjectNeedsDelivery). storedSeq 0 names a message that is
+// not the durable's copy of a stored one (a core frame), whose stored copy the consumer holds
+// whatever its sequence.
 func (e SessionEntry) ConsumerHoldsStored(storedSeq uint64) bool {
 	return e.Delivery == DeliveryConsumer && (storedSeq == 0 || storedSeq >= e.ConsumerStart)
 }

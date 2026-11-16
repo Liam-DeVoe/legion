@@ -1,4 +1,4 @@
-// Wake reports for Legion's released issue pods: the two wakes only this listener sees, and the
+// Wake reports for Legion's released issue pods: the wakes only this listener sees, and the
 // liveness signal that says its silence means "nothing to report" rather than "nothing reporting".
 
 package main
@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -23,7 +24,7 @@ const (
 	// sent with keep: false keeps nothing and is answered 404 all the same, and the wake is what
 	// makes the sender's next attempt reach a live session.
 	wakeKindRole = "role_message"
-	// wakeKindAgent is a message sent to the agent subject of a session nothing can place: an
+	// wakeKindAgent is a message sent to the agent subject of a session that has no record: an
 	// Envoy direct message, or a person's answer, comment or message a Dispatch claim routes to
 	// that session.
 	wakeKindAgent = "agent_message"
@@ -38,12 +39,12 @@ const (
 // daemon's window is three times this, so one report lost to a reconnect costs nothing.
 const listenerReadyInterval = 5 * time.Minute
 
-// A wake report is retried until the bus acknowledges it. Losing one is not "one wake late": a
-// released architect gets no backstop at all (the daemon arms one for a phase worker only), a
-// phase worker whose phase is closed gets none either, and the daemon's stranded report passes
-// over a released claim no wake ever touched — so a report dropped during a NATS reconnect
-// leaves a tree stalled with nothing saying so. R3 asks for the report to reach the daemon
-// across a daemon restart too, which the stream's own retention gives once the publish is
+// A wake report the send routes raise is retried until the bus acknowledges it. Losing one is not
+// "one wake late": a released architect gets no backstop at all (the daemon arms one for a phase
+// worker only), a phase worker whose phase is closed gets none either, and the daemon's stranded
+// report passes over a released claim no wake ever touched — so a report dropped during a NATS
+// reconnect leaves a tree stalled with nothing saying so. R3 asks for the report to reach the
+// daemon across a daemon restart too, which the stream's own retention gives once the publish is
 // stored, and a publish that never happened defeats in the same way.
 //
 // wakeReportAttempt bounds one publish, wakeReportRetry is the first wait between two of them,
@@ -51,7 +52,9 @@ const listenerReadyInterval = 5 * time.Minute
 // listener has been unable to reach the stream for minutes, which its own liveness report then
 // says, and holding the goroutine longer buys nothing. No caller waits any of it out — a role
 // report is published off the path of the 404 or the 202 kept answer it is raised beside, and an
-// agent report off its undeliverable message's (reportRoleWake, reportAgentWake).
+// agent report off its send's answer (reportRoleWake, reportAgentWake). The agent delivery's own
+// report makes one attempt, bounded by wakeReportAttempt, and the stream's redelivery of its
+// message is its retry (storeAgentWake).
 const (
 	wakeReportAttempt  = 2 * time.Second
 	wakeReportRetry    = 250 * time.Millisecond
@@ -74,45 +77,19 @@ type wakeReport struct {
 // waits for it: the 404 or the 202 kept answer it was raised beside is answered whatever the bus
 // does, and is answered without waiting for it (reportRoleWake).
 //
-// Every attempt publishes the one envelope built below, under the one event id and dedupe key,
-// as the stream keeps no duplicate window for these: an attempt the stream stored and failed to
-// acknowledge is reported twice, and a wake the daemon has taken already is taken no second time
-// (its mark's key is the report's event id, which every attempt of one report carries, and the
-// role and agent reports of one message carry the same name whichever attempt the daemon reads).
+// Every attempt publishes the one envelope wakeReportEnvelope builds, under the one event id and
+// dedupe key, as the stream keeps no duplicate window for these: an attempt the stream stored and
+// failed to acknowledge is reported twice, and a wake the daemon has taken already is taken no
+// second time (its mark's key is the report's event id, which every attempt of one report
+// carries, and the role and agent reports of one message carry the same name whichever attempt
+// the daemon reads).
 func publishWakeReport(lifetime context.Context, client *bus.Client, logger *logging.Logger, report wakeReport) {
 	if client == nil {
 		return
 	}
-	report.At = contracts.NowMillis()
-	payload, err := json.Marshal(report)
+	item, err := wakeReportEnvelope(report)
 	if err != nil {
-		logger.Warn("legion wake report not encoded", slog.String("kind", report.Kind), slog.String("error", err.Error()))
-		return
-	}
-	eventID := id.New()
-	summary := "legion wake: " + report.Kind
-	if report.Role != "" {
-		summary += " " + report.Role
-	}
-	if report.Session != "" {
-		summary += " " + report.Session
-	}
-	// Every field contracts.Envelope.Validate requires is set here, SourceEventID included: a
-	// report that fails Validate is dropped before it is published (below), and a dropped
-	// listener_ready leaves every Legion daemon's release gate shut.
-	item := contracts.Envelope{
-		EventID:        eventID,
-		Source:         "envoy",
-		SourceEventID:  eventID,
-		Topic:          bus.LegionWakeTopic,
-		DedupeKey:      "legion.wake." + eventID,
-		IssuedAt:       report.At,
-		PayloadSummary: summary,
-		Payload:        string(payload),
-		TraceID:        id.New(),
-	}
-	if err := item.Validate(); err != nil {
-		logger.Warn("legion wake report not valid", slog.String("kind", report.Kind), slog.String("error", err.Error()))
+		logger.Warn("legion wake report not built", slog.String("kind", report.Kind), slog.String("error", err.Error()))
 		return
 	}
 	ctx, cancel := context.WithTimeout(lifetime, wakeReportBudget)
@@ -143,6 +120,58 @@ func publishWakeReport(lifetime context.Context, client *bus.Client, logger *log
 	}
 }
 
+// wakeReportEnvelope is the envelope a report travels on bus.LegionWakeTopic, stamped with this
+// listener's clock and an event id of its own. Every field contracts.Envelope.Validate requires is
+// set, SourceEventID included, and the envelope is validated here: a report that fails Validate is
+// never published, and a dropped listener_ready leaves every Legion daemon's release gate shut.
+func wakeReportEnvelope(report wakeReport) (contracts.Envelope, error) {
+	report.At = contracts.NowMillis()
+	payload, err := json.Marshal(report)
+	if err != nil {
+		return contracts.Envelope{}, fmt.Errorf("encode the wake report: %w", err)
+	}
+	eventID := id.New()
+	summary := "legion wake: " + report.Kind
+	if report.Role != "" {
+		summary += " " + report.Role
+	}
+	if report.Session != "" {
+		summary += " " + report.Session
+	}
+	item := contracts.Envelope{
+		EventID:        eventID,
+		Source:         "envoy",
+		SourceEventID:  eventID,
+		Topic:          bus.LegionWakeTopic,
+		DedupeKey:      "legion.wake." + eventID,
+		IssuedAt:       report.At,
+		PayloadSummary: summary,
+		Payload:        string(payload),
+		TraceID:        id.New(),
+	}
+	if err := item.Validate(); err != nil {
+		return contracts.Envelope{}, fmt.Errorf("validate the wake report: %w", err)
+	}
+	return item, nil
+}
+
+// storeAgentWake publishes one agent wake report for sessionID on bus.LegionWakeTopic and waits
+// for the stream to store it, for at most wakeReportAttempt. It is the agent delivery's report
+// (noRecordAgentDelivery), made inside the delivery and under no lifetime but its own bound: the
+// delivery acknowledges its message only once this answers nil, and a report the stream did not
+// store sends the message back, so the next delivery tries again. It makes one attempt, and each
+// attempt is a report with an event id of its own: the daemon takes the first wake of a released
+// role and no second one (TakePodWake).
+func storeAgentWake(client *bus.Client, sessionID string) error {
+	item, err := wakeReportEnvelope(wakeReport{Kind: wakeKindAgent, Session: sessionID})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wakeReportAttempt)
+	defer cancel()
+	return client.PublishWithin(ctx, item)
+}
+
 // publishWithinBudget makes one publish attempt, bounded by wakeReportAttempt and by what is
 // left of the report's whole budget.
 func publishWithinBudget(budget context.Context, client *bus.Client, item contracts.Envelope) error {
@@ -153,7 +182,7 @@ func publishWithinBudget(budget context.Context, client *bus.Client, item contra
 
 // wakeReportsInFlight is how many wake reports may be retrying at once. One report holds its
 // goroutine for as long as wakeReportBudget, and during a bus outage every role send with no
-// holder and every message nothing can place raises one, so an unbounded reporter turns a
+// holder and every send to a session with no record raises one, so an unbounded reporter turns a
 // minutes-long outage into a goroutine and a report's worth of memory per such request. Past
 // the cap a report is dropped and said so in the listener's log. The wake it carried is lost
 // until its sender tries again or, for a phase worker whose phase is open, the daemon's
@@ -205,8 +234,8 @@ func reportRoleWake(d *listenerDeps, logger *logging.Logger, role string) {
 	d.wakes.report(logger, wakeReport{Kind: wakeKindRole, Role: role})
 }
 
-// reportAgentWake reports that a message was sent to the agent subject of sessionID and nothing
-// could place it.
+// reportAgentWake reports, off the send route's answer, that a message was sent to the agent
+// subject of sessionID while the session had no record.
 func reportAgentWake(wakes *wakeReporter, logger *logging.Logger, sessionID string) {
 	if sessionID == "" {
 		return

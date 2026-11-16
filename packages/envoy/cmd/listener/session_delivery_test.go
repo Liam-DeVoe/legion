@@ -1092,27 +1092,34 @@ func deliveredMetrics(t *testing.T, harness listenerDeliveryHarness) string {
 
 // A consumer-delivery session's stored messages wait in its consumer, so the durable path
 // acknowledges them with nothing pushed and nothing reported, on its agent subject and on a
-// followed topic alike. An entry the previous build left for a session on the core path, portless
-// and on no consumer, is unreachable: its stored message is reported as undeliverable, which is
-// the honest answer and shows the exception lanes are heard.
+// followed topic alike. On the agent subject the session's record alone decides: an entry the
+// previous build left for a session on the core path, portless and on no consumer, is a record
+// too, so its message is acknowledged the same way and reports nothing; the consumer the
+// session's next registration starts delivers it. The probe's own control is an exception this
+// test publishes on a lane it reads, so a silent probe is the listener's silence and not a deaf
+// probe's.
 func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	exceptions := subscribeExceptionLanes(t, rig.harness.client.Conn)
+	control := listenerTestEnvelope("notifications.dispatch.issue.R.control", "probe-control")
+	if err := publishDeliveryException(rig.harness.client, control, "delivery_failed", "ses_probe_control"); err != nil {
+		t.Fatalf("publish the probe's control exception: %v", err)
+	}
+	if _, err := exceptions.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("the exception lanes did not carry the probe's own control exception: %v", err)
+	}
 	if err := rig.harness.sessions.Put("ses_core_only", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("write the entry of a session the previous build left on the core path: %v", err)
 	}
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.AgentSubject("ses_core_only"), "core-only"))})
-	if _, err := exceptions.NextMsg(2 * time.Second); err != nil {
-		t.Fatalf("the unreachable session's message raised no exception: %v", err)
-	}
 
 	rig.subscribe(t, `{"session_id":"ses_relayed","topics":["notifications.dispatch.issue.R.>"],"delivery":{"consumer":true,"epoch":"e"}}`)
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.AgentSubject("ses_relayed"), "relayed-agent"))})
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope("notifications.dispatch.issue.R.comment", "relayed-topic"))})
 
 	requireNoException(t, exceptions, "a consumer-delivery session's message")
-	if body := deliveredMetrics(t, rig.harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 2`) {
-		t.Fatalf("delivery metrics %s, want two skipped", body)
+	if body := deliveredMetrics(t, rig.harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 3`) {
+		t.Fatalf("delivery metrics %s, want three skipped", body)
 	}
 }
 

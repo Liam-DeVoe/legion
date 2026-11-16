@@ -120,10 +120,10 @@ type sessionDeliveryOutcome struct {
 	// epoch is the plugin's epoch, recorded on the entry when the session is relayed.
 	epoch string
 	// consumerStart is the stream sequence the session's consumer starts at, recorded on the entry
-	// beside the epoch: a stored message below it is in no consumer, and the durable path does not
-	// deliver it; which message it NAKs, defers or skips, and what it logs, is decided by
-	// agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go
-	// (session.SessionEntry.ConsumerStart).
+	// beside the epoch: a stored message below it is in no consumer, which the topic fan-out counts
+	// as a delivery that failed (fanoutDelivery, session.SessionEntry.ConsumerStart). A message
+	// on the session's own agent subject is acknowledged while the session has a record, whatever
+	// this start is (agentSubjectNeedsDelivery).
 	consumerStart uint64
 	// ackFloor is the stream sequence the session's consumer had everything acked through when
 	// this registration's consumer call read it (bus.SessionConsumerStart.AckFloor). It is where
