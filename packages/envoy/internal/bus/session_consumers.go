@@ -242,11 +242,23 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 // Publish publishes msg over core NATS on the connection, waiting for a connection nats.go is
 // replacing until ctx ends: a relay frame on a session's DeliverSubject, which the stream does not
 // store, so it travels on the connection the frame's message was pulled and is answered on.
+//
+// A frame whose headers and data together are past the server's max payload is refused before it
+// is sent, as ErrTooLarge naming both sizes: a stored message that fits the limit alone can still
+// make such a frame once the relay adds its headers, and every send of it is refused again.
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 	if err := s.client.ensureConnWithContext(ctx); err != nil {
 		return err
 	}
-	return s.client.Connection().PublishMsg(msg)
+	conn := s.client.Connection()
+	err := conn.PublishMsg(msg)
+	if errors.Is(err, nats.ErrMaxPayload) {
+		// nats.go weighs the headers and the data against the limit; Size counts the subject
+		// and the reply too.
+		return fmt.Errorf("%w: a frame of %d bytes, headers included, against the server's max payload of %d bytes",
+			ErrTooLarge, msg.Size()-len(msg.Subject)-len(msg.Reply), conn.MaxPayload())
+	}
+	return err
 }
 
 // SubscribeReplies subscribes handler over core NATS to subject, typically a reply-inbox wildcard,

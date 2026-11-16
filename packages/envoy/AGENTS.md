@@ -5035,7 +5035,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Each listener relays the entries of its watched session cache that name its machine and record `delivery: "consumer"` (`sessionRelays.wanted`).
   It stops relaying an entry that moves to another machine id at once, and at start it relays every such entry in its cache without waiting for a registration.
 
-- **Restart at the ack floor:** every start of a session's relay (the listener starts or gains the durable binding, the session registers with a new `epoch`, a paused relay's backoff ran out or its session registered, a consumer call or a pull failed) reads the consumer's ack floor, deletes the consumer and creates it again at the sequence after the floor with the current filter (`bus.SessionConsumers.RestartAtFloor`;
+- **Restart at the ack floor:** every start of a session's relay (the listener starts or gains the durable binding, the session registers with a new `epoch`, a paused relay's backoff ran out or its session registered, a consumer call or a pull failed, or a frame's publish failed for any reason but its size) reads the consumer's ack floor, deletes the consumer and creates it again at the sequence after the floor with the current filter (`bus.SessionConsumers.RestartAtFloor`;
   nats-server 2.10.29 has no consumer reset).
   So after any break the session takes its messages again in stream order, and its plugin's ledger drops the ones it already wrote.
   nats-server 2.10.29 reports an ack floor of 0 until an ack moves it, so a floor the server reports as 0 reads as the consumer's start sequence minus one while its delivered sequence is at or above that and its consumer ack floor is 0, any other floor stands even below it ("Data loss" above), and the floor is at least the last sequence delivered when nothing awaits an ack (`ackFloor`;
@@ -5061,7 +5061,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 
 - **Relay over NATS:** the owner pulls the consumer and publishes each message, in stream order, as a core frame on `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`, which the stream does not store).
   The frame's data is the stored message's bytes, and its headers are `Envoy-Subject`, `Envoy-Stream-Seq`, `Envoy-Stream-Id`, `Envoy-Delivered`, `Envoy-Stored-At` and, on the first frame after a restart below the stream's first sequence, `Envoy-Gap: true`.
-  Its reply subject is a token under the listener's one reply inbox.
+  Its reply subject is a token under the listener's one reply inbox: 128 bits from `crypto/rand`, in hex (`id.New`), new for each frame.
+  A reply names its frame by that token alone, since NATS gives the relay no sender to check (`onReply`), and a session's own frames tell it nothing of another frame's token ("Trust" below).
   The send route's connection probe is the one other message on this subject:
   no body, the one header `Envoy-Probe: 1` and none of the frame's, on a reply inbox of its own, so it never decodes as a frame, never reaches the relay's reply handler and never moves the resume point, and the session answers it `done` before any decode (`/v1/messages/send`).
   The session answers each frame with one word:
@@ -5080,6 +5081,14 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   The backoff starts at 2 s (`relayPauseFirst`) and doubles to 30 s (`relayPauseMax`, `relayRetryMax` again, and three times under the 90 s heartbeat that used to be the only resume);
   a frame the session answers puts it back to 2 s, and the session's next registration resumes the relay at once, whichever comes first.
   A pause is logged once an episode — the first one since the session last answered a frame — not once a probe.
+
+- **A frame too large to relay:** a stored message that fits the server's max payload can still make a frame past it, because the frame adds its headers to the message's bytes, and NATS refuses that frame at every send (`bus.ErrTooLarge`, from `bus.SessionConsumers.Publish`).
+  The relay then acknowledges the message and goes on to the next one, so that message does not hold back the session's later messages (`passTooLarge`).
+  It logs one WARN `session relay acknowledged a message too large to relay; the session does not receive it` with `session_id`, `event_id` (read from the message's `event_id` field alone, and empty when that does not decode), `subject`, `stream_seq` and `size`.
+  The WARN is written once per message and session in a listener process, also when a restart at the ack floor hands the message back, which the relay acknowledges again.
+  No `delivery_failed` notice is published, so the session is not told.
+  A pending `Envoy-Gap` goes on the next frame, and the passed message adds no gap of its own, since that header means messages lost to the stream's retention.
+  An acknowledgement that cannot be sent restarts the relay at the ack floor.
 
 - **No consumer:** the registration is refused and nothing is written -- no interest row, no session entry -- since a session nothing delivers to is not registered (`subscribeHandler`, which runs the decision before both writes).
   The refusal names its reason: `503 no_grant` for a listener whose consumer call the server refused for want of a grant (`bus.ErrConsumerNotGranted`), which logs one WARN for the episode and is then answered without a server call for 10 minutes (`noGrantBackoff`);
@@ -5114,7 +5123,10 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 
 - **Trust:** `core.SessionPermissions` subscribes to `notifications.envoy.deliver.*` and no other `notifications.` subject, so a client holding a session user can read any session's relay frames and publish `done` to a frame's reply subject (an `_INBOX.` subject, which every session user may publish to), which acknowledges that session's message away:
   it can remove a stored message from the consumer of a session that is away, so that session never sees it.
-  dispatch://INFRA-840 narrows that grant to the session's own subjects.
+  A forged `done` needs the frame's own token.
+  Each token is random, so a session cannot work out another frame's token from its own frames, as it could while the tokens were one counter for every session of the listener.
+  The random token alone does not close the forged acknowledgement: while the grant reads every session's relay frames, a client reads the token on the frame itself.
+  dispatch://INFRA-840 narrows that grant to the session's own subjects, and with that change the random token closes it.
   A host user (`HostPermissions`), which a host's sessions share with its listener, still names `notifications.>`, so there a session reads every notification topic until that change lands.
 
 ## Keyed Dispatch writes
