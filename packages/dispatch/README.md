@@ -157,12 +157,13 @@ suite's - a run of the stubbed layer alone, which installs no signal handler her
 same server - so `kill` that process, or use a Ctrl-C, which stops everything.
 
 A run killed outright - SIGKILL, an out-of-memory kill, a runner that crashes - runs no stop,
-and its listeners stop all the same: each harness starts a reaper beside them
-(`Supervisor`, `e2e/local-instance-support.ts`), which ends every process group the harness
-started once the process that started them is gone. `e2e/__tests__/harness-orphans.test.ts`
-kills a harness's parent with SIGKILL and finds none of its listeners left. A stack's Postgres
-is not a process group of the harness, so a killed run can still leave a `dispatch-e2e-pg-*`
-container or a `postgres` of the binaries provider behind.
+and what it started stops all the same: each harness, and each run's stack Postgres, hands
+what it starts to a reaper (`Reaper`, `e2e/local-instance-support.ts`), which ends it once the
+process that started it is gone: every process group of the harness, each stack's container
+by the id `docker run` printed, and each cluster of the binaries provider by its data
+directory. `e2e/__tests__/harness-orphans.test.ts` kills the parent of each with SIGKILL and
+finds nothing left: the listeners in every run, and a stack's Postgres where the run names a
+provider (`DISPATCH_E2E_PG_IMAGE` or `DISPATCH_E2E_PG_BIN`).
 
 Playwright's UI mode starts the stacks itself. The UI server runs `globalSetup`
 when a client connects rather than when it begins listening, so a session

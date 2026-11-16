@@ -36,7 +36,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { Interrupted } from "./local-instance-support";
+import { Interrupted, Reaper } from "./local-instance-support";
 import { sqlAt } from "./psql";
 
 const execFileAsync = promisify(execFile);
@@ -243,13 +243,15 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
 }
 
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
- *  it serves on. Returns or throws with no postmaster of `data` left running. */
+ *  it serves on. Returns or throws with no postmaster of `data` left running. The cluster that
+ *  starts is handed to `reaper`, which stops it should this process die before its own stop. */
 async function startCluster(
   bin: string,
   data: string,
   dir: string,
   what: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  reaper: Reaper
 ): Promise<number> {
   let last = "";
   const started = await serverSettings(env);
@@ -267,6 +269,7 @@ async function startCluster(
         "-w",
         "start",
       ]);
+      reaper.watch({ cluster: { data, pgCtl: join(bin, "pg_ctl") } });
       return port;
     } catch (error) {
       last = error instanceof Error ? error.message : String(error);
@@ -287,7 +290,24 @@ async function startCluster(
   );
 }
 
-function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): StackPostgres {
+/** Stops the cluster in `data` with `mode` and takes it back from `reaper`, which no longer has
+ *  it to stop. */
+async function stopCluster(
+  bin: string,
+  data: string,
+  mode: "fast" | "immediate",
+  reaper: Reaper
+): Promise<void> {
+  await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", mode, "-w", "stop"]);
+  reaper.forget({ cluster: { data, pgCtl: join(bin, "pg_ctl") } });
+}
+
+function binariesProvider(
+  dir: string,
+  bin: string,
+  env: NodeJS.ProcessEnv,
+  reaper: Reaper
+): StackPostgres {
   for (const tool of ["initdb", "pg_ctl"]) {
     if (!existsSync(join(bin, tool))) {
       throw new Error(
@@ -313,7 +333,14 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
       "-E",
       "UTF8",
     ]);
-    const port = await startCluster(bin, data, templateDir, "the stacks' Postgres template", env);
+    const port = await startCluster(
+      bin,
+      data,
+      templateDir,
+      "the stacks' Postgres template",
+      env,
+      reaper
+    );
     try {
       const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
       await ready(admin, "the stacks' Postgres template", signal);
@@ -327,7 +354,7 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
       // Whatever happened above: the postmaster is up from `startCluster` on, and a throw that
       // left it running would leave it serving a loopback port while the pool removes the data
       // directory under it.
-      await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
+      await stopCluster(bin, data, "fast", reaper);
     }
     return data;
   };
@@ -342,10 +369,8 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
         const what = `stack ${index}'s Postgres`;
-        const port = await startCluster(bin, data, stackDir, what, env);
-        const stop = async (): Promise<void> => {
-          await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
-        };
+        const port = await startCluster(bin, data, stackDir, what, env, reaper);
+        const stop = () => stopCluster(bin, data, "immediate", reaper);
         const url = `postgres://postgres@127.0.0.1:${port}/${databaseName}?sslmode=disable`;
         try {
           await ready(url, what, signal);
@@ -375,7 +400,12 @@ async function containerLog(container: string): Promise<string> {
   }
 }
 
-function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): StackPostgres {
+function imageProvider(
+  image: string,
+  run: string,
+  env: NodeJS.ProcessEnv,
+  reaper: Reaper
+): StackPostgres {
   return {
     name: `the Postgres image ${image}`,
     start: (index, signal) =>
@@ -393,8 +423,9 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
               () => {}
             );
           };
+          let id: string;
           try {
-            await execFileAsync("docker", [
+            ({ stdout: id } = await execFileAsync("docker", [
               "run",
               "--detach",
               "--name",
@@ -416,7 +447,7 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
               // (docker-library/postgres#1259).
               image,
               ...started.flatMap((setting) => ["-c", setting]),
-            ]);
+            ]));
           } catch (error) {
             // `docker run` publishes the port itself, so this is the port another listener took
             // between `freePort` and here, which is what another port answers.
@@ -424,6 +455,11 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
             await remove();
             continue;
           }
+          // The id `docker run` printed is the one this container answers to, whatever else
+          // comes to share its name: the reaper removes exactly it should this process die
+          // before its stack's stop.
+          const reaped = { container: id.trim() };
+          reaper.watch(reaped);
           const url = `postgres://postgres:dispatch@127.0.0.1:${port}/${databaseName}?sslmode=disable`;
           try {
             await ready(url, what, signal);
@@ -436,6 +472,7 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
             // ports. Its own last lines are read before it is removed.
             const said = await containerLog(container);
             await remove();
+            reaper.forget(reaped);
             throw new Error(
               `The Dispatch e2e harness cannot start: ${what} came up from ${image} on port ` +
                 `${port} and then ${error instanceof Error ? error.message : String(error)}; ` +
@@ -446,7 +483,8 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
             port,
             url,
             stop: async () => {
-              await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
+              await execFileAsync("docker", ["rm", "--force", "--volumes", reaped.container]);
+              reaper.forget(reaped);
             },
           };
         }
@@ -468,6 +506,9 @@ export function stackPostgres(options: {
   readonly env?: NodeJS.ProcessEnv;
 }): StackPostgres | undefined {
   const env = options.env ?? process.env;
+  // One reaper for every stack this run starts: each server is handed to it as it starts and
+  // taken back as its stop ends it.
+  const reaper = new Reaper();
   const image = (env[pgImageVariable] ?? "").trim();
   const bin = (env[pgBinVariable] ?? "").trim();
   if (image !== "" && bin !== "") {
@@ -477,7 +518,7 @@ export function stackPostgres(options: {
         "from its initdb and pg_ctl."
     );
   }
-  if (image !== "") return imageProvider(image, options.run, env);
-  if (bin !== "") return binariesProvider(options.dir, bin, env);
+  if (image !== "") return imageProvider(image, options.run, env, reaper);
+  if (bin !== "") return binariesProvider(options.dir, bin, env, reaper);
   return undefined;
 }

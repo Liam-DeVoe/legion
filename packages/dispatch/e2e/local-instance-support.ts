@@ -39,40 +39,118 @@ export interface PipedRunning extends Running {
 }
 
 /** The reaper's program (bash, whose `kill` takes a negative group id after `--`, where dash's does
- *  not; every harness script is bash already): it reads one process group id per line from its stdin, the
- *  write end of which only the supervising process holds. `end` is a stop that already ended every
- *  group, and it exits. End of input with no `end` is that process gone without a stop - killed,
- *  crashed, out of memory - and it ends every group it was told of as `stop` would: SIGTERM, then
- *  SIGKILL to whatever still runs ten seconds later. */
-const reaperProgram = `groups=
+ *  not; every harness script is bash already). It reads one line per thing to end from its stdin,
+ *  the write end of which only the process that started it holds:
+ *
+ *  - `group <pgid>`: a process group, ended as `Supervisor.stop` ends one: SIGTERM, then SIGKILL to
+ *    whatever still runs ten seconds later;
+ *  - `container <id>`: a container, removed with its volumes by the id `docker run` printed;
+ *  - `cluster <pg_ctl>` TAB `<data directory>`: a Postgres cluster, stopped `immediate`;
+ *  - `forget <line>`: one of those its starter already ended itself;
+ *  - `end`: its starter stopped everything, and it exits.
+ *
+ *  End of input with no `end` is that process gone without a stop - killed, crashed, out of
+ *  memory - and it ends everything it holds. Each line names exactly one thing its starter made,
+ *  by the id it recorded, never a pattern. */
+const reaperProgram = `held=
 while IFS= read -r line; do
-  if [ "$line" = end ]; then exit 0; fi
-  groups="$groups $line"
+  case "$line" in
+    end) exit 0 ;;
+    "forget "*)
+      target=\${line#forget }
+      kept=
+      while IFS= read -r item; do
+        [ -n "$item" ] && [ "$item" != "$target" ] && kept+="$item"$'\\n'
+      done <<< "$held"
+      held=$kept ;;
+    *) held+="$line"$'\\n' ;;
+  esac
 done
-for group in $groups; do kill -TERM -- "-$group" 2>/dev/null; done
+groups=()
+while IFS= read -r item; do
+  case "$item" in
+    "group "*)
+      groups+=("\${item#group }")
+      kill -TERM -- "-\${item#group }" 2>/dev/null ;;
+    "container "*)
+      docker rm --force --volumes "\${item#container }" >/dev/null 2>&1 & ;;
+    "cluster "*)
+      rest=\${item#cluster }
+      "\${rest%%$'\\t'*}" -D "\${rest#*$'\\t'}" -m immediate -w stop >/dev/null 2>&1 & ;;
+  esac
+done <<< "$held"
 waited=0
-while [ "$waited" -lt 100 ]; do
+while [ "\${#groups[@]}" -gt 0 ] && [ "$waited" -lt 100 ]; do
   alive=
-  for group in $groups; do kill -0 -- "-$group" 2>/dev/null && alive=1; done
-  [ -z "$alive" ] && exit 0
+  for group in "\${groups[@]}"; do kill -0 -- "-$group" 2>/dev/null && alive=1; done
+  [ -z "$alive" ] && break
   sleep 0.1
   waited=$((waited + 1))
 done
-for group in $groups; do kill -KILL -- "-$group" 2>/dev/null; done`;
+for group in "\${groups[@]}"; do kill -KILL -- "-$group" 2>/dev/null; done
+wait`;
+
+/** One thing a reaper ends when its starter dies without ending it: a process group, a container
+ *  by its id, or a Postgres cluster by its `pg_ctl` and its data directory. */
+export type Reaped =
+  | { readonly group: number }
+  | { readonly container: string }
+  | { readonly cluster: { readonly pgCtl: string; readonly data: string } };
+
+/** The line `reaperProgram` reads for `reaped`. */
+function reaperLine(reaped: Reaped): string {
+  if ("group" in reaped) return `group ${reaped.group}`;
+  if ("container" in reaped) return `container ${reaped.container}`;
+  return `cluster ${reaped.cluster.pgCtl}\t${reaped.cluster.data}`;
+}
+
+/** What ends the processes, containers and clusters this process starts when this process dies
+ *  without ending them: a SIGKILL, an out-of-memory kill, a crashed test runner. A stop is
+ *  something this process does, so its death runs none. The first `watch` starts a reaper
+ *  (`reaperProgram`) in a session of its own, so no signal meant for this process reaches it, and
+ *  tells it each thing as it is made; its stdin is a pipe only this process writes, so this
+ *  process's death, however it comes, is the reaper's end of input, and the reaper ends what it
+ *  holds. The reaper is unreferenced, its pipe too, so neither keeps this process alive; a reaper
+ *  already gone answers a write with EPIPE, which is ignored, since it can end nothing either way. */
+export class Reaper {
+  #process: ChildProcess | undefined;
+
+  /** Hands `reaped` to the reaper, which ends it should this process die first. */
+  watch(reaped: Reaped): void {
+    if (this.#process === undefined) {
+      this.#process = spawn("bash", ["-c", reaperProgram], {
+        detached: true,
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      this.#process.on("error", () => {});
+      this.#process.stdin?.on("error", () => {});
+      this.#process.unref();
+      (this.#process.stdin as { unref?: () => void } | null)?.unref?.();
+    }
+    this.#process.stdin?.write(`${reaperLine(reaped)}\n`);
+  }
+
+  /** Takes back `reaped`, which this process has ended itself: the reaper never touches an id the
+   *  system may since have handed to something else. */
+  forget(reaped: Reaped): void {
+    this.#process?.stdin?.write(`forget ${reaperLine(reaped)}\n`);
+  }
+
+  /** Everything handed to the reaper is ended: it exits, ending nothing. */
+  end(): void {
+    this.#process?.stdin?.end("end\n");
+    this.#process = undefined;
+  }
+}
 
 /** Every process the command starts, as the leader of a process group of its own, and the one
- *  signal that a stop is under way: a Ctrl-C (`interrupt`) or the end of the run (`stop`).
- *
- *  A stop is something this process does, so a process that dies without one - a SIGKILL, an
- *  out-of-memory kill, a crashed test runner - would leave every group running. So the first
- *  start also starts a reaper (`reaperProgram`), in a session of its own so no signal meant for
- *  this process reaches it, and tells it each group as it starts; its stdin is a pipe only this
- *  process writes, so this process's death, however it comes, is the reaper's end of input, and
- *  the reaper ends the groups. */
+ *  signal that a stop is under way: a Ctrl-C (`interrupt`) or the end of the run (`stop`). Each
+ *  group is handed to a `Reaper` as it starts, so a process that dies without a stop leaves none
+ *  of them running. */
 export class Supervisor {
   readonly #children: Running[] = [];
   readonly #stopping = new AbortController();
-  #reaper: ChildProcess | undefined;
+  readonly #reaper = new Reaper();
   /** Aborted by `interrupt` or `stop`. A step that starts a process outside `start` (psql through
    *  e2e/psql.ts) passes it on, so the process ends with the others. */
   get signal(): AbortSignal {
@@ -136,27 +214,10 @@ export class Supervisor {
     // unhandled before then.
     child.once("error", (error) => ended.reject(error));
     ended.promise.catch(() => {});
-    if (child.pid !== undefined) this.#reap(child.pid);
+    if (child.pid !== undefined) this.#reaper.watch({ group: child.pid });
     const running = { child, exited: ended.promise, name };
     this.#children.push(running);
     return running;
-  }
-
-  /** Tells the reaper of group `pgid`, starting it first if this is the first group. The reaper
-   *  is unreferenced, its pipe too, so neither keeps this process alive; a reaper that is already
-   *  gone answers a write with EPIPE, which is ignored, since it can reap nothing either way. */
-  #reap(pgid: number): void {
-    if (this.#reaper === undefined) {
-      this.#reaper = spawn("bash", ["-c", reaperProgram], {
-        detached: true,
-        stdio: ["pipe", "ignore", "ignore"],
-      });
-      this.#reaper.on("error", () => {});
-      this.#reaper.stdin?.on("error", () => {});
-      this.#reaper.unref();
-      (this.#reaper.stdin as { unref?: () => void } | null)?.unref?.();
-    }
-    this.#reaper.stdin?.write(`${pgid}\n`);
   }
 
   /** A foreground step. It throws on a non-zero exit, so a failed web build or dev-postgres.sh
@@ -203,8 +264,7 @@ export class Supervisor {
     // Every group this stop signalled is gone, so the reaper has nothing left to end: `end` lets
     // it go without signalling a group number the system may since have handed to another
     // process.
-    this.#reaper?.stdin?.end("end\n");
-    this.#reaper = undefined;
+    this.#reaper.end();
   }
 }
 
