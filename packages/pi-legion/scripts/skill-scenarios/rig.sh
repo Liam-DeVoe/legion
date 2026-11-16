@@ -1026,8 +1026,11 @@ own_dispatch() {
       "each run makes a database of its own there" || fail "$url"
     # A given server must let its login make a database. Nothing here checks that: the refusal a
     # server without the right gives is Postgres's own, in the run's fixture.log.
+    # A given server keeps every database its runs made (stop_run), so a batch whose run names an
+    # earlier batch's runs also had, in a runs directory that no longer holds them, meets that
+    # batch's database here: the refusal says so rather than leave the reader to find it.
     pg_sql "$postgres" "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
-      fail "CREATE DATABASE $database on $(safe_url "$postgres") failed; see $R/fixture.log"
+      fail "CREATE DATABASE $database on $(safe_url "$postgres") failed; see $R/fixture.log (where it already exists, an earlier batch's run of this name left it: this rig leaves a given server's databases to its operator)"
     postgres=$(safe_url "$postgres")
   else
     pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
