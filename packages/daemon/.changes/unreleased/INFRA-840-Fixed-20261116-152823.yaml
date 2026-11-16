@@ -1,16 +1,19 @@
 kind: Fixed
 body: |-
-  A claim can no longer register another claim's session id and be enrolled with the secrets
-  broker under it, which took that session's secret grants. The daemon holds each session id to
-  the first claim of its project that recorded it, whatever that claim's state since (live,
-  suspended, failed or retired), in a new `claim_sessions` table, and refuses any other claim's
-  registration of it with `409 session <id> is recorded for another claim of this daemon; …`
-  before anything is recorded or enrolled; a claim's own earlier id and an id no claim has
-  recorded register as before. The migration holds every claim's session and the session it last
-  abandoned for that claim, and an id two claims already recorded for neither: at boot the daemon
-  logs each such id at Error and suspends its claims with the operator's suspend, for an operator
-  to record the rightful holder (`update claim_sessions set claim = '<token>' where project =
-  '<project>' and session = '<id>'`) and resume it.
+  A claim can no longer register, or be relaunched into, another claim's session, which took that
+  session's secret grants and its transcript. The daemon holds every name of a session to the
+  first claim of its project that recorded it, whatever that claim's state since (live, suspended,
+  failed or retired), in a new `claim_sessions` table: its id, its file's base name (which holds
+  the path too), the id an Oh My Pi file name gives, and the id a Claude Code transcript is named
+  for. A registration under a name another claim holds is refused with `409 session <name> is
+  recorded for another claim of this daemon; …` before anything is recorded or enrolled, and a
+  relaunch whose record names one is refused before anything starts; a claim's own earlier session
+  and a session no claim has recorded register as before. At every boot the daemon holds each name
+  a claim records that no row holds, as after a rollback to a release before this one, and logs at
+  Error and suspends each claim that records a name held for another claim or for none, for an
+  operator to record the rightful holder (`update claim_sessions set claim = '<token>' where
+  project = '<project>' and kind = '<kind>' and name = '<name>'`) and resume it. A hold the
+  store does not answer at a relaunch is tried again at the probe interval, charging nothing.
 time: 2026-11-16T15:28:23Z
 custom:
     Issue: INFRA-840
