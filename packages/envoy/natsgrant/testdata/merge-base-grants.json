@@ -8,10 +8,7 @@
       "$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.\u003e",
       "$JS.ACK.ENVOY_NOTIFICATIONS.\u003e"
     ],
-    "subscribe": [
-      "notifications.envoy.exceptions.notifications.role.\u003e",
-      "_INBOX.\u003e"
-    ]
+    "subscribe": ["notifications.envoy.exceptions.notifications.role.\u003e", "_INBOX.\u003e"]
   },
   "dispatch": {
     "example-dispatch": {
@@ -318,10 +315,7 @@
       ]
     }
   },
-  "dispatch_durables": [
-    "delivery-events",
-    "delivery-jobs"
-  ],
+  "dispatch_durables": ["delivery-events", "delivery-jobs"],
   "host": {
     "example-dispatch": {
       "publish": [
@@ -1123,19 +1117,9 @@
       ]
     }
   },
-  "machine_ids": [
-    "example-host-a",
-    "example-dispatch",
-    "example-hub"
-  ],
+  "machine_ids": ["example-host-a", "example-dispatch", "example-hub"],
   "session_pattern": {
-    "publish": [
-      "_INBOX.\u003e",
-      "agentstream.*.frames"
-    ],
-    "subscribe": [
-      "notifications.envoy.deliver.*",
-      "agentstream.*.control"
-    ]
+    "publish": ["_INBOX.\u003e", "agentstream.*.frames"],
+    "subscribe": ["notifications.envoy.deliver.*", "agentstream.*.control"]
   }
 }

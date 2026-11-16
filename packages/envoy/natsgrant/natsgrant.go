@@ -391,6 +391,23 @@ func NamesSystemSubject(p Permissions) (string, bool) {
 	return "", false
 }
 
+// OpenDirection returns the first direction of p, "publish" then "subscribe", whose allow list is
+// empty, and true. An empty allow list is not "nothing": nats-io/jwt/v2 drops it when it encodes a
+// user (types.go, omitempty), and nats-server applies no restriction to a direction whose allow and
+// deny lists are both empty (server/accounts.go, client.go), so a user answered with one may
+// publish, or subscribe, to every subject. Permissions carries no deny list, so no grant of this
+// package can close a direction any other way, and the auth service refuses every grant this
+// names (internal/broker/natscallout).
+func OpenDirection(p Permissions) (string, bool) {
+	switch {
+	case len(p.Publish) == 0:
+		return "publish", true
+	case len(p.Subscribe) == 0:
+		return "subscribe", true
+	}
+	return "", false
+}
+
 // union is a followed by each entry of b it does not hold yet.
 func union(a, b []string) []string {
 	for _, entry := range b {

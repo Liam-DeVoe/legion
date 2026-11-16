@@ -49,16 +49,25 @@ type connectOpts struct {
 	beforeRequestFlush          func()
 	background                  bool
 	silentCutDetection          bool
+	immediateReconnect          bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
-// (connectWithContext): the NATS credential names (credential, nil for none), and the
-// pings of WithSilentCutDetection when the client asked for them.
+// (connectWithContext): the NATS credential names (credential, nil for none), the pings of
+// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
+// it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
-	if !o.silentCutDetection {
+	settings := []nats.Option{credential}
+	if o.silentCutDetection {
+		settings = append(settings, detectSilentCuts)
+	}
+	if o.immediateReconnect {
+		settings = append(settings, reconnectImmediately)
+	}
+	if len(settings) == 1 {
 		return credential
 	}
-	return allOf(credential, detectSilentCuts)
+	return allOf(settings...)
 }
 
 // parseConnectOptions applies options over the defaults every connect starts from.
@@ -190,6 +199,16 @@ func WithConnectInBackground() DialOption {
 // /healthz reports a cut bus within seconds of the cut.
 func WithSilentCutDetection() DialOption {
 	return func(o *connectOpts) { o.silentCutDetection = true }
+}
+
+// WithImmediateReconnect has every connection the client makes retry at once after a cut, with a
+// jitter of reconnectJitterImmediate rather than the second every other client waits. It is for
+// the one client a hub's other clients wait on: the NATS auth service
+// (internal/broker/natscallout), which is itself a client of the hub it admits connections to, so
+// a restart drops its connection too and every client that comes back before it is refused until
+// it returns. The jitter keeps two replicas from dialling in the same instant.
+func WithImmediateReconnect() DialOption {
+	return func(o *connectOpts) { o.immediateReconnect = true }
 }
 
 type subscriptionTransport uint8

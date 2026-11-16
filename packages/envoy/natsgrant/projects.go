@@ -1,7 +1,6 @@
 package natsgrant
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -180,13 +179,11 @@ func WithinProjects(grant Permissions, scope Scope) (Permissions, error) {
 	if err != nil {
 		return Permissions{}, err
 	}
-	if len(publish) == 0 {
-		return Permissions{}, errors.New("natsgrant: grant held to scope keeps no publish entry, and a NATS user with no publish allow list may publish to every subject")
+	narrowed := Permissions{Publish: publish, Subscribe: subscribe}
+	if direction, open := OpenDirection(narrowed); open {
+		return Permissions{}, fmt.Errorf("natsgrant: grant held to scope keeps no %s entry, and a NATS user with no %s allow list may %s to every subject", direction, direction, direction)
 	}
-	if len(subscribe) == 0 {
-		return Permissions{}, errors.New("natsgrant: grant held to scope keeps no subscribe entry, and a NATS user with no subscribe allow list may subscribe to every subject")
-	}
-	return Permissions{Publish: publish, Subscribe: subscribe}, nil
+	return narrowed, nil
 }
 
 // heldScope is a Scope checked and laid out for the rewrite: the identity that names its reply
