@@ -111,8 +111,8 @@ function projectedFile(): string {
   return file;
 }
 
-/** The environment of a pod that has an identity to trade at `brokerUrl` and holds no NATS seed:
- *  what `dev-stack.sh`, the compose stacks and the load test set, whatever their hub runs. */
+/** The environment of a pod that has an identity to trade at `brokerUrl` and holds no NATS seed: a
+ *  broker-capable environment, whatever its hub runs. */
 function podEnvironment(brokerUrl: string): EnvoyEnvironment {
   return {
     HOME: tempDir(),
@@ -140,9 +140,9 @@ function resolved(
 
 describe("which credential a session connects to NATS with", () => {
   test("a broker route, no seed and no NATS_AUTH resolves to none", () => {
-    // The machine's broker route says nothing about the hub: dev-stack.sh without --callout, the
-    // compose stacks and the load test each set it while their hubs run no auth service, where a
-    // broker token on the CONNECT would lose the session its inbound messages.
+    // The machine's broker route says nothing about the hub: dev-stack.sh without --callout, for
+    // one, exports a broker route beside a hub that runs no auth service, where a broker token on
+    // the CONNECT would lose the session its inbound messages.
     expect(resolved(podEnvironment("http://broker.test"))).toEqual({ kind: "none" });
     expect(resolved({ ...podEnvironment("http://broker.test"), NATS_AUTH: "" })).toEqual({
       kind: "none",

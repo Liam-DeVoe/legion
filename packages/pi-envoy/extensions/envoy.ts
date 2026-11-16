@@ -4101,6 +4101,9 @@ export default function envoyExtension(pi: PiApi): void {
       askgateBeat = undefined;
       closeStore(askgateOwner.store);
     }
+    // The token keeper stops before the drain: a renewal it ran on a draining connection would be
+    // refused and warned about as a failure, at a stop nobody asked to be warned of.
+    stopNatsKeeper();
     const deadline = Promise.withResolvers<void>();
     const timer = setTimeout(deadline.resolve, SHUTDOWN_DEADLINE_MS);
     try {
@@ -4122,7 +4125,6 @@ export default function envoyExtension(pi: PiApi): void {
       ]);
     } finally {
       clearTimeout(timer);
-      stopNatsKeeper();
       connection = undefined;
       activeSessionContext = undefined;
       followed.clear();

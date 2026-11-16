@@ -9,10 +9,14 @@
  * driver moves, `pi.appendEntry` writing into that branch, and
  * `context.setInterval` keeping the heartbeat callback rather than arming a timer on it, so a
  * pass runs when the smoke asks for one (`{"op":"heartbeat"}`) and no tick of its own interleaves
- * with what the smoke drives. Nothing else is faked: the extension dials the smoke's
- * natsd, and every listener call goes over HTTP to the smoke's recording proxy (`envoy.url` in
- * the `ENVOY_CONFIG_FILE` the smoke writes). One process is one client instance, which is what
- * the listener's rule turns on (R5, R6 of dispatch://INFRA-404/spec).
+ * with what the smoke drives. Nothing else is faked: the extension dials the driver's natsd, and
+ * every listener call goes over HTTP to the listener `envoy.url` names in the `ENVOY_CONFIG_FILE`
+ * the driver writes (`smoke-role-takeover.sh`'s recording proxy, the stack's own listener in
+ * `nats-callout-sessions.sh`). One process is one client instance, which is what the listener's
+ * rule turns on (R5, R6 of dispatch://INFRA-404/spec).
+ *
+ * Its input ending is the host going away: the extension's `session_shutdown` runs (it deregisters
+ * the session and drains NATS), bounded at 10 s, and the process exits, writing its notices.
  *
  * Run it as `bun --preload <dir>/host-stub.ts <dir>/omp-client.ts`: the preload supplies the host
  * package the extension imports.
@@ -207,3 +211,7 @@ for await (const line of console) {
     answer({ id, ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }
+await Promise.race([handlerFor("session_shutdown")({}, context), Bun.sleep(10_000)]).catch(
+  () => undefined
+);
+process.exit(0);

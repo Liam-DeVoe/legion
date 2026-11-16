@@ -29,6 +29,9 @@
  * `--withhold-inbox-answers true` takes each delivery and never answers it, so the server never
  * tells the listener the delivery was taken and the listener acks nothing.
  *
+ * Its input ending is Claude Code going away: it closes the channel server's stdin, as Claude Code
+ * does, waits up to 10 s for the server to deregister and exit, and exits.
+ *
  * Protocol: one JSON object per line on stdin, one answer per line on stdout, matched by `id`.
  *
  *   {"id":"1","op":"tool","name":"envoy_role_set","args":{"role":"reviewer"}}
@@ -270,3 +273,6 @@ for await (const line of console) {
     answer({ id, ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }
+child.stdin.end();
+await Promise.race([child.exited, Bun.sleep(10_000)]);
+process.exit(0);

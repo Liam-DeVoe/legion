@@ -125,11 +125,15 @@ async function exitWithin(server: Subprocess, ms: number): Promise<number | unde
   return Promise.race([server.exited, late])
 }
 
-test("a start the hub refuses closes the mod socket and exits non-zero", async () => {
-  const started = await startServer([refusingHub()])
+test("a start the hub refuses closes the mod socket and exits non-zero, naming the hub", async () => {
+  const hub = refusingHub()
+  const started = await startServer([hub])
   // Its stdin stays open: the parent is alive, and the server still ends with its session.
   const code = await exitWithin(started.server, 8_000)
-  expect(started.stderr()).toContain("Authorization Violation")
+  // The failure says which hub refused which credential, and why.
+  expect(started.stderr()).toContain(
+    `could not connect to NATS at ${hub} presenting no credential: 'Authorization Violation'`,
+  )
   expect(code, `still running: ${started.stderr()}`).toBeDefined()
   expect(code).not.toBe(0)
   expect(existsSync(started.socketPath)).toBe(false)

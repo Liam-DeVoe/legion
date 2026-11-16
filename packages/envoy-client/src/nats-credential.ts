@@ -33,8 +33,9 @@ export type NatsCredential =
 
 /**
  * A session's broker token as its NATS connection presents it. One per process and session name:
- * the token is the one the session's listener and Dispatch calls present
- * (`brokerTokenFor`, `brokerCredential`), so a session holds one token, not two.
+ * where the session's listener and Dispatch calls present a broker token too, it is this one
+ * (`brokerTokenFor`, `brokerCredential`), so a session holds one token, not two; a bearer those
+ * calls are given instead (`ENVOY_TOKEN`, a file's `token`) is theirs alone.
  */
 export interface BrokerNatsCredential {
   /** Takes the token to present, trading for one where the token in hand is not live: a

@@ -167,9 +167,10 @@ within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2
 default 120 s interval left a frozen path for up to 6 minutes.
 
 A session's NATS credential (`@legion/envoy-client/nats-credential`) is one of three: the nkey user
-a seed names, the session's broker token, or none. The broker token is the one the session's
-listener calls already present (`brokerTokenFor`), put on the CONNECT as its token, with a proof of
-its key over the nonce the server sent that one connection as its signature
+a seed names, the session's broker token, or none. The broker token is the session's own, the one
+its listener calls present too where they present a broker token rather than a bearer
+(`brokerTokenFor`). It goes on the CONNECT as its token, with a proof of its key over the nonce the
+server sent that one connection as its signature
 (`DpopKey.connectionProof`), which is what the auth service of a hub that runs one admits as that
 session alone. `brokerNatsCredential(env, session)` holds it: `ready()` takes a live token before a
 dial, `authenticator(nonce)` signs one snapshot of it per CONNECT and presents nothing, starting a

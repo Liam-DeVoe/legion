@@ -638,11 +638,19 @@ export interface ChannelNats {
   readonly followSession?: () => Promise<void>
 }
 
+/** How a failed dial names the credential it presented. */
+const CREDENTIAL_NAMES: Record<NatsCredential["kind"], string> = {
+  broker: "the session's broker token",
+  seed: "an nkey seed",
+  none: "no credential",
+}
+
 /**
  * Opens the session's NATS connection with the credential `inbound` resolved. A broker token is
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
  * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`),
- * until `stop` or the connection closing. `dial` is nats.js's `connect`, or a test's.
+ * until `stop` or the connection closing. A dial that fails throws naming the servers and the
+ * credential it presented beside nats.js's own reason. `dial` is nats.js's `connect`, or a test's.
  */
 export async function dialChannelNats(
   inbound: { readonly natsUrls: readonly string[]; readonly natsCredential: NatsCredential },
@@ -653,9 +661,17 @@ export async function dialChannelNats(
   const { natsCredential } = inbound
   const broker = natsCredential.kind === "broker" ? natsCredential.broker : undefined
   await broker?.ready()
-  const connection = await dial(
-    natsConnectionOptions({ servers: inbound.natsUrls, name, credential: natsCredential }),
-  )
+  let connection: NatsConnection
+  try {
+    connection = await dial(
+      natsConnectionOptions({ servers: inbound.natsUrls, name, credential: natsCredential }),
+    )
+  } catch (error) {
+    throw new Error(
+      `could not connect to NATS at ${inbound.natsUrls.join(", ")} presenting ${CREDENTIAL_NAMES[natsCredential.kind]}: ${messageFor(error)}`,
+      { cause: error },
+    )
+  }
   if (broker === undefined) return { connection, stop: () => {} }
   return {
     connection,
@@ -2266,10 +2282,16 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const stopped = Promise.withResolvers<void>()
   let stopping = false
   let session: ChannelSession | undefined
+  // Stops the keeper of the connection's broker token, where it presents one. Declared before
+  // `stop`, which may run on a signal before the connection is dialled.
+  let stopNatsKeeper = (): void => {}
   const stop = (): void => {
     if (stopping) return
     stopping = true
     booting.abort()
+    // The token keeper stops before the session drains its connection: a renewal it ran on a
+    // draining connection would be refused and warned about as a failure, at an ordinary stop.
+    stopNatsKeeper()
     // A reminder waiting on a 15-minute WAITING wait holds no shutting-down server open.
     phaseHook?.stop()
     void modLink?.close().catch(() => undefined)
@@ -2346,8 +2368,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
   }
 
   let connection: ChannelConnection | undefined
-  // Stops the keeper of the connection's broker token, where it presents one.
-  let stopNatsKeeper = (): void => {}
   try {
     const { inbound } = envoy
     if ("off" in inbound) {
@@ -2471,7 +2491,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
     stop()
     await stopped.promise
     await linking
-    stopNatsKeeper()
     await modLink?.close().catch(() => undefined)
     if (session === undefined && connection !== undefined) {
       await connection.drain().catch(() => undefined)

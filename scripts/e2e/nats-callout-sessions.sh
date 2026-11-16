@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e/nats-callout-sessions.sh — the live proof of dispatch://INFRA-840's r-kinds and
-# r-refusal with real sessions (its verification's check c-callout-kinds): an Oh My Pi session and
+# r-refusal with sessions (its verification's checks c-callout-kinds-plugins, the default mode,
+# and c-callout-kinds, --real-hosts): an Oh My Pi session and
 # a Claude Code session, each connecting to the hub with its own broker token (NATS_AUTH=broker),
 # are admitted to their own channels, receive a direct message, and keep receiving across a
 # restart of the listener and across a restart of the hub's server on the same store; and a probe
@@ -73,8 +74,10 @@
 #                                 (lib/model-endpoint.sh) before anything starts
 #     LEGION_E2E_MODEL_ID         the anthropic/<id> Oh My Pi runs
 #     LEGION_E2E_CLAUDE_MODEL     the model id Claude Code runs
-#     LEGION_E2E_OMP_PATH         the omp binary (default the omp on PATH, else the worker image's
-#                                 /opt/omp/bin/omp), its --version held to .omp-pin
+#     LEGION_E2E_OMP_PATH         the omp binary (default the build .omp-pin names, where mise has
+#                                 it; else the omp on PATH; else the worker image's
+#                                 /opt/omp/bin/omp), its --version held to .omp-pin's release and,
+#                                 for a mise install of oh-my-pi, its install to .omp-pin's build
 #     LEGION_E2E_CLAUDE_CODE_PIN  the directory holding the package.json and package-lock.json that
 #                                 pin @anthropic-ai/claude-code (default the worker image's
 #                                 /opt/legion/claude-code), installed under $TMPDIR with `npm ci`
@@ -131,7 +134,16 @@ if [ "$hosts" = real ]; then
   model_key_file=${LEGION_E2E_MODEL_KEY_FILE:-}
   model_id=${LEGION_E2E_MODEL_ID:-}
   claude_model=${LEGION_E2E_CLAUDE_MODEL:-}
-  omp_bin=${LEGION_E2E_OMP_PATH:-$(command -v omp || echo /opt/omp/bin/omp)}
+  omp_pin=$(<"$root/.omp-pin")
+  omp_build=${omp_pin##*@}
+  pinned_omp=$(mise where "$omp_pin" 2>/dev/null || true)
+  if [ -n "${LEGION_E2E_OMP_PATH:-}" ]; then
+    omp_bin=$LEGION_E2E_OMP_PATH
+  elif [ -n "$pinned_omp" ] && [ -x "$pinned_omp/bin/omp" ]; then
+    omp_bin=$pinned_omp/bin/omp
+  else
+    omp_bin=$(command -v omp || echo /opt/omp/bin/omp)
+  fi
   claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
   # shellcheck source=scripts/e2e/lib/model-endpoint.sh
   . "$root/scripts/e2e/lib/model-endpoint.sh"
@@ -143,13 +155,21 @@ if [ "$hosts" = real ]; then
   [[ $model_id =~ ^anthropic/[^[:space:]]+$ ]] || refuse "LEGION_E2E_MODEL_ID is '$model_id'; it must be anthropic/<id>"
   [ -n "$claude_model" ] || refuse "LEGION_E2E_CLAUDE_MODEL is required with --real-hosts: the model id Claude Code runs"
   [[ -n "$omp_bin" && -x "$omp_bin" ]] || refuse "LEGION_E2E_OMP_PATH names '$omp_bin', which is no executable omp"
-  # .omp-pin names github:sjawhar/oh-my-pi@<version>-<build>; omp --version prints omp/<version>.
-  omp_pin=$(<"$root/.omp-pin")
-  omp_pinned=${omp_pin##*@}
-  omp_pinned=${omp_pinned%%-*}
+  # .omp-pin names github:sjawhar/oh-my-pi@<release>-<build>; omp --version prints omp/<release>
+  # alone, so a mise install, whose directory is named for the build, is held to the build too.
+  omp_release=${omp_build%%-*}
   omp_reported=$("$omp_bin" --version 2>/dev/null | head -n 1) || true
-  [ "$omp_reported" = "omp/$omp_pinned" ] ||
-    refuse "$omp_bin prints --version '$omp_reported'; .omp-pin names $omp_pin (omp/$omp_pinned)"
+  [ "$omp_reported" = "omp/$omp_release" ] ||
+    refuse "$omp_bin prints --version '$omp_reported'; .omp-pin names $omp_pin (omp/$omp_release)"
+  omp_real=$(realpath -e -- "$omp_bin")
+  case $omp_real in
+    */github-sjawhar-oh-my-pi/*/bin/omp)
+      omp_installed=${omp_real%/bin/omp}
+      omp_installed=${omp_installed##*/}
+      [ "$omp_installed" = "$omp_build" ] ||
+        refuse "$omp_bin is the mise install of oh-my-pi $omp_installed; .omp-pin names $omp_build"
+      ;;
+  esac
   { [ -r "$claude_pin/package.json" ] && [ -r "$claude_pin/package-lock.json" ]; } ||
     refuse "LEGION_E2E_CLAUDE_CODE_PIN names $claude_pin, which holds no package.json and package-lock.json pinning @anthropic-ai/claude-code"
   claude_version=$(jq -er '.dependencies["@anthropic-ai/claude-code"]' "$claude_pin/package.json") ||
@@ -181,7 +201,9 @@ cleanup() {
   trap - EXIT
   trap '' INT TERM
   set +e
-  # A client's stdin closing is its shutdown: each deregisters and exits.
+  # A client's input ending is its host going away: each closes the end this shell holds of every
+  # fifo before it starts, so it sees the end here, runs its shutdown (deregistering its session)
+  # and exits; one still running 5 s later is killed with its process group.
   for fd in "${scenario_fds[@]}"; do
     exec {fd}>&-
   done
@@ -345,6 +367,16 @@ source "$drivers/clients.sh"
 omp_auth=(NATS_AUTH=broker)
 [ "$control" != seedless ] || omp_auth=()
 
+# close_held_fifos: closes, in a client's own subshell, the end this shell holds of every client's
+# fifo, so the client sees its input end when this shell closes its own (a child that held one
+# would hold its own input, or another client's, open).
+close_held_fifos() {
+  local fd
+  for fd in "${scenario_fds[@]}"; do
+    exec {fd}>&-
+  done
+}
+
 # isolated VAR=VALUE... -- CMD...: CMD with the environment the assignments make and nothing of
 # this shell's, the model key among them, so the key reaches the session's environment and never
 # an argv, which /proc shows every user. Run it as `(isolated ... -- cmd) &`.
@@ -367,9 +399,9 @@ jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" \
   '{envoy: {url: $url, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
   >"$omp_home/envoy.json"
 client_fifo omp
-# The child closes the fifo's end this shell holds, so it sees its input end when this shell
-# closes its own at teardown, and exits, keeping its notices.
-(omp_in=${client_fd[omp]} && exec {omp_in}>&- && cd -- "$root/packages/pi-envoy" &&
+# Every client closes the ends this shell holds of every client's fifo (close_held_fifos), so it
+# sees its input end when this shell closes its own at teardown, and shuts down.
+(close_held_fifos && cd -- "$root/packages/pi-envoy" &&
   exec env -i PATH="$PATH" HOME="$omp_home" TMPDIR="$scratch" ENVOY_CONFIG_FILE="$omp_home/envoy.json" \
     ENVOY_HEARTBEAT_MS="$heartbeat_ms" ROLE_TAKEOVER_CWD="$omp_home/cwd" \
     ROLE_TAKEOVER_CLIENT_LOG="$work/logs/omp-notices.log" "${broker_env[@]}" "${omp_auth[@]}" \
@@ -390,7 +422,7 @@ printf '%s\n' "${broker_env[@]}" >"$work/claude.env"
 client_fifo claude
 claude_flags=()
 [ "$control" != withhold-ack ] || claude_flags=(--withhold-inbox-answers true)
-(claude_in=${client_fd[claude]} && exec {claude_in}>&- && cd -- "$root/packages/claude-envoy" &&
+(close_held_fifos && cd -- "$root/packages/claude-envoy" &&
   exec env -i PATH="$PATH" HOME="$work/bun-home" TMPDIR="$scratch" \
     bun "$drivers/claude-client.ts" --server "$channel_server" --session "$claude_session" \
     --state-dir "$claude_state" --config-dir "$claude_config" --heartbeat-ms "$heartbeat_ms" \
@@ -412,7 +444,7 @@ else
   mkfifo "$omp_home/stdin"
   exec {omp_fd}<>"$omp_home/stdin"
   scenario_fds+=("$omp_fd")
-  (isolated PATH="$PATH" HOME="$omp_home/home" TMPDIR="$omp_home/tmp" OMP_SESSION_STORAGE=file \
+  (close_held_fifos && isolated PATH="$PATH" HOME="$omp_home/home" TMPDIR="$omp_home/tmp" OMP_SESSION_STORAGE=file \
     ANTHROPIC_BASE_URL="$model_base_url" ANTHROPIC_API_KEY="$(<"$work/model-key")" \
     ENVOY_HEARTBEAT_MS="$heartbeat_ms" "${broker_env[@]}" "${omp_auth[@]}" -- \
     setsid "$omp_bin" --mode rpc --no-ui --model "$model_id" --thinking off --cwd "$omp_home/cwd" \
@@ -451,7 +483,7 @@ else
   mkfifo "$claude_home/stdin"
   exec {claude_fd}<>"$claude_home/stdin"
   scenario_fds+=("$claude_fd")
-  (cd "$claude_home/cwd" && isolated PATH="$PATH" HOME="$claude_home/home" TMPDIR="$claude_tmp" \
+  (close_held_fifos && cd "$claude_home/cwd" && isolated PATH="$PATH" HOME="$claude_home/home" TMPDIR="$claude_tmp" \
     CLAUDE_CONFIG_DIR="$claude_home/config" \
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 CLAUDE_CODE_DISABLE_CRON=1 \
     LEGION_ROLE=implementer LEGION_ISSUE=NCS-1 ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
@@ -548,7 +580,7 @@ acked_past() {
 # message_each STEP: one direct message to each session, by the listener's own send route, then a
 # check per session that its own consumer acked it, naming where it stopped when it did not.
 message_each() {
-  local step=$1 label session marker code floor sequence
+  local step=$1 label session marker code floor sequence acked
   # A stand-in Oh My Pi host's timer is this script's to tick: a pass, which registers the session
   # again, as it would by now. A real host ticks its own.
   [ "$hosts" = real ] || send omp '{"op":"heartbeat"}'
@@ -562,9 +594,12 @@ message_each() {
       -d "$(jq -cn --arg t "$session" --arg m "$marker" \
         '{source: "agent", source_session: "nats-callout-sessions", target_session: $t, message: $m}')") ||
       code="unreachable"
-    if wait_for 45 acked_past "$session" "$floor" >/dev/null; then
+    acked=false
+    wait_for 45 acked_past "$session" "$floor" >/dev/null && acked=true
+    # The hub's record of the session's consumer, kept whatever the receive came to.
+    consumer "$session" >"$evidence/answers/$step-$label-consumer.json" || true
+    if [ "$acked" = true ]; then
       sequence=$(acked_past "$session" "$floor")
-      consumer "$session" >"$evidence/answers/$step-$label-consumer.json" || true
       if ! admitted_as "$session"; then
         failed "$step ($label)" "s-$session acked stream sequence $sequence, but the hub lists no connection admitted as session/$session"
       elif ! wait_for 15 received "$label" "$marker"; then

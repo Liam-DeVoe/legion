@@ -14,9 +14,11 @@ export const NATS_PING_INTERVAL_MS = 10_000;
 export const NATS_MAX_PINGS_OUT = 2;
 
 /** The `connect` options every session plugin dials NATS with: its credential (`natsAuthOptions`:
- * a seed's nkey user, the session's broker token, or none), reconnecting forever 2 s apart (so the
- * connection never closes on its own and only the plugin's shutdown ends it), the ping check above,
- * and, for the broker token alone, never giving up over a refused credential.
+ * a seed's nkey user, the session's broker token, or none), reconnect attempts without limit 2 s
+ * apart, the ping check above, and, for the broker token alone, never giving up over a refused
+ * credential. A seed or no credential that the server refuses twice in a row still closes the
+ * connection for good, as below; a broker token presented to a server that sends no nonce fails
+ * the CONNECT (`NO_AUTH_SERVICE`, `./nats-credential`).
  *
  * That last one matters on a hub whose connections an auth service admits
  * (packages/envoy/internal/broker/natscallout): while that service is away, which a restart of the

@@ -276,8 +276,9 @@ function natsSeed(
  * refused, naming the setting and never its value, which may be a credential pasted into the wrong
  * place. Unset is none, whatever
  * the machine's broker route says: that route reads only `AGENT_SECRETS_URL` and the machine's
- * identity, which the local stack, the compose stacks and the load test set while their hubs run
- * no auth service, and a broker token presented to such a hub loses the session its inbound
+ * identity, which says nothing of whether the hub runs an auth service (`dev-stack.sh` without
+ * `--callout`, for one, exports a broker route beside a hub that runs none), and a broker token
+ * presented to such a hub loses the session its inbound
  * messages. `broker` beside a seed is refused naming both, rather than one of the two silently
  * winning; `none` beside one leaves the seed the credential, as a seed is wherever it is set.
  */
