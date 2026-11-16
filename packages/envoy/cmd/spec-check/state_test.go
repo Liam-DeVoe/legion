@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -173,6 +172,11 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a subject of a branch with a transaction of the graph", "carry",
 			write("subjects.json", `[{"commit":"c2","branch":"listener-restart","graph_tx":"tx1","now":"2026-11-14T00:00:00Z"}]`),
 			"subjects.json", "subject 1: it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"},
+		// A graph_tx of no letter and no digit, by the test that the reader takes a missing text with,
+		// names no transaction (TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject takes tx1).
+		{"a subject whose graph_tx holds only blanks", "carry",
+			replace("subjects.json", `"branch": "listener-change"`, `"deploy": "d1", "graph_tx": " \t "`),
+			"subjects.json", "subject 4: it sets a graph_tx of no letter and no digit, which names no transaction of the graph"},
 		{"a subject with no time", "carry", write("subjects.json", `[{"commit":"c2","branch":"listener-restart"}]`),
 			"subjects.json", "subject 1: it sets no now"},
 		{"no subject", "carry", write("subjects.json", `[]`), "subjects.json", "it holds no subject"},
@@ -350,11 +354,14 @@ func TestAWaitReadsTheOwnChecksThatReadTheSubject(t *testing.T) {
 }
 
 // R13: a query "reads the graph at one transaction". R7: "A result counts only for the procedure
-// that ran it and for the subject that it read." Through the command, a check of the graph is judged
-// at the graph_tx of the subject, which the subject line names, whichever transaction is newer or
-// was recorded last, and has no state at a subject that names none. Each row: carry at m2 alone, as
-// the commit that production runs at deploy d1, with a query of the graph under its leaf: a failure
-// at tx2, then a pass at tx1 recorded later, and a caught failing example.
+// that ran it and for the subject that it read." R10: "A check whose subject is production decides
+// nothing for the head of a branch", and the graph is production's data. Through the command, a
+// check of the graph is judged at the commit that production runs, at the graph_tx of the subject,
+// which the subject line names, whichever transaction is newer or was recorded last, and reads
+// unknown at a subject that names no graph_tx or one that no result read (R10: "Unknown: every
+// other case"). Each row: carry at m2 alone, as the commit that production runs at deploy d1, with a
+// query of the graph as the one check of its leaf (carry's code check taken out), the row's runs of
+// it, and a caught failing example.
 func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -363,21 +370,35 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 		Claim:          "Each message record of the graph has a delivery record.",
 		ProcedureText:  "The query reads each message record of the graph.\nIt returns each message record that has no delivery record.",
 		FailingExample: "A copy of the graph with one message record that has no delivery record."}
-	for _, row := range []struct{ graphTx, subjectLine, checkLine string }{
-		{"tx2", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx2",
-			"  check " + graph.ID + ": false (failed, counted from tx2)"},
-		{"tx1", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx1",
-			"  check " + graph.ID + ": true (passed, counted from tx1)"},
-		{"tx3", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx3",
-			"  check " + graph.ID + ": unknown (subject_moved)"},
-		{"", "spec-check: subject m2, the commit that production runs at deploy d1", ""},
+	run := func(outcome, tx, at string, seq int) any {
+		return map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": outcome, "graph_tx": tx, "at": at, "seq": seq}
+	}
+	twoRuns := []any{run("fail", "tx2", "2026-11-13T12:00:00Z", 21), run("pass", "tx1", "2026-11-13T13:00:00Z", 22)}
+	deploy := "spec-check: subject m2, the commit that production runs at deploy d1"
+	leaf, check := "statement a-stored-message-survives-a-restart: ", "  check "+graph.ID+": "
+	unknown := []string{leaf + "unknown (check " + graph.ID + ": subject_moved)", check + "unknown (subject_moved)"}
+	for _, row := range []struct {
+		name, graphTx string
+		runs          []any
+		subjectLine   string
+		want          []string // lines that stdout holds
+	}{
+		{"a failure at tx2, then a pass at tx1; graph_tx tx2", "tx2", twoRuns, deploy + ", and the graph at transaction tx2",
+			[]string{leaf + "not met (check " + graph.ID + " is false)", check + "false (failed, counted from tx2)"}},
+		{"a failure at tx2, then a pass at tx1; graph_tx tx1", "tx1", twoRuns, deploy + ", and the graph at transaction tx1",
+			[]string{leaf + "met", check + "true (passed, counted from tx1)"}},
+		{"a failure at tx2, then a pass at tx1; graph_tx tx3", "tx3", twoRuns, deploy + ", and the graph at transaction tx3", unknown},
+		{"a failure at tx2, then a pass at tx1; no graph_tx", "", twoRuns, deploy, unknown},
+		{"a failure at tx1; no graph_tx", "", []any{run("fail", "tx1", "2026-11-13T12:00:00Z", 21)}, deploy, unknown},
+		{"a pass at tx1; no graph_tx", "", []any{run("pass", "tx1", "2026-11-13T12:00:00Z", 21)}, deploy, unknown},
 	} {
-		t.Run("graph_tx "+strconv.Quote(row.graphTx), func(t *testing.T) {
+		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			dir := copyScenario(t, "carry")
 			for _, commit := range []string{"c2", "c3", "c4"} {
 				removeAll(t, filepath.Join(dir, "files", commit))
 			}
+			removeCheck(t, dir, "a-restart-loses-no-message")
 			subject := map[string]any{"commit": "m2", "deploy": "d1", "now": "2026-11-14T00:00:00Z"}
 			if row.graphTx != "" {
 				subject["graph_tx"] = row.graphTx
@@ -396,10 +417,8 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 			writeFile(t, spec, append(content, block...))
 			var results []any
 			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-			results = append(results,
-				map[string]any{"check": graph.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "at": "2026-11-13T11:00:00Z", "seq": 20},
-				map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": "fail", "graph_tx": "tx2", "at": "2026-11-13T12:00:00Z", "seq": 21},
-				map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": "pass", "graph_tx": "tx1", "at": "2026-11-13T13:00:00Z", "seq": 22})
+			fault := map[string]any{"check": graph.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "at": "2026-11-13T11:00:00Z", "seq": 20}
+			results = append(append(results, fault), row.runs...)
 			writeJSONFile(t, filepath.Join(dir, "results.json"), results)
 			got := runBinary(t, binary, "", "state", "--scenario", dir)
 			if got.code != 0 || got.stderr != "" {
@@ -409,12 +428,10 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 			if lines[0] != row.subjectLine {
 				t.Errorf("the subject line %q, want %q", lines[0], row.subjectLine)
 			}
-			judged := slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "  check "+graph.ID+":") })
-			switch {
-			case row.checkLine == "" && judged:
-				t.Errorf("a subject with no graph_tx judged the check of the graph:\n%s", got.stdout)
-			case row.checkLine != "" && !slices.Contains(lines, row.checkLine):
-				t.Errorf("no line %q in:\n%s", row.checkLine, got.stdout)
+			for _, want := range row.want {
+				if !slices.Contains(lines, want) {
+					t.Errorf("no line %q in:\n%s", want, got.stdout)
+				}
 			}
 		})
 	}

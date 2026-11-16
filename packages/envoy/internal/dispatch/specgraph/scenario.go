@@ -94,8 +94,9 @@ type scenarioResult struct {
 //     statements exist, so an approved leaf can have no check, and the files then do not hold it;
 //   - subjects.json, [{"commit","branch","deploy","graph_tx","now"}]: at least one subject, each
 //     with a commit, a now, and exactly one of branch and deploy; graph_tx, the transaction of the
-//     graph that the subject reads, only with a deploy, and a subject that names none judges no
-//     check of the graph;
+//     graph that the subject reads, only with a deploy and only with a letter or a digit (hasWord).
+//     A check of production or of the graph is judged only at a deploy, and a check of the graph
+//     reads unknown there when graph_tx is absent or names a transaction that no result read;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
@@ -197,6 +198,8 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 			fault = "it sets neither branch nor deploy; a subject sets exactly one of them"
 		case sub.GraphTx != "" && sub.Deploy == "":
 			fault = "it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"
+		case sub.GraphTx != "" && !hasWord(sub.GraphTx):
+			fault = "it sets a graph_tx of no letter and no digit, which names no transaction of the graph"
 		}
 		if fault != "" {
 			return nil, scenarioFault("subjects.json", "subject %d: %s", i+1, fault)

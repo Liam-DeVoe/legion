@@ -44,9 +44,10 @@ type State struct {
 //     state for a tree that the rules refuse).
 //  4. Else met, checks_true, also when no check counts (R10: "Met: all of them are true"), and
 //     PartlyChecked when the approved spec marks S (R10: "The page then says partly checked beside
-//     met"). R37 needs that reading of no check: a statement whose only checks read production is
-//     met at the head of main before its issue is done and its production checks run. A leaf
-//     whose checks all read production is such a statement, and not a leaf with no check.
+//     met"). R37 needs that reading of no check: a statement whose only checks read production or
+//     the graph is met at the head of main before its issue is done and its production checks run.
+//     A leaf whose checks all read production or the graph is such a statement, and not a leaf with
+//     no check.
 //
 // Own is the state of S over its own checks that read the subject, which a wait on S reads (R29:
 // "its own checks read true there. The statements under it do not count for that wait"; R10:
