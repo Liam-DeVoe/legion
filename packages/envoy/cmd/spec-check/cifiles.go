@@ -9,20 +9,21 @@ import (
 )
 
 // compareCall is the comparison in the text that textHits keeps: a word that holds the command
-// spec-check, under any path ("./cmd/spec-check", "$RUNNER_TEMP/spec-check"), then white space, a
-// line break too, and the word compare.
-var compareCall = regexp.MustCompile(`spec-check\S*\s+compare\b`)
+// spec-check, under any path ("./cmd/spec-check", "$RUNNER_TEMP/spec-check"), then white space (a
+// line break too), commas and opening brackets, as a list of arguments in a script holds them,
+// and the word compare.
+var compareCall = regexp.MustCompile(`spec-check[^\s,\[(]*[\s,\[(]+compare\b`)
 
 // ciFilesThatCompare is "<path>:<line>" for each place of files where the comparison of the spec
 // files with the approved spec is written, sorted by path, then by line, each line once. No CI job
 // compares the files, and R2 gives that comparison at each push to Dispatch. The guard names each
-// place of a CI file where the command's name and then the word compare stand as two words that
-// follow each other, with quote characters, a $ before a quote, backslashes and line breaks
-// between them ignored, and the indentation after a backslash and a line break ignored too. So it
-// also names a comment or a quoted text that no shell runs, and the author rewords that line. It
-// does not find a command that an expansion or an escape builds, or one with another word between
-// the two, and it is no defence against an author who hides the command: compare itself refuses
-// to run in a CI job. It reads each file as text (textHits), and knows nothing of shell or of YAML.
+// place of a CI file where the command's name and then the word compare follow each other with
+// only white space, commas or opening brackets between them, and with quote characters (also a $
+// before one), backslashes, and line breaks with the indentation after them ignored. So it also
+// names a comment or a quoted text that no shell runs, and the author rewords that line. It does
+// not find a command that an expansion or an escape builds, or one with another word between the
+// two, and it is no defence against an author who hides the command: compare itself refuses to
+// run in a CI job. It reads each file as text (textHits), and knows nothing of shell or of YAML.
 //
 // The keys are the repository paths of the files that guard reads (ciDirs): every file under
 // .github/workflows/, .github/actions/, .github/scripts/ and scripts/, which hold the workflows
