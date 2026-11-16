@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
@@ -51,10 +52,11 @@ func TestReviewRoundsStillCountStatusEntriesWhenTheOnlyObservationFollowsTheClos
 }
 
 // TestASendBackIsCountedFromTheStatusHistoryBeforeObservations: "the share of issues sent back at
-// least once (a move from `testing`, `reviewing`, `accepting` or the merger's phase to
-// `implementing`)". Before observations the Design reads those phases off the status the workflow
-// wrote, as it does for the review rounds beside them — `needs_review` is the status of both
-// reviewing and accepting, `retro` the status of the merger's phase, and `testing` is its own.
+// least once (a move from `testing`, `reviewing`, `accepting` `retro`, `merging` or
+// `awaiting_merge` to `implementing`)". Before observations the Design reads those phases off the
+// status the workflow wrote, as it does for the review rounds beside them — `needs_review` is the
+// status of both reviewing and accepting, `retro` the status of both retro and merging, and
+// `testing` is its own.
 // `sentBackOnce` reads the phase timeline alone, and the event-log
 // fallback places one span per phase in workflow order, so no fallback timeline can hold a
 // send-back: over the A2 corpus 219 of 289 finished issues record a `needs_review` →
@@ -91,15 +93,16 @@ func TestASendBackIsCountedFromTheStatusHistoryBeforeObservations(t *testing.T) 
 
 // TestARetroSendBackCountsAsOneAndMarksImplementing: `retro` is the third status a send-back
 // moves out of (spec version 20), because the daemon writes `in_progress` over a retro when the
-// head's CI goes red (workflow/table.go's TriggerChecksRed), exactly as it does over testing and
-// needs_review. Before observations that write is read off the status history, so it counts the
-// issue as sent back and marks the hours after it as implementing rather than as the merger's.
+// head starts conflicting with its base (the daemon workflow's TriggerConflict), exactly as it
+// does over testing and needs_review. Before observations that write is read off the status
+// history, so it counts the issue as sent back and marks the hours after it as implementing
+// rather than as more of retro.
 func TestARetroSendBackCountsAsOneAndMarksImplementing(t *testing.T) {
 	fromRetro := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(9)).
 		statusAt(hour(0), "in_progress").
 		statusAt(hour(2), "testing").
 		statusAt(hour(3), "needs_review").
-		// The architect accepted it, and the head's CI went red in retro.
+		// The architect accepted it, and its head started conflicting with its base in retro.
 		statusAt(hour(4), "retro").
 		statusAt(hour(5), "in_progress").
 		statusAt(hour(7), "testing").
@@ -111,7 +114,8 @@ func TestARetroSendBackCountsAsOneAndMarksImplementing(t *testing.T) {
 		statusAt(hour(4), "retro").
 		statusAt(hour(9), "done")
 
-	report := Compute(fixture(hour(-24), hour(24), fromRetro, straight), ScopeAll, hour(24))
+	population := fixture(hour(-24), hour(24), fromRetro, straight)
+	report := Compute(population, ScopeAll, hour(24))
 
 	for _, row := range report.Rework.Issues {
 		want := row.Key == "INFRA-1"
@@ -122,14 +126,13 @@ func TestARetroSendBackCountsAsOneAndMarksImplementing(t *testing.T) {
 	if report.Rework.SentBackShare != 0.5 {
 		t.Errorf("sent-back share = %g, want 0.5", report.Rework.SentBackShare)
 	}
-	// The two hours between that `in_progress` and the next `testing` are implementing, not the
-	// merger's: an `in_progress` after retro names a phase where an admission's does not.
-	hours := map[string]float64{}
-	for _, bar := range report.PhaseTime.Bars {
-		hours[bar.Role] = bar.Hours
+	// The two hours between that `in_progress` and the next `testing` are implementing, not
+	// retro: an `in_progress` after retro names a phase where an admission's does not.
+	want := []string{
+		"implementing 0-2", "testing 2-3", "reviewing 3-4", "retro 4-5", "implementing 5-7", "testing 7-9",
 	}
-	if hours["implementer"] < 2 {
-		t.Errorf("the implementer's bar holds %g h, want at least the two hours after the send-back from retro", hours["implementer"])
+	if got := timelineOf(population, fromRetro); !reflect.DeepEqual(got, want) {
+		t.Errorf("the timeline of the issue sent back out of retro is %v, want %v", got, want)
 	}
 }
 

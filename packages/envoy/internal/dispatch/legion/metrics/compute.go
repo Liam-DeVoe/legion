@@ -31,18 +31,23 @@ const (
 // so the seven bars of an issue add up to its work time (phaseTime).
 const barNoRole = "no_role"
 
-// bars are the seven bars, in the order PhaseTime.Bars lists them. The merger's three phases
-// are the one declaration of that grouping (legion.MergerPhases).
+// mergerPhases are the two phases of the merger's bar, "merging and awaiting merge", and the two a
+// table names merging (tablePhase). Retro is not one of them: "the daemon gives retro to the
+// implementer" (RoleFor in packages/daemon/internal/phase), so its hours are on the
+// implementer's bar and a table names it retro (the spec's metric 2 and "Phase words in tables").
+var mergerPhases = []string{legion.PhaseMerging, legion.PhaseAwaitingMerge}
+
+// bars are the seven bars, in the order PhaseTime.Bars lists them.
 var bars = []struct {
 	Role   string
 	Phases []string
 }{
 	{"architect", []string{phaseDesign, legion.PhaseAccepting}},
 	{"planner", []string{legion.PhasePlanning}},
-	{"implementer", []string{legion.PhaseImplementing}},
+	{"implementer", []string{legion.PhaseImplementing, legion.PhaseRetro}},
 	{"tester", []string{legion.PhaseTesting}},
 	{"reviewer", []string{legion.PhaseReviewing}},
-	{"merger", legion.MergerPhases},
+	{"merger", mergerPhases},
 	{barNoRole, []string{legion.PhaseAwaitingPerson, legion.PhaseHeld}},
 }
 
@@ -122,8 +127,8 @@ type RoleBar struct {
 // Rework is metric 3.
 type Rework struct {
 	MedianReviewRounds float64 `json:"median_review_rounds"`
-	// SentBackShare is the share of finished issues moved from testing, reviewing, accepting or
-	// the merger's phase back to implementing at least once.
+	// SentBackShare is the share of finished issues moved from testing, reviewing, accepting,
+	// retro, merging or awaiting merge back to implementing at least once (sentBackPhases).
 	SentBackShare float64 `json:"sent_back_share"`
 	// HoursAfterFirstReview is the implementing and testing hours after the first review, across
 	// the finished issues, and its median per issue.
@@ -167,7 +172,7 @@ type SplittingWeek struct {
 // FiledIssue is one issue a Legion session created in the window. Three of its fields carry a
 // closed set the computation decides: Class is one of the four classes, Filer one of Legion's six
 // worker types or the controller, which works no issue, and FilerPhase the phase the filer's issue
-// was in, named by the bar it falls on (tablePhase).
+// was in, named by the word a table names it by (tablePhase).
 type FiledIssue struct {
 	Key   string    `json:"key"`
 	Title string    `json:"title"`
@@ -176,11 +181,13 @@ type FiledIssue struct {
 	// Filer is the role that filed it and the issue that role was working, or the controller.
 	Filer      string `json:"filer"`
 	FilerIssue string `json:"filer_issue"`
-	// FilerPhase is the phase the filer's issue was in when it filed, named by the bar it falls
-	// on (tablePhase): the seven bar words, the three a timeline holds that are on no bar
-	// (`queued`, `awaiting_person` and `held`), `done` for an issue the daemon has finished and
-	// Dispatch has not closed, and the empty string for a moment the issue's timeline does not
-	// cover, which is what every filing by the controller carries.
+	// FilerPhase is the phase the filer's issue was in when it filed, named by the word a table
+	// names it by (tablePhase): the eight words of the spec's "Phase words in tables" — `design`,
+	// `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro` and `merging` —,
+	// `queued` for the waiting line, `awaiting_person` and `held` for the "no role" bar, `done`
+	// for an issue the daemon has finished and Dispatch has not closed, and the empty string for
+	// a moment the issue's timeline does not cover, which is what every filing by the controller
+	// carries.
 	FilerPhase string `json:"filer_phase"`
 }
 
@@ -223,11 +230,28 @@ type computation struct {
 	workTimes map[string]workTimeRow
 }
 
-// phaseTimeline is one issue's phase timeline with where it came from: the daemon's own
-// observations, or the event log's fallback (Population.Phases).
+// phaseTimeline is one issue's phase timeline with where each part of it came from: the event
+// log's reading before the issue's first observed phase, and the daemon's own observations from
+// it on (Population.Phases).
 type phaseTimeline struct {
-	spans    []PhaseSpan
-	observed bool
+	spans []PhaseSpan
+	// firstObserved is the index of the first span the sampler observed, and len(spans) for an
+	// issue it never observed.
+	firstObserved int
+}
+
+// statusesBefore is the part of the issue's status history the rules before observations read:
+// the statuses written before the observed part of its timeline begins, which is all of them for
+// an issue the sampler never observed.
+func (t phaseTimeline) statusesBefore(issue *Issue) []Mark {
+	if t.firstObserved == len(t.spans) {
+		return issue.StatusMarks
+	}
+	from := t.spans[t.firstObserved].Span.From
+	if cut := slices.IndexFunc(issue.StatusMarks, func(mark Mark) bool { return !mark.At.Before(from) }); cut >= 0 {
+		return issue.StatusMarks[:cut]
+	}
+	return issue.StatusMarks
 }
 
 // workTimeRow is one memoised answer of workTimeOf: the row, the spans its hours are the measure
@@ -299,13 +323,13 @@ func (c *computation) inScope(key string) bool {
 	return true
 }
 
-// timelineOf is the issue's phase timeline with where it came from, computed once.
+// timelineOf is the issue's phase timeline with where each part of it came from, computed once.
 func (c *computation) timelineOf(issue *Issue) phaseTimeline {
 	if timeline, held := c.phases[issue.Key]; held {
 		return timeline
 	}
-	spans, observed := c.population.Phases(issue)
-	timeline := phaseTimeline{spans: spans, observed: observed}
+	spans, firstObserved := c.population.Phases(issue)
+	timeline := phaseTimeline{spans: spans, firstObserved: firstObserved}
 	c.phases[issue.Key] = timeline
 	return timeline
 }
@@ -435,15 +459,23 @@ func (c *computation) computeWorkTime(issue *Issue) workTimeRow {
 	}
 }
 
-// firstWorkerEvent is where an issue's work time starts: the first event of any session titled
-// `Legion <role> · <its key>`, and its first handoff for an issue whose Legion work is a handoff
-// alone.
+// firstWorkerEvent is where an issue's work time starts: "the issue's first worker event", the
+// first event of any session titled `Legion <role> · <its key>` (Issue.FirstRoleEvent), and its
+// first handoff only for an issue whose Legion work is handoffs alone.
+//
+// A handoff is recorded with a `handoff.recorded` event of the session that wrote it
+// (api/handoffs.go), so a handoff a worker of the issue wrote is already among that role's
+// events, and one written before the first of them is some other session's: it does not start
+// the work time of an issue its workers wrote on.
 func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 	var first time.Time
 	for _, at := range issue.FirstRoleEvent {
 		if first.IsZero() || at.Before(first) {
 			first = at
 		}
+	}
+	if !first.IsZero() {
+		return first, true
 	}
 	for _, handoff := range issue.Handoffs {
 		if first.IsZero() || handoff.At.Before(first) {
@@ -535,42 +567,42 @@ func (c *computation) rework(finished []*Issue) Rework {
 	return metric
 }
 
-// reviewRounds is "entries into `reviewing`, or into status `needs_review` before observations".
-// Before observations is where the sampler drew no timeline of the issue's own life: an issue
-// whose only `phase` mark is the one the sampler's first pass left after it closed has no
-// observed round of any hour it lived, so its rounds are its status entries.
+// reviewRounds is "entries into `reviewing`, or into status `needs_review` before observations":
+// the entries into `needs_review` of the status history written before the observed part of the
+// issue's timeline begins, and the entries into `reviewing` of that observed part. A `reviewing`
+// stretch the sampler first saw is no new entry where the event log's part ends in reviewing too.
+// An issue whose only `phase` mark is the one the sampler's first pass left after it closed has
+// no observed part, so its rounds are its status entries.
 func reviewRounds(issue *Issue, timeline phaseTimeline) int {
-	if !timeline.observed {
-		return statusEntries(issue, statusNeedsReview)
-	}
-	rounds := 0
-	for index, span := range timeline.spans {
-		if span.Phase == legion.PhaseReviewing && (index == 0 || timeline.spans[index-1].Phase != legion.PhaseReviewing) {
+	rounds := statusEntries(timeline.statusesBefore(issue), statusNeedsReview)
+	for index := timeline.firstObserved; index < len(timeline.spans); index++ {
+		if timeline.spans[index].Phase == legion.PhaseReviewing && (index == 0 || timeline.spans[index-1].Phase != legion.PhaseReviewing) {
 			rounds++
 		}
 	}
 	return rounds
 }
 
-// sentBackOnce is "a move from `testing`, `reviewing`, `accepting` or the merger's phase to
-// `implementing`": off the observed timeline where the sampler drew one, and off the status
-// history before observations, as the review rounds beside it are, since `needs_review` is the
-// status of both reviewing and accepting, `retro` the status of the merger's phase and
-// `in_progress` the status of implementing. The merger's phase is three of the daemon's
-// (legion.MergerPhases, the three the merger's bar holds), and a red check sends an issue back
-// to implementing out of any of them, so the observed half counts all three where the fallback
-// half counts the one status that names them.
+// sentBackPhases are the phases a send-back moves out of: "a move from `testing`, `reviewing`,
+// `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`". A head that starts
+// conflicting with its base sends the issue back out of any of them (the daemon workflow's
+// TriggerConflict).
+var sentBackPhases = []string{
+	legion.PhaseTesting, legion.PhaseReviewing, legion.PhaseAccepting,
+	legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,
+}
+
+// sentBackOnce is whether the issue moved from one of sentBackPhases to `implementing`: off the
+// status history written before the observed part of its timeline begins, and off that observed
+// part from there on, as the review rounds beside it are. Before observations the move is the
+// status's (sentBackStatuses): `needs_review` is the status of both reviewing and accepting,
+// `retro` the status of both retro and merging, and `in_progress` the status of implementing.
 func sentBackOnce(issue *Issue, timeline phaseTimeline) bool {
-	if !timeline.observed {
-		return statusMoved(issue, sentBackStatuses, statusImplementing)
+	if statusMoved(timeline.statusesBefore(issue), sentBackStatuses, statusImplementing) {
+		return true
 	}
-	for index := 1; index < len(timeline.spans); index++ {
-		if timeline.spans[index].Phase != legion.PhaseImplementing {
-			continue
-		}
-		switch previous := timeline.spans[index-1].Phase; {
-		case previous == legion.PhaseTesting, previous == legion.PhaseReviewing,
-			previous == legion.PhaseAccepting, legion.IsMergerPhase(previous):
+	for index := max(timeline.firstObserved, 1); index < len(timeline.spans); index++ {
+		if timeline.spans[index].Phase == legion.PhaseImplementing && slices.Contains(sentBackPhases, timeline.spans[index-1].Phase) {
 			return true
 		}
 	}
@@ -587,15 +619,16 @@ func firstEntry(timeline []PhaseSpan, phase string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// firstReview is when the issue was first reviewed: the first `reviewing` stretch of the
-// timeline the sampler drew, and the first entry into status `needs_review` before observations,
-// where the rounds and the send-back beside it are read off the same status history ("Rule
-// details — Review rounds and send-backs before observations").
+// firstReview is when the issue was first reviewed: its first entry into status `needs_review`
+// before the observed part of its timeline begins, and else the first `reviewing` stretch of that
+// observed part ("Rule details — The first review"), where the rounds and the send-back beside it
+// are read off the same two halves ("Rule details — Review rounds and send-backs before
+// observations").
 func firstReview(issue *Issue, timeline phaseTimeline) (time.Time, bool) {
-	if !timeline.observed {
-		return firstStatusEntry(issue, statusNeedsReview)
+	if at, entered := firstStatusEntry(timeline.statusesBefore(issue), statusNeedsReview); entered {
+		return at, true
 	}
-	return firstEntry(timeline.spans, legion.PhaseReviewing)
+	return firstEntry(timeline.spans[timeline.firstObserved:], legion.PhaseReviewing)
 }
 
 // splitting is metric 4: each issue a Legion session created in the window, by the parent it had
@@ -718,19 +751,20 @@ func phaseAt(timeline []PhaseSpan, at time.Time) string {
 	return ""
 }
 
-// tablePhase is the word a table names a phase by: the bar it falls on (the spec's "Phase words
-// in tables"). The merger's bar holds three of the daemon's phases (legion.MergerPhases, the one
-// declaration of that grouping), so a filer in any of them is named merging, and every other
-// phase is named as the timeline names it.
+// tablePhase is the word a table names a phase by (the spec's "Phase words in tables"): "Every
+// table names a phase by the bar it falls on: design, planning, implementing, testing, reviewing,
+// accepting, retro, merging (for `merging` and `awaiting_merge`). So splitting and follow-ups
+// names a filer in `awaiting_merge` as merging." The two phases of the merger's bar
+// (mergerPhases) are named merging, and every other phase is named as the timeline names it:
+// retro is on the implementer's bar and keeps its own word.
 //
-// The whole of what it answers: the seven words of the bars — `design`, `planning`,
-// `implementing`, `testing`, `reviewing`, `accepting` and `merging`; the three words a timeline
-// holds that are on no role's bar — `queued`, which is the waiting line, and `awaiting_person`
-// and `held`, which are the "no role" bar's; `done`, which an issue the daemon has finished and
-// Dispatch has not closed yet holds; and "" for a moment no span of the timeline covers, which is
-// what a filing by the controller carries, since the controller works no issue.
+// The whole of what it answers: those eight words; the three words a timeline holds that are on
+// no role's bar — `queued`, which is the waiting line, and `awaiting_person` and `held`, which are
+// the "no role" bar's; `done`, which an issue the daemon has finished and Dispatch has not closed
+// yet holds; and "" for a moment no span of the timeline covers, which is what a filing by the
+// controller carries, since the controller works no issue.
 func tablePhase(phase string) string {
-	if legion.IsMergerPhase(phase) {
+	if slices.Contains(mergerPhases, phase) {
 		return legion.PhaseMerging
 	}
 	return phase

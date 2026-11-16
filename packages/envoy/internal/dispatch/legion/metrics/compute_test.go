@@ -135,6 +135,31 @@ func TestAnIssueThatClosedWithNoLegionWorkIsNotCounted(t *testing.T) {
 	}
 }
 
+// TestAHandoffBeforeTheFirstWorkerEventDoesNotStartTheWorkTime: work time to merge runs "from the
+// issue's first worker event to its close", and a worker event is an event of a session titled
+// `Legion <role> · <KEY>` "whose `<KEY>` is the issue's own key" (the spec's metric 1 and "Which
+// session is Legion's"). A worker's handoff is recorded with an event of its own session, so it
+// is among that role's events already, and a handoff before the issue's first worker event is
+// some other session's: it starts no work time. The issue below has a handoff at hour 0, its
+// implementer's first event at hour 5 and its close at hour 10.
+func TestAHandoffBeforeTheFirstWorkerEventDoesNotStartTheWorkTime(t *testing.T) {
+	issue := newIssue("INFRA-1").
+		handedOff("plan", hour(0)).
+		worked("implementer", hour(5)).
+		closedAt(hour(10))
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if len(report.WorkTime.Issues) != 1 {
+		t.Fatalf("work-time rows = %d, want the one issue", len(report.WorkTime.Issues))
+	}
+	if row := report.WorkTime.Issues[0]; row.Hours != 5 || !row.StartedAt.Equal(hour(5)) {
+		t.Fatalf("the work time = %g hours from %v, want 5 from the implementer's first event at %v: the handoff before it starts none",
+			row.Hours, row.StartedAt, hour(5))
+	}
+	if bar := barOf(t, report, "implementer"); bar.Hours != 5 {
+		t.Fatalf("the implementer's bar = %g hours, want the five of the work time and none before it", bar.Hours)
+	}
+}
+
 // TestTheScopePicksRootsOrChildren: a tree's root and its child, each counted alone under
 // its own scope and both under all. The root is read from the parent chain, since no daemon has
 // sent a `tree` yet.
@@ -169,7 +194,7 @@ func TestTheScopePicksRootsOrChildren(t *testing.T) {
 // TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts is the fallback timeline, for
 // an issue the sampler never observed: each role's phase starts at the first event of its
 // session or at the handoff of the phase before it, whichever comes first, accepting starts at
-// the review handoff, and the merger's phase ends at the close.
+// the review handoff, and the merging the merger's first event starts ends at the close.
 func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing.T) {
 	root := newIssue("INFRA-1").
 		worked("architect", hour(0)).
@@ -184,7 +209,7 @@ func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing
 	population := fixture(hour(-24), hour(24), root)
 	want := []string{
 		"design 0-1", "planning 1-2", "implementing 2-5", "testing 5-7", "reviewing 7-8",
-		"accepting 8-9", "retro 9-10",
+		"accepting 8-9", "merging 9-10",
 	}
 	if got := timelineOf(population, root); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fallback timeline is %v, want %v", got, want)
@@ -203,6 +228,55 @@ func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing
 	// Nothing was observed, so segments 2 and 3 can hold through nothing and every hour is idle.
 	if report.PhaseTime.IdleShare != 1 {
 		t.Errorf("the idle share = %g, want 1 before any observation exists", report.PhaseTime.IdleShare)
+	}
+}
+
+// TestRetroIsOnTheImplementersBar: one bar per role, "implementer (implementing and retro, because
+// the daemon gives retro to the implementer: `RoleFor` in packages/daemon/internal/phase/phase.go)
+// ... and merger (merging and awaiting merge)" (the spec's metric 2). Before observations the
+// `retro` status starts retro and the merger's first event starts merging, since the workflow
+// keeps the status `retro` through both; on the observed timeline the daemon names all three.
+func TestRetroIsOnTheImplementersBar(t *testing.T) {
+	for _, one := range []struct {
+		name        string
+		issue       *Issue
+		timeline    []string
+		implementer float64
+		merger      float64
+	}{
+		{
+			name: "before observations",
+			issue: newIssue("INFRA-1").
+				worked("implementer", hour(0)).
+				statusAt(hour(2), "retro").
+				worked("merger", hour(3)).
+				closedAt(hour(4)),
+			timeline:    []string{"implementing 0-2", "retro 2-3", "merging 3-4"},
+			implementer: 3, merger: 1,
+		},
+		{
+			name: "observed",
+			issue: newIssue("INFRA-2").worked("implementer", hour(0)).closedAt(hour(6)).
+				observeString(legion.FieldPhase, hour(0), "implementing").
+				observeString(legion.FieldPhase, hour(1), "retro").
+				observeString(legion.FieldPhase, hour(3), "merging").
+				observeString(legion.FieldPhase, hour(4), "awaiting_merge"),
+			timeline:    []string{"implementing 0-1", "retro 1-3", "merging 3-4", "awaiting_merge 4-6"},
+			implementer: 3, merger: 3,
+		},
+	} {
+		t.Run(one.name, func(t *testing.T) {
+			population := fixture(hour(-24), hour(24), one.issue)
+			if got := timelineOf(population, one.issue); !reflect.DeepEqual(got, one.timeline) {
+				t.Fatalf("the timeline is %v, want %v", got, one.timeline)
+			}
+			report := Compute(population, ScopeAll, hour(24))
+			implementer, merger := barOf(t, report, "implementer").Hours, barOf(t, report, "merger").Hours
+			if implementer != one.implementer || merger != one.merger {
+				t.Fatalf("the implementer's bar = %g hours and the merger's %g, want %g and %g: retro's hours are the implementer's",
+					implementer, merger, one.implementer, one.merger)
+			}
+		})
 	}
 }
 
@@ -439,21 +513,23 @@ func TestPlanningStartsAtTheFirstPlannerEventAndNotTheAdmissionWrite(t *testing.
 // TestWorkHoursBeforeTheFirstPhaseMarkAreOnThatPhasesBar: "When an issue's first worker event
 // comes before the start of its first phase, the work hours in between go on the bar of that
 // first phase. So every work-time hour stays on a bar" (the spec's "Work hours before any phase
-// mark"). The issue below opens its work time with a handoff record whose word names no phase —
-// retro, the merger's READY and the architect's sign-off write none — an hour before its planner
-// speaks, and the admission's `in_progress` before that opens nothing, so its first phase starts
-// after its work time does.
+// mark"). Every role's first event is a phase mark of its own, so work hours fall ahead of every
+// mark only on an issue whose Legion work is handoffs alone, whose first handoff opens its work
+// time (firstWorkerEvent). The issue below opens it with a handoff whose word names no phase —
+// `retro`, which the daemon's retro never writes — two hours before its `plan` handoff, and the
+// admission's `in_progress` before that opens nothing, so its first phase starts after its work
+// time does.
 func TestWorkHoursBeforeTheFirstPhaseMarkAreOnThatPhasesBar(t *testing.T) {
 	issue := newIssue("INFRA-1").
 		statusAt(hour(-2), "in_progress").
 		handedOff("retro", hour(0)).
-		worked("planner", hour(1)).
-		worked("implementer", hour(3)).
+		handedOff("plan", hour(2)).
+		handedOff("implement", hour(3)).
 		closedAt(hour(5))
 	population := fixture(hour(-24), hour(24), issue)
-	// The planning the planner's event starts at hour 1 reaches back to the handoff that opened
-	// the work time, so the hour between them is on the planner's bar and not on none.
-	want := []string{"planning 0-3", "implementing 3-5"}
+	// The implementing the plan handoff starts at hour 2 reaches back to the handoff that opened
+	// the work time, so the two hours between them are on the implementer's bar and not on none.
+	want := []string{"implementing 0-3", "testing 3-5"}
 	if got := timelineOf(population, issue); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fallback timeline is %v, want %v", got, want)
 	}
@@ -465,7 +541,7 @@ func TestWorkHoursBeforeTheFirstPhaseMarkAreOnThatPhasesBar(t *testing.T) {
 		whole += bar.Hours
 	}
 	want2 := map[string]float64{
-		"architect": 0, "planner": 3, "implementer": 2, "tester": 0, "reviewer": 0, "merger": 0, barNoRole: 0,
+		"architect": 0, "planner": 0, "implementer": 3, "tester": 2, "reviewer": 0, "merger": 0, barNoRole: 0,
 	}
 	if !reflect.DeepEqual(hoursPerBar, want2) {
 		t.Fatalf("the bars are %v, want %v", hoursPerBar, want2)
@@ -481,13 +557,15 @@ func TestWorkHoursBeforeTheFirstPhaseMarkAreOnThatPhasesBar(t *testing.T) {
 }
 
 // TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar: the same rule on the other timeline.
-// The sampler reads a daemon once a minute and records a phase only when it changes, so an issue
-// whose first worker event comes before the sampler ever saw it has work hours ahead of every
-// observation. They are on the bar of the phase it is first seen in, as the fallback's are, or
-// the seven bars would not add up to the work time for any issue the sampler met late.
+// The hours before an issue's first observation are the event log's to name (the spec's
+// "Statuses before observations"), so the first observed phase is the issue's first phase only
+// where the event log names none before it: here, an issue whose Legion work opens with a
+// handoff naming no phase two hours before the sampler first saw it. Those hours are on the bar
+// of the phase it is first seen in, as the fallback's are, or the seven bars would not add up to
+// the work time.
 func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
 	issue := newIssue("INFRA-1").
-		worked("implementer", hour(0)).
+		handedOff("retro", hour(0)).
 		observeString(legion.FieldPhase, hour(2), "implementing").
 		observeString(legion.FieldPhase, hour(4), "testing").
 		closedAt(hour(6))
@@ -511,11 +589,67 @@ func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
 	}
 	row := report.WorkTime.Issues[0]
 	if row.Hours != 6 {
-		t.Fatalf("the work time = %g hours, want the six from the first worker event to the close", row.Hours)
+		t.Fatalf("the work time = %g hours, want the six from the handoff that opened it to the close", row.Hours)
 	}
 	if whole != row.Hours {
 		t.Fatalf("the seven bars hold %g hours against a work time of %g: an hour of the work time is on no bar",
 			whole, row.Hours)
+	}
+}
+
+// TestAnIssueFirstObservedInFlightTakesItsEarlierPhasesFromItsEvents: "An issue in flight when its
+// first observation is stored takes its phases from observations only from that observation on.
+// Its hours before it come from these status rules, so they keep the phases its events mark
+// rather than all falling on the first phase the sampler saw" (the spec's "Statuses before
+// observations"). The issue below was implemented, tested, reviewed and sent back before the
+// sampler's first read found it implementing at hour 4; from there the daemon's phases name its
+// second round. Metric 3 reads the same two halves: the status history's first round and its
+// send-back before hour 4, and the observed second round after it, whose `needs_review` status
+// is the observations' to count and not the status history's.
+func TestAnIssueFirstObservedInFlightTakesItsEarlierPhasesFromItsEvents(t *testing.T) {
+	issue := newIssue("INFRA-1").
+		worked("implementer", hour(0)).
+		statusAt(hour(0), "in_progress").
+		statusAt(hour(1), "testing").
+		statusAt(hour(2), "needs_review").
+		statusAt(hour(3), "in_progress").
+		observeString(legion.FieldPhase, hour(4), "implementing").
+		statusAt(hour(5), "testing").
+		observeString(legion.FieldPhase, hour(5), "testing").
+		statusAt(hour(6), "needs_review").
+		observeString(legion.FieldPhase, hour(6), "reviewing").
+		observeString(legion.FieldPhase, hour(7), "accepting").
+		statusAt(hour(8), "done").
+		closedAt(hour(8))
+	population := fixture(hour(-24), hour(24), issue)
+	want := []string{
+		"implementing 0-1", "testing 1-2", "reviewing 2-3", "implementing 3-4",
+		"implementing 4-5", "testing 5-6", "reviewing 6-7", "accepting 7-8",
+	}
+	if got := timelineOf(population, issue); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the timeline is %v, want %v: the event log's phases up to the first observation at hour 4 and the daemon's from it on",
+			got, want)
+	}
+	report := Compute(population, ScopeAll, hour(24))
+	hoursPerBar := map[string]float64{}
+	for _, bar := range report.PhaseTime.Bars {
+		hoursPerBar[bar.Role] = bar.Hours
+	}
+	want2 := map[string]float64{
+		"architect": 1, "planner": 0, "implementer": 3, "tester": 2, "reviewer": 2, "merger": 0, barNoRole: 0,
+	}
+	if !reflect.DeepEqual(hoursPerBar, want2) {
+		t.Fatalf("the bars are %v, want %v: the first round's testing and reviewing hours are not the implementing the sampler first saw",
+			hoursPerBar, want2)
+	}
+	row := report.Rework.Issues[0]
+	if row.ReviewRounds != 2 || !row.SentBack {
+		t.Fatalf("the issue has %d review rounds and sent_back=%t, want the round and the send-back its statuses record before hour 4 and the round observed after it",
+			row.ReviewRounds, row.SentBack)
+	}
+	if row.ImplementingHoursAfterFirst != 2 || row.TestingHoursAfterFirst != 1 {
+		t.Fatalf("after the first review: %g implementing and %g testing hours, want 2 and 1 from the review at hour 2",
+			row.ImplementingHoursAfterFirst, row.TestingHoursAfterFirst)
 	}
 }
 
@@ -572,18 +706,18 @@ func TestReviewRoundsAndSendBacksComeFromThePhaseTimeline(t *testing.T) {
 	}
 }
 
-// TestASendBackOutOfTheMergersPhaseIsCountedOnTheObservedTimeline: metric 3 counts "a move from
-// `testing`, `reviewing`, `accepting` or the merger's phase to `implementing`", and the merger's
-// phase is three of the daemon's - `retro`, `merging` and `awaiting_merge`. A red check in any
-// of them sends the issue back (the daemon's workflow table, TriggerChecksRed), so the observed
-// half counts it, as the status half counts the `retro` that names them.
-func TestASendBackOutOfTheMergersPhaseIsCountedOnTheObservedTimeline(t *testing.T) {
+// TestASendBackOutOfRetroIsCountedOnTheObservedTimeline: metric 3 counts "a move from `testing`,
+// `reviewing`, `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`". A head that
+// starts conflicting with its base sends the issue back out of any of them (the daemon workflow's
+// TriggerConflict), so the observed half counts a move out of retro, as the status half counts
+// the `in_progress` written over a `retro`.
+func TestASendBackOutOfRetroIsCountedOnTheObservedTimeline(t *testing.T) {
 	fromRetro := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
 		observeString(legion.FieldPhase, hour(0), "implementing").
 		observeString(legion.FieldPhase, hour(1), "testing").
 		observeString(legion.FieldPhase, hour(2), "reviewing").
 		observeString(legion.FieldPhase, hour(3), "retro").
-		// The head's CI went red while the merger worked.
+		// The head started conflicting with its base during retro.
 		observeString(legion.FieldPhase, hour(4), "implementing").
 		observeString(legion.FieldPhase, hour(6), "done")
 	straight := newIssue("INFRA-2").worked("implementer", hour(0)).closedAt(hour(6)).
@@ -598,7 +732,7 @@ func TestASendBackOutOfTheMergersPhaseIsCountedOnTheObservedTimeline(t *testing.
 	for _, row := range report.Rework.Issues {
 		want := row.Key == "INFRA-1"
 		if row.SentBack != want {
-			t.Errorf("%s sent_back = %t, want %t: only the issue the red check took out of retro was sent back",
+			t.Errorf("%s sent_back = %t, want %t: only the issue sent back out of retro was sent back",
 				row.Key, row.SentBack, want)
 		}
 	}
@@ -763,22 +897,29 @@ func TestTheScopeNarrowsTheFilingsByTheIssueFiled(t *testing.T) {
 	}
 }
 
-// A table names a phase by the bar it falls on (spec version 18, "Phase words in tables"). The
-// merger's bar holds three of the daemon's phases, so a filer in `retro` — which the merger's
-// first event starts — is named merging, while a filer in a phase of its own bar keeps its own
-// word.
-func TestTheSplittingTableNamesAFilerInRetroAsMerging(t *testing.T) {
-	root := newIssue("INFRA-1").
-		worked("architect", hour(0)).
-		worked("implementer", hour(5)).
-		worked("merger", hour(10)).
-		closedAt(hour(20))
+// TestTheSplittingTableNamesAFilerByThePhaseWordsOfTables: "Every table names a phase by the bar
+// it falls on: design, planning, implementing, testing, reviewing, accepting, retro, merging (for
+// `merging` and `awaiting_merge`). So splitting and follow-ups names a filer in `awaiting_merge`
+// as merging" (spec version 48, "Phase words in tables"). Retro is on the implementer's bar and
+// keeps its own word, and both phases of the merger's bar are named merging.
+func TestTheSplittingTableNamesAFilerByThePhaseWordsOfTables(t *testing.T) {
+	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(20)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(10), "retro").
+		observeString(legion.FieldPhase, hour(12), "merging").
+		observeString(legion.FieldPhase, hour(14), "awaiting_merge")
 	inRetro := newIssue("INFRA-5").under("INFRA-1")
 	whileImplementing := newIssue("INFRA-6").under("INFRA-1")
-	population := fixture(hour(-24), hour(48), root, inRetro, whileImplementing)
+	whileMerging := newIssue("INFRA-7").under("INFRA-1")
+	awaitingMerge := newIssue("INFRA-8").under("INFRA-1")
+	population := fixture(hour(-24), hour(48), root, inRetro, whileImplementing, whileMerging, awaitingMerge)
+	implementer := legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}
+	merger := legion.SessionTitle{Role: "merger", Issue: "INFRA-1"}
 	population.Filed = []Filed{
-		{Key: "INFRA-6", At: hour(6), Filer: legion.SessionTitle{Role: "implementer", Issue: "INFRA-1"}, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
-		{Key: "INFRA-5", At: hour(11), Filer: legion.SessionTitle{Role: "merger", Issue: "INFRA-1"}, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
+		{Key: "INFRA-6", At: hour(6), Filer: implementer, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
+		{Key: "INFRA-5", At: hour(11), Filer: implementer, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
+		{Key: "INFRA-7", At: hour(13), Filer: merger, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
+		{Key: "INFRA-8", At: hour(15), Filer: merger, Parent: "INFRA-1", Ancestors: []string{"INFRA-1"}},
 	}
 
 	report := Compute(population, ScopeAll, hour(48))
@@ -787,11 +928,15 @@ func TestTheSplittingTableNamesAFilerInRetroAsMerging(t *testing.T) {
 	for _, row := range report.Splitting.Filed {
 		phaseOf[row.Key] = row.FilerPhase
 	}
-	if phaseOf["INFRA-5"] != legion.PhaseMerging {
-		t.Errorf("the filing made while the filer was in retro names the phase %q, want merging", phaseOf["INFRA-5"])
+	want := map[string]string{
+		"INFRA-5": legion.PhaseRetro,
+		"INFRA-6": legion.PhaseImplementing,
+		"INFRA-7": legion.PhaseMerging,
+		"INFRA-8": legion.PhaseMerging,
 	}
-	if phaseOf["INFRA-6"] != legion.PhaseImplementing {
-		t.Errorf("the filing made while the filer was implementing names the phase %q, want implementing", phaseOf["INFRA-6"])
+	if !reflect.DeepEqual(phaseOf, want) {
+		t.Fatalf("the filings name the filer's phases %v, want %v: a filer in retro is named retro, and one in merging or awaiting_merge merging",
+			phaseOf, want)
 	}
 }
 
