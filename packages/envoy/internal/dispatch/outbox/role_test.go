@@ -1116,6 +1116,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 		t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by the one pass",
 			held.attempts, held.settled, held.published, holder)
 	}
+	handedNow(t, recv, "the role route's held copy forwarded to "+holder)
 	forwards := recv.received()
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %d copies, want the held one: %+v", holder, len(forwards), forwards)
@@ -1222,6 +1223,7 @@ func TestARoleCopyToTheHolderWhoseOwnMentionFailedCarriesTheMentionsKey(t *testi
 
 	holding(t, deps).scan(ctx, unfenced{})
 
+	handedNow(t, recv, "the route's one copy forwarded to "+holder)
 	forwards := recv.received()
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %d copies, want the route's one copy: %+v", holder, len(forwards), forwards)
@@ -1745,6 +1747,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 			t.Fatalf("the comment was not published once the holder's mention settled: attempt_count %d, publish_error %v",
 				attempts, failure)
 		}
+		handedNow(t, recv, "the role route's copy forwarded once "+holder+"'s own mention settled")
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the role route's once its own mention settled: %+v", holder, len(forwards), forwards)
@@ -1761,6 +1764,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 
 		holding(t, deps).scan(ctx, unfenced{})
 
+		handedNow(t, recv, "the role route's copy forwarded past "+holder+"'s own attempt's lease")
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			attempts, failure, _ := eventState(t, rig.database, event.ID)
@@ -2155,6 +2159,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 			t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by the one pass",
 				held.attempts, held.settled, held.published, second)
 		}
+		handedNow(t, recv, "the role route's held copy forwarded to "+second)
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the held one: %+v", second, len(forwards), forwards)
@@ -2417,6 +2422,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 			t.Fatalf("once the holder's mention had settled the held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by that pass",
 				settled.attempts, settled.settled, settled.published, second)
 		}
+		handedNow(t, recv, "the held copy forwarded once "+second+"'s own mention settled")
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the held one once its own mention settled: %+v", second, len(forwards), forwards)
@@ -2435,14 +2441,15 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		row := readHeldCopy(t, rig.database, commentID, roleTopic)
-		forwards := recv.received()
-		if len(forwards) != 1 {
-			t.Fatalf("%s was sent %d copies though its own mention is pending past model.DeliveryClaimLapse = %v, want the held one: the held copy is attempts=%d settled=%v published=%v",
-				second, len(forwards), model.DeliveryClaimLapse, row.attempts, row.settled, row.published)
-		}
 		if !row.settled || !row.published || row.attempts != 0 {
 			t.Fatalf("the held copy is attempts=%d settled=%v published=%v, want it forwarded and settled by the one pass",
 				row.attempts, row.settled, row.published)
+		}
+		handedNow(t, recv, "the held copy forwarded past "+second+"'s own attempt's lease")
+		forwards := recv.received()
+		if len(forwards) != 1 {
+			t.Fatalf("%s was sent %d copies though its own mention is pending past model.DeliveryClaimLapse = %v, want the held one",
+				second, len(forwards), model.DeliveryClaimLapse)
 		}
 		if !strings.HasPrefix(forwards[0].DedupeKey, contracts.RoleForwardDedupePrefix) {
 			t.Fatalf("the copy forwarded past the holder's own attempt's lease is keyed %q, want a role forward's prefixed key: no mention of this comment settled for that holder, and the forward waits for no attempt past its lease",
