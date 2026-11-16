@@ -3199,6 +3199,26 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `ci.yaml`'s `envoy-go-checks` runs the tests of `specgraph` and of `cmd/spec-check` with the architecture-note ones, and runs the action over this repository's `.dispatch/spec` right after the architecture-note action, before the job's own setup-go, with `allow-empty: 'true'` while main holds no spec file;
   a pull request whose spec files break a rule fails that job with one line for each fault, naming its file, its line and its node, and the next step fails unless `count` is a whole number.
 
+- `cmd/ci-report` is the last step of a CI job: it writes one result to Dispatch for each check of the spec files whose test part names the job and whose test ran in the job's go test report (`cmd/ci-report/main.go`).
+  `ci-report --dir <dir> --job <job> --report <file> --project <key> [--dispatch-cli <argv>]` reads the commit with `git rev-parse HEAD` in the checkout, never from `GITHUB_SHA`, and prints both on stderr.
+  It reads the directory as `cmd/spec-check` does, a directory that does not exist being the empty tree, and the report with `specgraph.ReadGoTestJSON`.
+  `planReports` (`report.go`) decides each check with `specgraph.MatchTests`: one run of the test gives its `pass`, `fail`, `skip` or `could_not_run`, no run is `absent`, a runner other than `go` is `absent` with a reason that names the runner, and two or more runs are `two_tests`.
+  A test that go test stopped at its time limit, or whose report the end of the job cut, is `could_not_run` and never `fail`.
+  For each `pass`, `fail` and `could_not_run` it runs `<dispatch-cli> result --project <key> --check <id> --verdict <outcome> --commit <sha> --observed-file -`, with the test's output on standard input, so a `--- FAIL` line never reads as a flag;
+  a skip, a test that did not run and a test that ran twice get no call.
+  It prints one JSON line on stdout for each check of the job, `{"check","test","outcome","exit","result_id","why"}`, `exit` being `null` for a check with no call and `-1` for a command that could not start.
+  Of the command's output it reads only the stored row's `id`, since the row's `predicate.recorder.person` is the address of a person, and `why` carries the command's stderr when a call failed.
+  It exits 0 when each call stored its result, 1 when a call failed, and 2, with no call, for a tree with any problem, a report that holds anything but events, a commit it cannot read and arguments it does not take.
+  Its tests run it with a stub `dispatch` command of their own, and `ci.yaml`'s `envoy-go-checks` runs them with the spec-file ones.
+
+- The composite action `.github/actions/dispatch-results` runs `cmd/ci-report` in a job of this repository:
+  `go run ./packages/envoy/cmd/ci-report --dir .dispatch/spec --job "$JOB" --report "$REPORT" --project "$PROJECT" --dispatch-cli "bun packages/envoy-client/bin/dispatch.ts"`, with `AGENT_SECRETS_MACHINE_IDENTITY=github-actions`, so the dispatch command trades the job's own GitHub OIDC token for one that writes results and nothing else.
+  Its inputs are `report` and `project`, both required, and `job`, by default `${{ github.job }}`.
+  It writes each line to `$RUNNER_TEMP/dispatch-results.jsonl` and to the log, and fails when the command fails:
+  `go run` exits 1 for every status of the command but 0, and its `exit status <n>` line in the log gives the command's own.
+  The calling job checks out this repository, installs Go and runs `bun install`, and its step sets `DISPATCH_URL`, `AGENT_SECRETS_URL` and `AGENT_SECRETS_MACHINE_AUDIENCE`.
+  `cmd/ci-report`'s `TestTheActionRunsTheReporter` runs the action's one step as a runner runs a `shell: bash` step, with fakes of `go` and `bun` on `PATH`.
+
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
   Only the process stopping ends a flight early:

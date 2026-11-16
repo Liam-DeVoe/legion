@@ -113,11 +113,12 @@ jobs:
             exit 1
           fi
         working-directory: packages/envoy
-      # These five packages need no database, so they run here on every push. This is their one
+      # These six packages need no database, so they run here on every push. This is their one
       # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
-      # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
+      # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py. cmd/ci-report's
+      # tests also run the one step of .github/actions/dispatch-results, with fakes of go and bun.
       - name: Test the architecture-note and spec-file rules and their commands
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/ ./cmd/ci-report/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go

@@ -603,6 +603,10 @@ RULES = {
     f"{ENVOY}/cmd/broker/outage_test.go": [
         run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:323-325 cmdtest.BuildCommand . in ../agent-secrets", mode="build")],
     f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:501 countMigrations globs ../../internal/broker/store/migrations/*.up.sql")),
+    f"{ENVOY}/cmd/ci-report/action_test.go": reads(
+        (".github/actions/dispatch-results/action.yml",
+         "cmd/ci-report/action_test.go:20 actionPath joins ../../../../.github/actions/dispatch-results/action.yml, which "
+         "TestTheActionRunsTheReporter reads at :71 and whose one step it runs")),
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
     # :42), which loads bin/dispatch.ts and its imports: envoy-client's sources and
@@ -1357,7 +1361,7 @@ def race_step(job):
 # built from this list, so go-test-step-expansion.py finds no pair the two steps both run and
 # neither step can come to name a package the other does not leave out.
 NOTE_AND_SPEC_PACKAGES = ["internal/dispatch/architecture/notes", "internal/runnerlog", "internal/dispatch/specgraph",
-                          "cmd/architecture-check", "cmd/spec-check"]
+                          "cmd/architecture-check", "cmd/spec-check", "cmd/ci-report"]
 NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their commands"
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
 NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)

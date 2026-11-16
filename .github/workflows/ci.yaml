@@ -2661,9 +2661,9 @@ jobs:
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
             # checks, the seven shell-script tests, and the build and pack of the envoy commands,
             # with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
-            # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
-            # run this is (envoy-go's unit step leaves them out), the architecture-note check over
-            # this repository's own notes through the composite action
+            # internal/dispatch/specgraph, cmd/architecture-check, cmd/spec-check and
+            # cmd/ci-report, whose one run this is (envoy-go's unit step leaves them out), the
+            # architecture-note check over this repository's own notes through the composite action
             # .github/actions/architecture-check, and the spec-file check over its .dispatch/spec
             # through the composite action .github/actions/spec-check. gofmt -l . walks every .go
             # file under packages/envoy, those tests and the scripts they drive live there, and
@@ -2704,6 +2704,9 @@ jobs:
               # main holds no spec file yet, and check-ci-filters.sh refuses a pattern that
               # matches no file (its rule 9).
               - '.dispatch/**'
+              # cmd/ci-report's tests run the one step of .github/actions/dispatch-results, the
+              # action that runs that command as the last step of a job.
+              - '.github/actions/dispatch-results/action.yml'
             # The text checks of the three Go modules, the Dispatch API's eight static source
             # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
             # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
@@ -3832,6 +3835,7 @@ jobs:
               - '!packages/envoy/cmd/architecture-check/**/*_test.go'
               - '!packages/envoy/cmd/broker/**/*_test.go'
               - '!packages/envoy/cmd/broker-refgen/**/*_test.go'
+              - '!packages/envoy/cmd/ci-report/**/*_test.go'
               - '!packages/envoy/cmd/dev-airlock-stands/**/*_test.go'
               - '!packages/envoy/cmd/dev-oidc-issuer/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/**/*_test.go'
@@ -4918,16 +4922,16 @@ jobs:
   # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
   # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
   # internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
-  # cmd/architecture-check and cmd/spec-check, whose one run this is (envoy-go's unit step leaves
-  # them out), the architecture-note check over this repository's own .dispatch/architecture
-  # through the composite action .github/actions/architecture-check, and the spec-file check over
-  # its .dispatch/spec through the composite action .github/actions/spec-check, both of which
-  # other repositories can call. The slow half below (the module's unit tests, the
-  # container-backed NATS matrix and the integration suite) is one of the nine slow suites,
-  # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
-  # must come back on every push. No Postgres service: nothing here opens a database. It
-  # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
-  # binary of every package of the envoy module).
+  # cmd/architecture-check, cmd/spec-check and cmd/ci-report, whose one run this is (envoy-go's
+  # unit step leaves them out), the architecture-note check over this repository's own
+  # .dispatch/architecture through the composite action .github/actions/architecture-check, and
+  # the spec-file check over its .dispatch/spec through the composite action
+  # .github/actions/spec-check, both of which other repositories can call. The slow half below
+  # (the module's unit tests, the container-backed NATS matrix and the integration suite) is one
+  # of the nine slow suites, which run in the merge queue and on a pull request labelled
+  # `full-ci`, while these checks must come back on every push. No Postgres service: nothing here
+  # opens a database. It restores go-envoy rather than go-envoy-test, which is the slow half's
+  # family alone (the test binary of every package of the envoy module).
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
