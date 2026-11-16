@@ -823,7 +823,11 @@ describe("follow filter", () => {
   // The session's own inbox in either form is its own, whenever it was stored, as the old form
   // always was; another session's inbox in either form is not, so the rename widens no reach.
   test("the session's own agent subject is taken in either form, and no other session's", () => {
-    for (const subject of [AGENT, "notifications.agent._.ses_a", "notifications.agent.PRIV.ses_a"]) {
+    for (const subject of [
+      AGENT,
+      "notifications.agent._.ses_a",
+      "notifications.agent.PRIV.ses_a",
+    ]) {
       const { delivery, handed } = setup();
       delivery.receive(relay({ seq: 1, subject, storedAt: T0 - 60 * MINUTE }));
 
