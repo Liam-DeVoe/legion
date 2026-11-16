@@ -4,19 +4,21 @@ import type { ApiError } from "../../api/client";
 
 /**
  * Dispatch's refusal of a person's Approve for the form of The Spec (`SPEC_FORM`), kept by the
- * approval it refused: an approval request's ask (`ask:<id>`, the answer form of `AskCard`) or a
- * document's header (`artifact:<id>`, `ApprovalChip`).
+ * approval request it refused, under one key for its document (`approvalRefusalKey`). The
+ * document's header (`ApprovalChip`) and each card of the request (`AskCard`'s answer form) read
+ * it there, so a refusal of a press in one place shows in each place that shows the request.
  *
- * A refusal belongs to that approval, not to the card or the header that shows it, for the reason
+ * A refusal belongs to that request, not to the card or the header that shows it, for the reason
  * an unsent answer belongs to its ask (`inbox/answer-drafts.ts`): a host can draw its card again
  * while the answer is out. The issue page's Needs you does that every time, because the answer
  * takes the ask's row out of the Inbox read and the refusal puts it back. The card drawn again
  * reads the refusal here, and with it picks Request changes and takes the focus that the press
- * owes. Each surface that shows the approval shows its refusal, and only one takes the focus
- * (`takeFormRefusalFocus`).
+ * owes. Each surface that shows the request shows its refusal, only one takes the focus
+ * (`takeFormRefusalFocus`), and only one card puts the reason in the request's draft
+ * (`takeFormRefusalReason`).
  *
  * Each refusal holds the version it judged, and a read for another version finds none, since the
- * findings are of the text that version holds. The next press of the same approval, or an answer
+ * findings are of the text that version holds. The next press of the same request, or an answer
  * that Dispatch records, lets the refusal go.
  */
 interface FormRefusal {
@@ -25,6 +27,15 @@ interface FormRefusal {
   /** Whether the press it answers still owes the focus to a surface that shows it: true until
    *  one takes it (`takeFormRefusalFocus`). */
   focusOwed: boolean;
+  /** Whether the reason it carries is still to go in the request's draft: true until a card
+   *  puts it there (`takeFormRefusalReason`). */
+  reasonOwed: boolean;
+}
+
+/** The key of the refusal of the approval request of the document `artifactId`, which its header
+ *  and each card of the request share. */
+export function approvalRefusalKey(artifactId: string): string {
+  return `artifact:${artifactId}`;
 }
 
 /** One press of Approve: the surface where the person pressed it (`useRefusalSurface`), when,
@@ -66,7 +77,7 @@ export function setFormRefusal(
 ): void {
   if (refusal === undefined && !refusals.has(key)) return;
   if (refusal === undefined) refusals.delete(key);
-  else refusals.set(key, { ...refusal, focusOwed: true });
+  else refusals.set(key, { ...refusal, focusOwed: true, reasonOwed: true });
   for (const listener of listeners.get(key) ?? []) listener();
 }
 
@@ -102,6 +113,16 @@ export function takeFormRefusalFocus(key: string, surface: number, root: Element
   const standsIn = !drawn.has(press.surface) && surface > press.at && focusIsFreeFor(root);
   if (surface !== press.surface && !standsIn) return false;
   refusal.focusOwed = false;
+  return true;
+}
+
+/** Whether the reason of `key`'s refusal is still to go in the request's draft, and takes it once:
+ *  the draft belongs to the request, so the first card that asks puts the reason there for each
+ *  card, and a card drawn later leaves the text as the person changed it. */
+export function takeFormRefusalReason(key: string): boolean {
+  const refusal = refusals.get(key);
+  if (refusal === undefined || !refusal.reasonOwed) return false;
+  refusal.reasonOwed = false;
   return true;
 }
 
