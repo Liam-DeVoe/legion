@@ -3086,6 +3086,20 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The instrument reads text: a command held in a variable, a line a YAML folded scalar joins, and a Go program that calls `specgraph.Compare` are outside it.
   `ci.yaml`'s `envoy-go-checks` runs it over this repository (`go run ./cmd/spec-check guard --root ../..`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them runs the step.
 
+- `cmd/spec-check state --scenario <dir> [--json]` derives the states of a scenario of The Spec (`cmd/spec-check/state.go`), in the format `specgraph.ReadScenario` reads (`internal/dispatch/specgraph/scenario.go`).
+  The four scenarios in `internal/dispatch/specgraph/testdata/scenarios` each hold the answers that the spec gives them in `want.txt`.
+  For each subject it prints `spec-check: subject <commit>, the head of <branch>` or `spec-check: subject <commit>, the commit that production runs at deploy <deploy>`.
+  Then it prints each current approved statement in preorder with its state from `specgraph.Derive`: `statement <id>: met`, `met, partly checked`, `not built (…)`, `not met (…)` or `unknown (…)`.
+  After each statement come its own checks that read the subject: `  check <id>: true (passed, counted from <commit>)`, `false (failed, counted from <commit>)` or `unknown (<reason>)`.
+  With `units.json`, at the head of main it prints `wait of <unit> on <statement>: ends` or `holds (<own state>)` for each wait (`State.WaitEnds`, R29).
+  After the last subject it then prints `spec-check: cycle of waits: <unit> -> <statement> -> … -> <unit>` or `spec-check: cycle of waits: none` (`specgraph.WaitCycle`).
+  `--json` prints one line of JSON instead: `[]State`, or with `units.json` `{"states":[…],"cycle":[…]}`.
+  A scenario it reads is exit 0 with nothing on stderr.
+  A file or a field that the format does not hold, a missing file, or a spec file that does not parse is exit 2 with one line on stderr, `spec-check: <dir>/<file>: <fault>`.
+  The statement, check and wait lines have no `spec-check: ` prefix: each starts with its fixed word and passes through `runnerlog.Printable`.
+  `TestScenarios` runs the built binary on each scenario and compares its stdout with `want.txt` byte for byte.
+  No flag of a test writes `want.txt`, so a difference is a fault of the code or a question about the spec.
+
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
   Only the process stopping ends a flight early:
