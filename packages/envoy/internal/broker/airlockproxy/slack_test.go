@@ -491,11 +491,11 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	if err != nil {
 		t.Fatalf("record.Sign: %v", err)
 	}
-	request, err := m.Create(t.Context(), enrollmentID, compact, "")
+	request, err := m.Create(t.Context(), enrollmentID, compact, "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%s) = %+v, %v; want a grant at once, as the token is shared and agent tier", slackName, request, err)
 	}
-	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil)
+	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil, requests.ReleaseCall{})
 	if err != nil || release.Airlock == nil {
 		t.Fatalf("Values = %+v, %v; want %s held back behind the airlock", release, err, slackName)
 	}
