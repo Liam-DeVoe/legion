@@ -150,10 +150,12 @@ const accessFetchTimeout = 10 * time.Second
 // never from two mixed, since a mapping from one pass beside answers from another could serve a
 // repository neither alone would. A pass every question of which Dispatch answered replaces the
 // one held. A pass any question of which failed (Dispatch unreachable, a timeout, an answer past
-// its bound) adds nothing, but every refusal it got applies at once (narrow): a project it answers
-// not found or not visible is refused so, and one whose repositories it answers keeps only those
-// both passes name, since the token exchange refuses a removed person's token whatever else
-// Dispatch answers; each failure is logged at warn. Dispatch refusing the
+// its bound) adds nothing, but every restriction any of its answered questions yields applies at
+// once (narrow), whatever else failed: a project it answers not found or not visible is refused
+// so, one whose repositories it answers keeps only those both passes name, and a mapping it read
+// withholds each lane it shows a project outside the entry mapping, newly shared or moved away,
+// since the token exchange refuses a removed person's token whatever else Dispatch answers; each
+// failure is logged at warn. Dispatch refusing the
 // broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused) on any question of a
 // pass, a project's answer or the mapping, is the pass's outcome whatever its other questions
 // did, failures included: the token exchange refuses every trade that asks Dispatch then (oauth's
@@ -351,26 +353,30 @@ func (h *heldAccess) refresh(ctx context.Context) {
 				}
 			}
 		}
-		h.narrow(pass.began, answered)
+		h.narrow(pass.began, answered, pass.lanes)
 		return
 	}
 	pass.answers = answered
 	h.hold(pass)
 }
 
-// narrow applies to the pass held the refusals an incomplete pass, begun at began, got in
-// answers: a held key it answers not found or not visible is refused so at once, and one it
-// answers visible keeps only the repositories both passes name. It adds nothing: a key answered
-// visible again, and a repository or lane new to the pass held, wait for a complete pass, so the
-// grant still never holds what one complete pass did not. A pass held as refused stays refused.
-func (h *heldAccess) narrow(began time.Time, answers map[heldKey]heldAnswer) {
+// narrow applies to the pass held the restrictions an incomplete pass, begun at began, got in
+// answers and, when its mapping read was answered, in lanes: a held key it answers not found or
+// not visible is refused so at once, one it answers visible keeps only the repositories both
+// passes name, and a lane either pass's mapping shows a project outside an entry mapping is
+// withheld from that entry (the lanes of both, merged). It adds nothing: a key answered visible
+// again, a repository or lane new to the pass held, and a lane the later mapping no longer shows
+// shared, wait for a complete pass, which replaces the merged lanes with its own, so the grant
+// still never holds what one complete pass did not, and a mapping moved between two complete
+// passes is no shared lane. A pass held as refused stays refused.
+func (h *heldAccess) narrow(began time.Time, answers map[heldKey]heldAnswer, lanes map[string][]string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	held := h.pass
 	if held == nil || held.refused || began.Before(held.began) {
 		return
 	}
-	narrowed := &heldPass{began: began, answers: maps.Clone(held.answers), lanes: held.lanes}
+	narrowed := &heldPass{began: began, answers: maps.Clone(held.answers), lanes: mergeLanes(held.lanes, lanes)}
 	for key, fresh := range answers {
 		kept, ok := narrowed.answers[key]
 		switch {
@@ -385,6 +391,26 @@ func (h *heldAccess) narrow(began time.Time, answers map[heldKey]heldAnswer) {
 		}
 	}
 	h.pass = narrowed
+}
+
+// mergeLanes is every project either held or later maps to each lane, sorted and each once: a
+// lane is shared outside an entry under the merge whenever it is under either. held is returned
+// as it is when later is nil, a pass whose mapping read failed.
+func mergeLanes(held, later map[string][]string) map[string][]string {
+	if later == nil {
+		return held
+	}
+	merged := make(map[string][]string, len(held)+len(later))
+	for _, lanes := range []map[string][]string{held, later} {
+		for lane, projects := range lanes {
+			merged[lane] = append(merged[lane], projects...)
+		}
+	}
+	for lane, projects := range merged {
+		slices.Sort(projects)
+		merged[lane] = slices.Compact(projects)
+	}
+	return merged
 }
 
 // hold holds pass in place of the one held, unless that one began later, which a slower pass must

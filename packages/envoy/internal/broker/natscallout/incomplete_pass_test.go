@@ -77,3 +77,41 @@ func TestAnIncompletePassStillAppliesItsRefusals(t *testing.T) {
 		})
 	}
 }
+
+// A lane withheld as shared stays withheld until a complete pass: an incomplete pass's mapping
+// may withhold more (TestTNKnownMappingRevocationAppliesDuringProjectFailure) but gives back
+// nothing, since serving a lane again is an addition. PUB maps acme/a and acme/shared, which
+// OTHER maps too, so a first complete pass withholds acme/shared from PUB's daemon; then OTHER
+// drops it and answers 500 in the same pass. The lane stays withheld, and the next complete pass
+// serves it. The control lets the later mapping replace the held one: the incomplete pass serves
+// the lane.
+func TestAnIncompletePassUnsharesNoLane(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	tokens := map[string]platformToken{"pub-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/a", "acme/shared"}, "OTHER": {"acme/other", "acme/shared"}}}
+	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, slowDaemonAccount: {"OTHER"}}, dispatch, services)
+	decision, err := Decide(t.Context(), deps, services, serviceRequest("pub-token"))
+	require.NoError(t, err)
+	require.False(t, holdsLane(decision.Grant, "acme/shared"), "the first complete pass served the lane OTHER shares")
+
+	dispatch.set("OTHER", "acme/other")
+	access := deps.held.access
+	deps.held.access = func(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+		if project == "OTHER" {
+			return projectaccess.Answer{}, errors.New(`projectaccess: dispatch answered /api/v1/access/projects/OTHER 500 with the code ""`)
+		}
+		return access(ctx, project, person)
+	}
+	deps.held.refresh(t.Context())
+	decision, err = Decide(t.Context(), deps, services, serviceRequest("pub-token"))
+	require.NoError(t, err)
+	require.False(t, holdsLane(decision.Grant, "acme/shared"), "an incomplete pass gave back a lane its mapping no longer shows shared")
+	require.True(t, holdsLane(decision.Grant, "acme/a"))
+
+	deps.held.access = access
+	deps.held.refresh(t.Context())
+	decision, err = Decide(t.Context(), deps, services, serviceRequest("pub-token"))
+	require.NoError(t, err)
+	require.True(t, holdsLane(decision.Grant, "acme/shared"), "the complete pass after OTHER dropped acme/shared did not serve it")
+}
