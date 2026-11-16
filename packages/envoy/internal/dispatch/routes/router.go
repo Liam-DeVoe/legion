@@ -131,6 +131,11 @@ type AppContextOptions struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
+	// OIDCAccounts are the service-account subjects the API admits, and AccessAccounts those that
+	// read the membership answer (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS, DISPATCH_ACCESS_ACCOUNTS).
+	// See api.DepsInput.
+	OIDCAccounts   []string
+	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
@@ -212,6 +217,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
 		OIDC:                   opts.OIDC,
+		OIDCAccounts:           opts.OIDCAccounts,
+		AccessAccounts:         opts.AccessAccounts,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
 		AgentSecretsURL:        opts.AgentSecretsURL,

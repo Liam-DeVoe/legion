@@ -156,6 +156,19 @@ session. External issues fall back to `DISPATCH_DEFAULT_PROJECT` when
 configured. An unmapped repository without a default is rejected; issues that
 use the default get a `repo:owner/name` label. `DISPATCH_NATS_DISABLED=1` leaves
 database and live-socket paths available and makes `/healthz` report `nats: null`.
+Every project has an owner (`projects.owner`, migration `20261116015736_project_access`): right
+after the default project's check, `store.EnsureProjectOwners` gives each project with none to
+`DISPATCH_PROJECT_OWNER_FALLBACK`'s full member, and refuses the boot while one still has none,
+naming each and both repairs. `envoy-dispatch project-owner <KEY> <email>` (`project_owner.go`,
+`giveProject`) is the other: it gives any project to another full member at any time, whoever owned
+it before, through `access.SetOwner` in one transaction that appends `project.access_changed` as
+`{kind: "system", id: "envoy-dispatch project-owner"}`, and exits 2 for an unknown key, an email
+that is not a full member's, or wrong arguments. `envoy-dispatch backfill-session-projects`
+(`session_projects_fill.go`) records the (session, project) pair of every event written before
+`events.Broker.AppendAll` recorded each one live, reading `events` 10,000 at a time, writing only a
+pair no row holds, since `session_projects` has no unique key, and then the one
+`session_projects_filled` row (README "Giving a project to another owner", "Filling the sessions'
+projects").
 Dispatch loads config at every start, `DISPATCH_NATS_DISABLED` set or not, in this precedence
 order: the user `envoy.json` (`${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`), the `dispatch`
 section of the checkout's `.envoy/envoy.json` in the directory it starts in, then environment
@@ -549,6 +562,16 @@ write identity errors with `identity.WriteError`.
   the token alone: `bearerSessionActor` copies it from the authenticated actor
   exactly as it copies `owner`, and a request body naming one is ignored.
   Unset, the branch does not exist and bearer handling is unchanged.
+- `DISPATCH_OIDC_ACCOUNTS` and `DISPATCH_ACCESS_ACCOUNTS` are comma-separated
+  `system:serviceaccount:<namespace>:<name>` subjects (`commaList`, then
+  `checkAccessSettings`, which refuses either without `DISPATCH_OIDC_AUDIENCE`, an
+  empty or malformed entry by position, and an access account a non-empty
+  `DISPATCH_OIDC_ACCOUNTS` leaves out). `appContextOptions` hands both to the
+  router: a verified token of an account the first does not list is
+  `401 SERVICE_ACCOUNT_NOT_ADMITTED` (`api.serviceTokenActor`), and only the
+  second reads the membership answer. With an audience and no first list every
+  account of the issuer is admitted, as before the setting, and
+  `resolveBootConfig` logs one WARN saying so.
 - An access token the secrets broker issued is the fifth credential and the one
   that is not a bearer: it is presented under RFC 9449's DPoP scheme
   (`Authorization: DPoP <token>` with a `DPoP:` proof header), because that RFC
