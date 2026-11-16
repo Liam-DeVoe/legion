@@ -285,7 +285,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 	} {
 		// A document of its own each step, since the tick indexes the one before it as soon as
 		// that step lets it through, and an indexed document is owed nothing to wait for.
-		document := createOwedDocument(t, database, service, "", step.slug, "- one\n- two\n", "")
+		document := createOwedDocument(t, database, service, "CORE-1", "", step.slug, "- one\n- two\n", "")
 		settle(t, database, document)
 		holder, err := database.Pool.Begin(ctx)
 		if err != nil {

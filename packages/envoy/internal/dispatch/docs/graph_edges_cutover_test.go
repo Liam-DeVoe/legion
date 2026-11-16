@@ -1069,18 +1069,18 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	// The target is indexed before the document that points at it: a write states a pointer
 	// only at a block the store holds and only at a type the attribute allows, which is why the
 	// link at a type it does not allow is made by retyping the target below.
-	target := createOwedDocument(t, database, service, "", "target", graphEdgeTarget, "")
+	target := createOwedDocument(t, database, service, "CORE-1", "", "target", graphEdgeTarget, "")
 	settle(t, database, target)
 	if ticks := drainBlockIndex(t, service, "the target document"); ticks == 0 {
 		t.Fatal("the fixture indexed no document")
 	}
-	plan := createOwedDocument(t, database, service, "", "plan", graphEdgePlanWhole, "")
+	plan := createOwedDocument(t, database, service, "CORE-1", "", "plan", graphEdgePlanWhole, "")
 	settle(t, database, plan)
 	if ticks := drainBlockIndex(t, service, "the document that points at it"); ticks == 0 {
 		t.Fatal("the fixture indexed no document holding a pointer")
 	}
 
-	legacy := createOwedDocument(t, database, service, "", "legacy", graphEdgeLegacy, "")
+	legacy := createOwedDocument(t, database, service, "CORE-1", "", "legacy", graphEdgeLegacy, "")
 	settle(t, database, legacy)
 	if ticks := drainBlockIndex(t, service, "the document the store is unwritten of"); ticks == 0 {
 		t.Fatal("the fixture indexed no document to unwrite the store of")
