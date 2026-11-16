@@ -39,13 +39,16 @@ const idleRigURLVariable = "LEGION_IDLE_RIG_URL"
 // idleRigRole is one role process the rig has seen: the claim it registered, the session it
 // became, every message it was given — the daemon's prompts over the worker stream, and the
 // messages the session's own consumer was relayed — and every adopt-working-copy frame the daemon
-// sent it ahead of a prompt.
+// sent it ahead of a prompt. Stopping is how many held stops its processes have begun
+// (idleRigPlan.StopDelaySeconds): each one's session record is gone from the listener while the
+// process still runs.
 type idleRigRole struct {
 	Claim       string
 	Secret      string
 	Session     string
 	SessionFile string
 	Registered  int
+	Stopping    int
 	Prompts     []idleRigMessage
 	Messages    []idleRigMessage
 	Adoptions   []idleRigAdoption
@@ -85,10 +88,20 @@ type idleRigAdoption struct {
 // (packages/pi-legion/extensions/legion.ts): at every turn's end whatever it says, and between
 // turns whenever it changes (idleRigRoleProcess.watchActivity), so a test that changes it
 // mid-run is a subagent starting or ending in a live session.
+//
+// StopDelaySeconds is how long the process takes to exit once it is told to stop, as a session
+// whose plugin still has work on its way out does. Such a process does at its SIGTERM what a
+// session's plugin does there: it deletes its session record (DELETE /v1/sessions/<id>, as
+// envoy-client's transport does at its stop) and keeps its interest row, which the listener's
+// reaper ends 10 to 20 minutes later. It then tells the rig's service that it is stopping, and it
+// exits when the delay is over (idleRigRoleProcess.holdStop). The process reads the plan at its
+// SIGTERM, so a test can hold one stop of a role and no later one. With no delay the process
+// unregisters and exits at once (idleRigRoleProcess.unregister).
 type idleRigPlan struct {
-	TakeTurn   bool     `json:"takeTurn"`
-	Topics     []string `json:"topics"`
-	Background []string `json:"background"`
+	TakeTurn         bool     `json:"takeTurn"`
+	Topics           []string `json:"topics"`
+	Background       []string `json:"background"`
+	StopDelaySeconds int      `json:"stopDelaySeconds"`
 }
 
 // idleRigAgents is the rig's own service: it hands each role process the boot token its pod's
@@ -189,6 +202,8 @@ func (a *idleRigAgents) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.record(w, r)
 	case "/agent/plan":
 		a.servePlan(w, r)
+	case "/agent/stopping":
+		a.stopping(w, r)
 	default:
 		http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
 	}
@@ -273,6 +288,26 @@ func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 	default:
 		seen.Messages = append(seen.Messages, message)
 	}
+	a.mu.Unlock()
+	writeIdleRigJSON(w, map[string]string{})
+}
+
+// stopping records that a role process has begun a held stop: its session record is gone from the
+// listener, and the process runs on until its plan's delay is over (idleRigRoleProcess.holdStop).
+func (a *idleRigAgents) stopping(w http.ResponseWriter, r *http.Request) {
+	var request struct{ Pod, Role string }
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.mu.Lock()
+	key := idleRigKey(request.Pod, request.Role)
+	seen, ok := a.roles[key]
+	if !ok {
+		seen = &idleRigRole{}
+		a.roles[key] = seen
+	}
+	seen.Stopping++
 	a.mu.Unlock()
 	writeIdleRigJSON(w, map[string]string{})
 }
@@ -461,7 +496,7 @@ func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
 }
 
 // run connects, registers, claims the role, reports ready, and then serves the daemon's frames
-// until it is shut down.
+// until it is shut down: by the daemon, or by a SIGTERM, which its plan may hold (holdStop).
 func (p *idleRigRoleProcess) run() error {
 	bootToken, err := p.bootToken()
 	if err != nil {
@@ -502,12 +537,36 @@ func (p *idleRigRoleProcess) run() error {
 	defer p.unregister()
 	stopping := make(chan os.Signal, 1)
 	signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-stopping
-		p.unregister()
-		os.Exit(0)
-	}()
-	return p.serve()
+	served := make(chan error, 1)
+	go func() { served <- p.serve() }()
+	select {
+	case err := <-served:
+		return err
+	case <-stopping:
+	}
+	// The plan is read at the stop, not at the start, so a test holds the stop it names and no
+	// later one. A plan that cannot be read holds nothing.
+	if held, err := p.plan(); err == nil && held.StopDelaySeconds > 0 {
+		p.holdStop(time.Duration(held.StopDelaySeconds) * time.Second)
+	}
+	return nil
+}
+
+// holdStop is a stop that takes delay to end, as a session whose plugin still has work on its way
+// out does. The session record goes at once, as the plugin deletes it at its stop, and the
+// interest row stays for the listener's reaper to end. The rig's service is told once the record
+// is gone: from then on a message sent to the session is stored for a session with no record,
+// while the release that sent this SIGTERM still waits for the process to exit. The process keeps
+// answering the daemon's frames for the whole delay, whatever becomes of the worker stream, and
+// then exits with nothing else unregistered.
+func (p *idleRigRoleProcess) holdStop(delay time.Duration) {
+	if err := p.delete(p.envoy + "/v1/sessions/" + p.session); err != nil {
+		fmt.Fprintf(os.Stderr, "idle rig role process: delete the session record of %s: %v\n", p.session, err)
+	} else if err := p.post(p.rig+"/agent/stopping", map[string]any{"pod": p.pod, "role": p.role}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "idle rig role process: tell the rig that %s is stopping: %v\n", p.session, err)
+	}
+	time.Sleep(delay)
+	os.Exit(0)
 }
 
 // unregister drops the session's role claim and its registration with the listener.

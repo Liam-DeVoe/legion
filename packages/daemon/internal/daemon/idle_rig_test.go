@@ -64,6 +64,14 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
+// idleRigStopGrace is the rig's worker_stop_timeout_seconds: how long a release's role stop lets a
+// role process take to exit after its SIGTERM before the launcher kills it (the runtime's
+// LauncherStop names it as its grace). It is longer than the daemon's default of 10 seconds, so a
+// stop that a test holds past the daemon's 30-second wake retry (idleRigPlan.StopDelaySeconds)
+// ends on its own and not by the kill. A role process that holds nothing exits at its SIGTERM, so
+// the longer grace costs every other stop nothing.
+const idleRigStopGrace = 60 * time.Second
+
 // idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose
 // controller stand-in starts a real `legion launcher` for every pod it reports Ready, each
@@ -149,6 +157,7 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
 	// daemon has not admitted is one its boot lingers closed.
 	cfg.AdmissionCap = len(issues) + 4
+	cfg.WorkerStopTimeout = idleRigStopGrace
 	// Every launcher of the rig reaches that database through its generation's proxy, which
 	// carries the launcher's own startup packet to it unchanged, so the password the rig's DSN
 	// names has to be in the environment before the first launcher starts
@@ -860,9 +869,9 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 			quieted = time.Now()
 			r.quiet()
 		}
-		// One listing for the nine pods, not one each: the operator's route answers every claim
+		// One listing for the ten pods, not one each: the operator's route answers every claim
 		// at once (daemon.claims, which daemon.claim reads to find one), and the pass this waits
-		// for reads the same rows through the same pool, so a wait that asked nine times a poll
+		// for reads the same rows through the same pool, so a wait that asked ten times a poll
 		// would be taking the daemon's own Postgres away from the release it is waiting for.
 		claims := r.api.claims()
 		released := true
@@ -877,6 +886,28 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 			}
 		}
 		return released
+	})
+}
+
+// awaitStopping waits until the issue's role process has begun a held stop
+// (idleRigPlan.StopDelaySeconds): the release has reached that role's stop, the process has
+// deleted its session record, and it still runs. The claim rows are back-dated as awaitReleased
+// back-dates them, because this wait is inside the same release wave, and the wave's span bounds
+// it.
+func (r *idleWakeRig) awaitStopping(issue idleRigIssue) {
+	r.t.Helper()
+	defer func() {
+		if r.t.Failed() {
+			r.t.Log(r.diagnose())
+		}
+	}()
+	var quieted time.Time
+	idleRigEventually(r.t, idleRigReleaseWait, "the role process of "+issue.key+" holding its stop", func() bool {
+		if time.Since(quieted) > 2*time.Second {
+			quieted = time.Now()
+			r.quiet()
+		}
+		return r.agents.role(issue.key, string(issue.role)).Stopping > 0
 	})
 }
 
@@ -1023,6 +1054,20 @@ func (r *idleWakeRig) releaseRecords(issue idleRigIssue) api.ReleaseRecordsRespo
 // logged is how many of the daemon's log lines say msg with each of attributes, as
 // check_wake_test.go's rig reads them.
 func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
+	return r.loggedWhere(msg, func(entry map[string]any) bool {
+		for key, want := range attributes {
+			if fmt.Sprint(entry[key]) != want {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// loggedWhere is how many of the daemon's log lines say msg and answer true to match. match reads
+// the line's attributes, so a caller can find a name inside a longer value, such as an error's
+// text.
+func (r *idleWakeRig) loggedWhere(msg string, match func(entry map[string]any) bool) int {
 	count := 0
 	for _, line := range strings.Split(r.logs.String(), "\n") {
 		if line == "" {
@@ -1032,11 +1077,7 @@ func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 		if json.Unmarshal([]byte(line), &entry) != nil {
 			continue
 		}
-		matches := entry["msg"] == msg
-		for key, want := range attributes {
-			matches = matches && fmt.Sprint(entry[key]) == want
-		}
-		if matches {
+		if entry["msg"] == msg && match(entry) {
 			count++
 		}
 	}
@@ -1051,7 +1092,7 @@ const idleRigDeadlineMargin = 5 * time.Second
 
 // Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
 // clamps it by the run's own deadline. The spans are what the work behind each wait takes on a
-// loaded runner with nine pods, nine launchers, a nats-server, a Postgres and an Envoy listener
+// loaded runner with ten pods, ten launchers, a nats-server, a Postgres and an Envoy listener
 // on it; they are the bound a fault is reported at, so a release that never happens is a
 // failure naming the pods minutes into the run and not at the binary's timeout panic, which
 // would take the rest of internal/daemon with it.
@@ -1071,7 +1112,8 @@ const (
 	// it, which waits on that same pod.
 	idleRigPodWait = 150 * time.Second
 	// idleRigReleaseWait bounds the release of every pod of the rig by one pass of the idle
-	// tick: nine launches undone at once, and so the longest span here.
+	// tick: ten launches undone at once, one of whose stops a test holds for most of a minute
+	// (idleRigPlan.StopDelaySeconds), and so the longest span here.
 	idleRigReleaseWait = 240 * time.Second
 	// idleRigRecordWait bounds a row the daemon writes, a task it gives or a message it
 	// delivers once the pod behind it is already up: a tick or two of the rig and the write
@@ -1079,7 +1121,7 @@ const (
 	idleRigRecordWait = 60 * time.Second
 	// idleRigWarningWait bounds the warning the daemon logs about a resume with no first turn,
 	// which its wake pass decides on the tick after the rig back-dates the resume, behind
-	// whatever else that pass is deciding for the other eight pods.
+	// whatever else that pass is deciding for the other nine pods.
 	idleRigWarningWait = 90 * time.Second
 	// idleRigStuckWait bounds the stuck flag reaching the resume's record once that warning is
 	// out: the same pass writes both, so this is the write alone.
