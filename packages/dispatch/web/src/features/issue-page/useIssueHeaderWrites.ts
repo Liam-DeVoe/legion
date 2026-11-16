@@ -158,13 +158,15 @@ export function useIssueHeaderWrites(
       drafts.onIssueSuccess(next ?? issue, input);
     },
   });
+  // The labels are a field of the issue too, so they land as every field write does: a landing
+  // with no answer reads the issue again rather than leave the old labels showing
+  // (`landIssueWrite`, dispatch://INFRA-3935 R8).
   const labels = useKeyedWrite({
     label: () => `Labels of ${issue.key}`,
     target: () => `issue:${issue.key}`,
     request: (next: string[]) => issuePatchRequest(issue.key, { labels: next }),
     onSuccess: (next) => {
-      if (next !== null) mergeIssue(queryClient, next);
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      landIssueWrite(queryClient, issue.key, next);
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);

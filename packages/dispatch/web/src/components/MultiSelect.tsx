@@ -16,6 +16,7 @@ import {
 } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 import { TruncatedText } from "./TruncatedText";
+import { useTooltips } from "./tooltips";
 
 function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
@@ -89,6 +90,7 @@ export function MultiSelect({
   triggerClassName = `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
 }: MultiSelectProps): ReactNode {
   const id = useId();
+  const tooltips = useTooltips();
   const listboxId = `${id}-options`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
@@ -248,9 +250,16 @@ export function MultiSelect({
                   >
                     {isSelected ? "✓" : ""}
                   </span>
-                  <TruncatedText className="min-w-0 flex-1" title={label}>
-                    {label}
-                  </TruncatedText>
+                  {tooltips ? (
+                    <TruncatedText className="min-w-0 flex-1" title={label}>
+                      {label}
+                    </TruncatedText>
+                  ) : (
+                    // Inside `NoTooltips` (the new issue page) no `title` can give back what an
+                    // ellipsis cut, so the label wraps instead and is read whole
+                    // (dispatch://INFRA-1196 R6, R19).
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
+                  )}
                   {detail === undefined ? null : (
                     <span className={`shrink-0 text-xs tabular-nums ${textMutedOnSurface}`}>
                       {detail}

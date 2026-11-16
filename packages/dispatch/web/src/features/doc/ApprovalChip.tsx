@@ -241,8 +241,9 @@ export interface ApprovalChipProps {
   layout?: "contents" | "inline";
   /** `compact` draws the chip and its two actions at the size of the new issue page header's
    *  other pills and controls (the prototype's `.pill` and `.hbtn`, dispatch://INFRA-1196 R13):
-   *  12 px type, 20 px tall for the chip and 24 px for each action. `default` is every other
-   *  host's. */
+   *  12 px type, and 24 px tall at every width for the chip and for each action, since each is
+   *  a target and a 24 px target holds at every width (decision 43 of its part-decisions-md).
+   *  `default` is every other host's. */
   size?: "compact" | "default";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */

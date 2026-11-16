@@ -71,10 +71,14 @@ export function IssueComponentsLine({
     inDetails
       ? ((tree.data?.components ?? []).find((component) => component.id === id)?.title ?? id)
       : id;
+  // In a row of Details nothing of the line stops its wrap (dispatch://INFRA-3935 R4): the
+  // words break between themselves, and a long name breaks inside its chip only where no break
+  // between words is left. Everywhere else each part stays whole, as on `main`.
+  const part = inDetails ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
   const write = useIssueComponents(issue);
   const inheritedFrom =
     components.inherited_from === null ? null : (
-      <span className={`shrink-0 text-xs ${textMutedOnSurface}`} {...page?.pageChrome}>
+      <span className={`${part} text-xs ${textMutedOnSurface}`} {...page?.pageChrome}>
         {page?.CONTROL_LABELS.components_inherited_from ?? "inherited from"}{" "}
         <Link
           className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
@@ -114,7 +118,7 @@ export function IssueComponentsLine({
         <>
           {(components.ids ?? []).map((id) => (
             <span
-              className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgePrimary.bg} ${badgePrimary.text}`}
+              className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgePrimary.bg} ${badgePrimary.text}`}
               key={id}
               {...page?.authorText}
             >
@@ -123,7 +127,7 @@ export function IssueComponentsLine({
           ))}
           {(components.unknown ?? []).map((id) => (
             <span
-              className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
+              className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
               key={id}
               title={
                 tooltips ? `${id} is no longer in the project's architecture model` : undefined

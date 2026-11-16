@@ -161,7 +161,7 @@ function RouteForm({
           drafts.discardRoute();
           onClose();
         }}
-        saveLabel="Save route"
+        saveLabel={CONTROL_LABELS.save_route}
         saving={isClosed || !drafts.routeIsValid || saving}
       />
       {/* What the box takes, in words (`HELP_LINES.route_shape`): a refusal while the draft is
@@ -231,7 +231,7 @@ function ParentForm({
           drafts.discardParent();
           onClose();
         }}
-        saveLabel="Save parent"
+        saveLabel={CONTROL_LABELS.save_parent}
         saving={isClosed || saving}
       />
       <span className="sr-only" id="issue-parent-help">
