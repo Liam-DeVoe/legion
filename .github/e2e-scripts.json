@@ -187,6 +187,10 @@
       "needs": "a live multi-repository run on the production cluster: it is the operator's acceptance observer, reads that run's daemon, Dispatch, GitHub and kubectl, and starts nothing of its own"
     },
     {
+      "script": "nats-callout-sessions-real-hosts.sh",
+      "needs": "a model route for both hosts (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the omp binary (LEGION_E2E_OMP_PATH, default the omp on PATH), a Postgres server it may create two databases on (LEGION_TEST_PG_DSN), go and bun with this checkout's node_modules; it runs nats-callout-sessions.sh with the real Oh My Pi and the pinned Claude Code, and starts its own stack"
+    },
+    {
       "script": "parked-decision-devbox.sh",
       "needs": "a devbox, run from the operator's own Oh My Pi session: a model route (LEGION_E2E_MODEL_ROUTE), docker for its Postgres and NATS containers, Legion's two role Apps, and the proof human's gh, as Stage 3's rig"
     },

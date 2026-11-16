@@ -5136,10 +5136,18 @@ and a probe run in one session's own environment is refused the other session's 
 
 The stack is `packages/envoy/scripts/dev-stack.sh --callout`: the brokers, the listener, Dispatch and `nats-server` behind the NATS auth service, each the process production runs, built from this checkout.
 dev-stack.sh restarts natsd (SIGUSR1) and the listener (SIGUSR2) in place, on the ports they served, and natsd on the same JetStream store and callout keys.
-The sessions are the two plugins, each the real code its host runs, in processes of their own and with no model:
+It runs its sessions two ways, which `NATS_CALLOUT_SESSIONS_HOSTS` chooses.
+
+`plugins`, the default and what `e2e.yaml` runs on a hosted runner, is each plugin's own code under a stand-in host, in processes of their own and with no model:
 the Oh My Pi extension under the stand-in host its own suite drives (`packages/pi-envoy/scripts/role-takeover/omp-client.ts`, whose heartbeat the script ticks before each message, as the host's timer would),
 and Claude Code's channel server under a stand-in `claude` that speaks MCP to it and plays the Legion inbox it writes each delivery to (`role-takeover/claude-client.ts --inbox`).
-The Oh My Pi session is told `NATS_AUTH=broker` in its environment and the Claude Code session `"natsAuth": "broker"` in its `envoy.json`, so both ways of naming the credential run.
+
+`real`, which [`nats-callout-sessions-real-hosts.sh`](#nats-callout-sessions-real-hostssh) runs, is the hosts themselves:
+the Oh My Pi binary in RPC mode with this checkout's pi-envoy packed as the release packs it, and the pinned Claude Code under `legion claude-bridge` (built from this checkout) with this checkout's claude-envoy.
+A delivery has reached a session when its transcript holds it: an envoy-message card or a user message in Oh My Pi's, a user message in Claude Code's, the turn the bridge made of it.
+It needs a model route (`LEGION_E2E_MODEL_BASE_URL`, `LEGION_E2E_MODEL_KEY_FILE`, `LEGION_E2E_MODEL_ID`, `LEGION_E2E_CLAUDE_MODEL`), the omp binary (`LEGION_E2E_OMP_PATH`) and the Claude Code pin (`LEGION_E2E_CLAUDE_CODE_PIN`, default `packages/daemon/docker/claude-code`), as [`envoy-session-states.sh`](#envoy-session-statessh) takes them, and runs every check but `receives-after-switch`, which drives each host's switch through its stand-in.
+
+In both, the Oh My Pi session is told `NATS_AUTH=broker` in its environment and the Claude Code session `"natsAuth": "broker"` in its `envoy.json`, so both ways of naming the credential run.
 Each trades the stack's pod identity for a token naming its own session, which the script first registers for that pod, as a deployment's daemon does.
 
 | check | what it holds |
@@ -5159,9 +5167,21 @@ The negative control, `NATS_CALLOUT_SESSIONS_CONTROL=seedless`, starts both sess
 | `NATS_CALLOUT_SESSIONS_CONTROL` | unset | `seedless`, the negative control |
 | `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: `dev-stack.log`, `stack-logs/` (every server's log, each restarted one's earlier log beside it), `client-logs/` (each client's output and the channel server's stderr) and `answers/` (each send's answer and the probe's output) |
 
-It needs `go` (unless `--binaries`, passed on to dev-stack.sh, names the stack's binaries), `bun` with this checkout's `node_modules`, `psql`, `curl`, `jq` and `python3`, and no model, container or credential, so `e2e.yaml` runs it on a hosted runner.
-No `AGENT_SECRETS_*`, `DISPATCH_*`, `ENVOY_*` or `NATS_*` variable of the caller reaches anything the run starts.
+In `plugins` mode it needs `go` (unless `--binaries`, passed on to dev-stack.sh, names the stack's binaries), `bun` with this checkout's `node_modules`, `psql`, `curl`, `jq` and `python3`, and no model, container or credential, so `e2e.yaml` runs it on a hosted runner.
+No `AGENT_SECRETS_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `ANTHROPIC_*` or `CLAUDE_*` variable of the caller reaches anything the run starts; in `real` mode the model key reaches the two hosts' environments alone, never an argv.
 Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 refused (an input or tool is missing, or the stack or a client did not start).
+
+## nats-callout-sessions-real-hosts.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+LEGION_E2E_MODEL_BASE_URL=<endpoint> LEGION_E2E_MODEL_KEY_FILE=<key file> \
+LEGION_E2E_MODEL_ID=anthropic/<id> LEGION_E2E_CLAUDE_MODEL=<id> \
+  bash scripts/e2e/nats-callout-sessions-real-hosts.sh     # → "nats-callout-sessions: 7 of 7 checks passed (hosts: real)", exit 0
+```
+
+[`nats-callout-sessions.sh`](#nats-callout-sessionssh) in its `real` mode, and nothing else: its own entry point because `.github/e2e-scripts.json` lists a script once, and this mode needs a model route and the omp binary, so it is an `elsewhere` row.
+`NATS_CALLOUT_SESSIONS_CONTROL=seedless` is its negative control too.
 
 ## lib/loopback-dsn.py
 
