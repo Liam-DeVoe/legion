@@ -14,7 +14,9 @@
 // comes from one math/rand/v2 PCG source seeded by Spec.Seed and every time from Spec.Now, so one
 // spec writes the same history on every run. Each table is one statement that unnests its columns
 // as arrays, as legiontest writes its tables: a history of eighty thousand jobs written a statement
-// per row takes minutes against a real Postgres.
+// per row takes minutes against a real Postgres. The mappings are that one statement under a
+// mapping write's locks (WriteRepoProjects), which every fixture that maps a repository calls, so
+// a fixture and a mapping route writing one repository at once never deadlock.
 //
 // Containment (delivery/containment.go) ships a pull request of the deploy repository with the
 // earliest-completing successful production job of a deploy run on main that GitHub created after
@@ -33,6 +35,7 @@ package deliverytest
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -44,6 +47,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -733,11 +737,12 @@ func (s *seeding) judge() {
 }
 
 // write stores the history, one statement per table: the settings through delivery.PutSettings,
-// the one write of that row, and every other table as arrays unnested into one insert, so a
-// history of eighty thousand jobs costs a handful of round trips. The tables go in the order
-// their foreign keys need: projects, repositories and issues before the pull requests that name
-// them, and the runs before their jobs. A project that has a row already keeps it, so the history
-// can join a project another history made first.
+// the one write of that row, the mappings through WriteRepoProjects, under a mapping write's locks,
+// and every other table as arrays unnested into one insert, so a history of eighty thousand jobs
+// costs a handful of round trips. The tables go in the order their foreign keys need: projects,
+// repositories and issues before the pull requests that name them, and the runs before their
+// jobs. A project that has a row already keeps it, so the history can join a project another
+// history made first.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -758,11 +763,12 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		projects, nextNumbers); err != nil {
 		return err
 	}
-	if err := exec("repositories", `
-		insert into repo_projects (repo, project, created_by, is_default)
-		select repo, $2, $3::jsonb, repo = $4 from unnest($1::text[]) as seeded(repo)`,
-		s.fixture.Repos, s.fixture.Project, actor, s.fixture.DeployRepo); err != nil {
-		return err
+	mappings := make([]model.RepoProject, len(s.fixture.Repos))
+	for i, repo := range s.fixture.Repos {
+		mappings[i] = model.RepoProject{Repo: repo, Project: s.fixture.Project, Default: repo == s.fixture.DeployRepo, CreatedBy: system}
+	}
+	if err := WriteRepoProjects(ctx, pool, mappings...); err != nil {
+		return fmt.Errorf("write the repositories of %s: %w", s.spec.Project, err)
 	}
 	if err := s.writeIssues(exec, actor); err != nil {
 		return err
@@ -771,6 +777,44 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		return err
 	}
 	return s.writeRuns(exec)
+}
+
+// WriteRepoProjects stores each mapping's repository as mapped to its project, its default or not,
+// created by its CreatedBy, in one transaction that takes a mapping write's locks for each
+// repository before it inserts the rows (delivery.LockRepoProjectWrite), as the mapping routes do:
+// the change log's lock first, before any row of repo_projects. An insert of mappings in a
+// statement of its own would take that lock after its rows, in the table's change trigger, and
+// wait on a mapping route's write of the same repository while that write waited on it. A
+// repository that has a mapping already refuses the whole write.
+func WriteRepoProjects(ctx context.Context, pool *store.Pool, mappings ...model.RepoProject) error {
+	repos, projects, createdBy := make([]string, len(mappings)), make([]string, len(mappings)), make([]string, len(mappings))
+	defaults := make([]bool, len(mappings))
+	for i, mapping := range mappings {
+		author, err := json.Marshal(mapping.CreatedBy)
+		if err != nil {
+			return fmt.Errorf("encode the author of %s's mapping: %w", mapping.Repo, err)
+		}
+		repos[i], projects[i], createdBy[i], defaults[i] = mapping.Repo, mapping.Project, string(author), mapping.Default
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	broker := events.NewBroker()
+	for _, mapping := range mappings {
+		if _, err := delivery.LockRepoProjectWrite(ctx, tx, broker, mapping.Repo, mapping.Project); err != nil {
+			return fmt.Errorf("lock the mapping of %s: %w", mapping.Repo, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into repo_projects (repo, project, created_by, is_default)
+		select repo, project, author::jsonb, is_default
+		from unnest($1::text[], $2::text[], $3::text[], $4::bool[]) as mapped(repo, project, author, is_default)`,
+		repos, projects, createdBy, defaults); err != nil {
+		return fmt.Errorf("map the repositories: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // writeIssues stores every issue. An issue closes half an hour after the last pull request

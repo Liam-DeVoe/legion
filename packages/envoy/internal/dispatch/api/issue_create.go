@@ -316,7 +316,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
 	}
 	// The project row is locked from here; the mapping check takes its key-share lock only now, in
-	// the project-then-mapping order every mapping write follows (lockRepoProjectWrite).
+	// the project-then-mapping order every mapping write follows (delivery.LockRepoProjectWrite).
 	if repo != nil {
 		if err := checkIssueRepoMapped(r.Context(), tx, *repo, input.Project); err != nil {
 			s.writeHandlerError(w, err)

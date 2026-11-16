@@ -529,77 +529,166 @@ func TestTheDeployedWriteTakesTheChangeLogLockLastAndNeverDeadlocksWithAPullRequ
 	t.Logf("the deployed write waited for the change log's lock holding its pull request's row, the pull request's write behind it; it held the lock at most %s", held.Round(time.Microsecond))
 }
 
-// TestASessionGroupWriteTakesTheChangeLogLockFirst: a session group's create, sent while the change
-// log's lock is held elsewhere, waits for it holding no other lock, the session groups' own lock
-// free to another transaction, since it takes the change log's lock first; a run write of the
-// intake (a one-statement write, its row's lock and then the change log's) and a second group's
-// create wait behind it. Let go, all three land, none a deadlock; the time from the release to the
-// first create's answer, the whole of its transaction, which it holds the lock for, is logged.
-func TestASessionGroupWriteTakesTheChangeLogLockFirst(t *testing.T) {
-	shared, ctx := deliveryTestPool(t)
-	pool := wideTestPool(t, shared)
-	seedDeliverySettings(t, ctx, pool)
-	names := []string{"Outbox crew", "Outbox night crew"}
-	clearGroups := func() {
+// inGroupTransaction answers a call that runs write in a transaction of its own and commits it, as
+// each session group route does (api/delivery_session_groups.go).
+func inGroupTransaction(ctx context.Context, pool *store.Pool, write func(pgx.Tx) error) func() error {
+	return func() error {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(context.Background()) }()
+		if err := write(tx); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+}
+
+// clearSessionGroups deletes the groups named names now and when the test ends, since the
+// package's tests share one database.
+func clearSessionGroups(t *testing.T, pool *store.Pool, names ...string) {
+	t.Helper()
+	remove := func() {
 		if _, err := pool.Exec(context.Background(), `delete from delivery_session_groups where name = any($1)`, names); err != nil {
 			t.Errorf("clear the groups: %v", err)
 		}
 	}
-	clearGroups()
-	t.Cleanup(clearGroups)
-	actor := model.Actor{Kind: "system", ID: "delivery-test"}
-	create := func(name, session string) func() error {
-		return func() error {
-			tx, err := pool.Begin(ctx)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = tx.Rollback(context.Background()) }()
-			if _, err := CreateSessionGroup(ctx, tx, name, []string{session}, actor); err != nil {
-				return err
-			}
-			return tx.Commit(ctx)
-		}
-	}
+	remove()
+	t.Cleanup(remove)
+}
 
-	gate := takeChangeLock(t, ctx, pool)
-	first := goTimed(create(names[0], "outbox-s1"))
+// TestASessionGroupWriteReadsBeforeItTakesTheChangeLogLock: a session group's create runs every
+// read that decides it, the title rule's read of every pull request's sessions among them, under
+// the session groups' own lock and before it takes the change log's lock, so it holds the change
+// log's lock for its writes alone. The test holds delivery_pull_requests in access exclusive mode,
+// which the title rule's read waits for: while the create waits there, it holds the session
+// groups' lock, and the change log's lock is free to another transaction. Let on, the create lands;
+// each hold of the change log's lock the samples saw from the release on is logged, with the
+// statement its backend ran last, and asserted nowhere: the wall clock is the build farm's measure
+// (k20).
+func TestASessionGroupWriteReadsBeforeItTakesTheChangeLogLock(t *testing.T) {
+	shared, ctx := deliveryTestPool(t)
+	pool := wideTestPool(t, shared)
+	seedDeliverySettings(t, ctx, pool)
+	clearSessionGroups(t, pool, "Reading crew")
+	actor := model.Actor{Kind: "system", ID: "delivery-test"}
+
+	gate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the gate: %v", err)
+	}
+	defer func() { _ = gate.Rollback(context.Background()) }()
+	if _, err := gate.Exec(ctx, `lock table delivery_pull_requests in access exclusive mode`); err != nil {
+		t.Fatalf("hold the pull requests from every read: %v", err)
+	}
+	create := goTimed(inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
+		_, err := CreateSessionGroup(ctx, tx, "Reading crew", []string{"reading-s1"}, actor)
+		return err
+	}))
 	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
-		t.Fatal("the group's create never waited for the change log's lock")
+		t.Fatal("the group's create never read the pull requests' sessions")
 	}
 	probe, err := pool.Begin(ctx)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("begin the probe: %v", err)
 	}
-	var free bool
-	if err := probe.QueryRow(ctx, `select pg_try_advisory_xact_lock(hashtext('delivery-session-groups'))`).Scan(&free); err != nil {
-		t.Fatalf("probe the session groups' lock: %v", err)
-	}
+	var changesFree, groupsFree bool
+	err = probe.QueryRow(ctx, `select pg_try_advisory_xact_lock(6900, 0), pg_try_advisory_xact_lock(hashtext('delivery-session-groups'))`).Scan(&changesFree, &groupsFree)
 	_ = probe.Rollback(ctx)
-	if !free {
-		t.Error("the group's create waits for the change log's lock holding the session groups' lock: it takes the change log's lock in the middle of its transaction")
+	if err != nil {
+		t.Fatalf("probe the locks: %v", err)
+	}
+	if !changesFree {
+		t.Error("the group's create reads the pull requests' sessions holding the change log's lock: it takes the lock before its reads")
+	}
+	if groupsFree {
+		t.Error("the group's create reads the pull requests' sessions without the session groups' lock, which two writes' title checks need")
+	}
+	stop := storetest.SampleAdvisoryHolds(t, pool, changeLockClass, changeLockObject)
+	released := time.Now()
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("let the reads on: %v", err)
+	}
+	answer := <-create
+	holds := stop()
+	if answer.err != nil {
+		t.Fatalf("the group's create: %v", answer.err)
+	}
+	for _, hold := range holds {
+		t.Logf("the change log's lock: %s", hold)
+	}
+	t.Logf("the group's create waited for its read of the pull requests holding the session groups' lock and not the change log's; let on, it answered %s later", answer.at.Sub(released).Round(time.Microsecond))
+}
+
+// TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows: a session group's update, sent while the
+// change log's lock is held elsewhere, waits for it holding the session groups' own lock and no row
+// of the group tables, since it takes the change log's lock after its reads and before its first
+// write: the group tables' one position for the lock. A run write of the intake (a one-statement
+// write, its row's lock and then the change log's) waits behind the lock, and a second group's
+// create behind the session groups' lock. Let go, all three land, none a deadlock; the time from
+// the release to the update's answer, which bounds its hold of the lock from above, is logged.
+func TestASessionGroupWriteTakesTheChangeLogLockBeforeItsRows(t *testing.T) {
+	shared, ctx := deliveryTestPool(t)
+	pool := wideTestPool(t, shared)
+	seedDeliverySettings(t, ctx, pool)
+	names := []string{"Outbox crew", "Outbox night crew"}
+	clearSessionGroups(t, pool, names...)
+	actor := model.Actor{Kind: "system", ID: "delivery-test"}
+	var crew SessionGroup
+	if err := inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		crew, err = CreateSessionGroup(ctx, tx, names[0], []string{"outbox-s1"}, actor)
+		return err
+	})(); err != nil {
+		t.Fatalf("create the group: %v", err)
+	}
+
+	gate := takeChangeLock(t, ctx, pool)
+	update := goTimed(inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
+		_, err := UpdateSessionGroup(ctx, tx, crew.ID, SessionGroupUpdate{Add: []string{"outbox-s2"}, Remove: []string{"outbox-s1"}}, actor)
+		return err
+	}))
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+		t.Fatal("the group's update never waited for the change log's lock")
+	}
+	if rowLockedByAnother(t, ctx, pool, `select 1 from delivery_session_groups where id = $1::uuid`, crew.ID) {
+		t.Error("the group's update waits for the change log's lock holding its group's row: it writes before it takes the lock")
+	}
+	if rowLockedByAnother(t, ctx, pool, `select 1 from delivery_session_group_members where session_id = 'outbox-s1'`) {
+		t.Error("the group's update waits for the change log's lock holding the member it removes: it writes before it takes the lock")
 	}
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	run := goTimed(func() error { return UpsertRun(ctx, pool, changeTestRun(812, DeliveryRunKindDeploy, started, started)) })
-	second := goTimed(create(names[1], "outbox-s2"))
+	second := goTimed(inGroupTransaction(ctx, pool, func(tx pgx.Tx) error {
+		_, err := CreateSessionGroup(ctx, tx, names[1], []string{"outbox-s3"}, actor)
+		return err
+	}))
 	if waiting := storetest.WaitForLockWaiters(t, gate, 3, 10*time.Second); waiting < 3 {
-		t.Fatalf("the run write and the second create never both waited behind the change log's lock: %d waiting", waiting)
+		t.Fatalf("the run write and the second create never both waited, behind the change log's lock or the update: %d waiting", waiting)
 	}
 	released := time.Now()
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("let the lock go: %v", err)
 	}
-	firstAnswer, runAnswer, secondAnswer := <-first, <-run, <-second
-	requireNotDeadlocked(t, "the first group's create", firstAnswer.err)
+	updateAnswer, runAnswer, secondAnswer := <-update, <-run, <-second
+	requireNotDeadlocked(t, "the group's update", updateAnswer.err)
 	requireNotDeadlocked(t, "the run write", runAnswer.err)
 	requireNotDeadlocked(t, "the second group's create", secondAnswer.err)
 	if t.Failed() {
 		return
 	}
-	held := firstAnswer.at.Sub(released)
-	var groups int
-	if err := pool.QueryRow(ctx, `select count(*) from delivery_session_groups where name = any($1)`, names).Scan(&groups); err != nil || groups != 2 {
-		t.Errorf("the groups stored are %d, %v; want both", groups, err)
+	held := updateAnswer.at.Sub(released)
+	groups, err := ListSessionGroups(ctx, pool)
+	if err != nil {
+		t.Fatalf("read the groups: %v", err)
 	}
-	t.Logf("the group's create waited for the change log's lock holding no other lock; it held the lock at most %s, the run write and the second create behind it", held.Round(time.Microsecond))
+	stored := map[string][]string{}
+	for _, group := range groups {
+		stored[group.Name] = group.Sessions
+	}
+	if !slices.Equal(stored[names[0]], []string{"outbox-s2"}) || !slices.Equal(stored[names[1]], []string{"outbox-s3"}) {
+		t.Errorf("the groups hold %v; want %s holding outbox-s2 and %s holding outbox-s3", stored, names[0], names[1])
+	}
+	t.Logf("the group's update waited for the change log's lock holding the session groups' lock and no group row; it held the lock at most %s, the run write and the second create behind it", held.Round(time.Microsecond))
 }

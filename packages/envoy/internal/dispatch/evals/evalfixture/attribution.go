@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -76,11 +78,10 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 		on conflict (key) do nothing`, result.Projects); err != nil {
 		return AttributionResult{}, err
 	}
-	if err := exec("repositories", `
-		insert into repo_projects (repo, project, created_by, is_default)
-		values ($1, $2, $5::jsonb, true), ($3, $4, $5::jsonb, true)`,
-		deployRepo, project, otherRepo, other, fmt.Sprintf(`{"kind":%q,"id":%q}`, actor.Kind, actor.ID)); err != nil {
-		return AttributionResult{}, err
+	if err := deliverytest.WriteRepoProjects(ctx, pool,
+		model.RepoProject{Repo: deployRepo, Project: project, Default: true, CreatedBy: actor},
+		model.RepoProject{Repo: otherRepo, Project: other, Default: true, CreatedBy: actor}); err != nil {
+		return AttributionResult{}, fmt.Errorf("write the repositories of k15's case: %w", err)
 	}
 	offset, err := issueOffset(ctx, pool, other)
 	if err != nil {

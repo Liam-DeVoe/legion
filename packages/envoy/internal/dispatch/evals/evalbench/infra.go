@@ -13,9 +13,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -352,11 +354,11 @@ func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory,
 	if _, err := pool.Exec(ctx, `insert into projects (key, name, next_number) values ($1, 'Infrastructure', 1)`, Project); err != nil {
 		return infraHistory{}, fmt.Errorf("write the project %s: %w", Project, err)
 	}
-	creator := fmt.Sprintf(`{"kind":%q,"id":%q}`, actor.Kind, actor.ID)
-	if _, err := pool.Exec(ctx, `
-		insert into repo_projects (repo, project, created_by, is_default)
-		select repo, $2, $3::jsonb, repo = $4 from unnest($1::text[]) as mapped(repo)`,
-		Repos, Project, creator, Repos[0]); err != nil {
+	mappings := make([]model.RepoProject, len(Repos))
+	for i, repo := range Repos {
+		mappings[i] = model.RepoProject{Repo: repo, Project: Project, Default: i == 0, CreatedBy: actor}
+	}
+	if err := deliverytest.WriteRepoProjects(ctx, pool, mappings...); err != nil {
 		return infraHistory{}, fmt.Errorf("map INFRA's repositories: %w", err)
 	}
 	if err := copyIssues(ctx, pool, history); err != nil {

@@ -19,7 +19,11 @@
 -- 20261115155340 points here: issue_facts, eval_readings, eval_versions, eval_days and
 -- issue_filings. The delivery intake's kinds (pull_request, run, run_job, session_group, settings)
 -- are still written into delivery_changes directly, by one-statement writes or by transactions
--- that take 6900 first or in their last statement (delivery.LockChanges).
+-- that take 6900 first or in their last statement (delivery.LockChanges). A run's jobs write
+-- (delivery.UpsertRunJobs) is one statement now, the run row and every job, and a session group's
+-- write takes 6900 after its reads and before its first write: 0100's header, which describes the
+-- jobs write as two statements and the group write taking 6900 in the middle of its transaction,
+-- stays as it shipped.
 --
 -- delivery_change_log_pending(kind, run_kind, repo, ref, t_old, t_new) inserts one pending row,
 -- answers its id (eval_days_change_log widens its own transaction's row by it), and notifies

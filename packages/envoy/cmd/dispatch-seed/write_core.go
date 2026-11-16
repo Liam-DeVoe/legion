@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -39,13 +40,15 @@ func sessionActor(session string) string {
 // writeProjects writes the projects and their repository mappings. Each project has one default
 // mapping, which an issue with no repository of its own resolves to, and one more that the issues
 // carrying a repository of their own use. Each mapping's trigger logs a settings change under the
-// change log's lock, so the transaction takes that lock first, before any row lock, as every
-// writer of several statements that logs a change does (delivery.LockChanges).
+// change log's lock, so the transaction takes that lock first, before any row lock, and writes each
+// mapping under a mapping write's locks, as the mapping routes do (delivery.LockRepoProjectWrite),
+// which take the change log's lock before any row of repo_projects.
 func (r *seedRun) writeProjects(ctx context.Context) error {
 	return r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := delivery.LockChanges(ctx, tx); err != nil {
 			return err
 		}
+		broker := events.NewBroker()
 		for index, project := range r.plan.projects {
 			if _, err := tx.Exec(ctx, `
 				insert into projects (key, name, next_number, created_at, last_seq)
@@ -57,6 +60,9 @@ func (r *seedRun) writeProjects(ctx context.Context) error {
 				repo    string
 				primary bool
 			}{{project.Repo, true}, {project.OwnRepo, false}} {
+				if _, err := delivery.LockRepoProjectWrite(ctx, tx, broker, mapping.repo, project.Key); err != nil {
+					return fmt.Errorf("lock repo mapping %s: %w", mapping.repo, err)
+				}
 				if _, err := tx.Exec(ctx, `
 					insert into repo_projects (repo, project, created_by, created_at, is_default)
 					values ($1, $2, $3::jsonb, $4, $5)

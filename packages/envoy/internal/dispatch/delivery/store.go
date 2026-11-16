@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -662,11 +663,15 @@ func ScanJob(row pgx.Row) (DeliveryRunJob, error) {
 // The run's bookkeeping and its job rows are written by one statement, the run row's update and
 // every job's upsert (none for an empty listing) in one data-modifying `with`, so they commit
 // together. Every other writer of a delivery_runs row is one statement too, which takes the row's
-// lock and then, in its change trigger, the change log's advisory lock (0100): this one takes the
-// run row's and its jobs' row locks, and the change log's lock last, in the triggers that fire at
-// the statement's end (delivery.LockChanges), so a run's own completion written beside its jobs
-// waits for one of them rather than deadlocking with it, and the change log's lock is held for
-// that statement's triggers and its commit alone.
+// lock and then, in its change trigger, the change log's advisory lock (0100): this one takes its
+// jobs' row locks, then the run row's (the `with`, which runs after the insert), and the change
+// log's lock last, in the triggers that fire at the statement's end (delivery.LockChanges), so a
+// run's own completion written beside its jobs waits for one of them rather than deadlocking with
+// it, and the change log's lock is held for that statement's triggers and its commit alone. It
+// takes the job rows in one order, their names' byte order, whatever order the listing gave them
+// in: the jobs are sorted before the statement, and the statement inserts them in that order too.
+// Two listings of one run that named its jobs in opposite orders would otherwise each lock a job
+// the other then waited for.
 func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64, jobs []DeliveryRunJob, complete bool) error {
 	if complete {
 		for _, job := range jobs {
@@ -705,6 +710,7 @@ func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int
 			folded[i] = row
 		}
 	}
+	slices.SortFunc(folded, func(a, b foldedJob) int { return strings.Compare(a.name, b.name) })
 	names := make([]string, len(folded))
 	started := make([]*time.Time, len(folded))
 	completed := make([]*time.Time, len(folded))
@@ -727,6 +733,7 @@ func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int
 		select $1, $2, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
 		from unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
 			as job (name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
+		order by job.name collate "C"
 		on conflict (repo, run_id, name) do update set
 			started_at = excluded.started_at,
 			completed_at = excluded.completed_at,

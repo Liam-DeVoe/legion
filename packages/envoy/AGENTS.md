@@ -2523,7 +2523,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A mapping's `PUT` takes `default` and moves the project's default in one transaction;
   a mapping that issues name is neither deleted nor moved to another project (`409 REPO_PROJECT_IN_USE`, counted under the mapping's row lock);
   and a moved mapping emits `settings.repo_project.updated` on the project it left (`deleted: true`) as well as the one it joined.
-  Every writer of a mapping, the `PUT`, the `DELETE` and the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), takes `lockRepoProjectWrite`'s locks in one order:
+  Every writer of a mapping, the `PUT`, the `DELETE`, the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), `cmd/dispatch-seed` and the delivery fixtures (`deliverytest.WriteRepoProjects`, which `evalfixture` and the eval bench write through), takes `delivery.LockRepoProjectWrite`'s locks in one order:
   the delivery change log's lock first (`delivery.LockChanges`, since the mapping's trigger logs a `settings` change under it), then an advisory lock on the repository, the event owners of every project it touches, then the row.
   So two writes to one repository serialize, even while it has no row yet, and the seed's own additions are announced like any other.
 
@@ -2860,8 +2860,26 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The delivery change log, `delivery_changes`, is what the Delivery page's live hub, the eval day-row refresher and the Legion facts consumer read from cursors of their own, each woken by the `delivery_changes` notification (`internal/dispatch/delivery/changes.go`).
   Every insert into it takes the advisory lock `pg_advisory_xact_lock(6900, 0)` before it draws a seq and holds it to its commit (`0100`), so a seq is drawn only once every row below it has committed or rolled back: a reader's cursor never skips a change row.
   Seq follows the order rows enter the log, which for a change from the outbox below is the order the drains move them in, not the order their writers committed in; what every reader relies on is the cursor's rule.
-  A path takes 6900 either first, before any row lock (`delivery.LockChanges`: the session groups' writes, a repository mapping's writes, the drain), or last, in the statement that ends its transaction, after every row lock it takes: every one-statement write of a delivery row, a run's jobs write, which writes the run row and its jobs in one statement (`UpsertRunJobs`), and the `issue.deployed` write, which locks its pull request's row, appends the event and marks the row last (`recordDeployedEvent`).
-  So no path holds 6900 while it waits for a lock a waiter for 6900 holds, and none holds it longer than its last statement and its commit, but the few short transactions that take it first.
+  Each table whose rows a path that takes 6900 locks has one position for 6900 against those row locks, and every writer of the table takes it there: first, before any row lock of the table (`delivery.LockChanges`), or last, in the change triggers of the statement that ends its transaction, after the rows that statement writes.
+  A writer that took it first beside one that takes it last on the same rows would wait for the row the other holds while the other waited for 6900.
+  A path that takes it last holds it for that statement and its commit; one that takes it first, for the rest of its transaction, so it runs its reads before it: a session group's write takes the groups' own advisory lock, runs the title rule's read of every pull request's sessions and its other checks, and only then sends 6900 and its writes, in one round trip.
+  Last is not after every row lock in a statement that changes several rows of a table with a foreign key: Postgres fires the after-row triggers row by row at the statement's end, each row's foreign key check before its change trigger, so the checks of rows 2..n take `FOR KEY SHARE` on the rows they reference after row 1's trigger took 6900 (`AttributePullRequests`' issues, the fixtures' inserts of many pull requests or jobs).
+  No cycle follows: `FOR KEY SHARE` waits only for `FOR UPDATE`, a delete or a key change of the row, and no path that takes 6900 holds one on an issue, a project or a run: `TestNoForUpdateOnOwnerTables` refuses `for update` on issues and projects, and no statement outside the tests deletes an issue, a project or a run, changes their keys or locks a run `for update`.
+  A run's jobs write is one statement (`UpsertRunJobs`): migration `0100`'s header, which describes it as two and a group write taking 6900 in the middle of its transaction, predates both changes and stays as shipped.
+  The writers that take 6900 (a foreign key's `FOR KEY SHARE` left out, by the rule above):
+
+  | Writer | Rows it locks | 6900 |
+  | --- | --- | --- |
+  | the one-statement writes of `delivery/store.go` (a pull request, a run, `MarkRunJobsUnfetchable`, `PutSettings` with the reconcile progress it clears), `AttributePullRequests`, and the fixtures' inserts (`deliverytest`, `legiontest`, `evalfixture`) | the rows it writes of `delivery_pull_requests`, `delivery_runs`, `delivery_run_jobs`, `delivery_settings`, `delivery_reconcile_progress` | last, in its one statement |
+  | `UpsertRunJobs` | the run's jobs, in their names' byte order, then the run | last, in its one statement |
+  | `recordDeployedEvent` | its pull request and its issue (`for no key update`), a new `events` row, the pull request's marker | last, in its last statement |
+  | a session group's create, update or delete (`delivery/groups.go`) | `delivery_session_groups`, `delivery_session_group_members` | first, after its reads |
+  | every mapping write, through `delivery.LockRepoProjectWrite` | `projects` (`for no key update`), `repo_projects` (`for update`), new `events` rows, `session_titles` at commit | first |
+  | the drain (`delivery.DrainPending`) | `delivery_changes_pending` | first |
+
+  Each table's one position: last for `delivery_pull_requests`, `delivery_runs`, `delivery_run_jobs`, `delivery_settings`, `delivery_reconcile_progress` and `issues`;
+  first for `delivery_session_groups`, `delivery_session_group_members`, `repo_projects`, `projects`, `session_titles` and `delivery_changes_pending`;
+  `events` and `delivery_changes` take new rows alone, under keys no two writers share.
   The eval and Legion writes take no 6900 at all: the triggers of `issue_facts`, `issue_filings`, `eval_readings`, `eval_versions`, `eval_series` and `eval_days` record their changes in the outbox, `delivery_changes_pending`, with no lock (migrations `20261115155339` and `20261115155340`), and `delivery.DrainPending` moves them into the log 250 at a time, lowest ids first, each batch one short statement of its own that takes 6900 first and keeps each row's recorded moment, so no burst holds 6900 longer than one batch.
   The writer drains right after its own commit, before its route answers; the live hub drains before each read of the log, the refresher at the start of each pass, and the server's boot once, before it serves.
   A writer killed between its commit and its drain loses no change: the pending row committed with its rows and its notification reached every live process's hub at that commit, which drains on that wake, and with no process alive the next server's boot drains and its drain's notification wakes every hub listening by then.

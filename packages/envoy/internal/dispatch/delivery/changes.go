@@ -76,19 +76,21 @@ const ChangeRetention = 24 * time.Hour
 // settings row.
 const ChangesChannel = "delivery_changes"
 
+// lockChangesStatement takes the change log's lock for the rest of its transaction (LockChanges).
+const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
+
 // LockChanges takes, for the rest of tx, the change log's lock: the transaction advisory lock
 // (6900, 0) every insert into delivery_changes takes before it draws a seq, and holds to its
 // commit (migration 0100). A seq is therefore drawn only once every row below it has committed or
 // rolled back, so a reader's cursor never skips a change row: a reader that has read through seq
 // never meets a row below it later.
 //
-// A path takes the lock either first, before any row lock, or last, in the statement that ends its
-// transaction, after every row lock it takes; a one-statement write is the last-statement case. A
-// path that takes it last holds every row lock it needs when it waits, and a path that takes it
-// first locks no row a path taking it last ever holds, so no path holds the lock while it waits
-// for a lock a waiter for it holds, and the lock order has no cycle. A path that takes it last
-// holds it for its last statement and its commit; one that takes it first, for its whole
-// transaction, so those transactions are short.
+// Each table whose rows a path that takes the lock locks has one position for the lock against
+// those row locks, and every writer of the table takes it there: first, before any row lock of
+// the table, or last, in the change triggers of the statement that ends its transaction, after
+// the rows that statement writes. A writer that took it first beside one that takes it last on
+// the same rows would wait for the row the other holds while the other waited for the lock, a
+// deadlock; packages/envoy/AGENTS.md holds the table of every writer and each table's position.
 //
 //   - Last, in one statement: every one-statement write of a delivery row (a pull request, a run,
 //     the settings), and a run's jobs write (UpsertRunJobs), which writes the run row and every job
@@ -96,19 +98,39 @@ const ChangesChannel = "delivery_changes"
 //   - Last, in the statement that ends its transaction: the issue.deployed write
 //     (recordDeployedEvent), which locks its pull request's row first, appends the event, and
 //     marks the row last.
-//   - First, with LockChanges: every write of the session groups (lockSessionGroups) and of a
-//     repository's project mapping (api's lockRepoProjectWrite, and cmd/dispatch-seed's write of
-//     the projects it seeds), each a few statements; and the drain (DrainPending), which takes it
+//   - First, with LockChanges: every write of the session groups (writeSessionGroup, after the
+//     reads that decide it) and of a repository's project mapping (LockRepoProjectWrite, which
+//     every writer of repo_projects goes through); and the drain (DrainPending), which takes it
 //     before it locks the pending rows it moves.
+//
+// Last is not after every row lock in a statement that changes several rows of a table with a
+// foreign key: Postgres fires the after-row triggers at the statement's end row by row, each row's
+// foreign key check before its change trigger, so the checks of rows 2..n take FOR KEY SHARE on
+// the rows they reference after row 1's trigger took the lock (AttributePullRequests' issues, and
+// the fixtures' inserts of many pull requests or jobs). No cycle follows: FOR KEY SHARE waits only
+// for FOR UPDATE, a delete or a change of the row's key, and no path that takes the lock holds one
+// of those on an issue, a project or a run. TestNoForUpdateOnOwnerTables (api) refuses `for update`
+// on issues and projects anywhere in the module, and no statement outside the tests deletes an
+// issue, a project or a run, changes their keys or locks a run for update.
+//
+// A path that takes it last holds it for its last statement and its commit; one that takes it
+// first, for the rest of its transaction, so those transactions are short and do their reads
+// before it.
 //
 // No eval, refresher or Legion facts write takes it: their changes wait in the outbox
 // (delivery_changes_pending, migration 20261115155339), and the drain moves them into the log in a
 // short transaction of its own after they commit.
 func LockChanges(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6900, 0)`); err != nil {
+	if _, err := tx.Exec(ctx, lockChangesStatement); err != nil {
 		return fmt.Errorf("take the delivery change log's lock: %w", err)
 	}
 	return nil
+}
+
+// queueLockChanges queues the change log's lock (LockChanges) into batch, so the statements queued
+// after it run under it in the batch's one round trip.
+func queueLockChanges(batch *pgx.Batch) {
+	store.QueueExec(batch, "take the delivery change log's lock", lockChangesStatement)
 }
 
 // drainBatch is the most pending rows one transaction of the drain moves. On the pod it was
