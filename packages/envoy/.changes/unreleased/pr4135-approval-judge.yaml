@@ -16,8 +16,9 @@ body: |-
   5-second bound, and its approval asks Dispatch again, afresh rather than from the answers the
   broker keeps, under a 5-second bound of its own that ends a second before the run does; the
   verdict's row is written on a context of its own, so a slow Dispatch still leaves the run its
-  row. An approval whose answer was lost after it applied leaves only its own row, and where the
-  broker cannot read whether it applied, the row it writes says `applied` `unknown`, never false.
+  row. An approval whose answer was lost after it applied leaves only its own row, one still
+  committing is waited for, and where the broker cannot tell whether it applied, the row it writes
+  says `applied` `unknown`, never false.
   A stop of the broker during the approval is logged as that, not as a refusal. A new request or
   machine login whose reason names the issue keys of more than 16 projects is refused when it is
   made, on every broker, `400 REQUEST_INVALID` naming the bound; a request stored before that whose

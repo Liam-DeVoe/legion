@@ -339,10 +339,14 @@ type Machine struct {
 	testAdoptionHook func()
 	// testCommitCut, when set, runs right after a decision's transaction has committed, and an
 	// error it returns is what the decision answers: a COMMIT the server applied whose answer
-	// the network then lost. testLandedRead, when set, is what LogJudged's read of whether an
-	// approval's own row is there fails with. Both exist only so a test can cut a judge's
-	// approval after it applied, and fail that read; no production caller sets them.
+	// the network then lost. testHoldCommit, when set, runs with every row of the decision
+	// written and before its COMMIT, and an error it returns rolls the decision back: a COMMIT
+	// still in flight. testLandedRead, when set, is what LogJudged's read of whether an
+	// approval's own row is there fails with. They exist only so a test can cut a judge's
+	// approval after it applied, hold it uncommitted, and fail that read; no production caller
+	// sets them.
 	testCommitCut  func() error
+	testHoldCommit func() error
 	testLandedRead func() error
 }
 
@@ -1132,16 +1136,23 @@ const judgedKind = "request.judged"
 //
 // A row that says an approval was not applied (applied false) can be wrong: the approval's COMMIT
 // may have applied on the server and only its answer been lost, and then its own row is already
-// there, saying applied. So LogJudged first reads whether it is (approvalLanded), on ctx, before
-// any transaction: when it is, it writes nothing (JudgedAlreadyApplied), so the trail holds the
-// one row that says what happened; when that read fails, it writes the row with applied
-// AppliedUnknown and the read's error under applied_unknown (JudgedAppliedUnknown), never a false
-// it could not check. Any other row is written as given (JudgedWritten).
+// there, saying applied, or is still committing. So LogJudged first reads whether it is, inside
+// its own transaction (approvalLanded), after taking the request's row for share, which waits for
+// a COMMIT or an abort in flight, since the approval holds that row for update until it ends:
+// when the row is there, it writes nothing (JudgedAlreadyApplied), so the trail holds the one row
+// that says what happened; when that wait outlasts its bound or the read fails, it writes the row
+// with applied AppliedUnknown and the cause under applied_unknown (JudgedAppliedUnknown), never a
+// false it could not check. Any other row is written as given (JudgedWritten).
 func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedWrite, error) {
 	detail := judgedDetail(judged)
 	wrote := JudgedWritten
+	tx, err := m.Store.Pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
 	if applied, ok := detail["applied"].(bool); ok && !applied {
-		landed, err := m.approvalLanded(ctx, recordID)
+		landed, err := m.approvalLanded(ctx, tx, recordID)
 		switch {
 		case err != nil:
 			detail["applied"] = AppliedUnknown
@@ -1151,11 +1162,6 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 			return JudgedAlreadyApplied, nil
 		}
 	}
-	tx, err := m.Store.Pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback(ctx)
 	// The enrollment is the one the request hangs off now, never the one the record froze, as
 	// every other read of this package is (the package comment's moved session). No lock and no
 	// liveness test: the row is written for the trail, and a verdict on a request whose box has
@@ -1184,17 +1190,48 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 // transaction set, and which says nothing of why it was not applied. Every row LogJudged writes
 // for an approval says why (not_applied), and a referral's says nothing of applied at all, so only
 // an approval that committed leaves such a row, and a request is approved at most once.
-func (m *Machine) approvalLanded(ctx context.Context, recordID string) (bool, error) {
+//
+// It reads inside tx, in a savepoint of its own: first the request's row for share, which waits
+// for an approval whose transaction holds that row for update (applyDecisionAttempt) to commit or
+// abort, so the read after it sees the state that settled; then the read itself. The wait is
+// bounded by lock_timeout at half of what is left of ctx (landedWait), so the other half is left
+// to write the row; a wait it ends is an error, and the savepoint's rollback leaves tx to write.
+func (m *Machine) approvalLanded(ctx context.Context, tx pgx.Tx, recordID string) (bool, error) {
 	if m.testLandedRead != nil {
 		if err := m.testLandedRead(); err != nil {
 			return false, err
 		}
 	}
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer sp.Rollback(ctx)
+	if _, err := sp.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", landedWait(ctx).Milliseconds())); err != nil {
+		return false, err
+	}
+	var one int
+	if err := sp.QueryRow(ctx, `select 1 from requests where record_id=$1 for share`, recordID).Scan(&one); err != nil {
+		return false, fmt.Errorf("wait for the approval's own transaction to end: %w", err)
+	}
 	var landed bool
-	err := m.Store.Pool.QueryRow(ctx, `select exists(select 1 from audit a join requests r on r.id = a.request_id
+	if err := sp.QueryRow(ctx, `select exists(select 1 from audit a join requests r on r.id = a.request_id
 		where r.record_id=$1 and a.kind=$2 and jsonb_typeof(a.detail->'applied')='boolean' and not (a.detail ? 'not_applied'))`,
-		recordID, judgedKind).Scan(&landed)
-	return landed, err
+		recordID, judgedKind).Scan(&landed); err != nil {
+		return false, err
+	}
+	return landed, nil
+}
+
+// landedWait is how long approvalLanded waits for an approval's transaction to end: half of what
+// is left of ctx, or JudgeRowReserve where ctx has no deadline, and never less than a
+// millisecond, since a lock_timeout of zero waits for ever.
+func landedWait(ctx context.Context) time.Duration {
+	wait := JudgeRowReserve
+	if end, ok := ctx.Deadline(); ok {
+		wait = time.Until(end) / 2
+	}
+	return max(wait, time.Millisecond)
 }
 
 // JudgedWrite is what LogJudged did with the row it was given.
@@ -1609,6 +1646,11 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		// wrote (decider.judgedRow).
 		judged = who.judgedRow(next)
 		if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nullable(grantID), who.actor(), judged); err != nil {
+			return Decision{}, false, err
+		}
+	}
+	if m.testHoldCommit != nil {
+		if err := m.testHoldCommit(); err != nil {
 			return Decision{}, false, err
 		}
 	}

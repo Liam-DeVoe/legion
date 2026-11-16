@@ -1059,8 +1059,9 @@ written, under a 5-second bound of its own that ends a second before the run doe
 slow to answer then fails the approval, and the request waits for its person. A run with a
 verdict writes its `request.judged` row on a context of its own, which the run's deadline does not
 cancel, so an approval that failed late still leaves its row; one whose answer was lost after it
-applied leaves only the row it wrote itself, and where even that cannot be read, the row it writes
-says `applied` `unknown`. The broker writes nothing in Dispatch — no ask, no comment, no
+applied leaves only the row it wrote itself, one still committing is waited for, for half the time
+the row has, and where even that cannot tell, the row it writes says `applied` `unknown`. The broker
+writes nothing in Dispatch — no ask, no comment, no
 status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
 settings name, presenting the broker machine's own Google identity token for the audience they
 name. Those settings are all-or-none, and the
