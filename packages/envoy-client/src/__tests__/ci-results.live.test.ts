@@ -367,13 +367,16 @@ describe.skipIf(!dispatchStackEnabled)(
         ["POST", "/api/v1/issues", { project, title: "An issue a CI job writes" }],
         ["GET", `/api/v1/projects/${project}/results?commit=${at}`, undefined],
       ] as const) {
+        // One signal bounds the request and the trade the credential awaits for it.
+        const signal = AbortSignal.timeout(60_000);
         const url = `${resolution.url}${route}`;
         const response = await fetch(url, {
           method,
           headers: {
             ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-            ...(await resolution.credential.headers(method, url)),
+            ...(await resolution.credential.headers(method, url, undefined, signal)),
           },
+          signal,
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
         const answer = (await response.json()) as { code?: string };

@@ -1345,8 +1345,9 @@ const (
 
 // ResultNotCountedRoleOnCICheck is why a role's result of a check CI proves counts for nothing
 // (CheckResult.NotCounted): only that check's CI job records its result. The kind of a check is its
-// block's alone, so such a row, which a build that counted such rows took while it served beside
-// a newer one, changes nothing about the check. A reader prints it after "It counts for nothing: ".
+// block's at each read, and such a row stands against a block carrying ci_check only until the
+// settlement that holds the block to the fourth rule takes that ci_check off (a browser's write, or
+// a write that raced the result). A reader prints it after "It counts for nothing: ".
 const ResultNotCountedRoleOnCICheck = "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves"
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
@@ -1534,7 +1535,7 @@ type CheckResultRetraction struct {
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
 // `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check
-// is its block's kind alone: Results holds the one result derived from that run (id
+// is CI's by its block at each read: Results holds the one result derived from that run (id
 // `ci-run:<check run id>`) alone, as a dispatch command released before this one reads it, and
 // RecordedResults every result recorded against it, newest first: each one a run of its CI job
 // recorded (role `ci`, Branch set), and each role's, which carries NotCounted.
@@ -2127,7 +2128,7 @@ type BlockRepairedEventPayload struct {
 
 // BlockInvalidEventPayload records a block that browser editing left breaking a rule: an ask block
 // settlement cannot read, which it marks `invalid`, or, with BlockType "check", a check block whose
-// ci_check breaks one of the three rules, which it deletes. Reason is the ask's reason or the rule.
+// ci_check breaks one of the four rules, which it deletes. Reason is the ask's reason or the rule.
 // BlockType is absent for an ask.
 type BlockInvalidEventPayload struct {
 	BlockID     string `json:"block_id"`

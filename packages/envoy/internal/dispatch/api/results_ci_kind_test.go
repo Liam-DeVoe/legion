@@ -1,28 +1,31 @@
 // results_ci_kind_test.go holds the results routes to the rule that the kind of a check comes from
-// its check block alone, at each read: a check whose ci_check names a run and that keeps the three
-// rules of such a block is CI's, whatever rows stand against it. A role's row on such a check (one
-// the build before this rule wrote while it served beside this one) counts for nothing and says why.
+// its check block at each read: a check whose ci_check names a run and that keeps the three rules
+// of such a block is CI's, whatever rows stand against it. A role's row on such a check (one a
+// browser's write, or a write that raced the result, left beside the block's ci_check until the
+// next settlement takes that ci_check off) counts for nothing and says why.
 package api
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// olderBuildsRow writes a tester's pass of check blockID at commit as the build before this rule
-// wrote one: role tester, no branch, against the check's words now.
-func olderBuildsRow(t *testing.T, rig *ciJobRig, blockID, commit string) {
+// rolesRow writes a tester's pass of check blockID at commit as a role's row stands: role tester,
+// no branch, against the check's words now.
+func rolesRow(t *testing.T, rig *ciJobRig, blockID, commit string) {
 	t.Helper()
 	check := checkOf(t, readResults(t, rig.handler, rig.issue), blockID)
 	if _, err := rig.database.Pool.Exec(context.Background(), `
 		insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version, check_sha256, role, commit_sha, verdict, actor)
 		values ($1, $1, $2::uuid, $3, $4, $5, 'tester', $6, 'pass', '{"kind":"session","id":"older-build"}')
 	`, rig.issue, rig.verification, blockID, check.Version, check.SHA256, commit); err != nil {
-		t.Fatalf("write the older build's row of %s: %v", blockID, err)
+		t.Fatalf("write the tester's row of %s: %v", blockID, err)
 	}
 }
 
@@ -56,16 +59,26 @@ func notCountedOf(t *testing.T, handler http.Handler, issue, role string) map[st
 	return held
 }
 
-// TestARolesRowOnACICheckCountsForNothing: the older build's tester pass of c1 stands at the open
-// pull request's head. c1's block names ci_check go-checks and keeps the three rules, so c1 is still
-// a check CI proves; the tester's row counts for nothing, says so in not_counted, and makes no pass
-// stand; and a further role's result of c1 is still 409 CHECK_PROVED_BY_CI. The control is k1, an
-// ordinary check holding the same row, on which the tester's pass stands and counts.
+// TestARolesRowOnACICheckCountsForNothing: a tester's pass of c1 stands at the open pull request's
+// head beside c1's ci_check, the state a browser's write, or a write that raced the result, leaves
+// until the next settlement. c1's block names ci_check go-checks and keeps the three rules, so c1
+// is still a check CI proves at each read; the tester's row counts for nothing, says so in
+// not_counted, and makes no pass stand; and a further role's result of c1 is still 409
+// CHECK_PROVED_BY_CI. The control is k1, an ordinary check holding the same row, on which the
+// tester's pass stands and counts. The next settlement then holds c1 to the fourth rule, as the
+// release before does: it takes c1's ci_check off with one block.invalid naming the rule, and c1 is
+// an ordinary check. Its tester's row then counts, under words that moved with the repair, since a
+// block's digest covers its attributes, so no pass of c1 stands. The rig's own upload is settled
+// first, so the rows are read before any settlement can judge them.
 func TestARolesRowOnACICheckCountsForNothing(t *testing.T) {
 	rig := newCIJobRig(t)
+	documents := rig.deps.Docs.(*docs.Service)
+	if err := documents.SettleIssueDocuments(context.Background(), rig.issue); err != nil {
+		t.Fatalf("settle the rig's upload: %v", err)
+	}
 	writeHead(t, rig.database, ciJobRepository, 70, ciJobCommit, "open", rig.issue)
-	olderBuildsRow(t, rig, "c1", ciJobCommit)
-	olderBuildsRow(t, rig, "k1", ciJobCommit)
+	rolesRow(t, rig, "c1", ciJobCommit)
+	rolesRow(t, rig, "k1", ciJobCommit)
 
 	read := readResults(t, rig.handler, rig.issue)
 	if k1 := checkOf(t, read, "k1"); k1.PassStands.Answer != model.PassStandsYes {
@@ -90,5 +103,26 @@ func TestARolesRowOnACICheckCountsForNothing(t *testing.T) {
 	refused := rig.post(t, rig.issue, rig.sessionToken(), resultBody("c1", "pass", ciJobCommit, map[string]any{"role": "tester"}))
 	if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" {
 		t.Fatalf("a further tester's result of c1: status=%d body=%s, want 409 CHECK_PROVED_BY_CI", refused.Code, refused.Body.String())
+	}
+
+	if edited := applyOp(t, rig.handler, rig.verification, map[string]any{
+		"op": "insert", "after": "end", "markdown": "A note below the checks.\n",
+	}); edited.Code != http.StatusOK {
+		t.Fatalf("an edit beside c1: status=%d body=%s, want 200", edited.Code, edited.Body.String())
+	}
+	if err := documents.SettleIssueDocuments(context.Background(), rig.issue); err != nil {
+		t.Fatalf("settle the edit: %v", err)
+	}
+	settled := checkOf(t, readResults(t, rig.handler, rig.issue), "c1")
+	if settled.CICheck != "" || settled.CI != nil || settled.PassStands.Answer != model.PassStandsNo {
+		t.Fatalf("c1 once settled reads ci_check %q, ci %+v, pass_stands %+v, want an ordinary check whose pass does not stand",
+			settled.CICheck, settled.CI, settled.PassStands)
+	}
+	if len(settled.Results) != 1 || settled.Results[0].NotCounted != "" || settled.Results[0].CheckWordsMoved == nil || !*settled.Results[0].CheckWordsMoved {
+		t.Fatalf("c1's tester's row once settled reads %+v, want it counted, under words that moved with the repair", settled.Results)
+	}
+	want := []ciCheckRefusalEvent{{BlockID: "c1", Reason: ciCheckRecordedRule, BlockType: "check"}}
+	if got := ciCheckRefusalEvents(t, rig.handler, rig.issue); !reflect.DeepEqual(got, want) {
+		t.Fatalf("block.invalid events = %+v, want %+v", got, want)
 	}
 }

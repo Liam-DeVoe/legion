@@ -90,7 +90,7 @@ type ciRun struct {
 	appSlug     string
 }
 
-// deriveCIResults answers every check CI proves among checks (validCICheck, its block alone): its
+// deriveCIResults answers every check CI proves among checks (validCICheck, its block): its
 // `ci` member, and, where the run that decides it passed or failed, the result derived from that
 // run, merged into the results the read loaded for it, newest first (newestResultsFirst). A role's
 // result the read loaded for such a check counts for nothing and says why (notCountedOnCICheck). An
@@ -143,8 +143,10 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 
 // notCountedOnCICheck marks each result the read loaded for check, a check CI proves, that no CI
 // job recorded: a role's, a row of check_results, which names no branch, where every row of
-// ci_check_results names one. Such a row is older than the check's ci_check, or a build released
-// before ci_check_results took it. It counts for nothing (standingCommit) and says why
+// ci_check_results names one. Such a row is older than the check's ci_check, a browser's write or
+// a write that raced the result gave the block, and stands against it only until the settlement
+// that holds the block to the fourth rule (docs.CICheckRuleIn) takes that ci_check off. It counts
+// for nothing (standingCommit) and says why
 // (model.ResultNotCountedRoleOnCICheck). It runs before the derived result is merged in, so
 // that one is never marked.
 func notCountedOnCICheck(check *model.CheckBlock) {

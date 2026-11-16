@@ -473,8 +473,9 @@ test("a check with ci_check whose CI run was skipped says its run proved nothing
   }
 });
 
-/** The three check blocks a person can paste that each break one rule of a check CI proves, by
- *  block id, with the rule's own words. */
+/** The four check blocks a person can paste that each break one rule of a check CI proves, by
+ *  block id, with the rule's own words. `c-old` reuses the id of a check that held a recorded
+ *  result, which was deleted from the document before the paste. */
 const brokenCIChecks = [
   {
     block: `:::check{#c-run ci_check="${ciRun}" run="bun test web/src" negative_control="Break it and the run fails."}\nA check CI proves that names a run.\n:::\n`,
@@ -491,22 +492,21 @@ const brokenCIChecks = [
     id: "c-control",
     rule: "a check proved by CI names its negative control",
   },
+  {
+    block: `:::check{#c-old ci_check="${ciRun}" negative_control="Break it and the run fails."}\nA check that already holds a result.\n:::\n`,
+    id: "c-old",
+    rule: "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one",
+  },
 ] as const;
-
-/** A valid check pasted under the id of a check that a role's result stands against, which was
- *  deleted from the document before the paste. The kind of a check is its block's alone, so it
- *  keeps its ci_check. */
-const heldCICheck = `:::check{#c-old ci_check="${ciRun}" negative_control="Break it and the run fails."}\nA check that already holds a result.\n:::\n`;
 
 // SLOW(>=2s): 4.6 s - a project, its default repository, a pull request in the fake GitHub, a
 // Verification document, a recorded result reading through to that fake and a block deletion,
 // then a load of the document that opens its live room, the paste, the room's settlement and its
 // repair reaching the editor, and a second load, of the Activity tab.
-// The live editor writes through the document socket, which refuses no update, so the three rules
+// The live editor writes through the document socket, which refuses no update, so the four rules
 // reach a browser's write at the room's settlement: it deletes the `ci_check` of each block that
 // breaks one and posts one block.invalid naming the block and the rule, which the issue's
-// Activity reads as the refusal. A valid check pasted on a fresh id keeps its `ci_check`, and so
-// does one pasted under the id of a check a role's result stands against.
+// Activity reads as the refusal. A valid check pasted on a fresh id keeps its `ci_check`.
 test("a pasted check block whose ci_check breaks a rule loses it, and the Activity names the rule", async ({
   browser,
 }) => {
@@ -541,11 +541,11 @@ End.
     const valid = `:::check{#c-fresh ci_check="${ciRun}" negative_control="Break it and the run fails."}\nA check CI proves under a new id.\n:::\n`;
     await paste(page, {
       html: "",
-      text: [...brokenCIChecks.map(({ block }) => block), heldCICheck, valid].join("\n"),
+      text: [...brokenCIChecks.map(({ block }) => block), valid].join("\n"),
     });
 
-    // Once the room has settled, the stored document holds all five blocks, and only the two
-    // valid ones carry a ci_check.
+    // Once the room has settled, the stored document holds all five blocks, and only the valid
+    // one carries a ci_check.
     await expect
       .poll(async () => {
         const { markdown } = await getArtifactText(artifactId);
@@ -555,7 +555,7 @@ End.
       .toEqual({
         "c-control": false,
         "c-fresh": true,
-        "c-old": true,
+        "c-old": false,
         "c-run": false,
         "c-when": false,
       });
@@ -569,7 +569,6 @@ End.
       await expect(ciCheckOf(id)).toHaveCount(0);
     }
     await expect(ciCheckOf("c-fresh")).toHaveText(ciRun);
-    await expect(ciCheckOf("c-old")).toHaveText(ciRun);
 
     // The Activity names each refusal, by block and rule, and none for the valid block.
     await page.goto(`/issues/${issue.key}/activity`);
@@ -578,7 +577,6 @@ End.
       await expect(rows.filter({ hasText: `refused check ${id}: ${rule}` })).toHaveCount(1);
     }
     await expect(rows.filter({ hasText: "refused check c-fresh" })).toHaveCount(0);
-    await expect(rows.filter({ hasText: "refused check c-old" })).toHaveCount(0);
   } finally {
     await alice.close();
   }

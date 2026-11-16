@@ -308,9 +308,9 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Asked again under the locks: a document write can have given the block a ci_check since the
-	// resolve, and a role's result recorded since takes the block back from CI. Both are read in
-	// this transaction, so whichever of a racing result and a racing ci_check commits, every
-	// reader reads the block as one kind of check.
+	// resolve, and the block's attributes are read in this transaction. A result that races a write
+	// giving the block a ci_check can commit beside it; the next settlement then holds the block to
+	// the fourth rule (docs.CICheckRuleIn) and takes that ci_check off, as the release before does.
 	if err := s.refuseResultOfAnotherRecorder(r.Context(), tx, check, credential, run); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -816,9 +816,12 @@ func (s *server) readCheckAttributes(ctx context.Context, check *resolvedCheck) 
 }
 
 // validCICheck reports whether check is one CI proves: it carries ci_check and keeps the three
-// rules of such a block (docs.CICheckRule). The kind of a check is its block's alone, read again
-// at each read, so no row stored against it changes it: a role's result of such a check counts for
-// nothing (notCountedOnCICheck). Any other check is an ordinary check, whatever its ci_check says.
+// rules of such a block (docs.CICheckRule). The kind of a check is its block's, read again at each
+// read, so a role's result of such a check counts for nothing (notCountedOnCICheck). A write is held
+// to a fourth rule too, that no result a role recorded stands against the block
+// (docs.CICheckRuleIn), so such a result stands against a block carrying ci_check only until the
+// settlement that repairs the block. Any other check is an ordinary check, whatever its ci_check
+// says.
 func validCICheck(check model.CheckBlock) bool {
 	attributes := docs.CheckAttributesOfBlock(check)
 	return docs.CarriesCICheck(attributes) && docs.CICheckRule(attributes) == ""

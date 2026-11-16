@@ -612,8 +612,9 @@ func TestAResultsTokenOfAnotherProjectIsRefused(t *testing.T) {
 
 // TestAJobsResultLeavesTheCheckCIs: the job's result leaves c1 a check CI proves. An edit elsewhere
 // in the document leaves it a settlement to owe, which holds every check block of the document to
-// the three rules (reconcileCICheckBlocks); that settlement keeps c1's ci_check and appends no
-// block.invalid. A write that changes c1's negative control, which holds c1 to the three rules
+// the four rules (reconcileCICheckBlocks), whose fourth counts a role's rows of check_results and
+// never a CI job's of ci_check_results; that settlement keeps c1's ci_check and appends no
+// block.invalid. A write that changes c1's negative control, which holds c1 to the four rules
 // again (refuseCICheckBlocks), is stored. A settlement with nothing owed judges no block, so the
 // edit is what makes the first half able to fail.
 func TestAJobsResultLeavesTheCheckCIs(t *testing.T) {

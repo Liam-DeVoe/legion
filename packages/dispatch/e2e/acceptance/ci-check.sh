@@ -442,7 +442,7 @@ pass setup "seeded the fake GitHub with $driven_repo, replacing every repository
 
 # --- k1: the attribute, the four refusals, the fresh id and the two sockets ----------------------
 
-issue k1 "ci_check is stored, and the three rules refuse"
+issue k1 "ci_check is stored, and the four rules refuse"
 readonly k1="$key"
 held_commit="$(sha_of k1-held)"
 plain_commit="$(sha_of k4-plain)"
@@ -515,10 +515,15 @@ A check CI proves with no negative control.
 :::"
 refused_write "a check carrying ci_check and no negative_control" "$work/k1-control.md" c-control \
   "a check proved by CI names its negative control"
+k1_document "$work/k1-held.md" ":::check{#c-held surface=\"cli\" ci_check=\"contracts\" negative_control=\"$k1_control\"}
+A check a tester records a result for.
+:::"
+refused_write "ci_check added to c-held, which holds a recorded result" "$work/k1-held.md" c-held \
+  "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
 version_of k1 "$k1"
 [[ "$version" == "$k1_version" ]] ||
-  fail k1 "the three refused writes store nothing" "verification.md is at version $version, was $k1_version"
-pass k1 "the three refused writes store nothing: verification.md is still at version $k1_version"
+  fail k1 "the four refused writes store nothing" "verification.md is at version $version, was $k1_version"
+pass k1 "the four refused writes store nothing: verification.md is still at version $k1_version"
 
 k1_document "$work/k1-fresh.md" "$k1_held" "$k1_fresh"
 send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$work/k1-fresh.md")"
@@ -528,12 +533,10 @@ run k1 "read verification.md back" doc-read --issue "$k1" --artifact verificatio
 line k1 "dispatch doc-read reads c-fresh back with its ci_check" \
   ":::check{#c-fresh surface=\"cli\" when=\"before_merge\" negative_control=\"$k1_control\" ci_check=\"contracts\"}"
 k1_document "$work/k1-reused.md" ":::check{#c-held surface=\"cli\" ci_check=\"contracts\" negative_control=\"$k1_control\"}
-A check a tester recorded a result for, which its block now gives to CI.
+A new check written under the id of one that holds a result.
 :::" "$k1_fresh"
-send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$work/k1-reused.md")"
-[[ "$status" == 2?? ]] ||
-  fail k1 "ci_check on c-held, which holds a tester's result, is accepted" "HTTP $status: $(body)"
-pass k1 "ci_check on c-held, which holds a tester's result, is accepted, HTTP $status: the kind of a check is its block's alone"
+refused_write "a new block under the old id c-held, carrying ci_check" "$work/k1-reused.md" c-held \
+  "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
 
 # The sockets: the scope Hocuspocus's authentication answers, as the browser's provider reads it.
 get "/api/v1/schema/blocks"

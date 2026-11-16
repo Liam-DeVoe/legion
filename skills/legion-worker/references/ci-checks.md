@@ -9,9 +9,10 @@ cites is in cybermonklabs/legion.
 A `check` block can carry `ci_check`: the name of the GitHub check run that proves the check at
 the head. Such a check has no `run`, its `when` is `before_merge`, and it names its
 `negative_control`. Through the documents API, Dispatch refuses a write that breaks one of these
-rules. A write in the live editor lands, and the next settlement removes that `ci_check` and names
-the rule in the issue's Activity. The kind of a check is its block's alone: a result a role
-recorded before the block named `ci_check` counts for nothing once it does.
+rules, or that gives `ci_check` to a check that already holds a result a role recorded. A write in
+the live editor lands, and the next settlement removes that `ci_check` and names the rule in the
+issue's Activity. To give such a check to CI, write a new check block under a new id: a retraction
+does not lift the rule, since the retracted result stays recorded.
 
 ## No role runs it
 

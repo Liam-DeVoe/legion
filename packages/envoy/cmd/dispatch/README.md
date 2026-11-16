@@ -2351,6 +2351,7 @@ Nothing updates or deletes a row, and no route retracts one (`POST /api/v1/resul
 It reads no row of `ci_check_results`.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 Rolling back past it is an image rollback alone, with no step before it: the release before reads none of its rows, so no result a job recorded changes what that release serves.
+A block that holds a role's result takes no `ci_check` under either build, since both hold a document write to the same four rules (`400 INVALID_CI_CHECK`, below), so the release before's settlement finds no block this release gave a `ci_check` that it must take away.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
@@ -4326,7 +4327,7 @@ Each item below names a path with its method and identity, then its purpose.
     — Dispatch already holds an open or merged pull request whose head is that commit, whatever issue it is attributed to, since its own passes keep reading that row;
     or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
-  A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run` and a `negative_control` (`validCICheck`, `docs.CICheckRule`): its block's attributes alone, so no stored row changes its kind.
+  A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run` and a `negative_control` (`validCICheck`, `docs.CICheckRule`): its block's attributes, read at each read.
   No role records its result (POST below refuses one), and nothing is stored of the run that `ci_check` names:
   each read takes the head of the issue's `open` pull request of the highest number, else the final head of its `merged` one of the highest number (`delivery.NewestPullRequestHead`), and reads that commit's check runs once, every page, under one 10-second deadline (`api/results_ci.go`, `deriveCIResults`).
   Of the runs named exactly as `ci_check` says, the one of the highest id decides.
@@ -4351,6 +4352,8 @@ Each item below names a path with its method and identity, then its purpose.
     Its predicate holds the project, the check's `ref` as `check`, the result's `check_sha256` as `procedure_digest`, the check's `ci_check` as `test.job`, the verdict, `observed`, the job and the leg, the run, the recorder, and `recorded_at`, which is the result's `created_at`.
     A role's result and a derived result carry none.
 
+  - A document write is held to a fourth rule too, that no result a role recorded stands against the block (`400 INVALID_CI_CHECK`, below), so a role's result stands against a block carrying `ci_check` only until the settlement that takes that `ci_check` off.
+
   A check carrying `ci_check` that breaks one of those rules reads as an ordinary check; a role's result of a check CI proves carries `not_counted` and counts for nothing.
 
   The issue a result was recorded on is read for nothing here, so a child's pull request is never a basis for a check above it.
@@ -4364,7 +4367,7 @@ Each item below names a path with its method and identity, then its purpose.
     `check` names a check of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical block reference (`409 CHECK_AMBIGUOUS`); any other id is `400 UNKNOWN_CHECK`.
 
   - A check CI proves (GET above) is `409 CHECK_PROVED_BY_CI` for every credential but a CI job's results token, naming the block and the CI job, since only a run of that job records its result (`refuseResultOfAnotherRecorder`);
-    the test runs right after the check is resolved, before GitHub is asked about the commit, and again inside the recording transaction, where whether a role recorded a result against the block is read again.
+    the test runs right after the check is resolved, before GitHub is asked about the commit, and again inside the recording transaction, where the block's attributes are read again.
 
   - A CI job's results token records the result of a check CI proves whose `ci_check` is the name of the token's check run, and no other.
     Its body is `{check, commit, verdict, observed}`, `verdict` `pass` or `fail`, and any other member is `400 RESULT_INPUT` naming it, since Dispatch reads who recorded the result from the token and from GitHub, never from the body.
@@ -4869,9 +4872,12 @@ Each item below names a status and code, then its meaning.
 
 - `400 INVALID_CI_CHECK`
 
-  A document write leaves a check block carrying `ci_check` that breaks one of the three rules of a check CI proves (`docs.CICheckRule`), and the message names the block, its `ci_check` and the rule: `check <id> (ci_check "<name>"): <rule>`.
-  The rules, in the order they are read: `a check proved by CI carries no run`; `ci_check takes when of before_merge`; `a check proved by CI names its negative control` (`docs.CICheckRule`).
-  They are the block's attributes alone: a write that gives `ci_check` to a check that holds a result a role recorded is stored, and that result counts for nothing.
+  A document write leaves a check block carrying `ci_check` that breaks one of the four rules of a check CI proves (`docs.CICheckRuleIn`), and the message names the block, its `ci_check` and the rule: `check <id> (ci_check "<name>"): <rule>`.
+  The rules, in the order they are read: `a check proved by CI carries no run`; `ci_check takes when of before_merge`; `a check proved by CI names its negative control`;
+  and, read in the write's transaction, `this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one`.
+  The fourth rule counts a result that a role recorded, a row of `check_results`, retracted or not, and never a CI job's result, a row of `ci_check_results`.
+  It is the release before's rule, read in the same table, so the two builds refuse and repair the same blocks while they serve one database.
+  A writer who wants CI to prove a check that holds a role's result writes a new check block under a new id: a retraction is a row of its own and leaves the result's row, so it does not lift the rule.
   Every route that writes a document refuses it - an issue's create, an upload of a document or a version, `POST /edits` and its attribute operations (never wrapped into `INVALID_OP`), and a rebuild from supplied markdown - for each check block the write adds and each one whose `ci_check`, `run`, `when` or `negative_control` it changes, compared by block id with the document before the write;
   an edit elsewhere in a document never meets another writer's block.
   A blank `ci_check` names no run.

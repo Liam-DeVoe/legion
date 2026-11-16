@@ -3043,6 +3043,46 @@ describe("dispatch result --project, as a CI job writes it", () => {
     expect(written).toEqual([]);
   }, 15_000);
 
+  // The one signal of the bound reaches the issue form's trade as it reaches the project form's:
+  // a broker that takes the trade and never answers it ends the call at the bound, with the line
+  // that names the trade and says nothing was written, and Dispatch is sent nothing. The control
+  // is the row that posts the issue form's result above, whose broker answers at once.
+  test("with the job's identity, --issue ends at the command's one bound when the broker never answers the trade", async () => {
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    const answer = brokerAnswer;
+    brokerAnswer = async () => {
+      await held;
+      return answer();
+    };
+    try {
+      const ran = await timedJob(issueRecord, jobEnvironment(), shortBound(400, 50));
+      expect(
+        {
+          code: ran.code,
+          stderr: ran.stderr,
+          lines: ran.stdout.split("\n").length,
+          namesTheTrade: ran.stdout.startsWith(
+            "this command's 0.4 s ended while the secrets broker traded the job's token, and nothing was written: "
+          ),
+          outcomeUnknown: ran.stdout.includes("write_outcome_unknown"),
+          sentToDispatch: written.length,
+          withinTheBound: ran.ms < 800,
+        },
+        ran.stdout
+      ).toEqual({
+        code: 1,
+        stderr: "",
+        lines: 2,
+        namesTheTrade: true,
+        outcomeUnknown: false,
+        sentToDispatch: 0,
+        withinTheBound: true,
+      });
+    } finally {
+      release();
+    }
+  }, 30_000);
+
   test("with the job's identity, an argument of a role's record is refused on --issue, naming its flag, before any request", async () => {
     for (const [flag, value] of [
       ["--role", "tester"],

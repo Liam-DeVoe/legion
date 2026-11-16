@@ -223,7 +223,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := refuseBlockPointers(ctx, tx, artifactID, tree, prior, offsets); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		if err := refuseCICheckBlocks(tree, prior); err != nil {
+		if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, prior); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}

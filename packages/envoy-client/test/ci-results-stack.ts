@@ -541,7 +541,7 @@ async function wholeStack(): Promise<void> {
     // no session a result entry fixes. So the job's own credential, as `dispatch result
     // --project` resolves it, is presented by hand, and only the answer's status and code print.
     console.log(
-      `bun -e 'import { ownIdentityDispatch } from "${OWN_IDENTITY}"; const d = ownIdentityDispatch(process.env); const url = d.url + "/api/v1/issues?project=${stack.project}"; const r = await fetch(url, { headers: await d.credential.headers("GET", url) }); console.log(r.status, (await r.json()).code)'   # another route`
+      `bun -e 'import { ownIdentityDispatch } from "${OWN_IDENTITY}"; const d = ownIdentityDispatch(process.env); const url = d.url + "/api/v1/issues?project=${stack.project}"; const signal = AbortSignal.timeout(60_000); const r = await fetch(url, { headers: await d.credential.headers("GET", url, undefined, signal), signal }); console.log(r.status, (await r.json()).code)'   # another route`
     );
     console.log(
       `ACTIONS_ID_TOKEN_REQUEST_TOKEN='${forged.ACTIONS_ID_TOKEN_REQUEST_TOKEN}' ${result} --check ${PROBE_CHECK} --commit ${tested}   # a forged token`
