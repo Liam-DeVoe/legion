@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A person's comment on an issue routed to session s1 that also mentions s1 reaches s1 once:
@@ -119,6 +120,22 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 			"body": "Did either of you finish this?", "mentions": mentions,
 		})
 	}()
+	// The comment looks each mention up before its transaction, bounded by mentionLookupTimeout on
+	// the server's clock - a deadline as near as a backoff, which stepListenerWaits fires whenever
+	// the stand-in is serving nothing, as it is while a lookup's request is still on its way to
+	// it. A lookup cut so goes unanswered, not answered with the "no live session" the stand-in
+	// gives, so its comment commits on another resolution than the one this row writes it with. A
+	// comment with no route, as this one is, commits once its lookups have answered, waiting out
+	// no take-over first (resolveCommentDeliveries), so the clock stays where it is until the
+	// comment's attempts are committed; a wait of the request's after that is one the move below
+	// takes it through.
+	testwait.Eventually(t, "the comment's attempts to be committed", func() bool {
+		var committed int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from comment_deliveries`).Scan(&committed); err != nil {
+			t.Fatalf("count the comment's attempts: %v", err)
+		}
+		return committed >= len(ended)
+	})
 	response := answerWhileCallsAreHeld(t, clock, &calls, responses)
 	took := clock.Now().Sub(started)
 	created := decodeMentionedComment(t, response)

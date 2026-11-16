@@ -53,9 +53,21 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 				})
 				input["reply_to"] = decodeMentionedComment(t, root).ID
 			}
+			bound := clock.Now().Add(mentionLookupTimeout)
 			posted := make(chan *httptest.ResponseRecorder, 1)
 			go func() { posted <- postMentionedComment(t, handler, issue.Key, input) }()
-			created := decodeMentionedComment(t, answerWhileCallsAreHeld(t, clock, &state.calls, posted))
+			// The comment looks s1 up before its transaction, bounded by mentionLookupTimeout on
+			// the server's clock and armed before the lookup's request leaves. The clock moves to
+			// that bound once the stand-in holds the lookup: moved sooner, it would end a lookup
+			// the listener never saw, which is no silent listener's doing.
+			testwait.Until(t, "the stand-in to hold s1's lookup, bounded at "+bound.Format(time.RFC3339Nano),
+				func() ([]time.Time, bool) {
+					armed := clock.Armed()
+					_, holding := state.calls.counts()
+					return armed, holding == 1 && slices.ContainsFunc(armed, bound.Equal)
+				})
+			clock.Set(bound)
+			created := decodeMentionedComment(t, testwait.Receive(t, "the comment to answer once its lookup's bound ran out", posted))
 
 			settled := settledCommentDeliveriesOn(t, database, created.ID, clock, &state.calls)
 			if len(settled) != 1 || settled[0].State != "failed" {

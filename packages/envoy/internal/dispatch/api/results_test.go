@@ -3043,15 +3043,18 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 		"status 500", "Server Error at the check runs of "+headCommit)
 
 	// A read GitHub holds is cut at ciReadDeadline on the server's clock, which the test moves
-	// there once the read has armed it.
+	// there once GitHub holds the read: the deadline is armed before the read's request leaves, so
+	// moved as soon as it is armed it would end a read GitHub was never asked.
 	fake.failWith(0)
 	fake.holdEveryRead()
+	asked := fake.reads(headCommit)
 	held := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		held <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
 	}()
 	deadline := clock.Now().Add(ciReadDeadline)
 	awaitArmedAt(t, clock, "the check-runs read's deadline", deadline)
+	testwait.Eventually(t, "GitHub to hold the check-runs read", func() bool { return fake.reads(headCommit) > asked })
 	clock.Set(deadline)
 	response := testwait.Receive(t, "the held read's answer once its deadline passed", held)
 	if response.Code != http.StatusOK {

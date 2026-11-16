@@ -779,7 +779,9 @@ func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *t
 // mentionLookupTimeout, also on an issue whose route is not one of the comment's mentions: the
 // route's own lookup runs beside the mentions' lookups, not after them, so the two timeouts do not
 // add up. Both bounds are therefore armed on the server's clock at once, for the same moment; a
-// route looked up after the mention would arm its bound only once the mention's had run out.
+// route looked up after the mention would arm its bound only once the mention's had run out. The
+// clock moves to that moment once the stand-in holds both lookups, and no further: the comment
+// answers there.
 func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *testing.T) {
 	listener, state := newMentionListener(t)
 	letMentionAnswer := state.holdLookups("/v1/registry/s1")
@@ -795,18 +797,25 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 		t.Fatalf("set the route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
-	start := clock.Now()
+	bound := clock.Now().Add(mentionLookupTimeout)
 	posted := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		posted <- postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body": "Is anyone there?", "mentions": []map[string]any{{"target": "session:s1"}},
 		})
 	}()
-	bounds := clock.AwaitArmed(t, "the mention's and the route's lookup bounds", 2)
-	if want := start.Add(mentionLookupTimeout); !bounds[0].Equal(want) || !bounds[1].Equal(want) {
-		t.Fatalf("the two lookups are bounded at %v, want both at %v: one timeout, not two in a row", bounds, want)
-	}
-	created := decodeMentionedComment(t, answerWhileCallsAreHeld(t, clock, &state.calls, posted))
+	// Each lookup arms its bound and then the listener client's own window (envoy.CallWindow)
+	// before its request leaves, so the deadlines pending say the two lookups are in flight only
+	// once two of them stand at the bound. The stand-in holding both says their requests reached
+	// it: moved sooner, the clock would end a lookup the listener never saw.
+	testwait.Until(t, fmt.Sprintf("the stand-in to hold the mention's and the route's lookups, both bounded at %v",
+		bound.Format(time.RFC3339Nano)), func() ([]time.Time, bool) {
+		armed := clock.Armed()
+		_, holding := state.calls.counts()
+		return armed, holding == 2 && len(slices.DeleteFunc(slices.Clone(armed), func(at time.Time) bool { return !at.Equal(bound) })) == 2
+	})
+	clock.Set(bound)
+	created := decodeMentionedComment(t, testwait.Receive(t, "the comment to answer once its lookups' bound ran out", posted))
 
 	letMentionAnswer()
 	letRouteAnswer()

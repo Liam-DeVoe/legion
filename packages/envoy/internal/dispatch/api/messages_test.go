@@ -56,7 +56,7 @@ func newTargetedMessageHandler(t *testing.T, envoyURL string) (http.Handler, *st
 
 // newTargetedMessageHandlerOn is newTargetedMessageHandler on a server whose clock, which every
 // listener call's window runs on, is clock: a test of a receipt timeout passes a fake and moves
-// it to each window's end (answerThroughWindows).
+// it to the end of each window its stand-in holds (answerWhileCallsAreHeld).
 func newTargetedMessageHandlerOn(t *testing.T, envoyURL string, clock *clocktest.Fake) (http.Handler, *store.Store) {
 	t.Helper()
 	options := testServerOptions{envoyURL: envoyURL}
@@ -65,26 +65,6 @@ func newTargetedMessageHandlerOn(t *testing.T, envoyURL string, clock *clocktest
 	}
 	handler, database, _ := newTestServer(t, options)
 	return handler, database
-}
-
-// answerThroughWindows runs send, a request whose listener calls go unanswered, on a goroutine, and
-// moves clock, the server's, to the end of each call's window as the call arms it, until send
-// answers. The take-over window asks again on each missed receipt, so a send makes several calls.
-func answerThroughWindows(t *testing.T, clock *clocktest.Fake, send func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
-	t.Helper()
-	answered := make(chan *httptest.ResponseRecorder, 1)
-	go func() { answered <- send() }()
-	return testwait.Until(t, "the request to answer once its listener calls' windows ran out", func() (*httptest.ResponseRecorder, bool) {
-		select {
-		case response := <-answered:
-			return response, true
-		default:
-		}
-		if armed := clock.Armed(); len(armed) > 0 {
-			clock.Set(armed[0])
-		}
-		return nil, false
-	})
 }
 
 func bearerRequest(t *testing.T, handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
@@ -556,10 +536,14 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		// An unanswered read is what a listener take-over gives, so the send asks again for the
 		// take-over window before it settles; every one of those reads is cancelled the same way,
-		// at the end of its window on the server's clock, which the test moves there.
+		// at the end of its window on the server's clock, which the test moves there once the
+		// stand-in holds the read.
 		cancelled := make(chan struct{})
 		var cancelledOnce sync.Once
+		var calls listenerCalls
 		listener := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			defer calls.took()()
+			defer calls.holding()()
 			<-r.Context().Done()
 			cancelledOnce.Do(func() { close(cancelled) })
 		}))
@@ -567,11 +551,13 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 		clock := clocktest.New(time.Now())
 		handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 		issue := createInteractionIssue(t, handler, "TEST", "Timeout listener", "before")
-		response := answerThroughWindows(t, clock, func() *httptest.ResponseRecorder {
-			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+		sent := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 				"body": "Can you receive?", "target": "session:s1", "delivery": "steer",
 			}, "alice")
-		})
+		}()
+		response := answerWhileCallsAreHeld(t, clock, &calls, sent)
 		if response.Code != http.StatusCreated {
 			t.Fatalf("create message: status=%d body=%s", response.Code, response.Body.String())
 		}
@@ -1659,6 +1645,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 // same key, so the attempt is recorded failed only when every try of that window missed; this
 // listener misses every one until the message's own request has answered.
 func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
+	var calls listenerCalls
 	var listenerState struct {
 		sync.Mutex
 		keys      []string
@@ -1668,6 +1655,7 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 	listenerState.delivered = map[string]struct{}{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -1694,9 +1682,11 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 			listenerState.Unlock()
 			if missing {
 				// Held past the window the client gives the call, which ends on the server's
-				// clock, so Dispatch records the attempt failed while the agent already has the
-				// message.
+				// clock where the test moves it once the send is held here, so Dispatch records
+				// the attempt failed while the agent already has the message.
+				done := calls.holding()
 				<-r.Context().Done()
+				done()
 			}
 			if held {
 				_, _ = w.Write([]byte(`{"event_id":"target-envelope-2","recipient":"s1","duplicate":true}`))
@@ -1712,11 +1702,13 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A send that landed then timed out", "before")
 
-	created := answerThroughWindows(t, clock, func() *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+	sent := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 			"body": "The send landed; the answer did not.", "target": "session:s1", "delivery": "steer",
 		}, "alice")
-	})
+	}()
+	created := answerWhileCallsAreHeld(t, clock, &calls, sent)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create targeted message: status=%d body=%s", created.Code, created.Body.String())
 	}

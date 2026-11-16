@@ -125,11 +125,14 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 // own test rather than a line in the one above.
 func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
 	held := make(chan struct{})
+	var calls listenerCalls
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		if r.Method == http.MethodGet && (r.URL.Path == "/v1/registry/s1" || r.URL.Path == "/v1/sessions") {
 			// The lookup is never answered: what ends it is the window the client gives the
-			// call, on the server's clock, which the test moves to each window's end
-			// (answerThroughWindows).
+			// call, on the server's clock, which the test moves to the window's end once the
+			// lookup is held here (answerWhileCallsAreHeld).
+			defer calls.holding()()
 			select {
 			case <-held:
 			case <-r.Context().Done():
@@ -146,11 +149,13 @@ func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
 	handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A resolution that timed out", "before")
 
-	created := answerThroughWindows(t, clock, func() *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+	sent := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 			"body": "The listener never answered the lookup.", "target": "session:s1", "delivery": "steer",
 		}, "alice")
-	})
+	}()
+	created := answerWhileCallsAreHeld(t, clock, &calls, sent)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create targeted message: status=%d body=%s", created.Code, created.Body.String())
 	}
