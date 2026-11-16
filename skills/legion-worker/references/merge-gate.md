@@ -191,23 +191,22 @@ as the fingerprint decides (*The reviewer*, below, and
   checks until someone reads them. A red there is a
   `REQUEST_CHANGES` when the code is at fault, and your own commit to fix when your prose broke it.
 
-A reviewer's phase ends with its review, and the reviewer completes all the same. Every round records a handoff and
-takes this order: read CI as above; write the handoff and record it with `dispatch handoff-write`;
-submit the review of the head, by its SHA; then complete. A red at the code is a `REQUEST_CHANGES`
-naming the check, never an approval; so is an unmet goal or requirement, named: only an approved
-spec version takes one out. A requirement an open child carries is pending until the parent's last
-round. Neither decision waits on CI: a request for changes stands whatever CI says and the issue
-leaves reviewing with it, and the approval ends the round at the head it names, since the round reads
-no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
-issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
-in one message each to the tree's architect, the worker of the issue's current phase and the
-implementer, and judges none: a red is the implementer's to fix or re-run, the
-architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
-it approves is the only read that decides anything. A review that names an older head reviews
-code the pull request no longer has. The daemon moves the issue on the decision GitHub reports,
-your completion or not: an approval once GitHub answers that the approved head is one the issue
-may advance on, so an approved head GitHub answers `blocked` for leaves the issue in reviewing
-until that answer comes clean.
+Every round records a handoff and takes this order: read CI as above; write the handoff and record
+it with `dispatch handoff-write`; submit the review of the head, by its SHA; then complete. A red at
+the code is a `REQUEST_CHANGES` naming the check, never an approval; so is an unmet goal or
+requirement, named: only an approved spec version takes one out. A requirement an open child carries
+is pending until the parent's last round. Neither decision waits on CI: a request for changes stands
+whatever CI says and the issue leaves reviewing with it, and the approval ends the round at the head
+it names, since the round reads no CI verdict, and a settlement the daemon reads later — at that
+head or any above it — moves the issue nowhere. The daemon names each check GitHub reported, with
+the conclusion GitHub gave it, in one message each to the tree's architect, the worker of the
+issue's current phase and the implementer, and judges none: a red is the implementer's to fix or
+re-run, the architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read
+before it approves is the only read that decides anything. A review that names an older head reviews
+code the pull request no longer has. The daemon moves the issue on the decision GitHub reports, your
+completion or not: an approval once GitHub answers that the approved head is one the issue may
+advance on, so an approved head GitHub answers `blocked` for leaves the issue in reviewing until
+that answer comes clean.
 
 ## The architect's acceptance
 
