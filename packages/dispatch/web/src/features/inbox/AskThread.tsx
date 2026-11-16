@@ -178,7 +178,9 @@ export function AskReplyComposer({
       <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`} htmlFor={fieldId}>
         Reply
         <textarea
-          className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
+          // `border`: `inputClasses` sets the edge's colours alone, and without its width the box
+          // a quote lands in has no edge and no focus edge to be seen by.
+          className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
           disabled={sending}
           id={fieldId}
           onChange={(event) => setBody(event.target.value)}
