@@ -400,10 +400,14 @@ Each item below names a task and where its code is, then notes on it.
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
   the same lines end `dispatch read --issue` and the answer to an approval request.
+  Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
+
+- **Words and trees of check and requirement blocks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/api/reference_targets.go`
+
   A check's and a requirement's `text` is its words with every link and `dispatch://` reference dropped (`blockWords`), which is what the pull-request body line reads.
   A caller that sent `Dispatch-Trees: 1` is given the block's whole content beside it as `text_tree`, links and references kept: the block's own children rendered as a document of their own (`blockContent`) and read for display as a decision's section is, through the request's one tree reader.
   `GET /api/v1/reference-targets` answers the same for every member that names a block, a plan task among them, whose `name` is the stored excerpt and so holds the directive line and stops at 480 runes: the block's whole text is read from the block index, one statement per kind of block (`refs.BlockTexts`), a typed block's is cut to its own content (`blockTextContent`), and no document is loaded; the read's ETag hashes each tree.
-  Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
+  Shapes: `RequirementCoverage`, `CheckBlock`, `ReferenceTarget` in `packages/contracts/src/dispatch-api.ts`
 
 - **Load test**: `loadtest/`
 
