@@ -35,8 +35,10 @@ import { useIssuePalette } from "./useIssuePalette";
  *    reaches nobody, and the labels that fit (`IssuePropertiesRow.tsx`).
  *
  * Every other property, and every control of one, is in Details (`IssueMargin.tsx`), which the
- * control at the right of row one opens; the writes both draw are the page's one set
- * (`useIssueHeaderWrites`), so a draft begun in either is the same draft.
+ * control at the right of row one opens. The header and Details each call `useIssueHeaderWrites`
+ * and keep their own drafts; every write either makes goes in the issue's one line of the keyed
+ * store (`issue:<key>`), so the two keep their order, and both read one pending status (part E's
+ * `pickStatus`).
  *
  * Rows one and two are the identity block, which stays at the top of the screen from 761 px up
  * while the properties line scrolls away under it, and which scrolls away with the rest of the

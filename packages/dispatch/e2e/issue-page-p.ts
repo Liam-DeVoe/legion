@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import type { IssueDecisions } from "../web/src/api/types";
+import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import {
   baseUrl,
   createAsk,
@@ -294,6 +295,22 @@ export async function issueDecisions(key: string): Promise<IssueDecisions> {
 /** Details, the drawer over the right of the page. */
 export function details(page: Page): Locator {
   return page.locator("aside[data-details]");
+}
+
+/** How far below the bottom of the header's actions control its open menu starts, in px:
+ *  negative where the menu covers the control, where a second press on the control lands on the
+ *  menu's first action instead of closing it. The menu is the element the control names in
+ *  `aria-controls`. */
+export async function actionsMenuDrop(page: Page): Promise<number> {
+  const drop = await issueHeader(page)
+    .getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions })
+    .evaluate((control) => {
+      const menu = document.getElementById(control.getAttribute("aria-controls") ?? "");
+      if (menu === null || !menu.checkVisibility()) return null;
+      return menu.getBoundingClientRect().top - control.getBoundingClientRect().bottom;
+    });
+  if (drop === null) throw new Error("the actions control names no open menu");
+  return drop;
 }
 
 /** A `"` inside an attribute value would end the selector's string. */

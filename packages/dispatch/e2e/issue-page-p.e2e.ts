@@ -18,6 +18,7 @@ import {
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
 import {
+  actionsMenuDrop,
   asAgent,
   badgeValue,
   DESKTOP,
@@ -371,6 +372,12 @@ test("the header holds R13's list and its limits at every width @phone", async (
       await expect(details(page), "Details' control opened no Details").toBeVisible();
       await closeDetails(page);
       await header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions }).click();
+      // The open menu hangs under its control, so a second press on the control reaches the
+      // control, which closes the menu, rather than the menu's first action.
+      expect(
+        await actionsMenuDrop(page),
+        `the actions menu opens over its own control at ${width} px`
+      ).toBeGreaterThanOrEqual(-0.5);
       await header.getByRole("button", { exact: true, name: CONTROL_LABELS.edit_parent }).click();
       await expect(
         details(page),

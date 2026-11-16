@@ -72,31 +72,36 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
           ⋯
         </span>
       </button>
-      {/* At 760 px and below the panel spans the screen less the page's 14 px insets, under the
-          control where it opened, so it never reaches past the right edge (R17); from 761 px it
-          hangs from the control at the prototype's menu width. */}
-      <div
-        className={`fixed inset-x-3.5 z-30 mt-1 flex flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] min-[761px]:absolute min-[761px]:inset-x-auto min-[761px]:left-0 min-[761px]:w-64 ${pageHairBorder} ${pagePaperBg}`}
-        hidden={!open}
-        id={panelId}
-      >
-        {actions.map((action) => (
-          <button
-            aria-pressed={action.pressed}
-            data-issue-action={action.id}
-            className={`flex min-h-11 w-full items-center rounded-[7px] px-2 py-[7px] text-left text-sm font-medium min-[761px]:min-h-0 ${pageRowHoverBg} ${pageInkText} ${secondaryButtonDisabledText}`}
-            disabled={action.disabled}
-            key={action.id}
-            onClick={() => {
-              setOpen(false);
-              action.run();
-            }}
-            type="button"
-            {...pageChrome}
-          >
-            {action.text}
-          </button>
-        ))}
+      {/* The panel hangs from a zero-size anchor at the wrapper's bottom left, so it opens under
+          the control: placed from the flex wrapper itself, its top was the wrapper's top and it
+          covered the control, which then could not be pressed again to close it. At 760 px and
+          below the panel is fixed at the anchor's height and spans the screen less the page's
+          14 px insets, so it never reaches past the right edge (R17); from 761 px it is absolute
+          at the anchor, at the prototype's menu width. */}
+      <div className="absolute top-full left-0">
+        <div
+          className={`fixed inset-x-3.5 z-30 mt-1 flex flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] min-[761px]:absolute min-[761px]:inset-x-auto min-[761px]:top-0 min-[761px]:left-0 min-[761px]:w-64 ${pageHairBorder} ${pagePaperBg}`}
+          hidden={!open}
+          id={panelId}
+        >
+          {actions.map((action) => (
+            <button
+              aria-pressed={action.pressed}
+              data-issue-action={action.id}
+              className={`flex min-h-11 w-full items-center rounded-[7px] px-2 py-[7px] text-left text-sm font-medium min-[761px]:min-h-0 ${pageRowHoverBg} ${pageInkText} ${secondaryButtonDisabledText}`}
+              disabled={action.disabled}
+              key={action.id}
+              onClick={() => {
+                setOpen(false);
+                action.run();
+              }}
+              type="button"
+              {...pageChrome}
+            >
+              {action.text}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
