@@ -85,11 +85,11 @@ func TestSchemaTypes(t *testing.T) {
 		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener",
 	}, slices.Collect(maps.Keys(servedSchema(t).Types)))
 	// One callout type for every NATS component, the AWS one's authorization and the hubs', so a
-	// consumer running both writes it alike; core refuses a callout without its issuer or its
-	// service user, so the schema requires them.
+	// consumer running both writes it alike; core refuses a callout without its issuer, its xkey or
+	// its service user, so the schema requires all three.
 	callout := servedSchema(t).Types["envoy-infra:nats:AuthCallout"]
 	require.ElementsMatch(t, []string{"issuer", "xkey", "serviceUser"}, slices.Collect(maps.Keys(callout.Properties)))
-	require.ElementsMatch(t, []string{"issuer", "serviceUser"}, callout.Required)
+	require.ElementsMatch(t, []string{"issuer", "xkey", "serviceUser"}, callout.Required)
 }
 
 func TestSchemaServesTheListenerComponentWithASecretSeed(t *testing.T) {

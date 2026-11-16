@@ -82,7 +82,7 @@ func requireSameText(t *testing.T, want, got string) {
 //
 // Negative control: make render write the callout block whatever Callout holds (drop its
 // `a.Callout != nil` guard, rendering an empty AuthCallout when it is nil). This test then fails at
-// line 14, the rendered `  timeout: 5` where the golden closes the authorization block with `}`.
+// line 14, the rendered `  auth_callout {` where the golden closes the authorization block with `}`.
 func TestAuthorizationWithNoPrivateProjectRendersAsBefore(t *testing.T) {
 	text, err := hubShaped().Render(hubHeader)
 	if err != nil {

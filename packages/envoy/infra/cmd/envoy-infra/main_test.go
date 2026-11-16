@@ -187,9 +187,10 @@ no_auth_user: "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5"
 
 // TestRenderNatsStartScriptWithACallout: the authorization file takes the callout and
 // privateProjects as core.Authorization spells them. With a callout the script's configuration
-// gains the authorization timeout and the auth_callout block, listing every keyed user's key;
-// without one it is byte for byte the script the command printed before the callout existed; and
-// privateProjects beside a session user is refused, naming it.
+// gains the auth_callout block, listing every keyed user's key, and no authorization timeout;
+// without one it is byte for byte the script the command printed before the callout existed. A
+// callout without an xkey is refused, and so are privateProjects beside a session user and beside
+// a service user granted more than an auth service needs, each named.
 func TestRenderNatsStartScriptWithACallout(t *testing.T) {
 	render := func(t *testing.T, authorization string) (string, string, int) {
 		t.Helper()
@@ -210,7 +211,6 @@ func TestRenderNatsStartScriptWithACallout(t *testing.T) {
 			t.Fatalf("exit %d, stderr %q; want 0 and no stderr", code, stderr)
 		}
 		want := strings.Replace(startScriptWithout, "  ]\n}\n", "  ]\n"+
-			"  timeout: 5\n"+
 			"  auth_callout {\n"+
 			`    issuer: "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G"`+"\n"+
 			`    auth_users: ["UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5", "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN"]`+"\n"+
@@ -230,13 +230,29 @@ func TestRenderNatsStartScriptWithACallout(t *testing.T) {
 			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, startScriptWithout)
 		}
 	})
-	t.Run("private projects beside a session user are refused, naming it", func(t *testing.T) {
-		stdout, stderr, code := render(t, `{`+calloutUsers+`, "noAuthUser": "example-sessions", `+calloutJSON+`, "privateProjects": true}`)
-		want := `refused: --authorization-file: authorization: privateProjects: noAuthUser "example-sessions": ` +
-			"a client presenting no credential would become a user while a project is private\n"
+	refused := func(t *testing.T, authorization, want string) {
+		t.Helper()
+		stdout, stderr, code := render(t, authorization)
+		want = "refused: --authorization-file: authorization: " + want + "\n"
 		if code != 2 || stdout != "" || stderr != want {
 			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and stderr %q", code, stdout, stderr, want)
 		}
+	}
+	t.Run("a callout without an xkey is refused", func(t *testing.T) {
+		refused(t, `{`+calloutUsers+`, "callout": {"issuer": "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G", "serviceUser": "example-auth"}}`,
+			"callout.xkey is required: without it nats-server sends each connecting client's token to the auth service unsealed, on $SYS.REQ.USER.AUTH")
+	})
+	t.Run("private projects beside a session user are refused, naming it", func(t *testing.T) {
+		refused(t, `{`+calloutUsers+`, "noAuthUser": "example-sessions", `+calloutJSON+`, "privateProjects": true}`,
+			`privateProjects: users[1] "example-sessions" is noAuthUser: a client presenting no credential would become it while a project is private`)
+	})
+	// The service user connects by its seed alone, so with a grant wider than an auth service's it
+	// is a client past the service (review of #4118 at e7c174fa1b, its e-broad-service.json with an
+	// xkey).
+	t.Run("private projects beside a service user granted everything are refused, naming the entry", func(t *testing.T) {
+		refused(t, `{"users": [{"name": "example-auth", "nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "publish": {"allow": [">"]}, "subscribe": {"allow": [">"]}, "hasSeed": true}], `+
+			calloutJSON+`, "privateProjects": true}`,
+			`privateProjects: callout.serviceUser "example-auth": publish.allow[0] ">" is wider than the auth service's grant, which subscribes $SYS.REQ.USER.AUTH and publishes only its replies under $SYS._INBOX.; with a wider grant the service user is a client that connects past the auth service`)
 	})
 }
 

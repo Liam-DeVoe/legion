@@ -58,9 +58,9 @@ func TestClusteredNatsHubReloadRefusesACalloutChange(t *testing.T) {
 			err := server.Reload(t, authConfOf(t, changed))
 			require.ErrorContains(t, err, "config reload not supported for AuthCallout")
 		})
-		t.Run("dropping the xkey is refused", func(t *testing.T) {
+		t.Run("another xkey is refused", func(t *testing.T) {
 			changed := calloutClusteredHub()
-			changed.AuthCallout.XKey = ""
+			changed.AuthCallout.XKey = otherXKey(t)
 			err := server.Reload(t, authConfOf(t, changed))
 			require.ErrorContains(t, err, "config reload not supported for AuthCallout")
 		})

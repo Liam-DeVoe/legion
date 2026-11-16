@@ -175,13 +175,16 @@ to `maxFileStoreGb`, with no memory store, and monitoring listens on 8222. The p
 zone, held hard (`topology.kubernetes.io/zone`, `maxSkew: 1`, `DoNotSchedule`, `minDomains: 3`), so
 on a cluster with nodes in fewer than three zones a pod stays Pending rather than share a zone. A
 change of `users` rewrites `auth.conf` alone, which the reloader applies without restarting a
-server. Two changes restart the hub pods one at a time instead, each through an annotation on the
-pod template, since nats-server refuses to reload them: a change of `sessionUser` (a changed
-`no_auth_user`), and a change of the file store's limit, `maxFileStoreGb` given or derived (a
-lower `max_file_store` is refused, and a refused reload blocks every later one, a `users` change's
-included, until the server restarts). The StatefulSet carries `config.kubernetes.io/depends-on`
-naming the chart's ConfigMap `<n>-config`, so Pulumi applies it only once the ConfigMap holding
-the new `nats.conf` and `auth.conf` is applied, and every restarted pod starts on them.
+server; while `authCallout` is set, only a change of a user's grant does. Three changes restart
+the hub pods one at a time instead, each through an annotation on the pod template, since
+nats-server refuses to reload them: a change of `sessionUser` (a changed `no_auth_user`); a change
+of the file store's limit, `maxFileStoreGb` given or derived (a lower `max_file_store` is refused,
+and a refused reload blocks every later one, a `users` change's included, until the server
+restarts); and, while `authCallout` is set, a change of the callout's lines, which a change of
+`authCallout` or of the keys in `users`, a user added or removed among them, makes (`auth_users`
+lists every user's key). The StatefulSet carries `config.kubernetes.io/depends-on` naming the
+chart's ConfigMap `<n>-config`, so Pulumi applies it only once the ConfigMap holding the new
+`nats.conf` and `auth.conf` is applied, and every restarted pod starts on them.
 
 ### Inputs
 
@@ -204,8 +207,8 @@ the new `nats.conf` and `auth.conf` is applied, and every restarted pod starts o
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub has `tailnet`, whose listener is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). A change to it, or to the keys of `users` while it is set, rolls the hub pods (`envoy-infra.sjawhar.dev/auth-callout`), since nats-server refuses to reload one. Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, and beside any entry of `users` but `authCallout.serviceUser`. |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). A change to it, or to the keys of `users` while it is set, rolls the hub pods (`envoy-infra.sjawhar.dev/auth-callout`), since nats-server refuses to reload one; a change of a user's grant alone does not. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to. |
 | `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
@@ -387,8 +390,8 @@ chart's one transform therefore protects the StatefulSet `<n>` with Pulumi's own
 protects nothing else. A change of `diskSizeGb` or `storageClassName`, or a chart version that
 changes one of those fields, makes the preview plan to replace the StatefulSet and fail, because it
 is protected; nothing is applied. Pod-template changes (an image, a size, the session user, the
-priority class, the file store's limit) are updates, which roll the pods one at a time, and are not
-affected.
+callout's lines, the priority class, the file store's limit) are updates, which roll the pods one
+at a time, and are not affected.
 
 The StatefulSet's claim template is fixed once Kubernetes has created the StatefulSet, and the
 running claims, `<n>-js-<n>-0`, `-1` and `-2`, never follow a template change, so `diskSizeGb`
@@ -2041,7 +2044,7 @@ system), `logGroupName`, `taskDefinitionArn`, `metricNamespace` and `internalUrl
 
 | Input | Default | What it is |
 | --- | --- | --- |
-| `authorization` | unset | The server's nkey authorization, an `aws:Authorization` ([NATS authorization](#nats-authorization)): `users`, `noAuthUser`, the auth service's `callout`, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`), and `privateProjects`, refused without `callout`, beside `noAuthUser` and beside any user but `callout.serviceUser`. Unset, NATS runs with no authorization block. |
+| `authorization` | unset | The server's nkey authorization, an `aws:Authorization` ([NATS authorization](#nats-authorization)): `users`, `noAuthUser`, the auth service's `callout`, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), and `privateProjects`, refused without `callout`, beside `noAuthUser`, beside any user but `callout.serviceUser`, and when `callout.serviceUser` is granted more than the auth service's grant. Unset, NATS runs with no authorization block. |
 | `configHeader` | with `authorization` | The rendered configuration's header lines, each written as a `# ` comment; `[]` for none. Required with `authorization` and refused without it, since only its start script writes a configuration. |
 | `serverArgs` | required | `nats-server`'s arguments: JetStream, its store directory, the ports. With `authorization` they follow `--config <configPath>`. |
 | `configPath` | with `authorization` | Where the start script writes the configuration in the container. Required with `authorization` and refused without it. |
@@ -2875,7 +2878,12 @@ server's from their `users`, `listener` and `sessionUser`, with `authCallout` an
 [The auth service](docs/nats-hub.md#the-auth-service)). A hub refuses its own listener beside
 `authCallout`, naming both: the listener connects as a user whose seed the hub stores, and its
 service identity, with which it would connect through the auth service, arrives with
-dispatch://INFRA-840 (t-e-13). `host:Listener` runs no NATS server and takes none.
+dispatch://INFRA-840 (t-e-13). With `privateProjects`, a hub also refuses an
+`authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
+(`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
+<machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
+service connects as a permissions user of its own`). `host:Listener` runs no NATS server and takes
+none.
 
 | Input | What it is |
 | --- | --- |
@@ -2885,9 +2893,9 @@ dispatch://INFRA-840 (t-e-13). `host:Listener` runs no NATS server and takes non
 | `users[].hasSeed` | The consumer stores a seed for this user. |
 | `noAuthUser` | Optional: the name of a keyed user without a seed, whom a client presenting no credential becomes. |
 | `callout.issuer` | With a callout: the public key of the account, `A` and 55 more characters, whose seed signs the auth service's answers. The server refuses an answer another key signed. |
-| `callout.xkey` | Optional: a curve public key, `X` and 55 more characters. The server seals each request to the auth service with it, so only the service reads a client's token. |
+| `callout.xkey` | With a callout: a curve public key, `X` and 55 more characters. The server seals each request to the auth service with it, so only the service reads a client's token. Required: without it nats-server sends each connecting client's token to the auth service unsealed, on `$SYS.REQ.USER.AUTH`. |
 | `callout.serviceUser` | With a callout: the name of the keyed user the auth service connects as. |
-| `privateProjects` | Optional: the deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862), R12). It needs `callout`, and no user but the auth service's. |
+| `privateProjects` | Optional: the deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862), R12). It needs `callout`, no user but the auth service's, and that user granted no more than the auth service's grant. |
 
 A user with no `nkey` is pending: it stands for a seed whose key the server is not told yet, such
 as one whose secret is declared but not yet written. It needs `hasSeed`, takes no rules and is not
@@ -2922,17 +2930,26 @@ An authorization is refused, with an error naming the field and, for a user's fi
 - a `callout.issuer`, `callout.xkey` or `callout.serviceUser` that holds an nkey seed, checked with
   the names and entries above and refused the same way, as `callout.issuer holds an nkey seed (not
   echoed)`;
-- a `callout.issuer` that is not an account public key, or a `callout.xkey` that is set and is not a
-  curve public key: each is checked as a user's `nkey` is, and neither is quoted;
+- a `callout.issuer` that is not an account public key, or a `callout.xkey` that is not a curve
+  public key: each is checked as a user's `nkey` is, and neither is quoted;
+- a callout without `callout.xkey` (`callout.xkey is required: without it nats-server sends each
+  connecting client's token to the auth service unsealed, on $SYS.REQ.USER.AUTH`);
 - a `callout.serviceUser` that names no keyed user, or that names the `noAuthUser`, as whom a client
   presenting no credential would answer every other client's authorization;
-- `privateProjects` without `callout`, beside a `noAuthUser` (`privateProjects: noAuthUser
-  "<name>": a client presenting no credential would become a user while a project is private`), or
+- `privateProjects` without `callout`; beside a `noAuthUser` (`privateProjects: users[<i>] "<name>"
+  is noAuthUser: a client presenting no credential would become it while a project is private`);
   beside any user but `callout.serviceUser`, a pending one included (`privateProjects: users[<i>]
   "<name>": a stored client seed while a project is private`, or `a static client user` for one
-  without `hasSeed`). While a project is private, every client connects through the auth service,
-  which gives each connection only what its token's projects allow, so the server keeps no user a
-  client could become or authenticate as past it.
+  without `hasSeed`); or with a `callout.serviceUser` granted more than the auth service's own
+  grant, which subscribes `$SYS.REQ.USER.AUTH`, alone or with a queue group, and publishes only its
+  replies, under `$SYS._INBOX.`: a subscribe `allow` entry other than those, or a publish `allow`
+  entry not under `$SYS._INBOX.`, is refused (`privateProjects: callout.serviceUser "<name>":
+  <publish|subscribe>.allow[<i>] "<entry>" is wider than the auth service's grant, which subscribes
+  $SYS.REQ.USER.AUTH and publishes only its replies under $SYS._INBOX.; with a wider grant the
+  service user is a client that connects past the auth service`). While a project is private,
+  every client connects through the auth service, which gives each connection only what its
+  token's projects allow, so the server keeps no user a client could become or authenticate as
+  past it.
 
 Each refusal of the callout is a `core.InputError` naming `callout`, and each of `privateProjects`
 one naming `privateProjects`, so a component that carries them under its own names, as the hubs'
@@ -2941,15 +2958,35 @@ one naming `privateProjects`, so a component that carries them under its own nam
 `Render` writes the header lines it is given, each as a `# ` comment, which may not hold a line
 break or an nkey seed. Then comes the block: a comment naming each keyed user, in order, and
 the user as one JSON object, with keys sorted, non-ASCII characters as they are, and `deny` only
-when it names an entry. With a callout, two lines follow the users inside the block: `timeout: 5`,
-the seconds the server waits for the auth service's answer to a client (nats-server's default is
-2), and `auth_callout`, naming the issuer, `auth_users` and the xkey when there is one.
-`auth_users` is the key of every keyed user, in order, and is never given: the server sends a keyed
-user it does not list to the auth service, even one whose nkey signature is valid, so a static user
-left out would be refused. Without a callout the text is byte for byte what it was before
-callouts existed. With a `noAuthUser`, `no_auth_user` follows the block, naming that user's key.
-For three keyed users, a pending `example-pending` and `noAuthUser` `example-fallback`, `core`'s
-tests pin this text:
+when it names an entry. With a callout, one block follows the users inside the authorization
+block:
+
+```text
+  auth_callout {
+    issuer: "A…"
+    auth_users: ["U…", "U…"]
+    xkey: "X…"
+  }
+```
+
+`issuer` and `xkey` are the callout's. `auth_users` is the key of every keyed user, in order, and
+is never given: the server sends a keyed user it does not list to the auth service, even one whose
+nkey signature is valid, so a static user left out would be refused. The authorization block sets
+no `timeout`, so nats-server's default authorization timeout of 2 s (`AUTH_TIMEOUT` in its
+server/const.go) bounds its wait for the auth service's answer to a client, and the auth service
+must answer within 1.5 s. A longer timeout would not give it longer: the server sends a client its
+first PING after 2 s plus up to 20% (nats-server's server/client.go `setFirstPingTimer`), even
+while the client's CONNECT still waits for the callout, and a Go client (nats.go) reads anything
+but PONG there as an error, `nats: expected 'PONG', got 'PING'`, so it fails at about 2 s whatever
+the timeout. No nats-server 2.15.1 setting moves that first PING. Measured on the hub's image
+(nats-server 2.15.1, nats.go v1.53.1): under an authorization timeout of 5 s, an answer after
+3.5 s failed the client at 2.1 s. The TypeScript client the plugins use (nats.js 2.29.3) waits that
+PING out: on nats-server 2.15.1 it was admitted on answers at 1.0 s and 1.8 s under the default
+timeout and at 3.5 s under 5 s, while nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s.
+So the 1.5 s budget is the Go client's. Without a callout the text is byte for byte what it was before
+callouts existed. With a `noAuthUser`, `no_auth_user` follows the authorization block, naming that
+user's key. For three keyed users, a pending `example-pending` and `noAuthUser`
+`example-fallback`, `core`'s tests pin this text:
 
 ```text
 # Rendered by envoy-infra from placeholder inputs.
