@@ -12,10 +12,12 @@ import { issuePage, presetRow } from "./issue-page";
  * What the view draws (`decisions-filter/DecisionsFilterBody.tsx`):
  *
  * - **The list** `[data-decisions-body]`, a region named by the view, holding the tree.
- * - **Each part** `[data-decisions-part="open_questions" | "review" | "yours" | "others" |
- *   "agents"]` with its heading `[data-decisions-heading]` and count `[data-decisions-count]`,
- *   its rows the outline's own `[data-node-row]`; the foot's control is the `button` in
- *   `[data-decisions-foot]`.
+ * - **The named rows** first inside the tree: the node the address names where it is neither an
+ *   ask nor a decision, an outline row `[data-node-row]` under no heading and in no part.
+ * - **Each part** `[data-decisions-part="open_questions" | "review" | "yours" | "agents"]` with
+ *   its heading `[data-decisions-heading]` and count `[data-decisions-count]`, its rows the
+ *   outline's own `[data-node-row]`; another person's entry stands in `yours` with their name.
+ *   The foot's control is the `button` in `[data-decisions-foot]`.
  * - **The Decisions control's flag** `[data-preset-flag="to_review"]` in D's view row, whose
  *   number is how many decisions wait for the reader's review.
  */

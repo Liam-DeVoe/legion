@@ -765,9 +765,9 @@ test("a decision the reader sent a Change on says so, leaves the review list and
   }
 });
 
-// R2: the third part is the reader's own decisions. What another person answered stands under
-// the heading that says it is theirs, with their name on it.
-test("another person's answer stands under Decided by others", () => {
+// R2: the view draws four parts. What another person answered is no part of its own: it stands
+// under Your decisions with the reader's own, newest first, and its answer names that person.
+test("another person's answer stands under Your decisions with their name", () => {
   const view = renderBody({
     children: [
       answeredAsk("a-mine", { at: "2026-11-14T09:00:00Z", text: "Mine." }),
@@ -778,15 +778,9 @@ test("another person's answer stands under Decided by others", () => {
       }),
     ],
   });
-  expect(rowsOfPart(view, "yours")).toEqual(["a-mine"]);
-  expect(rowsOfPart(view, "others")).toEqual(["a-bobs"]);
-  expect(
-    words(
-      view.container.querySelector(
-        '[data-decisions-part="others"] [data-decisions-heading] [data-page-chrome]'
-      )
-    )
-  ).toBe(DECISIONS_WORDS.parts.others);
+  expect(rowsOfPart(view, "yours")).toEqual(["a-mine", "a-bobs"]);
+  expect(words(rowOf(view, "a-bobs").querySelector("[data-answer-author]"))).toBe("bob");
+  expect(view.container.querySelector('[data-decisions-part="others"]')).toBeNull();
 });
 
 // The tester's F16: a key with nowhere to go says so at the row it was pressed on, and the

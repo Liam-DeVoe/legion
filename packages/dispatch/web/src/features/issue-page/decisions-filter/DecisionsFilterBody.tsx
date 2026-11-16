@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -11,7 +10,6 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { api } from "../../../api/client";
 import type { Actor, Artifact, IssueDetails } from "../../../api/types";
 import {
   focusVisibleRing,
@@ -20,9 +18,7 @@ import {
   pageQuietText,
   textMutedOnCanvas,
 } from "../../../theme/classes";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAgentText } from "../../refs/AgentName";
-import { decisionChanges } from "../decision-review";
 import { useSetFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
@@ -40,26 +36,20 @@ import {
   nodeStateWord,
   PRESET_NAMES,
 } from "../page-words";
-import { treeContext } from "../tree-drafts";
 import type { DrawnRow } from "../tree-fold";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow, type RowPerson } from "./DecisionsRow";
+import { useDecisionsEntries } from "./decisions-entries";
 import {
   conversationPath,
   type DecisionsEntry,
   type DecisionsPart,
-  decisionsParts,
   waitingOrder,
 } from "./decisions-parts";
 
-/** The parts drawn under a heading of their own, in the filter's order; the last, the foot, is
- *  headed by the control that unfolds it. */
-const HEADED = [
-  "open_questions",
-  "review",
-  "yours",
-  "others",
-] as const satisfies readonly DecisionsPart[];
+/** The three parts drawn under a heading of their own, in the view's order; the fourth, the
+ *  foot, is headed by the control that unfolds it. */
+const HEADED = ["open_questions", "review", "yours"] as const satisfies readonly DecisionsPart[];
 
 /** What a key that folds, zooms or opens a branch does here, where the list holds none. */
 const NOTHING = (): void => {};
@@ -68,13 +58,14 @@ const NOTHING = (): void => {};
  * The Decisions filter's body (dispatch://INFRA-1196 R2, R9, R22, R35, the picture
  * `page-v3-decisions-1440.png`, the prototype's `.decs`).
  *
- * It is one list in parts, each under its own heading and in this order: the open questions;
- * the decisions that wait for the reader's review, each with Keep and Change; the reader's own
- * decisions, newest first; what other people decided; and, folded at the foot, the agents'
- * decisions that no statement rests on. Which entry stands in which part is
- * `decisions-parts.ts`, which is pure; this draws it. A part that holds nothing is not drawn,
- * and no sentence explains the parts: their headings are the whole of it (R22). It is drawn the
- * same at every width: the rows are the outline's own (`DecisionsRow.tsx`).
+ * It is one list in four parts, each under its own heading and in this order: the open
+ * questions; the decisions that wait for the reader's review, each with Keep and Change; the
+ * reader's decisions, newest first, where another person's entry stands too, with that person's
+ * name on its row; and, folded at the foot, the agents' decisions that no statement rests on.
+ * Which entry stands in which part is `decisions-parts.ts`, which is pure, read through the seam
+ * (`decisions-entries.ts`); this draws it. A part that holds nothing is not drawn, and no
+ * sentence explains the parts: their headings are the whole of it (R22). It is drawn the same
+ * at every width: the rows are the outline's own (`DecisionsRow.tsx`).
  *
  * The list is one landmark named by the filter, and inside it answers the WAI-ARIA tree pattern
  * as the outline does, under the outline's own name, so a reader and the browser suite find one
@@ -87,8 +78,8 @@ const NOTHING = (): void => {};
  * in the tab order, as the prototype's is, so Tab reaches it where the foot is all the list
  * holds. A key with nowhere to go says so at the row it was pressed on (the tester's F16).
  *
- * The reads are the ones the page's tree is built from, under the keys it reads them by
- * (`useIssueTree.ts`), so the body costs no request of its own (R20).
+ * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
+ * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
  */
 export function DecisionsFilterBody({
   artifacts,
@@ -115,8 +106,8 @@ export function DecisionsFilterBody({
   /** Whether the issue is closed, which Keep and Change are refused on. */
   isClosed: boolean;
   issue: IssueDetails;
-  /** Who is reading, whose own answer carries the ink rule (R34) and whose decisions stand
-   *  under "Your decisions". */
+  /** Who is reading, whose own answer carries the ink rule (R34). Another person's decision
+   *  stands under "Your decisions" too, with that person's name on its row. */
   reader: string | undefined;
   /** What the page last asked of the outline: go to a node, which the Contents pane's list
    *  asks (`outline-request.tsx`). Each ask is acted on once. */
@@ -133,34 +124,7 @@ export function DecisionsFilterBody({
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
-  const decisions = useQuery(issueDecisionsQuery(issue.key, true)).data;
-  const asks = useQuery({
-    queryFn: () => api.listIssueAsks(issue.key, "all"),
-    queryKey: ["asks", issue.key],
-  }).data;
-  // The issue's comments, which hold the changes a person asked of a decision
-  // (`decision-review.ts`), under the key the tree reads them by.
-  const comments = useQuery({
-    queryFn: () => api.listComments(issue.key),
-    queryKey: ["comments", issue.key],
-  }).data;
-  // How this issue addresses a node, which is the one rule the tree was built with, so a
-  // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
-  const parts = useMemo(
-    () =>
-      decisionsParts({
-        asks,
-        changes: decisionChanges(decisions, comments, issue.artifacts),
-        decisions,
-        issueKey: issue.key,
-        nodeIdOf,
-        reader,
-        root,
-        view,
-      }),
-    [asks, comments, decisions, issue.artifacts, issue.key, nodeIdOf, reader, root, view]
-  );
+  const parts = useDecisionsEntries({ issue, reader, root, view });
   // Each row's people by the page's one rule for naming one (`AgentText.author`), read once for
   // every row: a name and a shape, never an id (R9, R22).
   const agentText = useAgentText();
@@ -199,7 +163,6 @@ export function DecisionsFilterBody({
       ...parts.open_questions,
       ...parts.review,
       ...parts.yours,
-      ...parts.others,
       ...(footShown ? parts.agents : []),
     ],
     [footShown, parts]
