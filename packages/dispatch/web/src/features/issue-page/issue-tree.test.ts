@@ -32,9 +32,10 @@ import {
   lineWords,
   nodeWords,
   type TreeNode,
+  targetNames,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
-import { blockNodeId } from "./tree-drafts";
+import { blockNodeId, plainWords } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
 
 /**
@@ -523,6 +524,34 @@ test("a pointer whose target is gone is drawn as a chip that says so", () => {
   ]);
 });
 
+// Decision 62: the batched read answers a short reference whose id two or more targets carry as
+// gone and ambiguous, and the chip says it is ambiguous, so it can draw the reference as written
+// rather than as a target deleted. A target that is gone and no more carries no `ambiguous`.
+test("a chip of an ambiguous short reference says so, and a gone target's chip does not", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const ambiguous = `dispatch://${KEY}/artifact/plan-md#b-abcd1234`;
+  const gone = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [block("t1", "plan_task", { needs: `${ambiguous} ${gone}` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      { ambiguous: true, gone: true, kind: "block", name: "", ref: ambiguous },
+      { gone: true, kind: "block", name: "", ref: gone },
+    ],
+  });
+
+  expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips).toStrictEqual([
+    { ambiguous: true, answered: true, gone: true, label: "needs", name: "", ref: ambiguous },
+    { answered: true, gone: true, label: "needs", name: "", ref: gone },
+  ]);
+});
+
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
 // which is its source: `:::plan_task{#t1 serves="…" needs="…"}`, its words, and the closing
 // fence. The opening line and the fence are markup, so a block's row carries its words alone,
@@ -720,6 +749,64 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
   ]);
 });
 
+// R21: an ask's question and a comment's or a message's body are markdown, and the batched read
+// names each by that stored text, so a chip naming one - and the name the page publishes for it,
+// which is the chip's by one rule (`targetNames`) - draws its plain words and no `**`, backtick
+// or link mark. An issue's name is its title, which is no markdown, and stands as written.
+test("a chip naming an ask, a comment or a message draws its plain words, an issue its title", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const marked = "**Hold** the `deploy` until [the plan](https://example.com/plan) lands";
+  const issueRef = "dispatch://CORE-7";
+  const title = "Load __init__.py first";
+  // A decision's link to `ref`, which is a chip of the decision's and places nothing.
+  const linkTo = (ref: string, kind: string): NonNullable<Decision["links"]>[number] => ({
+    created_at: "2026-11-05T00:00:00Z",
+    created_version: 1,
+    from_block: "d1",
+    stale: false,
+    to: {
+      changed_at: null,
+      changed_by: null,
+      id: ref,
+      kind,
+      made_at: null,
+      made_by: null,
+      parent: null,
+      parent_version: null,
+      ref,
+    },
+  });
+  for (const kind of ["ask", "comment", "message"] as const) {
+    const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
+    const reads = {
+      decisions: decisions([
+        {
+          ...decision("d1", "Keep it.", []),
+          links: [linkTo(ref, kind), linkTo(issueRef, "issue")],
+        },
+      ]),
+      issue: issueDetails([spec, made]),
+      targets: [
+        { gone: false, kind, name: marked, ref },
+        { gone: false, kind: "issue", name: title, ref: issueRef },
+      ],
+    };
+    const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+    expect(
+      chips?.map(({ name, ref }) => ({ name, ref })),
+      kind
+    ).toEqual([
+      { name: "Hold the deploy until the plan lands", ref },
+      { name: title, ref: issueRef },
+    ]);
+    expect([...targetNames(reads)], kind).toEqual([
+      [ref, "Hold the deploy until the plan lands"],
+      [issueRef, title],
+    ]);
+  }
+});
+
 // R4, R20: the model takes any depth. Today's data reaches two levels below the issue, because
 // `document_blocks` holds no parent; a chain of `from` edges is drawn however long it is.
 test("a tree of one level and a tree of six are both drawn", () => {
@@ -761,6 +848,7 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   expect(firstLineOf("One sentence. And another.")).toEqual({
     cut: true,
     line: "One sentence.",
+    sentence: true,
   });
   const long =
     "Every property of the issue that carries a value is visible at every width the page draws, " +
@@ -770,16 +858,28 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   expect(first.line.length).toBeLessThanOrEqual(100);
   expect(long.startsWith(first.line)).toBe(true);
   expect(long.charAt(first.line.length)).toBe(" ");
-  expect(firstLineOf("Short enough.")).toEqual({ cut: false, line: "Short enough." });
-  expect(firstLineOf("")).toEqual({ cut: false, line: "" });
+  expect(firstLineOf("Short enough.")).toEqual({
+    cut: false,
+    line: "Short enough.",
+    sentence: true,
+  });
+  expect(firstLineOf("")).toEqual({ cut: false, line: "", sentence: false });
 
   // An unbroken token past the limit holds no word boundary to cut at, so the line is the
   // limit's own 100 characters rather than the whole token.
   const unbroken = "a".repeat(FIRST_LINE_LIMIT + 20);
-  expect(firstLineOf(unbroken)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
+  expect(firstLineOf(unbroken)).toEqual({
+    cut: true,
+    line: "a".repeat(FIRST_LINE_LIMIT),
+    sentence: false,
+  });
   // A space at the limit's own edge is a word boundary, and the line ends before it.
   const atTheEdge = `${"a".repeat(FIRST_LINE_LIMIT)} tail`;
-  expect(firstLineOf(atTheEdge)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
+  expect(firstLineOf(atTheEdge)).toEqual({
+    cut: true,
+    line: "a".repeat(FIRST_LINE_LIMIT),
+    sentence: false,
+  });
 });
 
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
@@ -789,12 +889,16 @@ test("a first line cut at the limit never ends inside a surrogate pair", () => {
   const face = "\u{1F600}";
   // The run starts one unit in, so the limit falls between the two units of its 50th face.
   const line = firstLineOf(`a${face.repeat(75)}`);
-  expect(line).toEqual({ cut: true, line: `a${face.repeat(49)}` });
+  expect(line).toEqual({ cut: true, line: `a${face.repeat(49)}`, sentence: false });
   const last = line.line.charCodeAt(line.line.length - 1);
   expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
   expect(decodeURIComponent(encodeURIComponent(line.line))).toBe(line.line);
   // A run whose pairs end at the limit keeps every one of them.
-  expect(firstLineOf(face.repeat(75))).toEqual({ cut: true, line: face.repeat(50) });
+  expect(firstLineOf(face.repeat(75))).toEqual({
+    cut: true,
+    line: face.repeat(50),
+    sentence: false,
+  });
 });
 
 // R1 and decision 51: a statement opens on its label - `R1.`, `12.`, `1.2.` - and the label is
@@ -804,8 +908,9 @@ test("a leading label is no sentence end", () => {
   expect(firstLineOf("R1. Draw the tree from one read. Then the rest.")).toEqual({
     cut: true,
     line: "R1. Draw the tree from one read.",
+    sentence: true,
   });
-  expect(firstLineOf("12. Twelve.")).toEqual({ cut: false, line: "12. Twelve." });
+  expect(firstLineOf("12. Twelve.")).toEqual({ cut: false, line: "12. Twelve.", sentence: true });
   expect(firstLineOf("t3. Cut the patch.").line).toBe("t3. Cut the patch.");
   expect(firstLineOf("1.2. Nested.").line).toBe("1.2. Nested.");
   expect(firstLineOf("Mr. Smith went home.").line).toBe("Mr.");
@@ -822,7 +927,41 @@ test("a leading label is no sentence end", () => {
   expect(firstLineOf(`R1. ${"a".repeat(200)}`)).toEqual({
     cut: true,
     line: `R1. ${"a".repeat(96)}`,
+    sentence: false,
   });
+});
+
+// R21: a stored markdown text read as plain words, the way the server's reading holds them.
+test("a stored text read to plain words keeps what markdown reads literally and drops its marks", () => {
+  for (const [stored, words] of [
+    // A backslash before punctuation is that character, never a mark nor a sentence's end.
+    ["**1\\. Stand the harness up.** Run it.", "1. Stand the harness up. Run it."],
+    ["\\*not emphasis\\*", "*not emphasis*"],
+    ["\\# not a heading", "# not a heading"],
+    ["\\`not code\\`", "`not code`"],
+    // A code span's content is verbatim: no mark and no escape is read inside it.
+    ["Run `a * b \\. c` now", "Run a * b \\. c now"],
+    ["Run `**not bold**` now", "Run **not bold** now"],
+    ["``a `tick` b``", "a `tick` b"],
+    ["an `open run", "an `open run"],
+    // An image holds no words; a link reads as its words, an autolink as its URL.
+    ["see ![diagram](shot.png) here", "see here"],
+    ["![diagram](shot.png)", ""],
+    ["[the plan](https://example.com/plan)", "the plan"],
+    ["<https://example.com/a_b*c*>", "https://example.com/a_b*c*"],
+    // An underscore inside a word is no mark; marks nest.
+    ["snake_case_name", "snake_case_name"],
+    ["_emphasis_ and __strong__", "emphasis and strong"],
+    ["***x***", "x"],
+    ["**a *b* c** and ~~gone~~", "a b c and gone"],
+    ["2 * 3 * 4", "2 * 3 * 4"],
+    // A heading marker goes at the start of any line, and white space collapses.
+    ["## Keep it\nKeep the model pure.", "Keep it Keep the model pure."],
+    ["   ### Indented", "Indented"],
+    ["  one\n\ntwo   three  ", "one two three"],
+  ] as const) {
+    expect(plainWords(stored), stored).toBe(words);
+  }
 });
 
 // Ruling 1 and row 20 of the differences: a line that is a whole sentence ends on its own mark,
@@ -837,6 +976,9 @@ test("a first line draws its ellipsis only where the cut ended inside a sentence
   expect(inside.cut).toBe(true);
   expect(drawnLine(inside)).toBe(`${inside.line}…`);
   expect(drawnLine({ cut: false, line: "No mark at its end" })).toBe("No mark at its end");
+  // A token cut hard at the limit whose last kept character is a dot ends no sentence, so its
+  // line draws the ellipsis all the same.
+  expect(drawnLine(firstLineOf(`${"x".repeat(99)}.yyyy more words here`)).endsWith("…")).toBe(true);
 });
 
 // A decision's reading opens with its own `##` heading, and the words of the whole reading join
@@ -882,7 +1024,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
   expect(line).toBe("Keep it");
   // The heading is the whole of its block, so nothing of the line is cut and, by `drawnLine`'s
   // rule, it draws no ellipsis.
-  expect(firstLineOf(line)).toEqual({ cut: false, line: "Keep it" });
+  expect(firstLineOf(line)).toEqual({ cut: false, line: "Keep it", sentence: false });
   expect(drawnLine(firstLineOf(line))).toBe("Keep it");
   // Where the read sent no reading the line is the stored text's first block, and the heading's
   // marker is markup and no word of it.
@@ -955,6 +1097,53 @@ test("a node's one line is cut from its first block that holds words, past a rul
   expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(({ name }) => name)).toEqual([
     "Keep the model pure.",
   ]);
+});
+
+// Decision 51: a plan task opens on its label, which its stored text writes escaped, `1\.`,
+// inside the bold of its first sentence. Its line holds that label and runs to the first
+// sentence end after it, read from the server's reading of the task and, where the read sent
+// none, from the stored text read to plain words, whose `**` after `today.` hid that sentence
+// end. The task's own text stays as stored: its body and its citations read it.
+test("a plan task written `**1\\. …**` keeps its label in its line, from its reading and from its stored text", () => {
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const ref = `dispatch://${KEY}/artifact/plan-md#b-t1`;
+  const words =
+    "**1\\. Stand the harness up and record what the page is today.** Run the steps the " +
+    "Verification document names: `bun install`, and a database of your own.";
+  const name = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}\n${words}\n:::`;
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [
+          {
+            marks: [{ type: "strong" }],
+            text: "1. Stand the harness up and record what the page is today.",
+            type: "text",
+          },
+          { text: " Run the steps the Verification document names: ", type: "text" },
+          { marks: [{ type: "inlineCode" }], text: "bun install", type: "text" },
+          { text: ", and a database of your own.", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  for (const [sent, member] of [
+    ["a reading", { gone: false, kind: "block", name, ref, text_tree: reading }],
+    ["no reading", { gone: false, kind: "block", name, ref }],
+  ] as const) {
+    const root = buildIssueTree({
+      documents: [{ artifactId: plan.id, blocks: [block("t1", "plan_task")] }],
+      issue: issueDetails([plan]),
+      targets: [member],
+    });
+    const task = nodeOf(root, blockNodeId("plan-md", "t1"));
+    expect(task?.text, sent).toBe(words);
+    expect(task === undefined ? "" : drawnLine(firstLineOf(lineWords(task))), sent).toBe(
+      "1. Stand the harness up and record what the page is today."
+    );
+  }
 });
 
 // R1, R3, R4, R12: a document is a node of the issue and not of its conversation, so the tree
