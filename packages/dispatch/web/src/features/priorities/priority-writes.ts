@@ -18,9 +18,11 @@ export interface PriorityPatch {
  * and each refreshes the whole `["priorities"]` family when it settles — the body the pages
  * read and the summary the rail reads sit under that one prefix — so a write a reader made
  * shows as the server holds it rather than as the page guessed. The changes to one priority go
- * out in press order (`priority:<id>`): an older one never lands after a newer one, so a field
- * that writes as it is typed (`useInPlaceDraft`) never has its newer text overwritten by an
- * older write, a retried one included.
+ * out in press order (`priority:<id>`): a press waits while an earlier one is still being tried
+ * under its key, so a field that writes as it is typed (`useInPlaceDraft`) never has its newer
+ * text overwritten by an older press. A refused write no longer holds the line: its Retry, from
+ * the pending-writes indicator, is the reader's own new write of that text, which joins the
+ * line at the back (`Writes.retry`) and lands after every press made before it.
  *
  * Whether the reader may write at all is `useIsHuman`: every priority write is classed as the
  * deployment's (`internal/dispatch/api/priorities.go`), which a credential scoped to a project

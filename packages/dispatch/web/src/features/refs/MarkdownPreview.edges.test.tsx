@@ -253,7 +253,7 @@ function Headline({ max, tree }: { max: number; tree: DisplayTree }): ReactNode 
   );
 }
 
-test("a headline writes a reference as its short form, keeps one in code as written, and never cuts a character in half", async () => {
+test("a headline writes a reference it has not read as written, keeps one in code as written, and never cuts a character in half", async () => {
   const view = render(
     <>
       <Headline max={60} tree={tree("a-headline-with-references")} />
@@ -267,7 +267,9 @@ test("a headline writes a reference as its short form, keeps one in code as writ
       expect(outputs).toHaveLength(3);
       return outputs;
     });
-    expect(reference?.textContent).toBe("Blocked on CORE-2 ask, see dispatch://CORE-3");
+    expect(reference?.textContent).toBe(
+      "Blocked on dispatch://CORE-2/ask/a1, see dispatch://CORE-3"
+    );
     expect(reference?.getAttribute("data-cut")).toBe("false");
     const cut = emoji?.textContent ?? "";
     expect(cut).toBe(`a${"😀".repeat(59)}…`);
@@ -313,11 +315,11 @@ test("an ask's unfurl card never borrows its issue's status, and reads no issue,
   try {
     await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-1"));
     // The ask has not answered: the card says what it is, not the issue's status. Its words are
-    // the body's own, read by the one reader as every body reads them - an address not yet
-    // resolved is its short form - never the characters the body stores.
+    // the projection's, which keeps an address as written until the address's read answers, as
+    // a painted link reads before its title resolves - never a status borrowed from the issue.
     await tick(20);
     const card = within(view.container).getByRole("link");
-    expect(card.textContent).toBe("CORE-1 ask");
+    expect(card.textContent).toBe("dispatch://CORE-1/ask/ask-1");
     expect(card.textContent).not.toContain("in_progress");
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();

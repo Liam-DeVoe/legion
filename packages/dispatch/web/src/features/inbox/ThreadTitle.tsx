@@ -39,7 +39,7 @@ export function ThreadTitle({
       fullTitle
       lines={1}
       markdown={thread.subject}
-      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id)}
+      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
       surface="inbox-thread-title"
       tree={thread.subject_tree}
     />

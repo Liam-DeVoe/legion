@@ -421,17 +421,31 @@ test("a handoff body expands to one row per top-level field and one per proof en
   });
 
   expect(handoffFields(body)).toEqual([
-    { field: "schemaVersion", json: false, label: "schemaVersion", text: "1" },
-    { field: "phase", json: false, label: "phase", text: "implement" },
-    { field: "verified", json: false, label: "verified", text: "true" },
-    { field: "note", json: false, label: "note", text: "null" },
-    { field: "files", json: true, label: "files", text: '[\n  "a.ts",\n  "b.ts"\n]' },
-    { field: "ci", json: true, label: "ci", text: '{\n  "status": "green"\n}' },
-    { field: "proof", json: false, label: "proof 1", text: "bun test passed" },
+    {
+      field: "schemaVersion",
+      label: "schemaVersion",
+      path: "schemaVersion",
+      shape: "value",
+      text: "1",
+    },
+    { field: "phase", label: "phase", path: "phase", shape: "prose", text: "implement" },
+    { field: "verified", label: "verified", path: "verified", shape: "value", text: "true" },
+    { field: "note", label: "note", path: "note", shape: "value", text: "null" },
+    {
+      field: "files",
+      label: "files",
+      path: "files",
+      shape: "json",
+      text: '[\n  "a.ts",\n  "b.ts"\n]',
+    },
+    { field: "ci", label: "ci", path: "ci", shape: "json", text: '{\n  "status": "green"\n}' },
+    // A proof entry's path is where the server keeps its reading: `proof.<n>`, from 0.
+    { field: "proof", label: "proof 1", path: "proof.0", shape: "prose", text: "bun test passed" },
     {
       field: "proof",
-      json: true,
       label: "proof 2",
+      path: "proof.1",
+      shape: "json",
       text: '{\n  "command": "bun run typecheck",\n  "exit": 0\n}',
     },
   ]);
@@ -439,7 +453,7 @@ test("a handoff body expands to one row per top-level field and one per proof en
 
 test("a proof that is not a list is one row, and a body that is not a JSON object has none", () => {
   expect(handoffFields('{"proof":"see CI"}')).toEqual([
-    { field: "proof", json: false, label: "proof", text: "see CI" },
+    { field: "proof", label: "proof", path: "proof", shape: "prose", text: "see CI" },
   ]);
   expect(handoffFields("{not json")).toBeUndefined();
   expect(handoffFields("[1, 2]")).toBeUndefined();
@@ -616,9 +630,13 @@ test("an answer that replaced an earlier one reads as a change in the activity l
     seq: 5,
     type: "ask.answered",
   } as DispatchEvent;
-  // The question is a part of its own: the one reader draws it, so a mention in it reads as its
-  // target's name and never as the link's source (`SentenceParts`).
-  const question = { prose: "Ship it?", tree: undefined };
+  // The question is a part of its own: the one reader draws it, as the ask's own record, so a
+  // mention in it reads as its target's name and never as the link's source (`SentenceParts`).
+  const question = {
+    prose: "Ship it?",
+    source: { id: "ask-1", issue: "CORE-1", kind: "ask" as const },
+    tree: undefined,
+  };
   expect(activityDescription(answered)).toEqual(["answered “", question, "”"]);
   expect(
     activityDescription({

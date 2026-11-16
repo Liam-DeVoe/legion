@@ -531,3 +531,33 @@ test("another writer's text landing while a write is out has the reader's text w
     view.unmount();
   }
 });
+
+// A Retry of a refused write from the pending-writes indicator is the reader's own new write of
+// that text, made at the back of the line, so it lands after the newer text the field sent
+// since. The field sent nothing that Retry carries: its landing reads as another writer's text,
+// and the field, which the reader is not holding, shows what Dispatch holds.
+test("a refused text a Retry from the indicator lands after a newer one reads as another writer's text", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { answer, field, lands, refuse, saves, view } = heldServer();
+  try {
+    await user.type(field, " A");
+    await jump(SAVE_AFTER_MS + 1);
+    await refuse("Old A");
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.tab();
+    expect(saves).toEqual(["Old A", "Old AB"]);
+    await answer("Old AB");
+    await lands("Old AB");
+    // The Retry's landing, read: no write of the field's carried it.
+    await lands("Old A");
+    expect(field.value).toBe("Old A");
+    await user.click(field);
+    await user.tab();
+    expect(saves).toEqual(["Old A", "Old AB"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});

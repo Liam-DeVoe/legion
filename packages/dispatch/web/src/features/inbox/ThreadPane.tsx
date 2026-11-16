@@ -32,7 +32,7 @@ function ThreadSubject({ thread }: { thread: MyReplyRow }): ReactNode {
       <MarkdownPreview
         lines={1}
         markdown={thread.subject}
-        source={textSourceOf(textSourceKind(thread.kind), thread.thread_id)}
+        source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
         surface="my-reply-subject"
         tree={thread.subject_tree}
       />

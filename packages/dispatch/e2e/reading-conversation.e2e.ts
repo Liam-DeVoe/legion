@@ -1,6 +1,7 @@
-import { createComment, createIssueArtifact, createMessage } from "./api";
+import { createAsk, createComment, createHandoff, createIssueArtifact, createMessage } from "./api";
 import {
   expectReadsReferences,
+  READING_LEAD,
   READING_SESSION_ID,
   READING_SESSION_TITLE,
   readingQuestionBlock,
@@ -13,15 +14,16 @@ import { expect, test } from "./test";
 
 /**
  * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) across an issue's own pages:
- * the Activity tab's event body, the three turns of the Conversation tab and the quote above a
- * reply there, and a decision on the Decisions tab. Each row writes the one reading text into
- * the record its surface shows, through the API as an agent or a person writes it, reaches the
- * surface the way its row of `DISPATCH_READING_SURFACES` says, and reads there every form a
- * text names a node by, drawn through the one renderer (R6).
+ * the Activity tab's event body and an event's line, the three turns of the Conversation tab, the
+ * quote above a reply and a handoff card's body there, and a decision on the Decisions tab. Each
+ * row writes the one reading text into the record its surface shows, through the API as an agent
+ * or a person writes it, reaches the surface the way its row of `DISPATCH_READING_SURFACES` says,
+ * and reads there every form a text names a node by, drawn through the one renderer (R6).
  *
  * Every surface here is a record a reader reads, so each reference is a link, but for the quote
  * above a reply: the quote is the link to its parent's turn, so the references inside it draw as
- * their names and link nothing.
+ * their names and link nothing. A handoff is no record of the reference graph, so a `#id` in
+ * its words names nothing, and its driver holds the other five forms.
  */
 
 /** The agent session these rows write as, so a write is never the reader's own. */
@@ -55,6 +57,30 @@ test("activity-event-body: a pinned Activity event draws every form of a stored 
   await margin.getByRole("tab", { name: "Pinned" }).click();
 
   await expectReadsReferences(margin.locator("article").locator(RENDERED_BODY), world, "link");
+});
+
+// SLOW(>=2s): the reading world's seeding and an ask, then one cold load of the Activity tab;
+// measured at 4.4 s on one run in an issue pod on one worker.
+test("event-line: an Activity event's line draws every form of the record's text it quotes through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // An ask's question is the text of the record its `asked “…”` line quotes. The ask is the
+  // host's, so a `#id` in its question is read against the host's spec, which declares it.
+  await createAsk(world.host.key, { question: readingText(world) }, readingAgent);
+
+  await page.goto(`/issues/${world.host.key}/activity`);
+  // The question block the host's spec declares is an ask of its own, with an `asked “…”` line
+  // too; the reading text is the one that opens with the lead word.
+  const line = page
+    .getByRole("list", { name: "Issue activity" })
+    .getByRole("listitem")
+    .filter({ hasText: `asked “${READING_LEAD}` });
+  await expect(line).toHaveCount(1);
+
+  // The line is in no link or button, so the question it quotes draws inline through the
+  // renderer with its references linked (`SentenceParts`).
+  await expectReadsReferences(line.locator(".dispatch-markdown"), world, "link");
 });
 
 // SLOW(>=2s): seeds the reading world - a project, the fake registry's session, four issues, a
@@ -131,6 +157,38 @@ test("reply-quote: the quote above a reply draws every form of its parent's refe
   );
 
   await expectReadsReferences(quote, world, "inert");
+});
+
+// SLOW(>=2s): the reading world's seeding and a handoff, then one cold load of the Conversation
+// and the handoff's own read once its card opens; measured at 4.2 s on one run in an issue pod on
+// one worker.
+test("conversation-handoff-body: a handoff card's field of words draws every form but a question id through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // A handoff's body is the JSON object its phase wrote; a string field of it is the words its
+  // session wrote, which the card draws from the reading the server sends for that field.
+  await createHandoff(
+    world.host.key,
+    "implement",
+    { phase: "implement", summary: readingText(world) },
+    readingAgent.actor
+  );
+
+  await page.goto(`/issues/${world.host.key}/conversation`);
+  const card = page
+    .getByRole("list", { name: "Conversation turns" })
+    .locator(":scope > li[data-turn]")
+    .filter({ has: page.getByText("implement handoff, version 1", { exact: true }) });
+  await card.getByRole("button", { name: "Show fields" }).click();
+
+  // The card's fields are in no link or button, so the summary draws as a block of the renderer
+  // with its references linked.
+  await expectReadsReferences(
+    card.locator('[data-handoff-field="summary"] .dispatch-markdown'),
+    world,
+    "link"
+  );
 });
 
 test("issue-decision: a decision's paragraph draws every form of a stored reference through the renderer", async ({

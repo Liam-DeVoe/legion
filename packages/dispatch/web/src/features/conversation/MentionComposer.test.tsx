@@ -20,14 +20,17 @@ import type {
   Agent,
   AskRead,
   Comment,
+  IssueCollaborators,
   IssueReferenceSummary,
   ItemBlock,
   ItemBlocks,
   Message,
 } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import type { AgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { stoppedRoleOptions } from "../refs/party-options";
 import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -179,11 +182,12 @@ function holdControls(): HTMLFieldSetElement {
 }
 
 /** Every source the picker reads when a door opens over the composer, and a read no handler
- *  answers fails its test: the issue's collaborators (its people), the project's components and
- *  the search behind the kinds that need a query. The pills under a draft draw each reference as
- *  the stored record will (`RefLink`), so an issue a pill names is read for its title
- *  (`summaryOf`), and a session the registry does not list is asked about once: Dispatch holds
- *  no record of one here. */
+ *  answers fails its test: the issue's collaborators (its people and the roles nobody is
+ *  running), the project's components and the search behind the kinds that need a query. The
+ *  rows that are about a stopped role answer the collaborators themselves. The pills under a
+ *  draft draw each reference as the stored record will (`RefLink`), so an issue a pill names is
+ *  read for its title (`summaryOf`), and a session the registry does not list is asked about
+ *  once: Dispatch holds no record of one here. */
 let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
 let architectureRead: Mock<typeof api.getArchitecture>;
 let searchRead: Mock<typeof api.search>;
@@ -443,7 +447,10 @@ test("a draft's bare key and #id get the titled pills a reader of the stored tex
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
-        <MarkdownBody markdown={text} source={{ id: "comment-1", kind: "comment" }} />
+        <MarkdownBody
+          markdown={text}
+          source={{ id: "comment-1", issue: "CORE-1", kind: "comment" }}
+        />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -547,7 +554,10 @@ async function expectPillsAsStored(
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
-        <MarkdownBody markdown={text} source={{ id: "comment-1", kind: "comment" }} />
+        <MarkdownBody
+          markdown={text}
+          source={{ id: "comment-1", issue: "CORE-1", kind: "comment" }}
+        />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -634,6 +644,24 @@ test("a mention's link with part of its words bold reads as the words written in
 
 test("a mention's link whose words are code reads as the words written in its pill", async () => {
   await expectPlannerPillAsStored("[`@Planner`](dispatch://agent/A)", "@Planner");
+});
+
+// A role no running session holds is still known where the issue's collaborators record it
+// (`role-holders.ts`), so the stored comment on CORE-1 names it and links it. The pill is read on
+// the issue the draft is written on (`RecordIssue`), so it reads the same way: as `@` and the
+// role's token, linked to the role's page, rather than as the words the draft wrote.
+test("a stopped role the issue records reads as its token in its pill, as on the stored comment", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  collaboratorsRead.mockResolvedValue(
+    issueCollaborators({ agents: collaboratorsAnswer.agents ?? [] })
+  );
+  try {
+    await expectPillsAsStored("[@Reviewer](dispatch://role/legion-p-core-1-reviewer)", [
+      { href: "/agents?role=legion-p-core-1-reviewer", name: "@legion-p-core-1-reviewer" },
+    ]);
+  } finally {
+    listAgents.mockRestore();
+  }
 });
 
 // A mention reaches a draft from the channel it is written in (`seedMentions`) or from the
@@ -1195,6 +1223,74 @@ test("a mention survives its target going offline before Send", async () => {
   }
 });
 
+/** One collaborators answer in the order the server sends it (the contract's: the registry's
+ *  agents by role in workflow order and then newest first, then the rest newest first) - the
+ *  planner, the reviewer role's newest session and the one it replaced, then a session with no
+ *  registry entry. */
+const collaboratorsAnswer: IssueCollaborators = {
+  agents: [
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: null,
+        replaced_by: null,
+        role: "planner",
+        role_token: "legion-planner",
+        started_at: "2026-10-26T00:00:00Z",
+      },
+      reasons: [],
+      session_id: "old-planner",
+      title: "Old planner",
+    },
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: null,
+        replaced_by: null,
+        role: "reviewer",
+        role_token: "legion-p-core-1-reviewer",
+        started_at: "2026-10-26T02:00:00Z",
+      },
+      reasons: [],
+      session_id: "new-reviewer",
+      title: "New reviewer",
+    },
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: "2026-10-26T02:00:00Z",
+        replaced_by: "new-reviewer",
+        role: "reviewer",
+        role_token: "legion-p-core-1-reviewer",
+        started_at: "2026-10-26T01:00:00Z",
+      },
+      reasons: [],
+      session_id: "old-reviewer",
+      title: "Old reviewer",
+    },
+    {
+      kind: "session",
+      last_at: "2026-10-26T03:00:00Z",
+      legion: null,
+      reasons: ["posted"],
+      session_id: "helper",
+      title: "Helper",
+    },
+  ],
+  issue_key: "CORE-1",
+  legion_registry: "ok",
+  people: [],
+};
+
+/** The naming the picker does outside React: no stopped session is in the registry cache, so each
+ *  name falls back to the title the collaborators read stamped on it. */
+const storedNames: Pick<AgentText, "sessionText"> = {
+  sessionText: (_sessionId, storedTitle) => storedTitle ?? "",
+};
+
 // An ask option's Enter adds the next option, and the picker's Enter takes the row under it:
 // the field's own listener is in front of the box's handler, so one key cannot do both.
 test("Enter in an ask option takes the picker's row, and adds an option once it is closed", async () => {
@@ -1222,6 +1318,31 @@ test("Enter in an ask option takes the picker's row, and adds an option once it 
     view.unmount();
     listAgents.mockRestore();
   }
+});
+
+// The rule the "Not running" options follow: a role a live agent holds is the live options'
+// (never offered twice), and a role is offered once by its newest session whatever replaced it.
+// A live list whose state is unknown offers no stopped role at all, which `useRefPicker` holds
+// to where it builds the picker's party rows.
+test("stopped role options leave out held roles and name each role once", () => {
+  const answerAgents = collaboratorsAnswer.agents ?? [];
+  const reviewerOnly = stoppedRoleOptions([planner], answerAgents, storedNames);
+  expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
+    ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running, not told"],
+  ]);
+  // The holder the filter matches and the detail tooltip names: that session's own name.
+  expect(reviewerOnly.map((option) => option.holder)).toEqual(["New reviewer"]);
+  // Nobody live holds either role: both, in the order the server sent them (planner, reviewer).
+  expect(
+    stoppedRoleOptions([worker], answerAgents, storedNames).map((option) => option.target)
+  ).toEqual(["role:legion-planner", "role:legion-p-core-1-reviewer"]);
+  // A session the live list names is no stopped option, whatever roles it claims: offered here it
+  // would draw its own `Running` mark inside the "Not running" group.
+  expect(
+    stoppedRoleOptions([{ ...worker, session_id: "new-reviewer" }], answerAgents, storedNames).map(
+      (option) => option.target
+    )
+  ).toEqual(["role:legion-planner"]);
 });
 
 test("two seeded mentions receive one comment-level delivery mode", async () => {

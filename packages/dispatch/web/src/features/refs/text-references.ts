@@ -75,15 +75,21 @@ export interface TextReferenceNeeds {
 
 /** What the text belongs to, as the reference graph knows it: the record whose text it is, by
  *  the kind the server indexes that record under and its id - a document version's own text
- *  (`artifact`), an ask's question, answer or resolution reason, a comment, an issue message.
- *  Which document a `#id` in it resolves against is the server's to say
- *  (`refs.ScopeOf`, read through `GET /api/v1/references/questions`): the document itself, the
- *  document an ask or a comment is written on or anchored to, an issue message's spec. Text
- *  that is no record's - an agent's conversation, a broadcast, a search hit - names no source
- *  and gets no `#id` links, which is right: a `#id` there declares nothing. */
+ *  (`artifact`), an ask's question, answer or resolution reason, a comment, an issue message -
+ *  and the issue that record is on. Which document a `#id` in it resolves against is the
+ *  server's to say (`refs.ScopeOf`, read through `GET /api/v1/references/questions`): the
+ *  document itself, the document an ask or a comment is written on or anchored to, an issue
+ *  message's spec. Text that is no record's - an agent's conversation, a broadcast, a search
+ *  hit - names no source and gets no `#id` links, which is right: a `#id` there declares
+ *  nothing. */
 export interface TextSource {
   readonly kind: "artifact" | "ask" | "comment" | "message";
   readonly id: string;
+  /** The issue the record is on, its own `issue_key`; undefined for a record on no issue (a
+   *  project document, a direct message). A role reference in the text is known while this
+   *  issue's collaborators record the role (`role-holders.ts`), so every record names it, and
+   *  none leaves it out by accident. */
+  readonly issue: string | undefined;
 }
 
 /** The reference-source kind a string names, or none where it names no source. The route table
@@ -103,14 +109,16 @@ export function textSourceKind(kind: string): TextSource["kind"] | undefined {
 
 /** The source of one record's own text, or none where there is no record to name it by: a
  *  reply shown without its id, a row of text an issue owns but no record holds, or a kind that
- *  names no reference source (`textSourceKind`). */
+ *  names no reference source (`textSourceKind`). `issue` is the issue the record is on, its own
+ *  `issue_key`, and undefined only for a record on none. */
 export function textSourceOf(
   kind: TextSource["kind"] | undefined,
-  id: string | null | undefined
+  id: string | null | undefined,
+  issue: string | null | undefined
 ): TextSource | undefined {
   return kind === undefined || id === null || id === undefined || id === ""
     ? undefined
-    : { id, kind };
+    : { id, issue: issue ?? undefined, kind };
 }
 
 /** What a caller already knows about the text. Each is read only where the text holds a

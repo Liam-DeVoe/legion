@@ -211,7 +211,7 @@ function CommentBody({
       {suggestion === null ? (
         <MarkdownBody
           markdown={comment.body}
-          source={textSourceOf("comment", comment.id)}
+          source={textSourceOf("comment", comment.id, comment.issue_key)}
           surface="margin-comment-body"
           tree={comment.body_tree}
         />
@@ -223,7 +223,7 @@ function CommentBody({
             <div className={`font-sans ${textSecondaryOnSurface}`}>
               <MarkdownBody
                 markdown={comment.body}
-                source={textSourceOf("comment", comment.id)}
+                source={textSourceOf("comment", comment.id, comment.issue_key)}
                 surface="margin-comment-body"
                 tree={comment.body_tree}
               />
@@ -517,7 +517,7 @@ export function ThreadCard({
                               block={reply.reply_block}
                               className="mb-2"
                               excerpt=""
-                              source={textSourceOf("comment", quoted?.id)}
+                              source={textSourceOf("comment", quoted?.id, quoted?.issue_key)}
                             />
                           )}
                           <CommentBody
@@ -576,7 +576,7 @@ export function ThreadCard({
                       className={`mt-2 text-xs ${textSecondaryOnSurface}`}
                       lines={1}
                       markdown={root.body}
-                      source={textSourceOf("comment", root.id)}
+                      source={textSourceOf("comment", root.id, root.issue_key)}
                       surface="margin-thread-preview"
                       tree={root.body_tree}
                     />
@@ -595,7 +595,7 @@ export function ThreadCard({
                   <MarkdownPreview
                     lines={2}
                     markdown={root.body}
-                    source={textSourceOf("comment", root.id)}
+                    source={textSourceOf("comment", root.id, root.issue_key)}
                     surface="margin-thread-preview"
                     tree={root.body_tree}
                   />

@@ -30,6 +30,7 @@
 export type DispatchReadingSurface =
   | "activity-event-body"
   | "event-line"
+  | "earlier-chosen-option"
   | "agents-row-reply"
   | "agents-row-message"
   | "agent-turn-text"
@@ -40,6 +41,7 @@ export type DispatchReadingSurface =
   | "broadcasts-list-body"
   | "answers-subject"
   | "answers-answer"
+  | "answers-chosen-options"
   | "answers-reply"
   | "component-prose"
   | "not-architectural-reason"
@@ -51,6 +53,7 @@ export type DispatchReadingSurface =
   | "agent-held-send"
   | "session-switch-answer"
   | "conversation-handoff-body"
+  | "conversation-handoff-data"
   | "ask-card-question"
   | "ask-edit-history"
   | "ask-answer-history"
@@ -65,9 +68,15 @@ export type DispatchReadingSurface =
   | "my-reply-subject"
   | "inbox-thread-title"
   | "issue-decision"
+  | "decision-heading-words"
   | "issue-decision-link"
   | "issue-open-question"
   | "item-match-first-line"
+  | "spec-requirement-words"
+  | "spec-version-summary"
+  | "artifact-version-summary"
+  | "change-view-diff"
+  | "credential-request-reason"
   | "issue-components-reason"
   | "margin-decision-passage"
   | "margin-pinned-conversation"
@@ -92,7 +101,9 @@ export type DispatchReadingSurface =
   | "reference-hover-card"
   | "reference-hover-card-ask"
   | "search-ask-status"
+  | "search-ask-chosen-options"
   | "search-result"
+  | "ref-picker-row-label"
   | "agent-message-issue-option"
   | "issue-page-title"
   | "document-page-title"
@@ -148,6 +159,35 @@ export interface DispatchReadingSurfaceRow {
    *  belongs to no document. The row's browser driver reads this, so the text it stores holds
    *  every other form and the surface is held to each of them (`e2e/reading-rows.ts`). */
   readonly cannotCarry?: DispatchReadingUncarried;
+  /** The test that proves a row drawn through the plain-text projection reads its text as the
+   *  one reader does: a browser driver or a unit test. Such a row has no driver in the walk, which
+   *  drives the rendered rows alone, so this names what holds it; the walk's gate fails when the
+   *  file does not exist or holds no test of that title (`e2e/__tests__/reading-walk.test.ts`),
+   *  and the source test fails when a row with a mount of the projection names none
+   *  (`surface-lists.test.ts`). */
+  readonly proof?: DispatchReadingProof;
+  /** The kinds of record a rendered surface shows that carry fewer forms than the rest of it -
+   *  each with its own driver in the walk, which stores the forms that arm carries. A row's own
+   *  `cannotCarry` is what its other records cannot carry. */
+  readonly arms?: readonly DispatchReadingArm[];
+}
+
+/** A test, by the file that holds it, from the repository root, and its own title - the title
+ *  its `test` call is given, not the titles of the `describe` blocks around it. */
+export interface DispatchReadingProof {
+  readonly file: string;
+  readonly test: string;
+}
+
+/** One kind of record a rendered surface shows that carries fewer forms than the rest of it. */
+export interface DispatchReadingArm {
+  /** The arm's id: its driver's title opens with the row's id, a `/` and this, and then a
+   *  colon (`agents-row-message/direct-message:`). */
+  readonly arm: string;
+  /** How a test reaches the arm, as the row's own `reach` says it for the row. */
+  readonly reach: string;
+  /** What the arm's records cannot carry, and why. */
+  readonly cannotCarry: DispatchReadingUncarried;
 }
 
 /** The forms a surface cannot carry, and what about the surface's text makes that so. */
@@ -161,6 +201,25 @@ export interface DispatchReadingUncarried {
 const NO_QUESTION_ID: DispatchReadingUncarried = {
   forms: ["question-id"],
   why: "The text is no record, so the renderer is given no `source` for it and a `#id` in it names nothing.",
+};
+
+/** What a message sent to one session on no issue cannot carry: it is a record, but of no
+ *  document, so the question map its `#id` is read against is empty. */
+const NO_DOCUMENT: DispatchReadingUncarried = {
+  forms: ["question-id"],
+  why: "A message sent to one session on no issue belongs to no document whose question a `#id` could name (`refs.ScopeOf`), so a `#id` in it, or in a reply to it, names nothing.",
+};
+
+/** How a test reaches an Agents row's message sent to its session alone, and a reply to one. */
+const DIRECT_MESSAGE_REACH =
+  "/agents, a row's message sent to its session on no issue (`POST /api/v1/agents/{session_id}/messages`), and the session's reply to it";
+
+/** The one test that holds the Decisions panel's projected links to the reader: an open
+ *  question's link and a shaped block's link (and the name its Change is given, which is
+ *  `decision-heading-words`). */
+const DECISIONS_PANEL_PROOF: DispatchReadingProof = {
+  file: "packages/dispatch/web/src/features/issue/DecisionsPanel.test.tsx",
+  test: "an open question, a shaped block's link and the Change's name read their text's plain-text projection",
 };
 
 /** Why a broadcast's own text is no record: the graph holds the copy each recipient got, never
@@ -200,6 +259,16 @@ const LOAD_STATE_REASON =
 const COMMAND_OUTPUT_REASON =
   "A check's words and a result's report are commands and what running them printed - a shell line, a log, a diff - where a `*`, a `_` or a `[` is a character of the output, so reading them as markdown would change what they say. They are shown as the characters they are.";
 
+/** Why a one-line field a writer fills in is shown as written, which is what a version's
+ *  summary and a credential request's reason say. */
+const ONE_LINE_FIELD_REASON =
+  "It is a one-line field its writer fills in, which INFRA-1702's non-goals leave out of the reference framework, as they leave a title: it is stored and shown as the characters its writer gave it.";
+
+/** Why a chosen option's label reaches some surfaces as written, which is what the three rows
+ *  that draw one that way say. */
+const NO_LABEL_TREE_REASON =
+  "A chosen option is the label its asker wrote, and the page parses no stored text: a label is drawn from the tree of the option it names. Where a label reaches the page with no such option, it has no tree anywhere, so it is shown as the characters its asker wrote.";
+
 /** Why the Proof editor's own drawing of a document is no mount of the renderer, which is what
  *  the live document and a past version of one both say. */
 const EDITOR_REASON =
@@ -216,7 +285,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "activity-event-body",
   },
-  // An event's one line, in the Activity tab and above its body in the margin's Pinned tab.
+  // An event's one line, in the Activity tab and above its body in the margin's Pinned tab. The
+  // line is in no link or button, so a text of the record it quotes is drawn by the renderer.
   {
     files: [
       "packages/dispatch/web/src/features/activity/SentenceParts.tsx",
@@ -224,22 +294,25 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       "packages/dispatch/web/src/features/issue/event-description.ts",
     ],
     reach: "/issues/<ISSUE>/activity, an event's line; the same line in the margin's Pinned tab",
-    reason: `An event's line is one sentence in the dashboard's own words around a text of the record - the question in \`asked “…”\`, the question a reply answers, a resolution's reason - so the sentence carries that text as its plain-text projection (\`SentenceParts\`, over \`PlainText\`): its words with the formatting gone and each reference read as its target's name, never the text's source. ${LOAD_STATE_REASON} The event's body is drawn by the renderer once the event is pinned (\`activity-event-body\`).`,
     record: true,
-    rendered: false,
+    rendered: true,
     surface: "event-line",
   },
-  // The Agents page: a reply under a row's exchange, and the targeted message a row shows.
+  // The Agents page: a reply under a row's exchange, and the targeted message a row shows. A row
+  // shows a message sent on an issue and one sent to the session alone, on no issue, and only
+  // the first belongs to a document a `#id` could name a question of.
   {
+    arms: [{ arm: "direct-message", cannotCarry: NO_DOCUMENT, reach: DIRECT_MESSAGE_REACH }],
     files: ["packages/dispatch/web/src/features/agents/AgentsPage.tsx"],
-    reach: "/agents, a row's reply turn",
+    reach: "/agents, a row's reply turn to a message sent on an issue",
     record: true,
     rendered: true,
     surface: "agents-row-reply",
   },
   {
+    arms: [{ arm: "direct-message", cannotCarry: NO_DOCUMENT, reach: DIRECT_MESSAGE_REACH }],
     files: ["packages/dispatch/web/src/features/agents/AgentsPage.tsx"],
-    reach: "/agents, a row's targeted message card",
+    reach: "/agents, a row's targeted message card for a message sent on an issue",
     record: true,
     rendered: true,
     surface: "agents-row-message",
@@ -266,24 +339,24 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "agent-turn-reasoning",
   },
   // The header's line about a `/model` or `/effort` switch, and a message of the viewer's that
-  // Dispatch has not made yet.
+  // Dispatch has not made yet. The switch's reply is a message of the session's conversation,
+  // sent on no issue.
   {
-    files: [
-      "packages/dispatch/web/src/features/agent-view/SessionSettings.tsx",
-      "packages/dispatch/web/src/features/agent-view/use-session-switch.ts",
-    ],
+    cannotCarry: NO_DOCUMENT,
+    files: ["packages/dispatch/web/src/features/agent-view/SessionSettings.tsx"],
     reach: "/agents/<SESSION>/live, the header's line after a model or thinking-level switch",
-    reason: `The header's line about a switch quotes the session's reply to it inside one line of the page's own words. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON} The same reply is a turn of the thread below, which the renderer draws.`,
     record: true,
-    rendered: false,
+    rendered: true,
     surface: "session-switch-answer",
   },
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/conversation/PendingSendTurn.tsx"],
     reach: '/agents/<SESSION>/live, `[data-testid="agent-send-held"]`',
-    reason: `A message Dispatch has not made yet is the viewer's own draft rather than a record: its turn names it as theirs, \`Your message: “…”\`, in one line of plain text that is never rendered as markdown. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON} Once Dispatch makes the message, the stored one takes its place, which the renderer draws.`,
+    reason:
+      "A message Dispatch has not made yet is the viewer's own draft rather than a record: the page parses it, as it parses every write the server has not stored, and draws it as the message it becomes, but it belongs to no document yet, so a `#id` in it names nothing until Dispatch makes it and the stored message takes its place.",
     record: false,
-    rendered: false,
+    rendered: true,
     surface: "agent-held-send",
   },
   // A broadcast's page: a recipient's reply is a message and a record; the broadcast's own body
@@ -336,10 +409,18 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
-    reach: "/answers, a row's answer: the options it chose and its text",
+    reach: "/answers, a row's answer text",
     record: true,
     rendered: true,
     surface: "answers-answer",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
+    reach: "/answers, a row's chosen options",
+    reason: `${NO_LABEL_TREE_REASON} A row carries its answer's options as their labels alone (\`GET /api/v1/me/answers\`), with no option a tree could be taken from.`,
+    record: true,
+    rendered: false,
+    surface: "answers-chosen-options",
   },
   {
     files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
@@ -392,15 +473,26 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "conversation-targeted-message",
   },
-  // A handoff's card, whose body is the JSON its phase wrote.
+  // A handoff's card, whose body is the JSON its phase wrote: the words a session wrote in it,
+  // and the data beside them.
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
     reach: "/issues/<ISSUE>/conversation, a handoff card opened on its body",
     reason:
-      "A handoff's body is the JSON its phase wrote rather than a markdown body: each field is shown as the value it is, and a body that is no JSON object as the text it is. A handoff is no record of the reference graph either (`textSourceKind`).",
+      "A handoff is no record of the reference graph (`textSourceKind`): the renderer draws the words its session wrote - each string field, each proof entry, a body that is no JSON object - from the reading the server sends for each (`field_trees`), and is given no `source`, so a `#id` in them names nothing.",
+    record: false,
+    rendered: true,
+    surface: "conversation-handoff-body",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
+    reach: "/issues/<ISSUE>/conversation, a handoff card's field of JSON",
+    reason:
+      "A handoff field that holds an array, an object, a number, a boolean or null is the data its session wrote, not words: it is shown as the JSON it is.",
     record: false,
     rendered: false,
-    surface: "conversation-handoff-body",
+    surface: "conversation-handoff-data",
   },
   // The line a reply quotes of what it answers, wherever a reply is drawn.
   {
@@ -445,6 +537,18 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "ask-answer-history",
   },
   {
+    files: [
+      "packages/dispatch/web/src/features/activity/EventBody.tsx",
+      "packages/dispatch/web/src/features/inbox/AskCompletionCard.tsx",
+    ],
+    reach:
+      "/issues/<ISSUE>/activity, a pinned changed answer's `was:` line; /, an ask card's earlier answers, for an option the ask no longer holds",
+    reason: `${NO_LABEL_TREE_REASON} An earlier answer can name an option the ask no longer holds, renamed or removed since, and only such a label is drawn so: every other is drawn from its option's tree.`,
+    record: true,
+    rendered: false,
+    surface: "earlier-chosen-option",
+  },
+  {
     files: ["packages/dispatch/web/src/features/inbox/AskCompletionCard.tsx"],
     reach: "/, an answered ask's question and answer",
     record: true,
@@ -485,6 +589,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       "packages/dispatch/web/src/features/inbox/useControlName.ts",
       "packages/dispatch/web/src/features/inbox/ask-name.ts",
     ],
+    proof: {
+      file: "packages/dispatch/web/src/features/inbox/useControlName.test.tsx",
+      test: "a #id in an Inbox row's question names the question of its ask in the controls' name",
+    },
     reach: "/, the name of an ask row's checkbox, of its Snooze and of the reading column's head",
     reason: `An Inbox row's controls are named in an \`aria-label\`, after the row's owner and the start of its question. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
     record: true,
@@ -520,6 +628,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       "packages/dispatch/web/src/features/inbox/Inbox.tsx",
       "packages/dispatch/web/src/features/inbox/DismissControl.tsx",
     ],
+    proof: {
+      file: "packages/dispatch/web/src/features/refs/reference-naming.test.tsx",
+      test: "a #id in an Inbox thread subject projects as its question where the row names its record",
+    },
     reach: "/, a thread row's title",
     record: true,
     rendered: true,
@@ -536,6 +648,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
+    proof: DECISIONS_PANEL_PROOF,
     reach: "/issues/<ISSUE>/decisions, a link under Shaped in the spec",
     reason: `The link to a spec block a decision shaped is worded with the head of that block's text. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
     record: true,
@@ -544,6 +657,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
+    proof: DECISIONS_PANEL_PROOF,
     reach: "/issues/<ISSUE>/decisions, a link under Open questions",
     reason: `An open question is a link to its ask, worded with the question. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
     record: true,
@@ -553,11 +667,83 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // The list an address shows when its short id names more than one item of the issue.
   {
     files: ["packages/dispatch/web/src/features/issue/ItemMatchList.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue/ItemMatchList.test.tsx",
+      test: "a match's first line reads its plain-text projection",
+    },
     reach: "An issue address whose short id names several items, a match's link",
-    reason: `A match is a link to its item, worded with the first line of the item's text, which the server cuts. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    reason: `A match is a link to its item, worded with the first line of the item's text, which the server cuts and reads into a tree. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
     record: true,
     rendered: false,
     surface: "item-match-first-line",
+  },
+  // A decision's heading, where it names a write, a form or a card, or words a link.
+  {
+    files: [
+      "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
+      "packages/dispatch/web/src/features/margin/DecisionCard.tsx",
+    ],
+    proof: {
+      file: "packages/dispatch/web/src/features/margin/DecisionCard.test.tsx",
+      test: "a heading that holds markdown names the card and its link in plain words",
+    },
+    reach:
+      "/issues/<ISSUE>/decisions, a waiting decision's Keep and Change; /issues/<ISSUE>/spec, a margin decision card's name and its heading's link",
+    reason: `A decision's heading names a write, a form and a card, and words a link to the decision. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "decision-heading-words",
+  },
+  // A requirement's line in the spec's Requirements list.
+  {
+    files: ["packages/dispatch/web/src/features/issue/SpecRequirements.tsx"],
+    reach: "/issues/<ISSUE>/spec, a requirement's line under Requirements",
+    reason:
+      "A requirement's line is the server's flattened words of a block of the stored spec (`blockWords`, `api/results.go`): its links' addresses and its mentions are dropped and a bare key is left as the characters it is, so the line holds no markdown to render and no reference to read. The spec block itself is drawn by the document's editor (`document-body`).",
+    record: false,
+    rendered: false,
+    surface: "spec-requirement-words",
+  },
+  // A document version's summary, in the spec's version picker and on an artifact's page.
+  {
+    files: ["packages/dispatch/web/src/features/issue/SpecToolbar.tsx"],
+    reach: "/issues/<ISSUE>/spec, the version picker's options",
+    reason: `A version's summary names the version it was given to. ${ONE_LINE_FIELD_REASON}`,
+    record: false,
+    rendered: false,
+    surface: "spec-version-summary",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/artifacts/ArtifactHeader.tsx"],
+    reach: "/issues/<ISSUE>/artifacts/<SLUG>, a version's label",
+    reason: `A version's summary names the version it was given to. ${ONE_LINE_FIELD_REASON}`,
+    record: false,
+    rendered: false,
+    surface: "artifact-version-summary",
+  },
+  // The diff between two versions of a document, at the three places that compare them.
+  {
+    files: [
+      "packages/dispatch/web/src/features/doc/ChangeView.tsx",
+      "packages/dispatch/web/src/features/artifacts/ArtifactDetails.tsx",
+      "packages/dispatch/web/src/features/doc/ProofDocument.tsx",
+      "packages/dispatch/web/src/features/inbox/EarlierApproval.tsx",
+    ],
+    reach: "/projects/<PROJECT>/documents/<SLUG>, Compare between two versions",
+    reason:
+      "A diff shows the exact characters a change swaps, the removed beside the added, so it is drawn as the characters each version holds rather than rendered (R6): a rendered `**` or `[` would hide the change it is. Each version itself is drawn by the document's editor (`document-body`, `document-version-body`).",
+    record: false,
+    rendered: false,
+    surface: "change-view-diff",
+  },
+  // The reason an agent gave for a credential it asks for.
+  {
+    files: ["packages/dispatch/web/src/features/credentials/CredentialRecordFacts.tsx"],
+    reach: "/credentials/machine, a machine login request's reason",
+    reason: `A credential request's reason is what the asking agent typed for it. ${ONE_LINE_FIELD_REASON}`,
+    record: false,
+    rendered: false,
+    surface: "credential-request-reason",
   },
   // The issue header's Components line, which shows the reason an issue touches no component.
   {
@@ -653,6 +839,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     files: ["packages/dispatch/web/src/features/doc/ProofDocument.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/doc/ProofDocument.decisions.test.tsx",
+      test: "the open-decision link reads its question's plain-text projection",
+    },
     reach: "/projects/<PROJECT>/documents/<SLUG>, the open decision named above the document",
     reason: `The bar above a document names its open decision in a link and in that link's \`title\`. ${PLAIN_WORDS_REASON}`,
     record: true,
@@ -790,11 +980,33 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "search-ask-status",
   },
   {
+    files: ["packages/dispatch/web/src/features/search/AskHitStatus.tsx"],
+    reach: "Ctrl+K, an ask hit's `Chose …`",
+    reason: `${NO_LABEL_TREE_REASON} A hit carries its answer's options as their labels alone (\`SearchAsk\`), with no option a tree could be taken from.`,
+    record: true,
+    rendered: false,
+    surface: "search-ask-chosen-options",
+  },
+  {
     files: ["packages/dispatch/web/src/features/search/SearchPalette.tsx"],
     reach: "Ctrl+K, a result row's snippet",
     record: true,
     rendered: true,
     surface: "search-result",
+  },
+  // A row of the reference picker, in every box that carries it.
+  {
+    files: ["packages/dispatch/web/src/features/refs/RefPickerList.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/refs/useRefPicker.test.tsx",
+      test: "a hit's row reads its snippet as its plain words",
+    },
+    reach:
+      "Any box with the picker: `[[` and two letters, a hit's row; ArrowRight on a hit, a block's row",
+    reason: `A picker row is an option the reader takes, worded with a hit's matched words or the head of a block's text. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "ref-picker-row-label",
   },
   // The five places a record's text is still written into an element that can hold no markup.
   {
@@ -837,6 +1049,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       "packages/dispatch/web/src/features/inbox/DeclineControl.tsx",
       "packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx",
     ],
+    proof: {
+      file: "packages/dispatch/web/src/features/inbox/question-label.test.tsx",
+      test: "an answer's label reads the question's plain-text projection",
+    },
     reach: "Any route, the Writes indicator's line for a write that is out",
     reason:
       "A write's label is one line the Writes indicator and its refusals read as text, naming which write this is, so it holds no markup. An ask's question is markdown, so a label on an ask draws the question's plain-text projection (`usePlainHeadline`, through `useQuestionLabel`): the words the card draws, formatting gone and each `dispatch://` address read as its target's name, never the question's source. An issue's title is one line of text already, so a new issue's label holds it as the characters it is.",

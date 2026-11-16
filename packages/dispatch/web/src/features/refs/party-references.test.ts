@@ -1,9 +1,12 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { referenceReading } from "@legion/contracts";
 
+import { loadedEngine, warmMarkdownRenderer } from "./markdown-engine";
+import { draftReading, parsedLinkWords } from "./parsed-references";
 import {
   draftParties,
   inLinkWords,
+  inlineLinks,
   isPartyRoute,
   linkOf,
   partyMention,
@@ -11,6 +14,10 @@ import {
 } from "./party-references";
 import { partyOfAddress } from "./routes";
 import { readTextReferences } from "./text-references";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const SESSION = "01a1058e-f14f-7684-87eb-3dc885955551";
 const AGENT = `dispatch://agent/${SESSION}`;
@@ -171,37 +178,55 @@ function mentionTaken(body: string): string | undefined {
   return span === undefined ? undefined : body.slice(span.start, span.end);
 }
 
-/** What a draft's pill reads the first reference of `body` as, as the chips ask it
- *  (`conversation/draft-pills.tsx`): the link around it, and the one rule over that link. */
-function pillReads(body: string): string {
+/** The engine the page parses with, which the tests load once. */
+function engine() {
+  const loaded = loadedEngine();
+  if (loaded === undefined) throw new Error("the Markdown engine did not load");
+  return loaded;
+}
+
+/** The words of the link the first reference of `body` stands in, as its parse reads them
+ *  (`parsedLinkWords`), with how they are formatted. */
+function wordsAt(body: string) {
+  const link = linkAt(body);
+  return link === undefined ? undefined : parsedLinkWords(engine(), link.markdown);
+}
+
+/** What a draft's pill draws for the first reference of `body`, as the chips ask it
+ *  (`conversation/draft-pills.tsx`, through `draftReading`). */
+function pill(body: string) {
   const [found] = readTextReferences(body).references;
   if (found?.route === undefined) throw new Error(`${body} holds no reference`);
-  const link = linkOf(body, found);
-  return referenceReading({
-    address: found.text,
-    party: isPartyRoute(found.route),
-    words: link?.words,
-    wordsFormatting: link?.formatting,
-  });
+  return draftReading(engine(), body, { ...found, route: found.route });
+}
+
+/** What a draft's pill reads the first reference of `body` as. */
+function pillReads(body: string): string {
+  return pill(body).reads;
 }
 
 // What a draft's pill reads a reference by: the link around it, as a reader of the stored text
 // sees it - its words, or a picture, which is drawn as the picture and is no link.
 test("a link is read around its address, a picture is told apart, and a reference on its own has none", () => {
   expect(linkAt(`Ask [@Planner](${AGENT}) now.`)).toEqual({
-    formatting: "plain",
+    markdown: `[@Planner](${AGENT})`,
     picture: false,
+  });
+  expect(pill(`Ask [@Planner](${AGENT}) now.`)).toEqual({
+    picture: false,
+    reads: "mention",
     words: "@Planner",
   });
-  expect(linkAt(`Ask [@Planner \\[2\\]](${AGENT}) now.`)).toEqual({
-    formatting: "plain",
+  expect(pill(`Ask [@Planner \\[2\\]](${AGENT}) now.`)).toEqual({
     picture: false,
+    reads: "mention",
     words: "@Planner [2]",
   });
   expect(linkAt(`Ask ${AGENT} now.`)).toBe(undefined);
-  expect(linkAt("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")).toEqual({
-    formatting: "plain",
+  expect(pill(`Ask ${AGENT} now.`)).toEqual({ picture: false, reads: "name", words: AGENT });
+  expect(pill("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")).toEqual({
     picture: true,
+    reads: "words",
     words: "shot.png",
   });
 });
@@ -210,38 +235,52 @@ test("a link is read around its address, a picture is told apart, and a referenc
 // balance, a title may follow its address, and its address may stand in angle brackets.
 test("a link whose words hold brackets that balance is read whole", () => {
   const body = `Ask [@Alice [x]](${AGENT}) now.`;
-  expect(linkAt(body)?.words).toBe("@Alice [x]");
+  expect(pill(body).words).toBe("@Alice [x]");
   expect(mentionTaken(body)).toBe(`[@Alice [x]](${AGENT})`);
 });
 
 test("a link with a title after its address is read to its closing parenthesis", () => {
   const body = `Ask [@Alice](${AGENT} "the planner") now.`;
-  expect(linkAt(body)?.words).toBe("@Alice");
+  expect(pill(body).words).toBe("@Alice");
   expect(mentionTaken(body)).toBe(`[@Alice](${AGENT} "the planner")`);
 });
 
 test("a link whose address stands in angle brackets is read whole", () => {
   const body = `Ask [@Alice](<${AGENT}>) now.`;
-  expect(linkAt(body)?.words).toBe("@Alice");
+  expect(pill(body).words).toBe("@Alice");
   expect(mentionTaken(body)).toBe(`[@Alice](<${AGENT}>)`);
 });
 
 // Markdown reads `\@` as `@`, so a link whose sign is written escaped is the mention the
 // rendered record draws (`reference-naming.test.tsx`): the draft's reader takes its words
-// through the one function that reads written words (`@legion/contracts`'s `readWrittenWords`).
+// through the parse every reader of the record takes them through (`parsedLinkWords`).
 test("a link whose words open with an escaped mention sign reads as the mention it is drawn as", () => {
   const body = `Ask [\\@Alice \\(lead\\)](${AGENT}) now.`;
-  expect(linkAt(body)?.words).toBe("@Alice (lead)");
-  expect(pillReads(body)).toBe("mention");
+  expect(pill(body)).toEqual({ picture: false, reads: "mention", words: "@Alice (lead)" });
+});
+
+// The parse decodes an entity and pairs formatting runs as the record's parser pairs them, which
+// no reading of the characters short of that parser does: `&#64;` is the mention sign, the runs
+// of `**@a*` pair nothing, so its words open with `*`, and `*@a**b*` is one emphasis over all of
+// its words.
+test("a draft's link words are the parser's, entities and delimiter runs alike", () => {
+  expect(pill(`Ask [&#64;Alice](${AGENT}) now.`)).toEqual({
+    picture: false,
+    reads: "mention",
+    words: "@Alice",
+  });
+  expect(wordsAt(`Ask [**@a*](${AGENT}) now.`)).toEqual({ formatting: "plain", words: "**@a*" });
+  expect(pillReads(`Ask [**@a*](${AGENT}) now.`)).toBe("words");
+  expect(wordsAt(`Ask [*@a**b*](${AGENT}) now.`)).toEqual({ formatting: "plain", words: "@a**b" });
+  expect(pillReads(`Ask [*@a**b*](${AGENT}) now.`)).toBe("mention");
 });
 
 // The formatting rule every reader of a record applies (`@legion/contracts`'s
-// `dispatch-mentions.ts`), read out of a draft's characters, in its three cases. First: code
+// `dispatch-mentions.ts`), read through a draft's parse, in its three cases. First: code
 // anywhere in a link's words keeps the words.
 test("a draft's link with code anywhere in its words reads as its words", () => {
-  expect(linkAt(`Ask [\`@Alice\`](${AGENT}) now.`)).toEqual({
+  expect(wordsAt(`Ask [\`@Alice\`](${AGENT}) now.`)).toEqual({
     formatting: "code",
-    picture: false,
     words: "@Alice",
   });
   expect(pillReads(`Ask [\`@Alice\`](${AGENT}) now.`)).toBe("words");
@@ -252,9 +291,8 @@ test("a draft's link with code anywhere in its words reads as its words", () => 
 // the link, so the link is still a mention, and its words are read without the runs that
 // write the formatting - inside the brackets, around the link, or around the sentence.
 test("a draft's link whose words are all under one formatting reads as a mention", () => {
-  expect(linkAt(`Ask [**@Alice**](${AGENT}) now.`)).toEqual({
+  expect(wordsAt(`Ask [**@Alice**](${AGENT}) now.`)).toEqual({
     formatting: "plain",
-    picture: false,
     words: "@Alice",
   });
   expect(pillReads(`Ask [**@Alice**](${AGENT}) now.`)).toBe("mention");
@@ -262,16 +300,21 @@ test("a draft's link whose words are all under one formatting reads as a mention
   expect(pillReads(`~~Ask [@Alice](${AGENT}) now.~~`)).toBe("mention");
 });
 
-// Third: formatting over some of a link's words makes them the author's words.
+// Third: formatting over some of a link's words makes them the author's words, and so does a
+// hard break among them, which cuts the words as such formatting does.
 test("a draft's link whose words are formatted in part reads as its words", () => {
-  expect(linkAt(`Ask [@Alice **lead**](${AGENT}) now.`)).toEqual({
+  expect(wordsAt(`Ask [@Alice **lead**](${AGENT}) now.`)).toEqual({
     formatting: "mixed",
-    picture: false,
     words: "@Alice lead",
   });
   expect(pillReads(`Ask [@Alice **lead**](${AGENT}) now.`)).toBe("words");
   expect(pillReads(`Ask [*@Alice* lead](${AGENT}) now.`)).toBe("words");
   expect(pillReads(`Ask [@Alice ~~lead~~](${AGENT}) now.`)).toBe("words");
+  expect(wordsAt(`Ask [@Alice\\\nlead](${AGENT}) now.`)).toEqual({
+    formatting: "mixed",
+    words: "@Alice lead",
+  });
+  expect(pillReads(`Ask [@Alice\\\nlead](${AGENT}) now.`)).toBe("words");
 });
 
 // The renderer links no reference a link's words hold (`RefLink.tsx`'s `linkPassReads`), while a
@@ -293,4 +336,43 @@ test("a reference in a link's words is told from the link's address", () => {
     ["CORE-1", true],
     ["dispatch://CORE-2", false],
   ]);
+});
+
+// A link holds no link: once one closes, no bracket open before it opens one, while a bracket
+// opened after it may, and a picture's caption may hold a link. A draft's pills ask about every
+// reference of one text in turn, and the text is read for its links once (`inlineLinks`).
+test("a link holds no link, a picture's caption may, and one text is read for its links once", () => {
+  const body = [
+    `[a [b](${AGENT}) c](dispatch://CORE-2)`,
+    "[ [d](dispatch://CORE-4) [e](dispatch://CORE-5) ](dispatch://CORE-6)",
+    "![x [y](dispatch://CORE-3)](dispatch://CORE-1/artifact/p-png@v1)",
+  ].join(" ");
+  expect(
+    inlineLinks(body).map((link) => [body.slice(link.addressStart, link.addressEnd), link.picture])
+  ).toEqual([
+    [AGENT, false],
+    ["dispatch://CORE-4", false],
+    ["dispatch://CORE-5", false],
+    ["dispatch://CORE-3", false],
+    ["dispatch://CORE-1/artifact/p-png@v1", true],
+  ]);
+  expect(inlineLinks(body)).toBe(inlineLinks(body));
+});
+
+// A `](` that opens no link - parentheses that never balance, a title that never closes - is read
+// no further than the longest tail a link may have, and never past its paragraph, so a draft of
+// thousands of them is read in time that grows with its length, not with its square (8,000 of
+// either took 6 to 12 seconds read to the end of the text), and still reads the link after them.
+test("a draft of thousands of `](` that open no link is read in linear time, and its real link still found", () => {
+  for (const opening of ["[a](((", "[a](x ("]) {
+    const body = `${opening.repeat(8000)} [@Alice](${AGENT}) now.`;
+    const started = performance.now();
+    const links = inlineLinks(body);
+    expect(performance.now() - started).toBeLessThan(3000);
+    expect(links.map((link) => body.slice(link.addressStart, link.addressEnd))).toEqual([AGENT]);
+  }
+  // A blank line ends the paragraph, and the link with it.
+  expect(inlineLinks(`[@Alice](\n\n${AGENT})`)).toEqual([]);
+  expect(inlineLinks(`[@Alice](${AGENT} "the\n\nplanner")`)).toEqual([]);
+  expect(inlineLinks(`[@Alice](\n${AGENT} "the\nplanner")`)).toHaveLength(1);
 });

@@ -67,7 +67,7 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
           {" · "}
           <MarkdownBody
             markdown={reason}
-            source={textSourceOf("artifact", entry.document?.id)}
+            source={textSourceOf("artifact", entry.document?.id, entry.document?.issue_key)}
             surface="approval-review-reason"
             variant="inline"
           />

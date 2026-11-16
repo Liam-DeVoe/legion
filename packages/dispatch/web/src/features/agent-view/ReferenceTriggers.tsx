@@ -24,10 +24,9 @@ import {
   selectedCardBorder,
   textMutedOnSurface,
   textOptionDescription,
-  textPrimaryOnSurface,
 } from "../../theme/classes";
 import { RefKindIcon } from "../refs/kind-icons";
-import { RefPartsControl, RefPickerNotes } from "../refs/RefPickerList";
+import { RefPartsControl, RefPickerNotes, RefRowLabel } from "../refs/RefPickerList";
 import {
   insertionText,
   orderedRows,
@@ -75,12 +74,12 @@ type DoorsInAddress = Record<RefPickerDoor, boolean>;
  * Where this door stands open, by the picker's own rule (`readTrigger`), so the three doors
  * cannot be open at once and a door opens here exactly where it opens in every other box: at a
  * word boundary, with no space typed since, never in a written link's words, and in its address
- * only on a trigger typed there. The rule reads the text on both sides of the caret, so the whole
- * message goes to it. The replaced stretch runs from the trigger's first character to the caret,
- * which is what a pick writes over. The matcher is the one reader that sees the whole message
- * and the caret, and assistant-ui hands the formatter the picked item alone, so the matcher
- * leaves in `inAddress` whether its door stands in a link's address, which decides what a pick
- * there writes (`insertionText`).
+ * only on a trigger typed there, with the caret at the address's end. The rule reads the text on
+ * both sides of the caret, so the whole message goes to it. The replaced stretch runs from the
+ * trigger's first character to the caret, which is what a pick writes over. The matcher is the
+ * one reader that sees the whole message and the caret, and assistant-ui hands the formatter the
+ * picked item alone, so the matcher leaves in `inAddress` whether its door stands in a link's
+ * address, which decides what a pick there writes (`insertionText`).
  */
 function doorMatcher(
   door: RefPickerDoor,
@@ -133,7 +132,7 @@ function RefRow({
       >
         <RefKindIcon kind={row.kind} />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className={`truncate font-medium ${textPrimaryOnSurface}`}>{item.label}</span>
+          <RefRowLabel row={row} />
           {item.description === undefined ? null : (
             <TruncatedText
               className={`self-stretch text-xs ${textOptionDescription}`}

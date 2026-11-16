@@ -210,7 +210,7 @@ function ThreadMarkCheckbox({
   return (
     <PlainText
       markdown={thread.subject}
-      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id)}
+      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
       surface="inbox-thread-title"
       tree={thread.subject_tree}
     >
@@ -391,7 +391,7 @@ function AskShortRow({
           className="min-w-0 grow text-sm"
           lines={1}
           markdown={ask.question}
-          source={textSourceOf("ask", ask.id)}
+          source={textSourceOf("ask", ask.id, ask.issue_key)}
           surface="inbox-ask-row"
           tree={ask.question_tree}
         />

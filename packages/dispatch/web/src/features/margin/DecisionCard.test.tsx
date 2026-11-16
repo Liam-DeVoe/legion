@@ -1,10 +1,13 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { renderToString } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
+import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { api } from "../../api/client";
 import type { AskRead, Decision } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -125,6 +128,38 @@ test("a `#id` in the passage names the question of the decisions document", asyn
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
   }
+});
+
+// The heading is a record of `decisions.md` too, so the card's name reads a `#id` in it as the
+// question it names in that document. Handed no record, the name keeps `#q2`.
+test("a #id in the heading names the question of the decisions document in the card's name", async () => {
+  const answers = answerQuestionOf("artifact", "artifact-decisions");
+  const view = renderCard({ heading: "Settle #q2 first" });
+  try {
+    expect(
+      await screen.findByRole("article", { name: `Decision: Settle ${NAMED_QUESTION} first` })
+    ).toBeDefined();
+  } finally {
+    view.unmount();
+    answers.restore();
+  }
+});
+
+// Until the reader's engine has answered - the first paint, and for good where its chunk never
+// loads - the card is named after its heading as written, never `Decision: ` with no words and an
+// empty link (the reading list's `decision-heading-words`). A paint with no effects run is that
+// state.
+test("before the engine answers, the card is named after its heading as written", () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const html = renderToString(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <DecisionCard item={item({})} onSelect={() => {}} selected={false} />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  expect(html).toContain('aria-label="Decision: Store notices in a table"');
+  expect(html).toContain(">Store notices in a table</a>");
 });
 
 test("selecting a decision card selects its margin item", async () => {

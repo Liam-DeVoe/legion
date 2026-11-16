@@ -71,9 +71,12 @@ function approvalScope(approval: ArtifactApproval): string {
 
 function ReviewsDialog({
   artifactId,
+  issueKey,
   onClose,
 }: {
   artifactId: string;
+  /** The issue the document is on, which each review's reason is a text of. */
+  issueKey: string | null;
   onClose: () => void;
 }): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
@@ -122,7 +125,7 @@ function ReviewsDialog({
                     <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
                       <MarkdownBody
                         markdown={review.reason}
-                        source={textSourceOf("artifact", artifactId)}
+                        source={textSourceOf("artifact", artifactId, issueKey)}
                         surface="approval-review-reason"
                         tree={review.reason_tree}
                       />
@@ -336,7 +339,11 @@ export function ApprovalChip({
         </>
       ) : null}
       {reviewsOpen ? (
-        <ReviewsDialog artifactId={artifact.id} onClose={() => setReviewsOpen(false)} />
+        <ReviewsDialog
+          artifactId={artifact.id}
+          issueKey={artifact.issue_key}
+          onClose={() => setReviewsOpen(false)}
+        />
       ) : null}
       {requestChangesOpen ? (
         <RequestChangesDialog

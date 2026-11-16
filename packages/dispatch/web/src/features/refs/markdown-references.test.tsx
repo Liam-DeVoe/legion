@@ -18,7 +18,7 @@ const origin = "https://dispatch.test";
 
 /** The record every row's text is: a message of CORE-1, whose `#id`s resolve against the
  *  question map the server answers for that source, which the row's `questions` is. */
-const source = { id: "message-1", kind: "message" } as const satisfies TextSource;
+const source = { id: "message-1", issue: "CORE-1", kind: "message" } as const satisfies TextSource;
 
 const testWindow = window as unknown as HappyDOMWindow;
 let pageBefore = "about:blank";

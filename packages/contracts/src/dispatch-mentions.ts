@@ -12,10 +12,17 @@
  * Formatting decides this much, the same way for every reader (`WordsFormatting`): code
  * anywhere in the words keeps the words; emphasis, strong or strikethrough over all of the
  * link's words is a mention drawn in that formatting; formatting over some of the words makes
- * them the author's words; every check is local to the link. In the parsed document
- * `[**@x**](…)` and `**[@x](…)**` are one text - the same words under a strong mark and a link -
- * so a mark over all of a link's words cannot be read as the author formatting the words, and a
- * mention inside a bold sentence keeps its current name.
+ * them the author's words, and so does a hard break among them (`HARD_BREAK_PIECE`); every check
+ * is local to the link. In the parsed document `[**@x**](…)` and `**[@x](…)**` are one text -
+ * the same words under a strong mark and a link - so a mark over all of a link's words cannot be
+ * read as the author formatting the words, and a mention inside a bold sentence keeps its
+ * current name.
+ *
+ * Every reader reads a link out of a parsed text - the rendered body's elements, the plain-text
+ * projection's and the document editor's nodes, and a draft's chips, which parse each link's own
+ * Markdown with the same engine (`parsed-references.ts` in the dashboard) - so the words each one
+ * reads are the parser's: escapes undone, entities decoded, formatting paired as the parser pairs
+ * it. No reader reads a link's words out of the characters a writer typed.
  *
  * Which address names a party is the reader's own grammar, so each caller says that much
  * (`WrittenReference.party`); everything else about the rule is here, so a reader that drew a
@@ -84,217 +91,12 @@ export function wordsFormatting(pieces: readonly WordsPiece[]): WordsFormatting 
   return first.code ? "code" : "plain";
 }
 
-/** CommonMark's ASCII punctuation, which a backslash before it escapes; its whitespace; and its
- *  punctuation, which with whitespace decides whether a run of `*`, `_` or `~` can open or
- *  close formatting. */
-const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
-const WHITESPACE = /\s/u;
-const PUNCTUATION = /[\p{P}\p{S}]/u;
-
-/** A code span of written words: where its backticks start and end, and its content between. */
-interface CodeSpan {
-  readonly start: number;
-  readonly contentStart: number;
-  readonly contentEnd: number;
-  readonly end: number;
-}
-
-/** The code spans of `written`, as CommonMark reads them: a run of backticks opens one and the
- *  next run of as many closes it, a backslash takes the backtick after it as a literal
- *  character, and a run nothing closes is literal. One space at each end of the content is the
- *  span's own where both stand there. */
-function codeSpans(written: string): CodeSpan[] {
-  const spans: CodeSpan[] = [];
-  const runEnd = (from: number): number => {
-    let end = from;
-    while (written.charAt(end) === "`") end += 1;
-    return end;
-  };
-  for (let at = 0; at < written.length; ) {
-    const character = written.charAt(at);
-    if (character !== "`") {
-      at += character === "\\" ? 2 : 1;
-      continue;
-    }
-    const opened = runEnd(at);
-    let close = -1;
-    for (let scan = opened; scan < written.length && close === -1; ) {
-      if (written.charAt(scan) !== "`") {
-        scan += 1;
-        continue;
-      }
-      const closed = runEnd(scan);
-      if (closed - scan === opened - at) close = scan;
-      scan = closed;
-    }
-    if (close === -1) {
-      at = opened;
-      continue;
-    }
-    const content = written.slice(opened, close);
-    const padded = content.startsWith(" ") && content.endsWith(" ") && content.trim() !== "";
-    spans.push({
-      contentEnd: padded ? close - 1 : close,
-      contentStart: padded ? opened + 1 : opened,
-      end: close + (opened - at),
-      start: at,
-    });
-    at = close + (opened - at);
-  }
-  return spans;
-}
-
-/** A run of `*`, `_` or `~` in written words, and whether it can open or close formatting. */
-interface DelimiterRun {
-  readonly character: string;
-  readonly start: number;
-  readonly end: number;
-  readonly opens: boolean;
-  readonly closes: boolean;
-}
-
-/** The runs of `*`, `_` and `~` in `written` outside its code spans, each read by CommonMark's
- *  flanking rule: a run opens where what follows it is no whitespace, and no punctuation unless
- *  whitespace or punctuation stands before it; it closes by the mirror of that; and a `_` does
- *  neither inside a word. The start and the end of the words count as whitespace. */
-function delimiterRuns(written: string, spans: readonly CodeSpan[]): DelimiterRun[] {
-  const runs: DelimiterRun[] = [];
-  let span = 0;
-  for (let at = 0; at < written.length; ) {
-    while ((spans[span]?.end ?? Number.POSITIVE_INFINITY) <= at) span += 1;
-    const code = spans[span];
-    if (code !== undefined && code.start <= at) {
-      at = code.end;
-      continue;
-    }
-    const character = written.charAt(at);
-    if (!"*_~".includes(character)) {
-      at += character === "\\" ? 2 : 1;
-      continue;
-    }
-    let end = at;
-    while (written.charAt(end) === character) end += 1;
-    const before = at === 0 ? " " : written.charAt(at - 1);
-    const after = end === written.length ? " " : written.charAt(end);
-    const leftFlanking =
-      !WHITESPACE.test(after) &&
-      (!PUNCTUATION.test(after) || WHITESPACE.test(before) || PUNCTUATION.test(before));
-    const rightFlanking =
-      !WHITESPACE.test(before) &&
-      (!PUNCTUATION.test(before) || WHITESPACE.test(after) || PUNCTUATION.test(after));
-    const inWord = character === "_";
-    runs.push({
-      character,
-      closes: rightFlanking && (!inWord || !leftFlanking || PUNCTUATION.test(after)),
-      end,
-      opens: leftFlanking && (!inWord || !rightFlanking || PUNCTUATION.test(before)),
-      start: at,
-    });
-    at = end;
-  }
-  return runs;
-}
-
-/** A stretch of written words under formatting: `[from, to)`, between the runs that open and
- *  close it, and the formatting those runs write, by the names a parsed document gives it. */
-interface FormattedStretch {
-  readonly from: number;
-  readonly to: number;
-  readonly marks: readonly string[];
-}
-
-/** The formatting a run of `length` of `character` writes: a `~` strikethrough, one `*` or `_`
- *  emphasis, two strong, and three both. */
-function delimiterMarks(character: string, length: number): readonly string[] {
-  if (character === "~") return ["strike_through"];
-  return length === 1 ? ["emphasis"] : length === 2 ? ["strong"] : ["emphasis", "strong"];
-}
-
-/**
- * A link's words as a reader sees them, and how they are formatted (`WordsFormatting`), from
- * the words as Markdown writes them - for a reader of a text nothing has parsed, a draft in a
- * writing box. Each backslash escape is the character it escapes (`\@Planner` reads `@Planner`),
- * a code span is its content, and a run of `*`, `_` or `~` that opens formatting another closes
- * is no word of its own. So `**@Planner**` reads `@Planner`, plain, as the same words under a
- * strong mark read in a parsed document; `@Planner **now**` reads `@Planner now`, mixed; and
- * `` `@Planner` `` reads `@Planner`, code. A rendered body's words come from the parser, which
- * read the same syntax, so the two read one link one way.
- */
-export function readWrittenWords(written: string): { words: string; formatting: WordsFormatting } {
-  const spans = codeSpans(written);
-  const runs = delimiterRuns(written, spans);
-  // Each closing run takes the nearest run before it that opens with the same character, and
-  // for a strikethrough the same length, as GFM pairs one.
-  const openers: DelimiterRun[] = [];
-  const paired = new Set<DelimiterRun>();
-  const stretches: FormattedStretch[] = [];
-  for (const run of runs) {
-    const length = run.end - run.start;
-    let opener: DelimiterRun | undefined;
-    for (let index = openers.length - 1; run.closes && index >= 0; index -= 1) {
-      const candidate = openers[index];
-      if (
-        candidate?.character === run.character &&
-        (run.character !== "~" || candidate.end - candidate.start === length)
-      ) {
-        opener = candidate;
-        openers.length = index;
-        break;
-      }
-    }
-    if (opener === undefined) {
-      if (run.opens) openers.push(run);
-      continue;
-    }
-    paired.add(opener).add(run);
-    stretches.push({
-      from: opener.end,
-      marks: delimiterMarks(run.character, Math.min(length, opener.end - opener.start)),
-      to: run.start,
-    });
-  }
-
-  let words = "";
-  const pieces: WordsPiece[] = [];
-  const see = (character: string, at: number, code: boolean): void => {
-    words += character;
-    pieces.push({
-      code,
-      formatting: [
-        ...new Set(
-          stretches
-            .filter((stretch) => stretch.from <= at && at < stretch.to)
-            .flatMap((stretch) => stretch.marks)
-        ),
-      ]
-        .sort()
-        .join(" "),
-    });
-  };
-  let span = 0;
-  let run = 0;
-  for (let at = 0; at < written.length; ) {
-    while ((spans[span]?.end ?? Number.POSITIVE_INFINITY) <= at) span += 1;
-    while ((runs[run]?.end ?? Number.POSITIVE_INFINITY) <= at) run += 1;
-    const code = spans[span];
-    const delimiter = runs[run];
-    if (code !== undefined && code.start <= at) {
-      for (let inside = code.contentStart; inside < code.contentEnd; inside += 1) {
-        see(written.charAt(inside), inside, true);
-      }
-      at = code.end;
-    } else if (delimiter !== undefined && delimiter.start <= at && paired.has(delimiter)) {
-      at = delimiter.end;
-    } else if (written.charAt(at) === "\\" && ASCII_PUNCTUATION.test(written.charAt(at + 1))) {
-      see(written.charAt(at + 1), at, false);
-      at += 2;
-    } else {
-      see(written.charAt(at), at, false);
-      at += 1;
-    }
-  }
-  return { formatting: wordsFormatting(pieces), words };
-}
+/** The stretch of a link's words a hard break is, where a hard break stands among them: a part
+ *  of the words formatted as no other part is, so words a hard break cuts read as their author
+ *  wrote them (`wordsFormatting` answers `mixed`). A parsed text draws such a link as one run of
+ *  words on each side of the break, with the same address, and every reader takes the runs on
+ *  both sides as the one link they are. */
+export const HARD_BREAK_PIECE: WordsPiece = { code: false, formatting: "hard break" };
 
 /** A reference as its text writes it, which is everything its reading depends on. */
 export interface WrittenReference {
@@ -303,8 +105,8 @@ export interface WrittenReference {
   readonly address: string;
   /** Whether the address names a party, by the caller's own reading of it. */
   readonly party: boolean;
-  /** The words of the link that holds the address, as a reader sees them (`readWrittenWords`
-   *  for a text nothing has parsed), or undefined for an address standing on its own. */
+  /** The words of the link that holds the address, as a reader of the parsed text sees them, or
+   *  undefined for an address standing on its own. */
   readonly words?: string;
   /** How those words are formatted (`WordsFormatting`); plain where it is left out. */
   readonly wordsFormatting?: WordsFormatting;

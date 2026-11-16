@@ -340,26 +340,34 @@ test("a held picker's steps survive the switch, and Enter after it ends picks th
   }
 });
 
-// The line quotes the session's reply, a stored message, as the one reader's plain-text
-// projection of it: the formatting goes, and a reference in it would read as its target's name.
-// Drawn as the characters the message stores, the line would keep the asterisks.
-test("the line quotes the session's reply as its plain words, never as its source", async () => {
+// The line is a paragraph of the page, in no link or button, so the session's reply - a stored
+// message - is drawn by the renderer inline, as that message: its formatting is drawn and a link
+// in it is a working link (R6). Read as the projection, the line would be plain words with no
+// link; drawn as the characters the message stores, it would keep the asterisks.
+test("the line draws the session's reply through the renderer, with a working link", async () => {
   await warmMarkdownRenderer();
   const view = renderWithQueries(
     <SessionSwitchLines
       notice={undefined}
       status={{
-        reply: { body: "Model set to **openai/model-c**.", id: "r1", tree: undefined },
+        reply: {
+          body: "Model set to **openai/model-c**, see [the notes](https://example.test/notes).",
+          id: "r1",
+          tree: undefined,
+        },
         words: "The session answered: ",
       }}
     />
   );
   try {
+    const status = screen.getByTestId("agent-switch-status");
     await waitFor(() =>
-      expect(screen.getByTestId("agent-switch-status").textContent).toBe(
-        "The session answered: Model set to openai/model-c."
+      expect(status.textContent).toBe(
+        "The session answered: Model set to openai/model-c, see the notes."
       )
     );
+    expect(status.querySelector("strong")?.textContent).toBe("openai/model-c");
+    expect(status.querySelector("a")?.getAttribute("href")).toBe("https://example.test/notes");
   } finally {
     view.unmount();
   }

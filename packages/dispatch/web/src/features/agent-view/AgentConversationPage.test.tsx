@@ -996,9 +996,8 @@ test("Send stays open with text while an earlier send is out or late, and each p
     await sendFromLiveView(user, "try the other branch");
     const [held] = screen.getAllByTestId("agent-send-held");
     // The pending turn names the message as the reader's own, at a glance and to a screen reader.
-    expect(
-      within(held as HTMLElement).getByText("Your message: “try the other branch”")
-    ).toBeTruthy();
+    expect(within(held as HTMLElement).getByText("Your message")).toBeTruthy();
+    expect(within(held as HTMLElement).getByText("try the other branch")).toBeTruthy();
     expect(within(held as HTMLElement).getByRole("status").textContent).toBe("Sending…");
 
     // The field cleared on the press, and the next message goes out as its own press.
@@ -2186,16 +2185,16 @@ test("a refused send keeps the message on screen and says why", async () => {
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
-  expect(
-    within(screen.getByTestId("agent-send-held")).getByText("Your message: “try the other branch”")
-  ).toBeTruthy();
+  const held = screen.getByTestId("agent-send-held");
+  expect(within(held).getByText("Your message")).toBeTruthy();
+  expect(within(held).getByText("try the other branch")).toBeTruthy();
   expect(composerInput().value).toBe("");
 });
 
-// The held turn shows the draft as its plain-text projection, the words a reader of the stored
-// message will read: the formatting goes, and a mention the picker wrote reads as the party's
-// name. Drawn as the characters typed, the turn would keep the asterisks and a link's address.
-test("a held message reads as its plain words, never as the source typed", async () => {
+// The held turn draws the draft by the renderer, as the message it becomes will be drawn: its
+// formatting is drawn, and a mention the picker wrote reads as the party's name. Drawn as the
+// characters typed, the turn would keep the asterisks.
+test("a held message reads as the message it becomes, never as the source typed", async () => {
   await warmMarkdownRenderer();
   const user = userEvent.setup();
   spies.push(
@@ -2213,13 +2212,9 @@ test("a held message reads as its plain words, never as the source typed", async
   await type(user, input, "try the **other** branch");
   await user.click(sendButton());
   await screen.findByTestId("agent-send-error");
-  await waitFor(() =>
-    expect(
-      within(screen.getByTestId("agent-send-held")).getByText(
-        "Your message: “try the other branch”"
-      )
-    ).toBeTruthy()
-  );
+  const held = screen.getByTestId("agent-send-held");
+  await waitFor(() => expect(held.querySelector("strong")?.textContent).toBe("other"));
+  expect(held.textContent).not.toContain("**");
 });
 
 // A refusal belongs to the session that sent the message. One landing while the reader is on
@@ -2266,9 +2261,9 @@ test("a refusal that lands after switching sessions stays with the session that 
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
-  expect(
-    within(screen.getByTestId("agent-send-held")).getByText("Your message: “hold this”")
-  ).toBeTruthy();
+  const turn = screen.getByTestId("agent-send-held");
+  expect(within(turn).getByText("Your message")).toBeTruthy();
+  expect(within(turn).getByText("hold this")).toBeTruthy();
 });
 
 // Messages to one session go out one after another, in press order: Send stays open while one is

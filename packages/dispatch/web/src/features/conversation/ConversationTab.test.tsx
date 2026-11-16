@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { displayTree } from "../../__tests__/display-trees";
 import { jump } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
@@ -27,6 +28,7 @@ import type {
   Comment,
   CommentDelivery,
   DispatchEvent,
+  DisplayTree,
   Handoff,
   IssueAskRow,
   IssueAskThreadRow,
@@ -38,6 +40,7 @@ import type {
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { stubMatchMedia } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
@@ -1044,7 +1047,7 @@ test("each handoff version is a card naming its phase, version and author, and e
   }
 });
 
-test("a handoff body that is not a JSON object shows as its raw text", async () => {
+test("a handoff body that is not a JSON object is drawn whole by the renderer", async () => {
   const user = userEvent.setup();
   const stub = stubLists({
     handoffs: [handoffRecord("handoff-1", 1, "not { json", "2026-09-10T09:00:00Z")],
@@ -1055,8 +1058,52 @@ test("a handoff body that is not a JSON object shows as its raw text", async () 
   try {
     await user.click(await screen.findByRole("button", { name: "Show fields" }));
     const raw = await screen.findByText("not { json");
-    expect(raw.hasAttribute("data-handoff-raw")).toBe(true);
+    expect(raw.closest("[data-handoff-raw]")).not.toBeNull();
     expect(view.container.querySelector("[data-handoff-field]")).toBeNull();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// The words a handoff's session wrote are drawn by the renderer from the reading the server
+// sends for each (`field_trees`, keyed by the field, `proof.<n>` for a proof entry, and `` for a
+// body that is no JSON object), so a reference in them reads as its target's name and the page
+// parses none of them: the tree here reads `**Second** pass` where the field says `Second
+// pass`. A field of JSON stays the JSON it is (`conversation-handoff-data`).
+test("a handoff's words are drawn from the trees the server sends, its JSON as JSON", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const record = {
+    ...handoffRecord(
+      "handoff-1",
+      1,
+      JSON.stringify({ files: ["a.ts"], proof: ["CI is green"], summary: "Second pass" }),
+      "2026-09-10T09:00:00Z"
+    ),
+    field_trees: {
+      "proof.0": displayTree("CI is *green*") as DisplayTree,
+      summary: displayTree("**Second** pass") as DisplayTree,
+    },
+  };
+  const stub = stubLists({ handoffs: [record] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Show fields" }));
+    const summary = await waitFor(() => {
+      const found = view.container.querySelector('[data-handoff-field="summary"] strong');
+      if (found === null) throw new Error("the summary is not drawn from its tree yet");
+      return found;
+    });
+    expect(summary.textContent).toBe("Second");
+    expect(view.container.querySelector('[data-handoff-field="proof"] em')?.textContent).toBe(
+      "green"
+    );
+    expect(view.container.querySelector('[data-handoff-field="files"] pre')?.textContent).toBe(
+      '[\n  "a.ts"\n]'
+    );
   } finally {
     view.unmount();
     stub.restore();

@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { DISPATCH_READING_SURFACES } from "@legion/contracts";
+import { DISPATCH_READING_SURFACES, type DispatchReadingProof } from "@legion/contracts";
+import * as ts from "typescript";
 
 import { type ListedRow, rowsOfListing } from "../configurations";
 import { listing, projectArguments, retained } from "./playwright-listing";
@@ -10,9 +11,10 @@ import { listing, projectArguments, retained } from "./playwright-listing";
 /**
  * The gate of the reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`): every rendered
  * row of `DISPATCH_READING_SURFACES` has exactly one driver among the `reading-*.e2e.ts` specs,
- * a row titled with the surface's id followed by a colon, Playwright runs every driver rather
- * than skipping it, and no driver names a row the list does not hold or does not render. A row
- * the list gains with no driver fails here, by name, before any browser runs.
+ * a row titled with the surface's id followed by a colon, and so does every arm of one (the
+ * surface's id, a `/` and the arm's, then the colon). Playwright runs every driver rather than
+ * skipping it, and no driver names a row or an arm the list does not hold or does not render. A
+ * row the list gains with no driver fails here, by name, before any browser runs.
  *
  * The drivers are the rows Playwright itself lists, not titles read out of the specs' text: a
  * title in a comment declares no row, and a row marked `test.fixme` or `test.skip` declares one
@@ -25,6 +27,11 @@ import { listing, projectArguments, retained } from "./playwright-listing";
  * form with nothing a reader could check. And the references lane names its spec files one by
  * one, so a reading spec it does not name would pass every rule above and run on no pull
  * request.
+ *
+ * A row drawn through the plain-text projection has no driver here, since the walk drives the
+ * rendered rows alone: it names the test that proves it instead (`proof`), and that test must be
+ * one its file declares and runs. The source test is what says which rows draw the projection
+ * and fails one that names no proof (`web/src/features/refs/surface-lists.test.ts`).
  */
 
 /** The project the references lane runs the reading specs in (`.github/workflows/
@@ -38,15 +45,22 @@ const READING_LISTING_ARGUMENTS = [...projectArguments(["chromium"]), "e2e/readi
  *  one group of files takes a few seconds on this pod. */
 const listingTimeout = 180_000;
 
-/** A driver's surface: the id its title starts with, before the colon. A row of a reading spec
- *  whose title starts with no id is no driver of any row, so it is answered by its whole title,
- *  which names no surface of the list and is reported as one. */
-const SURFACE = /^([a-z0-9-]+):/u;
+/** What a driver drives: the id its title starts with, before the colon - a row's surface, or a
+ *  surface, a `/` and one of its arms (`DispatchReadingArm`). A row of a reading spec whose title
+ *  starts with no id is no driver of any row, so it is answered by its whole title, which names
+ *  nothing the list drives and is reported as such. */
+const DRIVEN = /^([a-z0-9-]+(?:\/[a-z0-9-]+)?):/u;
 
-/** One row Playwright lists in the reading specs: the surface it drives, where it is declared,
- *  and whether Playwright runs it. */
+/** Everything the walk drives, each by the id a driver's title opens with: every rendered row,
+ *  and every arm of one. */
+const DRIVEN_IDS: readonly string[] = DISPATCH_READING_SURFACES.filter(
+  (row) => row.rendered
+).flatMap((row) => [row.surface, ...(row.arms ?? []).map((arm) => `${row.surface}/${arm.arm}`)]);
+
+/** One row Playwright lists in the reading specs: what it drives, where it is declared, and
+ *  whether Playwright runs it. */
 interface Driver {
-  readonly surface: string;
+  readonly drives: string;
   readonly file: string;
   readonly title: string;
   /** What Playwright expects of the row: `passed` for a row it runs, `skipped` for one marked
@@ -63,9 +77,9 @@ function driversOf(rows: readonly ListedRow[]): Driver[] {
     .map((row) => {
       const title = row.title.split(" › ").at(-1) ?? row.title;
       return {
+        drives: DRIVEN.exec(title)?.[1] ?? title,
         expectedStatus: row.expectedStatus,
         file: row.file,
-        surface: SURFACE.exec(title)?.[1] ?? title,
         title,
       };
     });
@@ -90,19 +104,17 @@ test(
   listingTimeout
 );
 
-test.each(
-  DISPATCH_READING_SURFACES.filter((row) => row.rendered).map((row) => [row.surface] as const)
-)(
+test.each(DRIVEN_IDS.map((driven) => [driven] as const))(
   "the rendered surface %s has one driver",
-  async (surface) => {
+  async (driven) => {
     const files = (await drivers)
-      .filter((driver) => driver.surface === surface)
+      .filter((driver) => driver.drives === driven)
       .map((driver) => driver.file);
     expect(
       files.length === 1
-        ? surface
-        : `${surface} has ${files.length} drivers in the reading specs: ${files.join(", ") || "none"}`
-    ).toBe(surface);
+        ? driven
+        : `${driven} has ${files.length} drivers in the reading specs: ${files.join(", ") || "none"}`
+    ).toBe(driven);
   },
   listingTimeout
 );
@@ -110,11 +122,8 @@ test.each(
 test(
   "every driver names a rendered row of the reading list",
   async () => {
-    const rendered = new Set(
-      DISPATCH_READING_SURFACES.filter((row) => row.rendered).map((row) => row.surface as string)
-    );
     const stray = (await drivers)
-      .filter((driver) => !rendered.has(driver.surface))
+      .filter((driver) => !DRIVEN_IDS.includes(driver.drives))
       .map((driver) => `${driver.file}: ${driver.title}`);
     expect(stray).toEqual([]);
   },
@@ -154,12 +163,121 @@ test.each(
 });
 
 test("every row that names a form it cannot carry says why", () => {
-  const silent = DISPATCH_READING_SURFACES.filter(
-    (row) =>
-      row.cannotCarry !== undefined &&
-      (row.cannotCarry.forms.length === 0 || row.cannotCarry.why.trim() === "")
-  ).map((row) => row.surface);
+  const silent = DISPATCH_READING_SURFACES.flatMap((row) =>
+    [
+      { at: row.surface, cannotCarry: row.cannotCarry },
+      ...(row.arms ?? []).map((arm) => ({
+        at: `${row.surface}/${arm.arm}`,
+        cannotCarry: arm.cannotCarry,
+      })),
+    ].filter(
+      ({ cannotCarry }) =>
+        cannotCarry !== undefined &&
+        (cannotCarry.forms.length === 0 || cannotCarry.why.trim() === "")
+    )
+  ).map(({ at }) => at);
   expect(silent).toEqual([]);
+});
+
+// An arm is a kind of record a rendered surface shows, held by a driver of its own: on a row the
+// list does not render, nothing would drive it.
+test("every arm is an arm of a rendered row", () => {
+  const undriven = DISPATCH_READING_SURFACES.filter(
+    (row) => !row.rendered && (row.arms ?? []).length > 0
+  ).map((row) => row.surface);
+  expect(undriven).toEqual([]);
+});
+
+/** The repository's root, which a proof's file is named from. */
+const REPOSITORY = fileURLToPath(new URL("../../../../", import.meta.url));
+
+/** The calls that declare a test that runs: bun's and Playwright's `test`, and bun's `it`. A
+ *  `test.skip`, `test.fixme` or `test.todo` declares one that never runs, and a `test.each` one
+ *  whose title is a pattern rather than a test's own, so neither proves a row. */
+const TEST_CALLS: readonly string[] = ["test", "it"];
+
+/** The titles of the tests `source` declares: the first argument of each call of a
+ *  `TEST_CALLS` name, written as a string. A title in a comment, or in a string no such call
+ *  takes, declares none. */
+function declaredTests(fileName: string, source: string): string[] {
+  const tree = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const titles: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      TEST_CALLS.includes(node.expression.text)
+    ) {
+      const [title] = node.arguments;
+      if (title !== undefined && ts.isStringLiteralLike(title)) titles.push(title.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  return titles;
+}
+
+/** What is wrong with `proof` as the test of a row, or undefined where its file is a test file
+ *  of the repository that declares a test of its title. `read` answers a file's text, or
+ *  undefined where there is none. */
+function proofComplaint(
+  surface: string,
+  proof: DispatchReadingProof,
+  read: (file: string) => string | undefined
+): string | undefined {
+  if (!/\.(test\.tsx?|e2e\.ts)$/u.test(proof.file)) {
+    return `${surface}: its proof ${proof.file} is no unit test or browser spec`;
+  }
+  const source = read(proof.file);
+  if (source === undefined) return `${surface}: its proof ${proof.file} does not exist`;
+  return declaredTests(proof.file, source).includes(proof.test)
+    ? undefined
+    : `${surface}: ${proof.file} declares no test "${proof.test}"`;
+}
+
+/** A proof file's text, read from the repository, or undefined where there is no such file. */
+function readRepositoryFile(file: string): string | undefined {
+  const path = `${REPOSITORY}${file}`;
+  return existsSync(path) ? readFileSync(path, "utf8") : undefined;
+}
+
+test("every proof a row names is a test its file declares", () => {
+  const proved = DISPATCH_READING_SURFACES.flatMap((row) =>
+    row.proof === undefined ? [] : [[row.surface, row.proof] as const]
+  );
+  // A guard on the list itself: were no row to name a proof, this rule would hold nothing.
+  expect(proved.length).toBeGreaterThan(5);
+  expect(
+    proved.flatMap(([surface, proof]) => proofComplaint(surface, proof, readRepositoryFile) ?? [])
+  ).toEqual([]);
+});
+
+test("a proof is held to a test its file declares and runs", () => {
+  const file = "packages/dispatch/web/src/features/x/x.test.tsx";
+  const source = [
+    '// test("in a comment", () => {});',
+    'describe("a block", () => {',
+    '  test("a test", () => {});',
+    '  it("an it", () => {});',
+    "});",
+    'test.skip("skipped", () => {});',
+    'test.fixme("fixme", () => {});',
+    'const title = "a string no call takes";',
+  ].join("\n");
+  const read = (asked: string) => (asked === file ? source : undefined);
+  const complaint = (title: string, at = file) =>
+    proofComplaint("row", { file: at, test: title }, read);
+  expect(complaint("a test")).toBeUndefined();
+  expect(complaint("an it")).toBeUndefined();
+  for (const title of ["in a comment", "skipped", "fixme", "a string no call takes", "a block"]) {
+    expect(complaint(title)).toBe(`row: ${file} declares no test "${title}"`);
+  }
+  expect(complaint("a test", "packages/dispatch/web/src/features/x/gone.test.tsx")).toBe(
+    "row: its proof packages/dispatch/web/src/features/x/gone.test.tsx does not exist"
+  );
+  expect(complaint("a test", "packages/dispatch/web/src/features/x/x.tsx")).toBe(
+    "row: its proof packages/dispatch/web/src/features/x/x.tsx is no unit test or browser spec"
+  );
 });
 
 /** The workflow whose `references` lane runs the reading specs on a pull request. */

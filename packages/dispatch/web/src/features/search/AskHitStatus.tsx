@@ -1,5 +1,5 @@
 import { actorActText } from "@legion/contracts";
-import { Fragment, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import type { SearchAsk } from "../../api/types";
 import {
@@ -9,7 +9,6 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { AskResolutionLine } from "../refs/AgentName";
-import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
 import type { TextSource } from "../refs/text-references";
@@ -70,17 +69,10 @@ export function AskHitStatus({
             ) : (
               <>
                 Chose{" "}
-                {(answer.selected ?? []).map((label, index) => (
-                  <Fragment key={label}>
-                    {index === 0 ? null : ", "}
-                    <MarkdownBody
-                      markdown={label}
-                      source={source}
-                      surface="search-ask-status"
-                      variant="inline"
-                    />
-                  </Fragment>
-                ))}
+                {/* A hit carries its chosen options as their labels alone, with no tree and no
+                    option to take one from, so they are shown as written: the reading list's
+                    `search-ask-chosen-options`. */}
+                {(answer.selected ?? []).join(", ")}
               </>
             )}
           </span>

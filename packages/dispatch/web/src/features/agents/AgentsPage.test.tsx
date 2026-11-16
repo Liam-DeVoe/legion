@@ -3386,7 +3386,8 @@ test("a live-view send out when the page reloads is sent again under its key and
   after.createAgentMessage.mockReturnValueOnce(answer.promise);
   try {
     const held = await screen.findByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     expect(after.createAgentMessage.mock.calls).toEqual([
       [
@@ -4306,7 +4307,8 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     await backToAgents(user);
     await openLiveView(user, "Planner");
     const held = screen.getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     await jump(4_000);
     await jump(8_000);
@@ -4357,7 +4359,8 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     const held = within(planner).getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     const field = within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
     expect(field.value).toBe("");
@@ -4453,7 +4456,8 @@ test("a refused live-view send shows on the Agents row, and Discard there drops 
     const planner = card(screen.getByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     const held = within(planner).getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByTestId("agent-send-error").textContent).toBe(
       "Could not send: Dispatch refused the message"
     );

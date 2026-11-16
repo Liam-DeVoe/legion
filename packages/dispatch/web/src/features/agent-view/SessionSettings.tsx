@@ -11,7 +11,7 @@ import {
 import { pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import { inputClasses, textMutedOnCanvas } from "../../theme/classes";
-import { PlainText } from "../refs/plain-text";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { textSourceOf } from "../refs/text-references";
 import type { SessionSettingsView } from "./conversation";
 import type { SwitchRequest, SwitchStatus } from "./use-session-switch";
@@ -195,8 +195,9 @@ export function SessionSettings({
  * taller than the transcript on a 390 px screen and pushed the message box under the keyboard.
  * A line under the row is read where it always was, at any width.
  *
- * The line is plain text. Where it quotes the session's reply, a stored message, it draws the
- * reply's plain-text projection as that message, so a key or a mention in it reads as a name.
+ * Where the line quotes the session's reply, a stored message, the reply is drawn by the
+ * renderer inline, as that message: the line is a paragraph of the page and in no link or
+ * button, so a key or a mention in the reply is a link reading as its target's name (R6).
  */
 export function SessionSwitchLines({
   notice,
@@ -215,16 +216,13 @@ export function SessionSwitchLines({
         >
           {status.words}
           {status.reply === undefined ? null : (
-            <PlainText
+            <MarkdownBody
               markdown={status.reply.body}
-              source={textSourceOf("message", status.reply.id)}
+              source={textSourceOf("message", status.reply.id, undefined)}
               surface="session-switch-answer"
               tree={status.reply.tree}
-            >
-              {/* The reply as its plain words, and as written until the engine has answered:
-                  the reading list's `session-switch-answer`. */}
-              {(line) => line ?? status.reply?.body}
-            </PlainText>
+              variant="inline"
+            />
           )}
         </p>
       )}

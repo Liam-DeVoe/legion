@@ -1,4 +1,5 @@
 import {
+  HARD_BREAK_PIECE,
   referenceReading,
   type WordsPiece,
   wordsFormatting,
@@ -154,9 +155,11 @@ interface LinkRun {
  *  reads one by (`@legion/contracts`'s `referenceReading`): one whose text is its own address -
  *  the autolink a document stores as `[dispatch://…](dispatch://…)` - is one candidate of that
  *  address; one whose words are a mention - they open with the mention sign, with no code among
- *  them and no formatting over a part of them - is one mention of that address, which the host
- *  draws as the party's current name or leaves as the words; and one whose text its author
- *  wrote any other way keeps those words and is never drawn over. */
+ *  them and no formatting or hard break over a part of them - is one mention of that address,
+ *  which the host draws as the party's current name or leaves as the words; and one whose text
+ *  its author wrote any other way keeps those words and is never drawn over. A hard break holds
+ *  no mark, so a link whose words one cuts is a run of text on each side of it with the same
+ *  link, which is read as the one link it is (`HARD_BREAK_PIECE`). */
 function blockCandidates(
   block: ProseMirrorNode,
   start: number,
@@ -164,10 +167,23 @@ function blockCandidates(
 ): Decoration[] {
   let text = "";
   const runs: LinkRun[] = [];
-  block.forEach((child, offset) => {
+  block.forEach((child, offset, index) => {
     if (!child.isText) {
       const leaf = child.type.spec.leafText?.(child);
       text += leaf?.length === child.nodeSize ? leaf : LINK_MASK.repeat(child.nodeSize);
+      const last = runs.at(-1);
+      const next = block.maybeChild(index + 1);
+      if (
+        child.type.name === "hardbreak" &&
+        last !== undefined &&
+        last.end === offset &&
+        next?.isText === true &&
+        last.mark.isInSet(next.marks)
+      ) {
+        last.end += child.nodeSize;
+        last.text += " ";
+        last.pieces.push(HARD_BREAK_PIECE);
+      }
       return;
     }
     const childText = child.text ?? "";

@@ -362,6 +362,27 @@ test("a party's link whose words are formatted in part is offered as no mention"
   );
 });
 
+// A hard break among a link's words cuts them as formatting over a part of them does. The break
+// holds no mark, so the link is a run of text on each side of it, which the editor reads as the
+// one link it is, as every reader of the record does: the words are the author's, and only the
+// plain mention beside it is drawn.
+test("a party's link whose words a hard break cuts is offered as no mention", async () => {
+  const host = hostReferences();
+  const agent = "dispatch://agent/s1";
+  await withMarksEditor(
+    `Ask [@Old\\\nname](${agent}) and [@Old](${agent}) here.`,
+    ({ handle, view }) => {
+      handle.setReferences(host.references);
+      expect(host.mentioned).toEqual([[agent]]);
+      resolve(handle, host, {}, { [agent]: { href: agent, title: "@New name" } });
+
+      expect(titles(view).map((title) => title.text)).toEqual(["@New name"]);
+      expect(hidden(view)).toEqual(["@Old"]);
+      expect(view.dom.querySelector("br")).not.toBeNull();
+    }
+  );
+});
+
 // A target that opens no page - a person, whom no page shows - is drawn by its title as words,
 // not as a link a click or the hover card would follow.
 test("a target with no address is drawn as words and no link", async () => {

@@ -151,7 +151,7 @@ function asLive(
   return {
     ...row,
     red: live.red,
-    // not stored prose: the dashboard's own line on how fresh a source is
+    // The page's own line on how fresh a source is.
     text: `${label} ${live.text}`,
     detail: live.red
       ? `${label}: the live connection to Dispatch is lost; it is reconnecting`

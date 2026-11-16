@@ -184,6 +184,27 @@ test("lists the person's answers and replies newest first with time, owner, ques
   }
 });
 
+// A row carries its chosen options as their labels alone, with no tree and no option to take
+// one from, and the page parses no stored text: each pill shows its label as written
+// (`answers-chosen-options`). Read through the projection, the pill would parse the label and
+// read `Ship it`.
+test("a row's chosen options are its labels as written, parsed by nothing", async () => {
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
+    page([answerRow({ answer: { ...shipAnswer, selected: ["**Ship** it"], text: null } })])
+  );
+  const { view } = renderPage();
+  try {
+    const [row] = (await view.findAllByRole("listitem")).filter(
+      (item) => item.dataset.answerRow !== undefined
+    ) as [HTMLElement];
+    expect(within(row).getByText("**Ship** it")).toBeTruthy();
+    expect(row.querySelector("strong")).toBeNull();
+  } finally {
+    view.unmount();
+    listMyAnswers.mockRestore();
+  }
+});
+
 test("an approval answer offers no Change answer", async () => {
   const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
     page([

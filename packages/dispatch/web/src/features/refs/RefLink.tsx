@@ -502,9 +502,12 @@ function addressOf(anchor: Element): string | null {
 
 /**
  * Whether `anchor` stands against another anchor of its own address on one side, with nothing
- * between them but formatting. Proof's schema draws emphasis, strong and code outside a link, so
- * a link formatted in part is drawn as more than one anchor - `[@x **y**](…)` as
- * `<a>@x </a><strong><a>y</a></strong>` - and each of them is a part of that one link.
+ * between them but formatting and at most one hard break. Proof's schema draws emphasis, strong
+ * and code outside a link, and a hard break holds no link, so a link formatted in part, or one a
+ * hard break cuts, is drawn as more than one anchor - `[@x **y**](…)` as
+ * `<a>@x </a><strong><a>y</a></strong>`, a break as `<a>@x</a><br><a>y</a>` - and each of them
+ * is a part of that one link, read as the plain-text projection and the document editor read it
+ * (`markdown-engine.ts`'s `linkWordsAt`).
  */
 function adjoinsItsLink(
   anchor: HTMLAnchorElement,
@@ -515,6 +518,9 @@ function adjoinsItsLink(
     node = node.parentElement;
   }
   let beside = node[side];
+  if (beside instanceof HTMLBRElement) {
+    beside = beside[side];
+  }
   while (beside instanceof HTMLElement && beside.matches(WORD_FORMATTING_OR_CODE)) {
     beside = side === "nextSibling" ? beside.firstChild : beside.lastChild;
   }

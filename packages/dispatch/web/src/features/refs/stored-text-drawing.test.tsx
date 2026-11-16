@@ -121,12 +121,12 @@ test("useMarkdownHeadline takes the plain words of a tree and parses no markdown
   expect(parses).toBe(0);
 });
 
-test("a headline shortens a reference as a rendered body's link reads it", async () => {
+test("a headline writes a reference as a rendered body's link reads it before its title resolves", async () => {
   const body = stored("a-reference");
   const view = render(withQueries(<Headline max={100} tree={body.latest} />));
   await waitFor(() => {
     expect(view.container.querySelector("[data-headline]")?.textContent).toBe(
-      "Tracked as CORE-1 since Monday."
+      "Tracked as dispatch://CORE-1 since Monday."
     );
   });
   expect(parses).toBe(0);

@@ -301,8 +301,9 @@ function restoredEdit(edit: KeptEdit): NonNullable<SentRequest["edit"]> {
 
 /** A kept draft as its composer takes it up again. A record the build before this one kept
  *  holds a `mentions` array and a body carrying only the cosmetic `@Name` that build drew, so
- *  each of those is written back as the party's mention (`[@Name](address)`, R4), which reads as
- *  the party's current name: the draft then reads as who it addresses and resends to them, where
+ *  each of those is written back as the party's mention (`[@Name](address)`, R4), its name
+ *  written as literal words as a pick writes one (`partyLink`), which reads as the party's
+ *  current name: the draft then reads as who it addresses and resends to them, where
  *  dropping the array would have delivered it to nobody with nothing said about it. A span is
  *  rewritten only while it still reads as the `@Name` that build accepted - the rule that build
  *  read its own mentions by (`survivingMentions`) - and the spans are written from the last to
@@ -322,7 +323,7 @@ function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
     .sort((one, other) => other.start - one.start)
     .reduce((text, mention) => {
       const { end, start } = mention;
-      // not stored prose: the words a mention was typed as, matched against the draft
+      // The words a mention was typed as, matched against the draft and drawn nowhere.
       const words = `@${mention.text}`;
       if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > text.length) {
         return text;

@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 import { PlainText } from "../refs/plain-text";
 import { parseDispatchReference, referenceHref, shortForm } from "../refs/routes";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import type { ItemRoute } from "./useItemLanding";
 
 /** What each kind of match is called, in the words the rest of the page uses for the same
@@ -106,9 +107,16 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
           className={`block min-w-0 [overflow-wrap:anywhere] ${linkText} ${linkHoverText}`}
           to={href}
         >
-          <PlainText markdown={candidate.first_line} surface="item-match-first-line">
-            {/* The first line as its plain words, and as written until the engine has answered:
-                the reading list's `item-match-first-line`. */}
+          <PlainText
+            markdown={candidate.first_line}
+            source={textSourceOf(textSourceKind(candidate.kind), candidate.id, candidate.issue_key)}
+            surface="item-match-first-line"
+            tree={candidate.first_line_tree}
+          >
+            {/* The candidate is the record the line is the head of, though a block of a document
+                names no record by its own id. The first line is drawn from the server's reading
+                of it as its plain words, and as written until the engine has answered: the
+                reading list's `item-match-first-line`. */}
             {(line) => (line ?? candidate.first_line) || candidate.id}
           </PlainText>
         </Link>

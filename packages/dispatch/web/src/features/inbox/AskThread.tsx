@@ -60,7 +60,7 @@ function AskReply({
       <div className={textPrimaryOnSurfaceMuted}>
         <MarkdownBody
           markdown={comment.body}
-          source={textSourceOf("comment", comment.id)}
+          source={textSourceOf("comment", comment.id, comment.issue_key)}
           surface="ask-thread-reply"
           tree={comment.body_tree}
         />

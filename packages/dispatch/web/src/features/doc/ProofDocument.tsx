@@ -308,7 +308,10 @@ export function ProofDocument({
   const queryClient = useQueryClient();
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
-  const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
+  const textSource = useMemo(
+    () => textSourceOf("artifact", artifact.id, artifact.issue_key),
+    [artifact.id, artifact.issue_key]
+  );
   const followReference = useReferenceClick();
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
@@ -1141,9 +1144,12 @@ export function ProofDocument({
               : `${openBlockAsks.length} open decisions`}
           </span>
           {/* A link's words and its `title` hold no markup, so the question is read as its plain
-              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`). */}
+              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`).
+              The question is an ask block of this document, so a `#id` in it names a question
+              of this document. */}
           <PlainText
             markdown={openDecision.question}
+            source={textSource}
             surface="document-open-decision"
             tree={openDecision.question_tree}
           >
@@ -1160,9 +1166,12 @@ export function ProofDocument({
                   window.location.hash = blockFragment(blockID);
                   focusInEditor(() => editorRef.current?.focusBlock(blockID));
                 }}
-                title={question}
+                // Until the engine has answered, the question as written, so the link is never
+                // left with no words: the reading list's `document-open-decision`.
+                title={question ?? openDecision.question}
               >
-                <TruncatedText>{question ?? ""}</TruncatedText>
+                {/* The same load state: the reading list's `document-open-decision`. */}
+                <TruncatedText>{question ?? openDecision.question}</TruncatedText>
               </a>
             )}
           </PlainText>
@@ -1288,6 +1297,7 @@ export function ProofDocument({
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
       ) : showDiff ? (
+        // The exact characters a change swaps: the reading list's `change-view-diff`.
         <ChangeView after={liveMarkdown} before={versionMarkdown} />
       ) : (
         <div data-testid="version-view">
@@ -1296,6 +1306,7 @@ export function ProofDocument({
             asks={blockAsks}
             createdAt={versions.find((item) => item.number === version)?.created_at}
             highlight={highlight}
+            issueKey={artifact.issue_key}
             owner={owner.kind === "document" ? owner : undefined}
             version={version}
           />

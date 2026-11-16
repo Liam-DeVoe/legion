@@ -373,7 +373,7 @@ test("Unfurl cards a reference that ends in the punctuation the grammar trims", 
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(blockAskRead);
   const address = renderUnfurl("dispatch://CORE-1.");
   const key = renderUnfurl("CORE-1,");
-  const question = renderUnfurl("#q1.", { id: "message-1", kind: "message" });
+  const question = renderUnfurl("#q1.", { id: "message-1", issue: "CORE-1", kind: "message" });
 
   try {
     expect(
@@ -416,7 +416,7 @@ test("Unfurl cards a #id against the document the body's text belongs to", async
     specQuestions
   );
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(blockAskRead);
-  const view = renderUnfurl("#q1", { id: "message-1", kind: "message" });
+  const view = renderUnfurl("#q1", { id: "message-1", issue: "CORE-1", kind: "message" });
 
   try {
     const card = await within(view.container).findByRole("link", {

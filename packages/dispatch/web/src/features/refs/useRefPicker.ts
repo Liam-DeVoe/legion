@@ -11,7 +11,8 @@ import { useAgents } from "../conversation/useAgents";
 import { searchResultKind, stepActive } from "../search/search-model";
 import { useAgentText } from "./AgentName";
 import { withBlock } from "./block-reference";
-import { type MentionOption, mentionOptions } from "./party-options";
+import { headRefs } from "./head-refs";
+import { type MentionOption, mentionOptions, stoppedRoleOptions } from "./party-options";
 import {
   groupRows,
   insertionFor,
@@ -22,11 +23,13 @@ import {
   REF_PICKER_QUERY_MIN,
   REF_PICKER_SEARCH_LIMIT,
   REF_PICKER_SEARCHED_KINDS,
+  REF_PICKER_TEXT_MAX,
   type RefPickerDoor,
   type RefPickerGroup,
   type RefPickerInsertion,
   type RefPickerKeyResult,
   type RefPickerKind,
+  type RefPickerLinks,
   type RefPickerParties,
   type RefPickerParts,
   type RefPickerRow,
@@ -43,15 +46,12 @@ import {
   partyOfAddress,
   shortForm,
 } from "./routes";
+import { textSourceKind, textSourceOf } from "./text-references";
 
 /** How long after the last keystroke the search goes out, here and in the search palette
  *  (`features/search/SearchPalette.tsx`), so the two surfaces put the same load on the route;
  *  and how long a draft's pills wait before they read it (`draft-pills.tsx`). */
 export const SEARCH_DEBOUNCE_MS = 150;
-
-/** How much of a snippet or of a block's text a row shows: enough to tell two rows apart, short
- *  enough that a row stays one line. */
-const ROW_TEXT_MAX = 120;
 
 /** What a host tells the picker: the draft it holds, where the caret is in it, and which issue
  *  and project the box belongs to. A ProseMirror or assistant-ui host passes the text of the
@@ -68,6 +68,10 @@ export interface RefPickerOptions {
   readonly project?: string;
   /** False while the host wants no picker - a field that is disabled, or a send in flight. */
   readonly enabled?: boolean;
+  /** How the host's text holds a link (`RefPickerLinks`): Markdown, unless the host is a
+   *  ProseMirror document, whose links are marks, so its text holds no address a door could
+   *  stand in and a party's pick is its mention wherever the caret is. */
+  readonly links?: RefPickerLinks;
 }
 
 /** What a host needs to draw the picker and to serve its keyboard. */
@@ -100,29 +104,35 @@ export interface RefPicker {
   readonly openParts: (id: string) => void;
 }
 
-/** One line of somebody's text, cut to what a row holds. */
+/** One line of somebody's text, cut to what a row holds where no reference crosses the cut
+ *  (`headRefs`), so a row drawn as written never ends in half of one. */
 function oneLine(text: string): string {
-  const line = text.replace(/\s+/gu, " ").trim();
-  return line.length > ROW_TEXT_MAX ? `${line.slice(0, ROW_TEXT_MAX - 1)}…` : line;
+  return headRefs(text.replace(/\s+/gu, " ").trim(), REF_PICKER_TEXT_MAX, "…");
 }
 
 /** What a hit's row is called: the thing's own name where it has one, else the words that
  *  matched, which is all an ask, a comment or a message is named by - and all a hit is named by
  *  when its owner answered no title or name at all. The server marks the matched words in a
- *  snippet; a row draws the text under those marks. */
-function hitLabel(hit: SearchResult): string {
-  const matched = () =>
-    oneLine(
-      snippetSegments(hit.snippet)
-        .map((segment) => segment.text)
-        .join("")
-    );
-  if (hit.kind === "issue" && hit.owner.kind === "issue") return hit.owner.title ?? matched();
-  if (hit.kind === "document") {
-    const owned = hit.owner.kind === "document" ? hit.owner.name : hit.owner.title;
-    return hit.artifact?.name ?? owned ?? matched();
-  }
-  return matched();
+ *  snippet; a row draws the text under those marks, as its plain words where the server sent the
+ *  snippet's tree (`RefPickerRow.prose`): the snippet is the record's own text, cut, so the row
+ *  names the record it is, as the search palette does. */
+function hitLabel(hit: SearchResult): Pick<RefPickerRow, "label" | "prose"> {
+  const named =
+    hit.kind === "issue" && hit.owner.kind === "issue"
+      ? hit.owner.title
+      : hit.kind === "document"
+        ? (hit.artifact?.name ?? (hit.owner.kind === "document" ? hit.owner.name : hit.owner.title))
+        : undefined;
+  if (named !== undefined) return { label: named };
+  const markdown = snippetSegments(hit.snippet)
+    .map((segment) => segment.text)
+    .join("");
+  const label = oneLine(markdown);
+  const issue = hit.owner.kind === "issue" ? hit.owner.key : undefined;
+  const source = textSourceOf(textSourceKind(hit.kind), hit.id, issue);
+  return hit.snippet_tree === undefined
+    ? { label }
+    : { label, prose: { markdown, source, tree: hit.snippet_tree } };
 }
 
 /** The rows the search answered. A hit whose `href` names no address is left out, which is how
@@ -143,7 +153,7 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
         detail: shortForm(route),
         id: `ref-picker-${kind}-${hit.id}`,
         kind,
-        label: hitLabel(hit),
+        ...hitLabel(hit),
         reference,
         ...(kind === "issue" ? {} : { parts }),
       },
@@ -206,7 +216,10 @@ function blockKindOf(kind: RefPickerKind): RefPickerKind {
 
 /** The blocks of one node, from its `part_of` backlinks: an edge of that kind runs from the
  *  block to the node that holds it, so a node's parts are its backlinks of that kind, and each
- *  edge's excerpt carries the block's own first words. */
+ *  edge's excerpt carries the block's own first words, with the tree the server read them into
+ *  (`RefPickerRow.prose`). A block's record is the one its node names as its parent - its
+ *  document, or the ask, comment or message it is a part of - whose document names a `#id` in
+ *  it. */
 function blockRows(
   holder: string,
   kind: RefPickerKind,
@@ -220,13 +233,22 @@ function blockRows(
     if (edge.kind !== "part_of" || edge.node.kind !== "block" || blockId === undefined) return [];
     const blockRoute = withBlock(route, blockId);
     if (blockRoute === undefined) return [];
+    const markdown = edge.excerpt?.text ?? "";
+    const tree = edge.excerpt?.text_tree;
+    const parent = edge.node.parent;
+    const source = textSourceOf(
+      textSourceKind(parent?.kind ?? ""),
+      parent?.id,
+      edge.node.issue_key
+    );
     return [
       {
         detail: shortForm(blockRoute),
         id: `ref-picker-block-${blockId}`,
         kind: blockKindOf(kind),
-        label: oneLine(edge.excerpt?.text ?? ""),
+        label: oneLine(markdown),
         reference: buildDispatchReference(blockRoute),
+        ...(tree === undefined ? {} : { prose: { markdown, source, tree } }),
       },
     ];
   });
@@ -263,10 +285,11 @@ export function useRefPicker({
   caret,
   enabled = true,
   issueKey,
+  links = "markdown",
   project,
   text,
 }: RefPickerOptions): RefPicker {
-  const trigger = enabled ? readTrigger(text, caret) : undefined;
+  const trigger = enabled ? readTrigger(text, caret, links) : undefined;
   // The trigger the reader dismissed with Escape stays shut while they type on after it: Escape
   // leaves the character they typed, and the picker must not open again on the next letter.
   const [dismissed, setDismissed] = useState<RefPickerTrigger | undefined>(undefined);
@@ -320,9 +343,12 @@ export function useRefPicker({
   // so it re-runs no sort of the live registry and no date of a row it already has.
   const listed = useMemo(() => {
     if (!open) return [];
-    // The registry's sessions and the roles they hold: a role nobody holds is no party, since
-    // the reader draws it as the words written and the server tells nobody of it (`roleHolders`).
-    const parties = mentionOptions(live.agents, agentText).map(partyRow);
+    // A live list that is not current says nothing about who is absent, so no role is offered as
+    // not running under it - the rule the composer's own options follow.
+    const stopped = live.current
+      ? stoppedRoleOptions(live.agents, collaborators.data?.agents ?? [], agentText)
+      : [];
+    const parties = [...mentionOptions(live.agents, agentText), ...stopped].map(partyRow);
     const logins =
       issueKey === undefined
         ? (users.data ?? []).map((user) => user.login)
@@ -358,6 +384,7 @@ export function useRefPicker({
     componentProject,
     issueKey,
     live.agents,
+    live.current,
     open,
     users.data,
   ]);

@@ -47,7 +47,9 @@ const architecture = {
   "web.md": "---\ntitle: Web\npaths: [packages/web]\n---\nThe **SPA** every reader opens.\n",
 };
 
-/** A word no seeded text but the document's holds, so the palette's hits are its own. */
+/** A word no seeded text holds but the document's and the chosen option of one answered ask, so
+ *  the palette's hits are theirs: the document's own, and the ask's, whose status line says
+ *  what was chosen. */
 const searchTerm = "astrolabe";
 
 /** The paragraph a block reference cites. Its markdown is the stored text `GET /api/v1/references`
@@ -113,6 +115,39 @@ async function seedStoredTexts(): Promise<Seeded> {
     selected: ["Ship"],
     text: "An **answer** of mine.",
   });
+  // An ask answered twice, whose options' labels hold markup and a reference, and whose second
+  // answer chose the option holding the palette's word. The Answers page lists both answers with
+  // the labels they chose; the palette's hit for that word says what was chosen; and the ask's
+  // card on the Conversation tab keeps the first answer under "Show 1 earlier answer", drawing
+  // the option it chose from that option's tree. The labels name the issue the ask is on, so no
+  // link to the reference preview's target is added to its page.
+  const sextant = `The **sextant**, per dispatch://${issue.key}`;
+  const astrolabe = `The **${searchTerm}**, as ${issue.key} keeps it`;
+  const instrument = await createAsk(
+    issue.key,
+    {
+      options: [{ label: sextant }, { label: astrolabe }],
+      question: "Which **instrument** takes the altitude?",
+    },
+    session
+  );
+  const firstAnswer = await answerAsk(instrument.id, {
+    expected_edited_at: null,
+    selected: [sextant],
+    text: "Whichever is **nearest**, for now.",
+  });
+  await answerAsk(instrument.id, {
+    expected_answer_at: firstAnswer.answer?.at ?? null,
+    expected_edited_at: null,
+    selected: [astrolabe],
+    text: "The **brass** one after all.",
+  });
+  // A reply alice made to that ask: the Activity tab's line for it quotes the question it
+  // replies to (`replied to “…”`), and the Answers page lists it among her replies.
+  await createComment(issue.key, {
+    ask_id: instrument.id,
+    body: "Which **mount** does it take?",
+  });
   // A thread alice wrote in that a session replied to: the Replies page draws both bodies.
   const thread = await createComment(issue.key, { body: "A **thread** alice opened." });
   await createComment(
@@ -155,6 +190,16 @@ async function seedStoredTexts(): Promise<Seeded> {
     { ops: [{ after: "end", markdown: "A **second** version.\n", op: "insert" }] },
     { as: "agent" }
   );
+  // What cites the document, which its page lists under the version it shows, in its Referenced
+  // by panel: a comment, listed by the head of its body, and a block of another document, listed
+  // by the block that holds the mention. Each excerpt is the head the server cut, drawn from the
+  // tree the server read of it.
+  const cited = `dispatch://CORE/artifact/${document.artifact.slug}`;
+  await createComment(issue.key, { body: `The **readings** are in ${cited}.` }, session);
+  await createProjectDocument("CORE", {
+    content: `# Logbook\n\nEach **entry** cites ${cited}.\n`,
+    name: "logbook.md",
+  });
 
   // The issue's decisions.md, which the Decisions tab draws block by block: its one decision
   // holds a paragraph of its own so the tab has a stored text to draw, and it links no spec
@@ -206,6 +251,16 @@ function bold(page: Page, word: string): Locator {
     .locator("strong")
     .filter({ hasText: new RegExp(`^${word}$`) })
     .first();
+}
+
+/** The first answer of the ask answered twice, as its card on the Conversation tab draws it in
+ *  its list of earlier answers, in the commit that draws the option it chose beside it. The
+ *  answer's words are what is waited for, since they draw as markup whether the page reads
+ *  their tree or parses them, where the option is drawn as written once no tree is served. The
+ *  list is a closed disclosure, so the answer is on the page and hidden: attached, never
+ *  visible. */
+function earlierAnswer(page: Page): Locator {
+  return page.locator("details strong").filter({ hasText: /^nearest$/ });
 }
 
 function surfaces(seeded: Seeded): Surface[] {
@@ -261,6 +316,11 @@ function surfaces(seeded: Seeded): Surface[] {
         await expect(
           page.getByRole("region", { name: "Document version 1" }).getByText("Instruments")
         ).toBeVisible();
+        // The Referenced by panel under the version is a read of its own, which can land after
+        // the version's text: the walk waits for both excerpts, the comment's and the logbook
+        // block's, so the count is read once they are drawn.
+        const citing = page.getByRole("region", { name: "Referenced by" }).locator("strong");
+        await expect(citing.filter({ hasText: /^(readings|entry)$/ })).toHaveCount(2);
       },
     },
     {
@@ -280,6 +340,10 @@ function surfaces(seeded: Seeded): Surface[] {
       name: "a reference preview",
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}/conversation`);
+        // The ask cards are a read of their own, which can land after the comment hovered
+        // below: the walk waits for the earlier answer one of them keeps, so the count is read
+        // once it is drawn.
+        await expect(earlierAnswer(page)).toBeAttached();
         await page.getByRole("link", { name: "Reference target" }).first().hover();
         await expect(page.getByRole("tooltip")).toContainText(seeded.targetKey);
       },
@@ -288,6 +352,8 @@ function surfaces(seeded: Seeded): Surface[] {
       name: "a block reference's card",
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}/conversation`);
+        // The ask cards' read, as the row above waits for it.
+        await expect(earlierAnswer(page)).toBeAttached();
         // A reference to a block of a comment is the surface `GET /api/v1/references` draws:
         // the link's title and the card under it are both the text that read's node carries.
         await page.getByRole("link", { name: quotedTitle }).first().hover();

@@ -20,7 +20,6 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { PlainText } from "../refs/plain-text";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -57,7 +56,7 @@ function AnswerRow({
   // Every text of the row is the ask's: its question, the answer written on it, and a reply in
   // its thread, which takes the ask's scope (`refs.ScopeOf`). So a `#id` in any of them resolves
   // against the document the server scopes the ask to, read once for the row.
-  const source = textSourceOf("ask", row.ask_id);
+  const source = textSourceOf("ask", row.ask_id, row.owner.issue?.key);
   const changeable =
     row.kind === "answer" &&
     row.current &&
@@ -84,12 +83,13 @@ function AnswerRow({
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           {(row.answer.selected ?? []).length === 0 ? null : (
             <div className="flex flex-wrap gap-1.5">
-              {/* A pill holds no markup, so a chosen option reads as its label's plain-text
-                  projection: the words the ask's own option draws, never their source. */}
               {(row.answer.selected ?? []).map((label) => (
-                <PlainText key={label} markdown={label} surface="answers-answer">
-                  {(words) => <LabelPill selected>{words ?? ""}</LabelPill>}
-                </PlainText>
+                <LabelPill key={label} selected>
+                  {/* A row carries its chosen options as their labels alone, with no tree and
+                      no option to take one from, so each is shown as written: the reading
+                      list's `answers-chosen-options`. */}
+                  {label}
+                </LabelPill>
               ))}
             </div>
           )}

@@ -19,7 +19,9 @@ const LIST_GAP_PX = 4;
  *  it names, which the editor writes as a link mark, and every other pick is the bare address
  *  as text. The Markdown a `<textarea>` host writes for a mention (`insertion.text`) would be
  *  stored here as the escaped characters of that Markdown, which every reader of the document
- *  would then read as `[Planner](` and an address rather than as a mention (R4). */
+ *  would then read as `[Planner](` and an address rather than as a mention (R4). A `](` the
+ *  reader typed is no link's address here (the picker is told the document's links are marks),
+ *  so a party picked after one is still its mention. */
 function documentInsertion(insertion: RefPickerInsertion): ReferenceInsertion {
   const { end, link, start, text, trigger } = insertion;
   return link === undefined
@@ -61,6 +63,7 @@ export function DocumentRefPicker({
     caret: caret?.text.length ?? 0,
     enabled: caret !== undefined,
     issueKey,
+    links: "marks",
     project,
     text: caret?.text ?? "",
   });

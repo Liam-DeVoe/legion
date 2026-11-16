@@ -5,6 +5,7 @@ import { type ReactNode, useRef } from "react";
 import type { DisplayTree } from "../../api/types";
 import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markdown-engine";
 import { hostDrawsMarkup, hostLinksReferences, useReferenceHost } from "./reference-host";
+import { RecordIssue } from "./role-holders";
 import { drawTaskCheckboxes } from "./task-checkboxes";
 import type { TextSource } from "./text-references";
 import { UnfurlRead } from "./Unfurl";
@@ -368,6 +369,9 @@ function PaintedBody({
       softBreaks,
     }
   );
+  // Each reference drawn in the body reads its role by the issue the record is on, and by no
+  // issue for a text that is no record's (`RecordIssue`).
+  const links = <RecordIssue.Provider value={source?.issue}>{portals}</RecordIssue.Provider>;
 
   if (inline) {
     return (
@@ -377,7 +381,7 @@ function PaintedBody({
         data-markdown-pending={isPending || undefined}
         ref={inlineRoot}
       >
-        {portals}
+        {links}
       </span>
     );
   }
@@ -389,7 +393,7 @@ function PaintedBody({
         data-markdown-pending={isPending || undefined}
         ref={blockRoot}
       >
-        {portals}
+        {links}
       </div>
       {/* A card is a link, so a body inside a link or a button draws none: there is nothing for
           the card to be. One line of a card has no room for one either, which is why the
@@ -402,6 +406,7 @@ function PaintedBody({
         <UnfurlRead
           body={referenceText}
           reading={references.reading}
+          source={source}
           surface="body-reference-cards"
           written={references.written}
         />

@@ -167,7 +167,7 @@ function BroadcastRecipientRow({
           <div className={textPrimaryOnCanvas}>
             <MarkdownBody
               markdown={reply.body}
-              source={textSourceOf("message", reply.id)}
+              source={textSourceOf("message", reply.id, reply.issue_key)}
               surface="broadcast-recipient-reply"
               tree={reply.body_tree}
             />

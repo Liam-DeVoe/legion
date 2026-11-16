@@ -1,5 +1,8 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
+import { loadedEngine, warmMarkdownRenderer } from "./markdown-engine";
+import { draftReading } from "./parsed-references";
+import { partyMention } from "./party-references";
 import {
   applyInsertion,
   groupRows,
@@ -8,10 +11,16 @@ import {
   kindOrder,
   matchesQuery,
   orderedRows,
+  partyLink,
   REF_PICKER_HEADINGS,
   type RefPickerRow,
   readTrigger,
 } from "./ref-picker";
+import { readTextReferences } from "./text-references";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function row(kind: RefPickerRow["kind"], label: string, reference: string): RefPickerRow {
   return { detail: "", id: `${kind}-${label}`, kind, label, reference };
@@ -181,12 +190,47 @@ test("each door opens in a link's address on a trigger typed there, and says it 
     door: "all",
     query: "go",
   });
-  // The caret in the middle of an address already closed.
-  expect(readTrigger("[the plan](#plan)", "[the plan](#pl".length)).toEqual({
-    ...opens,
+  // A closed address whose caret stands at its end, before the `)`: the pick writes it whole.
+  const closed = "[the plan](#plan)";
+  const atEnd = readTrigger(closed, "[the plan](#plan".length);
+  expect(atEnd).toEqual({ ...opens, chars: "#", door: "issues", query: "plan" });
+  if (atEnd === undefined) throw new Error("the trigger reads nothing");
+  expect(
+    applyInsertion(
+      closed,
+      insertionFor(row("issue", "Fix", "dispatch://CORE-1"), atEnd, "[the plan](#plan".length)
+    ).text
+  ).toBe("[the plan](dispatch://CORE-1)");
+});
+
+// A pick writes over the trigger through the caret and no further, so a door stands in an
+// address only where the caret ends it. Past the `)` that closes the address the caret is in no
+// address at all, and a pick there would write over the `)` and leave the link open
+// (`[the plan](dispatch://CORE-1`); before the rest of an address it would leave that rest
+// behind its own (`[the plan](dispatch://CORE-1an)`).
+test("no door opens in a link's address the caret has left, nor before the rest of one", () => {
+  expect(readTrigger("[the plan](#plan)")).toBeUndefined();
+  expect(readTrigger("see [the plan](#plan).")).toBeUndefined();
+  expect(readTrigger("[the plan](@ana)")).toBeUndefined();
+  expect(readTrigger("[the plan]([[goals)")).toBeUndefined();
+  // The caret in the middle of an address already closed, and of one still being written.
+  expect(readTrigger("[the plan](#plan)", "[the plan](#pl".length)).toBeUndefined();
+  expect(readTrigger("[the plan](#plan", "[the plan](#pl".length)).toBeUndefined();
+  // The caret in an open address still opens its door, and a trigger typed after a closed link
+  // is the prose's own.
+  expect(readTrigger("[the plan](#pl")).toEqual({
     chars: "#",
     door: "issues",
+    inAddress: true,
     query: "pl",
+    start: "[the plan](".length,
+  });
+  expect(readTrigger("[the plan](#plan) and #CO")).toEqual({
+    chars: "#",
+    door: "issues",
+    inAddress: false,
+    query: "CO",
+    start: "[the plan](#plan) and ".length,
   });
 });
 
@@ -229,6 +273,59 @@ test("a party pick inserts its mention and every other pick the bare address", (
   expect(
     insertionText(row("document-block", "First words", "dispatch://CORE-1/spec#b-one"), prose)
   ).toBe("dispatch://CORE-1/spec#b-one");
+});
+
+/** The engine the page parses with, which the tests load once. */
+function engine() {
+  const loaded = loadedEngine();
+  if (loaded === undefined) throw new Error("the Markdown engine did not load");
+  return loaded;
+}
+
+/** What a draft's chip reads the first reference of `body` as, with the words it reads, as the
+ *  chips ask it (`draftReading`). */
+function chip(body: string) {
+  const [found] = readTextReferences(body).references;
+  if (found?.route === undefined) throw new Error(`${body} holds no reference`);
+  return draftReading(engine(), body, { ...found, route: found.route });
+}
+
+// A name may hold a character Markdown reads as formatting - a session titled `fix *the* cache`.
+// Written as it is, the formatting covers a part of the link's words, which makes them their
+// author's words rather than a mention, and they never read as the party's current name again
+// (`@legion/contracts`'s `isMentionWords`). So every writer of a mention writes the name as
+// literal words: the pick in a box and in the live composer (`insertionText`), and the seed a
+// channel owes its party and a kept draft's rewrite (`partyMention`). Every reader takes the
+// words through the parse, the chips among them, so they read as the name and the link as the
+// mention. A host that writes marks takes the name's own characters, which its document escapes
+// as it stores them.
+test("a party's name holding Markdown's markup is written as literal words, which read as a mention", () => {
+  const agent = "dispatch://agent/planner-session";
+  const picked = row("agent", "fix *the* cache", agent);
+  const written = `[@fix \\*the\\* cache](${agent})`;
+  expect(insertionText(picked, { inAddress: false })).toBe(written);
+  expect(partyMention("session:planner-session", "fix *the* cache")).toBe(written);
+  expect(chip(`Ask ${written} now.`)).toEqual({
+    picture: false,
+    reads: "mention",
+    words: "@fix *the* cache",
+  });
+
+  const odd = "a_b `c` ~~d~~ \\e [f]";
+  const oddWritten = partyLink(odd, agent);
+  expect(oddWritten).toBe(`[@a\\_b \\\`c\\\` \\~\\~d\\~\\~ \\\\e \\[f\\]](${agent})`);
+  expect(chip(`Ask ${oddWritten} now.`)).toEqual({
+    picture: false,
+    reads: "mention",
+    words: `@${odd}`,
+  });
+
+  const trigger = readTrigger("ask @fi");
+  if (trigger === undefined) throw new Error("the trigger reads nothing");
+  expect(insertionFor(picked, trigger, "ask @fi".length).link).toEqual({
+    href: agent,
+    words: "@fix *the* cache",
+  });
 });
 
 // In a link's address the link around the pick already has its words: a party is its bare

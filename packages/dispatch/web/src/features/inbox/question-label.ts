@@ -4,10 +4,11 @@ import type { DisplayTree } from "../../api/types";
 import { usePlainHeadline } from "../refs/plain-text";
 import { textSourceOf } from "../refs/text-references";
 
-/** An ask's question, with the reading Go made of it where the read carries one, and the ask's
- *  id, which names the record the question is. */
+/** An ask's question, with the reading Go made of it where the read carries one, the ask's id,
+ *  which names the record the question is, and the issue that ask is on. */
 interface Question {
   readonly id: string;
+  readonly issue_key: string | null;
   readonly question: string;
   readonly question_tree?: DisplayTree;
 }
@@ -33,7 +34,7 @@ interface Question {
  */
 export function useQuestionLabel(ask: Question): { line: () => string; reads: ReactNode } {
   const { reads, text } = usePlainHeadline(ask.question_tree, ask.question, {
-    source: textSourceOf("ask", ask.id),
+    source: textSourceOf("ask", ask.id, ask.issue_key),
     surface: "write-label",
   });
   const latest = useRef(ask.question);

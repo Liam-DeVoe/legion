@@ -3,8 +3,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import type { AskAnswer, DispatchEvent } from "../../api/types";
+import type { AskAnswer, DispatchEvent, DisplayTree } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { EventBody } from "./EventBody";
 
 const markdownMessage: DispatchEvent = {
@@ -114,10 +116,13 @@ test("EventBody shows the answer a change replaced, struck through", async () =>
   }
 });
 
-// A chosen option and an answer's text are markdown their writers wrote, so the struck-through
-// line draws each through the renderer: a link in one is its words there. Drawn as the characters
-// they are, the line reads `was: Ship [now](https://example.test/now) - **Go** now.`.
-test("EventBody draws a replaced answer's options and text as rendered markdown", async () => {
+// A chosen option is one of the ask's options, so the struck-through line draws its label from
+// the tree the event carries for that option (`payload.options.<i>.label`), never parsing the
+// label: the tree here reads `soon` where the label's markdown says `now`. An option the ask no
+// longer holds has no tree anywhere and is shown as written (`earlier-chosen-option`). The
+// answer's text is drawn by the renderer as ever.
+test("EventBody draws a replaced answer's options from their trees and its text as rendered markdown", async () => {
+  await warmMarkdownRenderer();
   const changed: Extract<DispatchEvent, { type: "ask.answered" }> = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-09-11T00:00:00Z",
@@ -143,7 +148,7 @@ test("EventBody draws a replaced answer's options and text as rendered markdown"
       options: [{ label: "Ship [now](https://example.test/now)" }, { label: "Hold" }],
       previous_answer: {
         at: "2026-09-10T12:00:00Z",
-        selected: ["Ship [now](https://example.test/now)"],
+        selected: ["Ship [now](https://example.test/now)", "**Wait**"],
         text: "**Go** now.",
         user: "alice",
       },
@@ -152,15 +157,25 @@ test("EventBody draws a replaced answer's options and text as rendered markdown"
       urgency: "med",
     },
     seq: 6,
+    trees: {
+      "payload.options.0.label": displayTree(
+        "Ship [soon](https://example.test/soon)"
+      ) as DisplayTree,
+    },
     type: "ask.answered",
   };
   const view = render(<EventBody event={changed} />);
 
   try {
     await waitFor(() =>
-      expect(view.container.querySelector("s")?.textContent).toBe("was: Ship now - Go now.")
+      expect(view.container.querySelector("s")?.textContent).toBe(
+        "was: Ship soon, **Wait** - Go now."
+      )
     );
     expect(view.container.querySelector("s strong")?.textContent).toBe("Go");
+    expect(view.container.querySelector("s a")?.getAttribute("href")).toBe(
+      "https://example.test/soon"
+    );
   } finally {
     view.unmount();
   }

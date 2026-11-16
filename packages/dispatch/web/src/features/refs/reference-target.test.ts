@@ -192,12 +192,12 @@ test("a summary or block read that failed is fetched again when the window regai
   );
 });
 
-// A missing target is drawn as the words its writer wrote, so its 404 is asked once a page: the
-// first reference that mounts asks it, with the tries the dashboard's retry rule allows, and a
-// second and a third reference to it - another mention, the same body drawn again - read the
-// failure that is there rather than ask again (`REFERENCE_READ`). An event that invalidates the
-// read still asks once more.
-test("a reference read that failed is not asked again by the references that mount after it", async () => {
+// A target Dispatch answers does not exist is an answer, drawn as the words its writer wrote, so
+// its 404 is asked once a page: the first reference that mounts asks it, with the tries the
+// dashboard's retry rule allows, and a second and a third reference to it - another mention,
+// the same body drawn again - read the answer that is there rather than ask again
+// (`REFERENCE_READ`). An event that invalidates the read still asks once more.
+test("a target Dispatch answers does not exist is asked once, however many references to it mount", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockRejectedValue(
     new ApiError(404, { code: "NOT_FOUND", error: "no issue CORE-404" })
   );
@@ -232,6 +232,94 @@ test("a reference read that failed is not asked again by the references that mou
   }
 });
 
+// A target that was read and has since gone - an event invalidated its read while nothing drew
+// it, and Dispatch then answered it does not exist - is held to the same answer: the failed
+// fetch leaves the old data marked stale, which TanStack asks again on every mount
+// (`refetchOnMount`), and `REFERENCE_READ` asks it once.
+test("a target that has gone since it was read is asked once, however many references to it mount", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Fix the thing",
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: 0 } },
+  });
+  const route = { key: "CORE-1", kind: "issue" } as const;
+  const { queryKey } = issueSummaryQuery("CORE-1");
+  // The tries of one read that answers 404: the request and the two retries `queryRetry` allows.
+  const oneRun = 3;
+  const first = renderTarget(queryClient, route);
+  const mounted = [first];
+  try {
+    await waitFor(() => expect(first.result.current.title).toBe("Fix the thing"));
+    // Nothing draws the target when the event arrives.
+    mounted.pop()?.unmount();
+    await act(() => queryClient.invalidateQueries({ queryKey }));
+    expect(getIssueSummary).toHaveBeenCalledTimes(1);
+
+    getIssueSummary.mockRejectedValue(
+      new ApiError(404, { code: "NOT_FOUND", error: "no issue CORE-1" })
+    );
+    const second = renderTarget(queryClient, route);
+    mounted.push(second);
+    await waitFor(() => expect(second.result.current.missing).toBe(true));
+    expect(getIssueSummary).toHaveBeenCalledTimes(1 + oneRun);
+
+    // A mount that asks starts its read as it subscribes, inside the render's own `act`, so the
+    // read stands idle after one that asks nothing.
+    const third = renderTarget(queryClient, route);
+    mounted.push(third);
+    expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe("idle");
+    expect(third.result.current.missing).toBe(true);
+    expect(getIssueSummary).toHaveBeenCalledTimes(1 + oneRun);
+  } finally {
+    for (const hook of mounted) hook.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
+// A failure that can pass - a 503, a dropped connection - is no answer: the next reference to
+// that target that mounts asks it again, within the retry rule, and names the target once
+// Dispatch can answer.
+test("a read that failed in a way that can pass is asked again when a reference to it next mounts", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "try again" })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: 0 } },
+  });
+  const route = { key: "CORE-1", kind: "issue" } as const;
+  // The tries of one read: the request and the two retries `queryRetry` allows a 503.
+  const oneRun = 3;
+  const first = renderTarget(queryClient, route);
+  const mounted = [first];
+  try {
+    await waitFor(() =>
+      expect(queryClient.getQueryState(issueSummaryQuery("CORE-1").queryKey)?.status).toBe("error")
+    );
+    expect(getIssueSummary).toHaveBeenCalledTimes(oneRun);
+    expect(first.result.current.missing).toBe(false);
+
+    getIssueSummary.mockResolvedValue({
+      documents: [],
+      key: "CORE-1",
+      project: "CORE",
+      status: "in_progress",
+      title: "Fix the thing",
+    });
+    const later = renderTarget(queryClient, route);
+    mounted.push(later);
+    await waitFor(() => expect(later.result.current.title).toBe("Fix the thing"));
+    expect(getIssueSummary).toHaveBeenCalledTimes(oneRun + 1);
+  } finally {
+    for (const hook of mounted) hook.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
 // A read a reference makes after it mounted - here the question map of a text once a `#id` is
 // typed into it - is held to the same rule as one made at mount: over a read that failed, it
 // asks nothing again (`useReferenceQuery`). TanStack's observer that is enabled late asks a failed
@@ -241,7 +329,7 @@ test("a reference read made after mount, over a read that failed, is not asked a
     new ApiError(404, { code: "NOT_FOUND", error: "no document for comment c-1" })
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const source = { id: "c-1", kind: "comment" } as const;
+  const source = { id: "c-1", issue: "CORE-1", kind: "comment" } as const;
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client: queryClient }, children);
   const first = renderHook(() => useTextReferences("Decide #q2.", source), { wrapper });
@@ -586,7 +674,9 @@ test("artifactAtAddress finds an artifact by slug first, then a document by its 
   expect(artifactAtAddress(null, "notes-md")).toBeUndefined();
 });
 
-test("a session the registry lists reads as its title trimmed, and one it lists untitled links in its words", () => {
+// The registry is the shell's poller's to refresh: a session reference reads the answer the page
+// holds, older than the registry's `staleTime` here, and asks for it on no mount of its own.
+test("a session the registry lists reads as its title trimmed, one it lists untitled links in its words, and neither reads the registry", () => {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   restore = () => listAgents.mockRestore();
   const listed = (session_id: string, title: string): Agent => ({
@@ -603,10 +693,14 @@ test("a session the registry lists reads as its title trimmed, and one it lists 
     title,
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(agentsQuery().queryKey, [
-    listed("11111111-1111-4111-8111-111111111111", "  Planner  "),
-    listed("22222222-2222-4222-8222-222222222222", "   "),
-  ]);
+  queryClient.setQueryData(
+    agentsQuery().queryKey,
+    [
+      listed("11111111-1111-4111-8111-111111111111", "  Planner  "),
+      listed("22222222-2222-4222-8222-222222222222", "   "),
+    ],
+    { updatedAt: Date.now() - 60_000 }
+  );
   const read = (session: string) => {
     const hook = renderTarget(queryClient, { kind: "agent-session", session });
     const { known, missing, title } = hook.result.current;

@@ -454,6 +454,7 @@ function renderVersion(markdown: string = TEXT, at = "/") {
             asks={[]}
             createdAt="2026-09-09T00:00:00Z"
             highlight={undefined}
+            issueKey="CORE-1"
             owner={undefined}
             version={1}
           />

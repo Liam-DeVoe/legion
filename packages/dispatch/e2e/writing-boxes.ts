@@ -235,10 +235,10 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
  */
 function hintWords(box: DispatchWritingBox, write: DispatchWriting): string {
   if (box === "ask-answer") {
-    return `${HINT_DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role; a picked person shows as a name without a link and is not told.`;
+    return `${HINT_DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
   }
   if (dispatchWritingBox(box, write).delivers) {
-    return `${HINT_DOORS} A picked agent or role is told. A picked person shows as a name without a link and is not told.`;
+    return `${HINT_DOORS} A picked agent or role is told while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
   }
   if (write === "suggestion") {
     return `${HINT_DOORS} Until someone accepts the suggestion, the replacement shows the characters you write. Nobody you pick is told. A pick in the Reason box tells an agent or a role.`;

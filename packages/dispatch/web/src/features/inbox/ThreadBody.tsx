@@ -77,6 +77,8 @@ interface ThreadTurn {
   /** Which record the turn is, so its body is drawn as that record's own text: the comment or
    *  the issue message the route it was read from answered with. */
   readonly kind: "comment" | "message";
+  /** The issue that record is on; null for a direct message. */
+  readonly issue: string | null;
   /** The reading Go sent with `body`, which the turn draws rather than parsing the markdown
    *  again (`MarkdownBody`). */
   readonly tree?: DisplayTree;
@@ -134,7 +136,7 @@ function ThreadTurnView({
       <div className={textPrimaryOnSurfaceMuted}>
         <MarkdownBody
           markdown={turn.body}
-          source={textSourceOf(turn.kind, turn.id)}
+          source={textSourceOf(turn.kind, turn.id, turn.issue)}
           surface="inbox-thread-turn"
           tree={turn.tree}
         />
@@ -373,6 +375,7 @@ function commentTurn(comment: CommentWithTrees): ThreadTurn {
     body: comment.body,
     created_at: comment.created_at,
     id: comment.id,
+    issue: comment.issue_key,
     kind: "comment",
     tree: comment.body_tree,
   };
@@ -384,6 +387,7 @@ function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
     body: message.body,
     created_at: message.created_at,
     id: message.id,
+    issue: message.issue_key,
     kind: "message",
     tree: message.body_tree,
     ...(note === undefined ? {} : { note }),

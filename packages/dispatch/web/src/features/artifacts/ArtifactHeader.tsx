@@ -58,6 +58,7 @@ export function formatArtifactBytes(bytes: number | undefined): string {
 }
 
 export function versionLabel(version: Version): string {
+  // A version's summary, as its writer gave it: the reading list's `artifact-version-summary`.
   return `Version ${version.number}${version.summary === null ? "" : ` — ${version.summary}`}`;
 }
 

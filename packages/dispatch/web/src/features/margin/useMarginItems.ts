@@ -121,6 +121,8 @@ export interface PinnedConversationCard {
   /** The record's own id, without the kind the pin marker spells before it: what names the
    *  record this card's text is (`textSourceOf`). */
   readonly recordId: string;
+  /** The issue that record is on. */
+  readonly issue: string | null;
 }
 
 const NO_PINS: string[] = [];
@@ -419,6 +421,7 @@ export function useMarginItems(
           id: conversationItemId(kind, id),
           kind,
           recordId: id,
+          issue: row.issue_key,
         },
       ];
     });

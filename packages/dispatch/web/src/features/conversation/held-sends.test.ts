@@ -508,6 +508,30 @@ test("a kept mention is rewritten only for a delivery route at a span of the bod
   }
 });
 
+// A kept mention whose name holds a formatting character is written back as a pick writes it,
+// the name as literal words, so the restored draft's link is the mention it was and reads as the
+// party's current name rather than as words formatted in part.
+test("a kept mention whose name holds formatting characters is rewritten with the name escaped", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  try {
+    const restored = await restoredBody(
+      tab,
+      ["conversation", "CORE-1"],
+      "send-formatted",
+      "@fix *the* cache please look.",
+      [{ end: 16, start: 0, target: "session:planner-session", text: "fix *the* cache" }]
+    );
+    const written = "[@fix \\*the\\* cache](dispatch://agent/planner-session) please look.";
+    expect(restored).toEqual({ draft: written, request: written });
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // A closed tab loses what sessionStorage keeps, so while a send has no verdict the page asks to
 // confirm leaving, and only then.
 test("leaving asks for confirmation only while a send is unconfirmed", async () => {

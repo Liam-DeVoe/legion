@@ -11,10 +11,11 @@ import {
   useQueries,
   useQuery,
 } from "@tanstack/react-query";
+import { useContext } from "react";
 
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
-import { issueQuery, usersQuery } from "../../api/queries";
+import { issueCollaboratorsQuery, issueQuery, usersQuery } from "../../api/queries";
 import type {
   ArchitectureComponentRead,
   Artifact,
@@ -39,7 +40,7 @@ import {
 import { itemOfBlock } from "./block-reference";
 import { knownSessionQuery } from "./known-sessions";
 import { useMarkdownHeadline } from "./markdown-engine";
-import { roleHolders } from "./role-holders";
+import { RecordIssue, recordedRoles, roleHolders } from "./role-holders";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -105,19 +106,33 @@ type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
 const TITLE_HEADLINE_MAX = 60;
 
+/** Whether a read stands on anything but Dispatch's answer that its target does not exist: what
+ *  a mount asks again (`REFERENCE_READ`). */
+function notAnsweredMissing(query: { readonly state: { readonly error: unknown } }): boolean {
+  return !answeredNotFound(query.state.error);
+}
+
 /**
- * What every read a drawn reference observes is held to: a read that failed is not asked again
- * because another reference to the same target mounts, or the same one mounts again. TanStack's
- * default asks an errored read again on every mount, each time with the tries `queryRetry`
- * allows, so a page naming one missing target in several places - and drawing them again on
- * every render that remounts a body - asked for it over and over, where a missing target is
- * drawn as the words its writer wrote by design (R8) and its 404 needs asking once (INFRA-1196,
- * build rulings part 6). An invalidation still asks again, and so does a focus where the read
- * asks for that (`refetchFailedOnFocus`, and TanStack's default for every other read). It is an
- * observer's option, never a query's: a page of its own that observes the same key - an ask's,
- * a document's - keeps TanStack's default.
+ * What every read a drawn reference observes is held to when its read failed, which is two
+ * cases (INFRA-1196, build rulings part 6; INFRA-1702 round 13, Q7). A target Dispatch answered
+ * does not exist (a 404) is an answer: the reference is drawn as the words its writer wrote by
+ * design (R8), and the read is not asked again because another reference to the same target
+ * mounts, or the same one mounts again. TanStack's default asks such a read again on every
+ * mount, each time with the tries `queryRetry` allows - by `retryOnMount` where the read holds
+ * no data, and by `refetchOnMount` where it does, since a failed fetch marks the data it keeps
+ * stale - so a page naming one missing target in several places asked for it over and over.
+ * A failure that can pass - a 5xx, a dropped connection - is asked again when a reference to
+ * that target next mounts, within the retry rule, so a target the page could not read a moment
+ * ago comes to be named. A read that stands answered is held as it is: it is never stale by age
+ * (`staleTime`), and only an event's invalidation makes it so. An invalidation still asks
+ * either again, and so does a focus where the read asks for that (`refetchFailedOnFocus`, and
+ * TanStack's default for every other read). It is an observer's option, never a query's: a page
+ * of its own that observes the same key - an ask's, a document's - keeps TanStack's default.
  */
-export const REFERENCE_READ = { retryOnMount: false } as const;
+export const REFERENCE_READ = {
+  refetchOnMount: notAnsweredMissing,
+  retryOnMount: notAnsweredMissing,
+} as const;
 
 /**
  * One read a drawn reference makes, or none: `options` while the reference has what the read
@@ -127,7 +142,9 @@ export const REFERENCE_READ = { retryOnMount: false } as const;
  * issue, a question map once a `#id` is typed - asks a failed read again whatever
  * `REFERENCE_READ` says (`shouldFetchOptionally`). So the read is a list of zero or one read
  * (`useQueries`): a read that arrives later is a new observer, which subscribes enabled and
- * holds to `REFERENCE_READ` as a read made at mount does. Undefined while there is no read.
+ * holds to `REFERENCE_READ` as a read made at mount does. A read that says otherwise for itself
+ * keeps what it says - the registry, which the shell's poller refreshes, is never read again on
+ * mount. Undefined while there is no read.
  */
 export function useReferenceQuery<
   TQueryFnData,
@@ -137,7 +154,7 @@ export function useReferenceQuery<
   options: UseQueryOptions<TQueryFnData, Error, TData, TQueryKey> | undefined
 ): UseQueryResult<TData, Error> | undefined {
   const queries: UseQueryOptions<TQueryFnData, Error, TData, TQueryKey>[] =
-    options === undefined ? [] : [{ ...options, ...REFERENCE_READ }];
+    options === undefined ? [] : [{ ...REFERENCE_READ, ...options }];
   const [result] = useQueries({ queries });
   return result as UseQueryResult<TData, Error> | undefined;
 }
@@ -346,20 +363,21 @@ export interface ReferenceData {
    *  people who have signed in, the people the reference picker lists where no issue is in hand
    *  (`useRefPicker.ts`). False while that list loads and for any other reference. */
   readonly personKnown: boolean;
-  /** Whether a session the registry lists holds the role a role reference names: the registry
-   *  the picker's role rows come from (`party-options.ts`). False while that list loads and for
-   *  any other reference. */
+  /** Whether the role a role reference names is known (`role-holders.ts`): a session the
+   *  registry lists holds it, or the collaborators of the issue the record is on record it - the
+   *  roles the picker offers, running and not (`party-options.ts`). False while those load and
+   *  for any other reference. */
   readonly roleKnown: boolean;
   /** Whether Dispatch answered that the target does not exist: the read of the record behind the
    *  reference answered 404 (a project with no architecture among them), or the read that lists
    *  it came back without it - an issue's artifacts with neither the slug nor, for a document, the
    *  name an artifact reference writes (`artifactAtAddress`), a project's architecture without the
    *  component, Dispatch's record of sessions without the session (one the registry lists, and
-   *  one that ended, are both known), the registry without a session that holds the role. False
-   *  while loading and for any other failure, so a reference that names a real target never
-   *  loses its link to a slow or dropped read. The document editor reads the same answer
-   *  (`document-references.tsx`, through `useReferenceTarget`), so a comment and the editor
-   *  cannot disagree. */
+   *  one that ended, are both known), the registry without a session that holds the role and the
+   *  record's issue's collaborators without it. False while loading and for any other failure, so
+   *  a reference that names a real target never loses its link to a slow or dropped read. The
+   *  document editor reads the same answer (`document-references.tsx`, through
+   *  `useReferenceTarget`), so a comment and the editor cannot disagree. */
   readonly missing: boolean;
 }
 
@@ -500,7 +518,7 @@ export interface WholeRouteRead {
  */
 export function useWholeRouteRead(
   route: DispatchReferenceRoute | undefined,
-  observer: { readonly retryOnMount?: boolean } = {}
+  observer: Partial<typeof REFERENCE_READ> = {}
 ): WholeRouteRead {
   const origin = window.location.origin;
   const prefix = route === undefined ? undefined : prefixReference(route);
@@ -615,9 +633,9 @@ export function useReferenceData(
   // link; an id no agent ever held does not (R8). While a session reference is drawn it keeps the
   // shell's one registry poll running, so a session renamed since the page loaded reads as it is
   // called now (R4) - in a draft's pill as in the record. A role reference reads the same
-  // registry, by the one rule of what a known role is (`roleHolders`), which the picker's role
-  // rows follow too, and keeps the same poll running, so a role a session takes up while the
-  // page is open comes to be named.
+  // registry, by the one rule of what a known role is (`role-holders.ts`), which the picker's
+  // role rows follow too, and keeps the same poll running, so a role a session takes up while
+  // the page is open comes to be named.
   const sessionRoute = route?.kind === "agent-session" ? route : undefined;
   const roleRoute = route?.kind === "role" ? route : undefined;
   const readsRegistry = sessionRoute !== undefined || roleRoute !== undefined;
@@ -636,11 +654,29 @@ export function useReferenceData(
   );
   const listedTitle =
     sessionRoute === undefined ? undefined : registeredTitle(registry?.data, sessionRoute.session);
-  // A role is known while a session the registry lists holds it. One the latest read answered
-  // with no holder is no target: it reads as the words its writer wrote, with no link.
-  const roleKnown =
+  // A role is known while a session the registry lists holds it, or while the collaborators of
+  // the issue the record is on record it: the issue's stopped roles, which the picker offers
+  // under "Not running". Those collaborators are read only for a role the registry answered no
+  // holder for, on a record of an issue, from the one entry the picker and the Collaborators tab
+  // read. A role neither answer knows is no target: it reads as the words its writer wrote,
+  // with no link. A collaborators answer made while the Legion registry did not answer holds no
+  // role of anyone, so it is no answer about this one.
+  const recordIssue = useContext(RecordIssue);
+  const roleHeld =
     roleRoute !== undefined && roleHolders(registry?.data ?? EMPTY_AGENTS).has(roleRoute.role);
-  const roleUnheld = roleRoute !== undefined && registry?.isSuccess === true && !roleKnown;
+  const roleUnheld = roleRoute !== undefined && registry?.isSuccess === true && !roleHeld;
+  const collaborators = useReferenceQuery(
+    roleUnheld && recordIssue !== undefined ? issueCollaboratorsQuery(recordIssue) : undefined
+  );
+  const roleKnown =
+    roleHeld ||
+    (roleRoute !== undefined && recordedRoles(collaborators?.data?.agents).has(roleRoute.role));
+  const roleUnknown =
+    roleUnheld &&
+    !roleKnown &&
+    (collaborators === undefined ||
+      collaborators.data?.legion_registry === "ok" ||
+      answeredNotFound(collaborators.error));
   // A person is named by their login, which their address holds, once Dispatch knows the login:
   // the one read of everyone who has signed in, shared with every other person reference and
   // with the pickers that list them, and made only for a person reference.
@@ -666,7 +702,7 @@ export function useReferenceData(
     roleKnown,
     missing:
       (unlisted && recorded?.data?.known === false) ||
-      roleUnheld ||
+      roleUnknown ||
       [
         issue,
         messageQueryResult,
@@ -761,10 +797,11 @@ export function blockTextTree(node: GraphReferences["node"]): DisplayTree | unde
  * it loads or after. A block of a document resolves to the headline of its own text, as an ask or
  * comment does: the text the pinned version held for a pinned reference, its current text
  * otherwise. A component resolves to its own title from its project's architecture, the one
- * record behind that kind. A session resolves to its title, a role to its token while a session
- * the registry lists holds it, and a person to their login once Dispatch knows it (R5). A
- * reference to an image artifact, of an issue, a project or an agent's conversation, also
- * answers its picture: the bytes route of the version it pins, else of the latest.
+ * record behind that kind. A session resolves to its title, a role to its token while it is
+ * known (a session the registry lists holds it, or the record's issue's collaborators record it),
+ * and a person to their login once Dispatch knows it (R5). A reference to an image artifact, of
+ * an issue, a project or an agent's conversation, also answers its picture: the bytes route of
+ * the version it pins, else of the latest.
  */
 export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
@@ -851,9 +888,10 @@ export function useReferenceTarget(
       picture: undefined,
     };
   } else if (route?.kind === "role") {
-    // A role is named by its token, which its address holds, while a session the registry lists
-    // holds it (R5): the page it opens lists that session. A role nobody holds has no name, and
-    // reads as the words its writer wrote.
+    // A role is named by its token, which its address holds, while it is known (R5): a session
+    // the registry lists holds it, or the collaborators of the record's issue record it. The page
+    // it opens is the role's own. A role neither knows has no name, and reads as the words its
+    // writer wrote.
     shown = {
       title: roleKnown ? route.role : undefined,
       description: undefined,

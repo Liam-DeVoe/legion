@@ -132,6 +132,7 @@ test("a pinned card's agent byline links to its live conversation", () => {
               author: agent,
               body: "Pinned question",
               id: "ask:ask-1",
+              issue: "CORE-1",
               kind: "ask",
               recordId: "ask-1",
             },

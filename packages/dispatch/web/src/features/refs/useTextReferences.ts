@@ -1,9 +1,7 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { projectsQuery } from "../../api/queries";
-import type { Project } from "../../api/types";
-import { issueProject } from "../../lib/issue-key";
+import { keyMayNameIssue, useProjectKeys } from "./project-keys";
 import type { ReferenceLinking } from "./RefLink";
 import {
   issueSummaryQuery,
@@ -28,11 +26,6 @@ function readText(text: string | readonly string[], facts: TextReferenceFacts): 
   return typeof text === "string"
     ? readTextReferences(text, facts)
     : readTextCandidates(text, facts);
-}
-
-/** The keys of a project list, which say which prefixes an issue key can have. */
-function projectKeys(projects: readonly Project[]): ReadonlySet<string> {
-  return new Set(projects.map((project) => project.key));
 }
 
 /** The empty question map, shared so a body that needs none keeps one identity across renders
@@ -60,12 +53,12 @@ export interface TextReferences extends ReferenceLinking {
  * same read the link's own title comes from, so a key costs one request and a 404 for it is
  * final (`api/event-refresh.ts` re-asks it on `issue.created` alone): no body that mounts later
  * naming the same key asks it again, and neither does a later body asking a question map or a
- * prefix whose read failed (`REFERENCE_READ`). A `#id` resolves against the question map of the
- * document the text's own source belongs to, which the server says and `questionsQuery` reads;
- * a text naming no source, or one whose text belongs to no document, links no `#id`. An id
- * written as a prefix is resolved by the graph read of the reference as written
- * (`referencesQuery`), and the item is then read under the whole id the answer carries, so
- * nothing is ever cached under a prefix.
+ * prefix Dispatch answered does not exist (`REFERENCE_READ`). A `#id` resolves against the
+ * question map of the document the text's own source belongs to, which the server says and
+ * `questionsQuery` reads; a text naming no source, or one whose text belongs to no document,
+ * links no `#id`. An id written as a prefix is resolved by the graph read of the reference as
+ * written (`referencesQuery`), and the item is then read under the whole id the answer carries,
+ * so nothing is ever cached under a prefix.
  *
  * `text` is a body's markdown, or the distinct candidates a document editor's own reader found,
  * which are read one by one rather than joined into a text (`readTextCandidates`).
@@ -83,16 +76,11 @@ export function useTextReferences(
   const written = useMemo(() => readText(text, { origin }), [origin, text]);
   const { keys: writtenKeys, prefixes, questions } = written.needs;
 
-  // A word of prose shaped like an issue key - `UTF-16`, `SHA-256` - names an issue only where
-  // its prefix is a project. Where the page already holds its project list (the sidebar reads
-  // it), a key of no project is asked nothing and stays the words written; where it holds none
-  // yet, every key is asked. The list is observed here and never read for this.
-  const projects = useQuery({ ...projectsQuery(), enabled: false, select: projectKeys }).data;
+  // A word shaped like an issue key whose prefix is no project the page holds is asked nothing
+  // (`project-keys.ts`).
+  const projects = useProjectKeys();
   const keys = useMemo(
-    () =>
-      projects === undefined
-        ? writtenKeys
-        : writtenKeys.filter((key) => projects.has(issueProject(key))),
+    () => writtenKeys.filter((key) => keyMayNameIssue(key, projects)),
     [projects, writtenKeys]
   );
 

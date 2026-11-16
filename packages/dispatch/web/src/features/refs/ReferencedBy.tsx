@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { GraphEdge } from "../../api/types";
+import type { DisplayTree, GraphEdge, GraphReferences } from "../../api/types";
 import {
   borderDefault,
   linkHoverText,
@@ -129,8 +129,11 @@ function referencePath(reference: string | undefined, block?: string): SourcePat
   };
 }
 
+/** An edge as the references read answers it, with its excerpt's tree (`GraphEdgeWithTrees`). */
+type ReadEdge = NonNullable<GraphReferences["edges"]>[number];
+
 interface SourceGroup {
-  readonly edges: GraphEdge[];
+  readonly edges: ReadEdge[];
   readonly key: string;
   readonly label: string;
   /** How many citing nodes the group holds: more than one only when blocks of one document, or of
@@ -145,8 +148,8 @@ interface SourceGroup {
  *  that document's or item's rows. A source of one node links to that node (a block at the
  *  block); a document or item whose blocks are its rows links to itself, and each row to its own
  *  block. */
-function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
-  const groups = new Map<string, { edges: GraphEdge[]; nodes: Set<string> }>();
+function groupBySource(edges: readonly ReadEdge[]): SourceGroup[] {
+  const groups = new Map<string, { edges: ReadEdge[]; nodes: Set<string> }>();
   for (const edge of edges) {
     const key =
       edge.node.document ??
@@ -159,7 +162,7 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
     groups.set(key, group);
   }
   return [...groups].map(([key, { edges: grouped, nodes }]) => {
-    const [first] = grouped as [GraphEdge, ...GraphEdge[]];
+    const [first] = grouped as [ReadEdge, ...ReadEdge[]];
     return {
       edges: grouped,
       key,
@@ -186,23 +189,29 @@ function excerptIsBody(edge: GraphEdge): boolean {
 }
 
 /** The record a body excerpt is the head of, where the citing node is one a `TextSource` names:
- *  an ask, a comment or a message, a block of one, or a document. A block of a document names
- *  its document by address rather than by the artifact id a source is, so its excerpt is drawn
- *  as no record's and a `#id` in it names nothing. */
+ *  an ask, a comment or a message, or a document. A citing block is a block of its holder - a
+ *  comment, an ask, a message or a document - which the node carries as its `parent`
+ *  (`refs/graph.go`), so its excerpt is the holder's text and a `#id` in it names a question of
+ *  the holder's document. */
 function excerptSource(node: GraphEdge["node"]): TextSource | undefined {
-  const item = blockItem(node) ?? node;
-  return textSourceOf(textSourceKind(item.kind), item.id);
+  const holder = node.kind === "block" ? node.parent : node;
+  return holder === null
+    ? undefined
+    : textSourceOf(textSourceKind(holder.kind), holder.id, node.issue_key);
 }
 
 function Excerpt({
   rendered,
   source,
   text,
+  tree,
 }: {
   /** Whether the text is the head of a stored body, which the renderer draws (`excerptIsBody`). */
   rendered: boolean;
   source: TextSource | undefined;
   text: string;
+  /** The server's reading of the head as it cut it, so the page parses none of it. */
+  tree: DisplayTree | undefined;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
@@ -211,8 +220,8 @@ function Excerpt({
   return (
     <>
       {rendered ? (
-        // The head of a stored body, parsed here and drawn by the renderer: one clamped run
-        // until the reader opens it, the whole of it after.
+        // The head of a stored body, drawn by the renderer from the reading the server made of
+        // it: one clamped run until the reader opens it, the whole of it after.
         clamped ? (
           <MarkdownPreview
             className={`mt-1 text-sm ${textSecondaryOnSurface}`}
@@ -220,10 +229,16 @@ function Excerpt({
             markdown={text}
             source={source}
             surface="referenced-by-excerpt"
+            tree={tree}
           />
         ) : (
           <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
-            <MarkdownBody markdown={text} source={source} surface="referenced-by-excerpt" />
+            <MarkdownBody
+              markdown={text}
+              source={source}
+              surface="referenced-by-excerpt"
+              tree={tree}
+            />
           </div>
         )
       ) : (
@@ -414,6 +429,7 @@ export function ReferencedBy({
                           rendered={excerptIsBody(edge)}
                           source={excerptSource(edge.node)}
                           text={edge.excerpt.text}
+                          tree={edge.excerpt.text_tree}
                         />
                       )}
                     </li>

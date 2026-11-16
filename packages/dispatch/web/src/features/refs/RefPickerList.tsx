@@ -12,9 +12,11 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { RefKindIcon } from "./kind-icons";
+import { PlainText } from "./plain-text";
 import {
   REF_PICKER_PARTS_WORDS,
   REF_PICKER_PARTY_WORDS,
+  REF_PICKER_TEXT_MAX,
   REF_PICKER_WORDS,
   type RefPickerInsertion,
   type RefPickerRow,
@@ -113,6 +115,31 @@ export function RefPartsControl({
 }
 
 /**
+ * A row's words, in both the hosts that draw the picker's rows. A row worded with a record's own
+ * text - a hit's matched words, the head of a block - draws that text's plain-text projection
+ * from the tree the server read it into (`PlainText`), since a row is an option the reader takes,
+ * which holds no link: its formatting gone and each reference read as its target's name, never
+ * the Markdown it is written in. Until the reader's engine answers, and for a row the server sent
+ * no tree for, it draws `label`, the words as written, which `headRefs` cut where no reference
+ * crosses the cut.
+ */
+export function RefRowLabel({ row }: { row: RefPickerRow }): ReactNode {
+  const className = `truncate font-medium ${textPrimaryOnSurface}`;
+  if (row.prose === undefined) return <span className={className}>{row.label}</span>;
+  return (
+    <PlainText
+      markdown={row.prose.markdown}
+      max={REF_PICKER_TEXT_MAX}
+      source={row.prose.source}
+      surface="ref-picker-row-label"
+      tree={row.prose.tree}
+    >
+      {(line) => <span className={className}>{line ?? row.label}</span>}
+    </PlainText>
+  );
+}
+
+/**
  * The reference picker's rows, drawn for a host that has nowhere of its own to draw them: the
  * groups in the door's order, each under its kind's heading and wearing that kind's icon, with
  * the one instruction row and the words of whichever listing state holds. The host owns the
@@ -163,7 +190,7 @@ export function RefPickerList({
     >
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className={`truncate font-medium ${textPrimaryOnSurface}`}>{one.label}</span>
+        <RefRowLabel row={one} />
         {one.detail === "" ? null : (
           // The stronger muted role, which clears AA over the sky fill a highlighted row wears
           // as well as over the list's own surface.

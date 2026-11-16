@@ -6,12 +6,19 @@ import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
-import type { Agent, AskRead, IssueReferenceSummary, MyReplyRow } from "../../api/types";
+import type {
+  Agent,
+  AskRead,
+  IssueCollaborators,
+  IssueReferenceSummary,
+  MyReplyRow,
+} from "../../api/types";
 import { DismissControl, RowDismissContext } from "../inbox/DismissControl";
 import { ThreadTitle } from "../inbox/ThreadTitle";
 import { MarkdownBody } from "./MarkdownBody";
 import { useMarkdownHeadline } from "./markdown-engine";
 import { PlainText } from "./plain-text";
+import { partyLink } from "./ref-picker";
 import { ReferenceHostIs } from "./reference-host";
 import { shortForm } from "./routes";
 import type { TextSource } from "./text-references";
@@ -224,11 +231,11 @@ test("a known person reads as their login with no link, an unknown one as writte
   }
 });
 
-// R5 and R8, by the one rule of a known role (`roleHolders`), which the picker's role rows
+// R5 and R8, by the one rule of a known role (`role-holders.ts`), which the picker's role rows
 // follow: a role a session the registry lists holds is named and linked, whether that session is
-// live or unresponsive, as the server delivers to either; a role no listed session holds names
-// nobody the picker would offer, so it reads as the words its writer wrote, with no link - bare
-// or as a mention - as an unknown person does.
+// live or unresponsive, as the server delivers to either. A text that names no record is on no
+// issue, so no collaborators record a role for it, and a role no listed session holds reads as
+// the words its writer wrote, with no link - bare or as a mention - as an unknown person does.
 test("a role no session holds reads as the words written, and one an unresponsive session holds is linked", async () => {
   const view = draw(
     <MarkdownBody markdown="Ask dispatch://role/release-captain, [@captain](dispatch://role/release-captain), dispatch://role/reviewer and dispatch://role/watcher." />,
@@ -460,7 +467,7 @@ const ASK_ID = "2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b";
 const ASK = `dispatch://CORE-1/ask/${ASK_ID}`;
 
 /** The comment a row below is the text of: its document declares the ask above as `q2`. */
-const COMMENT: TextSource = { id: "comment-1", kind: "comment" };
+const COMMENT: TextSource = { id: "comment-1", issue: "CORE-1", kind: "comment" };
 
 /** An ask of CORE-1 whose question is `Ship it?`, as its own read answers it. */
 const shipIt = {
@@ -534,6 +541,160 @@ function Headline({ markdown }: { markdown: string }): ReactNode {
   return <span data-testid="headline">{useMarkdownHeadline(undefined, 200, markdown)?.text}</span>;
 }
 
+/** CORE-1's implementer role, which no session the registry lists holds. */
+const STOPPED_ROLE = "legion-p-core-1-implementer";
+
+/** An issue's collaborators as Dispatch answers them: CORE-1's record its implementer, whose
+ *  session has stopped, and any other issue's record no Legion role. */
+function collaboratorsOf(key: string): IssueCollaborators {
+  return {
+    agents:
+      key === "CORE-1"
+        ? [
+            {
+              kind: "session",
+              last_at: null,
+              legion: {
+                replaced_at: null,
+                replaced_by: null,
+                role: "implementer",
+                role_token: STOPPED_ROLE,
+                started_at: "2026-10-26T00:00:00Z",
+              },
+              reasons: [],
+              session_id: "old-implementer",
+              title: "Old implementer",
+            },
+          ]
+        : [],
+    issue_key: key,
+    legion_registry: "ok",
+    people: [],
+  };
+}
+
+/** Answers each issue's collaborators read with `answer`, and hands back the spy. */
+function answerCollaborators(answer: (key: string) => IssueCollaborators = collaboratorsOf) {
+  const read = spyOn(api, "getIssueCollaborators").mockImplementation(async (key) => answer(key));
+  spies.push(read);
+  return read;
+}
+
+// INFRA-1702 Q2: a role is known while a session the registry lists holds it, or while the
+// collaborators of the issue the record is on record it (`role-holders.ts`): the issue's stopped
+// roles, which the picker offers under "Not running". Such a role reads as its token, linked to
+// its page, bare and as a mention, and the plain-text projection names it the same way, though
+// no session holds it.
+test("a stopped role the record's issue's collaborators record reads as its token, linked", async () => {
+  const read = answerCollaborators();
+  const markdown = `Ask dispatch://role/${STOPPED_ROLE} and [@implementer](dispatch://role/${STOPPED_ROLE}).`;
+  const view = draw(
+    <>
+      <MarkdownBody markdown={markdown} source={COMMENT} />
+      <Line markdown={markdown} source={COMMENT} />
+    </>,
+    clientWithParties()
+  );
+  try {
+    const bare = await within(view.container).findByRole("link", { name: STOPPED_ROLE });
+    const mention = within(view.container).getByRole("link", { name: `@${STOPPED_ROLE}` });
+    expect(bare).toHaveAttribute("href", `/agents?role=${STOPPED_ROLE}`);
+    expect(mention).toHaveAttribute("href", `/agents?role=${STOPPED_ROLE}`);
+    await waitFor(() =>
+      expect(view.getByTestId("line").textContent).toBe(`Ask ${STOPPED_ROLE} and @${STOPPED_ROLE}.`)
+    );
+    expect(read).toHaveBeenCalledWith("CORE-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The rule's other side: a role neither answer records is no target, and reads as the words its
+// writer wrote. That is a role CORE-1's collaborators do not record, on a record of CORE-1. It is
+// also CORE-1's stopped role on a record of CORE-2, whose collaborators do not record it, and on
+// a record on no issue, which reads no collaborators at all.
+test("a role neither the registry nor the record's issue's collaborators record reads as the words written", async () => {
+  const read = answerCollaborators();
+  const view = draw(
+    <>
+      <div data-testid="unrecorded">
+        <MarkdownBody markdown="Ask dispatch://role/release-captain." source={COMMENT} />
+      </div>
+      <div data-testid="other-issue">
+        <MarkdownBody
+          markdown={`Ask dispatch://role/${STOPPED_ROLE}.`}
+          source={{ id: "comment-2", issue: "CORE-2", kind: "comment" }}
+        />
+      </div>
+      <div data-testid="no-issue">
+        <MarkdownBody
+          markdown={`Ask dispatch://role/${STOPPED_ROLE}.`}
+          source={{ id: "message-2", issue: undefined, kind: "message" }}
+        />
+      </div>
+    </>,
+    clientWithParties()
+  );
+  try {
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-dispatch-missing]")).toHaveLength(3)
+    );
+    expect(within(view.container).queryByRole("link")).toBeNull();
+    expect(words(view.getByTestId("unrecorded"))).toBe("Ask dispatch://role/release-captain.");
+    expect(words(view.getByTestId("other-issue"))).toBe(`Ask dispatch://role/${STOPPED_ROLE}.`);
+    expect(words(view.getByTestId("no-issue"))).toBe(`Ask dispatch://role/${STOPPED_ROLE}.`);
+    expect(new Set(read.mock.calls.map(([key]) => key))).toEqual(new Set(["CORE-1", "CORE-2"]));
+  } finally {
+    view.unmount();
+  }
+});
+
+// A role a listed session holds is known by the registry alone, so a record of an issue reads
+// no collaborators for it: they are read only for a role the registry answered no holder for.
+test("a held role is linked with no read of the record's issue's collaborators", async () => {
+  const read = answerCollaborators();
+  const view = draw(
+    <MarkdownBody markdown="Ask dispatch://role/reviewer." source={COMMENT} />,
+    clientWithParties()
+  );
+  try {
+    const role = await within(view.container).findByRole("link", { name: "reviewer" });
+    expect(role).toHaveAttribute("href", "/agents?role=reviewer");
+    expect(read).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A collaborators answer made while Legion's registry did not answer (`legion_registry:
+// "unavailable"`) records no Legion role of anyone, so it says nothing about this one: the role
+// keeps its link in the words its writer wrote, as it does while any read is out, rather than
+// reading as a target Dispatch answered does not exist.
+test("a role keeps its link in its words while Legion's record of the issue cannot be read", async () => {
+  const unavailable = (key: string): IssueCollaborators => ({
+    ...collaboratorsOf(key),
+    agents: [],
+    legion_registry: "unavailable",
+  });
+  answerCollaborators(unavailable);
+  const client = clientWithParties();
+  // Answered before the body mounts, so its first commit already reads it.
+  client.setQueryData(["issue", "CORE-1", "collaborators"], unavailable("CORE-1"));
+  const view = draw(
+    <MarkdownBody markdown={`Ask dispatch://role/${STOPPED_ROLE}.`} source={COMMENT} />,
+    client
+  );
+  try {
+    const role = await within(view.container).findByRole("link", {
+      name: `dispatch://role/${STOPPED_ROLE}`,
+    });
+    expect(role).toHaveAttribute("href", `/agents?role=${STOPPED_ROLE}`);
+    expect(view.container.querySelector("[data-dispatch-missing]")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // R8 in the projection: an address Dispatch answers does not exist is the words its writer
 // wrote, bare or as its own link's words, as the painted line reads it - never its short form,
 // which would pass for a name.
@@ -590,21 +751,20 @@ test("a bare key, a dashboard address and a short id project as the painted line
   }
 });
 
-// A reader that holds no facts for a form writes it as its author did: a title drawn over a
-// record's text resolves nothing, so only a `dispatch://` address is shortened there, and a line
-// that names no record reads a `#id` as written, since only a record's document declares one.
+// A reader that holds no facts for a form writes it as its author did, as a rendered body draws
+// the words of a link whose title has not resolved: a title drawn over a record's text resolves
+// nothing, so even a `dispatch://` address stays as written there, and a line that names no
+// record reads a `#id` as written, since only a record's document declares one.
 test("a reader with no facts for a form projects it as written", async () => {
-  const written = `See CORE-1, ${window.location.origin}/issues/CORE-1 and #q2`;
+  const written = `See CORE-1, ${window.location.origin}/issues/CORE-1 and #q2, not dispatch://CORE-1.`;
   const view = draw(
     <>
-      <Headline markdown={`${written}, not dispatch://CORE-1.`} />
+      <Headline markdown={written} />
       <Line markdown="Decide #q2 now." />
     </>
   );
   try {
-    await waitFor(() =>
-      expect(view.getByTestId("headline").textContent).toBe(`${written}, not CORE-1.`)
-    );
+    await waitFor(() => expect(view.getByTestId("headline").textContent).toBe(written));
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe("Decide #q2 now."));
   } finally {
     view.unmount();
@@ -710,8 +870,7 @@ test("an escaped #id stays its words, painted and projected alike", async () => 
 
 // A mention's sign may be written escaped: Markdown reads `\@` as `@`, so the link is the
 // mention it reads as, in the painted line and the projection - and in a draft's chips, which
-// read the same words through `@legion/contracts`'s `readWrittenWords`
-// (`party-references.test.ts`).
+// read the same words through the parse (`parsed-references.ts`, `party-references.test.ts`).
 test("a mention whose sign is written escaped reads as the party's current name", async () => {
   const markdown = `Ask [\\@Old name](dispatch://agent/${SESSION}) now.`;
   const view = draw(
@@ -825,6 +984,47 @@ test("a party's link whose words are formatted in part keeps them, painted and p
     await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(written));
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe(written));
     expect(within(view.getByTestId("painted")).queryByText(/Planner now/)).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A hard break among a link's words cuts them as formatting over a part of them does, so they
+// are the author's words. The break holds no link, so Proof paints such a link as an anchor on
+// each side of it, and the projection reads a run of text on each side; each reads the two as
+// the one link they are. The plain mention beside it shows the party's name has been read.
+test("a party's link whose words a hard break cuts keeps them, painted and projected alike", async () => {
+  const agent = `dispatch://agent/${SESSION}`;
+  const markdown = `Ask [@Old\\\nname](${agent}) and [@Old](${agent}) here.`;
+  const view = draw(<PaintedAndProjected markdown={markdown} />, clientWithParties());
+  try {
+    const painted = view.getByTestId("painted");
+    await waitFor(() => expect(words(painted)).toBe("Ask @Oldname and @Planner now here."));
+    expect(
+      within(painted)
+        .getAllByRole("link")
+        .map((link) => link.textContent)
+    ).toEqual(["@Old", "name", "@Planner now"]);
+    await waitFor(() =>
+      expect(view.getByTestId("line").textContent).toBe("Ask @Old name and @Planner now here.")
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// A session picked while its title held a formatting character, then renamed: the pick wrote the
+// title as literal words (`partyLink`), so the formatting covers no part of them, and the link is
+// the mention it was picked as, which reads as the session's current name, painted and projected
+// alike.
+test("a party picked by a name holding formatting characters reads as its current name after a rename", async () => {
+  const markdown = `Ask ${partyLink("fix *the* cache", `dispatch://agent/${SESSION}`)} now.`;
+  const view = draw(<PaintedAndProjected markdown={markdown} />, clientWithParties());
+  try {
+    const painted = view.getByTestId("painted");
+    await within(painted).findByRole("link", { name: "@Planner now" });
+    expect(words(painted)).toBe("Ask @Planner now now.");
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe("Ask @Planner now now."));
   } finally {
     view.unmount();
   }

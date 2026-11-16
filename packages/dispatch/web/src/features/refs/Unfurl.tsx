@@ -53,10 +53,10 @@ const CARD_BODY_CLASS = `mt-1 ${textSecondaryOnSurface}`;
  *  draws as no record's and a `#id` in it names nothing. */
 function cardRecord(route: DispatchReferenceRoute): TextSource | undefined {
   if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
-    return { id: route.id, kind: route.kind };
+    return { id: route.id, issue: route.key, kind: route.kind };
   }
   if (route.kind === "document" && route.item !== undefined) {
-    return { id: route.item.id, kind: route.item.kind };
+    return { id: route.item.id, issue: undefined, kind: route.item.kind };
   }
   return undefined;
 }
@@ -82,7 +82,14 @@ interface ReferenceCards {
   readonly github: readonly GitHubReference[];
 }
 
-function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
+function DispatchUnfurl({
+  card,
+  source,
+}: {
+  card: DispatchCard;
+  /** The record the body is, which the card's words are part of. */
+  source: TextSource | undefined;
+}): ReactNode {
   const { title, description, descriptionTree } = useReferenceTarget(card.route, { text: true });
   const href = useReferenceHref(card.route);
 
@@ -95,7 +102,7 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
       >
         <span className={`block font-medium ${linkText}`}>
           {title ?? (
-            <PlainText markdown={card.text} surface="dispatch-reference-card">
+            <PlainText markdown={card.text} source={source} surface="dispatch-reference-card">
               {(words) => words ?? ""}
             </PlainText>
           )}
@@ -326,11 +333,15 @@ function referenceCards(
 export function UnfurlRead({
   body,
   reading,
+  source,
   written,
 }: {
   body: string;
   /** The body's references with every fact its queries answered: what the cards are. */
   reading: TextReading;
+  /** The record the body is (`UnfurlProps`), which a card's words read a `#id` against while
+   *  the card's target loads. */
+  source: TextSource | undefined;
   /** The row of the reading list these cards are drawn on (`UnfurlProps`). */
   surface?: DispatchReadingSurface;
   /** The body's references as the text alone reads: what its shape is read from. */
@@ -351,7 +362,7 @@ export function UnfurlRead({
   return (
     <section aria-label="References" className="mt-3 space-y-2">
       {cards.dispatch.map((card) => (
-        <DispatchUnfurl card={card} key={card.reference} />
+        <DispatchUnfurl card={card} key={card.reference} source={source} />
       ))}
       {cards.github.map((reference) => (
         <GitHubUnfurl href={reference.href} key={reference.href} path={reference.path} />
@@ -377,5 +388,7 @@ export function Unfurl({ body, source, surface }: UnfurlProps): ReactNode {
     [body, written]
   );
   const { reading } = useTextReferences(shaped ? body : "", source);
-  return <UnfurlRead body={body} reading={reading} surface={surface} written={written} />;
+  return (
+    <UnfurlRead body={body} reading={reading} source={source} surface={surface} written={written} />
+  );
 }

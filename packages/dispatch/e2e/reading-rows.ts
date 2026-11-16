@@ -128,16 +128,20 @@ async function settledQuestion(artifactId: string): Promise<string> {
 }
 
 /** The forms the driven row's surface carries: every form but the ones its row of the list
- *  says it cannot (`cannotCarry`). The row is the one the running driver's title names before
- *  its colon, which is the tie the gate holds every driver to. */
+ *  says it cannot (`cannotCarry`), or, for a driver of one of the row's arms, the ones that arm
+ *  says it cannot. The row and the arm are the ones the running driver's title names before its
+ *  colon (`<surface>:` or `<surface>/<arm>:`), which is the tie the gate holds every driver to. */
 function carriedForms(): DispatchReadingForm[] {
   const { title } = test.info();
-  const surface = /^([a-z0-9-]+):/u.exec(title)?.[1];
+  const [, surface, armId] = /^([a-z0-9-]+)(?:\/([a-z0-9-]+))?:/u.exec(title) ?? [];
   const row = DISPATCH_READING_SURFACES.find((one) => one.surface === surface);
-  if (row === undefined) {
-    throw new Error(`setup: "${title}" names no row of DISPATCH_READING_SURFACES before its colon`);
+  const arm = armId === undefined ? undefined : row?.arms?.find((one) => one.arm === armId);
+  if (row === undefined || (armId !== undefined && arm === undefined)) {
+    throw new Error(
+      `setup: "${title}" names no row of DISPATCH_READING_SURFACES, or no arm of one, before its colon`
+    );
   }
-  const uncarried = row.cannotCarry?.forms ?? [];
+  const uncarried = (arm ?? row).cannotCarry?.forms ?? [];
   return DISPATCH_READING_FORMS.filter((form) => !uncarried.includes(form));
 }
 

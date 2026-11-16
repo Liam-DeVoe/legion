@@ -1,0 +1,45 @@
+import { expect, test } from "bun:test";
+
+import { headRefs } from "./head-refs";
+
+// A head drawn as its characters must not end in half a reference: a cut inside one moves back
+// to where it starts, the inline link around it taken whole, and drops the spaces before it.
+test("a cut inside a mention moves back to the link's start", () => {
+  const text = "ask [@Planner](dispatch://agent/planner-session) about it";
+  expect(headRefs(text, 20, "…")).toBe("ask…");
+  // The cut in the mention's words, and in its address, are both inside the one link.
+  expect(headRefs(text, 9, "…")).toBe("ask…");
+  expect(headRefs(text, 40, "…")).toBe("ask…");
+});
+
+test("a cut inside an address moves back to the address's start", () => {
+  expect(headRefs("see dispatch://CORE-1/spec now", 20, "…")).toBe("see…");
+  // A link worded by its author is taken whole as well.
+  expect(headRefs("see [the plan](dispatch://CORE-1/spec) now", 30, "…")).toBe("see…");
+});
+
+test("a cut inside a bare key moves back to the key's start", () => {
+  expect(headRefs("fix it in CORE-1234 today", 15, "…")).toBe("fix it in…");
+});
+
+// The head with the ellipsis after it must not read a reference the text does not write:
+// `CORE-12` of `CORE-12x4`, which is no key, would read as a working link to another issue.
+test("a head that would read a reference the text does not write moves back", () => {
+  expect(headRefs("see CORE-12x4 now", 12, "…")).toBe("see…");
+});
+
+test("a text with no reference is cut by length, as a text at or under the bound is left whole", () => {
+  expect(headRefs("plain words that run on and on", 10, "…")).toBe("plain wor…");
+  expect(headRefs("plain words", 11, "…")).toBe("plain words");
+  // A reference that ends before the cut is no reason to move it.
+  expect(headRefs("CORE-1 and plain words after it", 15, "…")).toBe("CORE-1 and pla…");
+});
+
+// A head of nothing tells a reader less than half a reference does.
+test("a text that opens with a reference longer than the bound keeps the cut by length", () => {
+  expect(headRefs("dispatch://CORE-1/spec#b-abc and more", 10, "…")).toBe("dispatch:…");
+});
+
+test("the bound counts characters, so no cut splits one", () => {
+  expect(headRefs("😀😀😀😀 words", 4, "…")).toBe("😀😀😀…");
+});

@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import {
+  HARD_BREAK_PIECE,
   isMentionWords,
   MENTION_SIGN,
   mentionDrawn,
   mentionName,
-  readWrittenWords,
   referenceReading,
   type WordsFormatting,
   wordsFormatting,
@@ -94,44 +94,14 @@ test("formatting over some of a link's words makes them the author's words", () 
   ).toBe("words");
 });
 
-// A reader of a text nothing has parsed reads the same three cases out of the characters, and a
-// link's words as a reader sees them: each escape undone, and the runs that write formatting
-// gone. A run that opens nothing is the character it is.
-test("written words read as a parsed document's do, formatting and all", () => {
-  expect(readWrittenWords("@Planner")).toEqual({ formatting: "plain", words: "@Planner" });
-  expect(readWrittenWords("\\@Planner \\[2\\]")).toEqual({
-    formatting: "plain",
-    words: "@Planner [2]",
-  });
-  expect(readWrittenWords("a\\\\b \\n C:\\dir")).toEqual({
-    formatting: "plain",
-    words: "a\\b \\n C:\\dir",
-  });
-  // All of the words under one formatting, however it is written.
-  for (const written of ["**@Planner**", "_@Planner_", "~~@Planner~~", "***@Planner***"]) {
-    expect(readWrittenWords(written)).toEqual({ formatting: "plain", words: "@Planner" });
-  }
-  expect(readWrittenWords("**@Plan**__ner__")).toEqual({ formatting: "plain", words: "@Planner" });
-  // Some of them.
-  expect(readWrittenWords("@Planner **now**")).toEqual({
-    formatting: "mixed",
-    words: "@Planner now",
-  });
-  expect(readWrittenWords("**@Planner** now")).toEqual({
-    formatting: "mixed",
-    words: "@Planner now",
-  });
-  // Code.
-  expect(readWrittenWords("`@Planner`")).toEqual({ formatting: "code", words: "@Planner" });
-  expect(readWrittenWords("@Planner `now`")).toEqual({
-    formatting: "mixed",
-    words: "@Planner now",
-  });
-  // Runs that write no formatting: inside a word, escaped, or closed by nothing.
-  for (const written of ["@snake_case_name", "@a*b", "@x `y", "2 * 3 * 4"]) {
-    expect(readWrittenWords(written)).toEqual({ formatting: "plain", words: written });
-  }
-  expect(readWrittenWords("\\*\\*@x\\*\\*")).toEqual({ formatting: "plain", words: "**@x**" });
+// A hard break among a link's words cuts them as formatting over a part of them does, whatever
+// the runs on either side of it are: the words are the author's.
+test("a hard break among a link's words makes them the author's words", () => {
+  const plain = wordsPieceUnder([mark("link")]);
+  const bold = wordsPieceUnder([mark("strong"), mark("link")]);
+  expect(wordsFormatting([plain, HARD_BREAK_PIECE, plain])).toBe("mixed");
+  expect(wordsFormatting([bold, HARD_BREAK_PIECE, bold])).toBe("mixed");
+  expect(wordsFormatting([plain, plain])).toBe("plain");
 });
 
 test("a mention draws the sign and the name", () => {

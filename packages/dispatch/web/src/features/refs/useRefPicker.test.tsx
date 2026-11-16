@@ -1,10 +1,11 @@
-import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { ApiError, api } from "../../api/client";
@@ -12,11 +13,13 @@ import type {
   Agent,
   ArchitectureTree,
   ArtifactWithTrees,
+  DisplayTree,
   GraphReferences,
   IssueCollaborators,
   SearchResponse,
   SearchResult,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { RefPickerList } from "./RefPickerList";
 import {
   applyInsertion,
@@ -28,6 +31,10 @@ import {
 import { useRefPicker } from "./useRefPicker";
 
 const now = Date.now();
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** `[` opens a key descriptor in user-event's keyboard syntax, so each one is doubled to type
  *  the character: this is the `[[` door typed out. */
@@ -287,13 +294,14 @@ test("every door lists the parties and the components before a character is type
 
   await screen.findByRole("listbox", { name: "References" });
   // The `@` door: people, agents, roles, then the kinds that need no query either. The issue
-  // records a reviewer whose session has stopped, and nobody holds that role: it is no row.
+  // records a reviewer whose session has stopped, which is offered as a role nobody runs.
   await waitFor(() =>
     expect(drawnRows()).toEqual([
       "People: alice@theorem.dev",
       "Agents: Planner",
       "Agents: Worker",
       "Roles: planner",
+      "Roles: reviewer",
       "Components: The relay",
     ])
   );
@@ -302,11 +310,10 @@ test("every door lists the parties and the components before a character is type
   expect(page.search).not.toHaveBeenCalled();
 });
 
-// One rule says which roles are known (`roleHolders`): a role a session the registry lists holds,
-// live or unresponsive, as the server delivers to either. A role the issue records only for a
-// session that has stopped has no holder: the reader draws it as the words written and the server
-// tells nobody, so the picker offers it nowhere, and the hint that a picked role is told holds.
-test("the picker offers a role a listed session holds, unresponsive or not, and no role nobody holds", async () => {
+// The roles a picker offers are the known ones (`role-holders.ts`): a role a session the
+// registry lists holds, live or unresponsive, and a role the issue's collaborators record whose
+// session has stopped, which is offered as not running.
+test("the picker offers a role a listed session holds, unresponsive or not, and the issue's stopped roles", async () => {
   const user = userEvent.setup();
   renderHost({ agents: [planner, { ...worker, roles: ["tester"], state: "unresponsive" }] });
 
@@ -314,8 +321,6 @@ test("the picker offers a role a listed session holds, unresponsive or not, and 
   await user.click(comment);
   await user.keyboard("@");
 
-  // The person is the collaborators' read, which also records the stopped reviewer: once it is
-  // drawn, that read has answered.
   await waitFor(() =>
     expect(drawnRows()).toEqual([
       "People: alice@theorem.dev",
@@ -323,6 +328,7 @@ test("the picker offers a role a listed session holds, unresponsive or not, and 
       "Agents: Worker",
       "Roles: planner",
       "Roles: tester",
+      "Roles: reviewer",
       "Components: The relay",
     ])
   );
@@ -382,13 +388,13 @@ test("the picker filters as the reader types, moves with the arrows and takes th
   await user.keyboard("@");
   await screen.findByRole("listbox", { name: "References" });
 
-  await waitFor(() => expect(drawnRows()).toHaveLength(5));
+  await waitFor(() => expect(drawnRows()).toHaveLength(6));
 
   await user.keyboard("worker");
   await waitFor(() => expect(drawnRows()).toEqual(["Agents: Worker"]));
 
   await user.keyboard("{Backspace}".repeat("worker".length));
-  await waitFor(() => expect(drawnRows()).toHaveLength(5));
+  await waitFor(() => expect(drawnRows()).toHaveLength(6));
   // The first row is highlighted until the reader moves; one step down takes the second.
   const options = screen.getAllByRole("option");
   expect(options[0]?.getAttribute("aria-selected")).toBe("true");
@@ -398,7 +404,7 @@ test("the picker filters as the reader types, moves with the arrows and takes th
   );
   await user.keyboard("{ArrowUp}{ArrowUp}");
   await waitFor(() =>
-    expect(screen.getAllByRole("option")[4]?.getAttribute("aria-selected")).toBe("true")
+    expect(screen.getAllByRole("option")[5]?.getAttribute("aria-selected")).toBe("true")
   );
 
   await user.keyboard("{Enter}");
@@ -623,5 +629,89 @@ test("the list says it is loading, that nothing matches, and that Dispatch is un
     expect(screen.getByTestId("ref-picker-unreachable").textContent).toBe(
       REF_PICKER_WORDS.unreachable
     )
+  );
+});
+
+/** A comment's hit whose snippet is `snippet`, with the tree the server read it into where the
+ *  test gives one, numbered so several can stand in one answer. */
+function commentHit(index: number, snippet: string, snippetTree?: DisplayTree): SearchResult {
+  return {
+    href: `/issues/CORE-2/comments/comment-${index}`,
+    id: `comment-${index}`,
+    kind: "comment",
+    owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+    rank: 0.1 - index / 100,
+    snippet,
+    ...(snippetTree === undefined ? {} : { snippet_tree: snippetTree }),
+  };
+}
+
+// A row is an option the reader takes, which holds no link, so a hit worded with its record's
+// own text draws that text's plain words from the tree the server read it into: its formatting
+// gone, and a mention read as the party's current name rather than as its Markdown.
+test("a hit's row reads its snippet as its plain words", async () => {
+  const user = userEvent.setup();
+  const snippet = "I saw **the relay** drop [@Old](dispatch://agent/planner-session)";
+  renderHost({
+    searchAnswer: async () => searchResponse([commentHit(1, snippet, displayTree(snippet))]),
+  });
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("#relay");
+  await waitFor(() => expect(drawnRows()).toContain("Comments: I saw the relay drop @Planner"));
+});
+
+// The head of a block, which its node's `part_of` backlink carries with its tree, is drawn the
+// same way.
+test("a block's row reads its excerpt as its plain words", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+  const text = "Ask *the planner*: [@Old](dispatch://agent/planner-session)";
+  const [edge] = blocks.edges ?? [];
+  if (edge === undefined) throw new Error("the fixture holds no block");
+  page.getReferences.mockResolvedValue({
+    ...blocks,
+    edges: [{ ...edge, excerpt: { text, text_tree: displayTree(text) } }],
+  });
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("#relay");
+  await waitFor(() => expect(drawnRows()).toContain("Comments: I saw the relay drop one"));
+  await user.click(screen.getByRole("button", { name: "Blocks" }));
+  await waitFor(() => expect(drawnRows()).toContain("Comment blocks: Ask the planner: @Planner"));
+});
+
+// A hit the server sent no tree for is drawn as its words written, cut to one line where no
+// reference crosses the cut: a cut that would land in a mention's link, in an address or in a
+// bare key moves back to its start, so the row never ends in half of one. A snippet that holds
+// none is cut by length, as it always was.
+test("a hit's row drawn as written is cut where no reference crosses the cut", async () => {
+  const user = userEvent.setup();
+  // 108 characters, so a reference written after them crosses the 120th.
+  const lead = "relay ".repeat(18);
+  const plain = "relay ".repeat(30).trim();
+  renderHost({
+    searchAnswer: async () =>
+      searchResponse([
+        commentHit(1, `${lead}[@Planner](dispatch://agent/planner-session) after`),
+        commentHit(2, `${lead}dispatch://CORE-1/spec after`),
+        commentHit(3, `${lead}CORE-1234567 after`),
+        commentHit(4, plain),
+      ]),
+  });
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("#relay");
+  const head = `Comments: ${lead.trimEnd()}…`;
+  await waitFor(() =>
+    expect(drawnRows().filter((row) => row.startsWith("Comments:"))).toEqual([
+      head,
+      head,
+      head,
+      `Comments: ${plain.slice(0, 119)}…`,
+    ])
   );
 });

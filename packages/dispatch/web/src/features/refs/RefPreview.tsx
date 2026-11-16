@@ -364,9 +364,9 @@ function Body({
 /** The issue's full read, not the summary its links share: the card shows priority, labels, open
  *  asks and the spec, and holds that read only while it is shown. The hover that opens the card
  *  has already asked both reads (`prefetchReference`), so the card's own mount asks neither
- *  again where it failed (`REFERENCE_READ`): a hover over a missing target costs one read. The
- *  spec's text waits on the issue's read, so it is a read made after the card mounted
- *  (`useReferenceQuery`). */
+ *  again where Dispatch answered the target does not exist (`REFERENCE_READ`): a hover over a
+ *  missing target costs one read. The spec's text waits on the issue's read, so it is a read
+ *  made after the card mounted (`useReferenceQuery`). */
 function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const key = "key" in route ? route.key : undefined;
   const { data: issue } = useQuery({
@@ -413,7 +413,11 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
         )}
       </span>
       {specMarkdown === undefined || specMarkdown.trim() === "" ? null : (
-        <Body markdown={specMarkdown} source={textSourceOf("artifact", spec?.id)} tree={specTree} />
+        <Body
+          markdown={specMarkdown}
+          source={textSourceOf("artifact", spec?.id, issue.key)}
+          tree={specTree}
+        />
       )}
     </>
   );
@@ -457,7 +461,7 @@ function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNod
       {markdown === undefined || markdown.trim() === "" ? null : (
         <Body
           markdown={markdown}
-          source={textSourceOf("artifact", artifact.id)}
+          source={textSourceOf("artifact", artifact.id, "key" in route ? route.key : undefined)}
           tree={markdownTree}
         />
       )}
@@ -522,7 +526,11 @@ function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
         </span>
       )}
       {text === undefined || text.trim() === "" ? null : (
-        <Body markdown={text} source={textSourceOf("artifact", artifact?.id)} tree={textTree} />
+        <Body
+          markdown={text}
+          source={textSourceOf("artifact", artifact?.id, "key" in route ? route.key : undefined)}
+          tree={textTree}
+        />
       )}
     </>
   );
@@ -540,7 +548,7 @@ function AskPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
         <MarkdownPreview
           lines={2}
           markdown={ask.ask.question}
-          source={textSourceOf("ask", ask.ask.id)}
+          source={textSourceOf("ask", ask.ask.id, ask.ask.issue_key)}
           surface="reference-hover-card-ask"
           tree={ask.ask.question_tree}
         />
@@ -565,7 +573,7 @@ function CommentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode
       </Heading>
       <Body
         markdown={comment.comment.body}
-        source={textSourceOf("comment", comment.comment.id)}
+        source={textSourceOf("comment", comment.comment.id, comment.comment.issue_key)}
         tree={comment.comment.body_tree}
       />
     </>
@@ -584,7 +592,7 @@ function MessagePreview({ route }: { route: DispatchReferenceRoute }): ReactNode
       </Heading>
       <Body
         markdown={message.message.body}
-        source={textSourceOf("message", message.message.id)}
+        source={textSourceOf("message", message.message.id, message.message.issue_key)}
         tree={message.message.body_tree}
       />
     </>

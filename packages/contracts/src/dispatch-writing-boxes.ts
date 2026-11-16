@@ -133,9 +133,11 @@ const DOORS = "Type @ for an agent, a role or a person, # for an issue, [[ for a
 
 /** What a box says when a mention on its write is delivered. The comment route tells an agent
  *  or a role the body names and never a person (`commentPartiesOf` in the Go API's
- *  comment_create.go), and a person's reference is drawn as their name with no link until a
- *  person has a page (R5). */
-export const DISPATCH_WRITING_HINT_DELIVERED = `${DOORS} A picked agent or role is told. A picked person shows as a name without a link and is not told.`;
+ *  comment_create.go), and it tells a role only while a session holds it: a role nobody holds is
+ *  refused at once ("no holder for role …", `resolveDeliveryTarget`) and kept for no later
+ *  holder, though the picker offers the issue's stopped roles and the reader links them. A
+ *  person's reference is drawn as their name with no link until a person has a page (R5). */
+export const DISPATCH_WRITING_HINT_DELIVERED = `${DOORS} A picked agent or role is told while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
 
 /** What a box whose write tells nobody it names says of a pick, before it says what does tell:
  *  every such write but a suggestion's, whose replacement shows no link (below). It says nothing
@@ -187,9 +189,11 @@ export const DISPATCH_WRITING_HINT_QUIET = {
 
 /** What the ask card's one box says, since the reader chooses there which write it makes: an
  *  answer reaches whoever asked and tells nobody it names, while a question back is a comment,
- *  which tells a picked agent or role and never a person. Both of that box's rows carry it,
- *  since the box shows one line for the two. */
-export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role; a picked person shows as a name without a link and is not told.`;
+ *  which tells what a delivering box's line says it tells (`DISPATCH_WRITING_HINT_DELIVERED`): a
+ *  picked agent or role while a session holds it, never a role that is not running, which still
+ *  gets a link, and never a person. Both of that box's rows carry it, since the box shows one
+ *  line for the two. */
+export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
 
 /** Why the delivery settings boxes have no picker. */
 const SETTINGS_REASON =

@@ -1,5 +1,3 @@
-import { readWrittenWords, type WordsFormatting } from "@legion/contracts";
-
 import { codeRanges } from "./code-ranges";
 import { partyLink } from "./ref-picker";
 import {
@@ -81,7 +79,7 @@ export function draftParties(body: string): DraftParties {
  *  `]` its words end at, its address without the angle brackets it may stand in, and one past its
  *  `)`; `picture` where a `!` before the `[` makes it a picture's syntax (`![caption](address)`),
  *  which a renderer draws as the picture rather than as a link. */
-interface InlineLink {
+export interface InlineLink {
   readonly open: number;
   readonly wordsEnd: number;
   readonly addressStart: number;
@@ -90,16 +88,36 @@ interface InlineLink {
   readonly picture: boolean;
 }
 
-/** The spaces, tabs and line breaks a link may hold between its parts, and a blank line, which
- *  ends the paragraph and every bracket open in it. */
-const LINK_SPACE = /[ \t\n]*/y;
+/** What follows a line break where the next line is blank, which ends the paragraph and every
+ *  bracket open in it. */
 const BLANK_LINE_AFTER = /[ \t]*\n/y;
 
-/** `at` moved past the spaces, tabs and line breaks that stand there. */
-function pastSpace(body: string, at: number): number {
-  LINK_SPACE.lastIndex = at;
-  LINK_SPACE.test(body);
-  return LINK_SPACE.lastIndex;
+/**
+ * The most characters a link's tail - its address and title, after the `(` - is read across: as
+ * many as the server reads past a cut to keep a reference whole (`longestWholeReferenceRunes` in
+ * `packages/envoy/internal/dispatch/text/runes.go`), far more than any address or title a person
+ * writes. A tail that runs further reads as no link. Every `](` of a text is read across no more
+ * than this, so a draft holding thousands of `](` that open no link - parentheses that never
+ * balance, a title that never closes - is read in time that grows with its length, not with its
+ * square.
+ */
+const LONGEST_LINK_TAIL = 1024;
+
+/** `at` moved past the spaces, tabs and one line break that stand there, short of `limit`;
+ *  undefined at a second line break, since a link's parts are never more than a line apart and a
+ *  blank line ends the paragraph, and so the link. */
+function pastSpace(body: string, at: number, limit: number): number | undefined {
+  let broken = false;
+  for (; at < limit; at += 1) {
+    const character = body.charAt(at);
+    if (character === "\n") {
+      if (broken) return undefined;
+      broken = true;
+    } else if (character !== " " && character !== "\t") {
+      break;
+    }
+  }
+  return at;
 }
 
 /** What closes a link's title, by what opens it. */
@@ -108,47 +126,64 @@ const TITLE_CLOSERS: Readonly<Record<string, string>> = { '"': '"', "'": "'", "(
 /** The address and the end of an inline link whose `(` stands just before `from`, read as
  *  CommonMark reads a link's destination and title: an address in angle brackets, or one with no
  *  space whose parentheses balance, then, after a space, a title in double quotes, single quotes
- *  or parentheses, then the `)`. Undefined where no link ends there. */
+ *  or parentheses, then the `)`, all within the paragraph and `LONGEST_LINK_TAIL` characters.
+ *  Undefined where no link ends there. */
 function linkTail(
   body: string,
   from: number
 ): Pick<InlineLink, "addressEnd" | "addressStart" | "close"> | undefined {
-  let at = pastSpace(body, from);
+  const limit = Math.min(body.length, from + LONGEST_LINK_TAIL);
+  let at = pastSpace(body, from, limit);
+  if (at === undefined) return undefined;
   const angled = body.charAt(at) === "<";
   const addressStart = angled ? at + 1 : at;
   at = addressStart;
   if (angled) {
-    while (at < body.length && body.charAt(at) !== ">") {
+    while (at < limit && body.charAt(at) !== ">") {
       const character = body.charAt(at);
       if (character === "\n" || character === "<") return undefined;
       at += character === "\\" ? 2 : 1;
     }
-    if (body.charAt(at) !== ">") return undefined;
+    if (at >= limit) return undefined;
   } else {
     let depth = 0;
-    for (; at < body.length; at += 1) {
+    for (; at < limit; at += 1) {
       const character = body.charAt(at);
       if (character <= " " || (character === ")" && depth === 0)) break;
       if (character === "\\") at += 1;
       else if (character === "(") depth += 1;
       else if (character === ")") depth -= 1;
     }
-    if (depth !== 0) return undefined;
+    if (depth !== 0 || at >= limit) return undefined;
   }
   const addressEnd = at;
   if (angled) at += 1;
-  const spaced = pastSpace(body, at);
+  const spaced = pastSpace(body, at, limit);
+  if (spaced === undefined) return undefined;
   const closer = spaced > at ? TITLE_CLOSERS[body.charAt(spaced)] : undefined;
   at = spaced;
   if (closer !== undefined) {
     at += 1;
-    while (at < body.length && body.charAt(at) !== closer) {
-      at += body.charAt(at) === "\\" ? 2 : 1;
+    // A title may run over a line break, never over a blank line.
+    let blank = false;
+    while (at < limit && body.charAt(at) !== closer) {
+      const character = body.charAt(at);
+      if (character === "\n") {
+        if (blank) return undefined;
+        blank = true;
+      } else if (character !== " " && character !== "\t") {
+        blank = false;
+      }
+      at += character === "\\" ? 2 : 1;
     }
-    if (at >= body.length) return undefined;
-    at = pastSpace(body, at + 1);
+    if (at >= limit) return undefined;
+    const closed = pastSpace(body, at + 1, limit);
+    if (closed === undefined) return undefined;
+    at = closed;
   }
-  return body.charAt(at) === ")" ? { addressEnd, addressStart, close: at + 1 } : undefined;
+  return at < limit && body.charAt(at) === ")"
+    ? { addressEnd, addressStart, close: at + 1 }
+    : undefined;
 }
 
 /**
@@ -159,10 +194,13 @@ function linkTail(
  * bracket open before it. Code holds no link syntax, so what the text's code contexts hold
  * (`codeRanges`) is passed over.
  */
-function inlineLinks(body: string): InlineLink[] {
+function readInlineLinks(body: string): readonly InlineLink[] {
   const code = codeRanges(body);
   const links: InlineLink[] = [];
-  const openers: { at: number; picture: boolean; active: boolean }[] = [];
+  const openers: { at: number; picture: boolean }[] = [];
+  // Every opener below this index that is not a picture's was open when a link closed, and so
+  // opens no link: one mark for all of them, rather than a walk over them at every link.
+  let closedBelow = 0;
   let nextCode = 0;
   for (let at = 0; at < body.length; at += 1) {
     while (nextCode < code.length && (code[nextCode]?.end ?? 0) <= at) nextCode += 1;
@@ -176,25 +214,38 @@ function inlineLinks(body: string): InlineLink[] {
       at += 1;
     } else if (character === "\n") {
       BLANK_LINE_AFTER.lastIndex = at + 1;
-      if (BLANK_LINE_AFTER.test(body)) openers.length = 0;
+      if (BLANK_LINE_AFTER.test(body)) {
+        openers.length = 0;
+        closedBelow = 0;
+      }
     } else if (character === "[") {
       const picture = body.charAt(at - 1) === "!" && body.charAt(at - 2) !== "\\";
-      openers.push({ active: true, at, picture });
+      closedBelow = Math.min(closedBelow, openers.length);
+      openers.push({ at, picture });
     } else if (character === "]") {
       const opener = openers.pop();
-      const tail =
-        opener?.active === true && body.charAt(at + 1) === "(" ? linkTail(body, at + 2) : undefined;
+      const opens = opener !== undefined && (opener.picture || openers.length >= closedBelow);
+      const tail = opens && body.charAt(at + 1) === "(" ? linkTail(body, at + 2) : undefined;
       if (opener === undefined || tail === undefined) continue;
       links.push({ ...tail, open: opener.at, picture: opener.picture, wordsEnd: at });
-      if (!opener.picture) {
-        for (const earlier of openers) {
-          if (!earlier.picture) earlier.active = false;
-        }
-      }
+      if (!opener.picture) closedBelow = openers.length;
       at = tail.close - 1;
     }
   }
   return links;
+}
+
+/** The last text `inlineLinks` read, and the links it found there. */
+let lastRead: { readonly body: string; readonly links: readonly InlineLink[] } | undefined;
+
+/** Every inline link `body` writes (`readInlineLinks`). A draft's pills ask about each reference
+ *  of one text in turn (`linkOf`, `inLinkWords`), so the text last read is read once, not once
+ *  for every reference it holds. */
+export function inlineLinks(body: string): readonly InlineLink[] {
+  if (lastRead === undefined || lastRead.body !== body) {
+    lastRead = { body, links: readInlineLinks(body) };
+  }
+  return lastRead.links;
 }
 
 /** The inline link whose address is `body.slice(start, end)`, or undefined where none is. */
@@ -210,16 +261,14 @@ function linkAround(body: string, start: number, end: number): { end: number; st
   return link === undefined ? { end, start } : { end: link.close, start: link.open };
 }
 
-/** The inline link `body` writes a reference's address in: its words as a reader sees them and
- *  how they are formatted, read out of the characters as a parsed record's are read out of its
- *  marks (`@legion/contracts`'s `readWrittenWords`) - each backslash escape undone, a bracket
- *  `partyLink` escaped among them, and the runs that write formatting gone - and whether it is a
- *  picture's syntax (`![caption](address)`), which a renderer draws as the picture rather than
- *  as a link. */
+/** The inline link `body` writes a reference's address in: the link's own Markdown, from the
+ *  `[` that opens its words to the `)` that closes its address, which a reader of its words
+ *  parses (`parsed-references.ts`'s `parsedLinkWords`) rather than reads out of the characters,
+ *  and whether it is a picture's syntax (`![caption](address)`), which a renderer draws as the
+ *  picture rather than as a link. */
 export interface WrittenLink {
   readonly picture: boolean;
-  readonly words: string;
-  readonly formatting: WordsFormatting;
+  readonly markdown: string;
 }
 
 /** The inline link whose address `reference` is (`WrittenLink`), or undefined where the
@@ -232,7 +281,7 @@ export function linkOf(
   const link = linkWithAddress(body, reference.start, reference.end);
   return link === undefined
     ? undefined
-    : { picture: link.picture, ...readWrittenWords(body.slice(link.open + 1, link.wordsEnd)) };
+    : { markdown: body.slice(link.open, link.close), picture: link.picture };
 }
 
 /** Whether `reference` stands in an inline link's words rather than on its own or as a link's

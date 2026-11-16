@@ -410,7 +410,7 @@ export function AskCard({
   const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
-  const source = textSourceOf("ask", displayedAsk.id);
+  const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
   // ask's issue, or the project of the document it was asked on.
   const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;

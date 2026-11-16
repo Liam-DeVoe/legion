@@ -33,6 +33,7 @@ import { PlainText, usePlainHeadline } from "../refs/plain-text";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { decisionHeadingTree } from "./decision-heading";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
  *  (`api/decisions.go`'s `unsurePrefix`). */
@@ -71,7 +72,7 @@ function wordsOf(node: DisplayTree): string {
   let apart = false;
   const read = (current: DisplayTree): void => {
     if (typeof current.text === "string") {
-      // not stored prose: a tree's words joined to match a quote against, drawn nowhere
+      // A tree's words joined to match a quote against, drawn nowhere.
       words += apart && words !== "" ? ` ${current.text}` : current.text;
       apart = false;
       return;
@@ -117,11 +118,12 @@ function markdownBlocks(text: string): DecisionBlock[] {
     .map((block) => block.trim())
     .filter((block) => block !== "" && !block.startsWith("#"))
     .map((markdown) => ({
-      // The block's own markdown is its text here, the Change quote included: with no reading
-      // there is nothing to flatten, and parsing the markdown in the browser to build a quote
-      // is the reading a stored text's tree exists to spare every view. It is what the
-      // references are read from as well, because it is what the browser parsed to draw this
-      // block: a reference some other block of the decision cites is no reference of this one.
+      // The block's own markdown is what draws it here, and what its references are read from,
+      // because it is what the browser parsed to draw this block: a reference some other block
+      // of the decision cites is no reference of this one. It is no quote: an anchor quote is
+      // the document's flattened words, never its markdown (the reading list's `anchor-quote`),
+      // and with no reading there are no words to quote, so a decision drawn this way offers no
+      // Change (`WaitingDecision`).
       text: markdown,
       references: markdown,
       tree: undefined,
@@ -211,9 +213,14 @@ function ShapedLinks({
                 className={`${linkText} ${linkHoverText}`}
                 to={specBlockPath(issueKey, spec, blockId)}
               >
-                <PlainText markdown={link.to.text} surface="issue-decision-link">
+                <PlainText
+                  markdown={link.to.text}
+                  source={textSourceOf("artifact", spec?.id, issueKey)}
+                  surface="issue-decision-link"
+                >
                   {/* The head of the block's text as its plain words, and as written until the
-                      engine has answered: the reading list's `issue-decision-link`. */}
+                      engine has answered: the reading list's `issue-decision-link`. The block is
+                      one of the spec's, the record a `#id` in it names a question of. */}
                   {(words) => (words ?? link.to.text)?.trim() || `Block ${blockId}`}
                 </PlainText>
               </Link>
@@ -246,6 +253,7 @@ function ChangeComposer({
   const [body, setBody] = useState("");
   const send = useKeyedWrite({
     inline: true,
+    // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `Change to ${name}`,
     // The decisions document belongs to an issue, and a comment on an issue's document is the
     // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
@@ -263,6 +271,7 @@ function ChangeComposer({
   });
   return (
     <form
+      // A form's name holds no markup: the reading list's `decision-heading-words`.
       aria-label={`Change ${name}`}
       className="space-y-2"
       onSubmit={(event) => {
@@ -328,7 +337,9 @@ function DecisionCard({
   issueKey: string;
   spec: Artifact | undefined;
 }): ReactNode {
-  const source = textSourceOf("artifact", documentId);
+  const source = textSourceOf("artifact", documentId, issueKey);
+  // One reading per answer: a fresh tree every render would be a fresh text to draw.
+  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   return (
     <li className={`space-y-2 rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
       <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>
@@ -336,6 +347,7 @@ function DecisionCard({
           markdown={decision.heading}
           source={source}
           surface="issue-decision"
+          tree={headingTree}
           variant="inline"
         />
       </h3>
@@ -401,16 +413,22 @@ function WaitingDecision({
   const [changing, setChanging] = useState(false);
   // A change anchors on the decision's first block below its heading, by the words that block
   // holds: an anchor quote names the document's own text, which is what the server matches it
-  // against (`pmdoc.FindQuote`).
-  const quote = blocks[0]?.text;
+  // against (`pmdoc.FindQuote`). A block drawn from its markdown, with no reading, holds no such
+  // words (`markdownBlocks`), so that decision offers no Change.
+  const first = blocks[0];
+  const quote = first?.tree === undefined ? undefined : first.text;
+  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   // The heading as plain words, which the Keep and the Change are named after: a write's label
-  // and a form's name hold no markup.
-  const { reads, text: heading } = usePlainHeadline(undefined, decision.heading, {
-    surface: "issue-decision",
+  // and a form's name hold no markup. Until the engine has answered, the heading as written,
+  // which is the load state the reading list's `decision-heading-words` accepts.
+  const { reads, text: heading } = usePlainHeadline(headingTree, decision.heading, {
+    source: textSourceOf("artifact", documentId, issueKey),
+    surface: "decision-heading-words",
   });
-  const name = heading?.text ?? "";
+  const name = heading?.text ?? decision.heading;
   const keep = useKeyedWrite({
     inline: true,
+    // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `Keep ${name}`,
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
@@ -508,7 +526,12 @@ function OpenQuestion({
   return (
     <li className={`rounded-lg border p-3 ${card}`}>
       <Link className={`text-sm ${linkText} ${linkHoverText}`} to={path}>
-        <PlainText markdown={ask.question} surface="issue-open-question" tree={ask.question_tree}>
+        <PlainText
+          markdown={ask.question}
+          source={textSourceOf("ask", ask.id, issueKey)}
+          surface="issue-open-question"
+          tree={ask.question_tree}
+        >
           {/* The question as its plain words, and as written until the engine has answered:
               the reading list's `issue-open-question`. */}
           {(words) => words ?? ask.question}

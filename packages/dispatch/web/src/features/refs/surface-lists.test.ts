@@ -21,13 +21,29 @@ import * as ts from "typescript";
  * construct - a mount of the renderer, of a reference card or of the plain-text projection -
  * names its row itself, in its `surface`, and fails when it names none or a row that does not
  * name its file: a second mount in a file a row already names is a surface of its own until it
- * says which row it is. The test reads each row back against the source, so a row whose box or
- * surface is gone fails too.
+ * says which row it is. A mount on a row whose text is a record hands its construct that record
+ * as its `source`, or its row says it cannot carry a question id. The test reads each row back
+ * against the source, so a row whose box or surface is gone fails too, and a row drawn through
+ * the projection names the test that proves it.
  *
  * A surface can also be drawn with no construct at all: a stored text written into a JSX child,
- * a `title` or a template literal as the characters it is, where a mention reads as
- * `[@name](dispatch://agent/...)`. The test finds those in the syntax tree too, and fails on
- * each one no row of the reading list excuses.
+ * an attribute, a template literal, a `+` join or a helper's call as the characters it is, where
+ * a mention reads as `[@name](dispatch://agent/...)`. The test finds those in the syntax tree
+ * too, and fails on each one that no excluded row names by its id beside it and that the
+ * reviewed list of fields holding no stored text (`NOT_STORED_TEXTS`) does not hold.
+ *
+ * What it cannot see, since it reads each file's syntax and not its types:
+ *
+ * - A stored text handed to a component of another file as a prop, and drawn raw there under
+ *   the prop's name: the walk follows props only within one file.
+ * - A stored text carried by a value that is no field read - state, a context, a ref, a store, a
+ *   query's `select`, an argument of a callback - and a function of another module that answers
+ *   one but is not imported by its own name.
+ * - A field the dashboard names like its own words (`label`, `description`) on a value the
+ *   trace does not see reached through `options`, and any field whose name no stored text has.
+ * - What a spread (`{...props}`) hands a construct: a spread counts as handing it a source.
+ * - A stored text written into the page by the DOM itself (`textContent`, `setAttribute`,
+ *   `document.title`) other than through a template literal.
  *
  * It walks `packages/proof-editor/src` beside the dashboard because the document body is one of
  * the three hosts that carry the picker: a box added inside the editor package must not be
@@ -128,8 +144,37 @@ const READING_HOOKS = new Map(
  *  the construct, so it is no raw draw. */
 const CONSTRUCT_TEXT_ATTRIBUTES: readonly string[] = ["body", "markdown", "referenceText"];
 
+/** The constructs that read a `#id` against the record their text is, and so take that record
+ *  as their `source`. The hover card and the cards the renderer mounts with the readings it has
+ *  already made read their records themselves, so they take none. */
+const SOURCE_TAKERS: ReadonlySet<string> = new Set([
+  "MarkdownBody",
+  "MarkdownPreview",
+  "PlainText",
+  "Unfurl",
+  "usePlainHeadline",
+]);
+
 /** The attributes whose value the browser shows a person as the characters it is. */
 const PLAIN_ATTRIBUTES: readonly string[] = ["alt", "aria-label", "label", "placeholder", "title"];
+
+/** The attributes of an element of the page that show nothing of their value as words: a class
+ *  list, an element's handles, an address to open, and a box's own draft, which the writing list
+ *  holds (`DISPATCH_WRITING_BOXES`). A stored text in any other attribute of an element is read
+ *  as drawn. A component's props are not attributes of the page: what one draws of them is read
+ *  where it draws it. */
+const UNDRAWN_ATTRIBUTES: readonly string[] = [
+  "className",
+  "defaultValue",
+  "href",
+  "htmlFor",
+  "id",
+  "key",
+  "ref",
+  "style",
+  "to",
+  "value",
+];
 
 /** Where the walk looks for a stored text drawn around the renderer: the dashboard's own source,
  *  since the editor package draws no record of Dispatch's. */
@@ -170,6 +215,8 @@ const UNTREED_PROSE_FIELDS: readonly string[] = [
   "quote",
   // An answer's chosen options: each the label its asker wrote.
   "selected",
+  // A document version's summary: the line its writer gave the version.
+  "summary",
 ];
 
 /** A reader this change folded into the shared one. Nothing may import it back: a second reader
@@ -470,8 +517,57 @@ interface Mount {
   readonly at: string;
   readonly construct: string;
   readonly file: string;
+  /** Whether it hands the construct the record its text is, for a construct that takes one
+   *  (`SOURCE_TAKERS`); `undefined` for one that takes none. */
+  readonly sourced: boolean | undefined;
   /** The row its `surface` names as a string; `undefined` where it names none. */
   readonly surface: string | undefined;
+}
+
+/** Whether a `source` value hands a record: anything but `undefined` written out. */
+function handsRecord(value: ts.Expression | undefined): boolean {
+  return value !== undefined && !(ts.isIdentifier(value) && value.text === "undefined");
+}
+
+/** Whether an element's own attributes hand it a `source`. A spread may hold one, and the walk
+ *  cannot read what it holds, so it counts as one. */
+function elementSource(element: ts.JsxOpeningLikeElement, tree: ts.SourceFile): boolean {
+  return element.attributes.properties.some((property) => {
+    if (ts.isJsxSpreadAttribute(property)) {
+      return true;
+    }
+    if (!ts.isJsxAttribute(property) || property.name.getText(tree) !== "source") {
+      return false;
+    }
+    const value = property.initializer;
+    return handsRecord(value !== undefined && ts.isJsxExpression(value) ? value.expression : value);
+  });
+}
+
+/** Whether a hook's options hand it a `source`: the object literal that is its last argument
+ *  names one, or spreads what may. Options the walk cannot read as a literal count as one. */
+function hookSource(call: ts.CallExpression): boolean {
+  const options = call.arguments[call.arguments.length - 1];
+  if (call.arguments.length < 3 || options === undefined) {
+    return false;
+  }
+  if (!ts.isObjectLiteralExpression(options)) {
+    return true;
+  }
+  return options.properties.some((property) => {
+    if (ts.isSpreadAssignment(property)) {
+      return true;
+    }
+    if (property.name === undefined || !ts.isIdentifier(property.name)) {
+      return false;
+    }
+    if (property.name.text !== "source") {
+      return false;
+    }
+    return ts.isShorthandPropertyAssignment(property)
+      ? true
+      : ts.isPropertyAssignment(property) && handsRecord(property.initializer);
+  });
 }
 
 /** A `surface` that hands on the construct's own: a preview's title is the projection's line,
@@ -553,12 +649,16 @@ function mountsOf(tree: ts.SourceFile): Mount[] {
   const visit = (node: ts.Node): void => {
     let construct: ReadingConstruct | undefined;
     let surface: string | typeof HANDED_ON | undefined;
+    let sourced: boolean | undefined;
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
-      construct = READING_ELEMENTS.get(node.tagName.getText(tree));
+      const tag = node.tagName.getText(tree);
+      construct = READING_ELEMENTS.get(tag);
       surface = construct === undefined ? undefined : elementSurface(node, tree);
+      sourced = SOURCE_TAKERS.has(tag) ? elementSource(node, tree) : undefined;
     } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       construct = READING_HOOKS.get(node.expression.text);
       surface = construct === undefined ? undefined : hookSurface(node);
+      sourced = SOURCE_TAKERS.has(node.expression.text) ? hookSource(node) : undefined;
     }
     if (construct !== undefined) {
       const name = functionNameOf(node) ?? "";
@@ -569,6 +669,7 @@ function mountsOf(tree: ts.SourceFile): Mount[] {
           at: `${file}:${lineOf(tree, node)}`,
           construct: construct.name,
           file,
+          sourced,
           surface: typeof surface === "string" ? surface : undefined,
         });
       }
@@ -595,6 +696,24 @@ function mountComplaint(mount: Mount): string {
   return row.files.includes(mount.file)
     ? mount.at
     : `${mount.at}: ${mount.construct} names ${mount.surface}, whose row does not name ${mount.file}`;
+}
+
+/** The mount's place, or what is wrong with the record it is given: a mount on a row whose text
+ *  is a record (`record: true`) hands the construct that record as its `source`, since a `#id`
+ *  in the text is read against that record's document, unless the row says its surface cannot
+ *  carry a question id (`cannotCarry`). A mount of a construct that takes no source, and one on
+ *  a row whose text is no record, is held to nothing here. */
+function sourceComplaint(mount: Mount): string {
+  const row = DISPATCH_READING_SURFACES.find((candidate) => candidate.surface === mount.surface);
+  if (
+    row === undefined ||
+    !row.record ||
+    mount.sourced !== false ||
+    row.cannotCarry?.forms.includes("question-id") === true
+  ) {
+    return mount.at;
+  }
+  return `${mount.at}: ${mount.construct} draws ${row.surface}, whose text is a record, and hands it no source`;
 }
 
 /** What the API's contract says of the stored texts it sends. */
@@ -707,6 +826,8 @@ interface RawDraw {
   readonly file: string;
   readonly line: number;
   readonly pattern: string;
+  /** The expression drawn, as written, its runs of space made one. */
+  readonly written: string;
 }
 
 /** What a failure and the test's own name call a raw draw: one line of the work list. */
@@ -715,8 +836,9 @@ function drawLabel(draw: RawDraw): string {
 }
 
 /** The expressions `expression` draws: itself, or each one it hands on - through `??`, `||`,
- *  the right of `&&`, a conditional's two branches, brackets, a type assertion, the items of a
- *  list written out, and a method whose answer is still its text (`TEXT_METHODS`). */
+ *  the right of `&&`, both sides of a `+` join, a conditional's two branches, brackets, a type
+ *  assertion, the items of a list written out, and a method whose answer is still its text
+ *  (`TEXT_METHODS`). */
 function drawnLeaves(expression: ts.Expression): ts.Expression[] {
   if (ts.isArrayLiteralExpression(expression)) {
     return expression.elements.flatMap(drawnLeaves);
@@ -736,7 +858,8 @@ function drawnLeaves(expression: ts.Expression): ts.Expression[] {
     const operator = expression.operatorToken.kind;
     if (
       operator === ts.SyntaxKind.QuestionQuestionToken ||
-      operator === ts.SyntaxKind.BarBarToken
+      operator === ts.SyntaxKind.BarBarToken ||
+      operator === ts.SyntaxKind.PlusToken
     ) {
       return [...drawnLeaves(expression.left), ...drawnLeaves(expression.right)];
     }
@@ -764,9 +887,16 @@ interface Through {
   readonly through: string;
 }
 
-/** What a name in a function holds: the stored-prose field it was read from, `PROJECTED`, or a
- *  value reached through a holder of a field named like the dashboard's own words. */
-type Held = string | typeof PROJECTED | Through;
+/** A component's props, held whole under the parameter's own name, by the component they are
+ *  the props of: `props.words` is what a mount of that component hands its `words`. */
+interface Props {
+  readonly props: string;
+}
+
+/** What a name in a function holds: the stored-prose field it was read from, `PROJECTED`, a
+ *  value reached through a holder of a field named like the dashboard's own words, or a
+ *  component's props. */
+type Held = string | typeof PROJECTED | Through | Props;
 
 /** Whether `expression` is a call of a projection hook. */
 function isProjection(expression: ts.Expression): boolean {
@@ -882,16 +1012,55 @@ interface ProseAnswer {
   readonly file: string;
 }
 
+/** The expressions a `useMemo` call answers: its factory's own expression, or each `return` of
+ *  its body. Empty for any other expression. */
+function memoAnswers(expression: ts.Expression): ts.Expression[] {
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isIdentifier(expression.expression) ||
+    expression.expression.text !== "useMemo"
+  ) {
+    return [];
+  }
+  const [factory] = expression.arguments;
+  if (factory === undefined || !(ts.isArrowFunction(factory) || ts.isFunctionExpression(factory))) {
+    return [];
+  }
+  if (!ts.isBlock(factory.body)) {
+    return [factory.body];
+  }
+  const returned: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      returned.push(node.expression);
+    } else if (!ts.isFunctionLike(node)) {
+      ts.forEachChild(node, visit);
+    }
+  };
+  visit(factory.body);
+  return returned;
+}
+
 /** The functions that answer a stored text, by name: each one a `return` of which hands back a
- *  stored field, as `askResolutionReason` hands back a resolution's `reason`. A call of one is
- *  read as the field it answers in the file that declares it and in every file that imports it
- *  (`rawDrawsOf`). A field named like the dashboard's own words makes no such function: what
- *  answers a `label` is a control's far more often than a record's. */
+ *  stored field, as `askResolutionReason` hands back a resolution's `reason` - read off a value,
+ *  through a constant of the function's own initialised with one, or through a `useMemo` of
+ *  one. A call of one is read as the field it answers in the file that declares it and in every
+ *  file that imports it (`rawDrawsOf`). A field named like the dashboard's own words makes no
+ *  such function: what answers a `label` is a control's far more often than a record's. */
 function proseAnswersOf(trees: readonly ts.SourceFile[]): Map<string, ProseAnswer> {
   const answers = new Map<string, ProseAnswer>();
-  const answered = (expression: ts.Expression): string | undefined =>
-    drawnLeaves(expression)
-      .flatMap((leaf) => (ts.isPropertyAccessExpression(leaf) ? [leaf.name.text] : []))
+  const answered = (
+    expression: ts.Expression,
+    locals: ReadonlyMap<string, string>
+  ): string | undefined =>
+    [...drawnLeaves(expression), ...memoAnswers(expression).flatMap(drawnLeaves)]
+      .flatMap((leaf) => {
+        if (ts.isPropertyAccessExpression(leaf)) {
+          return [leaf.name.text];
+        }
+        const local = ts.isIdentifier(leaf) ? locals.get(leaf.text) : undefined;
+        return local === undefined ? [] : [local];
+      })
       .find((field) => STORED_PROSE_FIELDS.has(field) && !UI_WORD_FIELDS.includes(field));
   for (const tree of trees) {
     const answer = (owner: string | undefined, field: string | undefined): void => {
@@ -900,49 +1069,66 @@ function proseAnswersOf(trees: readonly ts.SourceFile[]): Map<string, ProseAnswe
       }
     };
     // `owner` is the named function a `return` answers for: a declaration, or the constant an
-    // arrow or a function expression initialises. A callback handed to a call answers for nobody.
-    const visit = (node: ts.Node, owner: string | undefined): void => {
+    // arrow or a function expression initialises. A callback handed to a call answers for
+    // nobody. `locals` are the function's own constants that hold a stored field.
+    const visit = (node: ts.Node, owner: string | undefined, locals: Map<string, string>): void => {
       let inside = owner;
+      let scope = locals;
       if (ts.isFunctionDeclaration(node)) {
         inside = node.name?.text;
+        scope = new Map();
       } else if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
         const holder = node.parent;
         inside =
           ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name)
             ? holder.name.text
             : undefined;
+        scope = new Map();
         if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) {
-          answer(inside, answered(node.body));
+          answer(inside, answered(node.body, scope));
         }
       } else if (ts.isFunctionLike(node)) {
         inside = undefined;
+        scope = new Map();
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer !== undefined
+      ) {
+        const field = answered(node.initializer, locals);
+        if (field !== undefined) {
+          locals.set(node.name.text, field);
+        }
       } else if (ts.isReturnStatement(node) && node.expression !== undefined) {
-        answer(owner, answered(node.expression));
+        answer(owner, answered(node.expression, locals));
       }
-      ts.forEachChild(node, (child) => visit(child, inside));
+      ts.forEachChild(node, (child) => visit(child, inside, scope));
     };
-    visit(tree, undefined);
+    visit(tree, undefined, new Map());
   }
   return answers;
 }
 
 /**
  * `tree`'s raw draws of a stored text: a field that holds one (`STORED_PROSE_FIELDS`) drawn as a
- * JSX child, as the value of an attribute the browser shows as characters (`PLAIN_ATTRIBUTES`),
- * or into a template literal, outside the text a construct is handed (`handedToConstruct`). A
- * `className` is a list of classes rather than text, so nothing in one is a draw, and neither is
- * a member of a name the theme module exports (`importsOf`). A field named like the dashboard's
- * own words is a stored text only on a value reached through a field that holds it
- * (`UI_WORD_FIELDS`).
+ * JSX child, as the value of an attribute the browser shows as characters - any of
+ * `PLAIN_ATTRIBUTES`, and on an element of the page any other but the few that show nothing of
+ * their value (`UNDRAWN_ATTRIBUTES`) - or into a template literal, outside the text a construct
+ * is handed (`handedToConstruct`). A `className` is a list of classes rather than text, so
+ * nothing in one is a draw, and neither is a member of a name the theme module exports
+ * (`importsOf`). A field named like the dashboard's own words is a stored text only on a value
+ * reached through a field that holds it (`UI_WORD_FIELDS`).
  *
  * The field is read where it is written, as what a function that answers one hands back
- * (`answers`), and through a light trace inside one file: a constant initialised with it, a
- * binding that destructures it, the parameter of a `map` over a list of it, a method whose
- * answer is still its text (`TEXT_METHODS`), and a component's prop where a mount of that
- * component in the same file hands it one. A prop no mount in its file hands a stored text is
- * left alone: a shared control's words are the app's own far more often than a writer's.
- * Whatever a projection hook answers is its line rather than the text, so nothing read from it
- * is a raw draw.
+ * (`answers`), as the argument of any other call whose answer is drawn - a call of the
+ * projection is the projection's line - and through a light trace inside one file: a constant
+ * initialised with it or with a `useMemo` of it, a binding that destructures it, the parameter
+ * of a `map` over a list of it, a method whose answer is still its text (`TEXT_METHODS`), a join
+ * with `+`, and a component's prop - destructured under any name, or read off its props - where
+ * a mount of that component in the same file hands it one. A prop no mount in its file hands a
+ * stored text is left alone: a shared control's words are the app's own far more often than a
+ * writer's. Whatever a projection hook answers is its line rather than the text, so nothing
+ * read from it is a raw draw. What the walk does not see is the test's header's list.
  */
 function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswer>): RawDraw[] {
   const file = tree.fileName;
@@ -985,32 +1171,65 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
       return throughOf(expression.left);
     }
     const what = ts.isIdentifier(expression) ? heldAs(expression) : undefined;
-    return typeof what === "object" ? what.through : undefined;
+    return typeof what === "object" && "through" in what ? what.through : undefined;
   };
   /** Whether `field` read off `receiver` is a stored text: any stored field is, but one named
    *  like the dashboard's own words only on a value reached through a field that holds it. */
   const storedOn = (field: string, receiver: ts.Expression): boolean =>
     !UI_WORD_FIELDS.includes(field) ||
     CONTRACT_TEXTS.holders.get(field)?.has(throughOf(receiver) ?? "") === true;
+  /** What each mount in the file hands each prop, by `<component>.<prop>`. */
+  const handed = new Map<string, ts.Expression[]>();
+  /** The props being read, so a component that hands its own prop on to itself ends the read. */
+  const reading = new Set<string>();
+  /** The field a mount in the file hands `component`'s `prop`, where one hands it a stored text. */
+  const handedField = (component: string | undefined, prop: string): string | undefined => {
+    const key = `${component}.${prop}`;
+    if (reading.has(key)) {
+      return undefined;
+    }
+    reading.add(key);
+    const field = (handed.get(key) ?? [])
+      .map((value) => firstFieldOf(value))
+      .find((found) => found !== undefined);
+    reading.delete(key);
+    return field;
+  };
   const fieldOf = (leaf: ts.Expression): string | undefined => {
     if (ts.isIdentifier(leaf)) {
       const what = heldAs(leaf);
       return typeof what === "string" ? what : undefined;
     }
-    if (ts.isCallExpression(leaf) && ts.isIdentifier(leaf.expression)) {
-      const name = leaf.expression.text;
+    if (ts.isCallExpression(leaf) && !isProjection(leaf)) {
+      const name = ts.isIdentifier(leaf.expression) ? leaf.expression.text : "";
       const answer = answers.get(name);
-      return answer !== undefined && (answer.file === file || imports.has(name))
-        ? answer.field
-        : undefined;
+      if (answer !== undefined && (answer.file === file || imports.has(name))) {
+        return answer.field;
+      }
+      // Any other call whose answer is drawn draws what it is handed: a text cut, tidied or
+      // worded around by a helper is still that text's characters.
+      return [...leaf.arguments, ...memoAnswers(leaf)]
+        .map((argument) => firstFieldOf(argument))
+        .find((field) => field !== undefined);
     }
-    if (!ts.isPropertyAccessExpression(leaf) || !STORED_PROSE_FIELDS.has(leaf.name.text)) {
+    if (!ts.isPropertyAccessExpression(leaf)) {
       return undefined;
     }
     const root = rootOf(leaf.expression);
+    const what = root === undefined ? undefined : heldAs(root);
+    // A component's own props, read off the object they come in: what a mount hands the prop.
+    if (typeof what === "object" && "props" in what && leaf.expression === root) {
+      const given = handedField(what.props, leaf.name.text);
+      if (given !== undefined) {
+        return given;
+      }
+    }
+    if (!STORED_PROSE_FIELDS.has(leaf.name.text)) {
+      return undefined;
+    }
     // What the projection answered is its line, whatever member of the answer holds it, and a
     // member of a theme name is a class.
-    if (root !== undefined && heldAs(root) === PROJECTED) {
+    if (what === PROJECTED) {
       return undefined;
     }
     if (imports.get(root?.text ?? "")?.includes("/theme/") === true) {
@@ -1023,8 +1242,6 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
       .map(fieldOf)
       .find((field) => field !== undefined);
 
-  /** What each mount in the file hands each prop, by `<component>.<prop>`. */
-  const handed = new Map<string, ts.Expression[]>();
   const readMounts = (node: ts.Node): void => {
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
       for (const property of node.attributes.properties) {
@@ -1050,7 +1267,8 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
           hold(scopeOf(node), name, PROJECTED);
         }
       } else if (ts.isIdentifier(node.name)) {
-        const field = firstFieldOf(node.initializer);
+        const memo = memoAnswers(node.initializer);
+        const field = firstFieldOf(node.initializer) ?? memo.map(firstFieldOf).find(Boolean);
         const through = throughOf(node.initializer);
         if (field !== undefined) {
           hold(scopeOf(node), node.name.text, field);
@@ -1058,6 +1276,16 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
           hold(scopeOf(node), node.name.text, { through });
         }
       }
+    }
+    // A component's props taken whole, under the parameter's own name. A component's name is
+    // written in capitals, which tells it from a function whose first parameter is a value.
+    if (
+      ts.isParameter(node) &&
+      ts.isIdentifier(node.name) &&
+      node.parent.parameters[0] === node &&
+      /^[A-Z]/.test(ownerName(node) ?? "")
+    ) {
+      hold(node.parent, node.name.text, { props: ownerName(node) ?? "" });
     }
     if (
       ts.isBindingElement(node) &&
@@ -1068,16 +1296,21 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
       const field = ts.isIdentifier(key) || ts.isStringLiteral(key) ? key.text : undefined;
       const root = bindingRoot(node);
       // A variable bound from the projection holds its line. A prop holds a stored text only
-      // where a mount of its component in this file hands it one.
-      const bound = ts.isParameter(root)
-        ? (handed.get(`${ownerName(root)}.${field}`) ?? []).some(
-            (value) => firstFieldOf(value) !== undefined
-          )
-        : ts.isVariableDeclaration(root) &&
-          (root.initializer === undefined
-            ? !UI_WORD_FIELDS.includes(field ?? "")
-            : !isProjection(root.initializer) && storedOn(field ?? "", root.initializer));
-      if (field !== undefined && STORED_PROSE_FIELDS.has(field) && bound) {
+      // where a mount of its component in this file hands it one, under whatever name the prop
+      // has: it holds the field that mount hands it.
+      if (ts.isParameter(root)) {
+        const given = field === undefined ? undefined : handedField(ownerName(root), field);
+        if (given !== undefined) {
+          hold(scopeOf(node), node.name.text, given);
+        }
+      } else if (
+        field !== undefined &&
+        STORED_PROSE_FIELDS.has(field) &&
+        ts.isVariableDeclaration(root) &&
+        (root.initializer === undefined
+          ? !UI_WORD_FIELDS.includes(field)
+          : !isProjection(root.initializer) && storedOn(field, root.initializer))
+      ) {
         hold(scopeOf(node), node.name.text, field);
       }
     }
@@ -1126,7 +1359,15 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
       const field = fieldOf(leaf);
       if (field !== undefined) {
         const line = lineOf(tree, leaf);
-        draws.push({ at: `${file}:${line}`, attributeLine, field, file, line, pattern });
+        draws.push({
+          at: `${file}:${line}`,
+          attributeLine,
+          field,
+          file,
+          line,
+          pattern,
+          written: leaf.getText(tree).replace(/\s+/g, " "),
+        });
       }
     }
   };
@@ -1144,10 +1385,20 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
       ts.isJsxAttribute(node) &&
       node.initializer !== undefined &&
       ts.isJsxExpression(node.initializer) &&
-      node.initializer.expression !== undefined &&
-      PLAIN_ATTRIBUTES.includes(node.name.getText(tree))
+      node.initializer.expression !== undefined
     ) {
-      report(node.initializer.expression, `the ${node.name.getText(tree)} attribute`);
+      const name = node.name.getText(tree);
+      const tag = node.parent.parent.tagName.getText(tree);
+      if (PLAIN_ATTRIBUTES.includes(name)) {
+        report(node.initializer.expression, `the ${name} attribute`);
+      } else if (
+        /^[a-z]/.test(tag) &&
+        !UNDRAWN_ATTRIBUTES.includes(name) &&
+        !name.startsWith("data-") &&
+        !/^on[A-Z]/.test(name)
+      ) {
+        report(node.initializer.expression, `the ${name} attribute`);
+      }
     } else if (ts.isTemplateSpan(node)) {
       report(node.expression, "a template literal");
     }
@@ -1175,9 +1426,107 @@ const RAW_DRAWS = DRAWING_TREES.flatMap((tree) => rawDrawsOf(tree, PROSE_ANSWERS
  *  way than the renderer, each with the reason why. */
 const UNRENDERED_ROWS = DISPATCH_READING_SURFACES.filter((row) => !row.rendered);
 
-/** A line that excuses a field named like a stored text that holds none: `not stored prose:`
- *  and then why, in a comment. */
-const NOT_STORED_PROSE = /not stored prose:\s*[^\s*/}]/;
+const FEATURES = "packages/dispatch/web/src/features";
+
+/**
+ * The draws the walk finds that hold no writer's stored text: a value of the dashboard's own, or
+ * a word the server or the broker writes, under a name a stored text also has - which the walk,
+ * reading the syntax tree and not the types, cannot tell apart. Each is the file, the expression
+ * exactly as written there, and what it holds. It is reviewed here, in one place, rather than
+ * in a comment at the site: no comment silences a draw, so a stored text cannot be excused by a
+ * reason no one reads beside the list. An entry the walk no longer finds fails
+ * (`every entry of the list of fields that hold no stored text is still a draw the walk finds`),
+ * so the list cannot outlive the code it speaks for.
+ */
+const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string }[] = [
+  {
+    file: `${FEATURES}/agents/AgentsPage.tsx`,
+    holds: "a count of the group's agents, from the page's own selection of sessions",
+    written: "groupCountLabel(agents, selected)",
+  },
+  {
+    file: `${FEATURES}/agents/AgentsPage.tsx`,
+    holds: "a count of the sessions the reader selected",
+    written: "selectionSummary(selection)",
+  },
+  {
+    file: `${FEATURES}/agents/AgentsPage.tsx`,
+    holds: "the page's own word for why a selected session gets no broadcast",
+    written: "note.reason",
+  },
+  {
+    file: `${FEATURES}/conversation/MentionComposer.tsx`,
+    holds: "the host's own words for why a kind of reference cannot be picked here",
+    written: "kindRefusal.text",
+  },
+  {
+    file: `${FEATURES}/conversation/held-sends.ts`,
+    holds: "the words a mention was typed as, matched against the draft and drawn nowhere",
+    written: "mention.text",
+  },
+  {
+    file: `${FEATURES}/conversation/held-sends.ts`,
+    holds: "the draft being rewritten with a mention's link, drawn nowhere",
+    written: "link",
+  },
+  {
+    file: `${FEATURES}/credentials/MachineLoginsSection.tsx`,
+    holds: "a login's subject, the Kubernetes identity its token names",
+    written: "login.subject",
+  },
+  {
+    file: `${FEATURES}/delivery/SourceFreshness.tsx`,
+    holds: "the page's own line on how fresh a source is",
+    written: "row.text",
+  },
+  {
+    file: `${FEATURES}/delivery/lib/freshness.ts`,
+    holds: "the page's own line on how fresh a source is",
+    written: "live.text",
+  },
+  {
+    file: `${FEATURES}/inbox/useInboxSelection.ts`,
+    holds: "the server's own words for why it refused a snooze",
+    written: "first.reason",
+  },
+  {
+    file: `${FEATURES}/issue/DecisionsPanel.tsx`,
+    holds: "a tree's words joined to match an anchor quote against, drawn nowhere",
+    written: "current.text",
+  },
+  {
+    file: `${FEATURES}/issue/RelatedItems.tsx`,
+    holds: "the server's own words for why no related-item check was made",
+    written: "notMadeText(check.reason, title, check.searchQuery)",
+  },
+  {
+    file: `${FEATURES}/issue/event-description.ts`,
+    holds: "the server's own words for why it refused a check block or what is malformed in one",
+    written: "payload.reason",
+  },
+  {
+    file: `${FEATURES}/machines/MachinePage.tsx`,
+    holds: "a machine's counts of its sessions",
+    written: "sessionCountSentence(model.summary)",
+  },
+  {
+    file: `${FEATURES}/project/IssuesTable.tsx`,
+    holds: "the table's own notice of what a table action did",
+    written: "notice?.text",
+  },
+  {
+    file: `${FEATURES}/refs/RefPickerList.tsx`,
+    holds: "the picker's own name for a group of rows",
+    written: "group.heading",
+  },
+];
+
+/** Whether `draw` is one the list of fields that hold no stored text names. */
+function holdsNoStoredText(draw: RawDraw): boolean {
+  return NOT_STORED_TEXTS.some(
+    (entry) => entry.file === draw.file && entry.written === draw.written
+  );
+}
 
 /** Whether `line` writes `word` whole: `write-label` and not `write-labels`. */
 function writesWhole(line: string, word: string): boolean {
@@ -1185,21 +1534,22 @@ function writesWhole(line: string, word: string): boolean {
 }
 
 /** The draw's label where a comment beside it excuses it - on its own line, on the line above,
- *  or on the line above the JSX attribute it is written in - and what is wrong where nothing
- *  does. An excuse names a `rendered: false` row whose files hold this one - the row's reason is
- *  then the excuse, as an excluded row's pointer comment works - or says the field holds no
- *  stored text, and why. */
+ *  or on the line above the JSX attribute it is written in - or where it holds no stored text
+ *  (`NOT_STORED_TEXTS`), and what is wrong where neither does. An excuse names a `rendered:
+ *  false` row whose files hold this one by its id: the row's reason is then the excuse, as an
+ *  excluded row's pointer comment works. Words of any other kind excuse nothing, so a reason no
+ *  row of the list holds cannot silence a draw. */
 function drawComplaint(draw: RawDraw, text: string): string {
   const label = drawLabel(draw);
   const lines = text.split("\n");
   const near = [draw.line - 1, draw.line, (draw.attributeLine ?? draw.line) - 1].map(
     (line) => lines[line - 1] ?? ""
   );
-  const excused = near.some(
-    (line) =>
-      NOT_STORED_PROSE.test(line) ||
+  const excused =
+    holdsNoStoredText(draw) ||
+    near.some((line) =>
       UNRENDERED_ROWS.some((row) => row.files.includes(draw.file) && writesWhole(line, row.surface))
-  );
+    );
   return excused
     ? label
     : `${label}: a stored text drawn as its characters, by no construct and under no row of DISPATCH_READING_SURFACES`;
@@ -1411,6 +1761,54 @@ describe("a mount's surface is read from its own attributes", () => {
       "fixture.tsx:5 undefined",
     ]);
   });
+
+  // A `#id` is read against the record a text is, so a mount on a row whose text is a record
+  // hands its construct that record: by its `source` attribute or option, or by a spread the walk
+  // cannot read. `undefined` written out hands none, and the hover card takes none at all.
+  const sourced = [
+    "export const Row = ({ x, rest }: Props) => (",
+    "  <>",
+    '    <MarkdownBody markdown={x.body} source={source} surface="answers-reply" />',
+    '    <MarkdownBody markdown={x.body} source={undefined} surface="answers-reply" />',
+    '    <MarkdownBody markdown={x.body} {...rest} surface="answers-reply" />',
+    '    <MarkdownBody markdown={x.body} surface="broadcast-recipient-reply" />',
+    '    <MarkdownBody markdown={x.body} surface="broadcast-sent-body" />',
+    "    <RefPreviewHost />",
+    "  </>",
+    ");",
+    "export function useLine(x: Ask) {",
+    '  return usePlainHeadline(x.question_tree, x.question, { source, surface: "answers-reply" });',
+    "}",
+    "export function useBare(x: Ask) {",
+    '  return usePlainHeadline(x.question_tree, x.question, { surface: "answers-reply" });',
+    "}",
+  ].join("\n");
+
+  test("a mount's source is read from its own attributes or options", () => {
+    expect(mounts(sourced).map((mount) => `${mount.at} ${mount.sourced}`)).toEqual([
+      "fixture.tsx:3 true",
+      "fixture.tsx:4 false",
+      "fixture.tsx:5 true",
+      "fixture.tsx:6 false",
+      "fixture.tsx:7 false",
+      "fixture.tsx:8 undefined",
+      "fixture.tsx:12 true",
+      "fixture.tsx:15 false",
+    ]);
+  });
+
+  test("a mount on a record's row with no source fails, unless its row cannot carry a question id", () => {
+    // `broadcast-recipient-reply` is a record that cannot carry a question id, and
+    // `broadcast-sent-body` is no record, so neither needs a source.
+    expect(
+      mounts(sourced)
+        .map(sourceComplaint)
+        .filter((complaint) => complaint.includes(": "))
+    ).toEqual([
+      "fixture.tsx:4: a mount of the body or the preview renderer draws answers-reply, whose text is a record, and hands it no source",
+      "fixture.tsx:15: a mount of the plain-text projection draws answers-reply, whose text is a record, and hands it no source",
+    ]);
+  });
 });
 
 // ------------------------------------------------------------------------------------------
@@ -1552,7 +1950,61 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
     expect(draws(source)).toEqual(["fixture.tsx:10 reason a template literal"]);
   });
 
-  test("a draw is excused by its row or by why it holds no stored text, beside it or above its attribute", () => {
+  test("a prop under another name, a component's props, and a helper's own constant or memo draw what they hold", () => {
+    const source = [
+      "function Row({ words }: { words: string }) {",
+      "  return <p>{words}</p>;",
+      "}",
+      "function Line(props: { words: string }) {",
+      "  return <p>{props.words}</p>;",
+      "}",
+      "function questionOf(ask: Ask) {",
+      "  const question = ask.question;",
+      "  return question;",
+      "}",
+      "export function Card({ ask }: Props) {",
+      "  const label = useMemo(() => ask.heading, [ask]);",
+      "  return (",
+      "    <div>",
+      "      <Row words={ask.question} />",
+      "      <Line words={ask.body} />",
+      "      {questionOf(ask)}",
+      "      {label}",
+      "    </div>",
+      "  );",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual([
+      "fixture.tsx:2 question a JSX child",
+      "fixture.tsx:5 body a JSX child",
+      "fixture.tsx:17 question a JSX child",
+      "fixture.tsx:18 heading a JSX child",
+    ]);
+  });
+
+  test("a join with +, a call's argument and an element's other attribute draw it; a handle, an address and a component's prop do not", () => {
+    const source = [
+      "export const Row = ({ x }: Props) => (",
+      "  <div>",
+      '    {"Asked: " + x.question}',
+      "    {cut(x.body, 40)}",
+      '    {x.selected.length > 0 ? "chosen" : "none"}',
+      "    <meter aria-valuetext={x.reason} />",
+      "    <a data-quote={x.quote} href={x.text} />",
+      "    <Card summary={x.summary} />",
+      "  </div>",
+      ");",
+    ].join("\n");
+    // A component's prop is read where that component draws it, in a file of its own, which
+    // this walk does not follow (the header's blind spots).
+    expect(draws(source)).toEqual([
+      "fixture.tsx:3 question a JSX child",
+      "fixture.tsx:4 body a JSX child",
+      "fixture.tsx:6 reason the aria-valuetext attribute",
+    ]);
+  });
+
+  test("a draw is excused by its row's id beside it or above its attribute, and by no other words", () => {
     // The file of `agent-message-issue-option`, a row the list says is drawn without the
     // renderer, so a draw in it may name that row.
     const listed = "packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx";
@@ -1565,10 +2017,10 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
       "    <option>{x.body}</option>",
       "    {/* not stored prose: the tab's own name */}",
       "    <option>{x.text}</option>",
-      "    {/* not stored prose: */}",
+      "    {/* agent-message-issue-option */}",
       "    <option>{x.reason}</option>",
       "    <Confirm",
-      "      // not stored prose: a login's own name",
+      "      // agent-message-issue-option: a login's own name",
       "      words={() =>",
       "        `Revoke ${",
       "          x.subject",
@@ -1583,10 +2035,11 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
       drawsOf(source, file)
         .filter((draw) => drawComplaint(draw, source) === drawLabel(draw))
         .map((draw) => draw.line);
-    // The comment above the attribute speaks for its own value, not for an element inside it.
-    expect(excused(listed)).toEqual([5, 8, 15]);
+    // Free words excuse nothing: line 8's comment says why, and names no row. The comment above
+    // the attribute speaks for its own value, not for an element inside it.
+    expect(excused(listed)).toEqual([5, 10, 15]);
     // A row whose files do not hold the draw's file excuses nothing there.
-    expect(excused("fixture.tsx")).toEqual([8, 15]);
+    expect(excused("fixture.tsx")).toEqual([]);
     expect(drawsOf(source).map((draw) => draw.line)).toEqual([5, 6, 8, 10, 15, 16]);
   });
 });
@@ -1611,9 +2064,53 @@ describe("every surface the dashboard draws names its row of the reading list", 
   });
 });
 
+describe("every mount of a record's text hands its construct that record", () => {
+  test.each(
+    MOUNTS.filter((mount) => mount.sourced !== undefined).map(
+      (mount) => [mount.at, mount.construct, mount] as const
+    )
+  )("%s is %s", (_at, _construct, mount) => {
+    expect(sourceComplaint(mount)).toBe(mount.at);
+  });
+});
+
+describe("every row drawn through the projection names the test that proves it", () => {
+  // A rendered row is proved by its browser driver (`e2e/reading-rows.ts`); a row the renderer
+  // does not draw and the projection does has no driver, so it names the test that reads its
+  // line (`proof`), which `e2e/__tests__/reading-walk.test.ts` holds to a test that exists.
+  const projected = DISPATCH_READING_SURFACES.filter(
+    (row) =>
+      !row.rendered &&
+      MOUNTS.some(
+        (mount) =>
+          mount.surface === row.surface &&
+          mount.construct === "a mount of the plain-text projection"
+      )
+  );
+  test("finds the rows drawn through the projection", () => {
+    expect(projected.length).toBeGreaterThan(3);
+  });
+  test.each(projected.map((row) => [row.surface, row] as const))("%s", (label, row) => {
+    expect(row.proof === undefined ? `${label} names no test that proves it` : label).toBe(label);
+  });
+});
+
 describe("no stored text is drawn as its characters outside a construct and the list", () => {
   test.each(RAW_DRAWS.map((draw) => [drawLabel(draw), draw] as const))("%s", (label, draw) => {
     expect(drawComplaint(draw, TEXT_BY_FILE.get(draw.file) ?? "")).toBe(label);
+  });
+});
+
+describe("every entry of the list of fields that hold no stored text is still a draw the walk finds", () => {
+  test.each(
+    NOT_STORED_TEXTS.map((entry) => [`${entry.file} ${entry.written}`, entry] as const)
+  )("%s", (label, entry) => {
+    const found = RAW_DRAWS.some(
+      (draw) => draw.file === entry.file && draw.written === entry.written
+    );
+    expect(found ? label : `${label} names no draw the walk finds: remove it from the list`).toBe(
+      label
+    );
   });
 });
 

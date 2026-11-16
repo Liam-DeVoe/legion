@@ -46,11 +46,13 @@ interface Sent {
  *   then a leave therefore send one write, and a reader who types back to the old text while a
  *   write is out has that text written.
  * - Refused: the send leaves `out`, wherever it stands in it. The draft stays the reader's, so
- *   the next rest or leave sends it again.
+ *   the next rest or leave sends it again. A Retry of it from the pending-writes indicator is
+ *   none of this field's: it is the reader's own new write of that text, made at the back of the
+ *   line (`Writes.retry`), so its landing reads as another writer's text does (below).
  * - `value` reaches a text in `out`: that send's answer is in, and so is every older one's, so
  *   it and every send before it leave `out`. The earliest send of that text is the one matched:
- *   writes to one priority land in press order, so a read can answer a later send of it only
- *   once every send between has landed, and those leave `out` as landed sends do.
+ *   the sends in `out` land in press order, so a read can answer a later send of it only once
+ *   every send between has landed, and those leave `out` as landed sends do.
  * - A landed send leaves `out` on the next move of `value`, whatever `value` moves to: Dispatch
  *   has answered it, so the read is what it holds, and no landed send is still about to be. A
  *   send of the text Dispatch already held, which moves nothing, therefore stays only until

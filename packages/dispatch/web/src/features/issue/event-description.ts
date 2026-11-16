@@ -1,7 +1,13 @@
 import type { BlockInvalidEventPayload } from "@legion/contracts";
 import type { DispatchEvent } from "../../api/types";
-import { askResolvedParts, eventProse, type SentencePart } from "../activity/SentenceParts";
+import {
+  askQuestionProse,
+  askResolvedParts,
+  eventProse,
+  type SentencePart,
+} from "../activity/SentenceParts";
 import { capabilityLabel } from "../conversation/delivery";
+import { textSourceOf } from "../refs/text-references";
 
 /** An event's line in the Pinned tab, as `SentencePart`s: an agent it names keeps its identity
  *  until `EventBody` draws it through `AgentName`, and a text of the record it quotes stays a
@@ -15,10 +21,10 @@ export function eventDescription(event: DispatchEvent): SentencePart[] {
  *  `ci_check` settlement refused, or an ask block it marked malformed. */
 export function blockInvalidDescription(payload: BlockInvalidEventPayload): string {
   if (payload.block_type === "check") {
-    // not stored prose: the server's own words for why it refused the check
+    // The reason is the server's own words for why it refused the check.
     return `refused check ${payload.block_id}: ${payload.reason}`;
   }
-  // not stored prose: the server's own words for what is malformed in the block
+  // The reason is the server's own words for what is malformed in the block.
   return `marked decision ${payload.block_id} malformed: ${payload.reason}`;
 }
 
@@ -65,19 +71,19 @@ function describe(event: DispatchEvent): string | SentencePart[] {
     case "ask.answered":
       return [
         event.payload.previous_answer === undefined ? "Ask answered: " : "Answer changed: ",
-        eventProse(event, "payload.question", event.payload.question),
+        askQuestionProse(event),
       ];
     case "ask.edited":
-      return ["Ask edited: ", eventProse(event, "payload.question", event.payload.question)];
+      return ["Ask edited: ", askQuestionProse(event)];
     case "ask.handed_back":
-      return ["Ask handed back: ", eventProse(event, "payload.question", event.payload.question)];
+      return ["Ask handed back: ", askQuestionProse(event)];
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
       // project's default assignee while the issue holds nobody.
       return [
         `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: `,
-        eventProse(event, "payload.question", event.payload.question),
+        askQuestionProse(event),
       ];
     case "comment.resolved":
       return "Comment resolved";
@@ -87,7 +93,14 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return "Comment edited";
     case "message.created":
     case "message.answered":
-      return [eventProse(event, "payload.body", event.payload.body)];
+      return [
+        eventProse(
+          event,
+          "payload.body",
+          event.payload.body,
+          textSourceOf("message", event.payload.id, event.issue_key)
+        ),
+      ];
     case "message.delivery":
       // A queued attempt reads as queued, a queued repeat included: the listener holds it for a
       // session that is not running. Any other duplicate attempt reached the listener and the
@@ -99,14 +112,21 @@ function describe(event: DispatchEvent): string | SentencePart[] {
     case "message.accepted":
       return "Message taken as the session's own turn";
     case "ask.opened":
-      return ["Ask opened: ", eventProse(event, "payload.question", event.payload.question)];
+      return ["Ask opened: ", askQuestionProse(event)];
     case "ask.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Ask lost its quote"
         : "Ask re-anchored after an edit";
     case "comment.created":
     case "comment.answered":
-      return [eventProse(event, "payload.body", event.payload.body)];
+      return [
+        eventProse(
+          event,
+          "payload.body",
+          event.payload.body,
+          textSourceOf("comment", event.payload.id, event.issue_key)
+        ),
+      ];
     case "comment.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Comment lost its quote"

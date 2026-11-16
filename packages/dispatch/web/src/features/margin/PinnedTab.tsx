@@ -39,7 +39,11 @@ export function PinnedTab({
                   message are each drawn as the record they are. */}
               <MarkdownBody
                 markdown={conversation.body}
-                source={textSourceOf(textSourceKind(conversation.kind), conversation.recordId)}
+                source={textSourceOf(
+                  textSourceKind(conversation.kind),
+                  conversation.recordId,
+                  conversation.issue
+                )}
                 surface="margin-pinned-conversation"
                 tree={conversation.tree}
               />

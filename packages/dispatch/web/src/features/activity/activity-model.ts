@@ -1,7 +1,8 @@
 import type { Actor, DispatchEvent } from "../../api/types";
 import { queuedWait } from "../conversation/delivery";
 import { blockInvalidDescription } from "../issue/event-description";
-import { askResolvedParts, eventProse, type SentencePart } from "./SentenceParts";
+import { textSourceOf } from "../refs/text-references";
+import { askQuestionProse, askResolvedParts, eventProse, type SentencePart } from "./SentenceParts";
 
 export function dateKey(iso: string): string {
   const date = new Date(iso);
@@ -128,7 +129,12 @@ function describe(
           ? "replied to “an ask”"
           : [
               "replied to “",
-              eventProse(event, "payload.ask_question", event.payload.ask_question),
+              eventProse(
+                event,
+                "payload.ask_question",
+                event.payload.ask_question,
+                textSourceOf("ask", event.payload.ask_id, event.issue_key)
+              ),
               "”",
             ];
       }
@@ -172,40 +178,32 @@ function describe(
     case "ask.resolved":
       return askResolvedParts(event);
     case "ask.opened":
-      return ["asked “", eventProse(event, "payload.question", event.payload.question), "”"];
+      return ["asked “", askQuestionProse(event), "”"];
     case "ask.anchor_refreshed":
       return [
         event.payload.anchor?.orphaned
           ? "made an ask lose its quote: “"
           : "re-anchored an ask after an edit: “",
-        eventProse(event, "payload.question", event.payload.question),
+        askQuestionProse(event),
         "”",
       ];
     case "ask.edited":
-      return [
-        'edited the question "',
-        eventProse(event, "payload.question", event.payload.question),
-        '"',
-      ];
+      return ['edited the question "', askQuestionProse(event), '"'];
     case "ask.handed_back":
-      return [
-        "handed “",
-        eventProse(event, "payload.question", event.payload.question),
-        "” back for approval",
-      ];
+      return ["handed “", askQuestionProse(event), "” back for approval"];
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
       // project's default assignee while the issue holds nobody.
       return [
         "handed “",
-        eventProse(event, "payload.question", event.payload.question),
+        askQuestionProse(event),
         `” to ${event.payload.asked_of ?? "the issue's assignee"}`,
       ];
     case "ask.answered":
       return [
         event.payload.previous_answer === undefined ? "answered “" : "changed the answer to “",
-        eventProse(event, "payload.question", event.payload.question),
+        askQuestionProse(event),
         "”",
       ];
     case "message.created":

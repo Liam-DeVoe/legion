@@ -38,7 +38,7 @@ function AskEventBody({
   event: AskEvent;
   onRendered?: () => void;
 }): ReactNode {
-  const source = textSourceOf("ask", event.payload.id);
+  const source = textSourceOf("ask", event.payload.id, event.issue_key);
   const { answer, question, options, resolution, created_at } = event.payload;
   const resolutionReason = resolution === undefined ? undefined : askResolutionReason(resolution);
   // A changed answer names the one it replaced; the first answer's event carries none. An event
@@ -89,18 +89,32 @@ function AskEventBody({
             <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
               <s>
                 was:{" "}
-                {wasSelected.map((label, index) => (
-                  <Fragment key={label}>
-                    {index === 0 ? null : ", "}
-                    <MarkdownBody
-                      markdown={label}
-                      onRendered={onRendered}
-                      source={source}
-                      surface="activity-event-body"
-                      variant="inline"
-                    />
-                  </Fragment>
-                ))}
+                {wasSelected.map((label, index) => {
+                  // A chosen option is one of the ask's options, so its label is drawn from that
+                  // option's tree, which the event carries by the option's place in its list.
+                  const tree = optionsWithTrees.find(
+                    (option) => option.label === label
+                  )?.label_tree;
+                  return (
+                    <Fragment key={label}>
+                      {index === 0 ? null : ", "}
+                      {tree === undefined ? (
+                        // One the ask no longer holds has no tree anywhere, so it is shown as
+                        // written: the reading list's `earlier-chosen-option`.
+                        label
+                      ) : (
+                        <MarkdownBody
+                          markdown={label}
+                          onRendered={onRendered}
+                          source={source}
+                          surface="activity-event-body"
+                          tree={tree}
+                          variant="inline"
+                        />
+                      )}
+                    </Fragment>
+                  );
+                })}
                 {wasSelected.length === 0 || wasText === "" ? null : " - "}
                 {wasText === "" ? null : (
                   <MarkdownBody
@@ -194,7 +208,7 @@ export function EventBody({
         <MarkdownBody
           markdown={event.payload.body}
           onRendered={onRendered}
-          source={textSourceOf(message ? "message" : "comment", event.payload.id)}
+          source={textSourceOf(message ? "message" : "comment", event.payload.id, event.issue_key)}
           surface="activity-event-body"
           tree={payloadTree(event, "payload.body")}
         />

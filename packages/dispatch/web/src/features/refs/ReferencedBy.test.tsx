@@ -3,10 +3,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { api } from "../../api/client";
 import type { GraphEdge, GraphReferences } from "../../api/types";
 import type { BlockItemKind } from "./block-reference";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { ReferencedBy } from "./ReferencedBy";
 
 const createdAt = "2026-10-20T10:00:00Z";
@@ -530,6 +533,65 @@ test("a citing comment's excerpt is rendered, and a citing issue's title is show
   );
   expect(fromComment.getByText("first", { selector: "strong" })).toBeDefined();
   expect(within(sources[1] as HTMLElement).getByText(written)).toBeDefined();
+});
+
+// A citing block of a document is a block of that document, which its node carries as its
+// `parent`: its excerpt is the document's text, so a `#id` in it names the question of that
+// document. And the excerpt is drawn from the reading the server cut it into, never parsed in
+// the page: the row shows the tree's `later` where the excerpt's markdown says `now`.
+test("a document block's excerpt is drawn from its tree and reads a #id against its document", async () => {
+  await warmMarkdownRenderer();
+  const answers = answerQuestionOf("artifact", "plan-artifact");
+  const { getReferences, view } = renderPanel({
+    edges: [
+      {
+        created_at: createdAt,
+        direction: "in",
+        excerpt: {
+          block_id: "b1",
+          text: "Decide #q2 now.",
+          text_tree: displayTree("Decide #q2 later."),
+        },
+        kind: "mentions",
+        node: {
+          ...graphNodeFields(),
+          block_id: "b1",
+          document: "dispatch://CORE-2/artifact/plan-md",
+          id: "CORE-2/plan-md#b1",
+          issue_key: "CORE-2",
+          kind: "block",
+          parent: {
+            id: "plan-artifact",
+            kind: "artifact",
+            ref: "dispatch://CORE-2/artifact/plan-md",
+          },
+          project: "CORE",
+          ref: "dispatch://CORE-2/artifact/plan-md#b-b1",
+        },
+        source_seq: 13,
+      },
+    ],
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
+  });
+  restore = () => {
+    getReferences.mockRestore();
+    answers.restore();
+    view.unmount();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await waitFor(() =>
+    expect(panel.querySelector(`[data-dispatch-ref="${NAMED_ASK}"]`)?.textContent).toBe(
+      NAMED_QUESTION
+    )
+  );
+  expect(panel.textContent).toContain(`Decide ${NAMED_QUESTION} later.`);
 });
 
 // `serves` and `needs` are the edge kinds a typed block's `block[]` attributes make

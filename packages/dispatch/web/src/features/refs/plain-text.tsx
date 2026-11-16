@@ -10,6 +10,7 @@ import {
   useMarkdownHeadline,
 } from "./markdown-engine";
 import { isPartyRoute } from "./party-references";
+import { useProjectKeys } from "./project-keys";
 import { ReferenceHostIs } from "./reference-host";
 import {
   questionReferences,
@@ -17,6 +18,7 @@ import {
   useReferenceQuery,
   useReferenceTarget,
 } from "./reference-target";
+import { RecordIssue } from "./role-holders";
 import { type DispatchReferenceRoute, parseNodeReference, shortForm } from "./routes";
 import type { TextSource } from "./text-references";
 
@@ -30,8 +32,8 @@ const NO_NAMES: ReadonlyMap<string, ReferenceName> = new Map();
  *  or the sign and the party's short form where it exists with no name. A target Dispatch
  *  answered does not exist, or exists with no name of its own, has no name, and reads as the
  *  words its author wrote (R8). Undefined while the target has not answered, and for one the
- *  reader may not see, where the projection keeps a `dispatch://` reference's short form and any
- *  other form as written. */
+ *  reader may not see, where the projection keeps the words written, as the painted link does
+ *  until its title resolves. */
 function referenceAnswer(
   route: DispatchReferenceRoute,
   { known, missing, title }: { known: boolean; missing: boolean; title: string | undefined }
@@ -133,9 +135,10 @@ export function usePlainHeadline(
     () => (markdown === undefined ? undefined : citedReferences(markdown, questions)),
     [markdown, questions]
   );
+  const projects = useProjectKeys();
   const naming = useMemo<ReferenceNaming>(
-    () => ({ cited, names, questions }),
-    [cited, names, questions]
+    () => ({ cited, names, projects, questions }),
+    [cited, names, projects, questions]
   );
   const text = useMarkdownHeadline(tree, max, markdown, naming, firstLine);
   const holdsQuestions = text?.questions === true;
@@ -173,17 +176,21 @@ export function usePlainHeadline(
       return next;
     });
   }, []);
+  const issue = source?.issue;
   const reads = useMemo(
     () => (
       // The host every read sits in: an element that can hold no markup, so a body drawn under
-      // one draws its characters rather than a link.
+      // one draws its characters rather than a link. Each read takes its role by the issue the
+      // record is on, as the painted line's links do (`RecordIssue`).
       <ReferenceHostIs host="plain">
-        {[...routes].map(([address, route]) => (
-          <ReferenceNameRead address={address} key={address} onName={onName} route={route} />
-        ))}
+        <RecordIssue.Provider value={issue}>
+          {[...routes].map(([address, route]) => (
+            <ReferenceNameRead address={address} key={address} onName={onName} route={route} />
+          ))}
+        </RecordIssue.Provider>
       </ReferenceHostIs>
     ),
-    [onName, routes]
+    [issue, onName, routes]
   );
   return { reads, text };
 }

@@ -5,6 +5,7 @@ import { type ReactNode, useCallback, useRef } from "react";
 import type { DisplayTree } from "../../api/types";
 import { markdownClassName } from "./markdown-engine";
 import { usePlainHeadline } from "./plain-text";
+import { RecordIssue } from "./role-holders";
 import { SEARCH_HIGHLIGHT_SELECTOR, SearchHighlightClassName } from "./search-highlight";
 import type { TextSource } from "./text-references";
 import {
@@ -218,8 +219,9 @@ export function MarkdownPreview({
       title={title?.text}
     >
       {reads}
+      {/* Each reference drawn reads its role by the issue the record is on (`RecordIssue`). */}
       <SearchHighlightClassName.Provider value={highlightClassName}>
-        {portals}
+        <RecordIssue.Provider value={source?.issue}>{portals}</RecordIssue.Provider>
       </SearchHighlightClassName.Provider>
     </span>
   );

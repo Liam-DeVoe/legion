@@ -830,7 +830,7 @@ export function MentionComposer({
             : replyTo?.parentKind === "message"
               ? "message-reply"
               : "comment";
-  /** The issue whose people the picker offers; a document of its own
+  /** The issue the picker offers the people and the stopped roles of; a document of its own
    *  project has none, and the picker offers everyone who has signed in there. */
   const pickerIssue = owner.kind === "issue" ? owner.issueKey : undefined;
   const pickerProject = owner.kind === "artifact" ? owner.project : undefined;
@@ -894,7 +894,11 @@ export function MentionComposer({
             author={replyTo.actor}
             className="min-w-0 flex-1"
             excerpt={replyTo.excerpt}
-            source={textSourceOf(replyTo.parentKind, replyTo.id)}
+            source={textSourceOf(
+              replyTo.parentKind,
+              replyTo.id,
+              owner.kind === "issue" ? owner.issueKey : undefined
+            )}
             to={replyTo.to}
           />
           {/* The reply is part of the message's address, fixed once the send is out, so the

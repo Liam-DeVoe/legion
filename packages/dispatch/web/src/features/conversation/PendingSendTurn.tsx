@@ -8,7 +8,7 @@ import {
   textMutedOnCanvas,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
-import { PlainText } from "../refs/plain-text";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import type { HeldSend } from "./held-sends";
@@ -17,17 +17,18 @@ import type { SessionSends } from "./useSessionSends";
 
 /**
  * One message of the viewer's to a session that Dispatch has not yet made, as its own turn: the
- * text named as theirs - `Your message: “…”`, at a glance and to a screen reader, since it is not
- * yet the session's conversation - and where it stands: held while the viewer's sign-out in
- * another tab is out, saying so; waiting for the message before it, never sent, with Discard;
- * sending; still being tried past its deadline with Stop trying; or refused with why, Retry and
- * Discard. The session's live view and its Agents row both show it, and either's controls act on
- * the same write (`useSessionSends`). It leaves once Dispatch makes it, and the stored message
- * takes its place.
+ * text named as theirs - `Your message`, at a glance and to a screen reader, since it is not yet
+ * the session's conversation - and where it stands: held while the viewer's sign-out in another
+ * tab is out, saying so; waiting for the message before it, never sent, with Discard; sending;
+ * still being tried past its deadline with Stop trying; or refused with why, Retry and Discard.
+ * The session's live view and its Agents row both show it, and either's controls act on the
+ * same write (`useSessionSends`). It leaves once Dispatch makes it, and the stored message takes
+ * its place.
  *
- * The text is plain, never rendered as markdown, and it is the draft's plain-text projection
- * rather than its source: the picker writes a mention into the draft as a link, which reads here
- * as the party's name.
+ * The draft is drawn by the renderer, as the message it becomes will be: its line breaks and
+ * formatting as the stored message shows them, and a mention the picker wrote as the party's
+ * name. Dispatch has stored nothing yet, so the page parses it, as it parses every write the
+ * server has not stored; it is no record yet, so a `#id` in it names nothing until it is one.
  */
 export function PendingSendTurn({
   held,
@@ -45,15 +46,8 @@ export function PendingSendTurn({
       <div
         className={`max-w-[80%] rounded-xl px-3 py-2 text-sm opacity-80 ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
       >
-        <p className="whitespace-pre-wrap break-words">
-          Your message: “
-          <PlainText markdown={held.draft.draft.body} surface="agent-held-send">
-            {/* The draft as its plain words, and as typed until the engine has answered: the
-                reading list's `agent-held-send`. */}
-            {(line) => line ?? held.draft.draft.body}
-          </PlainText>
-          ”
-        </p>
+        <p className={`text-xs font-medium ${textMutedOnCanvas}`}>Your message</p>
+        <MarkdownBody markdown={held.draft.draft.body} surface="agent-held-send" />
       </div>
       <div className="flex max-w-[80%] flex-wrap items-center justify-end gap-x-3 gap-y-1">
         {held.status === "refused" ? (

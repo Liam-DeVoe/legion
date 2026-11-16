@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -12,6 +12,8 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { decisionHeadingTree } from "../issue/decision-heading";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { usePlainHeadline } from "../refs/plain-text";
 import { parseDispatchReference, referenceHref } from "../refs/routes";
@@ -22,8 +24,9 @@ import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
  *  unsure, its heading as a link to it in `decisions.md`, and the head of its text. Selecting the
  *  card lights up the block, as selecting an anchored comment lights up its text. The heading
- *  names the card and words a link, neither of which holds markup, so it is read as its plain
- *  words; the passage is the record the issue's `decisions.md` is, drawn by the renderer. */
+ *  names the card and words a link, neither of which holds markup, so there it is read as its
+ *  plain words; with no page to link to it is drawn by the renderer, as the passage is. Both
+ *  are the record the issue's `decisions.md` is. */
 export function DecisionCard({
   hovered = false,
   item,
@@ -41,13 +44,23 @@ export function DecisionCard({
   // person (R5) - leaves the heading as plain words.
   const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
-  const { reads, text } = usePlainHeadline(undefined, decision.heading, {
-    surface: "margin-decision-passage",
+  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
+  const source = textSourceOf(
+    "artifact",
+    item.documentId,
+    route !== undefined && "key" in route ? route.key : undefined
+  );
+  const { reads, text } = usePlainHeadline(headingTree, decision.heading, {
+    source,
+    surface: "decision-heading-words",
   });
-  const heading = text?.text ?? "";
+  // Until the engine has answered, the heading as written, which the reading list's
+  // `decision-heading-words` says is a load state: a card is never left with no name.
+  const heading = text?.text ?? decision.heading;
   return (
     <article
       aria-current={selected ? "true" : undefined}
+      // The card's name is its heading's plain words: the reading list's `decision-heading-words`.
       aria-label={`Decision: ${heading}`}
       className={`rounded-xl border p-3 text-sm shadow-sm ${
         active ? `${selectedCardBorder} ${selectedCardBg}` : card
@@ -78,9 +91,16 @@ export function DecisionCard({
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>
         {reads}
         {href === undefined ? (
-          heading
+          <MarkdownBody
+            markdown={decision.heading}
+            source={source}
+            surface="margin-decision-passage"
+            tree={headingTree}
+            variant="inline"
+          />
         ) : (
           <Link className={`${linkText} ${linkHoverText}`} to={href}>
+            {/* A link's words hold no markup: the reading list's `decision-heading-words`. */}
             {heading}
           </Link>
         )}
@@ -89,7 +109,7 @@ export function DecisionCard({
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
         markdown={decision.text}
-        source={textSourceOf("artifact", item.documentId)}
+        source={source}
         surface="margin-decision-passage"
         tree={decision.text_tree}
       />

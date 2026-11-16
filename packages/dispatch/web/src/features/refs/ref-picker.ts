@@ -1,6 +1,7 @@
 import { mentionName } from "@legion/contracts";
 
-import type { SearchResultKind } from "../../api/types";
+import type { DisplayTree, SearchResultKind } from "../../api/types";
+import type { TextSource } from "./text-references";
 
 /**
  * The reference picker's rows, their order and the text a pick inserts: one module, so the three
@@ -64,6 +65,10 @@ export const REF_PICKER_QUERY_MIN = 2;
  *  search results page: a reader who cannot see their target in eight rows types another letter.
  */
 export const REF_PICKER_SEARCH_LIMIT = 8;
+
+/** How much of a snippet or of a block's text a row shows: enough to tell two rows apart, short
+ *  enough that a row stays one line. */
+export const REF_PICKER_TEXT_MAX = 120;
 
 /** The heading each kind's rows sit under. */
 export const REF_PICKER_HEADINGS: Record<RefPickerKind, string> = {
@@ -160,7 +165,8 @@ export interface RefPickerRow {
   readonly id: string;
   readonly kind: RefPickerKind;
   /** The row's own words - an issue's title, a party's name, a block's first words - which the
-   *  browser-side filter matches and the list draws. */
+   *  browser-side filter matches and the list draws. A row worded with a record's own text is
+   *  that text as written, cut where no reference crosses the cut (`headRefs`). */
   readonly label: string;
   /** The line under the label: where the row is, or what it is. Empty for a row with nothing to
    *  add. */
@@ -168,6 +174,15 @@ export interface RefPickerRow {
   /** The `dispatch://` address the row names. */
   readonly reference: string;
   readonly parts?: RefPickerParts;
+  /** For a row worded with a record's own text - a hit's matched words, the head of a block - that
+   *  text whole, the tree the server read it into, which the list draws as its plain words
+   *  (`RefRowLabel`), and the record it is, whose document names a `#id` in it. Absent where the
+   *  server sent no tree, and the list draws `label` as written. */
+  readonly prose?: {
+    readonly markdown: string;
+    readonly tree: DisplayTree;
+    readonly source: TextSource | undefined;
+  };
 }
 
 /** One kind's rows, under that kind's heading. */
@@ -236,33 +251,62 @@ function atWordBoundary(before: string, start: number): boolean {
 const LINK_WORDS_AHEAD = /^(?:[^[\]\\\n]|\\.)*\]\(/u;
 
 /** The text before a caret that stands in a link's address: the `](` that opens it, then no
- *  space and no `)` since. */
+ *  space and no `)` since. Read of the text before a trigger, it says the trigger was typed in a
+ *  link's address. */
 const LINK_ADDRESS_BEHIND = /\]\([^\s)]*$/u;
+
+/** The text after a caret that ends the address the caret stands in: the space, the line break
+ *  or the `)` that ends it, or the end of the text. */
+const ADDRESS_END_AHEAD = /^(?:[\s)]|$)/u;
+
+/** How a host's text holds a link. `markdown`: a textarea or an assistant-ui composer,
+ *  whose text is the Markdown the reader types, so a link's words and its address are
+ *  characters of it. `marks`: a ProseMirror document, where a link is a mark over its words and
+ *  the address is the mark's, so the text holds neither, and a `[` or a `](` in it is only the
+ *  characters the reader typed. */
+export type RefPickerLinks = "markdown" | "marks";
 
 /**
  * The door open at `caret` in `text`, read from the text before it: the last trigger the reader
  * typed that still stands - at a word boundary, with no space typed since. Undefined when none
  * does, which is how the picker closes on a space and how it never opens mid-word. Nor does it
- * stand past a `]`, nor anywhere in a written link's words: the `@` a mention's words start with
- * (`[@Planner](dispatch://agent/…)`) follows a `[`, and the picker must open neither over the
- * mention it has just written nor where the reader moves the caret into one, since a pick there
- * would write a link inside a link. In a link's address a door opens on a trigger typed in that
- * address - `[the plan](#pl`, `[the plan](@`, `[the plan]([[go` - and says so (`inAddress`), so
- * its pick writes the address alone; a trigger before the address's first character is not this
- * door, which is why the caret in a mention's own address opens nothing. The caret defaults to
- * the end of the text.
+ * stand past a `]`, nor, in a host whose links are Markdown, anywhere in a written link's words:
+ * the `@` a mention's words start with (`[@Planner](dispatch://agent/…)`) follows a `[`, and the
+ * picker must open neither over the mention it has just written nor where the reader moves the
+ * caret into one, since a pick there would write a link inside a link. In such a link's address
+ * a door opens on a trigger typed in that address - `[the plan](#pl`, `[the plan](@`,
+ * `[the plan]([[go` - and says so (`inAddress`), so its pick writes the address alone; a trigger
+ * before the address's first character is not this door, which is why the caret in a mention's
+ * own address opens nothing. A pick writes over the trigger through the caret and no further, so
+ * such a door stands only where the caret ends the address - at the end of the text, or before
+ * the space or the `)` that ends it - where the pick writes the address whole: before the rest
+ * of an address it would leave that rest behind its own (`[the plan](dispatch://CORE-1an)`),
+ * and once the caret is past the `)` that closes an address, a trigger in that address is no
+ * door at all (`[the plan](#plan)` with the caret at its end). A host whose links are marks has
+ * no link in its text to stand in, so none of this reads it and no trigger stands in an
+ * address. The caret defaults to the end of the text.
  */
-export function readTrigger(text: string, caret = text.length): RefPickerTrigger | undefined {
-  if (LINK_WORDS_AHEAD.test(text.slice(caret))) return undefined;
+export function readTrigger(
+  text: string,
+  caret = text.length,
+  links: RefPickerLinks = "markdown"
+): RefPickerTrigger | undefined {
+  const markdown = links === "markdown";
+  if (markdown && LINK_WORDS_AHEAD.test(text.slice(caret))) return undefined;
   const before = text.slice(0, caret);
   // The address the caret stands in begins after the `](` that opens it.
-  const opened = LINK_ADDRESS_BEHIND.exec(before);
+  const opened = markdown ? LINK_ADDRESS_BEHIND.exec(before) : null;
+  if (opened !== null && !ADDRESS_END_AHEAD.test(text.slice(caret))) return undefined;
   const address = opened === null ? undefined : opened.index + "](".length;
   let found: RefPickerTrigger | undefined;
   for (const { chars, door } of REF_PICKER_TRIGGERS) {
     const start = before.lastIndexOf(chars);
     if (start < 0 || (found !== undefined && start < found.start)) continue;
     if (address !== undefined && start < address) continue;
+    // A trigger typed in an address the caret has since left, past its `)`.
+    if (markdown && address === undefined && LINK_ADDRESS_BEHIND.test(before.slice(0, start))) {
+      continue;
+    }
     if (!atWordBoundary(before, start)) continue;
     const query = before.slice(start + chars.length);
     if (!/[\s\]]/u.test(query)) {
@@ -285,15 +329,23 @@ export interface RefPickerInsertion {
   readonly trigger: string;
   /** A mention's pick, for a host that writes marks rather than Markdown: the words the mention
    *  shows and the address it names (R4). `text` is that same mention written as Markdown,
-   *  which is what a `<textarea>` host writes; a ProseMirror host writes these two instead, a
+   *  which is what a textarea host writes; a ProseMirror host writes these two instead, a
    *  link mark over the words, since plain text holding that Markdown is stored escaped. A party
    *  picked in a link's address is its bare address, as any other pick is, and carries none. */
   readonly link?: { readonly href: string; readonly words: string };
 }
 
-/** A link's words cannot hold a bare bracket; a session title can. */
+/** What Markdown reads as markup in a link's words: the brackets that would end them, the
+ *  backslash that escapes, and the delimiters of emphasis, strong, code and strikethrough,
+ *  which over a part of the words would make them their author's words rather than a mention
+ *  (`@legion/contracts`'s `isMentionWords`). */
+const LINK_WORDS_MARKUP = /[[\]\\*_`~]/gu;
+
+/** A party's name as a link's words, each character Markdown would read as markup written
+ *  escaped: a session title is whatever its holder typed - `Planner [2]`, `fix *the* cache` -
+ *  and every reader of the link takes the escaped words as exactly those characters. */
 function linkWords(label: string): string {
-  return label.replace(/[[\]]/gu, (bracket) => `\\${bracket}`);
+  return label.replace(LINK_WORDS_MARKUP, (character) => `\\${character}`);
 }
 
 /** The mention of a party: a link whose words are the mention sign and its name and whose
@@ -301,8 +353,11 @@ function linkWords(label: string): string {
  *  and still names it after an edit of the words. A link whose words start with the sign and
  *  whose address names a party reads as the sign and that party's current name wherever it is
  *  shown (`@legion/contracts`'s `mentionName`); a link whose words its author wrote another way
- *  keeps those words (R8). The one writer of that shape, read by the picker's pick below and by
- *  the seed a channel owes its own party (`party-references.ts`). */
+ *  keeps those words (R8). The name is written as literal words (`linkWords`), so a name that
+ *  holds a formatting character is still a mention's plain words and reads as the party's
+ *  current name after a rename. The one writer of that shape, read by the picker's pick below,
+ *  by the live composer's (`ReferenceTriggers`) and by the seed a channel owes its own party and
+ *  a kept draft's rewrite (`party-references.ts`'s `partyMention`). */
 export function partyLink(name: string, reference: string): string {
   return `[${mentionName(linkWords(name))}](${reference})`;
 }
@@ -328,13 +383,14 @@ export function insertionFor(
   const text = insertionText(row, trigger);
   const insertion = { end: caret, start: trigger.start, text, trigger: trigger.chars };
   // A pick that writes more than its bare address writes a mention, which a host that writes
-  // marks takes apart.
+  // marks takes apart. Its words are the characters of the mark's text, which the document's own
+  // Markdown writer escapes as it stores them, so they are the name as it is.
   return text === row.reference
     ? insertion
     : { ...insertion, link: { href: row.reference, words: mentionName(row.label) } };
 }
 
-/** `insertion` applied to a plain string, with the caret that follows it: what a `<textarea>`
+/** `insertion` applied to a plain string, with the caret that follows it: what a textarea
  *  host writes back. A ProseMirror or assistant-ui host maps the same offsets into its own
  *  document instead. */
 export function applyInsertion(

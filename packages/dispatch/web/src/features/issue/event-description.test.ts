@@ -4,6 +4,9 @@ import type { DispatchEvent } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
 import { eventDescription } from "./event-description";
 
+/** The record an ask event's question is: the ask itself, on its issue. */
+const ASK_SOURCE = { id: "ask-1", issue: "CORE-1", kind: "ask" } as const;
+
 function commentEvent(type: "comment.reopened" | "comment.edited"): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
@@ -80,7 +83,7 @@ test("eventDescription labels an edited ask with its new question", () => {
   // never carries the question's source.
   expect(eventDescription(editedAskEvent())).toEqual([
     "Ask edited: ",
-    { prose: "Publish?", tree: undefined },
+    { prose: "Publish?", source: ASK_SOURCE, tree: undefined },
   ]);
 });
 
@@ -88,7 +91,7 @@ test("eventDescription hands an ask's question the tree its event carries", () =
   const tree = { content: [], type: "doc" };
   expect(eventDescription({ ...editedAskEvent(), trees: { "payload.question": tree } })).toEqual([
     "Ask edited: ",
-    { prose: "Publish?", tree },
+    { prose: "Publish?", source: ASK_SOURCE, tree },
   ]);
 });
 
@@ -129,7 +132,7 @@ function answeredAskEvent(
 }
 
 test("eventDescription says an answer changed when it replaced an earlier one", () => {
-  const question = { prose: "Publish?", tree: undefined };
+  const question = { prose: "Publish?", source: ASK_SOURCE, tree: undefined };
   expect(eventDescription(answeredAskEvent())).toEqual(["Ask answered: ", question]);
   expect(
     eventDescription(

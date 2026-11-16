@@ -228,7 +228,7 @@ function AgentExchangeReply({
         <div className={textPrimaryOnCanvas}>
           <MarkdownBody
             markdown={reply.body}
-            source={textSourceOf("message", reply.id)}
+            source={textSourceOf("message", reply.id, reply.issue_key)}
             surface="agents-row-reply"
             tree={reply.body_tree}
           />
@@ -258,7 +258,7 @@ function AgentExchangeReply({
               author: parent.author,
               block: reply.reply_block,
               excerpt: parent.body,
-              source: textSourceOf("message", parent.id),
+              source: textSourceOf("message", parent.id, parent.issue_key),
               ...(parent.issue_key === null
                 ? {}
                 : {
@@ -311,7 +311,7 @@ function AgentTargetedMessage({
           <div className={textPrimaryOnCanvas}>
             <MarkdownBody
               markdown={read.message.body}
-              source={textSourceOf("message", read.message.id)}
+              source={textSourceOf("message", read.message.id, read.message.issue_key)}
               surface="agents-row-message"
               tree={read.message.body_tree}
             />

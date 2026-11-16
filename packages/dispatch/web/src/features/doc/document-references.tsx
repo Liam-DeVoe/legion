@@ -13,6 +13,7 @@ import { useNavigate } from "react-router-dom";
 
 import { isPartyRoute } from "../refs/party-references";
 import { fetchReferenceHref, needsSpecSlug, useReferenceTarget } from "../refs/reference-target";
+import { RecordIssue } from "../refs/role-holders";
 import {
   type DispatchReferenceRoute,
   parseNodeReference,
@@ -259,12 +260,14 @@ export function DocumentReferences({
     }
     return [...distinct];
   }, [resolved]);
+  // Each title reads its role by the issue the document is on, as a rendered body of the same
+  // text does (`RecordIssue`).
   return (
-    <>
+    <RecordIssue.Provider value={source?.issue}>
       {read.map(([reference, route]) => (
         <ReferenceTitle key={reference} onName={onName} reference={reference} route={route} />
       ))}
-    </>
+    </RecordIssue.Provider>
   );
 }
 

@@ -179,10 +179,15 @@ function ResultOption({
   // The route table carries the kind as a plain string; a kind this build has no icon or label
   // for keeps its own word and draws no icon, rather than borrowing another kind's.
   const kind = searchResultKind(result.kind);
-  // The hit's snippet is the record's own text, cut: the row names the record (`result.id`) and
-  // the kind it was indexed under, which is what a `#id` in it resolves against. A kind that
-  // names no reference source - a project, an agent - answers none (`textSourceKind`).
-  const record = textSourceOf(textSourceKind(result.kind), result.id);
+  // The hit's snippet is the record's own text, cut: the row names the record (`result.id`), the
+  // kind it was indexed under, which is what a `#id` in it resolves against, and the issue it is
+  // on, its owner. A kind that names no reference source - a project, an agent - answers none
+  // (`textSourceKind`).
+  const record = textSourceOf(
+    textSourceKind(result.kind),
+    result.id,
+    result.owner.kind === "issue" ? result.owner.key : undefined
+  );
 
   return (
     <PaletteOption
