@@ -138,6 +138,13 @@ func (d *dispatchAnswers) fail(err error) {
 	d.failing = err
 }
 
+// drop takes project out of Dispatch, which then answers ErrProjectNotFound about it.
+func (d *dispatchAnswers) drop(project string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.answers, project)
+}
+
 // hide takes entryPerson off project's access list, or with hidden false puts them back on it.
 func (d *dispatchAnswers) hide(project string, hidden bool) {
 	d.mu.Lock()
@@ -588,6 +595,13 @@ func TestAHeldDaemonIsNotServedASharedLane(t *testing.T) {
 			answers: map[string][]string{"PUB1": {"acme/a"}, "PUB3": {"acme/a.b"}, "PUB2": {"acme/a_b"}},
 			served:  []string{"acme/a"}, withheld: []string{"acme/a.b"}, logged: "[PUB2 PUB3]", dropped: 2,
 		},
+		{
+			// GitHub names a repository without case, as Dispatch's own lane rule compares lanes.
+			name:    "one lane spelled in two cases in two entries' projects",
+			pub:     []string{"PUB1"},
+			answers: map[string][]string{"PUB1": {"acme/a", "Acme/Shared"}, "PUB2": {"acme/shared"}},
+			served:  []string{"acme/a"}, withheld: []string{"acme/shared", "Acme/Shared"}, logged: "[PUB1 PUB2]", dropped: 2,
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			now := time.Now()
@@ -632,6 +646,47 @@ func TestAHeldDaemonIsNotServedASharedLane(t *testing.T) {
 	}
 }
 
+// A whole mapping move (a repository Dispatch maps to PUB2 in a later pass, where it mapped it
+// to PUB1 before, with no rename) is no shared lane: one project maps the lane in each pass, so
+// the repository goes with its mapping, PUB1's daemon losing its lane and PUB2's gaining it at
+// the complete pass that reads the move, with nothing logged or counted as shared. Who may move a
+// mapping is Dispatch's write rule, not this guard's. The control keeps the earlier pass's lanes
+// beside the later's: the moved repository reads as shared, and PUB2's daemon is not served it.
+func TestAMappingMoveIsNoSharedLane(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	tokens := map[string]platformToken{
+		"pub1-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"pub2-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+	}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB1": {"acme/x"}, "PUB2": {"acme/y"}}}
+	var logged bytes.Buffer
+	registry := metrics.New()
+	deps := Deps{
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB1"}, slowDaemonAccount: {"PUB2"}}),
+		Access: dispatch.access, RepoProjects: dispatch.repoProjects,
+		Log: slog.New(slog.NewTextHandler(&logged, nil)), Metrics: NewMetrics(registry),
+	}
+	deps.held = newHeldAccess(deps, services)
+	require.NotNil(t, deps.held)
+	deps.held.refresh(t.Context())
+	pub1, err := Decide(t.Context(), deps, services, serviceRequest("pub1-token"))
+	require.NoError(t, err)
+	require.True(t, holdsLane(pub1.Grant, "acme/x"))
+
+	dispatch.set("PUB1")
+	dispatch.set("PUB2", "acme/x", "acme/y")
+	deps.held.refresh(t.Context())
+	pub1, err = Decide(t.Context(), deps, services, serviceRequest("pub1-token"))
+	require.NoError(t, err)
+	pub2, err := Decide(t.Context(), deps, services, serviceRequest("pub2-token"))
+	require.NoError(t, err)
+	require.False(t, holdsLane(pub1.Grant, "acme/x"), "PUB1's daemon is still served acme/x, which Dispatch moved to PUB2")
+	require.True(t, holdsLane(pub2.Grant, "acme/x"), "PUB2's daemon is not served acme/x, which Dispatch moved to it: the move read as a shared lane")
+	require.NotContains(t, logged.String(), "level=ERROR", "a mapping move was logged as a shared lane:\n%s", logged.String())
+	require.Zero(t, sharedLanesDropped(t, registry), "a mapping move was counted as a shared lane")
+}
+
 // A grant the drop leaves WithinProjects unable to hold is refused under shared_lane, naming the
 // withheld lanes, and not as a grant that cannot be held at all. scopeGrant is handed a grant
 // whose one subscribe is every repository's GitHub lane: PUB1's one repository, acme/a.b, shares
@@ -655,8 +710,9 @@ func TestADropThatLeavesNoGrantIsRefusedAsASharedLane(t *testing.T) {
 	requireRefused(t, err, labelSharedLane, "grant cannot be held to its projects once the repositories whose lane a project outside the entry maps are withheld: service daemon/"+pubDaemonAccount)
 }
 
-// A held daemon is refused under shared_lane, inside the budget, until Dispatch's repository
-// mapping has been read once: until then no repository is known to be no other project's. Here
+// A held daemon is refused under no_complete_pass, inside the budget, until Dispatch's repository
+// mapping has been read once: until then no repository is known to be no other project's, and the
+// label says that, not a shared lane, so no operator goes looking for a second mapping. Here
 // Dispatch answers about PUB at once and never answers the mapping: PUB's held daemon is refused
 // in under 100 ms, and Dispatch's own connection, an all-projects entry, is admitted with its
 // grant as before. The control takes an unread mapping as one with no row: the daemon is
@@ -688,7 +744,7 @@ func TestAHeldDaemonIsRefusedUntilTheLanesAreKnown(t *testing.T) {
 	began := time.Now()
 	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	took := time.Since(began)
-	requireRefused(t, err, labelSharedLane, "no complete read of Dispatch's project answers and repository mapping is held yet")
+	requireRefused(t, err, "no_complete_pass", "no complete read of Dispatch's project answers and repository mapping is held yet")
 	require.Less(t, took, 100*time.Millisecond, "the refusal took %s: it waited on Dispatch", took)
 
 	decision, err := Decide(t.Context(), deps, services, serviceRequest("dispatch-token"))

@@ -7,20 +7,26 @@ body: |-
   exchange requires of that account's token. No connection waits on Dispatch: the broker reads it
   in passes, at its start and every 20 seconds after, each asking about every such project and
   reading Dispatch's whole repository mapping, and builds a held grant from the newest complete
-  pass alone, however old, never from two passes mixed; a pass any question of which fails
-  replaces nothing. A repository whose GitHub lane a project the daemon's entry does not name also
-  maps, by a `renamed_to` or by a second spelling of one lane, is withheld from the grant, counted
-  in `broker_nats_callout_shared_lanes_dropped_total` and logged at error with the lane and its
-  projects once a pass; a lane shared only among the entry's own projects is served. It refuses,
-  naming the reason and counting it under a label of its own, an account no exchange entry lists
-  (`no_exchange_entry`), an entry naming no project (`no_exchange_projects`), no complete pass
-  held yet (`shared_lane`, which the client retries),
-  Dispatch refusing the broker's own account token (a 401 or 403) in that pass
-  (`project_access_refused`, logged at error once a pass, as the token exchange refuses every
-  trade then), a project Dispatch does not hold (`project_not_found`), one the entry's person
-  cannot see (`project_not_visible`), and a grant that cannot be held to projects
-  (`grant_not_holdable`). A dispatch or listener entry with `-` is now refused at startup, as a
-  measurement entry's is. Dispatch's grant there may also write the private-projects bucket, a
+  pass alone, however old, never from two passes mixed; a pass any question of which fails adds
+  nothing, but every refusal it got (a project not found, or no longer seen by the entry's
+  person, or a repository no longer mapped to it) applies at once. A repository whose GitHub
+  lane a project the daemon's entry does not name also maps, by a `renamed_to` or by a second
+  spelling of one lane (lanes compared without case), is withheld from the grant, counted in
+  `broker_nats_callout_shared_lanes_dropped_total` and logged at error with the lane and its
+  projects once a pass; a lane shared only among the entry's own projects is served, and a
+  mapping moved whole to another project is no shared lane but goes with its mapping. The guard
+  sees only the mapping rows Dispatch answers the broker with: a Dispatch with private projects
+  gives the broker's account the public projects' rows alone, and refuses on its own every
+  mapping write that would share a lane with a private project (`REPOSITORY_LANE_SHARED`). It
+  refuses, naming the reason and counting it under a label of its own, an account no exchange
+  entry lists (`no_exchange_entry`), an entry naming no project (`no_exchange_projects`), no
+  complete pass held yet (`no_complete_pass`, which the client retries), Dispatch refusing the
+  broker's own account token (a 401 or 403) in that pass (`project_access_refused`, logged at
+  error once a pass, as the token exchange refuses every trade then), a project Dispatch does not
+  hold (`project_not_found`), one the entry's person cannot see (`project_not_visible`), a grant
+  that cannot be held to projects (`grant_not_holdable`), and one only the withheld lanes leave
+  unholdable (`shared_lane`). A dispatch or listener entry with `-` is now refused at startup, as
+  a measurement entry's is. Dispatch's grant there may also write the private-projects bucket, a
   listener's may read it, and a daemon entry with `*` is also granted its account's own reply
   prefix. List a Legion daemon with `*` until plan C's t-c-10 release gate opens: `-` names
   consumers today's daemon does not open.
