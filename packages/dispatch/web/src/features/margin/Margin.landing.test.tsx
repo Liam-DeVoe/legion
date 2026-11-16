@@ -25,6 +25,7 @@ import {
   CommentLink,
   comment,
   issue,
+  KeptDetailsLinks,
   markedCommentPath,
   ReportEmptyLayoutButton,
   SameCommentLink,
@@ -347,6 +348,60 @@ test("on a phone, a link followed in a panel portaled into Details closes the sh
       expect(
         details.hasAttribute("hidden"),
         "a link followed in a portaled panel left the phone's Details open"
+      ).toBe(true)
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// A link that carries `KEEPS_DETAILS_ATTRIBUTE`, or stands inside an element that does, such as a
+// history turn's time link (`KeptDetailsLinks`), is followed with the phone's sheet left open; a
+// plain link beside it still closes the sheet.
+test("on a phone, a link that keeps Details open leaves the sheet open, and a plain link still closes it", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(true);
+  const tree = (target: Element | null) => (
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={landingClient([])}>
+        <MarginProvider>
+          <Details open>
+            <Margin />
+          </Details>
+          {target === null
+            ? null
+            : createPortal(
+                <>
+                  <KeptDetailsLinks />
+                  <a href="/issues/CORE-2" onClick={(event) => event.preventDefault()}>
+                    a panel's link
+                  </a>
+                </>,
+                target
+              )}
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(null));
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    view.rerender(tree(details));
+    for (const name of ["a turn's time", "a link inside a turn"]) {
+      await user.click(screen.getByRole("link", { name }));
+      await settled();
+      expect(
+        details.hasAttribute("hidden"),
+        `"${name}", which keeps Details open, closed the phone's Details`
+      ).toBe(false);
+    }
+    await user.click(screen.getByRole("link", { name: "a panel's link" }));
+    await waitFor(() =>
+      expect(
+        details.hasAttribute("hidden"),
+        "a plain link beside the kept ones left the phone's Details open"
       ).toBe(true)
     );
   } finally {
