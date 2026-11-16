@@ -485,7 +485,9 @@ order; that relay, not a subscription of this plugin's, is where the session's m
   "Session consumers"), and nothing in this extension takes part: while the relay subscription
   is open a send to this session reads `connected`, and once the NATS connection closes, or a
   session switch moves the relay to another id and drops the old subject, nothing answers and
-  the send reads `stopped`.
+  the send reads `stopped`. It never reads `no_receiver`, the answer for a running session that
+  advertises no delivery mode, because every registration of this extension advertises `aside`
+  and `steer`.
 - The answer's one mode is `consumer` (`takeDeliveryAnswer`), and the relay carries the agent
   subject and every followed topic, each of which the stream stores (`streamStores`; the listener
   drops any other `notifications.` topic from the registration and names it in a warning, so a

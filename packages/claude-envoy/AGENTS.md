@@ -274,7 +274,11 @@ above says how to run it).
   `packages/envoy/AGENTS.md`, "Session consumers"), and the server holds no subscription for it
   beyond the relay subject: while that subject is open a send reads `connected`, and once the
   connection closes, or a `/clear` handoff moves the relay to the new id and drops the old
-  subject, nothing answers and a send to the id left behind reads `stopped`.
+  subject, nothing answers and a send to the id left behind reads `stopped`. A terminal session
+  whose mod has not connected advertises no delivery mode (`sessionCapabilities`), so while its
+  subject is open a plain send reads `no_receiver` instead, with no `recipient_state`: the
+  listener stores the message, and the sender's line says the session takes no message into its
+  conversation now, never `live` (`sendConfirmationText` in `@legion/envoy-client`).
 - The listener merges each registration's topics into the entry and never removes one. So every
   registry write (register, unsubscribe, deregister, the handoff) goes through the session's one
   `serialized` chain, a registration reads the id and topics when it runs, and a topic leaves the

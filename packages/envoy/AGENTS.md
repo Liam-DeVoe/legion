@@ -4366,19 +4366,26 @@ Each item below names an endpoint and its method, then its contract, and an item
   Dispatch uses `source: "dispatch"`, an idempotency key, and a `payload` JSON string whose frame is `{event, delivery}`;
   the response is the envelope plus `recipient` with the full target session ID, `duplicate: true` when JetStream already held this message, and `recipient_state`, `state` and `last_seen` (below).
 
-- A 200 from this route carries `recipient_state`, the target's registry state, and `state`, what the connection probe found it to be, `connected` or `stopped` (`sendHandler`), with `last_seen` in unix milliseconds:
+- A 200 from this route carries `recipient_state`, the target's registry state, and `state`, what the connection probe and the entry found it to be, `connected`, `stopped` or `no_receiver` (`sendHandler`), with `last_seen` in unix milliseconds:
   the entry's last registration, or for a target with no entry its known-session record's last write.
   `state` is a field of its own and not a fourth value of `recipient_state`, because every released plugin reads `recipient_state` as a closed list of `live`, `unresponsive` and `gone` and would fail to read an answer carrying a fourth;
-  an older client drops `state`, and `stopped` is never a `session.State`.
-  There are five answers.
+  an older client drops `state`, and neither `stopped` nor `no_receiver` is ever a `session.State`.
+  There are six answers.
   An entry within the gone horizon whose probe got a reply or a second of silence, or whose entry records no consumer delivery and so is not probed, is `200` and `connected`, with `recipient_state` `live` or `unresponsive` by the entry's age.
+  A probed entry whose probe passed that way but that advertises no delivery mode (`capabilities` empty) is `200` and `no_receiver`, with no `recipient_state` and `last_seen` the entry's.
+  A Claude Code terminal advertises no delivery mode while no mod is connected to it, so the session runs but nothing writes the message into its conversation now.
+  The answer names no `recipient_state`, because `live` would say the message reaches the conversation;
+  the field is left out rather than empty, because every released plugin refuses an empty string.
+  A released plugin reads the missing field as `live` and the new word as `connected`, so it still prints `(live)` until it releases with this change.
+  Only a plain send, one whose payload names no delivery mode, gets this answer: a send that names a mode is refused `403`, since the entry advertises none (`deliveryModeVerdict`).
   An entry within the gone horizon whose probe met NATS no-responders is `200` and `stopped`, with `recipient_state` by the entry's age: the probe wins over age.
   No entry, or one past the gone horizon, with a known-session record is `200` and `stopped` with `recipient_state: gone`, its delivery mode judged by the record's capabilities (`stoppedDeliveryModeVerdict`, which accepts a record that carries none).
-  Either `stopped` answer stored the message, and the stream keeps it 72 hours, so a session that runs again under the same id gets it from its own consumer.
+  Either `stopped` answer stored the message, and so did the `no_receiver` answer; the stream keeps it 72 hours, so a session that runs again under the same id, or takes messages again, gets it from its own consumer.
   A target neither store knows is the `404` above.
   A stopped target whose request set `connected_only` is `409 {"error":"the session is stopped"}` with nothing stored, recorded `outcome=session_stopped`;
   `connected_only` is a boolean field of the request body, which Dispatch sets on the send of a model or thinking switch the session would run as its own turn (a person's own Send or Aside, not one an agent wrote for them, on no issue, no broadcast's copy, whose body is one `/model` or `/effort` line: `isSessionSwitch`) and on every send of a message whose request to `POST /api/v1/agents/{session_id}/messages` set it, and absent it changes nothing.
-  A target with no entry within the gone horizon raises the wake report whatever its record says, on the `404` and the `stopped` answer alike, and one whose probe met no-responders raises none.
+  `connected_only` refuses no other state: a `no_receiver` target runs, and its message is stored.
+  A target with no entry within the gone horizon raises the wake report whatever its record says, on the `404` and the `stopped` answer alike, and one whose probe met no-responders raises none, nor does a `no_receiver` target.
 
 - The connection probe (`probeSessionConnection`, `cmd/listener/connection_probe.go`) is one core NATS request on the target's relay subject, `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`), with a reply inbox of its own, no body and the one header `Envoy-Probe: 1`, waiting at most 1 s (`connectionProbeTimeout`).
   It is sent only to a target whose entry records consumer delivery, since both plugins subscribe the relay subject before they register.

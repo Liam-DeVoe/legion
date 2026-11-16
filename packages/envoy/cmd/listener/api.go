@@ -73,13 +73,19 @@ type sendResponse struct {
 	// this listener still stores, and gone for a session the session registry holds no entry of
 	// within the gone horizon that the known-session store still knows, which State then answers
 	// stopped. A sender that must know whether its message will be read soon reads it; one that
-	// only needs the message stored ignores it.
-	RecipientState session.State `json:"recipient_state"`
-	// State is what the connection probe found the recipient to be when the message was stored,
-	// sessionStateConnected or sessionStateStopped, by the rules sendHandler states. It is a field
-	// of its own rather than a fourth value of RecipientState, because every released plugin
-	// reads that one as a closed list of three and would fail to read an answer carrying a fourth;
-	// a client older than this field drops it. stopped is never a session.State.
+	// only needs the message stored ignores it. It is left out when State is
+	// sessionStateNoReceiver, and only then: the session's entry may read live by its age, but no
+	// message reaches its conversation now, and an answer that said live would say it does. The
+	// field is left out rather than empty, because every released plugin refuses an empty string
+	// as no value of its closed list of three.
+	RecipientState session.State `json:"recipient_state,omitempty"`
+	// State is what the connection probe and the entry found the recipient to be when the message
+	// was stored: sessionStateConnected, sessionStateStopped or sessionStateNoReceiver, by the
+	// rules sendHandler states. It is a field of its own rather than a fourth value of
+	// RecipientState, because every released plugin reads that one as a closed list of three and
+	// would fail to read an answer carrying a fourth; a client older than this field drops it, and
+	// one older than no_receiver reads that word as connected. Neither stopped nor no_receiver is
+	// ever a session.State.
 	State string `json:"state"`
 	// LastSeen is that recipient's last registration (Unix ms), so an unresponsive recipient's
 	// sender can say how long it has been stalled: its entry's where it holds one, else its
@@ -778,7 +784,14 @@ const senderStampReadTimeout = 1 * time.Second
 //   - An entry within the gone horizon whose probe was answered, met silence or failed any other
 //     way (probeSessionConnection counts that as connected), or whose entry records no consumer
 //     delivery and so is not probed: 200, state connected, recipient_state live or unresponsive
-//     by the entry's age.
+//     by the entry's age. A probed entry that advertises no delivery mode gets the next answer.
+//   - A probed entry whose probe passed as above and that advertises no delivery mode, as a
+//     Claude Code terminal does while no mod is connected to it: 200, state no_receiver, no
+//     recipient_state, and last_seen the entry's. The session runs, but nothing writes a message
+//     into its conversation now, so an answer that named it live would be wrong. The message is
+//     stored, and it reaches the conversation from the session's own consumer once the session
+//     takes messages, within the stream's 72 hours. Only a plain send gets here: a payload that
+//     names a delivery mode is the 403 below, because the entry advertises none.
 //   - An entry within the gone horizon whose probe met no responders: 200, state stopped,
 //     recipient_state by the entry's age and last_seen the entry's. The probe wins over age.
 //   - No entry, or one past the gone horizon, and a known-session record: 200, state stopped,
@@ -788,17 +801,18 @@ const senderStampReadTimeout = 1 * time.Second
 //   - Neither: 404 "no live session <id>" (noLiveSession). The wording is load-bearing: Dispatch
 //     classifies a delivery failure on that prefix.
 //   - A stopped target whose request set connected_only: 409 "the session is stopped", with
-//     nothing stored.
+//     nothing stored. connected_only refuses no other state: a no_receiver target runs, and its
+//     message is stored for it.
 //
 // The entry is read from the session store itself and not merely from this listener's cache of
 // it: only the store's word that the key is gone can make a record-based stopped answer or a 404,
 // and a store or a bus that did not answer earns the 503 that asks the sender to try the same
 // route again. A target with no entry within the gone horizon raises the wake report whatever the
 // record says, exactly where a 404 always raised it; one whose probe met no responders raises
-// none, as a lingering entry never did. A target that cannot take the payload's delivery mode
-// (deliveryModeVerdict for a session with an entry, stoppedDeliveryModeVerdict for one with only a
-// record) is the 403 naming it. Every one of those answers is written through record, so this
-// route's one line per request is written with it.
+// none, as a lingering entry never did, and nor does a no_receiver target, which runs. A target
+// that cannot take the payload's delivery mode (deliveryModeVerdict for a session with an entry,
+// stoppedDeliveryModeVerdict for one with only a record) is the 403 naming it. Every one of those
+// answers is written through record, so this route's one line per request is written with it.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
@@ -902,9 +916,12 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// the two share (connectionProbeTimeout). It is sent only for a target whose entry records
 		// consumer delivery, whose plugin subscribes its relay subject before it registers: a
 		// target with no entry is stopped with nobody asked, and an entry an older listener wrote
-		// without the field counts as connected while it holds that entry.
+		// without the field counts as connected while it holds that entry. A probed target whose
+		// probe passed but whose entry advertises no delivery mode is no_receiver: its plugin holds
+		// the relay subject, but nothing writes a message into its conversation now.
+		probed := hasEntry && target.Delivery == session.DeliveryConsumer
 		connected := make(chan bool, 1)
-		if hasEntry && target.Delivery == session.DeliveryConsumer {
+		if probed {
 			go func() { connected <- probeSessionConnection(ctx, d.client, targetSession, logger) }()
 		} else {
 			connected <- hasEntry
@@ -914,8 +931,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if !hasEntry {
 			lastSeen = known.LastSeen
 		}
-		if !<-connected {
+		switch {
+		case !<-connected:
 			state = sessionStateStopped
+		case probed && len(target.Capabilities) == 0:
+			state = sessionStateNoReceiver
 		}
 		if request.ConnectedOnly && state == sessionStateStopped {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
@@ -933,11 +953,17 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if recipientState == session.Unresponsive && !duplicate {
 			d.sendsToUnresponsive.Inc()
 		}
+		// A no_receiver answer names no recipient_state (sendResponse.RecipientState): the entry's
+		// age may read live, and no message reaches that session's conversation now.
+		answered := recipientState
+		if state == sessionStateNoReceiver {
+			answered = ""
+		}
 		record.accept(w, sendResponse{
 			Envelope:       item,
 			ExpectsReply:   expectsReplyAnswer(body.ExpectsReply),
 			Recipient:      targetSession,
-			RecipientState: recipientState,
+			RecipientState: answered,
 			State:          state,
 			LastSeen:       lastSeen,
 			Duplicate:      duplicate,

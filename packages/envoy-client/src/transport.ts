@@ -176,13 +176,16 @@ const ErrorWireSchema = z.object({
  * `recipient`, `recipient_state`, `state`, `last_seen` and `duplicate` are a send's
  * (`cmd/listener/api.go`'s `sendResponse`). `recipient_state` is the target's registry state and
  * stays the strict three-value enum every deployed plugin parses. `state` is what the listener's
- * connection check found: `connected`, or `stopped` when no plugin of the target holds its relay
- * subject, so the message waits on the session's topic. It is read as a string rather than a
- * closed pair, as this file reads a delivery answer's `reason`, so a word a later listener adds
- * still parses: only `stopped` is stopped, and anything else is the connected reading every
- * release gave before the state existed. `duplicate` says the listener already stored a send
- * under this target and idempotency key, so this one stored nothing new; absent reads as false,
- * as an older listener's answer does.
+ * connection check found: `connected`; `stopped` when no plugin of the target holds its relay
+ * subject, so the message waits on the session's topic; or `no_receiver` when the target runs but
+ * advertises no delivery mode, as a Claude Code terminal does while no mod is connected to it, so
+ * nothing takes the message into its conversation now. A `no_receiver` answer names no
+ * `recipient_state`. `state` is read as a string rather than a closed list, as this file reads a
+ * delivery answer's `reason`, so a word a later listener adds still parses: only `stopped` and
+ * `no_receiver` are read as themselves, and anything else is the connected reading every release
+ * gave before the state existed. `duplicate` says the listener already stored a send under this
+ * target and idempotency key, so this one stored nothing new; absent reads as false, as an older
+ * listener's answer does.
  *
  * `holder` and `holder_state` are a role publish's, under the two names every role answer uses
  * (`publishResponse`). A publish to a topic the stream captures stores one copy that each
@@ -601,33 +604,51 @@ export type ListSessionsInput = {
 /**
  * What the listener's connection check found for a send's target: `connected`, a plugin of that
  * session holds its relay subject now; `stopped`, none does, so the message waits on the
- * session's topic. Beside the registry state (`SessionState`) rather than a fourth value of it:
- * a session stays live or unresponsive by the age of its last registration whatever this says,
- * and keeps its claims.
+ * session's topic; `no_receiver`, a plugin holds it but the session advertises no delivery mode,
+ * as a Claude Code terminal does while no mod is connected to it, so nothing takes the message
+ * into its conversation now. Beside the registry state (`SessionState`) rather than a fourth value
+ * of it: a session stays live or unresponsive by the age of its last registration whatever this
+ * says, and keeps its claims.
  */
-export type ConnectionState = "connected" | "stopped";
+export type ConnectionState = "connected" | "stopped" | "no_receiver";
+
+/**
+ * A send's target as the listener found it. A `no_receiver` target has no `recipientState`: the
+ * listener names none for it, because its registry state would read `live` while no message
+ * reaches its conversation.
+ */
+export type SendTargetState =
+  | {
+      /** The recipient's state as the listener resolved it; `live` from a listener that names
+       *  none. A message to an unresponsive recipient is stored and reaches it when it answers
+       *  again. */
+      readonly recipientState: SessionState;
+      /**
+       * What the target was when the listener stored the message. `stopped` means the message
+       * waits on the session's topic for the stream's 72 hours and reaches it if it runs again in
+       * that time. A listener that answers no state reads as `connected`, which is what every
+       * release meant before the state existed.
+       */
+      readonly state: Exclude<ConnectionState, "no_receiver">;
+    }
+  | {
+      readonly recipientState?: undefined;
+      /** The session runs but takes no message into its conversation now. The message is stored,
+       *  and it reaches the session if the session takes messages within the stream's 72 hours. */
+      readonly state: "no_receiver";
+    };
 
 export type SendResult = {
   readonly envelope: Envelope;
   readonly recipient: string;
   readonly confirmed: boolean;
-  /** The recipient's state as the listener resolved it; `live` from a listener that names none.
-   *  A message to an unresponsive recipient is stored and reaches it when it answers again. */
-  readonly recipientState: SessionState;
-  /**
-   * What the target was when the listener stored the message. `stopped` means the message waits
-   * on the session's topic for the stream's 72 hours and reaches it if it runs again in that
-   * time. A listener that answers no state reads as `connected`, which is what every release
-   * meant before the state existed.
-   */
-  readonly state: ConnectionState;
   /** The recipient's last registration in epoch milliseconds, which the listener sends beside an
    *  unresponsive or a stopped recipient's state so the sender can say since when it has been
    *  silent. Absent when the listener knows none, and from a listener predating the field. */
   readonly lastSeen?: number;
   /** The listener already held a send under this target and idempotency key: delivered once. */
   readonly duplicate: boolean;
-};
+} & SendTargetState;
 
 export type PublishResult = {
   readonly envelope: Envelope;
@@ -1073,20 +1094,28 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         }
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, attempts, error);
       }
-      return {
+      const sent = {
         envelope: response,
         recipient: response.recipient ?? input.targetSessionID,
         confirmed: response.recipient !== undefined,
-        recipientState: response.recipient_state ?? "live",
-        // Only `stopped` is stopped: an answer with no state is an older listener's, and a word
-        // this build does not know says nothing about the target that is worth acting on.
-        state: response.state === "stopped" ? "stopped" : "connected",
         // Omitted rather than zero when the listener names none, so a reader never reads 1970
         // as a last registration.
         ...(response.last_seen === undefined || response.last_seen <= 0
           ? {}
           : { lastSeen: response.last_seen }),
         duplicate: response.duplicate === true,
+      };
+      // A no_receiver target runs but takes no message into its conversation now. The listener
+      // names no registry state for it, and this reads none in: `live` would say the message
+      // reaches it.
+      if (response.state === "no_receiver") return { ...sent, state: "no_receiver" };
+      return {
+        ...sent,
+        recipientState: response.recipient_state ?? "live",
+        // Only `stopped` and `no_receiver` are read as themselves: an answer with no state is an
+        // older listener's, and a word this build does not know says nothing about the target
+        // that is worth acting on.
+        state: response.state === "stopped" ? "stopped" : "connected",
       };
     },
     publish: async (input) => {

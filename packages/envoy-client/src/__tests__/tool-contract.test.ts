@@ -165,12 +165,16 @@ describe("envoyToolSpecs", () => {
     );
   });
 
-  test("says what the recipient counts and the stopped state mean", () => {
+  test("says what the recipient counts, the stopped state and the no_receiver state mean", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 
     for (const name of ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"]) {
-      expect(envoyToolSpecs.find((spec) => spec.name === name)?.description).toContain(
+      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description;
+      expect(description).toContain(
         "A send answered with state stopped means that session is not running: the message is stored for it and reaches it if it runs again within 72 hours, and nothing of its claims changes."
+      );
+      expect(description).toContain(
+        "A send answered with state no_receiver means that session runs but takes no message into its conversation now, as a Claude Code terminal with no mod does: the message is stored for it and reaches it if it takes messages within 72 hours."
       );
     }
     expect(publish?.description).toContain(
@@ -574,6 +578,37 @@ describe("sendConfirmationText for a state", () => {
       "queued evt_01 for ses_target: the session is stopped; if it runs again within 72 hours, it gets the message"
     );
     expect(text).not.toContain("sent");
+  });
+
+  // A Claude Code terminal with no mod runs and holds its relay subject, but nothing writes a
+  // message into its conversation. The listener answers no_receiver and names no registry state,
+  // and the line must not call that session live (dispatch://INFRA-3589, R12).
+  const noReceiver = {
+    envelope: { event_id: "evt_01" },
+    recipient: "ses_target",
+    confirmed: true,
+    state: "no_receiver",
+    duplicate: false,
+  } as const;
+
+  test("a target with no conversation receiver is queued, and the line never says live", () => {
+    const text = sendConfirmationText(noReceiver);
+
+    expect(text).toBe(
+      "queued evt_01 for ses_target: the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within 72 hours, it gets the message"
+    );
+    expect(text).not.toContain("live");
+    expect(text).not.toContain("sent");
+  });
+
+  test("a resend to a target with no conversation receiver is queued once, and never says live", () => {
+    const text = sendConfirmationText({ ...noReceiver, duplicate: true });
+
+    expect(text).toBe(
+      "queued once for ses_target: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy; the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within 72 hours, it gets the message"
+    );
+    expect(text).not.toContain("live");
+    expect(text).not.toContain("evt_01");
   });
 });
 

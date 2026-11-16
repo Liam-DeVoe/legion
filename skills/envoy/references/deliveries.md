@@ -135,7 +135,11 @@ It depends on where a session takes its deliveries, not on whether the topic is 
   anything that answers it or stays silent for a second reads as running, a predecessor process of the same session id included, and nothing there at all reads as stopped.
   None of the three lines says that the session read the message.
 
-- A queued message waits for a session Envoy knows and that is not running.
+- A running session that advertises no delivery mode takes no message into its conversation now: a Claude Code terminal does this while no mod is connected to it.
+  A plain send to it answers `queued <id> for <recipient>: the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within 72 hours, it gets the message`, with `state` `no_receiver` and no `recipient_state`.
+  A send that names a delivery mode is refused, because the session advertises none.
+
+- A queued message waits for a session Envoy knows and that is not running, or that takes no message now.
   Never send a queued message again: a second send stores a second copy for that session to read.
 
 - A send fails with `no live session <id>` only when Envoy knows no session under that id, running now or in the last 30 days, or when the session is stopped and the listener cannot read its records of known sessions.

@@ -583,6 +583,45 @@ describe("EnvoyClient", () => {
     expect(connected.lastSeen).toBeUndefined();
   });
 
+  // A Claude Code terminal with no mod runs and holds its relay subject, but advertises no
+  // delivery mode. The listener answers no_receiver and names no registry state for it, and the
+  // result reads none in: a default of live would say the message reaches the conversation.
+  test("a send to a target with no conversation receiver reads no_receiver and no registry state", async () => {
+    const recorded = recordFetch([
+      jsonResponse({
+        event_id: "event-no-receiver",
+        source: "agent",
+        source_event_id: "agent.ses_sender.event-no-receiver",
+        source_session: "ses_sender",
+        topic: "notifications.agent.ses_terminal",
+        dedupe_key: "agent.ses_terminal.event-no-receiver",
+        issued_at: 1,
+        payload_summary: "hello",
+        trace_id: "trace-no-receiver",
+        recipient: "ses_terminal",
+        state: "no_receiver",
+        last_seen: 1_762_075_200_000,
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_terminal",
+      message: "hello",
+    });
+
+    expect(result.state).toBe("no_receiver");
+    expect(result.recipientState).toBeUndefined();
+    expect("recipientState" in result).toBe(false);
+    expect(result).toMatchObject({
+      recipient: "ses_terminal",
+      confirmed: true,
+      lastSeen: 1_762_075_200_000,
+      duplicate: false,
+    });
+  });
+
   test("a send a listener of an earlier release answers no state for reads as connected", async () => {
     const recorded = recordFetch([
       jsonResponse({

@@ -12,8 +12,8 @@ import {
 import { z } from "zod";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
-  type ConnectionState,
   type MessageMetadataInput,
+  type SendTargetState,
   type SessionInfo,
   type SessionState,
   UNRESPONSIVE_RULE,
@@ -27,7 +27,10 @@ const SESSION_STATE_GUIDE =
   "minutes, unresponsive after that and within an hour, gone past the hour or with no record at " +
   `all. ${UNRESPONSIVE_RULE} A session named with no state is live. A send answered with state ` +
   "stopped means that session is not running: the message is stored for it and reaches it if " +
-  `it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and nothing of its claims changes.`;
+  `it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and nothing of its claims changes. ` +
+  "A send answered with state no_receiver means that session runs but takes no message into its " +
+  "conversation now, as a Claude Code terminal with no mod does: the message is stored for it and " +
+  `reaches it if it takes messages within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours.`;
 
 const DELIVERY_CONTRACT =
   "Delivery is at-least-once, possibly out of order across topics; use id for dedupe and at for freshness.";
@@ -307,6 +310,12 @@ const STORED_ONCE =
  * `sent`, because nothing read the message and a model told "sent" waits for an answer that is
  * not coming.
  *
+ * A `no_receiver` target is queued too, for the same reason: the session runs, but it advertises
+ * no delivery mode, as a Claude Code terminal does while no mod is connected to it, so nothing
+ * takes the message into its conversation now. The message is stored, and it reaches the session
+ * if the session takes messages within the same hours. The listener names no registry state for
+ * it, so the line names none: `live` would say the message reaches it.
+ *
  * A connected target is sent to, and the line names its registry state and, for one that stopped
  * answering, since when (`lastSeen`, the listener's record of its last registration): a send to
  * an unresponsive session is stored for it, not a delivery that failed, and how long it has been
@@ -314,25 +323,28 @@ const STORED_ONCE =
  *
  * A `duplicate` answer is a resend of a message the listener already stored under the same
  * idempotency key. It stored nothing this time, so this answer's event id names no stored copy
- * and the line leaves the id out; the target's state still chooses the verb, because a stopped
+ * and the line leaves the id out; the target's state still chooses the verb, because a queued
  * target's one stored copy is waiting rather than delivered.
  *
  * `confirmed` is false only for a listener too old to echo the recipient, which is also too old
  * to answer a state, so the unconfirmed note belongs to the connected line alone.
  */
-export function sendConfirmationText(result: {
-  readonly envelope: { readonly event_id: string };
-  readonly recipient: string;
-  readonly recipientState: SessionState;
-  readonly state: ConnectionState;
-  readonly confirmed: boolean;
-  readonly lastSeen?: number;
-  readonly duplicate: boolean;
-}): string {
-  if (result.state === "stopped") {
+export function sendConfirmationText(
+  result: {
+    readonly envelope: { readonly event_id: string };
+    readonly recipient: string;
+    readonly confirmed: boolean;
+    readonly lastSeen?: number;
+    readonly duplicate: boolean;
+  } & SendTargetState
+): string {
+  if (result.state === "stopped" || result.state === "no_receiver") {
     const seen =
       result.lastSeen === undefined ? "" : ` (last seen ${lastSeenText(result.lastSeen)})`;
-    const waits = `the session is stopped${seen}; if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, it gets the message`;
+    const waits =
+      result.state === "stopped"
+        ? `the session is stopped${seen}; if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, it gets the message`
+        : `the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, it gets the message`;
     if (result.duplicate) {
       return `queued once for ${result.recipient}: ${STORED_ONCE}; ${waits}`;
     }

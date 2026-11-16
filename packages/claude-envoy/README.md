@@ -118,7 +118,9 @@ message from Dispatch's Agents page as that person's own turn.
   so Dispatch learns what the session takes without waiting for a heartbeat. With no capability
   the listener refuses every targeted delivery (`session … does not advertise aside`) and
   Dispatch shows the session as taking no messages, which is the right answer for a session
-  nothing can reach.
+  nothing can reach. A plain `envoy_send` names no mode, so the listener stores it, and it
+  answers `no_receiver` with no `recipient_state`: the sender reads that the session runs but
+  takes no message into its conversation now, and never that it is `live`.
 - A targeted Dispatch delivery the shared renderer rejects is never shown to the model: when it
   names a message, the server posts `Invalid Dispatch targeted delivery frame` to
   `POST /api/v1/messages/{id}/reply` so the attempt fails visibly; otherwise it is logged and dropped.

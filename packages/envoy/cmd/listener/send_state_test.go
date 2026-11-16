@@ -105,6 +105,16 @@ func (rig *sessionConsumerRig) register(t *testing.T, sessionID string, fields m
 	rig.post(t, "/v1/interests/subscribe", string(encoded))
 }
 
+// deliveryModes is fields with the capabilities of a session whose conversation takes messages:
+// the three delivery modes a plugin advertises once something writes into its conversation. A
+// probed session that advertises none answers a plain send no_receiver (sendHandler), so a test
+// that wants connected registers these.
+func deliveryModes(fields map[string]any) map[string]any {
+	registration := map[string]any{"capabilities": []string{"aside", "btw", "steer"}}
+	maps.Copy(registration, fields)
+	return registration
+}
+
 // stop ends sessionID the way a session that shuts down cleanly does, through the real route: its
 // session entry goes, its consumer after it, and its known-session record stays, moved to the
 // store's clock.
@@ -257,7 +267,7 @@ func TestASendReadsASessionWhoseConnectionClosedAsStopped(t *testing.T) {
 	const checked = "ses_cut_connection"
 	proxy := testnats.StartProxy(t, rig.url)
 	plugin := startSessionStandInOn(t, testnats.Connect(t, proxy.URL()), checked, answerDone)
-	rig.register(t, checked, nil)
+	rig.register(t, checked, deliveryModes(nil))
 
 	connected := rig.send(t, checked, nil)
 	connected.requireAnswer(t, "a send to a session whose plugin holds its relay subject", sessionStateConnected, session.Live)
@@ -316,7 +326,7 @@ func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
 
 	const denied = "ses_denied_probe"
 	plugin := startSessionStandIn(t, uri, denied, answerDone)
-	rig.register(t, denied, nil)
+	rig.register(t, denied, deliveryModes(nil))
 
 	answer := rig.send(t, denied, nil)
 
@@ -371,7 +381,7 @@ func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
 	startSecondListener(t, rig.url)
 
 	const quiet = "ses_silent_subscriber"
-	rig.register(t, quiet, nil)
+	rig.register(t, quiet, deliveryModes(nil))
 	conn := testnats.Connect(t, rig.url)
 	t.Cleanup(conn.Close)
 	heard := make(chan *natsgo.Msg, 4)
@@ -547,7 +557,7 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 
 	const live = "ses_switch_connected"
 	plugin := startSessionStandIn(t, rig.url, live, answerDone)
-	rig.register(t, live, nil)
+	rig.register(t, live, deliveryModes(nil))
 	answer := rig.send(t, live, map[string]any{"connected_only": true})
 	answer.requireAnswer(t, "a connected_only send to a connected session", sessionStateConnected, session.Live)
 	if probed := plugin.probed.Load(); probed != 1 {
