@@ -31,7 +31,9 @@ type Result struct {
 	Kind               ResultKind
 	Outcome            Outcome
 	// Commit, Deploy and GraphTx are the subject that the result read: a commit of the code, a
-	// deploy of production, or a transaction of the graph. One of the three is set.
+	// deploy of production, or a transaction of the graph; at most one of the three is set. A result
+	// counts only at the subject of its kind that the derivation is given (R7: "A result counts only
+	// for the procedure that ran it and for the subject that it read").
 	Commit, Deploy, GraphTx string
 	// Job and Leg are the job that reported the result and its matrix values, "" for none (R12).
 	Job, Leg string

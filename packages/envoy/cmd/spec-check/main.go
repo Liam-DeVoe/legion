@@ -17,6 +17,7 @@
 //	spec-check print --approved <approved.json> --id <id> [--id <id>...]
 //	spec-check guard --root <dir>
 //	spec-check state --scenario <dir> [--json]
+//	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy)
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -96,19 +97,25 @@
 // state reads a scenario of The Spec in the format of specgraph.ReadScenario (the directories of
 // internal/dispatch/specgraph/testdata/scenarios) and derives the state of each check and each
 // statement at each subject of it. For each subject it prints "spec-check: subject <commit>, the
-// head of <branch>" or "spec-check: subject <commit>, the commit that production runs at deploy
-// <deploy>", then each current approved statement in preorder, "statement <id>: met", "met, partly
-// checked", "not built (…)", "not met (…)" or "unknown (…)", each followed by its own checks that
-// read the subject, "  check <id>: true (passed, counted from <commit>)", "false (failed, counted
-// from <commit>)" or "unknown (<reason>)". With units.json, at the head of main, it prints "wait of
-// <unit> on <statement>: ends" or "holds (<own state>)" for each wait, and after the last subject
+// head of <branch>", "spec-check: subject <commit>, the commit that production runs at deploy
+// <deploy>", or with the graph_tx of the subject "…, the commit that production runs at deploy
+// <deploy>, and the graph at transaction <graph_tx>", then each current approved statement in
+// preorder, "statement <id>: met", "met, partly checked", "not built (…)", "not met (…)" or
+// "unknown (…)", each followed by its own checks that read the subject, "  check <id>: true
+// (passed, counted from <commit>)", "false (failed, counted from <commit>)" or "unknown
+// (<reason>)". With units.json, at the head of main, it prints "wait of <unit> on <statement>:
+// ends" or "holds (<own state>)" for each wait, and after the last subject
 // "spec-check: cycle of waits: <unit> -> <statement> -> … -> <unit>" or "spec-check: cycle of
 // waits: none". --json prints the states as one line of JSON instead, []State, or with units.json
 // {"states":[…],"cycle":[…]}. It exits 0 for a scenario it reads, and 2, with one line on standard
 // error naming the file and the fault, for one it does not: a file or a field that the format does
 // not hold (JSON that is not UTF-8, or a member written in other letters or given two times, too),
 // a missing file, spec files that do not parse or that the rules of tree refuse, or a loop of parent
-// and support relations in the approved spec.
+// and support relations in the approved spec. A check of the graph has a state only at a subject
+// that names its graph_tx, and a result counts only at the subject that it read: a result of a
+// graph check at another transaction reads as a subject that moved. A subject names graph_tx only
+// with a deploy, and a result names one subject, so the reader refuses graph_tx on a branch and a
+// result that names two of commit, deploy and graph_tx.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on
@@ -148,7 +155,8 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]
        spec-check print --approved <approved.json> --id <id> [--id <id>...]
        spec-check guard --root <dir>
-       spec-check state --scenario <dir> [--json]`
+       spec-check state --scenario <dir> [--json]
+         (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy)`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
 // checks and of state, the blocks of print, and the statement, check and wait lines of state.
