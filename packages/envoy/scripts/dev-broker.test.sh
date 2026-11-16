@@ -266,13 +266,16 @@ chmod +x "${fake_bin_dir}/curl"
 # Sets the global instance_pid array (never wrapped in a subshell: the EXIT trap's safety-net
 # kill must see the same variable this assignment updates). The log is emptied here, before the
 # fork, not only by the background job's own redirect: a reused log still holds the previous
-# run's "dev-broker: ready." line until that job runs, and wait_for_ready would read it.
+# run's "dev-broker: ready." line until that job runs, and wait_for_ready would read it. Each
+# instance makes its workdir under TMPDIR, and dev-broker.sh keeps that workdir when it exits, so
+# TMPDIR names this test's own directory and the EXIT trap's rm -rf takes every instance's workdir
+# with it.
 run_instance() {
   local which="$1" log_file="$2" docker_call_file="$3" curl_call_file="$4" postgres_url="${5:-}"
   : >"$log_file"
   : >"$docker_call_file"
   : >"$curl_call_file"
-  PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_POSTGRES_URL="$postgres_url" \
+  PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_POSTGRES_URL="$postgres_url" TMPDIR="$temporary_dir" \
     DEV_BROKER_TEST_DOCKER_CALL_FILE="$docker_call_file" DEV_BROKER_TEST_CURL_CALL_FILE="$curl_call_file" \
     bash "$driver" >"$log_file" 2>&1 &
   instance_pid[which]=$!
@@ -639,7 +642,7 @@ printf 'PASS: a DEV_BROKER_POSTGRES_URL whose dbname= names another database is 
 # database it would drop is that other run's. ---
 : >"$docker_calls1"
 create_status=0
-PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_POSTGRES_URL="$admin_url" DEV_BROKER_TEST_CREATE_FAILS=1 \
+PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_POSTGRES_URL="$admin_url" DEV_BROKER_TEST_CREATE_FAILS=1 TMPDIR="$temporary_dir" \
   DEV_BROKER_TEST_DOCKER_CALL_FILE="$docker_calls1" DEV_BROKER_TEST_CURL_CALL_FILE="$curl_calls1" \
   bash "$driver" >"$log1" 2>&1 || create_status=$?
 if [[ "$create_status" -eq 0 ]] || ! grep -q 'create database dev_broker_' "$docker_calls1" || grep -q 'drop database' "$docker_calls1"; then
