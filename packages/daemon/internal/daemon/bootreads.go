@@ -205,6 +205,19 @@ func (c natsConnection) log(log *slog.Logger) {
 	log.Info("legion daemon connects to NATS", "user", c.user, "paneUser", c.paneUser, "seed", string(c.source))
 }
 
+// waitsOut reports whether the boot waits a failed connect on this connection out, retrying it on
+// readinessRetry and logging each failure with its reason (bootprobe.Run), rather than refusing
+// the boot: an unreachable NATS for every credential (natsauth.Unreachable), and, for the service
+// token alone, a refusal (natsauth.Refused). The NATS auth service refuses a token while it is
+// away or holds no answer a decision needs yet, so the token's connection waits that out at boot as
+// it does while running (natsauth.ConnectService, natsauth.ReconnectBackoff), and the daemon,
+// which serves nothing while its boot runs, reads as not ready meanwhile rather than exiting into a
+// restart. A seed's refusal, or a refusal of no credential, is a misconfiguration no wait fixes,
+// and refuses the boot as before.
+func (c natsConnection) waitsOut(err error) bool {
+	return natsauth.Unreachable(err) || c.tokenFile != "" && natsauth.Refused(err)
+}
+
 // tmuxReads is what a daemon on this host needs that readBoot reads: a launch for each harness its
 // roles run on (resolveLaunchers), and the host's git and jj its own provisioning runs
 // (daemonTools), which no pane is told.

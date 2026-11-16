@@ -285,8 +285,9 @@ var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]
 // asynchronously: at error, every permission the server refuses it, a subscription or a publish,
 // the JetStream API requests a consumer makes included, and a terminal close (a fatal server -ERR,
 // or — for a caller that has not also set ReconnectForever — reconnects exhausted), once, with
-// its cause; at warn, every other asynchronous error, with the subject of the subscription it
-// names, and every disconnect, with its cause; at info, every reconnect, with the server. nats.go's
+// its cause; at warn, every refusal of the connection's credential on a reconnect (Refused), with
+// its reason, every other asynchronous error, with the subject of the subscription it names, and
+// every disconnect, with its cause; at info, every reconnect, with the server. nats.go's
 // default handler writes a refusal to stderr unlabelled and nothing for the rest. It owns the
 // connection's AsyncErrorCB, DisconnectedErrCB, ReconnectedCB and ClosedCB: an option after it
 // that sets one replaces its handler. It also sets NoCallbacksAfterClientClose, so the daemon's
@@ -294,6 +295,12 @@ var permissionRefusal = regexp.MustCompile(`(?i)(publish|subscription) to "([^"]
 func LogEvents(log *slog.Logger) nats.Option {
 	return func(o *nats.Options) error {
 		o.AsyncErrorCB = func(_ *nats.Conn, sub *nats.Subscription, err error) {
+			if Refused(err) {
+				// nats.go reports each refusal of a reconnect's CONNECT here: a seed's connection
+				// closes after the same one twice, the service token's tries again (ConnectService).
+				log.Warn("NATS refused the connection's credential", "error", err)
+				return
+			}
 			if !errors.Is(err, nats.ErrPermissionViolation) {
 				subject := ""
 				if sub != nil {
@@ -370,6 +377,34 @@ func Unreachable(err error) bool {
 	}
 	var opErr *net.OpError
 	return errors.As(err, &opErr)
+}
+
+// Refused reports whether err is the server refusing the connection's credential: nats.go's
+// authorization violation, which a hub whose connections the NATS auth service admits answers for
+// every refusal of that service, whatever its reason (the service tells the server why, and the
+// server tells the client only that it was refused). For a seed's connection that is a
+// misconfiguration, which Unreachable refuses; for the daemon's service token it is waited out,
+// at boot and while running alike (ConnectService, ReconnectBackoff).
+func Refused(err error) bool {
+	return errors.Is(err, nats.ErrAuthorization)
+}
+
+// ReconnectBackoff is the connection option that waits initial before the first reconnect of a
+// lost connection, doubling each attempt up to max: the daemon's service-token connection's wait
+// while running, the same schedule its boot waits a refusal out on (daemon.readinessRetry), so a
+// hub whose auth service refuses every client while it is away is not met with a reconnect per
+// client every two seconds.
+func ReconnectBackoff(initial, max time.Duration) nats.Option {
+	return nats.CustomReconnectDelay(func(attempts int) time.Duration {
+		wait := initial
+		for range attempts - 1 {
+			if wait >= max/2 {
+				return max
+			}
+			wait *= 2
+		}
+		return min(wait, max)
+	})
 }
 
 // PublicKey is the public key of the nkey user seed is the seed of, a seed Seed answered: what a

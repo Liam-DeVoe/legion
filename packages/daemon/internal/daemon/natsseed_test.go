@@ -236,6 +236,38 @@ func TestTheWorkflowConnectsByItsServiceToken(t *testing.T) {
 	})
 }
 
+// The daemon's token connection waits out a refusal of the NATS auth service at boot, as it does
+// while running: the stand-in refuses the token's first three CONNECTs, the daemon's boot logs each
+// refusal with its reason and tries again on readinessRetry, and the same process boots once the
+// token is admitted, with no exit and no restart; it serves nothing, so it reads as not ready,
+// until then. The control is today's boot, which refuses an authorization violation at once: make
+// natsConnection.waitsOut natsauth.Unreachable alone, and the boot exits naming the violation.
+func TestTheWorkflowWaitsOutARefusalOfItsServiceToken(t *testing.T) {
+	quickAppMints(t)
+	const account = "system:serviceaccount:legion-pub:legion-daemon"
+	s := testnats.StartCallout(t, 3, ">")
+	if _, err := jetstreamOf(t, s.Connect(t)).CreateStream(t.Context(), jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}}); err != nil {
+		t.Fatalf("create notification stream: %v", err)
+	}
+	tokenFile := filepath.Join(t.TempDir(), "nats-token")
+	if err := os.WriteFile(tokenFile, []byte(testnats.ServiceToken(account, time.Now().Add(time.Hour))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := workflowConfig(t, s.URL)
+	cfg.NatsDaemonServiceTokenFile = tokenFile
+	var out syncBuffer
+	tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
+	if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewTextHandler(&out, nil))); err != nil {
+		t.Fatalf("boot whose token the auth service refuses three times = %v, want the daemon serving once it is admitted", err)
+	}
+	if got := len(s.Presented()); got < 4 {
+		t.Fatalf("the daemon presented its token %d times, want at least four: three refused, then admitted", got)
+	}
+	if refusals := strings.Count(strings.ToLower(out.String()), "authorization violation"); refusals < 3 {
+		t.Errorf("the boot logged %d refusals with their reason, want three:\n%s", refusals, out.String())
+	}
+}
+
 // jetstreamOf is JetStream over conn.
 func jetstreamOf(t *testing.T, conn *nats.Conn) jetstream.JetStream {
 	t.Helper()

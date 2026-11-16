@@ -1,8 +1,11 @@
 package natsauth_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -143,5 +146,40 @@ func TestServiceIdentityNamesTheTokensAccount(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), natsauth.ServiceTokenFileKey+" names "+row.path+", "+row.says) {
 			t.Errorf("ServiceIdentity(%s) = %v, want an error naming %s and %q", row.path, err, natsauth.ServiceTokenFileKey, row.says)
 		}
+	}
+}
+
+// While running, the service token's connection waits its reconnects out on the boot's own
+// schedule: one second, doubling, capped at a minute.
+func TestReconnectBackoffDoublesToItsCap(t *testing.T) {
+	options := nats.GetDefaultOptions()
+	if err := natsauth.ReconnectBackoff(time.Second, time.Minute)(&options); err != nil {
+		t.Fatal(err)
+	}
+	var got []time.Duration
+	for attempt := 1; attempt <= 9; attempt++ {
+		got = append(got, options.CustomReconnectDelayCB(attempt))
+	}
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, time.Minute, time.Minute, time.Minute}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ReconnectBackoff waits %v, want %v", got, want)
+	}
+}
+
+// Each refusal of a reconnect's credential is logged with its reason, as a refusal and not as
+// some other asynchronous error; only the service token's connection then tries again.
+func TestLogEventsNamesARefusedCredential(t *testing.T) {
+	var out bytes.Buffer
+	options := nats.GetDefaultOptions()
+	if err := natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil)))(&options); err != nil {
+		t.Fatal(err)
+	}
+	options.AsyncErrorCB(nil, nil, nats.ErrAuthorization)
+	want := `level=WARN msg="NATS refused the connection's credential" error="nats: authorization violation"`
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("log = %q, want a line containing %s", out.String(), want)
+	}
+	if !natsauth.Refused(nats.ErrAuthorization) || natsauth.Refused(nats.ErrNoServers) {
+		t.Fatal("Refused does not tell an authorization violation from an unreachable server")
 	}
 }
