@@ -213,10 +213,10 @@ func referenceTargetsOf(references ...string) string {
 // answered 304. A comment's typed block whose content opens with a rule `---` and holds a second
 // one answers both rules and both paragraphs: as the opening of a document of its own, that `---`
 // would start front matter that swallows the content up to the second rule. A comment's typed
-// block whose closing fence stands two spaces in, while its line of content stands at column 0,
-// answers that line: the block's lines start at column 0, where such a fence closes it. A member
-// that names no block carries no tree, and neither does any member of a read that asked for none.
-// The names are the same either way.
+// block whose closing fence stands two spaces in, or three, while its line of content stands at
+// column 0, answers that line: the block's lines start at column 0, where such a fence closes it.
+// A member that names no block carries no tree, and neither does any member of a read that asked
+// for none. The names are the same either way.
 //
 // The texts cost one statement however many blocks of a document the set names: a set of 20
 // blocks of one document makes as many statements as a set of 2, and one of them reads the
@@ -293,6 +293,10 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	// lines start at column 0, where a fence fewer than four columns in closes the block.
 	const indentedFence = ":::callout{}\nText of the callout.\n  :::"
 	fenced := createReferenceAPIComment(t, handler, issue.Key, indentedFence)
+	// Three spaces is the most a fence can stand in and still close a block whose lines start
+	// at column 0, so the cut takes the lines as written there too.
+	const threeSpaceFence = ":::callout{}\nText of the callout, its fence three spaces in.\n   :::"
+	fencedThree := createReferenceAPIComment(t, handler, issue.Key, threeSpaceFence)
 	const messageBlock = "A message's second block, with dispatch://TBT-1 in it."
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message's first block.\n\n" + messageBlock}, "alice")
 	ask := readPartAsk(t, handler, createPartAsk(t, handler, issue.Key, "Which day do we ship?",
@@ -321,6 +325,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		notesRef + "#b-r2",
 		notesRef + "#b-f1",
 		"dispatch://" + issue.Key + "/comment/" + fenced.ID + "#b-b1",
+		"dispatch://" + issue.Key + "/comment/" + fencedThree.ID + "#b-b1",
 	}
 	target := referenceTargetsOf(references...)
 	plain := treesRequest(t, handler, target, false)
@@ -355,7 +360,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	for index, content := range map[int]string{
 		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quoted, 7: listed,
 		8: numbered, 9: ":::callout{}\nInner words.\n:::", 10: "***\n\nAfter a rule.\n\n---\n\nTail.",
-		11: deep, 12: footnoted, 13: "Text of the callout.",
+		11: deep, 12: footnoted, 13: "Text of the callout.", 14: "Text of the callout, its fence three spaces in.",
 	} {
 		want := sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest))
 		if read[index].TextTree == nil {
