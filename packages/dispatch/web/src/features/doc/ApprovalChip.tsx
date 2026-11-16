@@ -35,6 +35,7 @@ import { textSourceOf } from "../refs/text-references";
 import { useDialog } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
+  approvalRefusalKey,
   type FormRefusalPress,
   focusIsFreeFor,
   pressOn,
@@ -274,10 +275,11 @@ export function ApprovalChip({
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
   // Dispatch's refusal of the reader's last Approve for the form of The Spec: its words show under
   // the actions, and the reason it wrote for the author is what Request changes opens with. It is
-  // kept for the document (`form-refusals.ts`), so a header that its host draws again shows it
-  // too, for the version that Approve approved. It holds the press, so the focus goes back to the
-  // header where the person pressed.
-  const formRefusalKey = `artifact:${artifact.id}`;
+  // kept for the request of this document (`form-refusals.ts`), which each card of the request
+  // reads too, so a refusal in the header shows in those cards and theirs shows here, for the
+  // version that Approve approved. It holds the press, so the focus goes back to the place where
+  // the person pressed.
+  const formRefusalKey = approvalRefusalKey(artifact.id);
   const formRefusal = useFormRefusal(formRefusalKey, approval?.latest_version);
   const refusalSurface = useRefusalSurface();
   const press = useRef<FormRefusalPress | undefined>(undefined);

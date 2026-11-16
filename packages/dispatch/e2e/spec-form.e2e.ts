@@ -240,7 +240,11 @@ test("the person's Approve on the header of a broken statement under the root sh
     await page.goto(`/issues/${tree.header.key}`);
     const approve = page.getByRole("button", { exact: true, name: "Approve" });
     await approve.click();
-    const refusal = page.getByRole("alert").filter({ hasText: "Dispatch refused this approval" });
+    // The header's last line names Request changes. The Needs you card of the same request shows
+    // the refusal too, and its last line names Answer.
+    const refusal = page
+      .getByRole("alert")
+      .filter({ hasText: "To send these findings to the author, choose Request changes." });
     await expect(refusal).toContainText(findingLine);
     await expect(refusal).toContainText(
       "To send these findings to the author, choose Request changes."
@@ -425,6 +429,78 @@ test("the person's refused Approve on the Conversation tab's card keeps the focu
     expect(await margin.evaluate((element) => element.contains(document.activeElement))).toBe(
       false
     );
+  });
+});
+
+// One request has one refusal on the page. A refused Approve in the issue page's header shows in
+// the Needs you card of the same request, which picks Request changes with the reason, and a
+// refused Approve in that card shows in the header. The focus stays where the person pressed.
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around two issue pages and two answers written in them.
+test("the person's refused Approve in the issue page's header shows in the Needs you card of the same request, and a refusal in that card shows in the header", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    const headerRefusal = page
+      .getByRole("alert")
+      .filter({ hasText: "To send these findings to the author, choose Request changes." });
+    const approve = page.getByRole("button", { exact: true, name: "Approve" });
+
+    await page.goto(`/issues/${tree.header.key}`);
+    const headerCard = page
+      .locator(`[data-margin-item="${tree.asks.header}"]`)
+      .getByTestId(`ask-${tree.asks.header}`);
+    await approve.click();
+    await expect(headerRefusal).toContainText(findingLine);
+    await expect(headerCard.getByRole("alert")).toContainText(
+      "To send these findings to the author, choose Answer."
+    );
+    await expect(headerCard.getByRole("radio", { name: /^Request changes / })).toBeChecked();
+    await expect(headerCard.getByLabel("Reason (required)")).toHaveValue(changesReason);
+    await expect(approve).toBeFocused();
+
+    await page.goto(`/issues/${tree.card.key}`);
+    const card = page
+      .locator(`[data-margin-item="${tree.asks.card}"]`)
+      .getByTestId(`ask-${tree.asks.card}`);
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    const answer = card.getByRole("button", { exact: true, name: "Answer" });
+    await answer.click();
+    await expect(card.getByRole("alert")).toContainText(findingLine);
+    await expect(headerRefusal).toContainText(findingLine);
+    await expect(answer).toBeFocused();
+  });
+});
+
+// Nothing that the person typed is lost: after a refused Approve the reason field holds Dispatch's
+// reason, then one empty line, then the person's note as it was. The draft belongs to the request,
+// so the Needs you card beside the pressed Conversation card shows the same text.
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around the issue page and an answer written in it.
+test("the person's note survives a refused Approve: the field holds Dispatch's reason, an empty line and the note, in each card of the request", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/issues/${tree.card.key}`);
+    await page.getByRole("tab", { name: "Conversation" }).first().click();
+    const card = page.locator(`[data-turn] [data-testid="ask-${tree.asks.card}"]`);
+    const margin = page
+      .locator(`[data-margin-item="${tree.asks.card}"]`)
+      .getByTestId(`ask-${tree.asks.card}`);
+    const note = "I read each statement, and I approve it.";
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    await card.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+    await card.getByLabel("Reason", { exact: true }).fill(note);
+    await card.getByRole("button", { exact: true, name: "Answer" }).click();
+
+    for (const each of [card, margin]) {
+      await expect(each.getByRole("alert")).toContainText("Dispatch refused this approval");
+      await expect(each.getByLabel("Reason (required)")).toHaveValue(`${changesReason}\n\n${note}`);
+    }
   });
 });
 

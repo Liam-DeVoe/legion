@@ -20,10 +20,12 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
+  approvalRefusalKey,
   type FormRefusalPress,
   pressOn,
   setFormRefusal,
   takeFormRefusalFocus,
+  takeFormRefusalReason,
   useFormRefusal,
   useRefusalSurface,
 } from "../doc/form-refusals";
@@ -68,6 +70,16 @@ interface AskAnswerFailure {
 /** The last line of a form refusal on the card, once it has picked Request changes and filled
  *  the reason with what Dispatch wrote for the author. */
 const CARD_FORM_NEXT_STEP = "To send these findings to the author, choose Answer.";
+
+/**
+ * The answer field after a refusal of the form (plan decision 14): Dispatch's reason for the
+ * author, then one empty line and the note that the person typed, as it was. A field that holds no
+ * note takes the reason alone, and one that already starts with the reason keeps its text.
+ */
+function withRefusalReason(reason: string, note: string): string {
+  if (note.startsWith(reason)) return note;
+  return note.trim() === "" ? reason : `${reason}\n\n${note}`;
+}
 
 /**
  * The refusals the same answer is refused with again however often it is sent, and what the card
@@ -162,11 +174,13 @@ export function useAskAnswerForm({
   const answerText = changing ? changeAnswer : draftAnswer;
   const setAnswerText = changing ? setChangeAnswer : setDraftAnswer;
   const replacing = useRef<AskAnswer | undefined>(undefined);
-  // A refusal of Approve for the form of The Spec belongs to the ask, not to this card
-  // (`doc/form-refusals.ts`): a host that draws the card again while the answer is out reads it
-  // back. It holds the press it answers, with this card and the version, which `sendAnswer` keeps
-  // here, so the focus goes back to this card and to no other card of the ask.
-  const formRefusalKey = `ask:${ask.id}`;
+  // A refusal of Approve for the form of The Spec belongs to the request, not to this card
+  // (`doc/form-refusals.ts`): its document's header and each card of the request read it under one
+  // key, and a host that draws the card again while the answer is out reads it back. It holds the
+  // press it answers, with this card and the version, which `sendAnswer` keeps here, so the focus
+  // goes back to this card and to no other place of the request.
+  const formRefusalKey =
+    ask.approval === undefined ? `ask:${ask.id}` : approvalRefusalKey(ask.approval.artifact_id);
   const refusalSurface = useRefusalSurface();
   const press = useRef<FormRefusalPress | undefined>(undefined);
   const takeRefusalFocus = useCallback(
@@ -225,13 +239,14 @@ export function useAskAnswerForm({
         setJustAnswered(null);
         setChanging(false);
       }
-      if (isSpecFormRefusal(error)) {
+      if (isSpecFormRefusal(error) && press.current !== undefined) {
         // Dispatch refused the approval and wrote the reason a request for changes sends to the
         // author: the card picks Request changes with that reason (below, from the kept
-        // refusal), and one more press sends it.
-        if (press.current !== undefined)
-          setFormRefusal(formRefusalKey, { error, press: press.current });
-        setAnswerText(error.changesReason ?? "");
+        // refusal), and one more press sends it. The reason goes in the request's draft before
+        // the refusal shows, so Answer is ready for the focus that the press owes.
+        const reason = error.changesReason ?? "";
+        setAnswerText((note) => withRefusalReason(reason, note));
+        setFormRefusal(formRefusalKey, { error, press: press.current });
       }
     },
     onSettled: () => {
@@ -309,6 +324,13 @@ export function useAskAnswerForm({
     setPickedFor(formRefusal);
     if (formRefusal !== undefined) setSelected(["Request changes"]);
   }
+  // The kept refusal puts its reason before the note in the request's draft, once for each
+  // refusal, also when the press was in the document's header or in another card.
+  useEffect(() => {
+    if (formRefusal === undefined || !takeFormRefusalReason(formRefusalKey)) return;
+    const reason = formRefusal.changesReason ?? "";
+    setAnswerText((note) => withRefusalReason(reason, note));
+  }, [formRefusal, formRefusalKey, setAnswerText]);
   const recordedAsk = justAnswered ?? (displayedAsk.state === "open" ? null : displayedAsk);
   const canChangeAnswer =
     recordedAsk !== null &&
