@@ -39,6 +39,7 @@ export function TreeRows({
   rows,
   tabStop,
   threads,
+  unplaced,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
@@ -67,6 +68,9 @@ export function TreeRows({
   tabStop: string | undefined;
   /** Each thread's newest write by the node that draws it (`threadMarks`). */
   threads: ReadonlyMap<string, ThreadMark>;
+  /** The key of the row that, focused, does not place itself on screen (`NodeRow`'s
+   *  `placesItself`): the outline's first row the page opens on, until the reader acts. */
+  unplaced: string | undefined;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
   // every row rather than once a row: a name and a shape for every node, the page's own words
@@ -122,6 +126,7 @@ export function TreeRows({
             onToggle={() => onToggle(row.node, row.expanded)}
             ownAnswer={isReader(row.node.answer?.by, reader)}
             pinned={pinned.has(key)}
+            placesItself={unplaced !== key}
             {...(report?.row === key ? { report: report.line } : {})}
             rowKey={key}
             tabStop={tabStop === key}

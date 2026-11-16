@@ -23,6 +23,7 @@ import {
   claimIssue,
   createAsk,
   createComment,
+  createIssue,
   getArtifact,
   getAsk,
   getIssue,
@@ -46,7 +47,7 @@ import {
   UNBROKEN_PATH,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
-import { asPlanner } from "./issue-layout-seed-support";
+import { asPlanner, PROJECT } from "./issue-layout-seed-support";
 import {
   OPEN_QUESTION_BLOCK_ID,
   planTaskBlockId,
@@ -1043,6 +1044,45 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
         await focusedNodeId(page),
         `the page does not open with the focus on the outline's first row at ${at}`
       ).toBe(rows[0]?.id ?? "");
+      expect(await page.evaluate(() => window.scrollY), `the page opens scrolled at ${at}`).toBe(0);
+    }
+
+    // A first row taller than the window opens where it stands too (part I's reading, decision
+    // 63). Its body opens with the focus (R7), and the page's one rule for placing a focused row
+    // (`bringOnScreen`) puts a row taller than the screen at its top, under the band: on a long
+    // answered question a load once opened at 89 px at 1440 by 900 and at 161 px at 390 by 664,
+    // and hid the header. The issue's one node is a person's comment of 120 paragraphs.
+    const tall = await createIssue({
+      force: true,
+      project: PROJECT,
+      title: "An issue whose first row is taller than the window",
+    });
+    const long = await createComment(tall.key, {
+      body: Array.from(
+        { length: 120 },
+        (_, paragraph) => `Paragraph ${paragraph + 1} of words taller than any window.`
+      ).join("\n\n"),
+    });
+    for (const size of [DESKTOP, { height: 664, width: 390 }]) {
+      const at = `${size.width}x${size.height} on a first row taller than the window`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${tall.key}`);
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the page does not open with the focus on the first row at ${at}`,
+        })
+        .toBe(long.id);
+      expect(
+        idsOf(await drawnRows(page))[0],
+        `the long comment is not the outline's first row at ${at}`
+      ).toBe(long.id);
+      const row = nodeRow(page, long.id).first();
+      await expect(rowBody(row), `the focused first row draws no body at ${at}`).toHaveCount(1);
+      expect(
+        await row.evaluate((element) => element.getBoundingClientRect().height),
+        `the first row is not taller than the window at ${at}`
+      ).toBeGreaterThan(size.height);
       expect(await page.evaluate(() => window.scrollY), `the page opens scrolled at ${at}`).toBe(0);
     }
   });

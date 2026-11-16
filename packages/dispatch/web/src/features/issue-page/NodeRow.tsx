@@ -122,6 +122,7 @@ export function NodeRow({
   onToggle,
   ownAnswer,
   pinned,
+  placesItself,
   report,
   rowKey,
   tabStop,
@@ -165,6 +166,10 @@ export function NodeRow({
   /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
   ownAnswer: boolean;
   pinned: boolean;
+  /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
+   *  every row does but the outline's first row as the page opens on it with no question waiting
+   *  on the reader: that row stays where it stands until the reader acts (R8, `IssueTree.tsx`). */
+  placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
   report?: string;
@@ -209,7 +214,7 @@ export function NodeRow({
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
-  const press = useRowOnScreen(row, focused);
+  const press = useRowOnScreen(row, focused, placesItself);
 
   const depth = level - 1;
   const first = firstLineOf(nodeWords(node));
@@ -476,9 +481,21 @@ export const NODE_ROW_LAYOUT = {
  *
  * Answers the row's own `onPointerDown`, which marks a press. Every row of the outline and of a
  * filter's body places itself by this one hook.
+ *
+ * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
+ * nor as it grows. The outline's first row the page opens on is one, and its body opens with the
+ * focus (R7), so a row taller than the screen would be put at its top under the band and the
+ * page would open scrolled past its header (R8). Read when the row is placed rather than as a
+ * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
  */
-export function useRowOnScreen(row: RefObject<HTMLElement | null>, focused: boolean): () => void {
+export function useRowOnScreen(
+  row: RefObject<HTMLElement | null>,
+  focused: boolean,
+  placesItself = true
+): () => void {
   const pressed = useRef(false);
+  const placing = useRef(placesItself);
+  placing.current = placesItself;
   const press = () => {
     pressed.current = true;
     const ended = new AbortController();
@@ -493,6 +510,7 @@ export function useRowOnScreen(row: RefObject<HTMLElement | null>, focused: bool
     const element = row.current;
     if (!focused || element === null) return;
     const place = () => {
+      if (!placing.current) return;
       if (!pressed.current) bringOnScreen(element);
     };
     place();

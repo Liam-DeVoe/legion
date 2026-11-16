@@ -246,11 +246,22 @@ export function IssueTree({
   // focuses it where it is drawn already, and otherwise once the render that unfolds the path to
   // it has drawn it (`goToNode`). The reader acting before then lets it go.
   const holdOnFocus = useRef<string | undefined>(undefined);
+  // The outline's first row the page opens on where no question waits on the reader, which does
+  // not place itself on screen while it holds that focus (`NodeRow`'s `placesItself`): its body
+  // opens with the focus (R7), and the page's one rule puts a row taller than the screen at its
+  // top under the band: the page opened scrolled past its header - 89 px at 1440 by 900 and
+  // 161 px at 390 by 664 on a long answered question - where it is to stay at 0 px (R8). The
+  // opening names the row in `openingRow` while it focuses it, which tells that focus from every
+  // other; the reader's first act, or the focus going to any other row or out of the tree, ends
+  // it.
+  const [unplaced, setUnplaced] = useState<string | undefined>(undefined);
+  const openingRow = useRef<string | undefined>(undefined);
 
   const takeFocus = useCallback(
     (row: string, node: TreeNode) => {
       setFocused(row);
       setStop(row);
+      setUnplaced(row === openingRow.current ? row : undefined);
       // A move to a row is the reader going on from what a key reported.
       setReport(undefined);
       const item = conversationItem(node);
@@ -285,6 +296,7 @@ export function IssueTree({
       if (editing !== undefined) return;
       if (to instanceof Node && event.currentTarget.contains(to)) return;
       setFocused(undefined);
+      setUnplaced(undefined);
       setReport(undefined);
       if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
       setFocusedNode(undefined);
@@ -462,6 +474,7 @@ export function IssueTree({
         () => {
           opening.current.done = true;
           holdOnFocus.current = undefined;
+          setUnplaced(undefined);
           settle.abort();
         },
         { capture: true, signal: settle.signal }
@@ -500,7 +513,9 @@ export function IssueTree({
     );
     if (row === null || row === undefined) return;
     held.on = first.node.id;
+    openingRow.current = rowKeyOf(first);
     row.focus({ preventScroll: true });
+    openingRow.current = undefined;
   }, [reach, root, rootRow, rows, targetId]);
 
   // A write from the line at the foot takes the reader to what they wrote (R16): their newest
@@ -651,6 +666,7 @@ export function IssueTree({
           rows={rows}
           tabStop={tabStop}
           threads={threads}
+          unplaced={unplaced}
         />
       </div>
       {root.children.length === 0 ? (
