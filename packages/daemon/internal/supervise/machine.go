@@ -2302,6 +2302,18 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.log.Info("supervise: launch cut short; its context ended", "generation", m.claim.Generation, "error", err)
 			return err
 		}
+		if errors.Is(err, errHoldUnanswered) {
+			// The store did not answer the session's hold, which says nothing about the claim or
+			// its session: nothing started, so nothing is charged, and the same launch is tried
+			// again at the probe interval, as a launch whose write the store did not take is.
+			err = errors.Join(err, m.stopPrevious(starting))
+			m.log.Warn("supervise: the store did not answer the session's hold; trying the launch again at the probe interval, charging nothing",
+				"generation", m.claim.Generation, "error", err)
+			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
+				return m.launchAfter(ctx, charged, exempt, noEnd)
+			}))
+			return errors.Join(err, m.persist(starting))
+		}
 		m.claim.LastStartFailure = err.Error()
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)

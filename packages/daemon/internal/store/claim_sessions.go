@@ -65,40 +65,23 @@ func (s *Store) HoldSessions(ctx context.Context, project string, token claim.To
 	return holders, nil
 }
 
-// HeldForNone is one name of a session the claim_sessions migration found recorded by more than one
-// claim, and so held for none of them, with every claim whose row records it now: of its session,
-// or of the session it last abandoned (supervise.RecordedHolds).
-type HeldForNone struct {
+// SessionConflict is one name of a session (supervise.Hold) that claims of a project record without
+// holding it: a name the table holds for no claim, with every claim whose row records it; or a name
+// it holds for another claim, Holder, with every other claim whose row records it.
+type SessionConflict struct {
 	Hold   supervise.Hold
+	Holder claim.Token
 	Claims []claim.Token
 }
 
-// SessionsHeldForNone is every name of project held for no claim (HoldSessions' empty holder),
-// oldest first, each with the claims of the project whose rows record it, in token order, read by
-// the rule that named it (supervise.RecordedHolds). The daemon logs each at boot and suspends its
-// claims, for an operator to settle by hand (the claim_sessions migration gives the statement).
-func (s *Store) SessionsHeldForNone(ctx context.Context, project string) ([]HeldForNone, error) {
-	rows, err := s.pool.Query(ctx, `select kind, name from claim_sessions
-		where project = $1 and claim = '' order by recorded_at, kind collate "C", name collate "C"`, project)
-	if err != nil {
-		return nil, fmt.Errorf("read the sessions held for no claim: %w", err)
-	}
-	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (HeldForNone, error) {
-		var kind, name string
-		err := row.Scan(&kind, &name)
-		return HeldForNone{Hold: supervise.Hold{Kind: supervise.HoldKind(kind), Name: name}}, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the sessions held for no claim: %w", err)
-	}
-	if len(held) == 0 {
-		return nil, nil
-	}
-	rows, err = s.pool.Query(ctx, `select token, session, session_file,
+// recordedNames is every name a claim of project records, of its session or of the session it last
+// abandoned (supervise.RecordedHolds), each with the claims whose rows record it, in token order.
+func recordedNames(ctx context.Context, q pgx.Tx, project string) (map[supervise.Hold][]claim.Token, error) {
+	rows, err := q.Query(ctx, `select token, session, session_file,
 			coalesce(abandoned_session ->> 'session', ''), coalesce(abandoned_session ->> 'sessionFile', '')
-		from claims where project = $1 order by token`, project)
+		from claims where project = $1 order by token collate "C"`, project)
 	if err != nil {
-		return nil, fmt.Errorf("read the claims recording a session held for no claim: %w", err)
+		return nil, err
 	}
 	recorders := map[supervise.Hold][]claim.Token{}
 	var token, session, file, abandoned, abandonedFile string
@@ -112,10 +95,104 @@ func (s *Store) SessionsHeldForNone(ctx context.Context, project string) ([]Held
 		}
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("read the claims recording a session held for no claim: %w", err)
+		return nil, err
 	}
-	for i := range held {
-		held[i].Claims = recorders[held[i].Hold]
+	return recorders, nil
+}
+
+// sortedHolds is the names of recorders in the one order every transaction that holds several
+// takes them in (HoldSessions): kind, then name.
+func sortedHolds(recorders map[supervise.Hold][]claim.Token) []supervise.Hold {
+	holds := make([]supervise.Hold, 0, len(recorders))
+	for h := range recorders {
+		holds = append(holds, h)
+	}
+	slices.SortFunc(holds, func(a, b supervise.Hold) int {
+		return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Name, b.Name))
+	})
+	return holds
+}
+
+// HoldRecordedSessions holds every name a claim of project records that the table holds for no
+// one yet, as the claim_sessions migration's backfill held every name recorded before the table
+// existed: for the one claim recording it, or for none where several do. It answers how many names
+// it held. The daemon runs it at every boot (internal/daemon's suspendSessionConflicts), because a
+// claim records a name without holding it whenever a daemon from before the hold runs on this
+// database, as one rolled back to an earlier release does: such a daemon applies only the
+// migrations it has and never writes claim_sessions, and the migration's own backfill has run by
+// then. On a database only daemons with the hold have run, every recorded name is held already and
+// this holds nothing.
+func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, error) {
+	held := 0
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		recorders, err := recordedNames(ctx, tx, project)
+		if err != nil {
+			return err
+		}
+		for _, h := range sortedHolds(recorders) {
+			holder := ""
+			if tokens := recorders[h]; len(tokens) == 1 {
+				holder = string(tokens[0])
+			}
+			tag, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ($1, $2, $3, $4)
+				on conflict (project, kind, name) do nothing`, project, string(h.Kind), h.Name, holder)
+			if err != nil {
+				return err
+			}
+			held += int(tag.RowsAffected())
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("hold the session names claims of %s record: %w", project, err)
 	}
 	return held, nil
+}
+
+// SessionConflicts is every name a claim of project records without holding it (SessionConflict),
+// in kind and then name order: one held for no claim, which the claim_sessions migration or
+// HoldRecordedSessions found recorded by several claims, and one held for another claim, which a
+// daemon from before the hold let a claim record. A name no row holds is not one, since
+// HoldRecordedSessions holds it first. The daemon logs each at boot and suspends its claims, for an
+// operator to settle by hand (the claim_sessions migration gives the statement).
+func (s *Store) SessionConflicts(ctx context.Context, project string) ([]SessionConflict, error) {
+	var conflicts []SessionConflict
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		recorders, err := recordedNames(ctx, tx, project)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `select kind, name, claim from claim_sessions where project = $1`, project)
+		if err != nil {
+			return err
+		}
+		holders := map[supervise.Hold]claim.Token{}
+		var kind, name, holder string
+		if _, err := pgx.ForEachRow(rows, []any{&kind, &name, &holder}, func() error {
+			holders[supervise.Hold{Kind: supervise.HoldKind(kind), Name: name}] = claim.Token(holder)
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, h := range sortedHolds(recorders) {
+			holder, held := holders[h]
+			if !held {
+				continue
+			}
+			var others []claim.Token
+			for _, token := range recorders[h] {
+				if token != holder {
+					others = append(others, token)
+				}
+			}
+			if len(others) > 0 {
+				conflicts = append(conflicts, SessionConflict{Hold: h, Holder: holder, Claims: others})
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the session names claims of %s record without holding them: %w", project, err)
+	}
+	return conflicts, nil
 }

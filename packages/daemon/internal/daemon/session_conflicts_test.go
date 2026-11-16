@@ -1,0 +1,267 @@
+package daemon
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
+
+// conflictRow is one claim an earlier boot left, for the session-conflict boot tests to seed.
+type conflictRow struct {
+	token                claim.Token
+	issue, session, file string
+	state                supervise.ClaimState
+}
+
+// seedConflicts migrates the database at dsn and records rows as an earlier boot left them, then
+// holds holds as the claim_sessions table would (`insert ... values` rows of project, kind, name,
+// claim).
+func seedConflicts(t *testing.T, dsn, project string, rows []conflictRow, holds string, args ...any) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range rows {
+		c := earlierBootClaim(project, row.token, row.issue, row.session, row.state, i+1)
+		c.SessionFile = row.file
+		if row.state == supervise.StateQueued {
+			c.Locator = nil
+		}
+		if err := st.PutClaim(ctx, c); err != nil {
+			t.Fatalf("record %s: %v", row.token, err)
+		}
+	}
+	if holds != "" {
+		if _, err := st.Pool().Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values `+holds, args...); err != nil {
+			t.Fatalf("record the holds: %v", err)
+		}
+	}
+}
+
+// heldFor reads the claim the table holds a name of project for, and whether a row holds it.
+func heldFor(t *testing.T, dsn, project string, kind supervise.HoldKind, name string) (claim.Token, bool) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var holder string
+	err = st.Pool().QueryRow(ctx, `select claim from claim_sessions where project = $1 and kind = $2 and name = $3`,
+		project, string(kind), name).Scan(&holder)
+	if err != nil {
+		return "", false
+	}
+	return claim.Token(holder), true
+}
+
+// projectTokens is the daemon's project token and a minter of its claims' tokens.
+func projectTokens(t *testing.T, project string) func(issue string, role claim.Role) claim.Token {
+	return func(issue string, role claim.Role) claim.Token {
+		t.Helper()
+		tok, err := claim.NewToken(project, issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+}
+
+// A session name two claims recorded before the daemon held sessions is held for neither (the
+// claim_sessions migration), so each is refused its registration, its resume and its enrollment
+// under it; relaunched, either would be refused again and again. So the boot suspends each through
+// the operator's suspend, once whatever number of names it shares, before anything relaunches
+// them, and names each name, its claims and the statement that settles it at Error; a claim of the
+// same boot holding its own session is left as it was, and no launch is made for any claim of the
+// names. A claim in a turn holds the suspension for that turn's end (it stops the process at the
+// operator's stop timeout), which is no failure of the boot. A queued claim recording one is in no
+// state a suspension reaches: it is left queued, and its launch is refused before anything starts,
+// so it ends failed within its launch budget. A name is an agent's own text, so the statement
+// carries it as a SQL literal, its quotes doubled.
+//
+// The control: drop the boot step (start's call of suspendSessionConflicts); the claims are
+// re-adopted live, each a relaunch away from the refusal, and the test fails naming them (the pull
+// request records the run).
+func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.LaunchFailureLimit = 1
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := projectTokens(t, project)
+	first, second, busy := token("LEGION-901", claim.RoleImplementer), token("LEGION-902", claim.RoleImplementer), token("LEGION-903", claim.RoleImplementer)
+	// queued is its own tree's architect, so the operator's spawn opens the tree it launches in.
+	queued, own := token("LEGION-904", claim.RoleArchitect), token("LEGION-901", claim.RoleTester)
+	const twice = "ses_twice'; update claim_sessions set claim = 'x'; --"
+
+	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
+		// first and second share two names, the session id and the file's base name.
+		{first, "LEGION-901", twice, "/sessions/a/shared.jsonl", supervise.StateIdle},
+		{second, "LEGION-902", twice, "/sessions/b/shared.jsonl", supervise.StateIdle},
+		{busy, "LEGION-903", twice, "/sessions/3.jsonl", supervise.StateWorking},
+		{queued, "LEGION-904", twice, "/sessions/5.jsonl", supervise.StateQueued},
+		{own, "LEGION-901", "ses_own", "/sessions/4.jsonl", supervise.StateIdle},
+	}, // What the migration leaves of the names several claims record, and of the one recording its own.
+		`($1, 'session', $2, ''), ($1, 'file-name', 'shared.jsonl', ''), ($1, 'session', 'ses_own', $3)`,
+		project, twice, string(own))
+
+	rt := fake.NewRuntime()
+	logs := &syncBuffer{}
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
+
+	for _, tok := range []claim.Token{first, second} {
+		if got := d.claim(tok); got.State != string(supervise.StateSuspended) || got.SuspendedBy != string(supervise.SuspendedByOperator) {
+			t.Errorf("%s, whose session is held for no claim, is %s suspended by %q after the boot; want it suspended by the operator's suspend",
+				tok, got.State, got.SuspendedBy)
+		}
+	}
+	if got := d.claim(busy); got.State != string(supervise.StateWorking) || !got.SuspensionHeld {
+		t.Errorf("%s, in a turn with its session held for no claim, is %s holding a suspension %t after the boot; want the boot to have served with its suspension held for the turn",
+			busy, got.State, got.SuspensionHeld)
+	}
+	if got := d.claim(queued); got.State != string(supervise.StateQueued) {
+		t.Errorf("%s, queued with its session held for no claim, is %s after the boot; want it left queued, in no state a suspension reaches", queued, got.State)
+	}
+	if got := d.claim(own); got.State != string(supervise.StateIdle) {
+		t.Errorf("%s, which holds its own session, is %s after the boot, want it idle as it was", own, got.State)
+	}
+	for _, call := range rt.Calls() {
+		if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim != own {
+			t.Errorf("the boot launched %s (%s), whose session is held for no claim", call.Spec.Claim, call.Method)
+		}
+	}
+	stops := map[claim.Token]int{}
+	for _, call := range rt.CallsOf("Suspend") {
+		stops[call.Locator.Claim]++
+	}
+	if stops[first] != 1 || stops[second] != 1 || stops[own] != 0 {
+		t.Errorf("the boot stopped the processes %v, want %s's and %s's once each, though they share two names, and not %s's", stops, first, second, own)
+	}
+
+	lines := loggedLines(t, logs.String(), "recorded by claims that do not hold it")
+	if len(lines) != 2 {
+		t.Fatalf("the boot logged %d lines naming a name held for none, want 2: %v", len(lines), lines)
+	}
+	byName := map[string]map[string]any{}
+	for _, line := range lines {
+		name, _ := line["name"].(string)
+		byName[name] = line
+	}
+	line := byName[twice]
+	claims, _ := line["claims"].([]any)
+	settle := "update claim_sessions set claim = '<token>' where project = '" + project +
+		"' and kind = 'session' and name = 'ses_twice''; update claim_sessions set claim = ''x''; --'"
+	if line["level"] != "ERROR" || line["kind"] != "session" || line["holder"] != "none" || len(claims) != 4 ||
+		claims[0] != string(first) || claims[1] != string(second) || claims[2] != string(busy) || claims[3] != string(queued) || line["settle"] != settle {
+		t.Errorf("the boot logged %v, want an error naming the session %q held for none, %s, %s, %s and %s, and the statement that settles it, %q",
+			line, twice, first, second, busy, queued, settle)
+	}
+	if line := byName["shared.jsonl"]; line["kind"] != "file-name" || len(line["claims"].([]any)) != 2 {
+		t.Errorf("the boot logged %v for the shared file name, want the file-name kind and %s and %s", line, first, second)
+	}
+
+	// The queued claim's launch is refused before anything starts, and its one try is its budget.
+	launches := len(rt.CallsOf("Spawn")) + len(rt.CallsOf("Resume"))
+	status, body := d.request(http.MethodPost, "/legion/v1/operator/claims", api.SpawnRequest{Tree: "LEGION-904", Issue: "LEGION-904", Role: claim.RoleArchitect}, true)
+	if got := d.claim(queued); got.State != string(supervise.StateFailed) {
+		t.Errorf("%s, launched with its session held for no claim, is %s (the spawn answered %d %s); want it failed at its launch budget", queued, got.State, status, body)
+	}
+	if got := len(rt.CallsOf("Spawn")) + len(rt.CallsOf("Resume")); got != launches {
+		t.Errorf("the queued claim's launch reached the runtime %d times, want none: it was refused before anything started", got-launches)
+	}
+}
+
+// A daemon rolled back to a release before the hold runs on the claim_sessions table without
+// writing it, and the migration's backfill does not run again on the roll forward: so the boot
+// holds every name a claim records that no row holds (store.HoldRecordedSessions), for the one claim
+// recording it, and suspends a claim that recorded a name another claim holds, which the
+// rolled-back daemon let it register (store.SessionConflicts). The claim it took the name from, and
+// a claim whose name was merely left unheld, are left as they were.
+//
+// The controls (the pull request records both runs): the boot without HoldRecordedSessions leaves
+// the window's name unheld, so the next claim to register it takes it; the boot without the
+// conflict read leaves the taker idle on the other claim's session.
+func TestABootHoldsWhatARolledBackDaemonRecorded(t *testing.T) {
+	cfg := testConfig(t)
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := projectTokens(t, project)
+	window, holder, taker := token("LEGION-905", claim.RoleImplementer), token("LEGION-906", claim.RoleImplementer), token("LEGION-907", claim.RoleImplementer)
+
+	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
+		// Registered while the rolled-back daemon ran: nothing holds ses_window.
+		{window, "LEGION-905", "ses_window", "/sessions/6.jsonl", supervise.StateIdle},
+		// holder recorded ses_taken under the hold; taker registered it while the rolled-back daemon
+		// ran.
+		{holder, "LEGION-906", "ses_taken", "/sessions/7.jsonl", supervise.StateIdle},
+		{taker, "LEGION-907", "ses_taken", "/sessions/8.jsonl", supervise.StateIdle},
+	}, `($1, 'session', 'ses_taken', $2)`, project, string(holder))
+
+	rt := fake.NewRuntime()
+	logs := &syncBuffer{}
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
+
+	if got, held := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionID, "ses_window"); !held || got != window {
+		t.Errorf("ses_window is held for %q (a row %t) after the boot; want it held for %s, the one claim recording it", got, held, window)
+	}
+	if got, held := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionFile, "/sessions/8.jsonl"); !held || got != taker {
+		t.Errorf("taker's file is held for %q (a row %t) after the boot; want it held for %s", got, held, taker)
+	}
+	if got, _ := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionID, "ses_taken"); got != holder {
+		t.Errorf("ses_taken is held for %q after the boot; want it still %s's", got, holder)
+	}
+	if got := d.claim(taker); got.State != string(supervise.StateSuspended) || got.SuspendedBy != string(supervise.SuspendedByOperator) {
+		t.Errorf("%s, which records %s's session, is %s suspended by %q after the boot; want it suspended by the operator's suspend", taker, holder, got.State, got.SuspendedBy)
+	}
+	for _, tok := range []claim.Token{window, holder} {
+		if got := d.claim(tok); got.State != string(supervise.StateIdle) {
+			t.Errorf("%s is %s after the boot, want it idle as it was", tok, got.State)
+		}
+	}
+	lines := loggedLines(t, logs.String(), "recorded by claims that do not hold it")
+	if len(lines) != 1 || lines[0]["name"] != "ses_taken" || lines[0]["holder"] != string(holder) {
+		t.Errorf("the boot logged %v, want one error naming ses_taken, held by %s", lines, holder)
+	}
+	if held := loggedLines(t, logs.String(), "held session names claims recorded"); len(held) != 1 {
+		t.Errorf("the boot logged %d lines of the names it held, want 1", len(held))
+	}
+}
+
+// earlierBootClaim is a claim an earlier boot left in state on issue, recording session, with the
+// tmux process its locator names and this daemon's plugin contract: the boot re-adopts it rather
+// than launching it.
+func earlierBootClaim(project string, token claim.Token, issue, session string, state supervise.ClaimState, n int) supervise.Claim {
+	role, _ := token.Role()
+	pane := strconv.Itoa(n)
+	return supervise.Claim{
+		Token: token, Project: project, Tree: issue, Issue: issue, Role: role, Generation: 1,
+		Session: session, SessionFile: "/sessions/" + strconv.Itoa(n) + ".jsonl",
+		Locator: &runtime.Locator{
+			Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "3100" + pane + ":90000" + pane,
+			Tmux: &runtime.TmuxLocator{Window: "@" + pane, Pane: "%" + pane},
+		},
+		State:          state,
+		BootTokenHash:  supervise.HashBootToken("boot-" + string(token)),
+		CapabilityHash: []byte{byte(n)},
+		PluginContract: api.DaemonAPIVersion,
+	}
+}

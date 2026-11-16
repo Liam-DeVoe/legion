@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 )
+
+// errHoldUnanswered is a hold the store did not answer (holdRecorded): it says nothing about the
+// claim or its session, so it refuses nothing and is charged to no budget.
+var errHoldUnanswered = errors.New("the store did not answer the session's hold")
 
 // HoldKind is which of a session's names a hold keeps (Hold): each is a key some resume path
 // finds a session by.
@@ -87,7 +92,9 @@ func RecordedHolds(session, sessionFile string) []Hold {
 // never changes once made: the enrollment that follows a registration asks nothing more. A refusal
 // is asked again every time, because an operator settles a name held for no claim by recording its
 // rightful holder, and that claim's next decision on this same machine must see it. A store that
-// does not answer refuses nothing and is asked again by the next decision.
+// does not answer refuses nothing: its error wraps errHoldUnanswered, which a launch tries again at
+// the probe interval charging nothing (launchNow), and any other decision is asked again by the
+// next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
 	var ask []Hold
 	for _, h := range RecordedHolds(session, sessionFile) {
@@ -104,10 +111,10 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		holders, err = m.deps.Store.HoldSessions(ctx, m.claim.Project, m.claim.Token, ask)
 		return err
 	}); err != nil {
-		return fmt.Errorf("hold the session of %s: %w", m.claim.Token, err)
+		return fmt.Errorf("hold the session of %s: %w: %w", m.claim.Token, errHoldUnanswered, err)
 	}
 	if len(holders) != len(ask) {
-		return fmt.Errorf("hold the session of %s: the store answered %d holders for %d names", m.claim.Token, len(holders), len(ask))
+		return fmt.Errorf("hold the session of %s: %w: it answered %d holders for %d names", m.claim.Token, errHoldUnanswered, len(holders), len(ask))
 	}
 	for i, h := range ask {
 		if holders[i] != m.claim.Token {

@@ -458,6 +458,42 @@ func TestATmuxResumeByNameIsHeldToItsClaim(t *testing.T) {
 	})
 }
 
+// A store that does not answer a resume's hold says nothing about the claim or its session
+// (errHoldUnanswered): the launch starts nothing, is charged to no budget, and is tried again at
+// the probe interval, as a launch whose write the store did not take is; once the store answers,
+// the claim resumes its own session.
+//
+// The control (the pull request records the run): the hold's error sent down the launch-failure
+// path, as before this test: one unanswered hold spends the budget of one, and the claim fails.
+func TestAnUnansweredHoldAtAResumeChargesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+	h.deps.Limits.LaunchFailures = 1
+	h.restart()
+	h.store.fail("HoldSessions", errors.New("connection refused"))
+	resumes := len(h.calls("Resume"))
+
+	if err := h.handle(RequestResume{Claim: h.token}); !errors.Is(err, errHoldUnanswered) {
+		t.Fatalf("resuming with the store not answering the hold = %v, want errHoldUnanswered", err)
+	}
+	if c := h.claim(); c.State != StateLaunching || c.Budgets.LaunchFailures != 0 {
+		t.Fatalf("the claim is %s with %d launch failures charged, want it launching with none", c.State, c.Budgets.LaunchFailures)
+	}
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+		t.Fatalf("the runtime was asked to resume before the session was held: %+v", calls)
+	}
+
+	h.store.fail("HoldSessions", nil)
+	h.advance(testProbe)
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 1 || calls[0].Spec.ResumeSessionFile != sessionFile {
+		t.Fatalf("the retry at the probe interval resumed %+v, want the claim's own session once", calls)
+	}
+	if c := h.claim(); c.Budgets.LaunchFailures != 0 {
+		t.Fatalf("the claim has %d launch failures charged after the retry, want none", c.Budgets.LaunchFailures)
+	}
+}
+
 func TestAFailedRevocationIsRetriedThenLeftToTheLease(t *testing.T) {
 	h := newHarness(t)
 	broker := h.withSecrets()

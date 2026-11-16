@@ -42,9 +42,16 @@
 -- is held for neither: its claim is the empty string, which no claim's token is, so every claim is
 -- refused every registration, resume and enrollment under it. The daemon logs each such name at boot
 -- at Error, naming every claim whose row records it, and suspends them (internal/daemon's
--- suspendSessionsHeldForNone), and an operator records the rightful holder by hand:
+-- suspendSessionConflicts), and an operator records the rightful holder by hand:
 --   update claim_sessions set claim = '<token>'
 --     where project = '<project>' and kind = '<kind>' and name = '<name>';
+--
+-- A daemon rolled back to a release before this one runs on this table without writing it, so the
+-- claims it registers record names no row holds. This backfill runs once, so the daemon runs its
+-- rule again at every boot (store.HoldRecordedSessions), holding each name no row holds for the one
+-- claim recording it or for none, and suspends every claim that records a name another claim, or
+-- none, holds (store.SessionConflicts), with the same log line and statement. Nothing needs
+-- repairing by hand after a rollback but those names.
 create table claim_sessions (
   project text not null,
   kind text not null check (kind in ('session', 'file', 'file-name', 'file-id')),

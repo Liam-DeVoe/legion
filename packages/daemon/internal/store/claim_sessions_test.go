@@ -266,28 +266,59 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 			}
 		}
 
-		none, err := store.SessionsHeldForNone(ctx, "legion")
+		conflicts, err := store.SessionConflicts(ctx, "legion")
 		if err != nil {
-			t.Fatalf("read the sessions held for none: %v", err)
+			t.Fatalf("read the session conflicts: %v", err)
 		}
-		var wantNone []HeldForNone
+		var wantConflicts []SessionConflict
 		for k, holder := range want {
 			if k.project == "legion" && holder == "" {
 				tokens := slices.Clone(recorders[k])
 				slices.Sort(tokens)
-				wantNone = append(wantNone, HeldForNone{Hold: k.hold, Claims: tokens})
+				wantConflicts = append(wantConflicts, SessionConflict{Hold: k.hold, Claims: tokens})
 			}
 		}
-		slices.SortFunc(wantNone, func(a, b HeldForNone) int {
+		slices.SortFunc(wantConflicts, func(a, b SessionConflict) int {
 			return cmp.Or(cmp.Compare(a.Hold.Kind, b.Hold.Kind), cmp.Compare(a.Hold.Name, b.Hold.Name))
 		})
-		if len(wantNone) != 4 {
-			t.Fatalf("the rows above give %d names held for none, want 4: %+v", len(wantNone), wantNone)
+		if len(wantConflicts) != 4 {
+			t.Fatalf("the rows above give %d names held for none, want 4: %+v", len(wantConflicts), wantConflicts)
 		}
-		if !slices.EqualFunc(none, wantNone, func(a, b HeldForNone) bool {
-			return a.Hold == b.Hold && slices.Equal(a.Claims, b.Claims)
-		}) {
-			t.Errorf("the sessions held for none read %+v, want %+v", none, wantNone)
+		sameConflicts := func(a, b SessionConflict) bool {
+			return a.Hold == b.Hold && a.Holder == b.Holder && slices.Equal(a.Claims, b.Claims)
+		}
+		if !slices.EqualFunc(conflicts, wantConflicts, sameConflicts) {
+			t.Errorf("the session conflicts read %+v, want %+v", conflicts, wantConflicts)
+		}
+
+		// A daemon from before the hold, as one rolled back is, records names no row holds: one
+		// another claim holds already, and one no row holds. The boot's backfill holds the second
+		// for its claim and leaves the first as it is, and the conflict read names the claim that
+		// took the first.
+		if _, err := store.Pool().Exec(ctx, `update claims set session = 'ses_own', session_file = '/rolled/back/took.jsonl'
+			where token = 'legion-LEGION-306-implementer'`); err != nil {
+			t.Fatalf("record what a rolled-back daemon let a claim register: %v", err)
+		}
+		added, err := store.HoldRecordedSessions(ctx, "legion")
+		if err != nil {
+			t.Fatalf("hold the recorded names: %v", err)
+		}
+		if added != 2 {
+			t.Errorf("the boot's backfill held %d names, want 2: the rolled-back claim's file and its name", added)
+		}
+		if holder := holdOne(ctx, t, store, "legion", "legion-LEGION-399-implementer", supervise.Hold{Kind: supervise.HoldSessionFile, Name: "/rolled/back/took.jsonl"}); holder != "legion-LEGION-306-implementer" {
+			t.Errorf("the rolled-back claim's file is held for %q after the backfill, want its own claim", holder)
+		}
+		if again, err := store.HoldRecordedSessions(ctx, "legion"); err != nil || again != 0 {
+			t.Errorf("the backfill run again held %d names, %v; want none: every recorded name is held", again, err)
+		}
+		conflicts, err = store.SessionConflicts(ctx, "legion")
+		if err != nil {
+			t.Fatalf("read the session conflicts: %v", err)
+		}
+		took := SessionConflict{Hold: sessionHold("ses_own"), Holder: "legion-LEGION-301-implementer", Claims: []claim.Token{"legion-LEGION-306-implementer"}}
+		if !slices.ContainsFunc(conflicts, func(c SessionConflict) bool { return sameConflicts(c, took) }) || len(conflicts) != len(wantConflicts)+1 {
+			t.Errorf("the session conflicts read %+v, want the four held for none and %+v", conflicts, took)
 		}
 	})
 }
