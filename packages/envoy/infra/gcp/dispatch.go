@@ -633,10 +633,10 @@ func newDispatchAzure(args *DispatchArgs) (dispatchAzure, error) {
 	if keyless {
 		azure.audience = defaultAzureFederationAudience
 		if args.AzureFederationAudience != nil {
-			if *args.AzureFederationAudience == "" {
+			azure.audience = dispatchAudience(*args.AzureFederationAudience)
+			if azure.audience == "" {
 				return dispatchAzure{}, errors.New("azureFederationAudience is empty; leave it unset for " + defaultAzureFederationAudience)
 			}
-			azure.audience = *args.AzureFederationAudience
 		}
 	}
 	if !azure.embedder {
@@ -1043,17 +1043,27 @@ func refuseDispatchRegion(region string) error {
 	return nil
 }
 
-// refuseSharedListenerAudience refuses a listenerAudience equal to another audience the app
-// presents a token for or verifies one under: natsAudience (the NATS auth service),
-// agentSecretsAudience (the secrets broker), oidcAudience (callers of Dispatch itself) and the
-// keyless Azure sign-in's audience (Entra; azureFederationAudience, or its default). A token minted
-// for that other audience would then be a bearer the listener admits too, so whoever receives it,
-// or holds one for it, could call the listener as the app. Each audience is kept apart, as the
-// secrets broker keeps its exchange audience apart from its enrollment one
-// (internal/broker/config, BROKER_EXCHANGE_K8S_AUDIENCE), so that no token is spendable where
-// another is. The refusal names both inputs and neither value.
-func refuseSharedListenerAudience(args *DispatchArgs, azure dispatchAzure) error {
-	if args.ListenerAudience == "" {
+// dispatchAudience is the audience an input names, as the verifier that checks it reads it:
+// trimmed of surrounding whitespace, as oidc.ConfigFromEnv trims every verifier's audience
+// (internal/oidc/boot.go), Dispatch's DISPATCH_OIDC_AUDIENCE among them. Every audience the
+// component renders is this value, and so is every audience refuseSharedAudiences compares, so
+// two inputs that differ only in padding are one audience, rendered once and refused together.
+func dispatchAudience(input string) string {
+	return strings.TrimSpace(input)
+}
+
+// refuseSharedAudiences refuses a listenerAudience equal to another audience the app presents a
+// token for or verifies one under: natsAudience (the NATS auth service), agentSecretsAudience (the
+// secrets broker), oidcAudience (callers of Dispatch itself) and the keyless Azure sign-in's
+// audience (Entra; azureFederationAudience, or its default). A token minted for that other
+// audience would then be a bearer the listener admits too, so whoever receives it, or holds one
+// for it, could call the listener as the app. Each audience is kept apart, as the secrets broker
+// keeps its exchange audience apart from its enrollment one (internal/broker/config,
+// BROKER_EXCHANGE_K8S_AUDIENCE), so that no token is spendable where another is. It compares the
+// resolved settings, each audience as dispatchAudience reads it, and names both inputs and
+// neither value but the public Azure default.
+func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
+	if s.listenerAudience == "" {
 		return nil
 	}
 	azureInput := "azureFederationAudience"
@@ -1061,12 +1071,12 @@ func refuseSharedListenerAudience(args *DispatchArgs, azure dispatchAzure) error
 		azureInput += " (unset, so " + defaultAzureFederationAudience + ")"
 	}
 	for _, other := range []struct{ input, audience string }{
-		{"natsAudience", args.NatsAudience},
-		{"agentSecretsAudience", args.AgentSecretsAudience},
-		{"oidcAudience", args.OidcAudience},
-		{azureInput, azure.audience},
+		{"natsAudience", s.natsAudience},
+		{"agentSecretsAudience", s.agentSecretsAudience},
+		{"oidcAudience", s.oidcAudience},
+		{azureInput, s.azure.audience},
 	} {
-		if other.audience == args.ListenerAudience {
+		if other.audience == s.listenerAudience {
 			return core.InputErrorf("listenerAudience", "listenerAudience is also %s: a token minted for that audience would be a bearer Dispatch's listener admits, so give the listener an audience of its own", other.input)
 		}
 	}
@@ -1162,12 +1172,15 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if err := core.CheckEnvValue("listenerAudience", "ENVOY_OIDC_AUDIENCE", args.ListenerAudience); err != nil {
 		return dispatchSettings{}, err
 	}
-	if args.AgentSecretsAudience != "" && args.AgentSecretsUrl == "" {
+	// Every audience is used as its verifier reads it (dispatchAudience), so a padded one is the
+	// audience it names, and a blank one is none.
+	agentSecretsAudience, oidcAudience := dispatchAudience(args.AgentSecretsAudience), dispatchAudience(args.OidcAudience)
+	if agentSecretsAudience != "" && args.AgentSecretsUrl == "" {
 		return dispatchSettings{}, errors.New("agentSecretsUrl is required when agentSecretsAudience is set")
 	}
 	agentSecretsURL := strings.TrimSuffix(args.AgentSecretsUrl, "/")
 	if args.AgentSecretsUrl != "" {
-		if args.AgentSecretsAudience == "" {
+		if agentSecretsAudience == "" {
 			return dispatchSettings{}, errors.New("agentSecretsAudience is required when agentSecretsUrl is set")
 		}
 		// The shape Dispatch itself requires of DISPATCH_AGENT_SECRETS_URL, checked here so a bad
@@ -1187,7 +1200,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// without an audience would configure nothing and is refused rather than dropped. Dispatch
 	// itself refuses half the pair (oidc.ConfigFromEnv), which is why the component renders
 	// DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
-	if args.OidcIssuer != "" && args.OidcAudience == "" {
+	if args.OidcIssuer != "" && oidcAudience == "" {
 		return dispatchSettings{}, errors.New("oidcAudience is required when oidcIssuer is set")
 	}
 	var appSet, appMissing []string
@@ -1222,9 +1235,6 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if err != nil {
 		return dispatchSettings{}, err
 	}
-	if err := refuseSharedListenerAudience(args, azure); err != nil {
-		return dispatchSettings{}, err
-	}
 	// The answerer is resolved after the embedder, since the Azure chat form signs in with the
 	// credential newDispatchAzure judged: the two features share it.
 	answerer, err := newDispatchAnswerer(args, azure.keyless)
@@ -1250,10 +1260,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.clientID = args.SignInClientId
 	s.signIn.domain = args.SignInDomain
 	s.agentSecretsURL = agentSecretsURL
-	s.agentSecretsAudience = args.AgentSecretsAudience
-	s.natsAudience = args.NatsAudience
-	s.listenerAudience = args.ListenerAudience
-	s.oidcAudience = args.OidcAudience
+	s.agentSecretsAudience = agentSecretsAudience
+	s.natsAudience = dispatchAudience(args.NatsAudience)
+	s.listenerAudience = dispatchAudience(args.ListenerAudience)
+	s.oidcAudience = oidcAudience
 	s.oidcIssuer = args.OidcIssuer
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
@@ -1261,6 +1271,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.appKeySecretKey = args.AppPrivateKeySecretKey
 	s.azure = azure
 	s.answerer = answerer
+	if err := refuseSharedAudiences(args, s); err != nil {
+		return dispatchSettings{}, err
+	}
 	if args.DatabaseVersion != nil {
 		if *args.DatabaseVersion == "" {
 			return dispatchSettings{}, errors.New("databaseVersion is empty; leave it unset for " + defaultDispatchDatabaseVersion)

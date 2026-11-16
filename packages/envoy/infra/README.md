@@ -965,7 +965,10 @@ character is refused by name before the component registers a resource, and `clu
 refuses both. So is a `listenerAudience` equal to another audience the app presents a token for
 or verifies one under, naming both inputs: `natsAudience`, `agentSecretsAudience`, `oidcAudience`,
 or the keyless Azure sign-in's `azureFederationAudience` (`api://AzureADTokenExchange` when
-unset). A token minted for that other audience would be a bearer the listener admits too.
+unset). A token minted for that other audience would be a bearer the listener admits too. Every
+audience is compared and rendered as Dispatch and the listener read theirs, trimmed of surrounding
+whitespace, so two inputs that differ only in padding are one audience, and a padded
+`agentSecretsAudience`, `oidcAudience` or `azureFederationAudience` renders the audience it names.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh

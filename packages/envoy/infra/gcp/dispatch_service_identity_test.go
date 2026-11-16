@@ -258,8 +258,9 @@ func TestDispatchRefusesASeedInAnAudienceFirst(t *testing.T) {
 
 // listenerAudience is the listener's own. Equal to another audience the app presents a token for
 // or verifies one under, a token minted for that one would be a bearer the listener admits too,
-// so each such pair is refused, naming both inputs, before anything registers; five distinct
-// audiences resolve.
+// so each such pair is refused, naming both inputs, before anything registers. The comparison is
+// of the audiences as their verifiers read them, trimmed, so the other one padded with whitespace
+// on either side is refused too; five distinct audiences resolve.
 func TestDispatchRefusesAListenerAudienceAnotherAudienceShares(t *testing.T) {
 	const brokerAudience = "example-broker-audience"
 	setBroker := func(a *gcp.DispatchArgs) {
@@ -278,6 +279,24 @@ func TestDispatchRefusesAListenerAudienceAnotherAudienceShares(t *testing.T) {
 		{"azureFederationAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("api://example-audience")
+			a.ListenerAudience = "api://example-audience"
+		}},
+		{"agentSecretsAudience, padded", "agentSecretsAudience", func(a *gcp.DispatchArgs) {
+			setBroker(a)
+			a.AgentSecretsAudience = "  " + brokerAudience + "  "
+			a.ListenerAudience = brokerAudience
+		}},
+		{"oidcAudience, with leading whitespace", "oidcAudience", func(a *gcp.DispatchArgs) {
+			a.OidcAudience = " \t" + dispatchOidcAudience
+			a.ListenerAudience = dispatchOidcAudience
+		}},
+		{"oidcAudience, with trailing whitespace", "oidcAudience", func(a *gcp.DispatchArgs) {
+			a.OidcAudience = dispatchOidcAudience + " \n"
+			a.ListenerAudience = dispatchOidcAudience
+		}},
+		{"azureFederationAudience, padded", "azureFederationAudience", func(a *gcp.DispatchArgs) {
+			setAzureFederation(a)
+			a.AzureFederationAudience = pulumi.StringRef(" api://example-audience ")
 			a.ListenerAudience = "api://example-audience"
 		}},
 		{"the keyless Azure sign-in's default audience", "azureFederationAudience (unset, so api://AzureADTokenExchange)", func(a *gcp.DispatchArgs) {
@@ -305,4 +324,22 @@ func TestDispatchRefusesAListenerAudienceAnotherAudienceShares(t *testing.T) {
 	setAzureFederation(args)
 	_, err := gcp.ResolveDispatch(args)
 	require.NoError(t, err, "five distinct audiences")
+}
+
+// Each audience is rendered as its verifier reads it, trimmed: Dispatch's DISPATCH_OIDC_AUDIENCE,
+// and the audiences the kubelet mints the broker's and Entra's projected tokens for, so a padded
+// input names the audience it is compared as (TestDispatchRefusesAListenerAudienceAnotherAudienceShares).
+func TestDispatchRendersEachAudienceTrimmed(t *testing.T) {
+	args := dispatchArgs()
+	args.AgentSecretsUrl, args.AgentSecretsAudience = "https://example-broker.internal.example", " example-broker-audience\t"
+	args.OidcAudience = "\n" + dispatchOidcAudience + " "
+	setAzureFederation(args)
+	args.AzureFederationAudience = pulumi.StringRef("  api://example-audience  ")
+	m, err := runDispatch(t, args, true)
+	require.NoError(t, err)
+	template := deploymentPodTemplate(t, m, "example-dispatch")
+	container := podContainer(t, template, "envoy-dispatch")
+	require.Equal(t, dispatchOidcAudience, containerEnv(t, container)["DISPATCH_OIDC_AUDIENCE"])
+	require.Equal(t, "example-broker-audience", projectedAudience(t, template, container, "/var/run/secrets/dispatch/agent-secrets-account-token"))
+	require.Equal(t, "api://example-audience", projectedAudience(t, template, container, "/var/run/secrets/azure-federation/token"))
 }
