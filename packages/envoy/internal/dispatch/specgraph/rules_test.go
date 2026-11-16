@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -465,4 +466,51 @@ func parseDir(t *testing.T, dir string) Tree {
 		t.Fatalf("Parse(%s): %+v", dir, problems)
 	}
 	return tree
+}
+
+// A required text with no letter and no digit is a missing one, in each place where a rule of
+// Validate asks for a text: a statement's text, a check's claim, procedure and failing example, a
+// component's name and purpose, and a term's name and definition. Each row gives the one problem
+// that an empty text gives, for each of three empty shapes.
+func TestATextWithNoLetterOrDigitIsMissing(t *testing.T) {
+	t.Parallel()
+	pos := Position{File: "x.md", Line: 1}
+	tree := func() Tree {
+		return Tree{
+			Statements: []Statement{{ID: "a-claim-survives-a-restart", Text: "Legion keeps each claim.", Kind: KindBehavior, Pos: pos}},
+			Checks: []Check{{
+				ID: "a-restart-keeps-the-claim", Serves: "a-claim-survives-a-restart", Claim: "The daemon reads the claim.",
+				ProcedureText: "An agent reads the claims.", FailingExample: "A daemon with no store.",
+				Subject: SubjectCode, Procedure: ProcedureAgent, Pos: pos,
+			}},
+			Components: []Component{{ID: "dispatch", Name: "Dispatch", Purpose: "It keeps each issue.", Pos: pos}},
+			Terms:      []Term{{ID: "work-unit", Name: "work unit", Definition: "A work unit is work.", Pos: pos}},
+		}
+	}
+	for _, place := range []struct {
+		name, node, detail string
+		set                func(*Tree, string)
+	}{
+		{"a statement's text", "a-claim-survives-a-restart", "no-text: a statement has a text", func(t *Tree, s string) { t.Statements[0].Text = s }},
+		{"a check's claim", "a-restart-keeps-the-claim", "no-claim: the check has no claim", func(t *Tree, s string) { t.Checks[0].Claim = s }},
+		{"a check's procedure", "a-restart-keeps-the-claim", "no-procedure: the check has no procedure", func(t *Tree, s string) { t.Checks[0].ProcedureText = s }},
+		{"a check's failing example", "a-restart-keeps-the-claim", "no-failing-example: the check has no failing example", func(t *Tree, s string) { t.Checks[0].FailingExample = s }},
+		{"a component's name", "dispatch", "bad-component: a component has a name and one sentence of purpose", func(t *Tree, s string) { t.Components[0].Name = s }},
+		{"a component's purpose", "dispatch", "bad-component: a component has a name and one sentence of purpose", func(t *Tree, s string) { t.Components[0].Purpose = s }},
+		{"a term's name", "work-unit", "bad-term: a term has a name and a definition", func(t *Tree, s string) { t.Terms[0].Name = s }},
+		{"a term's definition", "work-unit", "bad-term: a term has a name and a definition", func(t *Tree, s string) { t.Terms[0].Definition = s }},
+	} {
+		for shape, empty := range map[string]string{"only spaces": "   ", "only U+200B": "\u200b", "only punctuation": "...!?"} {
+			tr := tree()
+			place.set(&tr, empty)
+			got := Validate(tr, Options{})
+			rule, _, _ := strings.Cut(place.detail, ":")
+			if want := []Problem{{pos, place.node, rule, place.detail}}; !reflect.DeepEqual(got, want) {
+				t.Errorf("%s of %s:\n got %+v\nwant %+v", place.name, shape, got, want)
+			}
+		}
+	}
+	if got := Validate(tree(), Options{}); len(got) != 0 {
+		t.Errorf("control, every text present: %+v, want none", got)
+	}
 }

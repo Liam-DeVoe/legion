@@ -54,7 +54,7 @@ func Validate(t Tree, o Options) []Problem {
 		v.component(c)
 	}
 	for _, term := range t.Terms {
-		if term.Name == "" || term.Definition == "" {
+		if !hasWord(term.Name) || !hasWord(term.Definition) {
 			v.problem(term.Pos, term.ID, "bad-term: a term has a name and a definition")
 		}
 		v.code(term.Pos, term.ID, "name", term.Name)
@@ -153,7 +153,7 @@ func (v *validator) target(pos Position, node, attribute, id string, wanted ...s
 }
 
 func (v *validator) statement(s Statement) {
-	if s.Text == "" {
+	if !hasWord(s.Text) {
 		v.problem(s.Pos, s.ID, "no-text: a statement has a text")
 	}
 	switch s.Kind {
@@ -205,7 +205,7 @@ func (v *validator) check(c Check) {
 		{c.ProcedureText, "no-procedure: the check has no procedure"},
 		{c.FailingExample, "no-failing-example: the check has no failing example"},
 	} {
-		if part.value == "" {
+		if !hasWord(part.value) {
 			v.problem(c.Pos, c.ID, part.detail)
 		}
 	}
