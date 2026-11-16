@@ -23,27 +23,27 @@ import (
 	"github.com/sjawhar/envoy/poolsetting"
 )
 
-// ServiceName is the service ServiceFile writes, and ServiceSize the pool size it names.
+// ServiceName is the service ServiceFile writes, and serviceSize the pool size it names.
 const (
 	ServiceName = "poolsize"
-	ServiceSize = 7
+	serviceSize = 7
 )
 
-// ServiceFile writes a pg_service.conf whose service ServiceName names pool_max_conns=ServiceSize,
+// ServiceFile writes a pg_service.conf whose service ServiceName names pool_max_conns=serviceSize,
 // and points PGSERVICEFILE at it for t.
 func ServiceFile(t testing.TB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pg_service.conf")
-	content := "[" + ServiceName + "]\n" + poolsetting.Key + "=" + strconv.Itoa(ServiceSize) + "\n"
+	content := "[" + ServiceName + "]\n" + poolsetting.Key + "=" + strconv.Itoa(serviceSize) + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PGSERVICEFILE", path)
 }
 
-// WithSetting is connString with one more connection setting, in connString's own form: a URL's
+// withSetting is connString with one more connection setting, in connString's own form: a URL's
 // query, or the next quoted pair of a keyword/value string.
-func WithSetting(t testing.TB, connString, key, value string) string {
+func withSetting(t testing.TB, connString, key, value string) string {
 	t.Helper()
 	if strings.HasPrefix(connString, "postgres://") || strings.HasPrefix(connString, "postgresql://") {
 		u, err := url.Parse(connString)
@@ -55,33 +55,33 @@ func WithSetting(t testing.TB, connString, key, value string) string {
 		u.RawQuery = query.Encode()
 		return u.String()
 	}
-	return connString + " " + key + "=" + Quoted(value)
+	return connString + " " + key + "=" + quoted(value)
 }
 
-// Quoted is value as a keyword/value string writes it: in single quotes, with each backslash and
+// quoted is value as a keyword/value string writes it: in single quotes, with each backslash and
 // single quote escaped.
-func Quoted(value string) string {
+func quoted(value string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(value) + "'"
 }
 
-// AsKeywords is the connection connString names, as a keyword/value string, whichever form
+// asKeywords is the connection connString names, as a keyword/value string, whichever form
 // connString has: so a test can write a setting no URL carries the same way, a quoted value. A
 // connection pgx would make without TLS keeps sslmode=disable.
-func AsKeywords(t testing.TB, connString string) string {
+func asKeywords(t testing.TB, connString string) string {
 	t.Helper()
 	config, err := pgconn.ParseConfig(connString)
 	if err != nil {
 		t.Fatalf("parse the connection string: %v", err)
 	}
 	pairs := []string{
-		"host=" + Quoted(config.Host), "port=" + strconv.Itoa(int(config.Port)), "user=" + Quoted(config.User),
-		"password=" + Quoted(config.Password), "dbname=" + Quoted(config.Database),
+		"host=" + quoted(config.Host), "port=" + strconv.Itoa(int(config.Port)), "user=" + quoted(config.User),
+		"password=" + quoted(config.Password), "dbname=" + quoted(config.Database),
 	}
 	if config.TLSConfig == nil {
 		pairs = append(pairs, "sslmode=disable")
 	}
 	for key, value := range config.RuntimeParams {
-		pairs = append(pairs, key+"="+Quoted(value))
+		pairs = append(pairs, key+"="+quoted(value))
 	}
 	return strings.Join(pairs, " ")
 }
@@ -94,16 +94,16 @@ func AsKeywords(t testing.TB, connString string) string {
 func OutranksTheDefault(t *testing.T, database string, want int32, open func(t *testing.T, connString string) int32) {
 	t.Helper()
 	ServiceFile(t)
-	keywords := AsKeywords(t, database)
+	keywords := asKeywords(t, database)
 	for _, tc := range []struct {
 		name, connString string
 		want             int32
 	}{
 		{"the database as given, naming no size", database, want},
-		{"the database as given, naming 7", WithSetting(t, database, poolsetting.Key, "7"), 7},
-		{"a keyword/value string naming 7", WithSetting(t, keywords, poolsetting.Key, "7"), 7},
-		{"the key inside a quoted value", WithSetting(t, keywords, "application_name", "worker "+poolsetting.Key+"=7"), want},
-		{"a service whose file names 7", WithSetting(t, keywords, "service", ServiceName), ServiceSize},
+		{"the database as given, naming 7", withSetting(t, database, poolsetting.Key, "7"), 7},
+		{"a keyword/value string naming 7", withSetting(t, keywords, poolsetting.Key, "7"), 7},
+		{"the key inside a quoted value", withSetting(t, keywords, "application_name", "worker "+poolsetting.Key+"=7"), want},
+		{"a service whose file names 7", withSetting(t, keywords, "service", ServiceName), serviceSize},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := open(t, tc.connString); got != tc.want {
