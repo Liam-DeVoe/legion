@@ -1968,10 +1968,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the caller's personal agent tokens, each with the scopes it holds. */
+    /** @description List the caller's personal agent tokens, each with the scopes it holds and the projects it lists, absent when it lists none. */
     get: operations["getApiV1MeAgentTokens"];
     put?: never;
-    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. The answer is the one time the token's plaintext is shown. */
+    /** @description Mint a personal agent token {name, scopes?, projects?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. projects is the list of projects the token may use, at most 16, each one the caller sees; 400 TOKEN_PROJECTS_INPUT otherwise. It defaults to the caller's own credential's list, and a credential that lists projects gives a token only some of its own. The answer is the one time the token's plaintext is shown. */
     post: operations["postApiV1MeAgentTokens"];
     delete?: never;
     options?: never;
@@ -1993,7 +1993,7 @@ export interface paths {
     delete: operations["deleteApiV1MeAgentTokensById"];
     options?: never;
     head?: never;
-    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. A token of another person's, or none, is 404 NOT_FOUND. */
+    /** @description Set the scopes, and the projects, of one of the caller's personal agent tokens {scopes, projects?}, answering the updated token: scopes is the whole set it is to hold, with the mint's refusals. projects is the list of projects the token may use, at most 16, each one the caller sees; 400 TOKEN_PROJECTS_INPUT otherwise. Left out, the token keeps its list. A token of another person's, or none, is 404 NOT_FOUND. */
     patch: operations["patchApiV1MeAgentTokensById"];
     trace?: never;
   };
@@ -3195,6 +3195,7 @@ export interface components {
       last_used_at: null | string;
       name: string;
       prefix: string;
+      projects?: string[];
       /** Format: date-time */
       revoked_at: null | string;
       scopes: string[] | null;
@@ -4135,6 +4136,7 @@ export interface components {
     };
     CreateAgentTokenInput: {
       name: string;
+      projects?: null | string[];
       scopes?: null | string[];
     };
     CreateArtifactReviewInput: {
@@ -4251,6 +4253,7 @@ export interface components {
       last_used_at: null | string;
       name: string;
       prefix: string;
+      projects?: string[];
       /** Format: date-time */
       revoked_at: null | string;
       scopes: string[] | null;
@@ -6272,6 +6275,7 @@ export interface components {
       examples: string[] | null;
     };
     UpdateAgentTokenScopesInput: {
+      projects?: null | string[];
       scopes: null | string[];
     };
     UpdateDeliverySessionGroupInput: {

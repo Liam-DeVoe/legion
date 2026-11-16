@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -31,7 +32,7 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select id::text, name, prefix, scopes, created_at, last_used_at, revoked_at
+		select id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
 		from agent_tokens
 		where owner = $1
 		order by created_at desc
@@ -65,6 +66,10 @@ type createAgentTokenInput struct {
 	// caller's own set, which is why the field is a pointer: an empty array is a token that
 	// holds nothing, and that is a different request from one that asks for the default.
 	Scopes *[]string `json:"scopes"`
+	// Projects is the list the new token may use. A body that names none leaves it to the
+	// caller's own list, for the reason Scopes is a pointer: an empty array is a token that lists
+	// nothing, which sees every public project its person sees.
+	Projects *[]string `json:"projects"`
 }
 
 // createAgentToken is POST /api/v1/me/agent-tokens. Its answer is the one time the token's
@@ -90,6 +95,10 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	projects, ok := s.tokenProjects(w, r, input.Projects)
+	if !ok {
+		return
+	}
 
 	plaintext, hash, err := newAgentToken()
 	if err != nil {
@@ -104,10 +113,10 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), `
-		insert into agent_tokens (owner, name, token_hash, prefix, scopes)
-		values ($1, $2, $3, $4, $5)
-		returning id::text, name, prefix, scopes, created_at, last_used_at, revoked_at
-	`, actor.ID, input.Name, hash[:], prefix, scopes))
+		insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects)
+		values ($1, $2, $3, $4, $5, $6)
+		returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
+	`, actor.ID, input.Name, hash[:], prefix, scopes, projects))
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("create agent token: %w", err))
 		return
@@ -122,14 +131,18 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 // updateAgentTokenScopesInput is the body of PATCH /api/v1/me/agent-tokens/{id}.
 type updateAgentTokenScopesInput struct {
 	Scopes *[]string `json:"scopes" required:"true"`
+	// Projects is the whole list the token is to use, with the mint's refusals. A body that names
+	// none leaves the token's list as it stands.
+	Projects *[]string `json:"projects"`
 }
 
 // updateAgentTokenScopes is PATCH /api/v1/me/agent-tokens/{id}: the whole set one of the
-// caller's own tokens is to hold, with the mint's refusals. Its answer holds no plaintext — the
-// token's secret was shown once, at the mint — so its key keeps that answer, which is why it is
-// not in answerHoldsSecret (request_keys.go). The update runs in a transaction of the shared
-// pool, as every keyed write does: the commit step marks the request's key committed with the
-// write itself (markRequestKeyCommitted).
+// caller's own tokens is to hold, and the list it is to use when the body names one, with the
+// mint's refusals. Its answer holds no plaintext — the token's secret was shown once, at the
+// mint — so its key keeps that answer, which is why it is not in answerHoldsSecret
+// (request_keys.go). The update runs in a transaction of the shared pool, as every keyed write
+// does: the commit step marks the request's key committed with the write itself
+// (markRequestKeyCommitted).
 func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -152,6 +165,13 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	// Nil keeps the token's list: the update below reads it as null.
+	var projects []string
+	if input.Projects != nil {
+		if projects, ok = s.tokenProjects(w, r, input.Projects); !ok {
+			return
+		}
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -160,10 +180,10 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	defer tx.Rollback(r.Context())
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), `
 		update agent_tokens
-		set scopes = $3
+		set scopes = $3, projects = coalesce($4::text[], projects)
 		where id = $1 and owner = $2
-		returning id::text, name, prefix, scopes, created_at, last_used_at, revoked_at
-	`, r.PathValue("id"), actor.ID, scopes))
+		returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
+	`, r.PathValue("id"), actor.ID, scopes, projects))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 		return
@@ -232,6 +252,69 @@ func callerScopes(actor model.Actor) []string {
 	return model.Scopes
 }
 
+// codeTokenProjectsInput refuses a list no token may hold: more keys than maxTokenProjects, a key
+// the caller does not see, or, from a credential that lists projects, a list naming none.
+const codeTokenProjectsInput = "TOKEN_PROJECTS_INPUT"
+
+// maxTokenProjects is how many projects one token lists at most, as agent_tokens.projects' own
+// check holds it.
+const maxTokenProjects = 16
+
+// tokenProjects is the list a mint or an edit gives a token: the one the body names, or, where it
+// names none, the list the caller's own credential holds. It writes its own refusal and answers
+// false for a list of more than maxTokenProjects keys, for a key the caller does not see, and for
+// an empty list from a credential that lists projects, because a token listing nothing sees every
+// public project its person sees. Every project a credential holding a list sees is on that list
+// (internal/dispatch/access, the rule), so such a credential gives a token only a part of its own.
+// A key named twice is listed once, and the list is stored sorted, as Credential.Projects holds it.
+//
+// What the caller sees is resolved as every read resolves it, access.Resolve once over the caller
+// optionalActor decided, and only for a list that names a key. A key the caller does not see is
+// refused in the same words whether a hidden project holds it or none does, so the refusal says
+// nothing of a project the caller may not see.
+func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested *[]string) ([]string, bool) {
+	caller, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return nil, false
+	}
+	var own []string
+	if caller.Credential != nil {
+		own = caller.Credential.Projects
+	}
+	named := own
+	if requested != nil {
+		named = *requested
+	}
+	projects := slices.Compact(slices.Sorted(slices.Values(named)))
+	switch {
+	case len(projects) > maxTokenProjects:
+		writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
+			"a token lists at most %d projects; this one names %d", maxTokenProjects, len(projects)))
+		return nil, false
+	case len(projects) == 0 && len(own) > 0:
+		writeError(w, codeTokenProjectsInput, http.StatusBadRequest,
+			"this request's credential lists projects, so a token it gives lists some of them: a token listing none sees every public project")
+		return nil, false
+	case len(projects) == 0:
+		// Not nil: agent_tokens.projects is not null, and its empty list is a token listing none.
+		return []string{}, true
+	}
+	viewer, err := access.Resolve(r.Context(), s.deps.Store.Pool, caller)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, false
+	}
+	for _, project := range projects {
+		if !slices.Contains(viewer.Sees, project) {
+			writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
+				"%q is no project this request's credential sees", project))
+			return nil, false
+		}
+	}
+	return projects, true
+}
+
 func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -260,13 +343,13 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
-	var scopes []string
+	var scopes, projects []string
 	var revokedAt *time.Time
 	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select id::text, name, owner, scopes, revoked_at
+		select id::text, name, owner, scopes, projects, revoked_at
 		from agent_tokens
 		where token_hash = $1
-	`, hash[:]).Scan(&id, &name, &owner, &scopes, &revokedAt)
+	`, hash[:]).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -285,12 +368,12 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	`, hash[:]); err != nil {
 		return model.Actor{}, fmt.Errorf("record agent token use: %w", err)
 	}
-	// The token's own row says what it may do, and it names the credential that acted: the
-	// person's token, not the person at a browser.
+	// The token's own row says what it may do and which projects it may use, and it names the
+	// credential that acted: the person's token, not the person at a browser.
 	return model.Actor{
 		Kind:       "session",
 		Owner:      &owner,
-		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name},
+		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects},
 	}, nil
 }
 
@@ -305,7 +388,7 @@ func newAgentToken() (string, [sha256.Size]byte, error) {
 
 func scanAgentToken(row rowScanner) (model.AgentToken, error) {
 	var token model.AgentToken
-	if err := row.Scan(&token.ID, &token.Name, &token.Prefix, &token.Scopes, &token.CreatedAt, &token.LastUsedAt, &token.RevokedAt); err != nil {
+	if err := row.Scan(&token.ID, &token.Name, &token.Prefix, &token.Scopes, &token.Projects, &token.CreatedAt, &token.LastUsedAt, &token.RevokedAt); err != nil {
 		return model.AgentToken{}, fmt.Errorf("scan agent token: %w", err)
 	}
 	return token, nil
