@@ -148,7 +148,7 @@ test(
     // project of the resolved configuration whatever the command selected - this head's
     // `-alone` listing names six projects and reports all eighteen - so an assertion over
     // the project list could not fail, and would pass with the `-alone` listing missing
-    // altogether. Measured at this head, the two listings hold 1,557 rows and every project
+    // altogether. Measured at this head, the two listings hold 1,605 rows and every project
     // owns some: the smallest is `firefox-download-navigation` with one, and the `-alone`
     // six hold 23, 13, 16, 2, 2 and 3.
     const projectsWithRows = new Set(rows.map((row) => row.project));
