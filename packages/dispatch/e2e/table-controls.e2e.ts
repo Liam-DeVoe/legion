@@ -2188,7 +2188,7 @@ test("the control in the row carries what the banner carried, and narrows the In
     "the page lists a different number of items than the control carries"
   ).toBe(4);
 
-  // On the project page the same component's banner is drawn as it is today.
+  // On the project page the same component's pill is drawn as it is today.
   await page.goto("/projects/CORE/issues");
   await expect(
     page.getByRole("link", { name: /^Blocked on you · \d+$/ }),
@@ -3320,4 +3320,71 @@ test("a column filter is visible and removable from the row even while its colum
   await expect(page).not.toHaveURL(/[?&]label=/);
   await expect(trigger).toHaveText("Filters · 0");
   await expect(chip).toHaveCount(0);
+});
+
+// SLOW(>=2s): 60 issues seeded, the List opened, a middle row focused and then closed by a second
+// person through the API.
+// INFRA-3135's review round 1, follow-up F4 (thread PRRT_kwDORFy7ds63p6y_): a focused row a live
+// update removes, with no press of the reader's on it, hands the focus to no other row and scrolls
+// nothing. The reader's last press is on the page's heading, outside the row, so the press window
+// does not cover the removal. `@firefox` and `@webkit`: a focused row taken away fires no `focusout`
+// in these engines, so the rescue sees the loss only by watching the page.
+test("a row a live update removes while it holds the focus hands the focus to no other row and scrolls nothing @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  // More rows than the box draws, each title its own word, since the server refuses a near copy of
+  // a title it holds (409 POSSIBLE_DUPLICATE).
+  for (let batch = 0; batch < 60; batch += 10) {
+    await Promise.all(
+      Array.from({ length: 10 }, (_, offset) =>
+        createIssue({ project: "CORE", title: `Removed row ${batch + offset + 1}` })
+      )
+    );
+  }
+  // The List opens on the open statuses and not done (`openIssueStatuses`), so closing an issue as
+  // another person takes its row off this view; the List view is opened first, since a project
+  // opens on whichever view the reader last left.
+  await openIssuesTab(page, "CORE", "List");
+  const main = page.getByTestId("main-content");
+  const listBox = control(main, CONTROL.dataTable);
+  await expect(listBox.locator("[data-issue-row]").first()).toBeVisible();
+  // Scroll the box so a row in the middle is in sight, and pick it.
+  await listBox.evaluate((node) => {
+    node.scrollTop = Math.round(node.scrollHeight / 2);
+  });
+  await settledScrollTop(listBox, WHEEL_STILL_FRAMES);
+  const picked = await listBox.evaluate((node) => {
+    const within = node.getBoundingClientRect();
+    const mid = [...node.querySelectorAll<HTMLElement>("[data-issue-row]")].find((row) => {
+      const box = row.getBoundingClientRect();
+      return box.top >= within.top + 40 && box.bottom <= within.bottom - 40;
+    });
+    return mid?.dataset.issueRow ?? null;
+  });
+  if (picked === null) throw new Error("no row sits wholly in the middle of the box");
+  const pickedBox = listBox.getByRole("checkbox", { exact: true, name: `Select ${picked}` });
+  // The reader's last press is on the page's heading, outside the row; the focus is then put on the
+  // row's checkbox with no press, so the removal that follows is a loss they did not cause.
+  await page.getByRole("heading", { exact: true, level: 1, name: "Core" }).click();
+  await pickedBox.evaluate((node) => (node as HTMLElement).focus({ preventScroll: true }));
+  await expect(pickedBox).toBeFocused();
+  const beforeTop = await listBox.evaluate((node) => node.scrollTop);
+  const beforeY = await page.evaluate(() => window.scrollY);
+  // A second person closes the issue through the API; the live update takes its row off the view.
+  await patchIssue(picked, { status: "done" }, { login: "bob" });
+  await expect(page.locator(`[data-issue-row="${picked}"]`)).toHaveCount(0);
+  // The focus is in no row, and nothing scrolled.
+  const inRow = await page.evaluate(
+    () => document.activeElement?.closest("[data-issue-row]") != null
+  );
+  const afterTop = await listBox.evaluate((node) => node.scrollTop);
+  const afterY = await page.evaluate(() => window.scrollY);
+  expect(inRow, "the focus landed in a row the reader did not pick").toBe(false);
+  expect(Math.abs(afterTop - beforeTop), "the box scrolled").toBeLessThanOrEqual(1);
+  expect(Math.abs(afterY - beforeY), "the window scrolled").toBeLessThanOrEqual(1);
+  // `x` marks nothing: no row holds the focus for it to act on, so no bar appears.
+  await page.keyboard.press("x");
+  await expect(control(main, CONTROL.selectionBar)).toHaveCount(0);
 });

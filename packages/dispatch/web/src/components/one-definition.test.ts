@@ -39,19 +39,20 @@ interface Mark {
 const SHARED_MARKS: readonly Mark[] = [
   {
     what: 'writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`',
-    pattern: /type=(?:\{\s*)?["'`]search["'`]/,
+    pattern: /type\s*[:=]\s*(?:\{\s*)?["'`]search["'`]|role=(?:\{\s*)?["'`]searchbox["'`]/,
   },
   {
     what: "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
-    pattern: /<table(?![\w-])/,
+    pattern:
+      /<table(?![\w-])|\bcreateElement\(\s*["'`]table["'`]|role=(?:\{\s*)?["'`](?:table|grid)["'`]/,
   },
   {
     what: "writes a `data-control` attribute by hand — a page draws the control, which carries its own name from `components/control-names.ts`",
-    pattern: /data-control/,
+    pattern: /data-control|\bdataset(?:\.control\b|\[["']control["']\])/,
   },
   {
     what: "imports `components/AnchoredPanel` — open a panel through `components/PanelTrigger.tsx`, `components/DisplayMenu.tsx` or `components/MultiSelect.tsx`",
-    pattern: /components\/AnchoredPanel"/,
+    pattern: /components\/AnchoredPanel(?:\.js)?["']/,
   },
 ];
 
@@ -92,7 +93,7 @@ const ADDRESS_MARKS: readonly Mark[] = [
   },
   {
     what: "builds the address directly (`new URLSearchParams`) — `lib/page-address.ts`'s `copyAddress`",
-    pattern: /new URLSearchParams\b/,
+    pattern: /new (?:window\.|globalThis\.)?URLSearchParams\b/,
   },
   {
     what: "navigates with a query of its own — `lib/page-address.ts`'s `useAddressNavigate`",
@@ -103,33 +104,45 @@ const ADDRESS_MARKS: readonly Mark[] = [
     pattern: /navigate\(\s*(?:["'`][^"'`]*\?|\{(?:[^{}]|\{[^{}]*\})*?(?<=[{,]\s*)search\s*[:,}])/,
   },
   {
+    what: "builds a link's query by hand (a `<Link>` to a query) — `lib/page-address.ts`'s `copyAddress` and `addressPath`",
+    // A `<Link>` or `<NavLink>` whose `to` is a query string, a template query, or an object
+    // naming `search`: the router's own link carrying an address the page joined for itself.
+    pattern: /<(?:Link|NavLink)\b[^>]*\bto=(?:["'`]\?|\{\s*`\?|\{\{\s*search\b)/,
+  },
+  {
     what: "redirects with the router's own `<Navigate>` — `lib/page-address.ts`'s `AddressRedirect`",
-    pattern: /<Navigate\b/,
+    pattern:
+      /<Navigate\b|\bNavigate\s+as\s+\w|<[A-Za-z_$][\w$]*\.Navigate\b|\bcreateElement\(\s*Navigate\b/,
   },
   {
     what: "reads or writes the address through the browser's own location (`window.location`) — `lib/page-address.ts`'s `usePageAddress` to read it, `useAddressUpdate` or `useAddressNavigate` to write it",
     // `self`, `top` and `parent` name this window as `window` does; each is matched only as a
     // name of its own, so an object's own `parent.location` is not one.
-    pattern: /(?:\b(?:window|document|globalThis)|(?<![\w$.])(?:self|top|parent))\.location\b/,
+    pattern:
+      /(?:\b(?:window|document|globalThis)|(?<![\w$.])(?:self|top|parent))(?:\??\.(?:self|top|parent))?(?:\??\.location\b|\[["']location["']\])|\bdocument\.URL\b/,
   },
   {
     what: "reads the browser's own location through the bare global (`location.search`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's",
-    pattern: /(?<![\w$.])location\??\.[A-Za-z_$]/,
+    pattern: /(?<![\w$.])location(?:\??\.[A-Za-z_$]|!\.[A-Za-z_$]|\[["'])/,
   },
   {
     what: "takes the browser's own location whole (`const { search } = location`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's",
     // The global bound to a name or destructured, which reads the address just as `location.x`
-    // does: the `=` is an assignment or a default, never a comparison (`==`, `===`, `!==`).
-    pattern: /(?<![=!<>])=\s*location\s*(?![\w$.?(])/,
+    // does: the `=` is an assignment or a default, never a comparison (`==`, `===`, `!==`), and
+    // `location` is taken whole, not through a member (`location!.x`, `location["x"]`), which the
+    // bare-global mark above answers.
+    pattern: /(?<![=!<>])=\s*location\s*(?![\w$.?(![])/,
   },
   {
     what: "writes the address through the browser's own history (`history.pushState` / `history.replaceState`), behind the router's back — `lib/page-address.ts`'s `useAddressUpdate` or `useAddressNavigate`",
-    pattern: /\bhistory\.(?:pushState|replaceState)\b/,
+    pattern:
+      /\bhistory(?:\??\.(?:pushState|replaceState)\b|\[["'](?:pushState|replaceState)["']\])/,
   },
 ];
 
-/** The table library's module specifier, as every one of its statements ends. */
-const TABLE_MODULE = '"@tanstack/react-table"';
+/** The table library's module specifiers: its main package, any subpath of it, and the core
+ *  package, each of which a page reaches as a value only through `components/DataTable.tsx`. */
+const TABLE_MODULE = /["'`]@tanstack\/(?:react-table(?:\/[^"'`]*)?|table-core)["'`]/g;
 
 /**
  * `components/DataTable.tsx` is the web app's one TanStack table, and it re-exports `flexRender`
@@ -147,29 +160,31 @@ const TABLE_MODULE = '"@tanstack/react-table"';
  */
 function tableImportRefusals(relativePath: string, source: string): string[] {
   const refused: string[] = [];
-  for (
-    let at = source.indexOf(TABLE_MODULE);
-    at !== -1;
-    at = source.indexOf(TABLE_MODULE, at + 1)
-  ) {
+  TABLE_MODULE.lastIndex = 0;
+  for (let match = TABLE_MODULE.exec(source); match !== null; match = TABLE_MODULE.exec(source)) {
+    const specifier = match[0];
+    const at = match.index;
     const before = source.slice(0, at);
     const keyword = /\b(?:import|export|declare)\b/g;
     let start = before.lastIndexOf(";") + 1;
-    for (let match = keyword.exec(before); match !== null; match = keyword.exec(before)) {
-      start = Math.max(start, match.index);
+    for (let found = keyword.exec(before); found !== null; found = keyword.exec(before)) {
+      start = Math.max(start, found.index);
     }
-    const statement = source.slice(start, at + TABLE_MODULE.length).trimStart();
-    const allowed =
-      /^(?:import|export)\s+type\b/.test(statement) ||
-      /^declare\s+module\s+"@tanstack\/react-table"$/.test(statement);
+    const statement = source.slice(start, at + specifier.length).trimStart();
+    const module = specifier.slice(1, -1);
+    const declared = new RegExp(
+      `^declare\\s+module\\s+["'\`]${module.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&")}["'\`]$`
+    );
+    const allowed = /^(?:import|export)\s+type\b/.test(statement) || declared.test(statement);
     if (!allowed) {
-      const statementStart = at + TABLE_MODULE.length - statement.length;
+      const statementStart = at + specifier.length - statement.length;
       const line = source.slice(0, statementStart).split("\n").length;
       refused.push(
-        `${relativePath}:${line} imports \`@tanstack/react-table\` as a value — the one table is \`components/DataTable.tsx\`, which re-exports \`flexRender\``
+        `${relativePath}:${line} imports \`${module}\` as a value — the one table is \`components/DataTable.tsx\`, which re-exports \`flexRender\``
       );
     }
   }
+  TABLE_MODULE.lastIndex = 0;
   return refused;
 }
 
@@ -391,6 +406,178 @@ describe("no page builds a control or an address of its own", () => {
       'features/inbox/Upload.tsx:4 writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`',
       "features/inbox/Upload.tsx:5 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
     ]);
+  });
+
+  // INFRA-3135's review round 1, follow-up F4 (class 11): each spelling the guard missed, beside
+  // a spelling it already caught, refused now. No live file under `features/` carries any of these.
+  test("the `<Navigate>` mark catches an aliased import, a member use and `createElement`", () => {
+    const what =
+      "redirects with the router's own `<Navigate>` — `lib/page-address.ts`'s `AddressRedirect`";
+    for (const source of [
+      'import { Navigate as Go } from "react-router-dom";',
+      'export const Gone = () => <Router.Navigate replace to="/x" />;',
+      'export const Gone = () => createElement(Navigate, { to: "/x" });',
+    ]) {
+      expect(refusals("features/inbox/Gone.tsx", source)).toEqual([
+        `features/inbox/Gone.tsx:1 ${what}`,
+      ]);
+    }
+  });
+
+  test("the link-query mark catches a query string, a template query and a `search` object, on Link and NavLink", () => {
+    const what =
+      "builds a link's query by hand (a `<Link>` to a query) — `lib/page-address.ts`'s `copyAddress` and `addressPath`";
+    for (const source of [
+      'export const L = () => <Link to="?label=bug">Bugs</Link>;',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: this string is source the guard must refuse, not a template
+      "export const L = () => <Link to={`?${query}`}>Bugs</Link>;",
+      "export const L = () => <Link to={{ search: query }}>Bugs</Link>;",
+      'export const L = () => <NavLink to="?label=bug">Bugs</NavLink>;',
+    ]) {
+      expect(refusals("features/inbox/Links.tsx", source)).toEqual([
+        `features/inbox/Links.tsx:1 ${what}`,
+      ]);
+    }
+    // A plain path, and a link outside the seven, are left alone.
+    expect(refusals("features/inbox/Links.tsx", '<Link to="/issues/CORE-1">Open</Link>')).toEqual(
+      []
+    );
+    expect(refusals("features/architecture/Links.tsx", "<Link to={{ search: query }} />")).toEqual(
+      []
+    );
+  });
+
+  test("the `new URLSearchParams` mark catches the window and globalThis globals", () => {
+    const what =
+      "builds the address directly (`new URLSearchParams`) — `lib/page-address.ts`'s `copyAddress`";
+    for (const global of ["window", "globalThis"]) {
+      expect(
+        refusals("features/inbox/probe.ts", `export const p = new ${global}.URLSearchParams(x);`)
+      ).toEqual([`features/inbox/probe.ts:1 ${what}`]);
+    }
+  });
+
+  test("the `window.location` mark catches optional chaining, nested window names, the bracket form and `document.URL`", () => {
+    const what =
+      "reads or writes the address through the browser's own location (`window.location`) — `lib/page-address.ts`'s `usePageAddress` to read it, `useAddressUpdate` or `useAddressNavigate` to write it";
+    for (const source of [
+      "export const q = window?.location.search;",
+      "export const q = window.top.location.search;",
+      "export const q = window.parent.location.search;",
+      "export const q = window.self.location.search;",
+      'export const q = window["location"].search;',
+      "export const q = document.URL;",
+    ]) {
+      expect(refusals("features/inbox/probe.ts", source)).toEqual([
+        `features/inbox/probe.ts:1 ${what}`,
+      ]);
+    }
+  });
+
+  test("the bare `location` mark catches the non-null assertion and the bracket form", () => {
+    const what =
+      "reads the browser's own location through the bare global (`location.search`) — `lib/page-address.ts`'s `usePageAddress`, under a name of its own, since a bare `location` is the browser's";
+    for (const source of [
+      "export const q = location!.search;",
+      'export const q = location["search"];',
+    ]) {
+      expect(refusals("features/inbox/probe.ts", source)).toEqual([
+        `features/inbox/probe.ts:1 ${what}`,
+      ]);
+    }
+  });
+
+  test("the history mark catches optional chaining and the bracket form", () => {
+    const what =
+      "writes the address through the browser's own history (`history.pushState` / `history.replaceState`), behind the router's back — `lib/page-address.ts`'s `useAddressUpdate` or `useAddressNavigate`";
+    for (const source of [
+      'history?.pushState(null, "", url);',
+      'history["replaceState"](null, "", url);',
+    ]) {
+      expect(refusals("features/inbox/probe.ts", source)).toEqual([
+        `features/inbox/probe.ts:1 ${what}`,
+      ]);
+    }
+  });
+
+  test('the search-box mark catches a spaced attribute, an object `type`, and `role="searchbox"`', () => {
+    const what =
+      'writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`';
+    for (const source of [
+      'export const B = () => <input type = "search" />;',
+      'export const o = { type: "search" };',
+      'export const B = () => <div role="searchbox" />;',
+    ]) {
+      expect(refusals("features/inbox/Box.tsx", source)).toEqual([
+        `features/inbox/Box.tsx:1 ${what}`,
+      ]);
+    }
+  });
+
+  test('the table mark catches `createElement("table")` and a div table\'s role', () => {
+    const what =
+      "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`";
+    for (const source of [
+      'export const T = () => createElement("table");',
+      'export const T = () => <div role="table" />;',
+      'export const T = () => <div role="grid" />;',
+    ]) {
+      expect(refusals("features/inbox/T.tsx", source)).toEqual([`features/inbox/T.tsx:1 ${what}`]);
+    }
+  });
+
+  test("the `data-control` mark catches `dataset.control` and the bracket form", () => {
+    const what =
+      "writes a `data-control` attribute by hand — a page draws the control, which carries its own name from `components/control-names.ts`";
+    for (const source of [
+      "export const c = node.dataset.control;",
+      'export const c = node.dataset["control"];',
+    ]) {
+      expect(refusals("features/inbox/probe.ts", source)).toEqual([
+        `features/inbox/probe.ts:1 ${what}`,
+      ]);
+    }
+    // A longer dataset key is not this one.
+    expect(
+      refusals("features/inbox/probe.ts", "export const r = node.dataset.controlRow;")
+    ).toEqual([]);
+  });
+
+  test("the AnchoredPanel mark catches a `.js` specifier", () => {
+    const what =
+      "imports `components/AnchoredPanel` — open a panel through `components/PanelTrigger.tsx`, `components/DisplayMenu.tsx` or `components/MultiSelect.tsx`";
+    expect(
+      refusals(
+        "features/inbox/P.tsx",
+        'import { AnchoredPanel } from "../../components/AnchoredPanel.js";'
+      )
+    ).toEqual([`features/inbox/P.tsx:1 ${what}`]);
+  });
+
+  test("a value import of the table core, or a subpath of the table library, is refused", () => {
+    expect(
+      refusals(
+        "features/inbox/probe-table.ts",
+        'import { createTable } from "@tanstack/table-core";'
+      )
+    ).toEqual([
+      "features/inbox/probe-table.ts:1 imports `@tanstack/table-core` as a value — the one table is `components/DataTable.tsx`, which re-exports `flexRender`",
+    ]);
+    expect(
+      refusals(
+        "features/inbox/probe-table.ts",
+        'import { useReactTable } from "@tanstack/react-table/build";'
+      )
+    ).toEqual([
+      "features/inbox/probe-table.ts:1 imports `@tanstack/react-table/build` as a value — the one table is `components/DataTable.tsx`, which re-exports `flexRender`",
+    ]);
+    // A type-only import of the core is a page naming its types, left alone.
+    expect(
+      refusals(
+        "features/inbox/probe-table.ts",
+        'import type { Table } from "@tanstack/table-core";'
+      )
+    ).toEqual([]);
   });
 
   test.each(FEATURE_FILES)("%s draws the shared controls", (relativePath, file) => {

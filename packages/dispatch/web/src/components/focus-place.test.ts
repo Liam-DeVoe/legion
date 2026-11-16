@@ -876,3 +876,71 @@ test("a control hidden after the reader scrolled it out of sight stays out of si
     scrolls.mockRestore();
   }
 });
+
+/** A box that scrolls by itself, laid out from 100 px to 400 px down the window, holding one row
+ *  per label - an Inbox row carrying the one checkbox a row marks itself by - appended to
+ *  `parent`. */
+function rowBoxIn(
+  parent: Element,
+  ...labels: string[]
+): { box: HTMLElement; rows: { mark: HTMLInputElement; row: HTMLElement }[] } {
+  const box = document.createElement("div");
+  box.style.overflowY = "auto";
+  parent.append(box);
+  placeAt(box, 100, 300);
+  const rows = labels.map((label) => {
+    const row = document.createElement("div");
+    row.setAttribute("data-inbox-row", label);
+    row.tabIndex = -1;
+    const mark = document.createElement("input");
+    mark.type = "checkbox";
+    mark.setAttribute("aria-label", `Select ${label}`);
+    row.append(mark);
+    box.append(row);
+    return { mark, row };
+  });
+  return { box, rows };
+}
+
+// (ag) A row a live update takes away while the reader can see it, with no press of theirs before
+// it, is a loss they did not cause: the focus goes into no other row and nothing scrolls. It lands
+// on the box the rows are drawn in instead, given a Tab stop for it, so the reader's next key acts
+// on no row they did not pick. INFRA-3135's review round 1, follow-up F4.
+test("a row removed by a live update with no press hands the focus to the box, in no row, scrolling nothing", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      second.mark.focus();
+      // In sight: the mark sits inside the box, which the window draws.
+      placeAt(second.mark, 200);
+      box.dispatchEvent(new Event("scroll"));
+      second.row.remove();
+      await settled();
+      expect(box).toHaveFocus();
+      expect(box).toHaveAttribute("tabindex", "-1");
+      expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+      expect(rows[2]?.mark).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});
+
+// (ah) The same removal, right after the reader's own press on that row, is a loss they caused:
+// the hand-off it always had stands, to the control the table now draws at the lost row's place.
+test("the same row removed right after the reader's press on it keeps today's hand-off", async () => {
+  await withRescue(async () => {
+    const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+    const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+    second.mark.focus();
+    placeAt(second.mark, 200);
+    box.dispatchEvent(new Event("scroll"));
+    second.mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    second.row.remove();
+    await waitFor(() => expect(third.mark).toHaveFocus());
+  });
+});

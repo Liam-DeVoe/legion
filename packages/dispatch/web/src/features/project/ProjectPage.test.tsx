@@ -455,7 +455,7 @@ test("keeps an unpersisted List or Board choice while identity is pending", asyn
   }
 });
 
-test("List table and Board strip share the URL's status, labels and search", async () => {
+test("List table and Board control row share the URL's status, labels and search", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend&q=core&status=todo");
@@ -478,7 +478,7 @@ test("List table and Board strip share the URL's status, labels and search", asy
   }
 });
 
-test("typing v in the strip's search input never toggles the view", async () => {
+test("typing v in the control row's search input never toggles the view", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend");

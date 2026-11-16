@@ -775,12 +775,13 @@ test("a snoozed row leaves Later, the Blocked on you control and the Inbox count
     const page = await alice.newPage();
     await page.goto("/");
     const row = inboxRow(page, ask.id);
-    // What the banner said is the control's name now (INFRA-3135, R7), in the one control row.
-    const banner = page.getByRole("button", { name: /Blocked on you: 1 item/ });
+    // Blocked on you is a control of the row now (INFRA-3135, R7), named for what it narrows to,
+    // in the one control row.
+    const blockedOnYou = page.getByRole("button", { name: /Blocked on you: 1 item/ });
     // The shell carries one number now, the Inbox entry's (INFRA-450), and the band the row
     // stands in is read off the row itself.
     await expect(row).toHaveAttribute("data-inbox-section", "human");
-    await expect(banner).toBeVisible();
+    await expect(blockedOnYou).toBeVisible();
     await expectInboxCount(page, 1);
 
     const put = page.waitForRequest(
@@ -798,7 +799,7 @@ test("a snoozed row leaves Later, the Blocked on you control and the Inbox count
     const later = page.getByRole("button", { name: /^Later \(1\)/ });
     await expect(later).toBeVisible();
     await expect(row).toBeHidden();
-    await expect(banner).toBeHidden();
+    await expect(blockedOnYou).toBeHidden();
     await expectInboxCount(page, 0);
     await expect
       .poll(async () => (await getInbox({ login: "alice" })).at(0)?.snoozed_until)
@@ -810,7 +811,7 @@ test("a snoozed row leaves Later, the Blocked on you control and the Inbox count
     await page.reload();
     await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
     await expect(row).toBeHidden();
-    await expect(banner).toBeHidden();
+    await expect(blockedOnYou).toBeHidden();
     await expectInboxCount(page, 0);
 
     // The real pointer opens the disclosure; the row is there with its return time.

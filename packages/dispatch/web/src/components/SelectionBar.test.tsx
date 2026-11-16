@@ -323,3 +323,78 @@ test("the bar going with a control the reader scrolled out of sight hands the fo
     rescue.unmount();
   }
 });
+
+/** Three rows, each an Inbox row carrying its mark, a control of the page's own outside them, and
+ *  the bar over them: the page the hand-off is read on when a refetch, not the reader, empties the
+ *  selection. The rows sit in no scroll box, so a loss the reader did not cause leaves the focus on
+ *  the body rather than pulled into any row. */
+function MarkedTable({
+  count,
+  returnFocus,
+}: {
+  count: number;
+  returnFocus: () => HTMLElement | null;
+}): ReactNode {
+  return (
+    <>
+      <button type="button">Filter</button>
+      {["CORE-1", "CORE-2", "CORE-3"].map((key) => (
+        <div data-inbox-row={key} key={key}>
+          <input aria-label={`Select ${key}`} type="checkbox" />
+        </div>
+      ))}
+      <SelectionBar count={count} label="Selected rows" returnFocus={returnFocus}>
+        <button type="button">Clear selection</button>
+      </SelectionBar>
+    </>
+  );
+}
+
+// INFRA-3135's review round 1, follow-up F4: a refetch, not the reader, empties the selection and
+// takes the bar away while it holds the focus. With no press of the reader's on the bar or on a
+// row's mark before it, the bar hands the focus to no row, so the list is not scrolled to one they
+// did not pick. The rescue, mounted here, is what records whether the reader pressed.
+test("the bar emptied by a refetch with no press hands the focus to no row", () => {
+  const rescue = renderHook(() => useFocusRescue({ current: null }));
+  let asked = 0;
+  const returnFocus = () => {
+    asked += 1;
+    return rowBox("CORE-2");
+  };
+  const view = render(<MarkedTable count={2} returnFocus={returnFocus} />);
+  try {
+    act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+    view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(rowBox("CORE-2")).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+    expect(asked).toBe(0);
+  } finally {
+    view.unmount();
+    rescue.unmount();
+  }
+});
+
+// Emptied by the reader's own Clear selection, a press on the bar: the bar hands the focus on as it
+// always has, to what the page names.
+test("the bar emptied by the reader's Clear selection hands the focus to what returnFocus names", () => {
+  const rescue = renderHook(() => useFocusRescue({ current: null }));
+  let asked = 0;
+  const returnFocus = () => {
+    asked += 1;
+    return rowBox("CORE-2");
+  };
+  const view = render(<MarkedTable count={2} returnFocus={returnFocus} />);
+  try {
+    const clear = screen.getByRole("button", { name: "Clear selection" });
+    act(() => clear.focus());
+    act(() => clear.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(rowBox("CORE-2")).toHaveFocus();
+    expect(asked).toBe(1);
+  } finally {
+    view.unmount();
+    rescue.unmount();
+  }
+});

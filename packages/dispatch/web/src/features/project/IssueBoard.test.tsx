@@ -902,9 +902,9 @@ test("a drop's mark never cancels a click outside the board", async () => {
   }
 });
 
-// The strip's filters on the board: Todo holds Alpha, Bravo, Charlie; only Alpha and Charlie
+// The control row's filters on the board: Todo holds Alpha, Bravo, Charlie; only Alpha and Charlie
 // contain an "h", so `?q=h` hides Bravo (and In progress's Delta).
-test("the strip's search hides board cards, counts the visible column, and drags name visible neighbours", async () => {
+test("the control row's search hides board cards, counts the visible column, and drags name visible neighbours", async () => {
   const user = userEvent.setup();
   const patchIssue = patchInFlight();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues, "/projects/CORE?q=h");
@@ -1041,7 +1041,7 @@ async function pickOption(picker: "Labels", option: string): Promise<void> {
   await user.click(screen.getByRole("option", { name: option }));
 }
 
-function renderStrip(
+function renderControlRow(
   list: IssueSummary[],
   state: UserState = {},
   initialEntry = "/projects/CORE",
@@ -1071,7 +1071,7 @@ function renderStrip(
 
 test("Needs you keeps only issues with open asks and lives in the URL", async () => {
   const user = userEvent.setup();
-  const { getMyState, listIssues, view } = renderStrip([
+  const { getMyState, listIssues, view } = renderControlRow([
     issue({ key: "CORE-1", open_asks: 1, title: "Answer me" }),
     issue({ key: "CORE-2", title: "Quiet" }),
   ]);
@@ -1095,7 +1095,7 @@ test("Needs you keeps only issues with open asks and lives in the URL", async ()
 
 test("Unread keeps only issues with events past last_read_seq and lives in the URL", async () => {
   const user = userEvent.setup();
-  const { getMyState, listIssues, view } = renderStrip(
+  const { getMyState, listIssues, view } = renderControlRow(
     [
       issue({ key: "CORE-1", last_seq: 4, title: "Unread" }),
       issue({ key: "CORE-2", last_seq: 3, title: "Read" }),
@@ -1121,7 +1121,7 @@ test("Unread keeps only issues with events past last_read_seq and lives in the U
 });
 
 test("label chips send every selection to the API and retain only AND matches", async () => {
-  const { getMyState, listIssues, view } = renderStrip([
+  const { getMyState, listIssues, view } = renderControlRow([
     issue({ key: "CORE-1", labels: ["frontend", "api"], title: "Navigation" }),
     issue({ key: "CORE-2", labels: ["frontend", "docs"], title: "Guidance" }),
     issue({ key: "CORE-3", labels: ["backend", "docs"], title: "Endpoint" }),
@@ -1150,7 +1150,7 @@ test("label chips send every selection to the API and retain only AND matches", 
 
 test("restores every filter from the URL and writes changes back to it", async () => {
   const user = userEvent.setup();
-  const { getMyState, listIssues, view } = renderStrip(
+  const { getMyState, listIssues, view } = renderControlRow(
     [
       issue({ key: "CORE-1", labels: ["docs"], title: "Guidance" }),
       issue({ key: "CORE-2", labels: ["frontend"], title: "Navigation" }),
@@ -1198,7 +1198,7 @@ test("restores every filter from the URL and writes changes back to it", async (
 });
 
 test("a search restored from ?q= narrows the list before anyone types", async () => {
-  const { getMyState, listIssues, view } = renderStrip(
+  const { getMyState, listIssues, view } = renderControlRow(
     [issue({ key: "CORE-1", title: "Guidance" }), issue({ key: "CORE-2", title: "Navigation" })],
     {},
     "/projects/CORE?q=guid"
@@ -1217,7 +1217,7 @@ test("a search restored from ?q= narrows the list before anyone types", async ()
 
 test("the search filter writes at most SEARCH_QUERY_MAX characters into the page URL", async () => {
   const user = userEvent.setup();
-  const { getMyState, listIssues, view } = renderStrip([
+  const { getMyState, listIssues, view } = renderControlRow([
     issue({ key: "CORE-1", title: "Guidance" }),
   ]);
 
@@ -1239,7 +1239,7 @@ test("the search filter writes at most SEARCH_QUERY_MAX characters into the page
 test("a ?q= over the cap from a link is cut on a code point, never leaving half an emoji", async () => {
   const user = userEvent.setup();
   const long = `${"x".repeat(SEARCH_QUERY_MAX - 1)}😀`;
-  const { getMyState, listIssues, view } = renderStrip(
+  const { getMyState, listIssues, view } = renderControlRow(
     [issue({ key: "CORE-1", title: "Guidance" })],
     {},
     `/projects/CORE?q=${encodeURIComponent(long)}`
@@ -1264,7 +1264,7 @@ test("a ?q= over the cap from a link is cut on a code point, never leaving half 
 test("collapses filter controls by default and retains the disclosure preference per login", async () => {
   const user = userEvent.setup();
   window.localStorage.clear();
-  const { getMyState, listIssues, view } = renderStrip([issue({ title: "Core work" })]);
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
 
   try {
     await screen.findByText("Core work");
@@ -1298,7 +1298,7 @@ test("collapses a saved filter disclosure when no filters are active", async () 
     userPreferenceStorageKey("alice", "project.issue-filters"),
     "expanded"
   );
-  const { getMyState, listIssues, view } = renderStrip([issue({ title: "Core work" })]);
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
 
   try {
     await screen.findByText("Core work");
@@ -1350,8 +1350,8 @@ test("a pending viewer keeps a URL-only filter disclosure collapsed without pers
   }
 });
 
-test("a ?status= in the URL is neither counted nor chipped by the strip", async () => {
-  const { getMyState, listIssues, view } = renderStrip(
+test("a ?status= in the URL is neither counted nor chipped by the control row", async () => {
+  const { getMyState, listIssues, view } = renderControlRow(
     [issue({ title: "Core work" })],
     {},
     "/projects/CORE?label=x&status=done"
@@ -1380,7 +1380,7 @@ const PANEL_CHOICE = userPreferenceStorageKey("alice", "project.issue-filters");
 test("a panel the stored choice opens as the Board loads takes no focus, and a press opens it into the focus", async () => {
   const user = userEvent.setup();
   window.localStorage.clear();
-  const { getMyState, listIssues, view } = renderStrip(
+  const { getMyState, listIssues, view } = renderControlRow(
     [issue({ labels: ["bug"], title: "Core work" })],
     {},
     "/projects/CORE?label=bug"
@@ -1418,7 +1418,7 @@ test("a panel the stored choice opens as the Board loads takes no focus, and a p
 test("the trigger's press either way, Escape and a press outside that closes the panel each write the stored choice", async () => {
   const user = userEvent.setup();
   window.localStorage.clear();
-  const { getMyState, listIssues, view } = renderStrip([issue({ title: "Core work" })]);
+  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
 
   try {
     await screen.findByText("Core work");
@@ -1451,7 +1451,7 @@ test("nothing but the reader's open and close writes the stored choice: not a pr
   const user = userEvent.setup();
   // Every write of the stored choice, in order, kept by a storage that counts them.
   const storage = installCountingStorage({ [PANEL_CHOICE]: "collapsed" });
-  const { getMyState, listIssues, view } = renderStrip(
+  const { getMyState, listIssues, view } = renderControlRow(
     [issue({ labels: ["bug"], title: "Core work" })],
     {},
     "/projects/CORE?label=bug&needs-you=1"
