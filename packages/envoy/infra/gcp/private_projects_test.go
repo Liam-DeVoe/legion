@@ -54,12 +54,13 @@ func privateClusteredHub() *gcp.ClusteredNatsHubArgs {
 }
 
 // privateProjectsRefusal is one hub privateProjects cannot be set on: the private hub with a
-// session user, with a client user that has a seed, or with no callout. who names what a client
-// could connect as past the auth service, and want is the refusal.
+// session user, with a client user that has a seed, with no callout, with a client's user named
+// as the auth service's, or with a service user granted more than an auth service needs. who names
+// what a client could connect as past the auth service, and want is the refusal.
 type privateProjectsRefusal struct {
-	name, who                  string
-	session, client, noCallout bool
-	want                       string
+	name, who                                             string
+	session, client, noCallout, hostService, broadService bool
+	want                                                  string
 }
 
 // apply makes the row of a private hub's users, session user and callout.
@@ -73,16 +74,26 @@ func (row privateProjectsRefusal) apply(users *[]gcp.NATSUserArgs, session **gcp
 	if row.noCallout {
 		*callout = nil
 	}
+	if row.hostService {
+		*users = []gcp.NATSUserArgs{exampleArgs().Users[0]}
+		(*callout).ServiceUser = "example-host-a"
+	}
+	if row.broadService {
+		(*users)[0].Permissions = &gcp.PermissionsArgs{Publish: nats.RulesArgs{Allow: []string{">"}}, Subscribe: nats.RulesArgs{Allow: []string{">"}}}
+	}
 }
 
-// privateProjectsRefusals are the three ways a hub could hold a private project while a client can
+// privateProjectsRefusals are the ways a hub could hold a private project while a client can
 // connect past the auth service, which c-private-needs-callout names: a session user, whom a client
-// presenting no credential becomes; a client user with a seed; and no callout at all.
+// presenting no credential becomes; a client user with a seed; no callout at all; and, from the
+// review of #4118 at e7c174fa1b, a client's user named as the auth service's (a host here, whose
+// grant and seed are a host's), or a service user granted more than an auth service needs, either
+// of which nats-server admits by its seed alone, past the service.
 func privateProjectsRefusals() []privateProjectsRefusal {
 	return []privateProjectsRefusal{
 		{
 			name: "beside a session user", who: `the session user "example-sessions"`, session: true,
-			want: `privateProjects: noAuthUser "example-sessions": a client presenting no credential would become a user while a project is private`,
+			want: `privateProjects: sessionUser "example-sessions" is noAuthUser: a client presenting no credential would become it while a project is private`,
 		},
 		{
 			name: "beside a client user with a seed", who: `the user "example-host-a", whose seed its host stores`, client: true,
@@ -91,6 +102,14 @@ func privateProjectsRefusals() []privateProjectsRefusal {
 		{
 			name: "without authCallout", who: "no callout", noCallout: true,
 			want: "privateProjects: a project can be private only while the server admits each client through the auth service, and the authorization has no callout",
+		},
+		{
+			name: "with a host user as the auth service's user", who: `the host user "example-host-a" as the auth service's user`, hostService: true,
+			want: `privateProjects: authCallout.serviceUser "example-host-a" names users[0], a machineId user, whose seed its client stores; the auth service connects as a permissions user of its own`,
+		},
+		{
+			name: "with a service user granted everything", who: `the service user "example-auth" granted everything`, broadService: true,
+			want: `privateProjects: callout.serviceUser "example-auth": publish.allow[0] ">" is wider than the auth service's grant`,
 		},
 	}
 }
@@ -107,13 +126,15 @@ func requirePrivateProjectsRefusal(t *testing.T, row privateProjectsRefusal, err
 }
 
 // TestPrivateProjectsNeedTheAuthService (c-private-needs-callout, R12): each hub component refuses
-// privateProjects beside a session user, beside a client user with a seed, and without authCallout,
-// naming the input and who could connect past the auth service, and registers nothing; with
-// authCallout and the service's user alone, it registers. aws:NatsService's rows are in
-// aws/natsservice_callout_test.go, under the same name.
+// privateProjects beside a session user, beside a client user with a seed, without authCallout,
+// with a client's user named as the auth service's, and with a service user granted more than an
+// auth service needs, naming the input and who could connect past the auth service, and registers
+// nothing; with authCallout and the service's user alone, it registers. aws:NatsService's rows
+// are in aws/natsservice_callout_test.go, under the same name.
 //
-// Negative controls, each run on its own in core/nats_callout.go's validateCallout, and each making
-// the component take the configuration R12 forbids rather than refuse it in other words:
+// Negative controls, each run on its own, and each making the component take the configuration
+// R12 forbids rather than refuse it in other words (core/nats_callout.go validateCallout, and for
+// the last two gcp/natshub.go authorization):
 //   - Let the session user through: delete the noAuthUser refusal, and make the users loop skip
 //     a.NoAuthUser beside the service user. The session-user rows of all three components fail
 //     with "privateProjects was taken beside the session user …", naming it.
@@ -123,6 +144,13 @@ func requirePrivateProjectsRefusal(t *testing.T, row privateProjectsRefusal, err
 //   - Let privateProjects through without a callout: make the a.Callout == nil branch return nil
 //     (deleting it would dereference the nil callout in the users loop). The callout rows fail
 //     with "privateProjects was taken beside no callout".
+//   - Let a wide service user through: delete the service user's grant check. The rows of the
+//     service user granted everything fail with "privateProjects was taken beside the service user
+//     "example-auth" granted everything". The host row stays refused, by the hubs' kind check.
+//   - Let a client's user be the service's: delete both the hubs' kind check and the grant check.
+//     The host rows fail with "privateProjects was taken beside the host user "example-host-a" as
+//     the auth service's user". Deleting the kind check alone leaves the grant check refusing the
+//     host's wide grant, with its own message: the two refusals are two doors.
 func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		for _, row := range privateProjectsRefusals() {

@@ -32,7 +32,9 @@ const (
 	// clusteredHubNoAuthUserAnnotation, on the hub's pod template, holds the session user's public
 	// key. nats-server refuses a reload that changes no_auth_user, so a session-user change must
 	// restart each server: the annotation changes the template, and the StatefulSet rolls its pods
-	// one at a time. Any other users change rewrites only auth.conf, which the reloader applies.
+	// one at a time. Without authCallout any other users change rewrites only auth.conf, which the
+	// reloader applies; with it, a user added or removed also changes auth_users, which rolls the
+	// pods (clusteredHubAuthCalloutAnnotation).
 	clusteredHubNoAuthUserAnnotation = "envoy-infra.sjawhar.dev/no-auth-user"
 	// clusteredHubMaxFileStoreAnnotation, on the hub's pod template, holds JetStream's
 	// max_file_store (maxFileStoreGb). nats-server v2.15.1 refuses a reload that lowers it
@@ -264,15 +266,16 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 		"podTemplate":         podTemplate,
 		"podDisruptionBudget": pulumi.Map{"enabled": pulumi.Bool(true)},
 		// The StatefulSet is applied only once the chart's ConfigMap, holding nats.conf and
-		// auth.conf, is. Both pod annotations roll the pods for a value nats-server cannot reload,
-		// no-auth-user for a new no_auth_user in auth.conf and max-file-store for a lower
-		// max_file_store in nats.conf, and each pod they roll must start on the new ConfigMap: a pod
-		// restarted on the old files keeps the old value, the reload that later brings the new one
-		// is refused, and so is every reload after it. Applied in parallel, a pod could restart on
-		// the old files, and a failed ConfigMap update could leave the pods rolled on the old values
-		// with nothing left to roll them again. So the order holds always, with or without a
-		// session user. pulumi-kubernetes orders a helm v4 Chart's objects by this annotation
-		// (references within the chart only).
+		// auth.conf, is. The three pod annotations roll the pods for a value nats-server cannot
+		// reload: no-auth-user for a new no_auth_user in auth.conf, max-file-store for a lower
+		// max_file_store in nats.conf, and auth-callout for a changed auth_callout block in
+		// auth.conf. Each pod they roll must start on the new ConfigMap: a pod restarted on the old
+		// files keeps the old value, the reload that later brings the new one is refused, and so is
+		// every reload after it. Applied in parallel, a pod could restart on the old files, and a
+		// failed ConfigMap update could leave the pods rolled on the old values with nothing left to
+		// roll them again. So the order holds always, with or without a session user or a callout.
+		// pulumi-kubernetes orders a helm v4 Chart's objects by this annotation (references within
+		// the chart only).
 		"statefulSet": pulumi.Map{"merge": pulumi.Map{"metadata": pulumi.Map{"annotations": pulumi.Map{
 			clusteredHubDependsOnAnnotation: pulumi.String(clusteredHubConfigMapRef(s.namespace, s.name)),
 		}}}},

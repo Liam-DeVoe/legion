@@ -644,7 +644,11 @@ type listenerUser struct {
 // they come before core has read the names, so quoting one could quote a seed. callout and
 // privateProjects pass to core as they are: core derives auth_users from the users above and
 // refuses, as a core.InputError naming privateProjects, a private project beside any of them but
-// the callout's service user.
+// the callout's service user, and a service user granted more than an auth service needs. With
+// privateProjects the hub also refuses a service user that names an entry of another kind than
+// permissions: a machineId, listenerMachineId, dispatchMachineId or daemon entry is a client whose
+// seed that client stores, and naming it the service's would let it connect past the service by
+// that seed. Quoting the service user's name is safe there: seededInput has refused a seed in it.
 func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserArgs, callout *nats.AuthCalloutArgs, privateProjects bool) (core.Authorization, error) {
 	if len(users) == 0 && l == nil {
 		return core.Authorization{}, errors.New("users: at least one user is required, or a listener")
@@ -662,6 +666,11 @@ func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserAr
 		kind, err := selectedUserKind(where, u)
 		if err != nil {
 			return core.Authorization{}, err
+		}
+		if privateProjects && callout != nil && u.Name == callout.ServiceUser && kind.input != "permissions" {
+			return core.Authorization{}, core.InputErrorf("privateProjects",
+				"privateProjects: authCallout.serviceUser %q names %s, a %s user, whose seed its client stores; the auth service connects as a permissions user of its own",
+				callout.ServiceUser, where, kind.input)
 		}
 		id := ""
 		if kind.id != nil {

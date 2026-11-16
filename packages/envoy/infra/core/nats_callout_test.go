@@ -40,27 +40,29 @@ func withCallout() core.Authorization {
 }
 
 // privateOnly is the one authorization R12 lets hold a private project: the auth service's user
-// alone, so every client connects through the service, and no user stands for a client presenting
-// no credential.
+// alone, with NATS's own auth-callout grant, so every client connects through the service, and no
+// user stands for a client presenting no credential.
 func privateOnly() core.Authorization {
 	return core.Authorization{
 		Users:           []core.User{authService()},
-		Callout:         &core.AuthCallout{Issuer: calloutIssuer, ServiceUser: "example-auth"},
+		Callout:         &core.AuthCallout{Issuer: calloutIssuer, XKey: calloutXKey, ServiceUser: "example-auth"},
 		PrivateProjects: true,
 	}
 }
 
-// The callout block sits inside the authorization block after its users: the authorization
-// timeout, then auth_callout naming the issuer, every keyed user's key in users' order (the pending
-// user has none, so it is not there), and the curve key.
+// The callout block sits inside the authorization block after its users: auth_callout naming the
+// issuer, every keyed user's key in users' order (the pending user has none, so it is not there),
+// and the curve key.
 func TestAuthCalloutRendersTheCalloutBlock(t *testing.T) {
 	text, err := withCallout().Render(hubHeader)
 	require.NoError(t, err)
 	requireSameText(t, golden(t, "authorization-callout.golden"), text)
 }
 
-// Without an xkey the block has no xkey line, and the server sends its requests unsealed.
-func TestAuthCalloutWithoutAnXKeyRendersNoXKeyLine(t *testing.T) {
+// The block sets no authorization timeout, so nats-server's default of 2 s stands: a longer one
+// would promise an auth service time that a nats.go client does not wait
+// (nats_callout_timeout_live_test.go).
+func TestAuthCalloutRendersNoAuthorizationTimeout(t *testing.T) {
 	text, err := privateOnly().Render(nil)
 	require.NoError(t, err)
 	require.Equal(t, "authorization {\n"+
@@ -68,10 +70,10 @@ func TestAuthCalloutWithoutAnXKeyRendersNoXKeyLine(t *testing.T) {
 		"    # example-auth\n"+
 		`    {"nkey": "`+authServiceKey+`", "permissions": {"publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}}}`+"\n"+
 		"  ]\n"+
-		"  timeout: 5\n"+
 		"  auth_callout {\n"+
 		`    issuer: "`+calloutIssuer+`"`+"\n"+
 		`    auth_users: ["`+authServiceKey+`"]`+"\n"+
+		`    xkey: "`+calloutXKey+`"`+"\n"+
 		"  }\n"+
 		"}\n", text)
 }
@@ -82,7 +84,7 @@ func TestCalloutBlockIsTheRenderedCalloutLines(t *testing.T) {
 	text, err := withCallout().Render(hubHeader)
 	require.NoError(t, err)
 	block := withCallout().CalloutBlock()
-	require.True(t, strings.HasPrefix(block, "  timeout: 5\n  auth_callout {\n"), "%q", block)
+	require.True(t, strings.HasPrefix(block, "  auth_callout {\n"), "%q", block)
 	require.Contains(t, text, "  ]\n"+block+"}\n")
 	require.Empty(t, hubShaped().CalloutBlock())
 }
@@ -114,6 +116,14 @@ func TestValidateRefusesACalloutThatCannotKeepAProjectApart(t *testing.T) {
 		a.Users = append(a.Users, hubShaped().Users[4])
 		a.NoAuthUser = "example-sessions"
 	}
+	service := func(a *core.Authorization) *core.User { return &a.Users[0] }
+	grant := func(publish, subscribe []string) func(a *core.Authorization) {
+		return func(a *core.Authorization) {
+			service(a).Publish = &core.Rules{Allow: publish}
+			service(a).Subscribe = &core.Rules{Allow: subscribe}
+		}
+	}
+	const wider = "is wider than the auth service's grant, which subscribes $SYS.REQ.USER.AUTH and publishes only its replies under $SYS._INBOX."
 	rows := []struct {
 		name   string
 		base   func() core.Authorization
@@ -133,6 +143,8 @@ func TestValidateRefusesACalloutThatCannotKeepAProjectApart(t *testing.T) {
 		{"a user key for the xkey", withCallout, xkey(userKey), "callout.xkey is not a curve public key"},
 		{"an account key for the xkey", withCallout, xkey(calloutIssuer), "callout.xkey is not a curve public key"},
 		{"an xkey of another length", withCallout, xkey(calloutXKey[:55]), "callout.xkey is not a curve public key"},
+		// Without an xkey nats-server sends each client's token to the service unsealed.
+		{"no xkey", withCallout, xkey(""), "callout.xkey is required: without it nats-server sends each connecting client's token to the auth service unsealed, on $SYS.REQ.USER.AUTH"},
 		{"no service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "" }, `callout.serviceUser "" names no keyed user`},
 		{"a service user naming nobody", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "example-nobody" }, `callout.serviceUser "example-nobody" names no keyed user`},
 		{"a pending service user", withCallout, func(a *core.Authorization) { callout(a).ServiceUser = "example-pending" }, `callout.serviceUser "example-pending" names no keyed user`},
@@ -144,7 +156,19 @@ func TestValidateRefusesACalloutThatCannotKeepAProjectApart(t *testing.T) {
 		{"private projects without the callout", privateOnly, func(a *core.Authorization) { a.Callout = nil },
 			"privateProjects: a project can be private only while the server admits each client through the auth service, and the authorization has no callout"},
 		{"private projects beside a session user", privateOnly, sessions,
-			`privateProjects: noAuthUser "example-sessions": a client presenting no credential would become a user while a project is private`},
+			`privateProjects: users[1] "example-sessions" is noAuthUser: a client presenting no credential would become it while a project is private`},
+		// The service user is admitted by its seed alone, so a grant wider than NATS's own for an
+		// auth service makes it a client that connects past the service.
+		{"private projects with a service user publishing everywhere", privateOnly, grant([]string{">"}, []string{"$SYS.REQ.USER.AUTH"}),
+			`privateProjects: callout.serviceUser "example-auth": publish.allow[0] ">" ` + wider},
+		{"private projects with a service user publishing beyond its replies", privateOnly, grant([]string{"$SYS._INBOX.>", "notifications.>"}, []string{"$SYS.REQ.USER.AUTH"}),
+			`privateProjects: callout.serviceUser "example-auth": publish.allow[1] "notifications.>" ` + wider},
+		{"private projects with a service user publishing to a look-alike inbox", privateOnly, grant([]string{"$SYS._INBOX_.>"}, []string{"$SYS.REQ.USER.AUTH"}),
+			`privateProjects: callout.serviceUser "example-auth": publish.allow[0] "$SYS._INBOX_.>" ` + wider},
+		{"private projects with a service user subscribing to $SYS", privateOnly, grant([]string{"$SYS._INBOX.>"}, []string{"$SYS.>"}),
+			`privateProjects: callout.serviceUser "example-auth": subscribe.allow[0] "$SYS.>" ` + wider},
+		{"private projects with a service user subscribing to its inbox too", privateOnly, grant([]string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH", "_INBOX.>"}),
+			`privateProjects: callout.serviceUser "example-auth": subscribe.allow[1] "_INBOX.>" ` + wider},
 		{"private projects beside a client user with a seed", privateOnly, func(a *core.Authorization) { a.Users = append(a.Users, hubShaped().Users[1]) },
 			`privateProjects: users[1] "example-dispatch": a stored client seed while a project is private`},
 		{"private projects beside a pending client user", privateOnly, func(a *core.Authorization) { a.Users = append(a.Users, hubShaped().Users[3]) },
@@ -191,15 +215,15 @@ func TestValidateAcceptsACallout(t *testing.T) {
 		a    func() core.Authorization
 	}{
 		{"today's users beside the callout", withCallout},
-		{"the callout without an xkey", func() core.Authorization {
-			a := withCallout()
-			a.Callout.XKey = ""
+		{"private projects with the service user alone", privateOnly},
+		{"private projects with the service user in a queue group", func() core.Authorization {
+			a := privateOnly()
+			a.Users[0].Subscribe.Allow = []string{"$SYS.REQ.USER.AUTH auth-service"}
 			return a
 		}},
-		{"private projects with the service user alone", privateOnly},
-		{"private projects with a sealed callout", func() core.Authorization {
+		{"private projects with the service user's replies narrowed", func() core.Authorization {
 			a := privateOnly()
-			a.Callout.XKey = calloutXKey
+			a.Users[0].Publish = &core.Rules{Allow: []string{"$SYS._INBOX.*.*"}, Deny: []string{"$SYS._INBOX.x.>"}}
 			return a
 		}},
 	}

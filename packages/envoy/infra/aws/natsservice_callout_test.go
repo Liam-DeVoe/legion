@@ -62,11 +62,11 @@ func natsCommand(t *testing.T, args *envoyaws.NatsServiceArgs) []any {
 
 // TestPrivateProjectsNeedTheAuthService (c-private-needs-callout, R12), for aws:NatsService, whose
 // authorization input mirrors core.Authorization: privateProjects beside a noAuthUser, whom a
-// client presenting no credential becomes, beside a client user with a seed, and without a callout
-// is each refused as a core.InputError naming authorization, with the user or the missing callout
-// in its message; with the callout and the service's user alone, it registers. The hub
-// components' rows are in gcp/private_projects_test.go, under the same name, and its comment names
-// the negative controls.
+// client presenting no credential becomes, beside a client user with a seed, without a callout,
+// and with a service user granted more than an auth service needs, is each refused as a
+// core.InputError naming authorization, with the user or the missing callout in its message; with
+// the callout and the service's user alone, it registers. The hub components' rows are in
+// gcp/private_projects_test.go, under the same name, and its comment names the negative controls.
 func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 	for _, row := range []struct {
 		name, who string
@@ -79,7 +79,7 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 				a.Users = append(a.Users, exampleAuthorization().Users[2])
 				a.NoAuthUser = "example-fallback"
 			},
-			want: `privateProjects: noAuthUser "example-fallback": a client presenting no credential would become a user while a project is private`,
+			want: `privateProjects: users[1] "example-fallback" is noAuthUser: a client presenting no credential would become it while a project is private`,
 		},
 		{
 			name: "beside a client user with a seed", who: `the user "example-listener", whose seed its host stores`,
@@ -90,6 +90,15 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 			name: "without a callout", who: "no callout",
 			edit: func(a *envoyaws.AuthorizationArgs) { a.Callout = nil },
 			want: "privateProjects: a project can be private only while the server admits each client through the auth service, and the authorization has no callout",
+		},
+		{
+			// A client's user named as the auth service's: it keeps the client's grant and seed.
+			name: "with a client user as the auth service's user", who: `the user "example-listener" as the auth service's user`,
+			edit: func(a *envoyaws.AuthorizationArgs) {
+				a.Users = []envoyaws.UserArgs{exampleAuthorization().Users[0]}
+				a.Callout.ServiceUser = "example-listener"
+			},
+			want: `privateProjects: callout.serviceUser "example-listener": publish.allow[0] "envoy.example.>" is wider than the auth service's grant`,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -125,6 +134,7 @@ func TestNatsServiceRendersTheCallout(t *testing.T) {
 	}
 	script, err := authorization.StartScript(args.ConfigHeader, args.ServerArgs, *args.ConfigPath)
 	require.NoError(t, err)
-	require.Contains(t, script, "  timeout: 5\n  auth_callout {\n")
+	require.Contains(t, script, "  ]\n  auth_callout {\n")
+	require.NotContains(t, script, "timeout")
 	require.Equal(t, []any{script}, natsCommand(t, args))
 }

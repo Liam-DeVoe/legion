@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nats-io/nkeys"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
 
@@ -36,14 +37,23 @@ func calloutClusteredHub() *gcp.ClusteredNatsHubArgs {
 }
 
 // calloutBlock is the callout's lines of an authorization block Render wrote for keys, the keyed
-// users in their order.
+// users in their order. It sets no authorization timeout, so nats-server's default of 2 s stands.
 func calloutBlock(keys ...string) string {
-	return "  timeout: 5\n" +
-		"  auth_callout {\n" +
+	return "  auth_callout {\n" +
 		`    issuer: "` + calloutIssuer + `"` + "\n" +
 		`    auth_users: ["` + strings.Join(keys, `", "`) + `"]` + "\n" +
 		`    xkey: "` + calloutXKey + `"` + "\n" +
 		"  }\n"
+}
+
+// otherXKey is a curve public key other than calloutXKey, made fresh for the test.
+func otherXKey(t *testing.T) string {
+	t.Helper()
+	curve, err := nkeys.CreateCurveKeys()
+	require.NoError(t, err)
+	key, err := curve.PublicKey()
+	require.NoError(t, err)
+	return key
 }
 
 // Both hubs render the callout inside the authorization block, after the users, with every keyed
@@ -292,6 +302,7 @@ func TestAHubRefusesACalloutCoreRefuses(t *testing.T) {
 	}{
 		{"an issuer that is a user key", func(c *nats.AuthCalloutArgs) { c.Issuer = keyA }, "authCallout: callout.issuer is not an account public key"},
 		{"an xkey that is an account key", func(c *nats.AuthCalloutArgs) { c.XKey = calloutIssuer }, "authCallout: callout.xkey is not a curve public key"},
+		{"no xkey", func(c *nats.AuthCalloutArgs) { c.XKey = "" }, "authCallout: callout.xkey is required: without it nats-server sends each connecting client's token to the auth service unsealed"},
 		{"a service user naming nobody", func(c *nats.AuthCalloutArgs) { c.ServiceUser = "example-nobody" }, `authCallout: callout.serviceUser "example-nobody" names no keyed user`},
 		{"the session user as the service user", func(c *nats.AuthCalloutArgs) { c.ServiceUser = "example-sessions" }, `authCallout: callout.serviceUser "example-sessions" is noAuthUser`},
 	} {
@@ -330,8 +341,8 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	require.Equal(t, digest(calloutBlock(keyA, keyB, keyC, keyD, keyAuth, keySessions)), before)
 
 	args := calloutClusteredHub()
-	args.AuthCallout.XKey = ""
-	require.NotEqual(t, before, annotation(t, args), "dropping the xkey rolls the pods")
+	args.AuthCallout.XKey = otherXKey(t)
+	require.NotEqual(t, before, annotation(t, args), "another xkey rolls the pods")
 
 	_, added := testnats.User(t)
 	args = calloutClusteredHub()

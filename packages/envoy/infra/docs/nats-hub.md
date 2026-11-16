@@ -53,8 +53,8 @@ and `instanceGroup`, the group's name.
 | `subnetwork` | unset | The VM's subnetwork, for a network with custom subnetworks: one in `zone`'s region. Only with `network`. May come from another resource or stack. |
 | `listener` | unset | The hub's own Envoy listener: `image`, the listener's image pinned as the images above are; its NATS identity, which follows `authCallout`: without it, `seedSecret`, the id of a Secret Manager secret in the hub's project holding its NATS user's seed, and `nkey`, that seed's public key, and with it `natsAudience`, the audience of the VM's Google identity token the listener presents to the auth service instead; `allowedHosts`, any further address a client dials this hub by, beyond the hub's own `<h>.<tailnetDnsName>`, which it always serves; and the listener's broker check, `agentSecretsUrl`, `agentSecretsAudience` and `publicUrl`, set together or not at all. Each `allowedHosts` entry is a plain host name or IP address, rendered as written into the listener's `ENVOY_ALLOWED_HOSTS`. See [The hub's listener](#the-hubs-listener) and [The listener's broker check](#the-listeners-broker-check). |
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
-| `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`: `issuer`, the account public key whose seed signs the service's answers; `xkey`, optionally, the curve public key the server seals each request to; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, and beside any entry of `users` but `authCallout.serviceUser`. With it, the listener's environment carries `ENVOY_PRIVATE_PROJECTS=1`, so the listener decides a project frame that carries no stamp as private. See [The auth service](#the-auth-service). |
+| `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. With it, the listener's environment carries `ENVOY_PRIVATE_PROJECTS=1`, so the listener decides a project frame that carries no stamp as private. See [The auth service](#the-auth-service). |
 
 Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource's output. Every
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
@@ -257,12 +257,20 @@ as the listener's user repeating it, as `listener "<h>": name repeats users[<ind
 
 With `authCallout`, the server admits every client that is not one of its users through the auth
 service (dispatch://INFRA-840), which reads the client's token and answers with that connection's
-grant, as [NATS authorization](../README.md#nats-authorization) renders it: `timeout: 5` and one
-`auth_callout` block inside the authorization block, whose `auth_users` is the key of every user
-above, the session user's included, so each of them still connects by its seed, or with no
-credential, and reaches no callout. The service connects as `authCallout.serviceUser`,
-an entry of `users` granted, as `permissions`, publish `$SYS._INBOX.>` and subscribe
-`$SYS.REQ.USER.AUTH`. There is no `accounts` block: the service places each client in the global
+grant, as [NATS authorization](../README.md#nats-authorization) renders it: one `auth_callout`
+block inside the authorization block, whose `auth_users` is the key of every user above, the
+session user's included, so each of them still connects by its seed, or with no credential, and
+reaches no callout. The authorization block sets no `timeout`, so nats-server's default
+authorization timeout of 2 s stands, and the auth service must answer within 1.5 s:
+whatever the timeout, a Go client (nats.go) fails at about 2 s, since the server sends it its first
+PING after 2 s plus up to 20% (nats-server's server/client.go `setFirstPingTimer`) even while its
+CONNECT still waits for the callout, and nats.go reads that PING as an error (the README's
+[NATS authorization](../README.md#nats-authorization) gives the measurement). `authCallout.xkey`
+is required: without it nats-server sends each connecting client's token to the auth service
+unsealed, on `$SYS.REQ.USER.AUTH`. The service connects as `authCallout.serviceUser`, an entry of
+`users` granted, as `permissions`, publish `$SYS._INBOX.>` and subscribe `$SYS.REQ.USER.AUTH`;
+with `privateProjects` the hub enforces it, refusing a service user of any other kind and one
+granted more (below). There is no `accounts` block: the service places each client in the global
 account, beside the static users, so turning the callout on moves no stream.
 
 Behind the auth service the hub's own `listener` is no user of the hub: it connects by its service
@@ -282,13 +290,23 @@ dispatch://INFRA-3862 allows only while every client connects through the auth s
 refused, as a `core.InputError` naming `privateProjects`, without `authCallout`
 (`privateProjects: a project can be private only while the server admits each client through the
 auth service, and the authorization has no callout`); beside a `sessionUser`
-(`privateProjects: noAuthUser "<name>": a client presenting no credential would become a user while
-a project is private`); and beside any entry of `users` but the service's
-(`privateProjects: users[<i>] "<name>": a stored client seed while a project is private`). A
-refusal of the callout itself, such as an `issuer` that is no account public key or a
-`serviceUser` naming no user, names `authCallout`, as `authCallout: callout.issuer is not an
-account public key …`. A seed in any of its fields is refused naming the field by the hub's path, as
-`authCallout.issuer: an nkey user seed, which is never an input of the hub (not echoed)`.
+(`privateProjects: sessionUser "<name>" is noAuthUser: a client presenting no credential would
+become it while a project is private`); beside any entry of `users` but the service's
+(`privateProjects: users[<i>] "<name>": a stored client seed while a project is private`); with an
+`authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
+(`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
+<machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
+service connects as a permissions user of its own`); and with a service user granted more than
+the auth service's own grant, which subscribes `$SYS.REQ.USER.AUTH`, alone or with a queue group,
+and publishes only its replies, under `$SYS._INBOX.` (`privateProjects: callout.serviceUser
+"<name>": <publish|subscribe>.allow[<i>] "<entry>" is wider than the auth service's grant, which
+subscribes $SYS.REQ.USER.AUTH and publishes only its replies under $SYS._INBOX.; with a wider grant
+the service user is a client that connects past the auth service`). A refusal of the callout
+itself, such as an `issuer` that is no account public key, a missing `xkey` or a `serviceUser`
+naming no user, names `authCallout`, as `authCallout: callout.issuer is not an account public key
+…` or `authCallout: callout.xkey is required: …`. A seed in any of its fields is refused naming the
+field by the hub's path, as `authCallout.issuer: an nkey user seed, which is never an input of the
+hub (not echoed)`.
 
 ## The hub's listener
 
@@ -640,12 +658,13 @@ e2fsck's repair, on a real disk, leaves what JetStream needs are for a first dep
 An instance template cannot change once it is created
 ([instance templates](https://cloud.google.com/compute/docs/instance-templates)), and the hub's
 holds the cloud-config, so a change to anything the cloud-config is rendered from (`users`,
-`listener` and its `allowedHosts`, `sessionUser`, `tags`, `tailnetDnsName`, `natsImage`,
-`tailscaleImage`) or to `machineType`, `diskType`, `diskSizeGb`, `network` or `subnetwork` makes a
-new template. So does a plugin release that changes the rendering itself: the release that added
-`listener` and `sessionUser` renamed the secret fetcher and gives every hub a Serve configuration,
-so upgrading to it replaces every existing hub's VM once, with the outage below, even a hub that
-sets neither input. The release that rendered `ENVOY_ALLOWED_HOSTS` into the listener's unit
+`listener` and its `allowedHosts`, `sessionUser`, `authCallout`, `tags`, `tailnetDnsName`,
+`natsImage`, `tailscaleImage`) or to `machineType`, `diskType`, `diskSizeGb`, `network` or
+`subnetwork` makes a new template. So does a plugin release that changes the rendering itself:
+the release that added `listener` and `sessionUser` renamed the secret fetcher and gives every hub
+a Serve configuration, so upgrading to it replaces every existing hub's VM once, with the outage
+below, even a hub that sets neither input. The release that rendered `ENVOY_ALLOWED_HOSTS` into
+the listener's unit
 replaced, once and with that same outage, the VM of every hub that runs a listener, and no hub
 without one. This release adds `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, the `envoy-roles`
 role-lane subscription and, for each key-value bucket the set opens,
@@ -918,11 +937,14 @@ so a new session user takes effect only when a server restarts. The hub therefor
 session user's public key into the hub pods' annotation `envoy-infra.sjawhar.dev/no-auth-user`
 (absent without a session user): adding, removing or changing the session user changes the pod
 template, and the StatefulSet replaces its pods one at a time, each server restarting on its own
-claim while the other two serve. Any other users change leaves the pod template as it was. A users
-change made in the same update as a session-user change applies, with it, as each pod restarts.
-The roll must start from the new `auth.conf`: a pod restarted on the old file keeps the old session
-user, and the reload that later brings the new file is refused. The same holds for the store's roll
-below, from the new `nats.conf`. So the StatefulSet's annotation
+claim while the other two serve. Without `authCallout`, any other users change leaves the pod
+template as it was; while `authCallout` is set, a users change that adds, removes or rekeys a user
+rolls the pods too (the callout, below), and only a grant change leaves the template as it was. A
+users change made in the same update as a session-user change applies, with it, as each pod
+restarts. The roll must start from the new `auth.conf`: a pod restarted on the old file keeps the
+old session user, and the reload that later brings the new file is refused. The same holds for the
+store's roll below, from the new `nats.conf`, and for the callout's, from the new `auth.conf`. So
+the StatefulSet's annotation
 `config.kubernetes.io/depends-on: /namespaces/<namespace>/ConfigMap/<n>-config` makes pulumi-kubernetes
 apply the StatefulSet only after the ConfigMap, with or without a session user, and a ConfigMap
 update that fails stops the update before any pod rolls.
@@ -946,10 +968,13 @@ The callout is the third exception. nats-server 2.15.1 refuses a whole reload th
 changes `auth_callout`, logging `config reload not supported for AuthCallout`
 (`gcp/clusteredhub_callout_live_test.go` measures it, with a grant change on the same server as the
 control that reloads), and `auth_users` lists every user's key, so adding or removing a user changes
-it too. The hub therefore writes the SHA-256 of `auth.conf`'s callout lines into the hub pods'
-annotation `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the
-pods, by the same depends-on order, on any such change; a change of a user's grant alone leaves the
-lines and the pods as they were, and the reloader applies it.
+it too. The hub therefore writes the SHA-256 of `auth.conf`'s callout lines, the `auth_callout`
+block (there is no `timeout` line), into the hub pods' annotation
+`envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the pods, by the
+same depends-on order as the session user's roll, on any such change: a pod restarted on the old
+`auth.conf` would keep the old callout, and the reload that later brings the new one would be
+refused. A change of a user's grant alone leaves the lines and the pods as they were, and the
+reloader applies it.
 
 ### Two ports, guarded by the NetworkPolicy alone
 

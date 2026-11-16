@@ -190,7 +190,7 @@ func natsSeedRows() []seedRow[envoyaws.NatsServiceArgs] {
 			return a.Authorization.NoAuthUser
 		}},
 		{input: "authorization.callout.issuer", set: func(a *A, s bool) string {
-			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: pick(s, testSeed, calloutIssuer), ServiceUser: "example-listener"}
+			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: pick(s, testSeed, calloutIssuer), XKey: calloutXKey, ServiceUser: "example-listener"}
 			return a.Authorization.Callout.Issuer
 		}},
 		{input: "authorization.callout.xkey", set: func(a *A, s bool) string {
@@ -198,7 +198,7 @@ func natsSeedRows() []seedRow[envoyaws.NatsServiceArgs] {
 			return a.Authorization.Callout.XKey
 		}},
 		{input: "authorization.callout.serviceUser", set: func(a *A, s bool) string {
-			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: calloutIssuer, ServiceUser: pick(s, splitSeed("-"), "example-daemon")}
+			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: calloutIssuer, XKey: calloutXKey, ServiceUser: pick(s, splitSeed("-"), "example-daemon")}
 			return a.Authorization.Callout.ServiceUser
 		}},
 		{input: "configHeader[1]", set: func(a *A, s bool) string {
