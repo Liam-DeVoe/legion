@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 
-import { createKeymap, DIALOG_SCOPE, type KeyBinding, type Keymap } from "./keymap";
+import {
+  createKeymap,
+  DIALOG_SCOPE,
+  type KeyBinding,
+  type Keymap,
+  PANEL_ATTRIBUTE,
+} from "./keymap";
 
 interface Harness {
   advance: (ms: number) => void;
@@ -306,6 +312,70 @@ test("a checkbox, radio or button takes no text, so single keys still fire while
     for (const element of [...shortcutTargets, ...typing]) {
       element.remove();
     }
+  }
+});
+
+/** An open panel as `AnchoredPanel` draws one: an element carrying the keymap's mark, holding the
+ *  controls a panel holds - the display menu's radio, a filter panel's checkbox and buttons - one
+ *  of them inside a group. The panel itself takes the focus where it holds no control. */
+function openPanel(): { controls: HTMLElement[]; panel: HTMLElement; radio: HTMLInputElement } {
+  const panel = document.createElement("div");
+  panel.setAttribute(PANEL_ATTRIBUTE, "");
+  panel.tabIndex = -1;
+  const typed = (type: string) => {
+    const input = document.createElement("input");
+    input.type = type;
+    return input;
+  };
+  const radio = typed("radio");
+  const checkbox = typed("checkbox");
+  const button = typed("button");
+  const group = document.createElement("fieldset");
+  const grouped = document.createElement("button");
+  group.appendChild(grouped);
+  panel.append(radio, checkbox, button, group);
+  document.body.appendChild(panel);
+  return { controls: [radio, checkbox, button, grouped], panel, radio };
+}
+
+// INFRA-3135's review round 1, follow-up F5: the display menu and the filter panels replaced
+// selects, where a page's single keys did nothing, with radios and checkboxes, which take no
+// text; with a panel open, `j` on its radio walked the table behind it.
+test("a key pressed anywhere inside an open panel fires only inEditable bindings, whatever control of it holds the focus", () => {
+  const { keymap, press } = harness();
+  const next = binding("next", "j");
+  const search = binding("search", "$mod+k", { inEditable: true });
+  keymap.register("global", [next.definition, search.definition]);
+  const { controls, panel } = openPanel();
+  try {
+    for (const target of [panel, ...controls]) {
+      expect(press("j", { target }), `j on ${target.outerHTML}`).toBe(false);
+      expect(press("k", { ctrlKey: true, target }), `$mod+k on ${target.outerHTML}`).toBe(true);
+    }
+    expect(next.fired()).toBe(0);
+    expect(search.fired()).toBe(controls.length + 1);
+  } finally {
+    panel.remove();
+  }
+});
+
+test("only a key pressed inside a panel is masked: a panel standing open with the focus on the page leaves the page's keys alone", () => {
+  const { keymap, press } = harness();
+  const next = binding("next", "j");
+  keymap.register("global", [next.definition]);
+  const { panel, radio } = openPanel();
+  const onPage = document.createElement("input");
+  onPage.type = "radio";
+  document.body.appendChild(onPage);
+  try {
+    expect(press("j"), "j on the body").toBe(true);
+    expect(press("j", { target: onPage }), "j on a radio of the page").toBe(true);
+    expect(next.fired()).toBe(2);
+    expect(press("j", { target: radio }), "j on the panel's radio").toBe(false);
+    expect(next.fired()).toBe(2);
+  } finally {
+    panel.remove();
+    onPage.remove();
   }
 });
 

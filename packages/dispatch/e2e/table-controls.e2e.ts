@@ -14,6 +14,7 @@ import {
   createComment,
   createIssue,
   createIssueArtifact,
+  createPriority,
   createProject,
   mintAgentToken,
   patchIssue,
@@ -33,11 +34,17 @@ import {
 } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, openFilterPanel } from "./filters";
-import { settledScrollTop } from "./frames";
+import { nextFrames, settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import { openFilterFields } from "./inbox-filter";
-import { askControls, hasReadingPane, inboxRow, selectRow } from "./inbox-pane";
-import { replyRowId, seedAgentThread, seedCommentThread } from "./inbox-threads";
+import { askControls, hasReadingPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
+import {
+  asSession,
+  replyRowId,
+  seedAgentThread,
+  seedCommentThread,
+  THREAD_SESSION,
+} from "./inbox-threads";
 import {
   bandHeadings,
   bandLabel,
@@ -1888,10 +1895,12 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
   await expect(band).toHaveAttribute("aria-expanded", "false");
 
   // Clear filters takes off the four fields, the assignee, the agent and the needs-you section,
-  // and leaves the text, the sort, the grouping and the view.
+  // and leaves the text, the sort, the grouping and the view. The agent is the session that asked
+  // the seed's questions, so the narrowing is on and its chip drawn before the press.
   await page.goto(
-    "/?assignee=bob&type=question&priority=P0&urgency=blocking&project=CORE&section=needs-you&q=rule&sort=priority&group=type&show=dismissed"
+    `/?assignee=bob&type=question&priority=P0&urgency=blocking&project=CORE&section=needs-you&agent=${encodeURIComponent(THREAD_SESSION.session_id)}&q=rule&sort=priority&group=type&show=dismissed`
   );
+  await expect(controlRow(main).getByRole("link", { name: "Clear agent filter" })).toBeVisible();
   await controlRow(main).getByRole("button", { exact: true, name: "Clear filters" }).click();
   const address = new URL(page.url());
   for (const gone of ["assignee", "type", "priority", "urgency", "project", "section", "agent"]) {
@@ -3387,4 +3396,73 @@ test("a row a live update removes while it holds the focus hands the focus to no
   // `x` marks nothing: no row holds the focus for it to act on, so no bar appears.
   await page.keyboard.press("x");
   await expect(control(main, CONTROL.selectionBar)).toHaveCount(0);
+});
+
+// SLOW(>=2s): three priorities and two asks seeded, and two pages opened.
+// INFRA-3135's review round 1, follow-up F5: the display menu replaced the Priorities page's
+// grouping select, where `j` and `k` did nothing, with radios, which take no text, so `j` on one
+// of them walked the table behind the open menu. At 1440 px the Inbox's `j` steps its reading
+// column's selection rather than the focus, so there it is the selection that must not move.
+// `@firefox` and `@webkit`: the rule reads the key's target, which is whatever element each
+// engine holds the focus on when the key is pressed.
+test("a page's single-key shortcuts do not act from inside an open panel @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  // Written one after another, since each takes the last place of the one order.
+  for (const title of ["Ship the daemon", "Cut the review queue", "Retire the old ledger"]) {
+    await createPriority({ owner: "alice", title });
+  }
+  const menu = page.getByRole("dialog", { name: "View" });
+  /** Opens the View menu from its trigger with the keyboard, and checks the focus went to one of
+   *  its radios. */
+  const openFromKeyboard = async (trigger: Locator) => {
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await expect(menu).toHaveCount(1);
+    await expect(menu.getByRole("radio").first()).toBeFocused();
+  };
+  /** Presses `j` and reads, two frames later, whether the focus is still in the View menu and
+   *  whether it is in a row `rows` names. */
+  const pressJ = async (rows: string) => {
+    await page.keyboard.press("j");
+    await nextFrames(page);
+    return page.evaluate(
+      (selector) => ({
+        inPanel: document.activeElement?.closest('[role="dialog"][aria-label="View"]') != null,
+        inRow: document.activeElement?.closest(selector) != null,
+      }),
+      rows
+    );
+  };
+
+  await page.goto("/priorities");
+  const priorities = page.locator('section[aria-label="Priorities"]');
+  await expect(priorities.locator("[data-priority-row]")).toHaveCount(3);
+  await openFromKeyboard(control(controlRow(priorities), CONTROL.displayMenu));
+  expect(await pressJ("[data-priority-row]"), "Priorities: j on the View menu's radio").toEqual({
+    inPanel: true,
+    inRow: false,
+  });
+  await expect(menu, "Priorities: j closed the View menu").toHaveCount(1);
+
+  const { issueKey } = await seedAsk("Which lease holds?");
+  await createAsk(issueKey, { question: "Which mirror replays first?" }, asSession());
+  await page.goto("/");
+  const rows = page.locator("[data-inbox-row]");
+  await expect(rows).toHaveCount(2);
+  const top = await rows.first().getAttribute("data-inbox-row");
+  if (top === null) throw new Error("the Inbox's first row carries no id");
+  await selectRow(page, top);
+  const main = page.getByTestId("main-content");
+  await openFromKeyboard(control(controlRow(main), CONTROL.displayMenu));
+  expect(await pressJ("[data-inbox-row]"), "Inbox: j on the View menu's radio").toEqual({
+    inPanel: true,
+    inRow: false,
+  });
+  await expect(selectedRow(page), "Inbox: j moved the reading column's selection").toHaveAttribute(
+    "data-inbox-row",
+    top
+  );
+  await expect(menu, "Inbox: j closed the View menu").toHaveCount(1);
 });

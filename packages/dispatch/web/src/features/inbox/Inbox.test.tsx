@@ -827,8 +827,9 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
     expect(live).toHaveAttribute("href", "/agents/session-1/live");
     expect(chip.contains(live)).toBe(false);
     // The Blocked on you control counts the whole inbox, which would contradict the filtered
-    // list, so it is absent beside an agent filter.
-    expect(screen.queryByText(/Blocked on you:/)).not.toBeInTheDocument();
+    // list, so it is absent beside an agent filter. It is found by its role and its name, which
+    // is `Blocked on you` alone or with its count after a colon; its text is `Blocked on you · N`.
+    expect(screen.queryByRole("button", { name: /^Blocked on you\b/ })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     listAgents.mockRestore();
