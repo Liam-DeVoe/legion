@@ -1757,6 +1757,7 @@ BROWSER_SUITE_STEPS = (
 STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 CI_RESULTS_STEP = "A CI job's result through the real broker and a real Dispatch"
+CI_REPORT_STEP = "The fixture CI job's results through ci-report, the real broker and a real Dispatch"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
@@ -3015,6 +3016,11 @@ GATES = [
                    f"the secrets broker and the cluster's token issuer that rig hands buildGoBinaries, run by "
                    f"{at(STALL, CI_RESULTS_STEP)}",
                    ENVOY, ["./cmd/broker", "./cmd/dev-oidc-issuer"], mode="build"),
+        script_run("packages/envoy-client/src/__tests__/ci-report.live.test.ts",
+                   'packages: ["./cmd/ci-report"],',
+                   f"the last step of the fixture CI job, which that test hands buildGoBinaries, run by "
+                   f"{at(STALL, CI_REPORT_STEP)}",
+                   ENVOY, ["./cmd/ci-report"], mode="build"),
         ceiling_run(STALL),
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
