@@ -361,28 +361,37 @@ func (r *repositoryReader) installationToken(ctx context.Context) (string, error
 	return token, nil
 }
 
+// readCached is what cache holds under key, decoded from the JSON it is held as, or, where it holds
+// nothing that decodes, what read answers, which is then held as JSON. An error of read is answered
+// with the zero value, and nothing is held.
+func readCached[T any](cache *bytelru.Cache[string, []byte], key string, read func() (T, error)) (T, error) {
+	if cached, ok := cache.Get(key); ok {
+		var value T
+		if err := json.Unmarshal(cached, &value); err == nil {
+			return value, nil
+		}
+	}
+	value, err := read()
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	if encoded, err := json.Marshal(value); err == nil {
+		cache.Put(key, encoded)
+	}
+	return value, nil
+}
+
 // specCheckRun is check run id of repository: the process's cached answer, or GitHub's.
 func (s *server) specCheckRun(ctx context.Context, reader *repositoryReader, repository string, id int64) (githubapp.CheckRun, error) {
 	s.specReads.init()
-	key := repository + "#" + strconv.FormatInt(id, 10)
-	if cached, ok := s.specReads.checkRuns.Get(key); ok {
-		var run githubapp.CheckRun
-		if err := json.Unmarshal(cached, &run); err == nil {
-			return run, nil
+	return readCached(s.specReads.checkRuns, repository+"#"+strconv.FormatInt(id, 10), func() (githubapp.CheckRun, error) {
+		token, err := reader.installationToken(ctx)
+		if err != nil {
+			return githubapp.CheckRun{}, err
 		}
-	}
-	token, err := reader.installationToken(ctx)
-	if err != nil {
-		return githubapp.CheckRun{}, err
-	}
-	run, err := s.deps.GitHub.CheckRun(ctx, token, reader.owner, reader.name, id)
-	if err != nil {
-		return githubapp.CheckRun{}, err
-	}
-	if encoded, err := json.Marshal(run); err == nil {
-		s.specReads.checkRuns.Put(key, encoded)
-	}
-	return run, nil
+		return s.deps.GitHub.CheckRun(ctx, token, reader.owner, reader.name, id)
+	})
 }
 
 // specFilesAt is what the spec files of repository at commit hold: the process's cached answer, or
@@ -393,45 +402,37 @@ func (s *server) specCheckRun(ctx context.Context, reader *repositoryReader, rep
 // spec-check counts them (notes.ReadSet), and where none is, a file GitHub serves over it is one.
 func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repository, commit string) (specFiles, error) {
 	s.specReads.init()
-	key := repository + "@" + commit
-	if cached, ok := s.specReads.checks.Get(key); ok {
-		var files specFiles
-		if err := json.Unmarshal(cached, &files); err == nil {
-			return files, nil
-		}
-	}
-	token, err := reader.installationToken(ctx)
-	if err != nil {
-		return specFiles{}, err
-	}
-	listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir)
-	if err != nil {
-		return specFiles{}, err
-	}
-	var files specFiles
-	for _, file := range listing.Files {
-		if err := notes.CheckSize(file.Path, file.Size); err != nil {
-			if files.Problems == 0 {
-				files.First = err.Error()
-			}
-			files.Problems++
-		}
-	}
-	if files.Problems == 0 {
-		read, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
-		switch {
-		case errors.Is(err, notes.ErrFileTooLarge):
-			files = specFiles{Problems: 1, First: err.Error()}
-		case err != nil:
+	return readCached(s.specReads.checks, repository+"@"+commit, func() (specFiles, error) {
+		token, err := reader.installationToken(ctx)
+		if err != nil {
 			return specFiles{}, err
-		default:
-			files = judgeSpecFiles(read)
 		}
-	}
-	if encoded, err := json.Marshal(files); err == nil {
-		s.specReads.checks.Put(key, encoded)
-	}
-	return files, nil
+		listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir)
+		if err != nil {
+			return specFiles{}, err
+		}
+		var files specFiles
+		for _, file := range listing.Files {
+			if err := notes.CheckSize(file.Path, file.Size); err != nil {
+				if files.Problems == 0 {
+					files.First = err.Error()
+				}
+				files.Problems++
+			}
+		}
+		if files.Problems == 0 {
+			read, err := s.deps.GitHub.DirFiles(ctx, token, reader.owner, reader.name, listing)
+			switch {
+			case errors.Is(err, notes.ErrFileTooLarge):
+				files = specFiles{Problems: 1, First: err.Error()}
+			case err != nil:
+				return specFiles{}, err
+			default:
+				files = judgeSpecFiles(read)
+			}
+		}
+		return files, nil
+	})
 }
 
 // judgeSpecFiles is what the route keeps of files as specgraph.Judge reads them: how many

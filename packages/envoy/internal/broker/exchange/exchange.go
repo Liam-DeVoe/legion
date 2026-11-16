@@ -684,8 +684,9 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			return nil, err
 		}
 		set.workflows[key] = entry
-		if _, listed := exactly[resultKey{entry.Repository, entry.Workflow}]; !listed {
-			exactly[resultKey{entry.Repository, entry.Workflow}] = where
+		pair := resultKey{entry.Repository, entry.Workflow}
+		if _, listed := exactly[pair]; !listed {
+			exactly[pair] = where
 		}
 	}
 	for i, entry := range results {
