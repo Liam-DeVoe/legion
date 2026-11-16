@@ -46,8 +46,7 @@ export function IssueOutlinePage(): ReactNode {
 
 /**
  * The page of one issue. A failed read draws the failed state whether or not an issue is held,
- * then, while no issue is held, the loading line, and only a loaded issue mounts the slots. A
- * background refetch keeps the issue, so the slots stay mounted through it.
+ * then a read in flight draws the loading line, and only a loaded issue mounts the slots.
  *
  * The words of the failed, missing and loading states are copied from today's `IssueDetail` in
  * `features/issue/IssuePage.tsx`, because R33 of INFRA-1196 changes no file today's page uses
