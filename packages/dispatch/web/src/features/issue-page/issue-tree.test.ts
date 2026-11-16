@@ -28,6 +28,7 @@ import {
   drawnLine,
   FIRST_LINE_LIMIT,
   firstLineOf,
+  lineWords,
   nodeWords,
   type TreeNode,
 } from "./issue-tree";
@@ -751,6 +752,63 @@ test("a first line draws its ellipsis only where the cut ended inside a sentence
   expect(inside.cut).toBe(true);
   expect(drawnLine(inside)).toBe(`${inside.line}…`);
   expect(drawnLine({ cut: false, line: "No mark at its end" })).toBe("No mark at its end");
+});
+
+// The reviewer's finding on `issue-tree.ts:313`: a decision's reading opens with its own `##`
+// heading, and the words of the whole reading join that heading to the paragraph after it, so a
+// line cut from them read "Keep it Keep the model pure.", and where a pod sent no reading,
+// "## Keep it Keep the model pure.". A node's one line is cut from its first block alone; its
+// words stay whole, since they are what its body draws and what its citations are read from.
+test("a node's one line is cut from its first block, so a heading is never run into its body", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const text = "## Keep it\n\nKeep the model pure.";
+  const reading: DisplayTree = {
+    content: [
+      { attrs: { level: 2 }, content: [{ text: "Keep it", type: "text" }], type: "heading" },
+      { content: [{ text: "Keep the model pure.", type: "text" }], type: "paragraph" },
+    ],
+    type: "doc",
+  };
+  const needs = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const root = buildIssueTree({
+    decisions: decisions([
+      { ...decision("d1", text, []), text_tree: reading },
+      decision("d2", text, []),
+    ]),
+    documents: [{ artifactId: plan.id, blocks: [block("t1", "plan_task", { needs })] }],
+    issue: issueDetails([spec, made, plan]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: `:::plan_task{#t0}\n${text}\n:::`,
+        ref: needs,
+        text_tree: reading,
+      },
+    ],
+  });
+
+  const read = nodeOf(root, blockNodeId("decisions-md", "d1"));
+  expect(read?.tree).toEqual(reading);
+  expect(read === undefined ? "" : nodeWords(read)).toBe("Keep it Keep the model pure.");
+  const line = read === undefined ? "" : lineWords(read);
+  expect(line).toBe("Keep it");
+  // The heading is the whole of its block, so nothing of the line is cut and, by `drawnLine`'s
+  // rule, it draws no ellipsis.
+  expect(firstLineOf(line)).toEqual({ cut: false, line: "Keep it" });
+  expect(drawnLine(firstLineOf(line))).toBe("Keep it");
+  // Where the read sent no reading the line is the stored text's first block, and the heading's
+  // marker is markup and no word of it.
+  const stored = nodeOf(root, blockNodeId("decisions-md", "d2"));
+  expect(stored?.tree).toBeUndefined();
+  expect(stored?.text).toBe(text);
+  expect(stored === undefined ? "" : lineWords(stored)).toBe("Keep it");
+  // A chip naming a block is cut from the first block of the block's reading the same way.
+  expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(({ name }) => name)).toEqual([
+    "Keep it",
+  ]);
 });
 
 // R1, R3, R4, R12: a document is a node of the issue and not of its conversation, so the tree

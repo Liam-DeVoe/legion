@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 
-import type { CheckBlock } from "../../../api/types";
-import type { TreeNode } from "../issue-tree";
+import type { Artifact, ArtifactBlock, CheckBlock, IssueDetails } from "../../../api/types";
+import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS } from "../page-words";
+import { filterSignals, presetView } from "../presets";
+import { blockNodeId } from "../tree-drafts";
+import { treeRows } from "../tree-fold";
 import {
   COMMIT_CHARACTERS,
   namedCommit,
@@ -16,10 +19,13 @@ import {
   COMMIT,
   check,
   checkNode,
+  ISSUE_KEY,
   node,
   OTHER_COMMIT,
   result,
+  SPEC_SLUG,
   statementNode,
+  VERIFICATION_SLUG,
   verificationView,
 } from "./verification-fixtures";
 
@@ -291,19 +297,20 @@ test("the latest result a check draws is the newest that stands", () => {
 // basis, whatever later fails exist, so a check with an older pass at another commit and a fail
 // at the commit the page names read "Out of date" and left its statement Unknown. The fail at
 // the named commit is what the page reads.
+const regressed = check({
+  block_id: "c-one",
+  pass_stands: { answer: "yes" },
+  results: [
+    result({ created_at: "2026-11-15T09:00:00Z", id: "fail-here", verdict: "fail" }),
+    result({
+      commit_sha: OTHER_COMMIT,
+      created_at: "2026-11-13T09:00:00Z",
+      id: "pass-elsewhere",
+    }),
+  ],
+});
+
 test("a fail at the commit the page names reads Failed whatever older pass still stands", () => {
-  const regressed = check({
-    block_id: "c-one",
-    pass_stands: { answer: "yes" },
-    results: [
-      result({ created_at: "2026-11-15T09:00:00Z", id: "fail-here", verdict: "fail" }),
-      result({
-        commit_sha: OTHER_COMMIT,
-        created_at: "2026-11-13T09:00:00Z",
-        id: "pass-elsewhere",
-      }),
-    ],
-  });
   const read = reading(
     [statementNode("r1", "The page draws it.", [checkNode(regressed)])],
     [regressed]
@@ -316,6 +323,188 @@ test("a fail at the commit the page names reads Failed whatever older pass still
     state: "failed",
   });
   expect(read.statements.map((held) => held.state)).toEqual(["not_met"]);
+});
+
+/** The issue's tree as `buildIssueTree` draws it from its reads: one statement of the spec,
+ *  which every check of `checks` serves, and the results read answering `checks`. */
+function issueTree(checks: readonly CheckBlock[]): TreeNode {
+  const document = (id: string, slug: string, name: string, primary: boolean): Artifact => ({
+    created_at: "2026-11-05T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id,
+    issue_key: ISSUE_KEY,
+    kind: "doc",
+    name,
+    primary,
+    project: "CORE",
+    ref_key: `artifact:${id}`,
+    session_id: null,
+    slug,
+    versions: [],
+  });
+  const spec = document("artifact-spec", SPEC_SLUG, "spec.md", true);
+  const verification = document(
+    "artifact-verification",
+    VERIFICATION_SLUG,
+    "verification.md",
+    false
+  );
+  const statement = `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-r1`;
+  const block = (id: string, type: string, serves?: string): ArtifactBlock => ({
+    attributes: serves === undefined ? [] : [{ kind: "block[]", name: "serves", value: serves }],
+    from: 0,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: id,
+    type,
+  });
+  const issue: IssueDetails = {
+    advances: [],
+    advances_revision: 0,
+    artifacts: [spec, verification],
+    assignee: null,
+    blocked_by: [],
+    children: [],
+    claim: null,
+    closed_at: null,
+    components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
+    created_at: "2026-11-05T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    decisions_artifact_id: "",
+    design_gates: [],
+    external_links: [],
+    holder_state: null,
+    key: ISSUE_KEY,
+    labels: [],
+    last_seen: null,
+    last_seq: 1,
+    number: 1,
+    open_asks: [],
+    parent: null,
+    plan_artifact_id: "",
+    primary_artifact_id: spec.id,
+    priority: null,
+    progress: { children: null, tasks: null },
+    project: "CORE",
+    rank: "U",
+    referenced_by_count: 0,
+    repo: null,
+    resolved_repo: null,
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    status: "todo",
+    takeable_at: null,
+    title: "The issue page draws one ordered body",
+    updated_at: "2026-11-05T00:00:00Z",
+    verification_artifact_id: verification.id,
+  };
+  return buildIssueTree({
+    coverage: {
+      gaps: [],
+      has_plan: false,
+      issue: ISSUE_KEY,
+      requirements: [
+        {
+          block_id: "r1",
+          checks: checks.length,
+          gaps: [],
+          plan_tasks: 0,
+          ref: statement,
+          text: "The page draws it.",
+        },
+      ],
+      spec_artifact_id: spec.id,
+    },
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+      {
+        artifactId: verification.id,
+        blocks: checks.map((one) => block(one.block_id, "check", statement)),
+      },
+    ],
+    issue,
+    results: { checks: [...checks], issue: ISSUE_KEY, verification_artifact_id: verification.id },
+  });
+}
+
+// The reviewer's finding on `presets.ts:273`: the tree read a check's state from `checkState`
+// alone while this body turned it over at the commit the page names, so one check read two
+// states. The regressed check above read Passed on its row and was off the fold's frontier, so
+// its statement arrived folded with the regression inside it, and the filter row counted
+// nothing failing, while this body read it Failed; a fail that stands at another commit read
+// Failed on the row and in the count, and Out of date here. The tree's node holds the one
+// reading this body draws (`checkStanding`).
+test("a check reads one state on its row, in the fold, in the filter row and in the body", () => {
+  const statement = blockNodeId(SPEC_SLUG, "r1");
+  const checkId = (blockId: string) => blockNodeId(VERIFICATION_SLUG, blockId);
+  const placed = (root: TreeNode, blockId: string) =>
+    root.children
+      .find((child) => child.id === statement)
+      ?.children.find((child) => child.id === checkId(blockId));
+  const bodyStates = (root: TreeNode, checks: readonly CheckBlock[]) =>
+    verificationReading({
+      checks,
+      view: presetView(root, "verification", "").root,
+    }).statements[0]?.checks.map((held) => held.state);
+
+  const tree = issueTree([regressed]);
+  expect(placed(tree, "c-one")?.state).toBe("failed");
+  expect(bodyStates(tree, [regressed])).toEqual(["failed"]);
+  // The check is open and unanswered, so the fold opens its statement down to it.
+  const rows = treeRows(tree);
+  expect(rows.find((row) => row.kind === "node" && row.node.id === statement)).toMatchObject({
+    expanded: true,
+  });
+  expect(rows.some((row) => row.kind === "node" && row.node.id === checkId("c-one"))).toBe(true);
+  expect(filterSignals(tree, "").verification).toEqual({
+    count: 1,
+    flag: { count: 1, word: "failing" },
+  });
+
+  // The reverse: a fail that stands at the commit its own check compared with, which is not the
+  // commit the page names, since another check's pass is newer.
+  const passedHere = check({ block_id: "c-one", results: [result({ id: "pass-here" })] });
+  const failedElsewhere = check({
+    block_id: "c-two",
+    compared_with: [{ commit: OTHER_COMMIT, kind: "named" }],
+    pass_stands: { answer: "no" },
+    results: [
+      result({
+        check_block_id: "c-two",
+        commit_sha: OTHER_COMMIT,
+        created_at: "2026-11-13T09:00:00Z",
+        failed: 1,
+        id: "fail-elsewhere",
+        verdict: "fail",
+      }),
+    ],
+  });
+  const reverse = issueTree([passedHere, failedElsewhere]);
+  expect(placed(reverse, "c-two")?.state).toBe("older");
+  expect(bodyStates(reverse, [passedHere, failedElsewhere])).toEqual(["passed", "older"]);
+  expect(filterSignals(reverse, "").verification).toEqual({ count: 2 });
+});
+
+// The reviewer's finding on `statement-state.ts:256`: a check fails, its author fixes the check's
+// words, and nobody has run it again. A fail recorded against words the check no longer has
+// stands for nothing, as `checkState` and the server's `standingCommit` read it, so it is no
+// fail at the commit the page names either: the check is Out of date and its statement Unknown,
+// not Not met on evidence about words the check no longer has.
+test("a fail at the commit the page names whose check's words moved reads Out of date", () => {
+  const moved = check({
+    block_id: "c-one",
+    pass_stands: { answer: "no" },
+    results: [result({ check_words_moved: true, failed: 1, id: "fail-moved", verdict: "fail" })],
+  });
+  const read = reading([statementNode("r1", "The page draws it.", [checkNode(moved)])], [moved]);
+
+  expect(read.commit).toBe(COMMIT);
+  expect(read.statements[0]?.checks[0]?.state).toBe("older");
+  expect(NODE_STATE_WORDS.check.older).toBe("Out of date");
+  expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
 });
 
 // Ruling 6: the body draws the newest result of each check and folds the rest, so the model

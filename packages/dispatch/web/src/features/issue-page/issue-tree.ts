@@ -94,9 +94,10 @@ export interface NodeChip {
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
   /** The words shown for the target (`treeContext`): a block's first line, as a row draws one
-   *  (R1), of the server's reading of its words, and `""` where the batched reference read sent
-   *  none; a whole document's word on the page, `Spec` and not `spec.md`; and anything else's
-   *  name as that read answers it, `""` until it answers. `""` for a target that is gone. */
+   *  (R1), cut from the first block of the server's reading of its words (`lineWords`), and `""`
+   *  where the batched reference read sent none; a whole document's word on the page, `Spec` and
+   *  not `spec.md`; and anything else's name as that read answers it, `""` until it answers.
+   *  `""` for a target that is gone. */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -150,8 +151,9 @@ export interface NodeOption {
 /** The one line a filter's row draws for its node's parent (R2, R1's first-line rule). */
 export interface ParentLine {
   readonly id: string;
-  /** The parent's own first line, cut by R1's rule (`firstLineOf`) and drawn as `drawnLine`
-   *  reads it: an ellipsis only where the cut ended inside a sentence. */
+  /** The parent's own first line, cut by R1's rule (`firstLineOf`) from the words of its
+   *  reading's first block (`lineWords`) and drawn as `drawnLine` reads it: an ellipsis only
+   *  where the cut ended inside a sentence. */
   readonly line: string;
   /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
    *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */
@@ -322,11 +324,41 @@ export function nodeWords(node: TreeNode): string {
   return node.tree === undefined ? node.text : wordsOf(node.tree);
 }
 
-/** The issue's whole tree, from the reads it was given. A chip names a block by the first line
- *  a row draws for it (`drawnLine`), which `tree-drafts.ts` is handed rather than imports, since
- *  this module imports it. */
+/**
+ * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
+ * the first top-level block of its reading, a heading or a paragraph, and where the node has no
+ * reading the first block of its stored text, to its first blank line, with a leading heading
+ * marker (`#` to `######` and a space) left out and a heading ending at its own line, as
+ * markdown ends one. A decision's reading opens with its own `##` heading, and `wordsOf` joins a
+ * heading and the paragraph after it with one space, so a line cut from the whole reading ran
+ * the heading into its body: "Keep it Keep the model pure.".
+ *
+ * Every place that draws one line for a node cuts it from these words: a parent's line under a
+ * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
+ * line, a folded branch, a Contents entry and a breadcrumb once they draw (R2). `nodeWords`
+ * stays the whole reading, which is what a body draws and what a node's citations are read
+ * from.
+ */
+export function lineWords(node: TreeNode): string {
+  if (node.tree !== undefined) return firstBlockWords(node.tree);
+  const block = node.text.trimStart().split(/\n\s*\n/u, 1)[0] ?? "";
+  return /^#{1,6} +(.*)/u.exec(block)?.[1] ?? block;
+}
+
+/** The words of the first top-level block of a reading (`lineWords`); `""` for a reading that
+ *  holds no block. */
+function firstBlockWords(reading: DisplayTree): string {
+  const content = reading.content;
+  const first: DisplayTree | undefined = Array.isArray(content) ? content[0] : undefined;
+  return first === undefined ? "" : wordsOf(first);
+}
+
+/** The issue's whole tree, from the reads it was given. A chip names a block by the line a row
+ *  draws for it (`drawnLine`), cut from the first block of the block's reading as `lineWords`
+ *  cuts a node's, which `tree-drafts.ts` is handed rather than imports, since this module
+ *  imports it. */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
-  const context = treeContext(reads, (words) => drawnLine(firstLineOf(words)));
+  const context = treeContext(reads, (reading) => drawnLine(firstLineOf(firstBlockWords(reading))));
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
 }
 

@@ -5,6 +5,7 @@ import type {
   ArtifactWithTrees,
   Ask,
   CheckBlock,
+  CheckResult,
   Decision,
   DisplayTree,
   IssueChild,
@@ -174,25 +175,26 @@ export interface TreeContext {
 
 /**
  * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
- * for a node draws, from the node's words: `buildIssueTree` gives R1's rule
- * (`drawnLine(firstLineOf(words))`), which this module cannot import, since `issue-tree.ts`
- * imports it, and a caller that reads no chip's name gives none, which keeps the words whole.
+ * for a node draws, from the server's reading of the node's words: `buildIssueTree` gives R1's
+ * rule over the words of the reading's first block (`lineWords`, `drawnLine(firstLineOf(…))`),
+ * which this module cannot import, since `issue-tree.ts` imports it, and a caller that reads no
+ * chip's name gives none, which names a block by the whole reading's words (`wordsOf`).
  *
  * A chip names its target by the words a reader reads it by, and never by markup:
  *
  * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone.
  * - **A block** - the reference names one, or the read answers that its target is one - by
- *   `lineOf` of the words of the server's reading of it (`ReferenceTarget.text_tree`), and by
- *   `""` where the read sent none. The read's `name` for a block is its stored excerpt, which
- *   is the block's source: a typed block's directive and the markdown its words are written in
- *   are markup and no word of it (R21).
+ *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`), and by `""` where the
+ *   read sent none. The read's `name` for a block is its stored excerpt, which is the block's
+ *   source: a typed block's directive and the markdown its words are written in are markup and
+ *   no word of it (R21).
  * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
  *   word for it (`documentWord`), and never by its file name.
  * - **Anything else** - an issue, an ask, a comment, a message - by the read's `name` for it.
  */
 export function treeContext(
   reads: IssueTreeReads,
-  lineOf: (words: string) => string = (words) => words
+  lineOf: (reading: DisplayTree) => string = wordsOf
 ): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
@@ -221,7 +223,7 @@ export function treeContext(
     const block = route !== undefined && "block" in route ? route.block : undefined;
     if (block !== undefined || target?.kind === "block") {
       const reading = target?.text_tree;
-      return reading === undefined ? "" : lineOf(wordsOf(reading));
+      return reading === undefined ? "" : lineOf(reading);
     }
     // Another issue's document is named by no role of this issue's.
     if (route?.kind === "spec") {
@@ -859,11 +861,16 @@ function requirementGaps(
  * Each check of the issue's Verification document with the results recorded against it: the
  * check's own words, how it stands and the four attributes its body draws, and one node per
  * result under the check it was recorded against (R4, "a result under its check"), each with
- * what that result recorded (`check-facts.ts`). The check's `serves` is no part of this read
- * (`CheckBlock` carries none), so its placement is the block's own pointer, below.
+ * what that result recorded (`check-facts.ts`). How it stands is the page's one reading of it,
+ * at the one commit the page names for the issue's results (`checkStanding`), so the row, the
+ * fold's frontier, the Verification filter's failing count and its body read one state. The
+ * check's `serves` is no part of this read (`CheckBlock` carries none), so its placement is the
+ * block's own pointer, below.
  */
 function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
-  for (const check of reads.results?.checks ?? []) {
+  const checks = reads.results?.checks ?? [];
+  const commit = namedCommit(checks);
+  for (const check of checks) {
     const slug = context.slugOf(check.artifact_id);
     if (slug === undefined) continue;
     const id = blockNodeId(slug, check.block_id);
@@ -873,7 +880,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     draft.parents = held?.parents ?? [];
     draft.pointers = held?.pointers ?? {};
     draft.reference = check.ref;
-    draft.state = checkState(check);
+    draft.state = checkStanding(check, commit).state;
     draft.text = check.text;
     const tree = check.text_tree ?? held?.tree;
     if (tree !== undefined) {
@@ -921,8 +928,9 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
  * whatever commit the withdrawn pass ran at.
  *
- * It is the one reading of a check's state the page has: the Verification filter draws the
- * node, the head's checks line draws the same states, and each is told apart by a word and a shape (R15,
+ * It is how a check stands against the basis the check itself carries, and the page draws it as
+ * `checkStanding` turns it over at the one commit the page names for the issue's results, so
+ * one check reads one state wherever it is drawn, each told apart by a word and a shape (R15,
  * R21). `e2e/issue-layout-seed-support.ts` waits on seeded checks by this function, so a seed
  * waits for the states the page draws rather than for a copy of this rule.
  */
@@ -946,6 +954,102 @@ export function checkState(check: CheckStateReads): CheckState {
 export type CheckStateReads = Pick<CheckBlock, "results"> & {
   readonly pass_stands?: CheckBlock["pass_stands"];
 };
+
+/**
+ * The one commit the page names for the issue's results: the commit of the newest result
+ * recorded against any check of the issue that still stands and names one. A result nobody
+ * withdrew is the evidence the page reads, so a withdrawn result names no commit here, and a
+ * result recorded with no commit at all names none either.
+ *
+ * It is the Verification filter's commit (R17, `verification-filter/statement-state.ts`, which
+ * exports it), read here because the tree reads every check's state at it (`checkStanding`),
+ * and this module cannot import that one, which imports this.
+ */
+export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
+  const named = checks.flatMap((check) =>
+    standingResults(check).filter((result) => result.commit_sha !== "")
+  );
+  return newestFirst(named)[0]?.commit_sha;
+}
+
+/** How one check stands at the commit the page names for the issue's results. */
+export interface CheckStanding {
+  /** How it stands, in the states `NODE_STATE_WORDS.check` names. */
+  readonly state: CheckState;
+  /** The result that state stands on: the fail at the named commit; else, for a check that
+   *  passed, the newest pass that still stands, since a pass recorded before a later fail is
+   *  what the server's `pass_stands` answered over; and for every other check the newest result
+   *  that stands at all. Absent where none stands. */
+  readonly stands?: CheckResult;
+}
+
+/**
+ * How a check stands at `commit`, the one commit the page names for the issue's results
+ * (`namedCommit`): the page's one reading of a check's state (R10, R17). The tree's check node
+ * holds it (`addChecks`), so the outline's row, the fold's frontier (`tree-fold.ts`) and the
+ * Verification filter's failing count (`presets.ts`'s `filterSignals`) read it, and so does
+ * the Verification filter's body (`statement-state.ts`'s `checkReading`): one check never reads
+ * Passed on its row and Failed in the filter.
+ *
+ * It is `checkState`'s answer with two turns, because R17 reads every result of the issue
+ * against the one commit the page names and `checkState` compares a result with the basis its
+ * own check carries:
+ *
+ * - **A fail at the named commit is a fail.** Where the newest result that stands and ran at
+ *   that commit failed, the check reads Failed there, whatever older pass the server still
+ *   counts as standing (`pass_stands` says yes for any pass at a basis, later fails or not), so
+ *   its statement is Not met and not Unknown behind an "Out of date". A fail recorded against
+ *   words the check no longer has turns nothing over: it stands for nothing, as `checkState`
+ *   and the server's `standingCommit` (`results_comparison.go`) read it, since it is evidence
+ *   about a check that no longer reads that way.
+ * - **A pass or a fail at another commit is out of date.** Otherwise a pass or a fail whose
+ *   result was recorded against another commit reads "Out of date", because that result no
+ *   longer speaks for the work the rest of the page is read against, and R17 says such a result
+ *   makes its statement Unknown. A result that names no commit at all turns nothing over: the
+ *   page has no ground to call it older, and it is no evidence at the named commit either.
+ *
+ * Where no commit is named - no result that stands names one - it is `checkState`'s answer.
+ */
+export function checkStanding(check: CheckStateReads, commit: string | undefined): CheckStanding {
+  const standing = newestFirst(standingResults(check));
+  const here =
+    commit === undefined ? undefined : standing.find((result) => result.commit_sha === commit);
+  const failedHere = here?.verdict === "fail" && here.check_words_moved !== true;
+  const state = failedHere ? "failed" : checkState(check);
+  const stands = failedHere
+    ? here
+    : state === "passed"
+      ? standing.find(({ verdict }) => verdict === "pass")
+      : standing[0];
+  const elsewhere =
+    commit !== undefined &&
+    stands !== undefined &&
+    stands.commit_sha !== "" &&
+    stands.commit_sha !== commit;
+  return {
+    state: elsewhere && (state === "passed" || state === "failed") ? "older" : state,
+    ...(stands === undefined ? {} : { stands }),
+  };
+}
+
+/** Every result of `check` nobody withdrew, which is every result that stands as evidence. */
+function standingResults(check: CheckStateReads): readonly CheckResult[] {
+  return (check.results ?? []).filter((result) => result.retracted === undefined);
+}
+
+/** `results` newest first, by the time each was recorded. The server already answers newest
+ *  first; this reads the times themselves, so the order is the model's own and no caller
+ *  depends on the order a read happened to arrive in. */
+export function newestFirst(results: readonly CheckResult[]): readonly CheckResult[] {
+  return [...results].sort((first, second) => recordedAt(second) - recordedAt(first));
+}
+
+/** When a result was recorded, and the oldest possible time for one whose time cannot be read,
+ *  so a result with no readable time never outranks one that has one. */
+function recordedAt(result: CheckResult): number {
+  const time = Date.parse(result.created_at);
+  return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
+}
 
 /**
  * A check and a plan task sit under each requirement their `serves` names, edited under the
