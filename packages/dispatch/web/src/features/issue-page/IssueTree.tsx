@@ -231,6 +231,22 @@ export function IssueTree({
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
 
+  // A row the page takes the reader to of its own accord - the node an address names, the open
+  // question the page opens on - takes the focus while the outline's other reads are still
+  // arriving, and each pushes it down the page, out of sight: the row is focused *and on screen*
+  // (R7, R20). It is held there until the reader acts or the focus leaves it (`holdOnScreen`),
+  // one row at a time.
+  const onScreenHold = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => onScreenHold.current?.abort(), []);
+  const holdRow = useCallback((row: HTMLElement) => {
+    onScreenHold.current?.abort();
+    onScreenHold.current = holdOnScreen(row);
+  }, []);
+  // The open question the page opens on, whose row is held once it has the focus: `reach`
+  // focuses it where it is drawn already, and otherwise once the render that unfolds the path to
+  // it has drawn it (`goToNode`). The reader acting before then lets it go.
+  const holdOnFocus = useRef<string | undefined>(undefined);
+
   const takeFocus = useCallback(
     (row: string, node: TreeNode) => {
       setFocused(row);
@@ -247,8 +263,15 @@ export function IssueTree({
         title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
         type: node.type,
       });
+      if (holdOnFocus.current === node.id) {
+        holdOnFocus.current = undefined;
+        const element = body.current?.querySelector<HTMLElement>(
+          `[data-node-row][data-row-key="${CSS.escape(row)}"]`
+        );
+        if (element !== null && element !== undefined) holdRow(element);
+      }
     },
-    [setFocusedNode]
+    [holdRow, setFocusedNode]
   );
   // The focus leaving the tree closes the body it opened: nothing is open while the reader is
   // somewhere else, and the panel goes back to the issue's own facts (R2, R12). A row the
@@ -402,13 +425,6 @@ export function IssueTree({
   // reader - or anything else on the page - has the focus, it is theirs: the effect leaves it
   // alone until another address names another node.
   const taken = useRef<string | undefined>(undefined);
-  // The rows around a landed node are still arriving when it takes the focus - the outline's
-  // other reads - and each pushes it down the page, out of sight: the node an address names is
-  // focused *and on screen* (R20). Until the reader acts, the page puts it back on screen
-  // whenever the page grows (`bringOnScreen`); a key, a press, a wheel or a touch is the reader
-  // taking over, and a focus that has moved off it ends the hold.
-  const landingHold = useRef<AbortController | undefined>(undefined);
-  useEffect(() => () => landingHold.current?.abort(), []);
   const targetId = target?.id;
   useEffect(() => {
     if (targetId === undefined || !focusReveal) return;
@@ -421,31 +437,22 @@ export function IssueTree({
     if (row === null || row === undefined) return;
     taken.current = targetId;
     // A row already inside the viewport is focused where it stands, so nothing jumps twice: the
-    // row's own focus places it by the page's one rule (`bringOnScreen`) when it is not.
+    // row's own focus places it by the page's one rule (`bringOnScreen`) when it is not, and the
+    // hold keeps it there while the rest of the page arrives.
     const box = row.getBoundingClientRect();
     row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
-    landingHold.current?.abort();
-    const hold = new AbortController();
-    landingHold.current = hold;
-    for (const type of READER_ACTS) {
-      window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
-    }
-    if (typeof ResizeObserver === "undefined") return;
-    const grown = new ResizeObserver(() => {
-      if (document.activeElement === row) bringOnScreen(row);
-      else hold.abort();
-    });
-    grown.observe(document.body);
-    hold.signal.addEventListener("abort", () => grown.disconnect());
-  }, [focusReveal, rows, targetId]);
+    holdRow(row);
+  }, [focusReveal, holdRow, rows, targetId]);
 
   // The page opens with the keyboard focus on the first open question that waits on the reader,
   // in the outline's own order, its path unfolded and its row in the viewport; where none waits
   // on them, on the outline's first row (R7). It is the page opening: with no filter on, on an
   // address that names no node, before the reader has pressed, scrolled or touched anything and
   // while nothing else holds the focus. The reads arrive one after another, so the first row
-  // takes the focus as soon as it is drawn and gives it to the question once the question's
-  // read has answered; the question is where it stays.
+  // takes the focus where it stands as soon as it is drawn, and gives it to the question once the
+  // question's read has answered. The question is where it stays, and its row is held on screen
+  // while the reads still out draw rows above it (`holdOnFocus`): the page scrolls for the
+  // question alone.
   const opening = useRef<{ done: boolean; on?: string }>({ done: false });
   useEffect(() => {
     const settle = new AbortController();
@@ -454,6 +461,7 @@ export function IssueTree({
         type,
         () => {
           opening.current.done = true;
+          holdOnFocus.current = undefined;
           settle.abort();
         },
         { capture: true, signal: settle.signal }
@@ -481,6 +489,7 @@ export function IssueTree({
     if (question !== undefined) {
       held.done = true;
       held.on = question.id;
+      holdOnFocus.current = question.id;
       reach(question.id);
       return;
     }
@@ -661,6 +670,32 @@ const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
  *  their newest node where it looked, in milliseconds: the line's send has landed and its read
  *  is a request away, so a read that has not drawn the node by then is not going to. */
 export const LANDING_WAIT_MS = 10_000;
+
+/**
+ * Holds `row`, which has the focus, on screen while the page grows: each time the page's size
+ * changes - a read drawing rows above it, a document mounting beside the tree - the row is put
+ * back on screen by the page's one rule (`bringOnScreen`). Nothing else would: `NodeRow.tsx`'s
+ * `useRowOnScreen` watches the row's own size, which rows drawn above it leave as it was, and
+ * the browser's scroll anchoring holds still what is at the top of the viewport, which on the
+ * first screen is the header and not the row. Measured with the comments' read answering after
+ * the question's, the question opened on at 496 px down a 900 px screen ended 2854 px down, at
+ * the page's top. A reader's own act (`READER_ACTS`) ends the hold, and so does the focus having
+ * left the row. Answers the hold, which aborting ends sooner.
+ */
+function holdOnScreen(row: HTMLElement): AbortController {
+  const hold = new AbortController();
+  for (const type of READER_ACTS) {
+    window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
+  }
+  if (typeof ResizeObserver === "undefined") return hold;
+  const grown = new ResizeObserver(() => {
+    if (document.activeElement === row) bringOnScreen(row);
+    else hold.abort();
+  });
+  grown.observe(document.body);
+  hold.signal.addEventListener("abort", () => grown.disconnect());
+  return hold;
+}
 
 /** The node a write was made under, by the item the line wrote to; the tree's own root for a
  *  write on the issue itself; undefined where the view the tree draws holds no such node. */
