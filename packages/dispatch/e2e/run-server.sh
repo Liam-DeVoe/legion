@@ -390,11 +390,26 @@ cd "$(dirname "$0")/../../envoy"
 # whole process group and the skill-scenarios rig the whole process tree, but a caller that
 # signals the one pid it started (`kill $!`) needs that pid to be the server. One binary per
 # checkout, built under a lock so two harnesses, or two-process mode's two servers, starting at
-# once serialise: Go rewrites it only when the source changed, and a running server keeps the
-# inode it started from. The port is chosen only after the build, and held-port.py execs `env`,
-# which execs the server, so the pid a caller started is still the server's.
+# once serialise: Go rewrites it only when the source or the commit it is stamped with changed,
+# and a running server keeps the inode it started from. The port is chosen only after the build,
+# and held-port.py execs `env`, which execs the server, so the pid a caller started is still the
+# server's.
+#
+# The build is stamped with this checkout's commit, `git rev-parse HEAD`, through the flag the
+# image build stamps with (-ldflags "-X main.buildCommit=<sha>", packages/envoy/docker/Dockerfile).
+# An unstamped server serves an empty commit: processes.Live reads two unstamped builds as one
+# fleet, and no build announcement is written while one is live, so a two-build run of them would
+# prove nothing about two builds. Where git names no commit for the checkout, this script builds
+# nothing rather than an unstamped server. The CI steps that build ./dispatch-e2e ahead of the
+# boot pass the same flag with the same commit, so this build finds their binary current and
+# links nothing.
 if [ -z "$server_bin" ]; then
-  flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch
+  build_commit="$(git rev-parse HEAD)" || build_commit=""
+  if ! [[ "$build_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "run-server.sh: git rev-parse HEAD in $PWD gave '$build_commit', not a 40-character commit sha; the server this script builds is stamped with its checkout's commit, and it builds no unstamped one" >&2
+    exit 1
+  fi
+  flock ./.dispatch-e2e.lock go build -ldflags "-X main.buildCommit=$build_commit" -o ./dispatch-e2e ./cmd/dispatch
   server_bin=./dispatch-e2e
 fi
 exec "${listen[@]}" env \

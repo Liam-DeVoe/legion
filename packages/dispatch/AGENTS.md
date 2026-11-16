@@ -2183,8 +2183,11 @@ reads the port from (`e2e/harness-start.ts` does). Set, the server binds that
 port, and an occupied one fails with `address already in use`. The binary is one per
 checkout, `packages/envoy/dispatch-e2e` (gitignored), built under
 `flock packages/envoy/.dispatch-e2e.lock` so two harnesses starting at once in
-one checkout serialise their builds; Go rewrites it only when the source
-changed, and a running server keeps the inode it started from. The script
+one checkout serialise their builds; Go rewrites it only when the source or
+the commit it is stamped with changed (`run-server.sh` stamps it with the
+checkout's `git rev-parse HEAD` through `-ldflags "-X main.buildCommit=…"`, and
+builds nothing where git names no commit), and a running server keeps the
+inode it started from. The script
 unsets inherited `DISPATCH_*`/`ENVOY_*`/`NATS_*` variables, supplies a fresh App
 key, passes no cookie signing key (the server generates one for its process, as
 `DISPATCH_DEV_SIGNIN` requires, or in two-process mode derives one from the

@@ -174,11 +174,13 @@ type Deps struct {
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
 	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
-	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
-	// is hashed into every list validator (listETag), so two builds never answer one ETag for
-	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
-	// it empty, which is one identity for every such build and is why a deploy is what it is
-	// for rather than a key anything depends on being unique.
+	// its own `buildCommit`: the image build stamps it (docker/Dockerfile's LEGION_COMMIT), and so
+	// do the e2e harness's build (packages/dispatch/e2e/run-server.sh) and the CI steps that build
+	// that binary ahead of it, each with its checkout's commit. It is hashed into every list
+	// validator (listETag), so two builds never answer one ETag for two bodies; a build nothing
+	// stamped - every `go test` binary, a devbox `go run` - leaves it empty, which is one identity
+	// for every such build and is why a deploy is what it is for rather than a key anything
+	// depends on being unique.
 	BuildCommit string
 }
 

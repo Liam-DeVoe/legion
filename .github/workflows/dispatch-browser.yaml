@@ -146,11 +146,16 @@ jobs:
       # rather than left to the runner's default, so each binary is static by construction: the
       # shard and alone jobs run them in a container of this repository's own image, and a
       # binary with a PT_INTERP has a glibc there to disagree with. They are written under
-      # $RUNNER_TEMP, so the checkout stays clean.
+      # $RUNNER_TEMP, so the checkout stays clean. The server is stamped with this checkout's
+      # commit, as e2e/run-server.sh stamps the build it makes when no binary is given (its
+      # comment says why a server must carry one). -ldflags reaches every binary of the build,
+      # and -X sets main.buildCommit only where a main package declares it: cmd/dispatch alone,
+      # since the linker passes over a name a binary does not have.
       - name: Build the binaries the browser suite runs
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+          commit=$(git rev-parse HEAD)
+          CGO_ENABLED=0 go build -ldflags "-X main.buildCommit=$commit" -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
         working-directory: packages/envoy
       # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
       # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.
@@ -1082,8 +1087,12 @@ jobs:
       - name: Build the Dispatch server
         # run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
-        # current and start in seconds.
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        # current and start in seconds. It is stamped with this checkout's commit, as run-server.sh
+        # stamps its own build (whose comment says why a server must carry one), so that build finds
+        # it current rather than linking again.
+        run: |
+          commit=$(git rev-parse HEAD)
+          go build -ldflags "-X main.buildCommit=$commit" -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # No apt in this step at all. Playwright's `chromium` entry in its ubuntu24.04-x64 table
@@ -1212,10 +1221,13 @@ jobs:
         working-directory: packages/contracts
       - name: Build the Dispatch server for the embedder lane
         # run-server.sh builds it too, inside the harness's boot wait; built here, the server
-        # finds it current and starts in seconds. The name carries the lane because
+        # finds it current and starts in seconds, stamped with this checkout's commit as the
+        # multiprocess job's step of the same build is. The name carries the lane because
         # .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
         # the multiprocess job above has a step that builds the same binary.
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        run: |
+          commit=$(git rev-parse HEAD)
+          go build -ldflags "-X main.buildCommit=$commit" -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # Browsers only, no apt: the multiprocess job's step of this name says why that list is

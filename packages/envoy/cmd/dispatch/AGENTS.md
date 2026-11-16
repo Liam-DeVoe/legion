@@ -84,9 +84,11 @@ none decides `ok` or the status, since the process serves through an outage of
 each; a check that needs one asserts it itself (`healthzHandler`).
 
 Beside those, `/healthz` names what is deployed: `commit`, the
-legion commit this process's image build stamped (`main.buildCommit`, from the Dockerfile's
-`LEGION_COMMIT` build argument, which the release workflow sets to its
-`github.sha` and which must be a full sha or empty; `null` in an unstamped
+legion commit this process's build stamped (`main.buildCommit`, through
+`-ldflags -X`: the image build from the Dockerfile's `LEGION_COMMIT` build
+argument, which the release workflow sets to its `github.sha` and which must be
+a full sha or empty, and the e2e harness's and CI's builds from their
+checkout's commit; `null` in an unstamped
 build); `fleet_commit`, the commit of the latest announcement that every live
 server process serves one build (`startup.Announcer.FleetCommit`, the one
 `server.started` carries; `null` when there is none or before this process's
