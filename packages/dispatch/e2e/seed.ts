@@ -60,6 +60,11 @@ const tables = [
   // by its state and its node row stays.
   "priority_tuples",
   "priority_nodes",
+  // The groups an access list names (migration 20261116015736_project_access). No foreign key
+  // reaches them either - a group belongs to no project, and its owner is an email rather than a
+  // people row - so the closure does not find them: a group one row made would stand in the next
+  // row's Settings and its name would be taken. Its members follow it through their own key.
+  "access_groups",
   "user_sessions",
 ];
 
