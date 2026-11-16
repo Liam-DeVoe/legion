@@ -12,6 +12,12 @@ import {
   dangerText,
   linkHoverText,
   linkText,
+  pageFailedText,
+  pageInkText,
+  pageLabelChip,
+  pageMutedText,
+  pageQuietText,
+  pageWaitingChip,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -75,13 +81,24 @@ export function IssueComponentsLine({
     inDetails
       ? ((tree.data?.components ?? []).find((component) => component.id === id)?.title ?? id)
       : id;
+  // In a row of Details nothing of the line stops its wrap (dispatch://INFRA-3935 R4): the
+  // words break between themselves, and a long name breaks inside its chip only where no break
+  // between words is left. Everywhere else each part stays whole, as on `main`.
+  const part = inDetails ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
+  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
+  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the line is the ink in a row
+  // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
+  // component is the page's label chip, a retired one its waiting chip, the one warning here;
+  // what qualifies the set is quiet words, the issue it is inherited from a link in the ink, and
+  // a refused save the failed red.
+  const quiet = page === null ? textMutedOnSurface : pageQuietText;
   const write = useIssueComponents(issue);
   const inheritedFrom =
     components.inherited_from === null ? null : (
-      <span className={`shrink-0 text-xs ${textMutedOnSurface}`} {...page?.pageChrome}>
+      <span className={`${part} text-xs ${quiet}`} {...page?.pageChrome}>
         {page?.CONTROL_LABELS.components_inherited_from ?? "inherited from"}{" "}
         <Link
-          className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+          className={`dispatch-inline-link underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
           to={buildIssuePath({ key: components.inherited_from, kind: "issue" })}
           {...page?.authorText}
         >
@@ -102,20 +119,20 @@ export function IssueComponentsLine({
   );
   return (
     <div
-      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${textSecondaryOnSurface}`}
+      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
       data-testid="issue-components"
     >
       {inDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
-          {page === null ? "Components:" : `${page.PROPERTY_LABELS.components}:`}
+          {`${page?.PROPERTY_LABELS.components ?? "Components"}:`}
         </span>
       )}
       {components.mode === "inherit" ? (
-        <span className={textMutedOnSurface} {...page?.pageChrome}>
+        <span className={quiet} {...page?.pageChrome}>
           {page?.CONTROL_LABELS.components_not_attached ?? "Not attached"}
         </span>
       ) : components.mode === "none" ? (
-        <span className={textMutedOnSurface} {...page?.pageChrome}>
+        <span className={quiet} {...page?.pageChrome}>
           {page === null ? "None" : page.CONTROL_LABELS.components_none} —{" "}
           {page === null ? reason : <span {...page.authorText}>{reason}</span>}
         </span>
@@ -123,7 +140,7 @@ export function IssueComponentsLine({
         <>
           {(components.ids ?? []).map((id) => (
             <span
-              className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgePrimary.bg} ${badgePrimary.text}`}
+              className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgePrimary.bg} ${badgePrimary.text}` : pageLabelChip}`}
               key={id}
               {...page?.authorText}
             >
@@ -132,7 +149,7 @@ export function IssueComponentsLine({
           ))}
           {(components.unknown ?? []).map((id) => (
             <span
-              className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
+              className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgeHigh.bg} ${badgeHigh.text}` : pageWaitingChip}`}
               key={id}
               title={
                 tooltips ? `${id} is no longer in the project's architecture model` : undefined
@@ -184,7 +201,11 @@ export function IssueComponentsLine({
         </ComponentPicker>
       )}
       {write.error === null ? null : (
-        <span className={`shrink-0 text-xs ${dangerText}`} role="alert" {...page?.authorText}>
+        <span
+          className={`shrink-0 text-xs ${page === null ? dangerText : pageFailedText}`}
+          role="alert"
+          {...page?.authorText}
+        >
           {write.error}
         </span>
       )}

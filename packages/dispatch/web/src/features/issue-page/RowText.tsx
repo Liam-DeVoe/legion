@@ -1,20 +1,19 @@
 import {
-  createContext,
   Fragment,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
   useCallback,
-  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
 
 import type { DisplayTree } from "../../api/types";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
-import { useMarkdownHeadline } from "../refs/markdown-engine";
+import { isPlainClick } from "../refs/picture-lightbox";
 import {
   buildReferencePath,
   type DispatchReferenceRoute,
@@ -47,18 +46,20 @@ import {
  * Either way a reference in the words - a `dispatch://` reference, a dashboard address, the key
  * of an issue that exists - is a link to its target, named from the page's one batched read of
  * what its references point at (`row-references.ts`): an issue by its key and title, and a block
- * or a document as a chip in place, named as a tie's chip is, in plain words (`chipName`,
- * `PlainReferenceNamesProvider`, part G's R4). The row asks the server nothing for it (R21), so
- * the body's own link pass, which reads one target for each reference, is given nothing to link.
+ * or a document as a chip in place, named as a tie's chip is, in plain words (`chipName`, part
+ * G's R4). The page publishes that read's names as plain words already (`useIssueTree.ts`), so
+ * they are drawn with no markdown pass (decision 66). The row asks the server nothing for it
+ * (R21), so the body's own link pass, which reads one target for each reference, is given
+ * nothing to link.
  *
  * The words are a reading of the text, as it was when it was drawn as stored: an `ask` block in a
  * document is a node of the tree of its own, where a reader answers it, so the text draws its
  * question and options rather than a second card to answer it in (`TextAskCard`). Whatever the
  * reading draws that takes the focus - a link, a reference, a picture's control - is out of the
  * tab order, as every other control inside a row is: the tree is one tab stop, and a key
- * reaches a row's links instead (R9, `useTreeKeymap.ts`'s `rowLinks`). A view that no tree's
- * keys reach passes `tabStops`, which keeps them in the tab order, the links a later pass makes
- * included.
+ * reaches a row's links instead (R9, `useTreeKeymap.ts`'s `rowStops`). A view that no tree's
+ * keys reach - part V's Verification view and part J's Spec view - passes `tabStops`, which
+ * keeps them in the tab order, the links a later pass makes included.
  */
 export function RowText({
   markdown,
@@ -101,8 +102,9 @@ export function documentWord(route: DispatchReferenceRoute | undefined): string 
 
 /** The words a chip draws for the target `route` names, whose name the batched read gave as
  *  `name`: a whole document by the page's word for it (`documentWord`), and anything else, a
- *  block among them, by its first words (`chipWords`). A typed block's name is its stored
- *  excerpt, which opens on the block's source line, so its source lines are left out first. */
+ *  block among them, by its first words (`chipWords`). The name is plain words as the page
+ *  publishes it (`useIssueTree.ts`), drawn with no markdown pass; a typed block's source line
+ *  that still stands in it is left out first. */
 export function chipName(route: DispatchReferenceRoute | undefined, name: string): string {
   return documentWord(route) ?? chipWords(withoutDirectiveLines(name));
 }
@@ -110,101 +112,41 @@ export function chipName(route: DispatchReferenceRoute | undefined, name: string
 /** The names the batched read brought, with every reference but an issue's named as a tie's chip
  *  is (`chipName`). A document `markdown` cites is named by the page's word for it whether or not
  *  the read has answered yet, so its file name and its slug are never drawn while it is in
- *  flight. */
+ *  flight. The read's own names are named once for each answer of the read (`namedOnce`), never
+ *  once for each row: a block's name is its whole reading, and every row draws from the one map. */
 function chipNames(
   names: ReadonlyMap<string, string>,
   markdown: string
 ): ReadonlyMap<string, string> {
+  const shared = namedOnce(names);
+  let named: Map<string, string> | undefined;
+  for (const one of rowReferences(markdown, [])) {
+    if (one.route.kind === "issue" || shared.has(one.reference) || named?.has(one.reference)) {
+      continue;
+    }
+    const words = chipName(one.route, "");
+    if (words === "") continue;
+    named ??= new Map(shared);
+    named.set(one.reference, words);
+  }
+  return named ?? shared;
+}
+
+/** Each answer of the batched read, its names named as a tie's chip names them, by the answer:
+ *  the page publishes one map for each answer (`usePublishReferenceNames`), so every row of that
+ *  answer reads the same names, and the same map. */
+const CHIP_NAMES = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, string>>();
+
+function namedOnce(names: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
+  const held = CHIP_NAMES.get(names);
+  if (held !== undefined) return held;
   const named = new Map(names);
   for (const [reference, name] of names) {
     const route = parseNodeReference(reference);
     if (route !== undefined && route.kind !== "issue") named.set(reference, chipName(route, name));
   }
-  for (const one of rowReferences(markdown, [])) {
-    if (one.route.kind === "issue" || named.has(one.reference)) continue;
-    const words = chipName(one.route, "");
-    if (words !== "") named.set(one.reference, words);
-  }
+  CHIP_NAMES.set(names, named);
   return named;
-}
-
-/**
- * The batched read's names, with each name but an issue's read as plain words, as the chip at
- * the end of a node's words reads its target's name (`NodeRow.tsx`'s `Chip`,
- * `useMarkdownHeadline`): a block's name is its stored excerpt, which is markdown, so a chip in
- * a node's words draws no mark its author typed either (part G's R4, the tester's finding F18).
- * An issue's name is its title, kept as the read sent it. A name is left out until its reading
- * answers, so the chip in place draws what it draws before the names come, never the marks.
- * This reading goes once F's `chipOf` names each target from the server's reading of it
- * (decision 49).
- */
-const PlainReferenceNames = createContext<ReadonlyMap<string, string> | undefined>(undefined);
-
-/** Whether the batched read's name for `reference` is kept as it was sent: an issue's, and that
- *  of a reference the grammar cannot read. */
-function keptAsSent(reference: string): boolean {
-  const route = parseNodeReference(reference);
-  return route === undefined || route.kind === "issue";
-}
-
-/** Reads every name the batched read brought as plain words, once for every row under it: the
- *  page's slots draw it around the views that draw rows (`slots/providers.tsx`). */
-export function PlainReferenceNamesProvider({ children }: { children: ReactNode }): ReactNode {
-  const read = useKnownReferenceNames();
-  const [plain, setPlain] = useState<ReadonlyMap<string, string>>(() => new Map());
-  const take = useCallback((name: string, words: string) => {
-    setPlain((held) => (held.get(name) === words ? held : new Map(held).set(name, words)));
-  }, []);
-  const names = useMemo(() => {
-    const named = new Map<string, string>();
-    for (const [reference, name] of read) {
-      const source = withoutDirectiveLines(name);
-      const words = keptAsSent(reference) ? name : source === "" ? "" : plain.get(source);
-      if (words !== undefined) named.set(reference, words);
-    }
-    return named;
-  }, [plain, read]);
-  // One reading for each name, whichever references share it.
-  const sources = useMemo(() => {
-    const held = new Set<string>();
-    for (const [reference, name] of read) {
-      const source = withoutDirectiveLines(name);
-      if (!keptAsSent(reference) && source !== "") held.add(source);
-    }
-    return [...held];
-  }, [read]);
-  return (
-    <PlainReferenceNames.Provider value={names}>
-      {sources.map((source) => (
-        <PlainName key={source} name={source} onRead={take} />
-      ))}
-      {children}
-    </PlainReferenceNames.Provider>
-  );
-}
-
-/** Reads one name as plain words, as the chip at the end of a node's words does, and hands them
- *  to `onRead` once the reading answers. It draws nothing. */
-function PlainName({
-  name,
-  onRead,
-}: {
-  name: string;
-  onRead: (name: string, words: string) => void;
-}): null {
-  const plain = useMarkdownHeadline(undefined, name.length, name);
-  useLayoutEffect(() => {
-    if (plain !== undefined) onRead(name, plain.text);
-  }, [name, onRead, plain]);
-  return null;
-}
-
-/** The names a node's words name their references by: read as plain words where the page's
- *  slots draw `PlainReferenceNamesProvider`, and as the batched read sent them where nothing
- *  does, as in a test that draws a row alone. */
-function useRowReferenceNames(): ReadonlyMap<string, string> {
-  const known = useKnownReferenceNames();
-  return useContext(PlainReferenceNames) ?? known;
 }
 
 /** The mark a reference in a node's words carries where it is drawn as a chip (`styles.css`). */
@@ -257,12 +199,14 @@ function StoredText({
   tabStops: boolean;
 }): ReactNode {
   const markdown = useMemo(() => withoutDirectiveLines(stored), [stored]);
-  const read = useRowReferenceNames();
+  const read = useKnownReferenceNames();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
   const found = useMemo(() => rowReferences(markdown, knownIssueKeys(names)), [markdown, names]);
+  const follow = useFollowInPlace();
   let at = 0;
   return (
-    <p className="whitespace-pre-wrap break-words" {...authorText}>
+    // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
+    <p className="whitespace-pre-wrap break-words" onClick={follow} {...authorText}>
       {found.map((one) => {
         const before = markdown.slice(at, one.start);
         at = one.end;
@@ -294,8 +238,32 @@ function StoredText({
   );
 }
 
+/**
+ * Follows an address of this application in a node's words in place, on a plain click, as a link
+ * the router draws does: the words are drawn as HTML (`MarkdownBody`, `linkRowReferences`), and
+ * their links would load the whole page again. A click with a key held or with another button, a
+ * link to a download, to another window or to another origin, and a click a picture already
+ * answered (`DispatchPicture`) are the browser's.
+ */
+function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
+  const navigate = useNavigate();
+  return useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      if (event.defaultPrevented || !isPlainClick(event.nativeEvent)) return;
+      const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return;
+      if (anchor.hasAttribute("download") || anchor.getAttribute("target") !== null) return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      event.preventDefault();
+      navigate(`${url.pathname}${url.search}${url.hash}`);
+    },
+    [navigate]
+  );
+}
+
 /** What takes the focus in a drawn text: every control a reading can hold. */
-const FOCUSABLE = "a[href], area[href], button, input, select, textarea, iframe, [tabindex]";
+export const FOCUSABLE = "a[href], area[href], button, input, select, textarea, iframe, [tabindex]";
 
 /**
  * Keeps every control inside `box` out of the tab order while `out` holds: the ones it is drawn
@@ -334,7 +302,7 @@ function DrawnText({
   tree: DisplayTree;
 }): ReactNode {
   const drawn = useRef<HTMLDivElement>(null);
-  const read = useRowReferenceNames();
+  const read = useKnownReferenceNames();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
   // After every paint of the reading, and again when the batched read brings the names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
@@ -358,8 +326,11 @@ function DrawnText({
   }, [names, tabStops]);
   useLayoutEffect(link, [link]);
   useOutOfTabOrder(drawn, !tabStops);
+  const follow = useFollowInPlace();
   return (
-    <div className="min-w-0 break-words" ref={drawn} {...authorText}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: the press is the links' own, followed in place.
+    // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
+    <div className="min-w-0 break-words" onClick={follow} ref={drawn} {...authorText}>
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
             reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}

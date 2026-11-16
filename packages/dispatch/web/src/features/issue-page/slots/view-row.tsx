@@ -51,7 +51,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   useIssueKeymap(issue.key);
   return (
     <div
-      className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[760px]:sticky max-[760px]:top-0 max-[760px]:z-[19]`}
+      className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
     >
       <IssuePresets
         active={address.preset}

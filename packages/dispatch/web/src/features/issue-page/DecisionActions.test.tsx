@@ -9,7 +9,7 @@ import { ApiError, api } from "../../api/client";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
  * The two controls a decision's node draws (dispatch://INFRA-1196 R7). The tree is one tab stop,
@@ -202,6 +202,34 @@ test("a Change that Dispatch refuses keeps its words when the body closes and op
     body.open();
     const field = screen.queryByLabelText(CONTROL_LABELS.your_change);
     expect(field, "the refused Change came back closed, its words lost").not.toBeNull();
+    expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Keep one preset.");
+  } finally {
+    body.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// Decision 92: a refused send says so in the page's own words and never in the server's, which
+// name what the reader cannot act on - here a quote that matches two places of the document -
+// and the words the reader wrote stay in the field, to send again.
+test("a refused send shows the plain words and keeps the draft", async () => {
+  const refusal =
+    "anchor quote matches 2 places; pass a zero-based occurrence to choose one of them";
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(409, { code: "QUOTE_AMBIGUOUS", error: refusal })
+  );
+  const user = userEvent.setup();
+  const body = renderBody();
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(ANSWER_LINES.change_not_sent);
+    expect(document.body.textContent, "the row draws the server's own words").not.toContain(
+      "occurrence"
+    );
+    const field = screen.getByLabelText(CONTROL_LABELS.your_change);
     expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Keep one preset.");
   } finally {
     body.unmount();

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
@@ -12,9 +12,11 @@ import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import type { TreeNode } from "./issue-tree";
+import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
+import type { NodeChip, TreeNode } from "./issue-tree";
 import { NodeOptions, NodeRow } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
+import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import {
   type AuthorKind,
@@ -24,8 +26,9 @@ import {
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
-import { PlainReferenceNamesProvider, RowText } from "./RowText";
+import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
+import { ProvidersSlot } from "./slots/providers";
 
 /**
  * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R1, R6, R9,
@@ -466,7 +469,9 @@ const MARKED_DRAWN = {
 // R20, c-plain-words: a decision's text is stored markdown, and the decisions read sends the
 // server's reading of it (`Decision.text_tree`). The row draws that reading, so the reader sees
 // a heading, bold words and a list, never the `##`, `**` and `-` the author typed, and the
-// browser parses nothing to get there. Folded, its one line holds none of those symbols either.
+// browser parses nothing to get there. Folded, its one line holds none of those symbols either,
+// and is cut from its first block's words alone (`lineWords`): the heading never runs into the
+// paragraph after it.
 test("a decision whose text holds bold draws no literal asterisks", () => {
   const decision = node({
     id: "decisions-md#b-d1",
@@ -483,7 +488,7 @@ test("a decision whose text holds bold draws no literal asterisks", () => {
   const folded = renderRow({ ...decision, held: 1 }, { body: false, expanded: false, folded: 1 });
   try {
     expect(folded.container.querySelector("[data-node-first-line]")?.textContent).toBe(
-      "Store the notices A decided thing."
+      "Store the notices"
     );
   } finally {
     folded.unmount();
@@ -548,7 +553,7 @@ test("a decision whose text quotes a typed block draws none of its source lines"
 });
 
 // R9: the tree is one tab stop and nothing inside a row takes one; a key reaches a row's links
-// (`useTreeKeymap.ts`'s `rowLinks`). Words drawn from a reading hold real links, and each is
+// (`useTreeKeymap.ts`'s `rowStops`). Words drawn from a reading hold real links, and each is
 // out of the tab order too.
 test("the links a row's words draw are out of the tab order", async () => {
   const text =
@@ -621,9 +626,10 @@ test("a chip names its target by its first words and never by an address", () =>
   }
 });
 
-// The tester's finding F18: a target's name is its stored excerpt, which is markdown, and its
-// chip draws the words alone, with no mark the author typed.
-test("a chip draws its target's words with no mark of markdown", () => {
+// Decision 66: a target's name is plain words already (`tree-drafts.ts`'s `treeContext` names a
+// block by the words of the server's reading of it), so a chip draws it as it stands, with no
+// markdown pass, which would read a numbered step as a list and drop its number.
+test("a chip named as a numbered step draws its number", () => {
   const view = renderRow(
     node({
       chips: [
@@ -631,8 +637,14 @@ test("a chip draws its target's words with no mark of markdown", () => {
           answered: true,
           gone: false,
           label: "Needs",
-          name: "**1\\. Stand the harness up and read the rows**",
+          name: "1. Stand the harness up.",
           ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
+        },
+        {
+          answered: true,
+          gone: false,
+          name: "2. Stand the harness up and read the rows",
+          ref: "dispatch://CORE-1/artifact/plan-md#b-t3",
         },
       ],
       id: "plan-md#b-t2",
@@ -643,7 +655,39 @@ test("a chip draws its target's words with no mark of markdown", () => {
   );
   try {
     const chips = [...view.container.querySelectorAll("[data-node-chip]")];
-    expect(chips.map((chip) => chip.textContent)).toEqual(["Needs 1. Stand the harness up and…"]);
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "Needs 1. Stand the harness up.",
+      "2. Stand the harness up and…",
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Decisions 62 and 89: a short reference that two or more targets answer to names no one target,
+// and the read answers it gone and ambiguous. Its chip draws the reference as its author wrote
+// it, as words with no link, and never as a target deleted.
+test("a chip of an ambiguous short reference draws the reference as written, not as deleted", () => {
+  const ambiguous: NodeChip = {
+    ambiguous: true,
+    answered: true,
+    gone: true,
+    name: "",
+    ref: "dispatch://CORE-1/comment/c1",
+  };
+  const view = renderRow(
+    node({
+      chips: [ambiguous],
+      id: "decisions-md#b-d1",
+      text: "Keep one reading.",
+      type: "decision",
+    }),
+    { body: false }
+  );
+  try {
+    const chip = view.container.querySelector("[data-node-chip]");
+    expect(chip?.textContent).toBe("dispatch://CORE-1/comment/c1");
+    expect(chip?.querySelector("a"), "an ambiguous reference is a link to one target").toBeNull();
   } finally {
     view.unmount();
   }
@@ -661,24 +705,34 @@ function Named({
   return children;
 }
 
-// F18 in a node's words: a chip in place is named from the batched read, whose name for a block
-// is its stored excerpt, which is markdown; it draws the words alone, as the chip at the end of
-// the words does.
-test("a chip in a node's words draws its target's words with no mark of markdown", async () => {
+// F18 and decision 66 in a node's words: a chip in place is named from the batched read, which
+// the page publishes as plain words (`useIssueTree.ts`), so it draws them with no markdown pass,
+// as the chip at the end of the words does, a numbered step's number kept. The words are drawn
+// under the page's own providers (`ProvidersSlot`), as the page draws them, so a second reading
+// of the names mounted there would fail on the number.
+test("a chip in a node's words draws its target's plain words, a numbered step's number kept", async () => {
   const target = "dispatch://CORE-1/artifact/plan-md#b-t1";
   const text = `It follows ${target}.`;
-  const names = new Map([
-    [target, ":::plan_task{#t1}\n**1\\. Stand the harness up and read the rows**\n:::"],
-  ]);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const names = new Map([[target, "1. Stand the harness up and read the rows"]]);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  // The reads the page's writer makes (`outline-writer.tsx`), answered before it mounts.
+  for (const key of [
+    ["asks", KEY],
+    ["comments", KEY],
+    ["issue-messages", KEY],
+  ]) {
+    queryClient.setQueryData(key, []);
+  }
   const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ReferenceNamesProvider>
           <Named names={names}>
-            <PlainReferenceNamesProvider>
+            <ProvidersSlot issue={issueDetails()} route={{ key: KEY, kind: "issue" }}>
               <RowText markdown={text} tree={displayTree(text)} />
-            </PlainReferenceNamesProvider>
+            </ProvidersSlot>
           </Named>
         </ReferenceNamesProvider>
       </MemoryRouter>
@@ -691,6 +745,115 @@ test("a chip in a node's words draws its target's words with no mark of markdown
     });
   } finally {
     view.unmount();
+  }
+});
+
+// Decision 102: the batched read's names are named as chips once for each answer of the read,
+// not once for each row. A block's name is its whole reading, so naming every name again for
+// every row cost the page seconds on an issue of 650 rows.
+test("the read's names are named as chips once per answer, not once per row", async () => {
+  const names = new Map(
+    Array.from({ length: 30 }, (_unused, at) => [
+      `dispatch://CORE-1/spec#b-r${at}`,
+      `The words of statement ${at}, which run on well past the room a chip has.`,
+    ])
+  );
+  const target = "dispatch://CORE-1/spec#b-r0";
+  const text = `It follows ${target}.`;
+  const named = spyOn(nodeRowChip, "chipWords");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <Named names={names}>
+            {Array.from({ length: 20 }, (_unused, at) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: twenty rows of one text.
+              <RowText key={at} markdown={text} tree={displayTree(text)} />
+            ))}
+          </Named>
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() => {
+      const chips = view.container.querySelectorAll(`a[data-row-reference="${target}"]`);
+      expect(chips).toHaveLength(20);
+      expect(chips[19]?.textContent).toBe("The words of statement 0, which…");
+    });
+    // A row names a reference the read has not answered by its address alone (`""`), which
+    // costs nothing; each of the read's names is named once.
+    const ofNames = named.mock.calls.filter(([name]) => name !== "");
+    expect(ofNames.length, "every row named the read's names again").toBeLessThanOrEqual(
+      names.size
+    );
+  } finally {
+    view.unmount();
+    named.mockRestore();
+  }
+});
+
+/** Where the router stands, drawn so a test reads it. */
+function Where(): ReactNode {
+  const at = useLocation();
+  return <output data-where="">{`${at.pathname}${at.hash}`}</output>;
+}
+
+// A reference in a row's words is a link of this application: a plain click follows it in place,
+// as a link the router draws does, and never loads the whole page again. A click with a key
+// held is the browser's, which opens it elsewhere. Both the words drawn as stored and the words
+// drawn from their reading, whose links the row's own pass makes, are read.
+test("a reference in a row's words is followed in place on a plain click", async () => {
+  const target = "dispatch://CORE-1/spec#b-r1";
+  const text = `It follows ${target}.`;
+  const names = new Map([[target, "Draw the rows."]]);
+  for (const tree of [undefined, displayTree(text)]) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+          <ReferenceNamesProvider>
+            <Named names={names}>
+              <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
+              <Where />
+            </Named>
+          </ReferenceNamesProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    // What the browser was left to do with each click, which the test then stops: the unit
+    // suite's document loads no page.
+    const left: boolean[] = [];
+    const stop = (event: Event) => {
+      left.push(!event.defaultPrevented);
+      event.preventDefault();
+    };
+    document.addEventListener("click", stop);
+    try {
+      const link = await waitFor(() => {
+        const found = view.container.querySelector<HTMLAnchorElement>(
+          `a[data-row-reference="${target}"]`
+        );
+        expect(found?.textContent).toBe("Draw the rows.");
+        return found;
+      });
+      const where = () => view.container.querySelector("[data-where]")?.textContent;
+      act(() => {
+        link?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true })
+        );
+      });
+      expect(where(), "a click with a key held was followed in place").toBe("/issues/CORE-1");
+      act(() => {
+        link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      expect(where(), "a plain click was left to load the page").toBe("/issues/CORE-1/spec#b-r1");
+      expect(left).toEqual([true, false]);
+    } finally {
+      document.removeEventListener("click", stop);
+      view.unmount();
+    }
   }
 });
 

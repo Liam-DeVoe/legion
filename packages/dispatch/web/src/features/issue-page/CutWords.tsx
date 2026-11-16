@@ -1,10 +1,7 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 
-import { pageQuietText } from "../../theme/classes";
-import { useClamp } from "./NodeRow";
-import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
-import { useOutOfTabOrder } from "./RowText";
+import { MoreWords, useClamp } from "./NodeRow";
+import { FOCUSABLE, useOutOfTabOrder } from "./RowText";
 
 /**
  * A node's words as a filter's own body draws them, cut as the outline cuts an agent's words
@@ -17,7 +14,8 @@ import { useOutOfTabOrder } from "./RowText";
  * The control leaves the focus where it is, as the outline's own does: focusing the node would
  * draw the words whole under the pointer and move the control before the press ends. It and
  * every control the words hold are out of the tab order, as everything inside a row of the
- * outline is, unless `tabStops` holds: a view that no tree's keys reach keeps them in it.
+ * outline is, unless `tabStops` holds: a view that no tree's keys reach keeps them in it, save
+ * the ones the cut hides, which leave it while the words are cut (`useCutOutOfTabOrder`).
  */
 export function CutWords({
   children,
@@ -39,6 +37,7 @@ export function CutWords({
   useOutOfTabOrder(words, !tabStops);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !whole;
+  useCutOutOfTabOrder(words, tabStops && clamped ? clamp.height : undefined);
   return (
     <>
       <div
@@ -56,26 +55,65 @@ export function CutWords({
         ) : null}
       </div>
       {clamp === undefined || whole ? null : (
-        <button
-          className={`dispatch-inline-link self-start text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
-          data-node-more=""
-          onClick={() => setOpened((held) => !held)}
-          onMouseDown={(event) => event.preventDefault()}
-          tabIndex={tabStops ? undefined : -1}
-          type="button"
-          {...pageChrome}
-        >
-          {opened ? (
-            CONTROL_LABELS.read_less
-          ) : (
-            <>
-              {CONTROL_LABELS.read_more} ·{" "}
-              <span {...authorText}>{clamp.hidden.toLocaleString()}</span>{" "}
-              {CONTROL_LABELS.read_more_words}
-            </>
-          )}
-        </button>
+        <MoreWords
+          className="self-start"
+          hidden={clamp.hidden}
+          onToggle={() => setOpened((held) => !held)}
+          opened={opened}
+          tabStops={tabStops}
+        />
       )}
     </>
   );
+}
+
+/**
+ * Takes each control the cut hides out of the tab order while the words are cut, `cut` px
+ * below the top of `box` (decision 85): one whose box starts at or below the cut is drawn
+ * nowhere, so Tab would put the focus where no reader sees it before it reaches "more". It
+ * watches the words as they change - a reference's link once its target answers, a pass that
+ * puts a link back in the tab order, a new width - and a control the cut stops hiding takes
+ * back its place. Once the words are whole (`cut` undefined), each control takes back the tab
+ * order it had before. `useOutOfTabOrder` takes every control out and never puts one back,
+ * which is what the outline needs and not what a view with tab stops does.
+ */
+function useCutOutOfTabOrder(box: RefObject<HTMLElement | null>, cut: number | undefined): void {
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (cut === undefined || element === null) return;
+    // Each control taken out, with its own `tabindex` as it stood before, or null for none.
+    const earlier = new Map<HTMLElement, string | null>();
+    const giveBack = (control: HTMLElement): void => {
+      const before = earlier.get(control);
+      earlier.delete(control);
+      if (before === undefined || before === null) control.removeAttribute("tabindex");
+      else control.setAttribute("tabindex", before);
+    };
+    const sync = (): void => {
+      const foot = element.getBoundingClientRect().top + cut;
+      for (const control of element.querySelectorAll<HTMLElement>(FOCUSABLE)) {
+        if (control.getBoundingClientRect().top < foot) {
+          if (earlier.has(control)) giveBack(control);
+          continue;
+        }
+        if (!earlier.has(control)) earlier.set(control, control.getAttribute("tabindex"));
+        if (control.tabIndex !== -1) control.tabIndex = -1;
+      }
+    };
+    sync();
+    const watching = new MutationObserver(sync);
+    watching.observe(element, {
+      attributeFilter: ["tabindex"],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    const resized = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(sync);
+    resized?.observe(element);
+    return () => {
+      watching.disconnect();
+      resized?.disconnect();
+      for (const control of [...earlier.keys()]) giveBack(control);
+    };
+  }, [box, cut]);
 }

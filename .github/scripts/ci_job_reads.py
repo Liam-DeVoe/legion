@@ -559,13 +559,13 @@ RULES = {
     # own package, which daemon_go_tests covers with the module itself.
     f"{DAEMON}/internal/api/waiting_line_test.go": reads(
         (f"{DAEMON}/cmd/legion/main.go",
-         "internal/api/waiting_line_test.go:240 reads every name of its list under the root it joins at :226"),
+         "internal/api/waiting_line_test.go:457 reads every name of its list under the root it joins at :451"),
         (f"{DAEMON}/cmd/legion/main_test.go",
-         "internal/api/waiting_line_test.go:240 reads every name of its list under the root it joins at :226"),
+         "internal/api/waiting_line_test.go:457 reads every name of its list under the root it joins at :451"),
         (f"{DAEMON}/internal/projection/project.go",
-         "internal/api/waiting_line_test.go:240 reads every name of its list under the root it joins at :226"),
+         "internal/api/waiting_line_test.go:457 reads every name of its list under the root it joins at :451"),
         (f"{DAEMON}/internal/projection/project_test.go",
-         "internal/api/waiting_line_test.go:240 reads every name of its list under the root it joins at :226")),
+         "internal/api/waiting_line_test.go:457 reads every name of its list under the root it joins at :451")),
     f"{DAEMON}/internal/workflow/waiting_line_band_test.go": reads(
         (f"{DAEMON}/cmd/legion/main.go",
          "internal/workflow/waiting_line_band_test.go:62 reads every file of its list under ../../../.."),
@@ -2008,8 +2008,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2172 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2240 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2684 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:47)"),

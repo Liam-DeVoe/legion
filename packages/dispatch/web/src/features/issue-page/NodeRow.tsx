@@ -28,7 +28,6 @@ import {
   pageWordsText,
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { useMarkdownHeadline } from "../refs/markdown-engine";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { DecisionActions } from "./DecisionActions";
@@ -38,8 +37,8 @@ import { bringOnScreen } from "./identity-block";
 import {
   drawnLine,
   firstLineOf,
+  lineWords,
   type NodeChip,
-  nodeWords,
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
@@ -100,9 +99,10 @@ import { documentWord, RowText } from "./RowText";
  * fold and the pin have the arrow keys and `o`, and Keep, Change and a chip's link have keys of
  * their own (`useTreeKeymap.ts`).
  *
- * A view that no tree's keys reach - the conversation's rows, before part I's outline replaces
- * them (`ConversationRows.tsx`) - passes `tabStops`, and every control the row draws keeps its
- * place in the tab order instead, so a reader on the keyboard alone Tabs to each (R9).
+ * A view that no tree's keys reach - the conversation's rows until part I's outline replaces
+ * them, part V's Verification view and part J's Spec view - passes `tabStops`, and every control
+ * the row draws keeps its place in the tab order instead, so a reader on the keyboard alone Tabs
+ * to each (R9).
  */
 export function NodeRow({
   answerer,
@@ -122,6 +122,7 @@ export function NodeRow({
   onToggle,
   ownAnswer,
   pinned,
+  placesItself,
   report,
   rowKey,
   tabStop,
@@ -165,6 +166,10 @@ export function NodeRow({
   /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
   ownAnswer: boolean;
   pinned: boolean;
+  /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
+   *  every row does but the outline's first row as the page opens on it with no question waiting
+   *  on the reader: that row stays where it stands until the reader acts (R8, `IssueTree.tsx`). */
+  placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
   report?: string;
@@ -209,10 +214,12 @@ export function NodeRow({
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
-  const press = useRowOnScreen(row, focused);
+  const press = useRowOnScreen(row, focused, placesItself);
 
   const depth = level - 1;
-  const first = firstLineOf(nodeWords(node));
+  // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
+  // drawing of a node is cut, so a heading never runs into the paragraph after it.
+  const first = firstLineOf(lineWords(node));
   // How many nodes a folded branch holds: on its one line, and after its words once its focus
   // or its pin draws them whole, so the reader still knows what the fold hides (R1).
   const count =
@@ -334,29 +341,13 @@ export function NodeRow({
           )}
           {more || (!oneLine && !trailInWords && trail !== null) ? (
             <p className="flex min-w-0 flex-wrap items-baseline">
-              {/* A press on it leaves the focus where it is: focusing the row would draw the
-                  words whole under the pointer and move the control before the press ends, so
-                  the press would land on nothing. */}
               {more ? (
-                <button
-                  className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
-                  data-node-more=""
-                  onClick={() => setOpened((held) => !held)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  tabIndex={tabStops ? undefined : -1}
-                  type="button"
-                  {...pageChrome}
-                >
-                  {opened ? (
-                    CONTROL_LABELS.read_less
-                  ) : (
-                    <>
-                      {CONTROL_LABELS.read_more} ·{" "}
-                      <span {...authorText}>{clamp.hidden.toLocaleString()}</span>{" "}
-                      {CONTROL_LABELS.read_more_words}
-                    </>
-                  )}
-                </button>
+                <MoreWords
+                  hidden={clamp.hidden}
+                  onToggle={() => setOpened((held) => !held)}
+                  opened={opened}
+                  tabStops={tabStops}
+                />
               ) : null}
               {trailInWords ? null : trail}
             </p>
@@ -476,9 +467,21 @@ export const NODE_ROW_LAYOUT = {
  *
  * Answers the row's own `onPointerDown`, which marks a press. Every row of the outline and of a
  * filter's body places itself by this one hook.
+ *
+ * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
+ * nor as it grows. The outline's first row the page opens on is one, and its body opens with the
+ * focus (R7), so a row taller than the screen would be put at its top under the band and the
+ * page would open scrolled past its header (R8). Read when the row is placed rather than as a
+ * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
  */
-export function useRowOnScreen(row: RefObject<HTMLElement | null>, focused: boolean): () => void {
+export function useRowOnScreen(
+  row: RefObject<HTMLElement | null>,
+  focused: boolean,
+  placesItself = true
+): () => void {
   const pressed = useRef(false);
+  const placing = useRef(placesItself);
+  placing.current = placesItself;
   const press = () => {
     pressed.current = true;
     const ended = new AbortController();
@@ -493,6 +496,7 @@ export function useRowOnScreen(row: RefObject<HTMLElement | null>, focused: bool
     const element = row.current;
     if (!focused || element === null) return;
     const place = () => {
+      if (!placing.current) return;
       if (!pressed.current) bringOnScreen(element);
     };
     place();
@@ -507,11 +511,11 @@ export function useRowOnScreen(row: RefObject<HTMLElement | null>, focused: bool
 /** The kinds of node the page draws no tag for: what somebody said, which is the conversation's
  *  own words rather than a kind it revealed (R34: "as one tag where the node has a typed
  *  kind"). Every other kind is a typed node, and its tag names it. */
-const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: true, message: true };
+export const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: true, message: true };
 
 /** A node's colour, as `pageKindBullet` and `pageKindTag` name them, by what it is and, for a
  *  turn, by who wrote it: a person's words are the ink, an agent's the quiet grey. */
-type Tone = keyof typeof pageKindBullet;
+export type Tone = keyof typeof pageKindBullet;
 
 function toneOf(type: NodeType, author: AuthorKind): Tone {
   switch (type) {
@@ -614,7 +618,7 @@ function Bullet({
  * author for draws none here: its body says so (`NodeBody`, ruling 5). From 761 px up it is a
  * column as wide as its first line; on a phone it is one small line under the words (ruling 4).
  */
-function RowMargin({
+export function RowMargin({
   author,
   context,
   node,
@@ -1016,13 +1020,15 @@ export function NodeEdges({
  * until then by its first words, cut at a word within 32 characters (`chipWords`), as the link a
  * reader follows to it; a whole document by the page's word for one, because today's model
  * holds no title for a document and its name is its file name (`documentWord`, part G's R4). No
- * address, slug or document name is drawn in its place (R22). A target nothing answers to now
- * says so. A chip whose target the batched reference read has not named yet draws nothing until
- * it does - "the names come last and all at once" (`useIssueTree.ts`) - and neither does one the
- * read named with no words at all: there is nothing to name it by. A target's name is its stored
- * excerpt, which is markdown, so it is read as plain words, as a link's text is
- * (`useMarkdownHeadline`): no mark the author typed is drawn (the tester's finding F18), and the
- * chip draws nothing until that reading answers.
+ * address, slug or document name is drawn in its place (R22), save one: a short reference that
+ * two or more targets answer to (`ambiguous`) names no one target, so it is drawn as its author
+ * wrote it, as words with no link, and never as a target deleted (decision 62). A target nothing
+ * answers to now says so. A chip whose target the batched reference read has not named yet
+ * draws nothing until it does - "the names come last and all at once" (`useIssueTree.ts`) - and
+ * neither does one the read named with no words at all: there is nothing to name it by. A
+ * target's name is plain words already (`tree-drafts.ts`'s `treeContext` names every kind of
+ * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
+ * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
  */
 function Chip({
   chip,
@@ -1034,17 +1040,15 @@ function Chip({
   tabStops: boolean;
 }): ReactNode {
   // A chip names a node the page may not be drawing, and the old page's decision cards reached
-  // each one by its words (R18, c-nothing-lost). A target nothing answers to now, or a reference
-  // the grammar cannot read, is text: there is nowhere to go.
+  // each one by its words (R18, c-nothing-lost). A target nothing answers to now, one of several
+  // a short reference names, or a reference the grammar cannot read, is text: there is nowhere
+  // to go.
+  const ambiguous = chip.ambiguous === true;
+  const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
-  const word = documentWord(target);
-  const plain = useMarkdownHeadline(
-    undefined,
-    Math.max(chip.name.length, 1),
-    word === undefined && chip.name !== "" ? chip.name : undefined
-  );
-  const words = word ?? chipWords(plain?.text ?? "");
-  if (!chip.gone && words === "") return null;
+  const word = ambiguous ? undefined : documentWord(target);
+  const words = ambiguous ? chip.ref : (word ?? chipWords(chip.name));
+  if (!gone && words === "") return null;
   // A person has no page, so a chip naming one draws its words (`PagedReferenceRoute`).
   const route = chip.gone || target?.kind === "person" ? undefined : target;
   // The page's word for a document is the page's, and a target's own words are its author's.
@@ -1054,10 +1058,11 @@ function Chip({
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
       {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
-      {chip.gone ? (
+      {gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
       ) : route === undefined ? (
-        <span className="whitespace-nowrap" data-chip-name="" {...marks}>
+        // An address as written may run longer than the line, so it alone may wrap.
+        <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>
           {words}
         </span>
       ) : (
@@ -1132,26 +1137,7 @@ function NodeBody({
       data-node-body=""
       data-pinned={pinned ? "" : undefined}
     >
-      {author.kind === "unknown" ? (
-        <p
-          className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
-          data-author-kind={author.kind}
-          data-node-author=""
-        >
-          <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.unknown} />
-          <span {...pageChrome}>{author.name}</span>
-        </p>
-      ) : author.kind === "agent" && agentRoleWord(author.name) !== author.name ? (
-        <p
-          className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
-          data-node-author-title=""
-        >
-          <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.agent} />
-          <span className="min-w-0 break-words" {...authorText}>
-            {author.name}
-          </span>
-        </p>
-      ) : null}
+      <BodyAuthor author={author} />
       <NodeFacts facts={node.facts} tabStops={tabStops} />
       {node.gaps.map((gap) => (
         <p className={`text-xs ${pageQuietText}`} key={gap} {...pageChrome}>
@@ -1174,18 +1160,113 @@ function NodeBody({
           tabStops={tabStops}
         />
       ) : null}
-      <p>
-        <button
-          className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
-          onClick={onPin}
-          tabIndex={tabStops ? undefined : -1}
-          type="button"
-          {...pageChrome}
-        >
-          {pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open}
-        </button>
-      </p>
+      <KeepOpen onPin={onPin} pinned={pinned} tabStops={tabStops} />
     </div>
+  );
+}
+
+/** Who made the focused node, in its body (R6, R9, ruling 5): "Author unknown", with its own
+ *  shape, where the model holds no author, and an agent's session's whole title where the row
+ *  names the agent by its role's word alone (ruling 6); nothing for any other author, whom the
+ *  row already names whole. */
+export function BodyAuthor({
+  author,
+}: {
+  author: { readonly kind: AuthorKind; readonly name: string };
+}): ReactNode {
+  if (author.kind === "unknown") {
+    return (
+      <p
+        className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
+        data-author-kind={author.kind}
+        data-node-author=""
+      >
+        <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.unknown} />
+        <span {...pageChrome}>{author.name}</span>
+      </p>
+    );
+  }
+  if (author.kind !== "agent" || agentRoleWord(author.name) === author.name) return null;
+  return (
+    <p
+      className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
+      data-node-author-title=""
+    >
+      <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.agent} />
+      <span className="min-w-0 break-words" {...authorText}>
+        {author.name}
+      </span>
+    </p>
+  );
+}
+
+/** Keep open, which holds the focused node's body open after the focus leaves it, and "Let
+ *  close" while it does, so a second press lets it close (R6). Out of the tab order unless
+ *  `tabStops` holds. */
+export function KeepOpen({
+  onPin,
+  pinned,
+  tabStops,
+}: {
+  onPin: () => void;
+  pinned: boolean;
+  tabStops: boolean;
+}): ReactNode {
+  return (
+    <p>
+      <button
+        className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
+        onClick={onPin}
+        tabIndex={tabStops ? undefined : -1}
+        type="button"
+        {...pageChrome}
+      >
+        {pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open}
+      </button>
+    </p>
+  );
+}
+
+/**
+ * The control under cut words (ruling 1): "more · N words", `hidden` the words the cut holds
+ * back, which draws the rest in place, and "less" once `opened` holds. A press on it leaves the
+ * focus where it is: focusing the row would draw the words whole under the pointer and move the
+ * control before the press ends, so the press would land on nothing. It is out of the tab order
+ * unless `tabStops` holds. A row of the outline and `CutWords` draw it, and so can any view that
+ * cuts a node's words; `className` adds the place it takes in its own box.
+ */
+export function MoreWords({
+  className,
+  hidden,
+  onToggle,
+  opened,
+  tabStops,
+}: {
+  className?: string;
+  hidden: number;
+  onToggle: () => void;
+  opened: boolean;
+  tabStops: boolean;
+}): ReactNode {
+  return (
+    <button
+      className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}${className === undefined ? "" : ` ${className}`}`}
+      data-node-more=""
+      onClick={onToggle}
+      onMouseDown={(event) => event.preventDefault()}
+      tabIndex={tabStops ? undefined : -1}
+      type="button"
+      {...pageChrome}
+    >
+      {opened ? (
+        CONTROL_LABELS.read_less
+      ) : (
+        <>
+          {CONTROL_LABELS.read_more} · <span {...authorText}>{hidden.toLocaleString()}</span>{" "}
+          {CONTROL_LABELS.read_more_words}
+        </>
+      )}
+    </button>
   );
 }
 

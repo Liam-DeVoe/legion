@@ -13,7 +13,8 @@ import { DETAILS_ATTRIBUTE } from "./margin-slot";
 export const IDENTITY_HEIGHT_PROPERTY = "--issue-identity-height";
 
 /** The widths the header scrolls away at and the filter row stays: the prototype's own media
- *  query, which the header's and the filter row's `max-[760px]:` classes repeat. */
+ *  query, which the header's and the filter row's `max-[761px]:` classes repeat, Tailwind's
+ *  `max-[761px]:` being a width under 761 px (dispatch://INFRA-1196 decision 72). */
 export const HEADER_SCROLLS_QUERY = "(max-width: 760px)";
 
 /** The mark the filter row's own element carries (`IssuePresets.tsx`), by which the band is found
@@ -78,9 +79,11 @@ export function bringOnScreen(element: HTMLElement): void {
  * properties line under it is not in the block, and scrolls away under it.
  *
  * The block draws its shadow once the page has scrolled more than `CONDENSED_AFTER` pixels, as
- * the prototype does. `restoringTo` is the place the page is about to put the reader back at, in
- * pixels down the document, where it has one (`IssuePage`'s `panelScroll`): the shadow is drawn
- * for that place in the commit that restores it, rather than a frame later.
+ * the prototype does, at the widths where it stays: at 760 px and below it scrolls away with the
+ * page (`HEADER_SCROLLS_QUERY`), is never stuck, and draws none, and the shadow is measured again
+ * when the width crosses that line. `restoringTo` is the place the page is about to put the
+ * reader back at, in pixels down the document, where it has one (`IssuePage`'s `panelScroll`):
+ * the shadow is drawn for that place in the commit that restores it, rather than a frame later.
  */
 export function useIdentityBlock(
   ref: RefObject<HTMLElement | null>,
@@ -123,13 +126,16 @@ export function useIdentityBlock(
 
   useEffect(() => {
     if (ref.current === null) return;
-    const measure = () => setStuck(window.scrollY > CONDENSED_AFTER);
+    const narrow = window.matchMedia(HEADER_SCROLLS_QUERY);
+    const measure = () => setStuck(window.scrollY > CONDENSED_AFTER && !narrow.matches);
     window.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("resize", measure);
+    narrow.addEventListener("change", measure);
     measure();
     return () => {
       window.removeEventListener("scroll", measure);
       window.removeEventListener("resize", measure);
+      narrow.removeEventListener("change", measure);
     };
   }, [ref]);
 

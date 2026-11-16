@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Artifact, Ask, Comment, IssueDetails } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
+import { KEEPS_DETAILS_ATTRIBUTE } from "./Margin";
 import { type DocumentBridge, useMargin } from "./margin-context";
 
 export const specArtifact: Artifact = {
@@ -154,6 +155,25 @@ export function SameCommentLink(): ReactNode {
     >
       Open the same comment
     </button>
+  );
+}
+
+/** Two links that keep the phone's Details open when followed in it (`Margin.tsx`'s
+ *  `KEEPS_DETAILS_ATTRIBUTE`): one that carries the attribute, as a history turn's time link
+ *  does, and one inside an element that carries it. Neither leaves the page. */
+export function KeptDetailsLinks(): ReactNode {
+  const keeps = { [KEEPS_DETAILS_ATTRIBUTE]: "" };
+  return (
+    <>
+      <a href="/issues/CORE-3" onClick={(event) => event.preventDefault()} {...keeps}>
+        a turn's time
+      </a>
+      <span {...keeps}>
+        <a href="/issues/CORE-4" onClick={(event) => event.preventDefault()}>
+          a link inside a turn
+        </a>
+      </span>
+    </>
   );
 }
 

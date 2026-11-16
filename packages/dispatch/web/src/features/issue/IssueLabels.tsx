@@ -5,6 +5,10 @@ import { projectIssuesQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
 import { usePageWords } from "../../components/tooltips";
 import {
+  pageLabelChip,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
@@ -155,10 +159,18 @@ export function IssueLabels({
       >
         {displayLabels.map((label) => (
           <span
+            // Inside `NoTooltips` a chip is never cut: it stays within its line and breaks a
+            // long label anywhere, so a 40-character label with no space wraps inside Details
+            // rather than running past it (dispatch://INFRA-3935 R4/R6, decision 91 of
+            // dispatch://INFRA-1196/artifact/part-decisions-md). Everywhere else it stays whole.
             className={
-              chipClassName === undefined
-                ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
-                : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
+              page === null
+                ? chipClassName === undefined
+                  ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
+                  : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
+                : chipClassName === undefined
+                  ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
+                  : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${chipClassName}`
             }
             key={label}
             {...page?.authorText}
@@ -185,7 +197,15 @@ export function IssueLabels({
           searchLabel="Search or create label"
           selected={draft}
           triggerAriaLabel="Edit labels"
-          triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935
+          // R6, decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): a label above is
+          // its label chip (the prototype's `.lchip`), and this trigger its secondary control, the
+          // header control's rule and muted words on the paper, with quiet words while it is busy.
+          triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${
+            page === null
+              ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`
+              : `${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`
+          }`}
         >
           {page === null ? (
             saving ? (
@@ -197,10 +217,14 @@ export function IssueLabels({
             )
           ) : (
             <span {...page.pageChrome}>
+              {/* With no label the control says what it does, as the priority's says "Add a
+                  priority": its row of Details already names the property, so the property's
+                  name here drew "Labels" twice (dispatch://INFRA-3935 R4/R6, decision 91 of
+                  dispatch://INFRA-1196/artifact/part-decisions-md). */}
               {saving
                 ? page.ANSWER_LINES.saving_labels
                 : displayLabels.length === 0
-                  ? page.PROPERTY_LABELS.labels
+                  ? page.CONTROL_LABELS.add_label
                   : "+"}
             </span>
           )}

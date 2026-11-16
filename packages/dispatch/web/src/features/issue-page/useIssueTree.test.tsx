@@ -8,10 +8,12 @@ import type {
   Artifact,
   ArtifactBlock,
   Comment,
+  DisplayTree,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
+import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { ReferenceNamesProvider, useKnownReferenceName } from "./reference-names";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
@@ -100,48 +102,88 @@ const issue: IssueDetails = {
 
 const comment: Comment = {
   anchor: null,
+  answers: null,
+  artifact_id: null,
+  ask_id: null,
   author: { id: "alice", kind: "user" },
   body: "One more turn of the conversation.",
   created_at: "2026-11-05T01:00:00Z",
+  deliveries: [],
+  edited_at: null,
   id: "comment-1",
   issue_key: KEY,
-  parent_id: null,
+  mentions: [],
+  reply_block: null,
+  reply_to: null,
+  resolved: false,
   resolved_at: null,
   resolved_by: null,
-  updated_at: "2026-11-05T01:00:00Z",
-} as unknown as Comment;
+  suggestion: null,
+  turn: null,
+};
 
-/** Every read the hook makes, answered empty but for the plan's one task block, and the comments
- *  read as `listComments` answers it. */
+/** A read the tree is built from, by what it reads: each is one the batched name read waits on. */
+type TreeRead =
+  | "asks"
+  | "blocks"
+  | "comments"
+  | "coverage"
+  | "decisions"
+  | "login"
+  | "messages"
+  | "results";
+
+/** Every read the hook makes, answered empty but for the plan's one task block, the reader's
+ *  login and `comments`. The `held` read stays out until its `until` settles, and then answers
+ *  as it would have. */
 function stubTreeReads(
   answerNames: (refs: readonly string[]) => Promise<{
     targets: ReferenceTarget[];
   }>,
-  listComments: () => Promise<Comment[]> = async () => []
+  {
+    comments = [],
+    held,
+  }: {
+    readonly comments?: readonly Comment[];
+    readonly held?: { readonly read: TreeRead; readonly until: Promise<void> };
+  } = {}
 ) {
+  const answered = (read: TreeRead): Promise<void> =>
+    read === held?.read ? held.until : Promise.resolve();
   return [
-    spyOn(api, "getIssueCoverage").mockResolvedValue({
-      gaps: [],
-      has_plan: true,
-      issue: KEY,
-      requirements: [],
-      spec_artifact_id: "",
+    spyOn(api, "getIssueCoverage").mockImplementation(async () => {
+      await answered("coverage");
+      return { gaps: [], has_plan: true, issue: KEY, requirements: [], spec_artifact_id: "" };
     }),
-    spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
+    spyOn(api, "getIssueDecisions").mockImplementation(async () => {
+      await answered("decisions");
+      return { decisions: [], document: null, open_questions: [] };
     }),
-    spyOn(api, "getIssueResults").mockResolvedValue({
-      checks: [],
-      issue: KEY,
-      verification_artifact_id: "",
+    spyOn(api, "getIssueResults").mockImplementation(async () => {
+      await answered("results");
+      return { checks: [], issue: KEY, verification_artifact_id: "" };
     }),
     spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-    spyOn(api, "listComments").mockImplementation(listComments),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "getArtifactBlocks").mockResolvedValue([task]),
+    spyOn(api, "listIssueAsks").mockImplementation(async () => {
+      await answered("asks");
+      return [];
+    }),
+    spyOn(api, "listComments").mockImplementation(async () => {
+      await answered("comments");
+      return [...comments];
+    }),
+    spyOn(api, "listIssueMessages").mockImplementation(async () => {
+      await answered("messages");
+      return [];
+    }),
+    spyOn(api, "getArtifactBlocks").mockImplementation(async () => {
+      await answered("blocks");
+      return [task];
+    }),
+    spyOn(api, "whoAmI").mockImplementation(async () => {
+      await answered("login");
+      return { event_head: "0", kind: "user", login: "alice" };
+    }),
     spyOn(api, "getReferenceTargets").mockImplementation(answerNames),
   ];
 }
@@ -234,19 +276,98 @@ function issueDocument(id: string, slug: string, extra: Partial<Artifact> = {}):
   };
 }
 
-// The tester's F17: the names come last and all at once. While a read of the tree is still out,
-// the addresses known so far are not read; once the last one answers, every address the tree
-// holds - a block's own, and one a comment's words cite - is read in one request, and the page
-// publishes the answer to every surface beside it (`reference-names.tsx`).
+/** Every read the tree is built from, in the order the test holds each one open. */
+const TREE_READS: readonly TreeRead[] = [
+  "comments",
+  "asks",
+  "coverage",
+  "decisions",
+  "messages",
+  "results",
+  "blocks",
+  "login",
+];
+
+// The tester's F17: the names come last and all at once. While any one read of the tree is still
+// out - the comments, the asks, the coverage, the decisions, the messages, the results, the
+// plan's blocks or the reader's login - the addresses known so far are not read; once it
+// answers, every address the tree holds - a block's own, and one a comment's words cite - is
+// read in one request, and the page publishes the answer to every surface beside it
+// (`reference-names.tsx`).
 test("The names are read in one batched request, after every other read has answered", async () => {
+  const cited = "dispatch://CORE-7";
+  for (const read of TREE_READS) {
+    const asked: string[][] = [];
+    const out = Promise.withResolvers<void>();
+    const stubs = stubTreeReads(
+      async (refs) => {
+        asked.push([...refs]);
+        return namedTargets(refs);
+      },
+      {
+        comments: [{ ...comment, body: `Read ${cited} first.` }],
+        held: { read, until: out.promise },
+      }
+    );
+    // A client and a page of the turn's own, so no answer of an earlier turn is in hand.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>
+        <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+      </QueryClientProvider>
+    );
+    try {
+      const view = renderHook(
+        () => ({
+          // How many reads were out when the hook last drew.
+          fetching: client.isFetching(),
+          name: useKnownReferenceName(TASK_REF),
+          root: useIssueTree(issue).root,
+        }),
+        { wrapper }
+      );
+      // The hook has drawn with every other read answered, the held one the only read still
+      // out: no name is read yet.
+      await waitFor(() => expect(view.result.current.fetching).toBe(1));
+      expect(asked, `no names read while the ${read} read is out`).toEqual([]);
+
+      await act(async () => {
+        out.resolve();
+        await out.promise;
+      });
+      // The read sends no reading of the task, so the name the page publishes for it is the
+      // page's word for its kind, as a chip naming it draws (`targetNames`).
+      await waitFor(() => expect(view.result.current.name).toBe(NODE_TYPE_NAMES.plan_task));
+      expect(asked, `one names read after the ${read} read answers`).toHaveLength(1);
+      expect(asked[0]).toContain(TASK_REF);
+      expect(asked[0]).toContain(cited);
+      view.unmount();
+    } finally {
+      out.resolve();
+      for (const stub of stubs) stub.mockRestore();
+    }
+  }
+});
+
+// dispatch://INFRA-1196 R9 and decision 55: the batched read resolves an id a comment writes
+// short in the owner the reference names, and answers under the reference as the request wrote
+// it. So the names read is asked for the short address itself, and the page publishes its answer
+// under that address, which is the one a row links it by.
+test("a short address a comment cites is read as written and named from that answer", async () => {
+  const cited = `dispatch://${KEY}/comment/c0b271c7`;
   const asked: string[][] = [];
-  const comments = Promise.withResolvers<Comment[]>();
   const stubs = stubTreeReads(
     async (refs) => {
       asked.push([...refs]);
-      return namedTargets(refs);
+      return {
+        targets: namedTargets(refs).targets.map((target) =>
+          target.ref === cited
+            ? { ...target, kind: "comment", name: "The comment its short id names" }
+            : target
+        ),
+      };
     },
-    () => comments.promise
+    { comments: [{ ...comment, body: `Read ${cited} first.` }] }
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -254,35 +375,178 @@ test("The names are read in one batched request, after every other read has answ
       <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
     </QueryClientProvider>
   );
-  const cited = "dispatch://CORE-7";
   try {
     const view = renderHook(
-      () => ({ name: useKnownReferenceName(TASK_REF), root: useIssueTree(issue).root }),
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
       { wrapper }
     );
-    // The plan's task is in the tree, with an address to name, while the comments are still
-    // being read: no name is read yet.
-    await waitFor(() => expect(taskWords(view.result.current.root)).toBe(""));
-    expect(asked).toEqual([]);
-
-    await act(async () => {
-      comments.resolve([{ ...comment, body: `Read ${cited} first.` }]);
-      await comments.promise;
-    });
-    await waitFor(() => expect(view.result.current.name).toBe(TASK_WORDS));
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toContain(TASK_REF);
+    await waitFor(() => expect(view.result.current).toBe("The comment its short id names"));
     expect(asked[0]).toContain(cited);
     view.unmount();
   } finally {
-    comments.resolve([]);
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// R21: the batched read names an ask by its question as stored, which is markdown, and every
+// link that reads the page's published names draws the name as it is, so the page publishes the
+// question's plain words, the name a chip naming the ask draws (`targetNames`).
+test("a published name of an ask is its question's plain words, never its markdown", async () => {
+  const cited = `dispatch://${KEY}/ask/ask-9`;
+  const stubs = stubTreeReads(
+    async (refs) => ({
+      targets: namedTargets(refs).targets.map((target) =>
+        target.ref === cited
+          ? {
+              ...target,
+              kind: "ask",
+              name: "**Hold** the `deploy` until [the plan](https://example.com/plan) lands",
+            }
+          : target
+      ),
+    }),
+    { comments: [{ ...comment, body: `Read ${cited} first.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("Hold the deploy until the plan lands"));
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// A plan task has no words until the names read answers, so what its words cite is in no address
+// that read was given. One more read names those addresses alone, once the first has answered,
+// and the page publishes its answer too.
+test("what a plan task's words cite is named by one more read", async () => {
+  const cited = "dispatch://CORE-7";
+  const words = `Draw the tree as ${cited} asks.`;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        return target.ref === cited
+          ? { ...target, kind: "issue", name: "The cited issue" }
+          : target;
+      }),
+    };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("The cited issue"));
+    expect(asked).toHaveLength(2);
+    expect(asked[0]).toContain(TASK_REF);
+    expect(asked[1]).toEqual([cited]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// Once nothing is left for the second read to name - an address only a plan task's words cited
+// is cited by a comment too, so the first read names it - the second read's query is disabled,
+// and it would hold its last answer as placeholder for good. The name the page publishes for
+// that address is the first read's newer one, never that older answer.
+test("once the second read has nothing left to name, the first read's newer names stand", async () => {
+  const cited = "dispatch://CORE-7";
+  const words = `Draw the tree as ${cited} asks.`;
+  let title = "The cited issue";
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        return target.ref === cited ? { ...target, kind: "issue", name: title } : target;
+      }),
+    };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    // The first round: only the plan task's words cite the issue, so the second read names it.
+    await waitFor(() => expect(view.result.current).toBe("The cited issue"));
+    expect(asked[1]).toEqual([cited]);
+
+    // The issue is renamed, and a comment citing it arrives: the tree's own addresses hold it
+    // now, so the first read names it and nothing is left for the second.
+    title = "The cited issue, renamed";
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [{ ...comment, body: `Read ${cited} again.` }]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current).toBe("The cited issue, renamed"));
+    expect(asked).toHaveLength(3);
+    expect(asked[2]).toContain(cited);
+    view.unmount();
+  } finally {
     for (const stub of stubs) stub.mockRestore();
   }
 });
 
 // The tester's F17: one block read for every document of the issue was 25 of a first load's 47
 // requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
-// documents, whose typed blocks the page draws, and of no other document.
+// documents, whose typed blocks the page draws, and of no other document: each the one the issue
+// read names by its id, as the server answers which document plays which part.
 test("Only the spec and the plan, Verification and decisions documents have their blocks read", async () => {
   const notes = issueDocument("artifact-notes", "notes-md");
   const read = [
@@ -291,7 +555,14 @@ test("Only the spec and the plan, Verification and decisions documents have thei
     issueDocument("artifact-verification", "verification-md", { role: "verification" }),
     issueDocument("artifact-decisions", "decisions-md", { role: "decisions" }),
   ];
-  const withDocuments: IssueDetails = { ...issue, artifacts: [...read, notes] };
+  const withDocuments: IssueDetails = {
+    ...issue,
+    artifacts: [...read, notes],
+    decisions_artifact_id: "artifact-decisions",
+    plan_artifact_id: plan.id,
+    primary_artifact_id: "artifact-spec",
+    verification_artifact_id: "artifact-verification",
+  };
   let named = 0;
   const stubs = stubTreeReads(async (refs) => {
     named += 1;
@@ -313,5 +584,83 @@ test("Only the spec and the plan, Verification and decisions documents have thei
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The server gives a document its part by its role, or, for a row a rolling deploy left with no
+// role, by the slug that part is made under, and it omits `role` on such a row. The issue read
+// names the document all the same (`plan_artifact_id`), and the tree reads its blocks, and names
+// it, by that id.
+test("A plan with no role that the issue names by its id has its blocks read and is named the plan", async () => {
+  const roleless = issueDocument(plan.id, PLAN);
+  const named: IssueDetails = { ...issue, artifacts: [roleless], plan_artifact_id: roleless.id };
+  const cites = `dispatch://${KEY}/artifact/${PLAN}`;
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    comments: [{ ...comment, body: `The tasks are in ${cites}.` }],
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(named).root, { wrapper });
+    // The plan's task is a row of the tree, which only its blocks being read puts there.
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    expect(api.getArtifactBlocks).toHaveBeenCalledWith(roleless.id);
+    // A comment citing the whole plan carries a chip that names it as the plan.
+    const chips = nodesInOrder(view.result.current).find((node) => node.id === comment.id)?.chips;
+    expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([
+      { name: PRESET_NAMES.plan, ref: cites },
+    ]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The batched read names a typed block by its stored excerpt, which opens on the block's
+// directive line. Every link that reads the page's published names draws the name as it is, so
+// the page publishes the name a chip naming the block draws (`targetNames`): the first line of
+// the server's reading where the read sends one, and the page's word for the block's kind where
+// it sends none - never the directive line.
+test("A published name of a typed block is never its directive line", async () => {
+  const opener = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}`;
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [{ marks: [{ type: "strong" }], text: TASK_WORDS, type: "text" }],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  for (const [sent, answer, published] of [
+    ["a reading", { name: `${opener}\n**${TASK_WORDS}**\n:::`, text_tree: reading }, TASK_WORDS],
+    ["no reading", { name: `${opener}\n${TASK_WORDS}\n:::` }, NODE_TYPE_NAMES.plan_task],
+  ] as const) {
+    const stubs = stubTreeReads(async (refs) => ({
+      targets: namedTargets(refs).targets.map((target) =>
+        target.ref === TASK_REF ? { ...target, ...answer } : target
+      ),
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>
+        <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+      </QueryClientProvider>
+    );
+    try {
+      const view = renderHook(
+        () => {
+          useIssueTree(issue);
+          return useKnownReferenceName(TASK_REF);
+        },
+        { wrapper }
+      );
+      await waitFor(() => expect(view.result.current, `the read sent ${sent}`).toBe(published));
+      view.unmount();
+    } finally {
+      for (const stub of stubs) stub.mockRestore();
+    }
   }
 });

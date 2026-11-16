@@ -13,10 +13,18 @@ import {
   backdrop40,
   card,
   dangerText,
+  focusBorder,
   focusVisibleRing,
+  pageFailedText,
+  pageHairBorder,
   pageHeaderControl,
   pageInkBorder,
   pageInkFill,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -34,6 +42,38 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDialog } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+
+/**
+ * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
+ * issue page's (dispatch://INFRA-3935 R6, decision 56 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md), by the role `main`'s colour has: a dialog is
+ * the page's paper inside its hairline rule over the icon rail's dark, the one page colour dark
+ * in both schemes; its heading and a review are the ink, the reviewer's reason and a label the
+ * muted grey, Close and a pending read the quiet grey, a refusal the failed red; Approve and the
+ * dialog's Request changes are filled with the ink, as the header's one filled control is, and
+ * the other actions are the header's control. The reason box keeps `main`'s focus rule, the
+ * application's one focus indicator (decision 58 of the same artifact).
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
+ * registers for the page.
+ */
+const ON_PAGE = {
+  action: `${pageLineBorder} ${pagePaperBg} ${pageMutedText}`,
+  backdrop: "bg-icon-rail/40",
+  dialog: `${pageHairBorder} ${pagePaperBg}`,
+  dismiss: pageQuietText,
+  failure: pageFailedText,
+  filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+  heading: pageInkText,
+  label: pageMutedText,
+  pending: pageQuietText,
+  reason: pageMutedText,
+  reasonBox: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
+  review: pageInkText,
+} as const;
 
 /** The version an approval speaks for: `version` when the review named one, else the document's
  *  latest. */
@@ -90,6 +130,7 @@ function ReviewsDialog({
   onClose: () => void;
 }): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
+  const page = usePageWords();
   const reviews = useQuery({
     queryFn: () => api.listArtifactReviews(artifactId),
     queryKey: ["artifact-reviews", artifactId],
@@ -97,19 +138,27 @@ function ReviewsDialog({
 
   return (
     <>
-      <div aria-hidden="true" className={`fixed inset-0 z-40 ${backdrop40}`} onClick={onClose} />
+      <div
+        aria-hidden="true"
+        className={`fixed inset-0 z-40 ${page === null ? backdrop40 : ON_PAGE.backdrop}`}
+        onClick={onClose}
+      />
       <div className="pointer-events-none fixed inset-0 z-40 flex items-start justify-center p-4 pt-20">
         <div
           aria-label="Reviews"
           aria-modal="true"
-          className={`pointer-events-auto w-full max-w-md space-y-3 rounded-lg border p-4 shadow-xl ${card}`}
+          className={`pointer-events-auto w-full max-w-md space-y-3 rounded-lg border p-4 shadow-xl ${page === null ? card : ON_PAGE.dialog}`}
           ref={dialog.containerRef}
           role="dialog"
         >
           <div className="flex items-center justify-between gap-3">
-            <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Reviews</h2>
+            <h2
+              className={`text-sm font-semibold ${page === null ? textSecondaryOnSurface : ON_PAGE.heading}`}
+            >
+              Reviews
+            </h2>
             <button
-              className={`text-sm font-medium ${textMutedOnSurface}`}
+              className={`text-sm font-medium ${page === null ? textMutedOnSurface : ON_PAGE.dismiss}`}
               onClick={onClose}
               type="button"
             >
@@ -117,22 +166,32 @@ function ReviewsDialog({
             </button>
           </div>
           {reviews.isPending ? (
-            <p className={`text-sm ${textMutedOnSurface}`}>Loading reviews…</p>
+            <p className={`text-sm ${page === null ? textMutedOnSurface : ON_PAGE.pending}`}>
+              Loading reviews…
+            </p>
           ) : reviews.isError ? (
-            <p className={`text-sm ${dangerText}`}>Could not load reviews.</p>
+            <p className={`text-sm ${page === null ? dangerText : ON_PAGE.failure}`}>
+              Could not load reviews.
+            </p>
           ) : reviews.data.length === 0 ? (
-            <p className={`text-sm ${textMutedOnSurface}`}>No reviews yet.</p>
+            <p className={`text-sm ${page === null ? textMutedOnSurface : ON_PAGE.pending}`}>
+              No reviews yet.
+            </p>
           ) : (
             <ul className="space-y-3">
               {reviews.data.map((review) => (
                 <li key={review.id}>
-                  <p className={`text-sm font-medium ${textPrimaryOnSurface}`}>
+                  <p
+                    className={`text-sm font-medium ${page === null ? textPrimaryOnSurface : ON_PAGE.review}`}
+                  >
                     <AgentName actor={review.actor} inline />{" "}
                     {review.state === "approved" ? "approved" : "requested changes on"} v
                     {review.version} · <Timestamp at={review.created_at} />
                   </p>
                   {review.reason === null ? null : (
-                    <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
+                    <div
+                      className={`mt-1 text-sm ${page === null ? textSecondaryOnSurface : ON_PAGE.reason}`}
+                    >
                       <MarkdownBody
                         markdown={review.reason}
                         source={textSourceOf("artifact", artifactId, issueKey)}
@@ -175,22 +234,33 @@ function RequestChangesDialog({
   // own element (`MentionFieldHandle`).
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
+  const page = usePageWords();
   const trimmed = reason.trim();
 
   return (
     <>
-      <div aria-hidden="true" className={`fixed inset-0 z-40 ${backdrop40}`} onClick={onClose} />
+      <div
+        aria-hidden="true"
+        className={`fixed inset-0 z-40 ${page === null ? backdrop40 : ON_PAGE.backdrop}`}
+        onClick={onClose}
+      />
       <div className="pointer-events-none fixed inset-0 z-40 flex items-start justify-center p-4 pt-20">
         <div
           aria-label="Request changes"
           aria-modal="true"
-          className={`pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl ${card}`}
+          className={`pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl ${page === null ? card : ON_PAGE.dialog}`}
           ref={dialog.containerRef}
           role="dialog"
         >
-          <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Request changes</h2>
+          <h2
+            className={`text-sm font-semibold ${page === null ? textSecondaryOnSurface : ON_PAGE.heading}`}
+          >
+            Request changes
+          </h2>
+          {/* #3125's field, in the page's colours inside `NoTooltips` (part I's `ON_PAGE`): its
+              label as part I draws it there, and the page's box colours after the field's own. */}
           <MentionField
-            className="text-sm"
+            className={page === null ? "text-sm" : `text-sm ${ON_PAGE.reasonBox}`}
             body={reason}
             disabled={saving}
             fieldRef={(handle) => {
@@ -198,6 +268,9 @@ function RequestChangesDialog({
             }}
             issueKey={issueKey}
             label="Reason"
+            labelClassName={
+              page === null ? undefined : `block text-sm font-medium ${ON_PAGE.label}`
+            }
             onChange={(change) => setReason(change.body)}
             onKeyDown={(event) =>
               submitOnModifiedEnter(event, {
@@ -212,7 +285,7 @@ function RequestChangesDialog({
             writing={dispatchWritingBox("approval-reason", "approval-reason")}
           />
           {error === null ? null : (
-            <p className={`text-sm ${dangerText}`} role="alert">
+            <p className={`text-sm ${page === null ? dangerText : ON_PAGE.failure}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
                   the block and the bound; any other failure is worth another try. */}
               {isCapExceeded(error) ? error.message : "Could not request changes. Try again."}
@@ -220,7 +293,7 @@ function RequestChangesDialog({
           )}
           <div className="flex items-center justify-end gap-2">
             <button
-              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`}
               disabled={saving}
               onClick={onClose}
               type="button"
@@ -228,7 +301,7 @@ function RequestChangesDialog({
               Cancel
             </button>
             <button
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`}
               disabled={trimmed === "" || saving}
               onClick={() => onSubmit(trimmed)}
               type="button"
@@ -242,6 +315,23 @@ function RequestChangesDialog({
   );
 }
 
+/** The chip's actions: `together`, in one box that does not wrap; otherwise with no box around
+ *  them, each its parent's own item, as on `main` (`keepActionsTogether`, dispatch://INFRA-3935
+ *  R10). */
+function ActionsGroup({
+  children,
+  together,
+}: {
+  children: ReactNode;
+  together: boolean;
+}): ReactNode {
+  return together ? (
+    <span className="inline-flex flex-nowrap items-center gap-2 whitespace-nowrap">{children}</span>
+  ) : (
+    children
+  );
+}
+
 export interface ApprovalChipProps {
   artifact: Artifact;
   /** `header`: shown on the document header, with an approval-state chip.
@@ -251,10 +341,17 @@ export interface ApprovalChipProps {
   showActions?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
   layout?: "contents" | "inline";
+  /** Whether Approve and Request changes sit in one box that does not wrap, so in a parent's line
+   *  that wraps the two stay together as one item beside the chip. `ApprovalSteps` passes it at
+   *  `layout="contents"`, which part P's header uses (dispatch://INFRA-3935 R10, decision 86 of
+   *  dispatch://INFRA-1196/artifact/part-decisions-md). Off, the default, each action is its own
+   *  item, as on `main`. */
+  keepActionsTogether?: boolean;
   /** `compact` draws the chip and its two actions at the size of the new issue page header's
    *  other pills and controls (the prototype's `.pill` and `.hbtn`, dispatch://INFRA-1196 R13):
-   *  12 px type, 20 px tall for the chip and 24 px for each action. `default` is every other
-   *  host's. */
+   *  12 px type, and 24 px tall at every width for the chip and for each action, since each is
+   *  a target and a 24 px target holds at every width (decision 43 of its part-decisions-md).
+   *  `default` is every other host's. */
   size?: "compact" | "default";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
@@ -268,6 +365,7 @@ export interface ApprovalChipProps {
  */
 export function ApprovalChip({
   artifact,
+  keepActionsTogether = false,
   layout = "inline",
   onReviewed,
   size = "default",
@@ -321,7 +419,7 @@ export function ApprovalChip({
     >
       <button
         aria-haspopup="dialog"
-        className={approvalPillClassName(approval.state, size)}
+        className={approvalPillClassName(approval.state, size, page !== null)}
         // Inside `NoTooltips`, the document whose approval this is, which an approval request's
         // own address puts the focus on (dispatch://INFRA-1196 R20).
         data-approval-artifact={page === null ? undefined : artifact.id}
@@ -336,7 +434,7 @@ export function ApprovalChip({
         {approvalLabel(approval, page?.CONTROL_LABELS.approval_latest)}
       </button>
       {variant === "header" && showActions ? (
-        <>
+        <ActionsGroup together={keepActionsTogether}>
           {approval.state === "approved" ? null : (
             // One filled button per surface: approving is the action the header wants, and
             // two outline buttons made a reader choose before reading either. At the new issue
@@ -345,7 +443,7 @@ export function ApprovalChip({
               className={
                 size === "compact"
                   ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
-                  : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
+                  : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`
               }
               disabled={review.isPending}
               onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
@@ -358,7 +456,7 @@ export function ApprovalChip({
             className={
               size === "compact"
                 ? pageHeaderControl
-                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`
+                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`
             }
             disabled={review.isPending}
             onClick={() => setRequestChangesOpen(true)}
@@ -366,7 +464,7 @@ export function ApprovalChip({
           >
             Request changes
           </button>
-        </>
+        </ActionsGroup>
       ) : null}
       {reviewsOpen ? (
         <ReviewsDialog

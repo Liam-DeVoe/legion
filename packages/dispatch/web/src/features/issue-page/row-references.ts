@@ -9,8 +9,9 @@ import { textHead } from "../refs/tree-fragment";
 
 /** How many characters of a target's words a link to it draws: a link's title elsewhere is cut
  *  at the same count (`TITLE_HEADLINE_MAX`, `refs/reference-target.ts`). It is written again
- *  here because this module is one the tree's model reads (`issue-tree.ts`), which the browser
- *  suite loads outside the bundler, where that module's own imports do not load. */
+ *  here because that module keeps the count to itself and loads the markdown engine with it
+ *  (`markdown-engine.ts`), which nothing this module draws needs; `useIssueTree.ts` reads this
+ *  one for the citations of every node's words. */
 const TITLE_MAX = 60;
 
 /**
@@ -45,18 +46,20 @@ export interface RowReference {
 
 /**
  * Every reference `text` cites, as the batched read is asked for it: each `dispatch://`
- * reference and dashboard address it writes whole, and each issue key it writes bare, which is
- * asked as that issue's own reference so the read answers whether the issue exists. An address
- * that writes an id as a prefix is left out: the read answers whole ids alone.
+ * reference and dashboard address it writes, and each issue key it writes bare, which is asked
+ * as that issue's own reference so the read answers whether the issue exists. An address that
+ * writes an item id or a block id short is asked as written too: the read resolves the short id
+ * in the owner the reference names and answers under the reference as the request wrote it,
+ * which is the reference a row links it by (`rowReferences`); where no item or two of them carry
+ * the prefix it answers the reference gone, and `ambiguous` where two do (dispatch://INFRA-1196
+ * decision 55).
  */
 export function citedReferences(text: string): string[] {
   if (text === "") return [];
   const { needs, references } = readTextReferences(text);
   const cited = new Set<string>();
   for (const found of references) {
-    if (found.form === "address" && found.reference !== undefined && !found.unresolved) {
-      cited.add(found.reference);
-    }
+    if (found.form === "address" && found.reference !== undefined) cited.add(found.reference);
   }
   for (const key of needs.keys) cited.add(`dispatch://${key}`);
   return [...cited];
@@ -91,9 +94,10 @@ export function rowReferences(text: string, issues: readonly string[]): RowRefer
 
 /**
  * What a row draws a reference as: an issue by its key, then its title once the batched read
- * has brought it; anything else by its target's own words, cut as a title is, and until the read
- * names it, or where nothing answers to it, by its short form, as a link of any other body reads
- * until its title resolves (`shortForm`).
+ * has brought it; anything else by its target's own words, cut to at most `TITLE_MAX`
+ * characters by `textHead` - at a word where one ends in the budget's second half - and drawn
+ * with no ellipsis; and until the read names it, or where nothing answers to it, by its short
+ * form, as a link of any other body reads until its title resolves (`shortForm`).
  */
 export function rowReferenceWords(
   one: Pick<RowReference, "reference" | "route">,
@@ -116,7 +120,9 @@ const ROW_REFERENCE = "data-row-reference";
 export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]";
 
 /** Writes `anchor`'s words: an issue's key set apart from its title, as a link to an issue reads
- *  everywhere (`RefLink.tsx`). */
+ *  everywhere (`RefLink.tsx`). An anchor that already reads them is left as it is: only this
+ *  writes a row's link, so its words tell what it holds, and a pass whose names changed nothing
+ *  writes nothing. */
 function nameAnchor(
   anchor: HTMLAnchorElement,
   one: Pick<RowReference, "reference" | "route">,
@@ -124,13 +130,15 @@ function nameAnchor(
 ): void {
   const { key, words } = rowReferenceWords(one, names);
   if (key === undefined) {
-    anchor.textContent = words;
+    if (anchor.textContent !== words) anchor.textContent = words;
     return;
   }
+  const title = words === "" ? "" : ` ${words}`;
+  if (anchor.textContent === `${key}${title}`) return;
   const strong = document.createElement("span");
   strong.className = "font-semibold whitespace-nowrap";
   strong.textContent = key;
-  anchor.replaceChildren(strong, words === "" ? "" : ` ${words}`);
+  anchor.replaceChildren(strong, title);
 }
 
 /**

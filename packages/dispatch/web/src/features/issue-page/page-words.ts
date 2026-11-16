@@ -593,6 +593,13 @@ export const PROGRESS_NOUNS = freeze({
 export const STATE_LINES = freeze({
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
   closed: "This issue is closed.",
+  /** What Details says of a GitHub link whose issue or pull request Dispatch cannot read, since
+   *  it holds no GitHub token for the link's repository, which today's pages say in the link's
+   *  tooltip (`features/issue/GitHubLink.tsx`, dispatch://INFRA-1196 R19). It is that tooltip's
+   *  sentence without "GitHub", whose capital inside the word reads as a code name to this
+   *  list's rule on internal words (`INTERNAL_WORD` in `page-words.test.ts`); the link's own
+   *  address, drawn before it, already says where the link points. */
+  github_unreadable: "Details are unavailable for this repository.",
   /** How a subscribed agent stands whose subscription is wider than this issue, which Details
    *  draws where today's pages draw "via" and its topic with the reason as a tooltip
    *  (`features/issue/SubscribedAgents.tsx`, dispatch://INFRA-1196 R19). */
@@ -632,6 +639,9 @@ export const ANSWER_LINES = freeze({
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
+  /** What a decision's Change form says when Dispatch refused its send, whatever the server
+   *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
+  change_not_sent: "Could not send the change.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -755,6 +765,10 @@ export const CONTROL_LABELS = freeze({
   accept: "Accept",
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
+  /** The labels control's word where the issue has no label yet, as `add_priority` is the
+   *  priority's: the property's own name would draw "Labels" twice in its row of Details
+   *  (decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+  add_label: "Add a label",
   /** The control that places an issue under a priority, where the issue advances none: the
    *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
   add_priority: "Add a priority",

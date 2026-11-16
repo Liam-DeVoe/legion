@@ -9,6 +9,8 @@ import {
   badgePrimary,
   pageAvatar,
   pageInkText,
+  pageLabelChip,
+  pagePaneBg,
   pageQuietText,
 } from "../../theme/classes";
 import {
@@ -66,6 +68,16 @@ export function AssigneeControl({
   // so the control never shows a value its options lack.
   const options = assignee === null || logins.includes(assignee) ? logins : [assignee, ...logins];
   const tone = assignee === null ? badgeLow : badgePrimary;
+  // Inside `NoTooltips` the badge is the new issue page's label chip, and Unassigned its quiet
+  // words on the same ground, as the header variant says it in the quiet grey: each colour there
+  // is one of that page's (dispatch://INFRA-3935 R6, decision 56 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : assignee === null
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
   const shown = assignee ?? page?.CONTROL_LABELS.unassigned ?? "Unassigned";
   const mark = assignee === null ? page?.pageChrome : page?.authorText;
   return (
@@ -92,11 +104,7 @@ export function AssigneeControl({
             <span className="min-w-0 truncate">{shown}</span>
           </span>
         ) : (
-          <span
-            aria-hidden="true"
-            className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}
-            {...mark}
-          >
+          <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeTone}`} {...mark}>
             {shown}
           </span>
         )}

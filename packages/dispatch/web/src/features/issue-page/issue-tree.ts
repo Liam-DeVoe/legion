@@ -17,7 +17,7 @@ import type {
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
-import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
+import { type Draft, plainWords, type TreeContext, treeContext, treeDrafts } from "./tree-drafts";
 
 /**
  * The issue's node tree, built from the page's reads and nothing else
@@ -82,6 +82,11 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
 
 /** One edge of a node that is not the spine, drawn beside the node as its target's name. */
 export interface NodeChip {
+  /** Whether the batched reference read could not tell which of several targets a short
+   *  reference names: two or more carry the id it writes short, and the read answers it gone and
+   *  ambiguous (`ReferenceTarget.ambiguous`). The chip draws the reference as written
+   *  (dispatch://INFRA-1196 decision 62). Absent for every other reference. */
+  readonly ambiguous?: true;
   /** Whether the batched reference read has answered for this reference. A target it answered
    *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
    *  still out by this and by nothing else, and the two are drawn differently: the first is
@@ -93,7 +98,15 @@ export interface NodeChip {
   /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
-  /** The words shown for the target, from the batched reference read; `""` until it answers. */
+  /** The words shown for the target (`treeContext`): a block's first line, as a row draws one
+   *  (R1), cut from the first block of the server's reading of its words (`lineWords`); where the
+   *  read answered with no reading or one that holds no words, the page's word for the block's
+   *  kind (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read, and `""`
+   *  for another issue's block; a whole document's word on the page, `Spec` and not `spec.md`;
+   *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`); and
+   *  anything else's name as that read answers it. `""` for a block and for anything else
+   *  until the read answers, and for a target that is gone. The page publishes this same name
+   *  for every link beside the tree to draw (`targetNames`). */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -147,7 +160,9 @@ export interface NodeOption {
 /** The one line a filter's row draws for its node's parent (R2, R1's first-line rule). */
 export interface ParentLine {
   readonly id: string;
-  /** The parent's own first line, cut by R1's rule (`firstLineOf`). */
+  /** The parent's own first line, cut by R1's rule (`firstLineOf`) from the words of its
+   *  reading's first block (`lineWords`) and drawn as `drawnLine` reads it: an ellipsis only
+   *  where the cut ended inside a sentence. */
   readonly line: string;
   /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
    *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */
@@ -193,8 +208,8 @@ export interface TreeNode {
   readonly options?: readonly NodeOption[];
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
-  /** Whether this node is an open question that waits on the reader, which the fold unfolds the
-   *  path to whatever its depth (R6). */
+  /** Whether this node is an open question, whoever's turn it is - the reader's, another
+   *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;
@@ -231,8 +246,10 @@ export interface TreeNode {
   readonly unsure?: true;
   /** Whether this node waits on the reader: a decision waiting for their review, which is where
    *  Keep and Change are drawn and what the Decisions preset opens on (R7), or an open question
-   *  whose turn is a person's. The header's count of what waits puts the focus on the first
-   *  of them (R13, `waiting.ts`). */
+   *  whose turn is the reader's own - it waits on a person, and that person
+   *  (`Ask.waiting_on_person`) is the reader's login. Nothing waits on a reader whose login has
+   *  not resolved. The header's count of what waits puts the focus on the first of them (R13,
+   *  `waiting.ts`). */
   readonly waiting: boolean;
 }
 
@@ -274,36 +291,63 @@ export const FIRST_LINE_LIMIT = 100;
 
 /**
  * The node's own text to the first sentence end or `FIRST_LINE_LIMIT` characters, whichever
- * comes first, cut at a word wherever the limit falls near one. A line held to the limit that
- * holds no space at all - one unbroken token, a URL or an identifier - is cut at the limit
- * itself, because there is no word boundary to cut at and the limit is the row's whole budget.
- * `cut` says whether the text carries on past the line, which is what the row draws its
- * ellipsis for.
+ * comes first, cut at a word wherever the limit falls near one. A leading label - a first word
+ * of at most five characters that ends in `.` and holds a digit, as `R1.`, `12.` or `1.2.` - is
+ * part of the line and no sentence end, so a statement's line runs on to the first sentence end
+ * after its label (decision 51). A line held to the limit that holds no space past its label -
+ * one unbroken token, a URL or an identifier - is cut at the limit itself, because there is no
+ * word boundary to cut at and the limit is the row's whole budget, and one unit short of it
+ * where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says whether the
+ * text carries on past the line, and `sentence` whether the line ends at a sentence end, the
+ * first one after any label: the two are what the row draws its ellipsis by (`drawnLine`). A
+ * line the limit cut, at a word or at the limit itself, ends at none, whatever its last
+ * character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as `x.yyyy` cut
+ * after its dot does.
  */
-export function firstLineOf(text: string): { readonly cut: boolean; readonly line: string } {
+export function firstLineOf(text: string): {
+  readonly cut: boolean;
+  readonly line: string;
+  readonly sentence: boolean;
+} {
   const whole = text.replace(/\s+/gu, " ").trim();
-  const sentence = /^.*?[.!?](?=\s|$)/u.exec(whole)?.[0];
-  if (sentence !== undefined && sentence.length <= FIRST_LINE_LIMIT) {
-    return { cut: sentence.length < whole.length, line: sentence };
+  const label = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u.exec(whole)?.[0] ?? "";
+  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
+  const first = rest === undefined ? undefined : `${label}${rest}`;
+  if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
+    return { cut: first.length < whole.length, line: first, sentence: true };
   }
   if (whole.length <= FIRST_LINE_LIMIT) {
-    return { cut: false, line: whole };
+    return { cut: false, line: whole, sentence: false };
   }
   const window = whole.slice(0, FIRST_LINE_LIMIT + 1);
   const lastSpace = window.lastIndexOf(" ");
-  const line = lastSpace <= 0 ? window.slice(0, FIRST_LINE_LIMIT) : window.slice(0, lastSpace);
-  return { cut: true, line };
+  if (lastSpace > label.length) {
+    return { cut: true, line: window.slice(0, lastSpace), sentence: false };
+  }
+  const last = whole.charCodeAt(FIRST_LINE_LIMIT - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? FIRST_LINE_LIMIT - 1 : FIRST_LINE_LIMIT;
+  return { cut: true, line: whole.slice(0, end), sentence: false };
 }
 
 /**
  * A first line as a place that draws one line for a node draws it (R1, the architect's ruling
  * 1): an ellipsis where the text carries on past a line the cut ended inside a sentence, and none
  * where the line is a whole sentence, whose own mark already ends it - "Thread 1 opens here.…"
- * reads as four dots. A line ending on its sentence's mark is a whole sentence; what follows it
- * is the node's next sentence, which its row or its body holds.
+ * reads as four dots. What follows a whole sentence is the node's next sentence, which its row
+ * or its body holds. Whether the line ends at a sentence end is `firstLineOf`'s `sentence`,
+ * since a line cut inside a sentence can end on a `.`, `!` or `?` that ends none; a line handed
+ * in without it is read by its last character, a sentence's mark ending a whole sentence.
  */
-export function drawnLine({ cut, line }: { readonly cut: boolean; readonly line: string }): string {
-  return cut && !/[.!?]$/u.test(line) ? `${line}…` : line;
+export function drawnLine({
+  cut,
+  line,
+  sentence = /[.!?]$/u.test(line),
+}: {
+  readonly cut: boolean;
+  readonly line: string;
+  readonly sentence?: boolean;
+}): string {
+  return cut && !sentence ? `${line}…` : line;
 }
 
 /** The node's own words as a reader reads them: the words of the server's reading of its text
@@ -313,10 +357,103 @@ export function nodeWords(node: TreeNode): string {
   return node.tree === undefined ? node.text : wordsOf(node.tree);
 }
 
+/**
+ * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
+ * the first top-level block of its reading that holds any, a heading or a paragraph, and where
+ * the node has no reading the first block of its stored text that holds any, to its blank line,
+ * with a leading heading marker (`#` to `######` and a space) left out and a heading ending at
+ * its own line, as markdown ends one. A block that holds no words - a horizontal rule, a
+ * paragraph that is only an image - is passed over, or the line would be empty while the node
+ * has words. A decision's reading opens with its own `##` heading, and `wordsOf` joins a heading
+ * and the paragraph after it with one space, so a line cut from the whole reading ran the heading
+ * into its body: "Keep it Keep the model pure.".
+ *
+ * A stored block is markdown, and its marks are no word of it, so it is read to plain words
+ * (`plainWords`) as the server's reading holds them: a plan task stored as
+ * `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`, whose label
+ * `firstLineOf` reads as no sentence end (decision 51), and whose sentence end is no longer
+ * hidden behind the `**` that followed it.
+ *
+ * Every place that draws one line for a node cuts it from these words: a parent's line under a
+ * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
+ * line, a folded branch, a Contents entry and a breadcrumb once they draw (R2). `nodeWords`
+ * stays the whole reading, which is what a body draws and what a node's citations are read
+ * from.
+ */
+export function lineWords(node: TreeNode): string {
+  if (node.tree !== undefined) return firstBlockWords(node.tree);
+  for (const stored of node.text.split(/\n\s*\n/u)) {
+    const block = stored.trimStart();
+    const words = plainWords(/^#{1,6} +(.*)/u.exec(block)?.[1] ?? block);
+    if (!NO_WORDS.test(words)) return words;
+  }
+  return "";
+}
+
+/** A stored block that holds no words once read to plain words (`plainWords`, which leaves an
+ *  image out): nothing but white space and the marks of a horizontal rule (`---`, `***`,
+ *  `___`). */
+const NO_WORDS = /^[\s*_-]*$/u;
+
+/** The words of the first top-level block of a reading that holds any (`lineWords`); `""` for a
+ *  reading none of whose blocks holds a word. */
+function firstBlockWords(reading: DisplayTree): string {
+  const content = reading.content;
+  for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
+    const words = wordsOf(block);
+    if (words.trim() !== "") return words;
+  }
+  return "";
+}
+
+/** The line a chip names a block by, and the page publishes as the block's name: the line a row
+ *  draws for it (`drawnLine`), cut from the first block of the block's reading as `lineWords`
+ *  cuts a node's, which `tree-drafts.ts` is handed rather than imports, since this module
+ *  imports it. */
+function chipLine(reading: DisplayTree): string {
+  return drawnLine(firstLineOf(firstBlockWords(reading)));
+}
+
+/** The reads as the tree and the page's published names both read them (`treeContext`), with a
+ *  block named by `chipLine`: the one call both make, so a chip and a link name one target by
+ *  one rule and cannot drift apart. */
+function namingContext(reads: IssueTreeReads): TreeContext {
+  return treeContext(reads, chipLine);
+}
+
 /** The issue's whole tree, from the reads it was given. */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
-  const context = treeContext(reads);
+  const context = namingContext(reads);
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
+}
+
+/**
+ * The name of each target of the batched reference read (`reads.targets`) that something answers
+ * to now, by its address: the name a chip naming it draws (`NodeChip.name`), by the same rule
+ * (`namingContext`), which the page publishes for every link beside the tree to draw
+ * (`reference-names.tsx`). A link and a chip naming one target so never disagree. A target whose
+ * name is `""` - another issue's block the read sent no reading for - is left out, so a link
+ * that finds no name reads its own (`useKnownReferenceName`).
+ */
+export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> {
+  const context = namingContext(reads);
+  const names = new Map<string, string>();
+  for (const target of reads.targets ?? []) {
+    if (target.gone) continue;
+    const name = context.chipOf(target.ref).name;
+    if (name !== "") names.set(target.ref, name);
+  }
+  return names;
+}
+
+/** How many nodes a branch holds below `children`, at any depth. */
+export function heldBy(children: readonly TreeNode[]): number {
+  return children.reduce((held, child) => held + child.held + 1, 0);
+}
+
+/** The order the tree draws siblings in: a draft's own order, then its id. */
+function drawOrder(one: Draft, other: Draft): number {
+  return one.order - other.order || one.id.localeCompare(other.id);
 }
 
 /**
@@ -345,26 +482,31 @@ function assemble(
   const placements = new Map<string, readonly string[]>();
   for (const draft of drafts) {
     references.set(draft.id, draft.reference ?? draft.id);
-    const named = draft.parents.filter((parent) => known.has(parent));
+    // A parent named twice is one placement: a decision whose paragraphs each cite the same
+    // question arrives naming it once per paragraph (`api/decisions.go`), and drawing it twice
+    // there would count it twice in `held` and give both rows one key (`tree-keys.ts`).
+    const named = [...new Set(draft.parents)].filter((parent) => known.has(parent));
     placements.set(draft.id, named.length === 0 ? [key] : named);
   }
   bringHome(key, drafts, placements);
   for (const draft of drafts) {
     for (const parent of placements.get(draft.id) ?? []) {
-      byParent.set(parent, [...(byParent.get(parent) ?? []), draft]);
+      const siblings = byParent.get(parent);
+      if (siblings === undefined) byParent.set(parent, [draft]);
+      else siblings.push(draft);
     }
   }
   const childrenOf = (id: string, above: readonly string[]): readonly TreeNode[] =>
     (byParent.get(id) ?? [])
       .filter((child) => child.id !== id && !above.includes(child.id))
-      .sort((one, other) => one.order - other.order || one.id.localeCompare(other.id))
+      .sort(drawOrder)
       .map((child) => build(child, id, [...above, id]));
   const build = (draft: Draft, parent: string, above: readonly string[]): TreeNode => {
     const children = childrenOf(draft.id, above);
     const parents = placements.get(draft.id) ?? [];
     const others = parents.filter((one) => one !== parent);
     return {
-      alsoUnder: parents.length > 1 ? others.map((one) => chipOf(references.get(one) ?? one)) : [],
+      alsoUnder: others.map((one) => chipOf(references.get(one) ?? one)),
       ...(draft.answer === undefined ? {} : { answer: draft.answer }),
       ...(draft.at === undefined ? {} : { at: draft.at }),
       ...(draft.author === undefined ? {} : { author: draft.author }),
@@ -373,7 +515,7 @@ function assemble(
       ...(draft.counts === undefined ? {} : { counts: draft.counts }),
       facts: draft.facts,
       gaps: draft.gaps,
-      held: children.reduce((total, child) => total + child.held + 1, 0),
+      held: heldBy(children),
       id: draft.id,
       ...(draft.child === undefined ? {} : { child: draft.child }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
@@ -401,7 +543,7 @@ function assemble(
     chips: [],
     facts: [],
     gaps: [],
-    held: children.reduce((total, child) => total + child.held + 1, 0),
+    held: heldBy(children),
     id: key,
     question: false,
     replaced: false,
@@ -441,7 +583,9 @@ function bringHome(
   const below = new Map<string, string[]>();
   for (const draft of drafts) {
     for (const parent of placements.get(draft.id) ?? []) {
-      below.set(parent, [...(below.get(parent) ?? []), draft.id]);
+      const siblings = below.get(parent);
+      if (siblings === undefined) below.set(parent, [draft.id]);
+      else siblings.push(draft.id);
     }
   }
   const reached = new Set<string>([key]);
@@ -458,9 +602,7 @@ function bringHome(
     }
   };
   walk(key);
-  const ordered = [...drafts].sort(
-    (one, other) => one.order - other.order || one.id.localeCompare(other.id)
-  );
+  const ordered = [...drafts].sort(drawOrder);
   /** Whether `id` is a member of a ring: a draft its own placements lead back to. */
   const inRing = (id: string): boolean => {
     const seen = new Set<string>();

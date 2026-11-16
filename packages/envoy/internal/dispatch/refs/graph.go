@@ -252,7 +252,7 @@ func resolveEdges(ctx context.Context, q Queryer, query Query) ([]resolvedEdge, 
 		case node.BlockID != "":
 			// A block's stored excerpt is already cut by BlockExcerpt, the excerpt a document's
 			// mention shows.
-			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name()}
+			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name(query.ServerURL)}
 		case node.text != "":
 			edge.Excerpt = &model.GraphExcerpt{Text: itemExcerpt(node.text, query.ServerURL)}
 		}
@@ -411,7 +411,7 @@ func Node(ctx context.Context, q Queryer, kind, id string, byRefKey bool) (model
 // node was deleted, or its kind is one this build cannot address (resolveNodes) — which is what
 // a caller draws as a reference whose target is gone. Each kind is read in one statement
 // whatever the number of targets, so a batch costs a statement per kind, not per target.
-func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]string, error) {
+func TargetNames(ctx context.Context, q Queryer, targets []Target, serverURL string) (map[Target]string, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {
 		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
@@ -422,7 +422,7 @@ func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]s
 	}
 	names := make(map[Target]string, len(nodes))
 	for key, node := range nodes {
-		names[Target{Kind: key[0], ID: key[1]}] = node.name()
+		names[Target{Kind: key[0], ID: key[1]}] = node.name(serverURL)
 	}
 	return names, nil
 }
@@ -435,13 +435,14 @@ type resolvedNode struct {
 	refKey string
 }
 
-// name is the words shown for the node in place of its text: its own text cut to excerptRunes. A
-// block's text is its stored excerpt, already cut to BlockExcerptRunes.
-func (n resolvedNode) name() string {
+// name is the words shown for the node in place of its text: its own text cut to excerptRunes
+// where no reference crosses the cut (itemExcerpt), serverURL being the server's own address. A
+// block's text is its stored excerpt, already cut by BlockExcerpt.
+func (n resolvedNode) name(serverURL string) string {
 	if n.BlockID != "" {
 		return n.text
 	}
-	return text.HeadRunes(n.text, excerptRunes)
+	return itemExcerpt(n.text, serverURL)
 }
 
 // nodeLoader loads the nodes of one kind whose ids are ids into nodes. Artifact ids are uuids on
