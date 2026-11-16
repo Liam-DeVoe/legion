@@ -283,11 +283,11 @@ export const LONGEST_LABEL = "the-longest-label-the-header-never-holds";
 
 /**
  * A label whose chip just fits the room the properties line leaves after its last label chip,
- * read on a line that draws no count: at most `under` px narrower than that room, so drawn after
- * those chips it fits while no count is drawn, and not once a count and its gap take their room
- * out of the line. A copy of the last chip, laid out unseen, takes the label's words one letter
- * more at a time, and the label is the longest that still fits; a room that holds all of its
- * words, or not one letter, throws.
+ * read on a line that draws no count: at least `under` px narrower than that room, and less than
+ * one letter more than that, so drawn after those chips it fits while no count is drawn, and not
+ * once a count and its gap take their room out of the line. A copy of the last chip, laid out
+ * unseen, takes the label's words one letter more at a time, and the label is the longest that
+ * still fits; a room that holds all of its words, or not one letter, throws.
  */
 export async function labelFillingTheRoom(page: Page, under: number): Promise<string> {
   const filled = await propertiesLine(page).evaluate((line, under) => {
