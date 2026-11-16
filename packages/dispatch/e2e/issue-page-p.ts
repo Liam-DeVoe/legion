@@ -275,6 +275,54 @@ export function labelsCutAsTheLineNarrows(page: Page, by: number): Promise<strin
   }, by);
 }
 
+/** The longest label Dispatch takes, 40 UTF-16 units (`maxIssueLabel16`,
+ *  `packages/envoy/internal/dispatch/api/issue_queries.go`): wider than what the header's line
+ *  at 1440 px leaves beside the labels it draws of the twenty, count or no count, so drawn after
+ *  them it is the one label left out. */
+export const LONGEST_LABEL = "the-longest-label-the-header-never-holds";
+
+/**
+ * A label whose chip just fits the room the properties line leaves after its last label chip,
+ * read on a line that draws no count: at most `under` px narrower than that room, so drawn after
+ * those chips it fits while no count is drawn, and not once a count and its gap take their room
+ * out of the line. A copy of the last chip, laid out unseen, takes the label's words one letter
+ * more at a time, and the label is the longest that still fits; a room that holds all of its
+ * words, or not one letter, throws.
+ */
+export async function labelFillingTheRoom(page: Page, under: number): Promise<string> {
+  const filled = await propertiesLine(page).evaluate((line, under) => {
+    const box = line.querySelector('[data-testid="issue-header-labels"]');
+    const last = [...(box?.querySelectorAll<HTMLElement>("[data-header-label]") ?? [])].at(-1);
+    if (box === null || last === undefined) return { error: "the line draws no label", label: "" };
+    if (line.querySelector('[data-testid="issue-labels-left"]') !== null) {
+      return { error: "the line draws a count", label: "" };
+    }
+    const room =
+      box.getBoundingClientRect().right -
+      last.getBoundingClientRect().right -
+      Number.parseFloat(getComputedStyle(box).columnGap) -
+      under;
+    const probe = last.cloneNode() as HTMLElement;
+    probe.removeAttribute("data-header-label");
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    line.append(probe);
+    const words = "the-label-that-fits-only-with-no-count";
+    let label = "";
+    for (const letter of words) {
+      probe.textContent = label + letter;
+      if (probe.getBoundingClientRect().width > room) break;
+      label += letter;
+    }
+    probe.remove();
+    if (label === "") return { error: `${room.toFixed(1)} px holds no label`, label };
+    if (label === words) return { error: `${room.toFixed(1)} px holds all of "${words}"`, label };
+    return { error: null, label };
+  }, under);
+  if (filled.error !== null) throw new Error(`no label fills the line's room: ${filled.error}`);
+  return filled.label;
+}
+
 /** The count of what waits on the reader, or whose turn it is when nothing waits. */
 export function waitingCount(page: Page): Locator {
   return issueHeader(page).getByTestId("issue-whose-turn");
@@ -328,18 +376,43 @@ export function badgeValue(page: Page, label: string): Locator {
   );
 }
 
-/** Every element the header draws that a reader reads or presses, by what it is: its test id,
- *  or its tag with the name a reader hears. Text it lays out unseen is left out. */
+/**
+ * Every element the header draws that a reader reads or presses, by what it is: its test id, or
+ * its tag with the name a reader hears; and every run of words drawn outside those, as
+ * `text <its words>`. Words count as drawn outside them where an element holds a text of its own
+ * and no part that holds no other part - a control, the title, a test id around words alone -
+ * holds that element: the project, the key and a pill are text in a span, and a property added
+ * that way is named too. A part that holds others, as the properties line does, names nothing
+ * of the words in it. Text it lays out unseen is left out.
+ */
 export function headerParts(page: Page): Promise<string[]> {
-  return issueHeader(page).evaluate((header) =>
-    [...header.querySelectorAll("a, button, select, h1, textarea, [data-testid]")]
+  return issueHeader(page).evaluate((header) => {
+    const all = [...header.querySelectorAll("a, button, select, h1, textarea, [data-testid]")];
+    const leaves = all.filter(
+      (part) => !all.some((other) => other !== part && part.contains(other))
+    );
+    const parts = all
       .filter((part) => part.checkVisibility())
       .map(
         (part) =>
           part.getAttribute("data-testid") ??
           `${part.tagName.toLowerCase()} ${part.getAttribute("aria-label") ?? (part.textContent ?? "").replace(/\s+/g, " ").trim()}`
-      )
-  );
+      );
+    const texts = [...header.querySelectorAll("*")].filter(
+      (element) =>
+        [...element.childNodes].some(
+          (node) => node.nodeType === Node.TEXT_NODE && (node.textContent ?? "").trim() !== ""
+        ) &&
+        element.checkVisibility() &&
+        !leaves.some((leaf) => leaf.contains(element))
+    );
+    // A run of words is named once, by its outermost element, so words drawn around a span of
+    // their own - a number in a sentence - are one run and not two.
+    const words = texts
+      .filter((element) => !texts.some((other) => other !== element && other.contains(element)))
+      .map((element) => `text ${(element.textContent ?? "").replace(/\s+/g, " ").trim()}`);
+    return [...parts, ...words];
+  });
 }
 
 /**
@@ -372,8 +445,9 @@ export function undersizedTargets(page: Page): Promise<string[]> {
 
 /** The controls R3 holds to 24 px tall at every width (finding F13 of
  *  dispatch://INFRA-1196/artifact/tester-findings-md): the status, the priority, the assignee,
- *  the count, Approve, Request changes and the labels' count, each as `<name>: <height>` where
- *  it is drawn shorter. */
+ *  the count, Approve, Request changes, the labels' count and the control that copies the key,
+ *  24 by 24 px as row one's other controls are, each as `<name>: <height>` where it is drawn
+ *  shorter. */
 export function shortControls(page: Page, key: string): Promise<string[]> {
   return issueHeader(page).evaluate((header, key) => {
     const named: [string, Element | null][] = [
@@ -382,6 +456,7 @@ export function shortControls(page: Page, key: string): Promise<string[]> {
       ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
       ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
       ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
+      ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],
       ...[...header.querySelectorAll("button")]
         .filter((button) => /^(Approve|Request changes)$/.test((button.textContent ?? "").trim()))
         .map((button): [string, Element] => [(button.textContent ?? "").trim(), button]),

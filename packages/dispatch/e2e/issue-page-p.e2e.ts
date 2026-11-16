@@ -34,6 +34,8 @@ import {
   identityBand,
   issueDecisions,
   issueHeader,
+  LONGEST_LABEL,
+  labelFillingTheRoom,
   labelsCutAsTheLineNarrows,
   labelsLeft,
   lineOrder,
@@ -54,6 +56,7 @@ import {
   waitingPressInHistory,
 } from "./issue-page-p";
 import { leaveFocus, onBody } from "./keyboard-issue";
+import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -96,6 +99,12 @@ function reviewActions(scope: Locator): Locator {
 /** The words the labels' count reads with `left` labels it does not draw: `+3 labels`. */
 function labelsLeftWords(left: number): string {
   return `+${left} ${left === 1 ? CONTROL_LABELS.labels_left_one : CONTROL_LABELS.labels_left_many}`;
+}
+
+/** A pattern that matches `words` whole and nothing else, each character as itself: a status's
+ *  mark or a key holds characters a pattern reads otherwise. */
+function exactly(words: string): RegExp {
+  return new RegExp(`^${words.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
 }
 
 /** How a row presses a control: the mouse's click, a tap of the phone's touch screen, or Enter
@@ -162,7 +171,9 @@ test("the header holds R13's list and its limits at every width @phone", async (
     // An approval request that waits on the reader.
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
     // R13's list, each part of the header by what it is: nothing else may be drawn there. Its one
-    // link is the parent's, named exactly.
+    // link is the parent's, named exactly. The words it draws outside a control are R1's too:
+    // the project, the crumbs' separators, the key, the status's mark, the priority and the
+    // assignee each drawn under its select, and the one chip's "Not requested".
     const named = [
       new RegExp(`^a ${seeded.parentKey}$`),
       /^button Open navigation$/,
@@ -184,6 +195,13 @@ test("the header holds R13's list and its limits at every width @phone", async (
       /^issue-approval-steps$/,
       /^button (Awaiting approval|Approve|Request changes)/,
       /^issue-route-unreachable$/,
+      exactly(`text ${HEADER_PROJECT}`),
+      exactly("text ›"),
+      exactly(`text ${seeded.key}`),
+      exactly(`text ${statusGlyph("in_progress")}`),
+      exactly("text P1"),
+      exactly("text alice"),
+      exactly(`text ${CONTROL_LABELS.not_requested}`),
     ];
 
     let drawnAtDesktop: number | undefined;
@@ -196,14 +214,30 @@ test("the header holds R13's list and its limits at every width @phone", async (
 
       // The header's own values, each where it is drawn, with no control opened.
       const header = issueHeader(page);
+      const band = identityBand(page);
       const inTheHeader: readonly (readonly [string, Locator, (string | RegExp)?])[] = [
+        ["the project", band.getByText(HEADER_PROJECT, { exact: true }), HEADER_PROJECT],
         ["the parent", header.getByRole("link", { exact: true, name: seeded.parentKey })],
+        ["the key", band.getByText(seeded.key, { exact: true }), seeded.key],
+        ["the copy control", header.getByRole("button", { name: /^Copy issue key / })],
+        [
+          "the actions menu",
+          header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions }),
+        ],
+        ["Details", header.getByTestId("issue-details-control"), CONTROL_LABELS.details],
         ["the status", header.getByRole("combobox", { name: "Status" })],
         ["the priority", badgeValue(page, `Priority of ${seeded.key}`), "P1"],
         ["the assignee", badgeValue(page, `Assignee of ${seeded.key}`), "alice"],
-        ["the first label", headerLabels(page).first(), TWENTY_LABELS[0]],
-        ["the children's progress", header.getByTestId("issue-progress-children")],
-        ["the whole tree's progress", header.getByTestId("issue-progress-subtree")],
+        [
+          "the children's progress",
+          header.getByTestId("issue-progress-children"),
+          `${CONTROL_LABELS.children} 1 ${CONTROL_LABELS.count_of} 3`,
+        ],
+        [
+          "the whole tree's progress",
+          header.getByTestId("issue-progress-subtree"),
+          `${CONTROL_LABELS.whole_tree} 1 ${CONTROL_LABELS.count_of} 3`,
+        ],
         ["the count of what waits", waitingCount(page), /^Waiting on you \(\d+\)$/],
         ["Approve", header.getByRole("button", { exact: true, name: "Approve" })],
         ["Request changes", header.getByRole("button", { exact: true, name: "Request changes" })],
@@ -215,6 +249,49 @@ test("the header holds R13's list and its limits at every width @phone", async (
         }
         await expect(at, `${name} is outside the ${width} px viewport`).toBeInViewport();
         await assertWhole(at);
+      }
+      // Each count of the children's progress draws no "done" and carries it in its name, the
+      // whole sentence a reader hears (decision 86).
+      for (const [name, at, heard] of [
+        [
+          "the children's progress",
+          header.getByTestId("issue-progress-children"),
+          `1 ${CONTROL_LABELS.count_of} 3 ${CONTROL_LABELS.children.toLowerCase()} ${CONTROL_LABELS.count_done}`,
+        ],
+        [
+          "the whole tree's progress",
+          header.getByTestId("issue-progress-subtree"),
+          `1 ${CONTROL_LABELS.count_of} 3 ${CONTROL_LABELS.count_of} ${CONTROL_LABELS.whole_tree.toLowerCase()} ${CONTROL_LABELS.count_done}`,
+        ],
+      ] as const) {
+        await expect(at, `${name} is not named "${heard}" at ${width} px`).toHaveAccessibleName(
+          heard
+        );
+      }
+      // The first label, or, where no chip fits whole on the line, the labels' count alone,
+      // which then names every label (R2, decision 96).
+      if ((await headerLabels(page).count()) === 0) {
+        await expect(
+          labelsLeft(page),
+          `the labels' count does not read every label at ${width} px`
+        ).toHaveText(labelsLeftWords(TWENTY_LABELS.length));
+        await expect(
+          labelsLeft(page),
+          `the labels' count is outside the ${width} px viewport`
+        ).toBeInViewport();
+        await assertWhole(labelsLeft(page));
+      } else {
+        const first = headerLabels(page).first();
+        await expect(
+          first,
+          `the first label is not drawn in the header at ${width} px`
+        ).toBeVisible();
+        await expect(
+          first,
+          `the first label does not read "${TWENTY_LABELS[0]}" at ${width} px`
+        ).toHaveText(TWENTY_LABELS[0]);
+        await expect(first, `the first label is outside the ${width} px viewport`).toBeInViewport();
+        await assertWhole(first);
       }
       expect(
         await header.getByRole("combobox", { name: "Status" }).inputValue(),
@@ -241,6 +318,11 @@ test("the header holds R13's list and its limits at every width @phone", async (
       expect(
         parts.filter((part) => !named.some((pattern) => pattern.test(part))),
         `the header draws parts R13 does not name at ${width} px`
+      ).toEqual([]);
+      // The list holds the words the header draws as text, so a property drawn that way is in it.
+      expect(
+        [`text ${HEADER_PROJECT}`, `text ${seeded.key}`].filter((words) => !parts.includes(words)),
+        `the header's parts leave out the words it draws as text at ${width} px`
       ).toEqual([]);
       const order = [
         "select Status",
@@ -378,6 +460,25 @@ test("the header holds R13's list and its limits at every width @phone", async (
         await actionsMenuDrop(page),
         `the actions menu opens over its own control at ${width} px`
       ).toBeGreaterThanOrEqual(-0.5);
+      // From 761 px to 1279 px each action of the open menu keeps `main`'s 44 px floor, as a
+      // menu a header control opens does (decision 58).
+      if (width === 1024) {
+        const actionHeights = await header
+          .getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions })
+          .evaluate((control) => {
+            const menu = document.getElementById(control.getAttribute("aria-controls") ?? "");
+            return [...(menu?.querySelectorAll("button") ?? [])].map(
+              (action) => action.getBoundingClientRect().height
+            );
+          });
+        expect(actionHeights.length, "the actions menu draws no action at 1024 px").toBeGreaterThan(
+          0
+        );
+        expect(
+          actionHeights.filter((height) => height < 44 - 0.5),
+          "an action of the actions menu is under 44 px at 1024 px"
+        ).toEqual([]);
+      }
       await header.getByRole("button", { exact: true, name: CONTROL_LABELS.edit_parent }).click();
       await expect(
         details(page),
@@ -394,17 +495,41 @@ test("the header holds R13's list and its limits at every width @phone", async (
       }
     }
 
-    // At 1440 px, the labels the line drew there of the twenty and one more end on the count of
-    // one label.
     if (drawnAtDesktop !== undefined) {
       await page.setViewportSize(viewportAt(DESKTOP.width));
-      await patchIssue(seeded.key, { labels: TWENTY_LABELS.slice(0, drawnAtDesktop + 1) });
+
+      // At 1440 px, the labels the line drew there of the twenty, which fit beside a count, and
+      // after them a label no line holds whole, end on the count of one label.
+      await patchIssue(seeded.key, {
+        labels: [...TWENTY_LABELS.slice(0, drawnAtDesktop), LONGEST_LABEL],
+      });
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
       await expect(
         labelsLeft(page),
         `${drawnAtDesktop + 1} labels at 1440 px do not end on "+1 ${CONTROL_LABELS.labels_left_one}"`
       ).toHaveText(`+1 ${CONTROL_LABELS.labels_left_one}`);
+      await expect(headerLabels(page)).toHaveCount(drawnAtDesktop);
+
+      // Labels that fit on the line only while no count is drawn are all drawn, and no count
+      // (R2): those labels alone, then with one more as wide as the room they leave less 4 px,
+      // which the count and its gap would take.
+      await patchIssue(seeded.key, { labels: TWENTY_LABELS.slice(0, drawnAtDesktop) });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expect(headerLabels(page)).toHaveCount(drawnAtDesktop);
+      await expect(labelsLeft(page)).toHaveCount(0);
+      const lastThatFits = await labelFillingTheRoom(page, 4);
+      await patchIssue(seeded.key, {
+        labels: [...TWENTY_LABELS.slice(0, drawnAtDesktop), lastThatFits],
+      });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expect(headerLabels(page), "labels that fit draw a count").toHaveText([
+        ...TWENTY_LABELS.slice(0, drawnAtDesktop),
+        lastThatFits,
+      ]);
+      await expect(labelsLeft(page), "labels that fit draw a count").toHaveCount(0);
     }
 
     // An issue whose labels fit draws them all and no count.
@@ -481,9 +606,10 @@ test("the approval entries stay in the header and read the document each step ap
     await expect(entry("criteria")).toContainText(CONTROL_LABELS.not_requested);
     await expect(entry("spec").getByRole("button", { name: "Awaiting approval" })).toBeVisible();
     // The approval the request asks for pins a version of the spec, and that version is the
-    // spec's own text.
+    // spec's own text. The version is the request's own: the document's approval names one only
+    // once someone has reviewed it, and nobody has reviewed this spec.
     const awaiting = await getArtifact(root.primary_artifact_id ?? "");
-    const pinned = awaiting.approval?.version ?? awaiting.approval?.latest_version ?? 0;
+    const pinned = (await getAsk(awaiting.approval?.ask_id ?? "")).ask.approval?.version ?? 0;
     expect(pinned, "the approval pins no version of the spec").toBeGreaterThan(0);
     expect(
       (await getArtifactVersion(root.primary_artifact_id ?? "", pinned)).markdown,
@@ -537,17 +663,32 @@ test("the approval entries stay in the header and read the document each step ap
       .toBe("approved");
     await expect(reviewActions(issueHeader(page))).toHaveCount(0);
 
-    // A root of a project that gates nothing carries the one chip, "Not requested".
+    // The page has read the projects, since it draws the gated root's steps from them, and the
+    // issues it opens next it opens within the app, as a link does: so each draws what its gate
+    // makes of it, not what a read of the projects still pending would. A root of a project that
+    // gates nothing carries the one chip, "Not requested".
+    await expect(steps.locator("[data-approval-step]")).toHaveCount(3);
+    const openInApp = async (key: string) => {
+      await navigateInApp(page, `/issues/${key}`);
+      await expect(
+        identityBand(page).getByText(key, { exact: true }),
+        `the page did not open ${key}`
+      ).toBeVisible();
+    };
     const plain = await createIssue({ project: "PLAIN", spec: "The plan.", title: "Plain root" });
-    await gotoIssue(page, `/issues/${plain.key}`);
+    await openInApp(plain.key);
     await expectHeaderDrawn(page);
     await expect(issueHeader(page).getByTestId("issue-approval-steps")).toHaveCount(0);
     await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
 
-    // Every child carries the one chip, and no list of steps: the child of a parent not yet
+    // Every child carries the one chip, and no list of steps: the child of the root that gates
+    // steps, opened within the app with the projects read, the child of a parent not yet
     // approved, of a parent whose spec changed since its approval, and of an approved parent.
-    const oneChip = async (key: string) => {
-      await gotoIssue(page, `/issues/${key}`);
+    const oneChip = async (
+      key: string,
+      open = (opened: string) => gotoIssue(page, `/issues/${opened}`)
+    ) => {
+      await open(key);
       await expectHeaderDrawn(page);
       await expect(issueHeader(page).getByTestId("issue-approval-steps")).toHaveCount(0);
       await expect(
@@ -555,6 +696,14 @@ test("the approval entries stay in the header and read the document each step ap
         `the child's header draws no "${CONTROL_LABELS.not_requested}"`
       ).toHaveCount(1);
     };
+    const gatedChild = await createIssue({
+      force: true,
+      parent: root.key,
+      project: "GATED",
+      spec: "The child's plan.",
+      title: "Child of the gated root",
+    });
+    await oneChip(gatedChild.key, openInApp);
     const childOf = (parent: string, title: string) =>
       createIssue({ parent, project: "PLAIN", spec: "The child's plan.", title });
     const unapproved = await createIssue({
@@ -737,13 +886,18 @@ test("the count of what waits is a control that opens the Decisions address @pho
       expect(first, `the press left no mark in the history entry at ${width} px`).not.toBeNull();
       const length = await page.evaluate(() => history.length);
 
-      // A press made at that address replaces its entry, with a new mark.
+      // A press made at that address replaces its entry, with a new mark: a number, and not the
+      // first press's.
       await press(waitingCount(page), how);
       await expect
-        .poll(() => waitingPressInHistory(page), {
-          message: `a second press left the first press's mark at ${width} px`,
-        })
-        .not.toBe(first);
+        .poll(
+          async () => {
+            const now = await waitingPressInHistory(page);
+            return now !== null && now !== first;
+          },
+          { message: `a second press left the first press's mark at ${width} px` }
+        )
+        .toBe(true);
       expect(
         await page.evaluate(() => history.length),
         `a second press added a history entry at ${width} px`
@@ -1068,6 +1222,23 @@ test("the press that ends a title edit reaches the control under it @phone", asy
           `the press out of a ${lines}-line title's edit at ${width} px did not reach the status`
         ).toBeFocused();
         await page.keyboard.press("Escape");
+
+        // An edit the keyboard opens and ends after the one that press ended: the press is
+        // over, so nothing holds the heading at the editor's height, and at 1440 px the title
+        // of three lines is clamped to two again.
+        if (width === DESKTOP.width && lines === 3) {
+          await leaveFocus(page);
+          await page.keyboard.press("e");
+          await expect(editor).toBeFocused();
+          await page.keyboard.press("Enter");
+          await expect(editor).toHaveCount(0);
+          await expect
+            .poll(() => heading.evaluate((title) => getComputedStyle(title).webkitLineClamp), {
+              message:
+                "the title stayed unclamped after a keyboard edit that followed a pressed one",
+            })
+            .toBe("2");
+        }
       }
     }
   });
@@ -1122,7 +1293,16 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       .filter({ hasText: `Could not update the priority of ${key}.` });
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
+    // The picker's write is refused too, and only then is the alert counted: the one the digit
+    // drew is on the screen before the picker's write has been sent.
+    const pickerRefused = page.waitForResponse(
+      (response) =>
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${key}` &&
+        response.status() === 400
+    );
     await priority.selectOption("3");
+    await pickerRefused;
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
     await expect.poll(() => getIssue(key)).toMatchObject({ priority: 1 });
@@ -1174,7 +1354,45 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect
       .poll(() => getIssue(key))
       .toMatchObject({ priority: 2, title: "The header's issue" });
+
+    // Escape and Enter leave the focus on the heading, and `e` there opens the editor again.
+    const heading = header.getByRole("heading", { level: 1 });
+    for (const leave of ["Escape", "Enter"] as const) {
+      await expect(heading, `${leave} dropped the focus out of the header`).toBeFocused();
+      await page.keyboard.press("e");
+      await expect(
+        editor,
+        "e did not open the title's editor from the focused heading"
+      ).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(editor, "Enter left the title's editor open").toHaveCount(0);
+    }
+
+    // A focus the page gives back to the heading opens no editor: Details, opened from its
+    // control while the heading holds the focus, gives the focus back to the heading as Escape
+    // closes it, and a key typed then is no part of the title.
+    await expect(heading, "Enter dropped the focus out of the header").toBeFocused();
+    await header.getByTestId("issue-details-control").click();
+    await expect(details(page), "Details' control opened no Details").toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(details(page), "Escape left Details open").toBeHidden();
+    // The drawer hands the focus back in the frames after it closes, as `closeDetails` waits
+    // them out, so the editor is looked for once they are drawn.
+    await page.evaluate(() => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      return promise;
+    });
+    await expect(editor, "a focus given back to the heading opened the title's editor").toHaveCount(
+      0
+    );
+    await expect(heading, "Details did not give the focus back to the heading").toBeFocused();
+    await page.keyboard.press("x");
     await leaveFocus(page);
+    expect(
+      (await getIssue(key)).title,
+      "a focus given back to the heading opened the title's editor"
+    ).toBe("The header's issue");
 
     // The palette offers Close issue and Set priority P2, and not Reopen issue.
     await page.keyboard.press("Control+k");
