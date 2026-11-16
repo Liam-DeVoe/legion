@@ -23,7 +23,7 @@ type programCheck struct {
 // runChecks is "spec-check checks --dir <dir> --job <job>": it prints the program checks whose
 // test part names the job as one line of JSON, [] when none, and answers 0; 2 when the tree has a
 // problem, with the problems on stderr, or for a directory it cannot read or arguments it does not
-// take.
+// take. A directory that does not exist is the empty tree (judgeOrEmpty), so it prints [].
 //
 // The line does not pass through runnerlog.Say, whose prefix and escapes would make it no JSON.
 // encoding/json writes each control character of a value as an escape, so no line break of a
@@ -41,7 +41,7 @@ func runChecks(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
-	j, err := judge(stderr, dir, specgraph.Options{})
+	j, err := judgeOrEmpty(stderr, dir)
 	if err != nil {
 		return cannotJudge(stderr, dir, err)
 	}
