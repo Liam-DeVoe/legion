@@ -349,6 +349,27 @@ test("a result shows how it ran, what was seen, its counts, its role and its scr
   expect(within(row).queryByTestId("verification-result-retracted")).toBeNull();
 });
 
+// A result a CI job recorded names the branch whose push it ran on, so a reader tells it from the
+// result derived from the check run, and a role's result names none.
+test("a CI job's result names the branch it was pushed on", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c1", [
+      result({ branch: "legion/CORE-1", id: "result-job", role: "ci" }),
+      result({ id: "result-role" }),
+    ]),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const [job, role] = await screen.findAllByTestId("verification-result");
+  expect(within(job as HTMLElement).getByTestId("verification-result-branch").textContent).toBe(
+    "on branch legion/CORE-1"
+  );
+  expect(within(role as HTMLElement).queryByTestId("verification-result-branch")).toBeNull();
+});
+
 // The reading is the record this page exists for, so a result that carries none says so
 // rather than drawing a blank.
 test("a result with no reading says it carries none", async () => {

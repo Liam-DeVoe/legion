@@ -1,3 +1,3 @@
 kind: Changed
 body: |-
-  The worker, architect and retro skills say that a run of a check's CI job on a push of the change's branch records its own result of a check carrying `ci_check`, and that a pass from CI is the derived result or one the job recorded. `ci-checks.md` shows how `dispatch results` prints each result the job recorded, and that an issue with no pull request prints no `Pull request line:`.
+  The worker, architect and retro skills say that a run of a check's CI job on a push of the change's branch records its own result of a check carrying `ci_check`, and that a pass from CI is the derived result or one the job recorded. `ci-checks.md` shows how `dispatch results` prints each result the job recorded, that an issue with no pull request prints no `Pull request line:`, and that such a check is a failure where no pass stands at the head: a result from CI there is a fail, its job recorded a pass and a fail at that commit, or its run proved nothing.

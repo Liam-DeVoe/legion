@@ -190,6 +190,9 @@ function Result({
           </span>
         )}
         <span data-testid="verification-result-role">{result.role}</span>
+        {result.branch === undefined || result.branch === "" ? null : (
+          <span data-testid="verification-result-branch">on branch {result.branch}</span>
+        )}
         <span aria-hidden="true">·</span>
         <Timestamp at={result.created_at} />
       </div>
