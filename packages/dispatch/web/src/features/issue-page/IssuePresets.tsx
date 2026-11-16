@@ -58,7 +58,10 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * is one control naming the one on, with its signal, which opens a menu of the five, each a
  * `menuitemradio` that says whether it is the one on; below 1024 px the Outline control stands
  * beside it (R2, R14). One query and its negation decide the two (`ONE_CONTROL_QUERY`), so no
- * width answers both shapes or neither, and the row is one line at every width.
+ * width answers both shapes or neither, and the row is one line at every width. The one control
+ * is a WAI-ARIA menu button: Enter, Space, Down and Up open its menu with the focus on the view
+ * that is on; Up and Down move in it, wrapping, and Home and End go to its ends; Escape closes it
+ * and gives the focus back to the control, and Tab closes it.
  */
 export function IssuePresets({
   active,
@@ -85,10 +88,13 @@ export function IssuePresets({
   const [open, setOpen] = useState<OpenMenu>(undefined);
   const wrapper = useRef<HTMLDivElement>(null);
   const toggles = useRef<Partial<Record<Preset, HTMLButtonElement | null>>>({});
-  // The one control, which takes the focus back when its menu closes with the focus in it - on
-  // a chosen view or on Escape - since the item the focus was on goes with the menu.
+  // The one control, a menu button (WAI-ARIA's pattern): its menu opens with the focus on the view
+  // that is on, and the control takes the focus back when the menu closes with the focus in it -
+  // on a chosen view or on Escape - since the item the focus was on goes with the menu. Tab
+  // leaves the menu from the control (`leftByTab`), so the focus stays where Tab moved it.
   const chooser = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef<OpenMenu>(undefined);
+  const leftByTab = useRef(false);
   // The ids a control's name and signal are read by; one prefix per drawn row, since two issue
   // pages in one document would otherwise write the same ids.
   const ids = useId();
@@ -97,9 +103,20 @@ export function IssuePresets({
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
 
   useEffect(() => {
+    const opened = wasOpen.current === undefined && open === "presets";
     const closed = wasOpen.current === "presets" && open === undefined;
     wasOpen.current = open;
+    if (opened) {
+      wrapper.current
+        ?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]')
+        ?.focus();
+      return;
+    }
     if (!closed) return;
+    if (leftByTab.current) {
+      leftByTab.current = false;
+      return;
+    }
     const focus = document.activeElement;
     if (focus === null || focus === document.body || wrapper.current?.contains(focus) === true) {
       chooser.current?.focus();
@@ -148,20 +165,28 @@ export function IssuePresets({
   };
   const walk = (event: KeyboardEvent<HTMLElement>, from: Preset) => {
     const at = PRESET_ORDER.indexOf(from);
-    const to =
-      event.key === "ArrowRight"
-        ? (at + 1) % PRESET_ORDER.length
-        : event.key === "ArrowLeft"
-          ? (at - 1 + PRESET_ORDER.length) % PRESET_ORDER.length
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? PRESET_ORDER.length - 1
-              : undefined;
+    const to = step(event.key, at, PRESET_ORDER.length, "ArrowLeft", "ArrowRight");
     const next = to === undefined ? undefined : PRESET_ORDER[to];
     if (next === undefined) return;
     event.preventDefault();
     toggles.current[next]?.focus();
+  };
+  // Inside the open menu, Up and Down move between the five, wrapping, and Home and End go to
+  // the ends. Tab closes it: the focus goes back to the control first, so Tab moves on from the
+  // control, and the items take no tab stop of their own.
+  const walkMenu = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Tab") {
+      leftByTab.current = true;
+      chooser.current?.focus();
+      setOpen(undefined);
+      return;
+    }
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+    const at = event.target instanceof HTMLElement ? items.indexOf(event.target) : -1;
+    const to = at < 0 ? undefined : step(event.key, at, items.length, "ArrowUp", "ArrowDown");
+    if (to === undefined) return;
+    event.preventDefault();
+    items[to]?.focus();
   };
   // The control the toolbar's one tab stop rests on, which the arrow keys move from.
   const [stop, setStop] = useState<Preset>(active);
@@ -204,6 +229,15 @@ export function IssuePresets({
             aria-haspopup="menu"
             className={`flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-sm leading-5 font-semibold ${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusVisibleRing}`}
             onClick={() => setOpen((shown) => (shown === "presets" ? undefined : "presets"))}
+            // Down and Up open the menu as Enter and Space do.
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+              event.preventDefault();
+              setOpen("presets");
+            }}
+            // As a toggle's press does (below), the press leaves the focus where it is; the
+            // menu takes it once it opens.
+            onMouseDown={(event) => event.preventDefault()}
             ref={chooser}
             type="button"
           >
@@ -218,7 +252,7 @@ export function IssuePresets({
             </span>
           </button>
           {open === "presets" ? (
-            <div className={`${pageMenu} left-0`} role="menu">
+            <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
               {PRESET_ORDER.map((preset) => (
                 // Named by its name and its signal, which it draws inside it; and checked
                 // where it is the one on, which its dot draws.
@@ -232,6 +266,7 @@ export function IssuePresets({
                     if (preset !== active || preset === "conversation") press(preset);
                   }}
                   role="menuitemradio"
+                  tabIndex={-1}
                   type="button"
                 >
                   <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
@@ -288,6 +323,11 @@ export function IssuePresets({
                 onClick={() => press(preset)}
                 onFocus={() => setStop(preset)}
                 onKeyDown={(event) => walk(event, preset)}
+                // A press leaves the focus where it is. Focus taken on mousedown leaves the
+                // outline, which closes the body its row had open: on an address that names a
+                // node (`#b-`) the page grows shorter under the pointer, the press ends on
+                // something else, and the view does not change.
+                onMouseDown={(event) => event.preventDefault()}
                 ref={(node) => {
                   toggles.current[preset] = node;
                 }}
@@ -320,6 +360,22 @@ type OpenMenu = "presets" | undefined;
 /** The widths the row is one control at: below 1280 px, from which R2 has the views one row.
  *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. */
 const ONE_CONTROL_QUERY = "(max-width: 1279px)";
+
+/** Where a roving focus goes from `at` of `count` controls on `key`: `back` and `forward` step
+ *  one, wrapping, and Home and End go to the ends; undefined for any other key. */
+function step(
+  key: string,
+  at: number,
+  count: number,
+  back: string,
+  forward: string
+): number | undefined {
+  if (key === forward) return (at + 1) % count;
+  if (key === back) return (at - 1 + count) % count;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  return undefined;
+}
 
 /**
  * What one control draws after its name: its count, then the noun the count is in, or what of

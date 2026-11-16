@@ -816,11 +816,15 @@ export const pageIssueBg = "bg-page-issue";
 export const pageWaitingBg = "bg-page-waiting";
 
 /** The header's small bordered control (the prototype's `.hbtn`): Details, the overflow menu and
- *  the phone's `☰`, and the filter row's node menu, words filter, version control and Keys, 22 px
- *  tall from the phone's width up and 24 px below it, the least a touch target may be (WCAG
- *  2.5.8), because the header at 390 px is held to eight lines and 250 px, nine and 280 px while
- *  an approval request waits on the reader, which leaves no room for more (dispatch://INFRA-1196
- *  R13, ruling 8 of its build-rulings-md). */
+ *  the phone's `☰`, and the filter row's node menu, words filter, version control and Keys. From
+ *  `md` up its 20 px line, `md:py-px` and its border make it 24 px tall, and below `md`,
+ *  `min-h-6` lifts it to 24 px; but below 1280 px the 44 px floor that `styles.css` gives every
+ *  control outranks those classes, so the control is 24 px tall from 1280 px up and 44 px below,
+ *  until the header's own rule lowers that floor. 24 px is the least a touch target may be (WCAG
+ *  2.5.8), and ruling 3 gives the header's controls that size at 390 px because the header there
+ *  is held to eight lines and 250 px, nine and 280 px while an approval request waits on the
+ *  reader, which leaves no room for more (dispatch://INFRA-1196 R13, rulings 3 and 8 of its
+ *  build-rulings-md). */
 export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 rounded-[7px] border px-2.5 text-xs leading-5 font-medium md:min-h-0 md:min-w-0 md:py-px border-page-line bg-page-paper text-page-muted ${focusVisibleRing}`;
 /** The filter row's box for words, opened from its control (`IssuePresets.tsx`): the page's
  *  hairline rule, its paper and its ink, the rule in the ink while it holds the caret. */
@@ -907,11 +911,12 @@ export const pageKindTag = {
 } as const;
 /** A node's state in the margin's second line (`.ms`): what waits on the reader in the waiting
  *  orange, a decision waiting for review in the decisions' violet, a check that passed in the
- *  passed green and one that failed in the failed red, every other state quiet. Each is a word
- *  and a shape as well (R6, R17). */
+ *  passed green, one that failed in the failed red and a result not run in the not-run grey,
+ *  every other state quiet. Each is a word and a shape as well (R6, R17). */
 export const pageStateText = {
   decision: "text-page-decision",
   failed: "text-page-failed",
+  notRun: "text-page-not-run",
   passed: "text-page-passed",
   quiet: "text-page-quiet",
   waiting: "text-page-waiting-text",
@@ -925,13 +930,15 @@ export const pageStateText = {
  * The line is one row of text that grows to 150 px; the kinds it writes are chips in their
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
  * caret is in the box. Every word in it says what it is, so the colours repeat what is written
- * (R6).
+ * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md).
  */
 export const pageComposer = {
   answering:
     "border-page-waiting shadow-[0_0_0_1px_var(--color-page-waiting),0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-waiting",
   box: "group flex min-w-0 flex-col gap-[3px] rounded-[10px] border border-page-hair bg-page-paper py-[5px] pr-1.5 pl-3 shadow-[0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-ink",
-  chip: "inline-flex items-center gap-1 rounded-full border px-2 text-xs leading-5 font-semibold max-[760px]:hidden max-[760px]:group-focus-within:inline-flex",
+  chip: "inline-flex items-center gap-1 rounded-full border px-2 text-xs leading-5 font-semibold max-[761px]:hidden max-[761px]:group-focus-within:inline-flex",
   chipOff: {
     ask: "border-page-question bg-page-paper text-page-question",
     comment: "border-page-ink bg-page-paper text-page-ink",
@@ -947,9 +954,9 @@ export const pageComposer = {
   // On a phone the field takes the line's whole width once the box holds the caret, and the
   // kinds and Send stand under it (the prototype's `.cbox:focus-within .crow1`).
   field:
-    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-quiet max-[760px]:group-focus-within:basis-full",
-  foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[760px]:pt-2.5",
-  line: "flex min-w-0 items-end gap-2 max-[760px]:group-focus-within:flex-wrap",
+    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-quiet max-[761px]:group-focus-within:basis-full",
+  foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[761px]:pt-2.5",
+  line: "flex min-w-0 items-end gap-2 max-[761px]:group-focus-within:flex-wrap",
   option:
     "inline-flex items-center gap-1 rounded-full border border-page-waiting px-2 text-xs leading-5 font-semibold text-page-waiting-text aria-pressed:bg-page-waiting-tint aria-pressed:text-page-ink",
   target:

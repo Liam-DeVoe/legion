@@ -14,7 +14,7 @@ import { usePageWords, useTooltips } from "../../components/tooltips";
 import { pageInkText } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
-import { Timestamp } from "../refs/Timestamp";
+import { exactTimeLabel, Timestamp } from "../refs/Timestamp";
 
 /**
  * What the registry says about a claim's holder, as `claimHolds` judges it. The registry lists
@@ -175,29 +175,37 @@ export function ClaimChip({
   // One moment decides the tone and the wording, and it is the server's: at it the take is still
   // refused, after it granted, which is why `claimTakeableNow` compares strictly.
   const takeable = lapsed || (unresponsive && claimTakeableNow(heard, lastSeen));
-  const since = `Claimed by ${text.label(claim.actor)} · since ${new Date(claim.at).toLocaleString()}.`;
-  const explains =
-    "A claim marks who is implementing this issue, so two agents never take the same work.";
-  const lapsedNote = lapsed ? " That session is no longer running, so anyone may claim it." : "";
-  const unresponsiveNote = !unresponsive
-    ? ""
-    : ` That session has missed its heartbeats without ending${
-        heardAt === null ? "" : `, last seen ${new Date(heardAt).toLocaleString()}`
-      }. ${
-        takeableAt === null
-          ? "It keeps this issue; another agent may take it once the listener gives it up."
-          : takeable
-            ? `It kept this issue until ${new Date(takeableAt).toLocaleString()}, so another agent may take it now. It has not ended, and may yet answer.`
-            : `It keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it.`
-      }`;
   // A session claim the registry could not judge says so, rather than pass for a held one.
   const unchecked = claim.actor.kind === "session" && registry.isError;
-  const uncheckedNote = !unchecked
-    ? ""
-    : ` Couldn't check whether that session is still running: ${
-        registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
-      }`;
+  // What the chip's tooltip says, built only where a tooltip is drawn.
+  const claimTitle = () => {
+    const since = `Claimed by ${text.label(claim.actor)} · since ${new Date(claim.at).toLocaleString()}.`;
+    const explains =
+      "A claim marks who is implementing this issue, so two agents never take the same work.";
+    const lapsedNote = lapsed ? " That session is no longer running, so anyone may claim it." : "";
+    const unresponsiveNote = !unresponsive
+      ? ""
+      : ` That session has missed its heartbeats without ending${
+          heardAt === null ? "" : `, last seen ${new Date(heardAt).toLocaleString()}`
+        }. ${
+          takeableAt === null
+            ? "It keeps this issue; another agent may take it once the listener gives it up."
+            : takeable
+              ? `It kept this issue until ${new Date(takeableAt).toLocaleString()}, so another agent may take it now. It has not ended, and may yet answer.`
+              : `It keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it.`
+        }`;
+    const uncheckedNote = unchecked
+      ? ` Couldn't check whether that session is still running: ${
+          registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
+        }`
+      : "";
+    return `${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`;
+  };
   const inDetails = page !== null && inRow;
+  // In a row of Details nothing of the claim stops its line from wrapping (dispatch://INFRA-3935
+  // R4): each part may shrink, and a long one breaks inside itself only where no break between
+  // words is left. Everywhere else each part stays whole, as on `main`.
+  const part = inDetails ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
   return (
     <span
       className={
@@ -205,15 +213,14 @@ export function ClaimChip({
           ? // Below 1280 px an inline link takes 6 px of padding above and below for a finger
             // (`styles.css`'s `.dispatch-inline-link`), so wrapped lines stand that far apart.
             `inline-flex min-w-0 max-w-full flex-wrap items-baseline gap-x-1 gap-y-3 text-sm xl:gap-y-0 ${pageInkText}`
-          : `${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`
+          : // Inside `NoTooltips` the pill's tone is the new issue page's (`pillClassName`'s
+            // `onPage`, dispatch://INFRA-3935 R6, decision 56 of
+            // dispatch://INFRA-1196/artifact/part-decisions-md).
+            `${pillClassName(takeable ? "label" : "selected-label", page !== null)} min-w-0 max-w-full gap-1`
       }
       data-testid="issue-claim"
       style={{ flexShrink: 1 }}
-      title={
-        tooltips
-          ? `${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`
-          : undefined
-      }
+      title={tooltips ? claimTitle() : undefined}
     >
       {inDetails ? null : (
         <span className="shrink-0" {...page?.pageChrome}>
@@ -226,41 +233,37 @@ export function ClaimChip({
         className={inDetails ? undefined : "min-w-0 truncate"}
         inline
       />
-      <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
+      <span aria-hidden="true" className={part} {...page?.pageChrome}>
         ·
       </span>
-      <Timestamp at={claim.at} className="shrink-0" exact />
+      <Timestamp at={claim.at} className={part} exact />
       {lapsed ? (
         <>
-          <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
+          <span aria-hidden="true" className={part} {...page?.pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-lapsed" {...page?.pageChrome}>
+          <span className={part} data-testid="issue-claim-lapsed" {...page?.pageChrome}>
             {page?.CONTROL_LABELS.not_running ?? "not running"}
           </span>
         </>
       ) : null}
       {unresponsive ? (
         <>
-          <span aria-hidden="true" className="shrink-0" {...page?.pageChrome}>
+          <span aria-hidden="true" className={part} {...page?.pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-unresponsive" {...page?.pageChrome}>
+          <span className={part} data-testid="issue-claim-unresponsive" {...page?.pageChrome}>
             {page?.CONTROL_LABELS.unresponsive ?? "unresponsive"}
             {heardAt === null ? null : (
               <span data-testid="issue-claim-unresponsive-since">
-                {page === null ? " since " : ` ${page.CONTROL_LABELS.unresponsive_since} `}
+                {` ${page?.CONTROL_LABELS.unresponsive_since ?? "since"} `}
                 <Timestamp at={heardAt} exact />
               </span>
             )}
             {takeableAt === null ? null : (
               <span data-testid="issue-claim-takeable">
                 {takeable ? (
-                  page === null ? (
-                    ", takeable now"
-                  ) : (
-                    `, ${page.CONTROL_LABELS.takeable_now}`
-                  )
+                  `, ${page?.CONTROL_LABELS.takeable_now ?? "takeable now"}`
                 ) : page === null ? (
                   <>
                     , takeable <Timestamp at={takeableAt} />
@@ -273,10 +276,7 @@ export function ClaimChip({
                         or, inside the last minute of the wait, with "just now" - which reads as
                         free while the server still refuses the take. */}
                     <time dateTime={takeableAt} {...page.authorText}>
-                      {new Date(takeableAt).toLocaleString(undefined, {
-                        dateStyle: "short",
-                        timeStyle: "short",
-                      })}
+                      {exactTimeLabel(new Date(takeableAt))}
                     </time>
                   </>
                 )}
@@ -285,15 +285,15 @@ export function ClaimChip({
           </span>
         </>
       ) : null}
-      {/* Where a tooltip carries it, `uncheckedNote` above says it; inside `NoTooltips` the
+      {/* Where a tooltip carries it, the title's `uncheckedNote` says it; inside `NoTooltips` the
           chip says it, because a claim nobody could judge is not a held one and a reader on a
           phone or on the keyboard has no other way to that. */}
       {unchecked && page !== null ? (
         <>
-          <span aria-hidden="true" className="shrink-0" {...page.pageChrome}>
+          <span aria-hidden="true" className={part} {...page.pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-unchecked" {...page.pageChrome}>
+          <span className={part} data-testid="issue-claim-unchecked" {...page.pageChrome}>
             {page.CONTROL_LABELS.unchecked}
           </span>
         </>
