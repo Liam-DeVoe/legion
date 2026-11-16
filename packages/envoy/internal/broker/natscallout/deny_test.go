@@ -1,7 +1,6 @@
 package natscallout
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -58,18 +57,10 @@ func TestADenyEntryIsEncodedAndEnforced(t *testing.T) {
 			require.NoError(t, reader.Flush())
 
 			a := newSession(t, "ses_a", 15*time.Minute)
-			grants := grantSource{
-				session: func(string) (natsgrant.Permissions, error) {
-					return natsgrant.Permissions{
-						Publish: []string{"_INBOX.>", "notifications.>"}, Subscribe: []string{"_INBOX.>"},
-						PublishDeny: row.deny,
-					}, nil
-				},
-				service: serviceGrant,
-			}
-			startService(t, url, keys, Deps{Introspect: introspector(a)}, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
-				return decide(ctx, deps, services, req, grants)
-			})
+			startService(t, url, keys, Deps{Introspect: introspector(a)}, answering(natsgrant.Permissions{
+				Publish: []string{"_INBOX.>", "notifications.>"}, Subscribe: []string{"_INBOX.>"},
+				PublishDeny: row.deny,
+			}))
 			errs := make(chan error, 16)
 			nc, err := connectSession(t, url, a, errs)
 			require.NoError(t, err)

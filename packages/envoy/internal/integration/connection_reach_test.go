@@ -81,11 +81,13 @@ func TestEachConnectionReceivesOnlyItsTokensProjects(t *testing.T) {
 	startReachService(t, url, keys, "daemon/-/-="+reachDaemonAccount, natscallout.Deps{
 		Introspect:   introspectSessions(sessions...),
 		ServiceToken: verifyPlatformToken(daemonToken),
-		Exchange: func(account string) ([]string, bool) {
+		// As the broker's exchange list answers it (exchange.Set.MappedForAccount): the person the
+		// account's entry acts for, whom the auth service asks Dispatch about, and its projects.
+		Exchange: func(account string) (string, []string, bool) {
 			if account == reachDaemonAccount {
-				return []string{"PUB"}, true
+				return "ada@example.com", []string{"PUB"}, true
 			}
-			return nil, false
+			return "", nil, false
 		},
 		Access: dispatchAccess(map[string]projectaccess.Answer{
 			"PUB":  {Project: "PUB", Visibility: "public", Visible: true, Repositories: []string{"acme/pub"}},
@@ -274,12 +276,14 @@ func verifyPlatformToken(token string) func(context.Context, string) (string, bo
 	}
 }
 
-// dispatchAccess is a Deps.Access answering as Dispatch does about each project of answers, asked
-// about no person, and projectaccess.ErrProjectNotFound about any other.
+// dispatchAccess is a Deps.Access answering as Dispatch does about each project of answers, for
+// the person the exchange stub names (ada@example.com), and projectaccess.ErrProjectNotFound about
+// any other project. Asked about any other person, it fails the ask, since the auth service asks
+// about the person the account's exchange entry acts for.
 func dispatchAccess(answers map[string]projectaccess.Answer) func(context.Context, string, string) (projectaccess.Answer, error) {
 	return func(_ context.Context, project, person string) (projectaccess.Answer, error) {
-		if person != "" {
-			return projectaccess.Answer{}, fmt.Errorf("the auth service asked about person %q", person)
+		if person != "ada@example.com" {
+			return projectaccess.Answer{}, fmt.Errorf("the auth service asked about person %q, not the account's entry's", person)
 		}
 		answer, ok := answers[project]
 		if !ok {

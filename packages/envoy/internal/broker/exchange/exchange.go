@@ -627,19 +627,20 @@ func (s *Set) MappedProjects(principal string) (person string, projects []string
 	return entry.person, []string{entry.project}, true
 }
 
-// ProjectsForAccount is the projects this configuration gives a token minted for one account,
-// and false for an account no entry lists. An account that opens with "system:serviceaccount:"
-// is read as a Kubernetes subject, any other as a Google account address, so a caller passes the
-// string its own configuration holds and spells no principal. It reads the same entries Pod and
-// Google mint from, so a grant made from this answer and the token of that account cannot
-// disagree. A workflow is no account and is answered false.
-func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
+// MappedForAccount is the person and the projects this configuration gives a token minted for
+// one account, and false for an account no entry lists. An account that opens with
+// "system:serviceaccount:" is read as a Kubernetes subject, any other as a Google account address,
+// so a caller passes the string its own configuration holds and spells no principal. It reads the
+// same entries Pod and Google mint from, so a grant made from this answer and the token of that
+// account cannot disagree: the token exchange holds that token's projects to what Dispatch says
+// its person may see, and a reader of this answer can ask Dispatch about the same person. A
+// workflow is no account and is answered false.
+func (s *Set) MappedForAccount(account string) (person string, projects []string, ok bool) {
 	principal := GooglePrincipal(account)
 	if strings.HasPrefix(account, "system:serviceaccount:") {
 		principal = AccountPrincipal(account)
 	}
-	_, projects, ok := s.MappedProjects(principal)
-	return projects, ok
+	return s.MappedProjects(principal)
 }
 
 // entryProjects is the list a token an operator's entry maps carries: that entry's one project,
@@ -652,13 +653,13 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("%w: %s's entry names no project, and the request named %s",
-			ErrProjectsFixed, identity, strings.Join(asked, " "))
+			ErrProjectsFixed, identity, oauthwire.JoinProjects(asked))
 	}
 	if len(asked) == 0 || (len(asked) == 1 && asked[0] == project) {
 		return []string{project}, nil
 	}
 	return nil, fmt.Errorf("%w: %s writes the project %s that its entry names, and the request named %s",
-		ErrProjectsFixed, identity, project, strings.Join(asked, " "))
+		ErrProjectsFixed, identity, project, oauthwire.JoinProjects(asked))
 }
 
 // checkGrant refuses what every entry shares: a blank person, which would mint a token answerable
@@ -878,7 +879,7 @@ func (s *Set) Google(token map[string]any, session string, projects []string) (C
 	if entry.Person == "" {
 		if len(projects) > 0 {
 			return Claims{}, fmt.Errorf("%w: %s is the service %s and names no person, and the request named %s",
-				ErrProjectsNoPerson, identity.Account, entry.Service, strings.Join(projects, " "))
+				ErrProjectsNoPerson, identity.Account, entry.Service, oauthwire.JoinProjects(projects))
 		}
 		claims.Service = entry.Service
 		return claims, nil

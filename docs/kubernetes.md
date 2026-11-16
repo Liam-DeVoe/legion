@@ -3094,6 +3094,7 @@ The auth service refuses a token while it is away, or while it holds no answer y
 at boot each refused attempt is logged as the `connect Envoy NATS` probe's retry with its `detail` (`nats: Authorization Violation`), and the daemon serves nothing, its `/readyz` answering nothing, until the token is admitted;
 while running each refused reconnect is logged at warn as `NATS refused the connection's credential` with its `error`.
 A seed's refusal, or a refusal of a connection with no credential, still refuses boot, and a seed's connection the server refuses twice with the same error still closes.
+NATS tells the daemon only that it was refused, never why: the reason is in the secrets broker's log, on its `natscallout: refused a NATS connection` line, as its `reason` (for example `project access not yet known: <KEY>`) and its `label` (for example `service_not_listed`, `project_not_known`, `project_not_visible`), which `broker_nats_callout_decisions_total` counts as its `reason`.
 
 A NATS permission violation on a JetStream call (a refused consumer or stream grant) is reported asynchronously:
 the server tells the connection of it well before the blocked call's own attempt bound runs out, but the blocked call itself does not return early on that report
@@ -5146,7 +5147,11 @@ The wakes are these:
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
-- a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon, one sent with `keep: false` included: that message is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
+- a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
+  Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
+  If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+  While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
+  One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
 
 - a message sent to the agent subject of a released session: an Envoy direct message, or a person's answer, comment or message that a Dispatch claim routes to that session;
 
@@ -6290,7 +6295,7 @@ An operator's entry is held to Dispatch the same way: a `named` token is refused
 Dispatch's answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins.
 A broker with neither setting asks Dispatch nothing: it mints every token that names no project as before, mints an entry's token as before, and refuses a `person` trade that names a project.
 So does a broker whose Dispatch cannot be reached, except that it refuses such a trade `temporarily_unavailable` for the client to ask again, and logs one line naming each token it mints unchecked.
-A Dispatch that answers 401 or 403 to the broker's own account token has not listed the broker as one that may ask: every trade that asks it is refused `server_error`, saying so, and nothing is minted unchecked.
+A Dispatch that answers 401 or 403 to the broker's own account token does not list the broker's account as one that may ask, or does not accept that token (one minted for another audience, say): every trade that asks it is refused `server_error`, saying so, and nothing is minted unchecked.
 A 404 is Dispatch holding no such project only with the code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
 A `named` token naming a project fails until every broker replica, Dispatch and listener run the release that carries the list: this release's readers refuse an older broker's `project` answer, the broker also stores a named token's one project under `project` so an older replica answers it that way, and an older Dispatch refuses this release's named answers.
 The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
@@ -6619,7 +6624,7 @@ Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker 
 it projects the broker's token, has a key directory of its own, and its shim takes the three agent-secrets flags and its agent `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR`.
 It runs as the operator's ServiceAccount (`runtime.kubernetes.pod`), the same account as every issue pod, and it is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps that account to `legion-daemon`.
 A service may name several accounts, so a controller given an account of its own keeps that service's secrets only when `BROKER_SERVICES` also names that account for `legion-daemon`.
-The broker grants it, with no person asked, an agent secret whose owner is `legion-daemon` and whose tier is `agent`, which is how the operator stores `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token its `slack_post` replies with.
+Its `slack_post` replies with `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token, which the operator stores as a shared agent secret (owner `shared`, tier `agent`), so the broker grants it with no person asked to every session enrolled with it, the controller's and every issue pod's among them, whatever service or person the session belongs to.
 Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
 "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`:
 Karpenter never consolidates or replaces for drift the node it runs on, though issue pods can still be scheduled onto that node;
