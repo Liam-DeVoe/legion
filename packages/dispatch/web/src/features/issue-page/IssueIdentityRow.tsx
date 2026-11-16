@@ -63,8 +63,12 @@ export function IssueIdentityRow({
         </span>
         {parent === null ? null : (
           <>
+            {/* No `dispatch-inline-link`: that class is for a link inside a sentence's line box,
+                and this link is a flex item of row one, where the class's 6 px of padding below
+                1280 px makes the row 30 px tall and the band 69 px, not the 63 px R5 holds it
+                to. The header's own rule in `styles.css` takes the 44 px floor off it. */}
             <Link
-              className={`dispatch-inline-link min-w-0 underline underline-offset-2 [overflow-wrap:anywhere] ${linkHoverText}`}
+              className={`min-w-0 underline underline-offset-2 [overflow-wrap:anywhere] ${linkHoverText}`}
               to={buildIssuePath({ key: parent, kind: "issue" })}
               {...authorText}
             >
