@@ -26,19 +26,21 @@ type Queryer interface {
 }
 
 // Followed is what one follow wrote: whether the follower row is new, and the session's node
-// where this follow made it, held for the event its caller appends after the follow
-// (graphstore.Uncaused). A caller that follows before its event exists passes
-// graphstore.NoEvent to Follow and hands Uncaused to graphstore.Caused once it holds the event,
-// in the same transaction, as a comment's node learns the event that stored it. Only a node
-// this follow made at the sentinel moves, so a session another write recorded keeps that
-// write's cause, and a caller that appends no event calls nothing and leaves its node at the
-// sentinel.
+// where this follow made it, with that node's two base attributes, held for the event its
+// caller appends after the follow (graphstore.Uncaused). A caller that follows before its event
+// exists passes graphstore.NoEvent to Follow and hands Uncaused to graphstore.Caused once it
+// holds the event, in the same transaction, as a comment's node learns the event that stored
+// it. Only a node this follow made at the sentinel moves, so a session another write recorded
+// keeps that write's cause. A caller that appends no event hands Uncaused to graphstore.Caused
+// with graphstore.NoEvent all the same, which appends those two at the sentinel, where the node
+// row stands: dropping it would leave a node row no appended fact describes.
 type Followed struct {
 	// Added is whether the session did not follow the ask before; following twice changes
 	// nothing.
 	Added bool
-	// Uncaused holds the session's node, made by this follow at the cause it was given. It holds
-	// none where the store held the node already, and graphstore.Caused moves nothing then.
+	// Uncaused holds the session's node, made by this follow at the cause it was given, and the
+	// base attributes the follow's own statement did not state. It holds none where the store
+	// held the node already, and graphstore.Caused moves nothing then.
 	Uncaused graphstore.Uncaused
 }
 
@@ -64,12 +66,22 @@ type Followed struct {
 // no lock of the store's order. A session id past the store's address bound is no node the store
 // can key, and the follow then writes the follower row alone, as graphstore.SessionRecorded
 // writes nothing for such a session.
+//
+// A follow whose cause comes later states no base attribute in that statement and answers the
+// node's two for the caller to append under its event (graphstore.WriteArmsUncaused,
+// graphstore.BaseAttributeFacts): no tuple may be updated to learn its cause, and
+// graphstore.Caused moves the node row onto that event, so stating them here would leave the
+// row naming one event and its own base tuples naming another.
 func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.Actor, at time.Time, event int64) (Followed, error) {
 	var nodes []graphstore.Node
 	if sessionID != "" && graphstore.AddressFits(sessionID) {
 		nodes = []graphstore.Node{graphstore.SessionNode(sessionID, who, at, event)}
 	}
-	arms, params, err := graphstore.WriteArms(3, nodes, nil, nil)
+	writeArms := graphstore.WriteArms
+	if event == graphstore.NoEvent {
+		writeArms = graphstore.WriteArmsUncaused
+	}
+	arms, params, err := writeArms(3, nodes, nil, nil)
 	if err != nil {
 		return Followed{}, fmt.Errorf("follow ask %q as %q: %w", askID, sessionID, err)
 	}
@@ -92,6 +104,9 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	followed := Followed{Added: added == 1}
 	if made == 1 {
 		followed.Uncaused.Nodes = nodes
+		if event == graphstore.NoEvent {
+			followed.Uncaused.Tuples = graphstore.BaseAttributeFacts(nodes)
+		}
 	}
 	return followed, nil
 }

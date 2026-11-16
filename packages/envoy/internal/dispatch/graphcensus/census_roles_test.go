@@ -243,17 +243,17 @@ func (w addressingWrites) settleMention(t *testing.T, key, commentID, role, read
 		if err := tx.QueryRow(ctx, `
 			update comment_deliveries set state = $3 where comment_id = $1 and target = $2 and attempt = 1
 			returning created_at
-		`, commentID, target, graphstore.DeliverySent).Scan(&attemptedAt); err != nil {
+		`, commentID, target, model.DeliveryStateSent).Scan(&attemptedAt); err != nil {
 			return model.Event{}, err
 		}
-		if _, err := graphstore.Reached(ctx, tx, graphstore.DeliverySent, reader, by, attemptedAt); err != nil {
+		if _, err := graphstore.Reached(ctx, tx, model.DeliveryStateSent, reader, by, attemptedAt); err != nil {
 			return model.Event{}, err
 		}
 		return model.Event{
 			IssueKey: new(key), Type: "comment.delivery", Actor: by,
 			Payload: model.CommentDeliveryEventPayload{
 				CommentID: commentID, Target: target, Attempt: 1, Delivery: "steer",
-				SessionID: new(reader), State: graphstore.DeliverySent,
+				SessionID: new(reader), State: model.DeliveryStateSent,
 			},
 		}, nil
 	})

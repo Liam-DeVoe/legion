@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -165,11 +166,8 @@ var projections = []projection{{
 		           or octet_length(coalesce(c.author->>'id', '')) <= `+addressBound+`
 		      then '`+graphstore.TupleAuthoredBy+`>' || `+commentAuthor+` end`,
 	) + `)
-		from comments c
-		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
-		left join artifacts owner on owner.id = c.artifact_id
-		where (anchor.ref_key is null or octet_length(anchor.ref_key) <= ` + addressBound + `)
-		  and (owner.ref_key is null or octet_length(owner.ref_key) <= ` + addressBound + `)`,
+		from comments c` + commentStoreJoins + `
+		where ` + commentInTheStore,
 	nodes: `
 		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(graphstore.KindComment,
 		`t.kind in ('`+graphstore.TupleAnchoredTo+`', '`+graphstore.TupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
@@ -347,6 +345,22 @@ const commentAuthor = `case
 				then '` + graphstore.KindPerson + `:' || user_threads_login(c.author->>'owner')
 		end`
 
+// commentStoreJoins are the two artifacts a comment's relations name, joined so that the bound
+// below can read their addresses: the document its anchor names and the artifact that owns it.
+// It follows `from comments c`.
+const commentStoreJoins = `
+		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
+		left join artifacts owner on owner.id = c.artifact_id`
+
+// commentInTheStore is true of a comments row the store holds a node for: one whose anchor's
+// and owner's addresses both fit the store's bound (commentStoreJoins names the two). A comment
+// with a longer one is left whole out of the store - no node, no tuple and no stamp, so that
+// the old comments arm answers both of its edges (api's commentStored) - and the backfill
+// leaves it alone for the same reason. So no such row names an author the store is held to a
+// node for, and every side that reads the people and the sessions comments name binds this.
+var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key) <= ` + addressBound + `)
+		  and (owner.ref_key is null or octet_length(owner.ref_key) <= ` + addressBound + `)`
+
 // commentPeople are the people the projected tables name as the author of a row, as
 // graphstore.AuthorOf reads an actor: the login an actor of kind user carries, or the owner a
 // personal token's actor carries, each canonicalised the way user_threads_login canonicalises a
@@ -355,6 +369,11 @@ const commentAuthor = `case
 // names that same session and whose owner is the person it belongs to, and the write that ties
 // the two with an alias_of tuple makes the owner's node with it (graphstore.AuthorFacts), except
 // for a session past the store's bound, of which nothing is written.
+//
+// Only the comments the store holds name anybody here (commentInTheStore): a comment anchored
+// to or owned by a document whose address is past the bound is left whole out of the store, so
+// it states no authored_by and makes no author node, and a person whose only comment is one of
+// those is no node of the store and no difference of this census.
 var commentPeople = `
 	select distinct user_threads_login(author.login) as login
 	from (
@@ -363,13 +382,15 @@ var commentPeople = `
 			when c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> '' then null
 			when coalesce(c.author->>'owner', '') <> '' then c.author->>'owner'
 		end as login
-		from comments c
+		from comments c` + commentStoreJoins + `
+		where ` + commentInTheStore + `
 		union all
 		select c.author->>'owner'
-		from comments c
+		from comments c` + commentStoreJoins + `
 		where c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
 		  and c.author->'act'->>'session' = c.author->>'id'
 		  and octet_length(c.author->>'id') <= ` + addressBound + `
+		  and ` + commentInTheStore + `
 	) author
 	where author.login is not null and user_threads_login(author.login) <> ''`
 
@@ -384,10 +405,16 @@ var commentPeople = `
 // follower added and removed before the store existed is held to a node as well. A node is
 // history and never goes, so a session that once followed still owes it.
 //
-// R14 is exact about which attempt is a delivery: "a sent attempt is a delivery; a pending or
-// failed one is not". So this binds `state = 'sent'`, the test the writer binds too: an attempt
-// still pending has reached nobody yet and a failed one never will, and counting either here
-// would hold the store to a node no writer is meant to have written.
+// R14 is exact about which attempt is a delivery: an attempt the listener took is one, and a
+// pending or failed one is not. So this binds the two states that mean it
+// (model.DeliveryTakenStatesSQL), the test the writer binds too (graphstore.Reached): an
+// attempt still pending has reached nobody yet and a failed one never will, and counting
+// either here would hold the store to a node no writer is meant to have written. A queued
+// attempt later answered is read by the same test before and after, so the flip to sent owes
+// no node the settle did not already write.
+//
+// Only the comments the store holds name a session here (commentInTheStore), for the reason
+// commentPeople binds the same: a comment left out of the store records no author at all.
 //
 // It is one definition read by two: the census's session row side and the backfill's session
 // pass (backfillSessions), so the sessions the backfill gives a node are exactly the sessions the
@@ -395,14 +422,15 @@ var commentPeople = `
 var recordedSessions = `
 	select id, min(event) as event, min(at) as at from (
 		select c.author->>'id' as id, null::bigint as event, c.created_at as at
-		from comments c
+		from comments c` + commentStoreJoins + `
 		where c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
+		  and ` + commentInTheStore + `
 		union all
 		select d.session_id, null, d.created_at from comment_deliveries d
-		where coalesce(d.session_id, '') <> '' and d.state = '` + graphstore.DeliverySent + `'
+		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `
 		union all
 		select d.session_id, null, d.created_at from message_deliveries d
-		where coalesce(d.session_id, '') <> '' and d.state = '` + graphstore.DeliverySent + `'
+		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `
 		union all
 		select substring(f.destination from ` + strconv.Itoa(len(contracts.AgentTopicPrefix)+1) + `), null, f.created_at
 		from comment_fallback_copies f

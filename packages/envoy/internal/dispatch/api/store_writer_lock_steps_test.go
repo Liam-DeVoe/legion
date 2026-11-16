@@ -314,8 +314,8 @@ func (r *storeWriterRig) commentDeliverySettle() storeWriter {
 					if err != nil {
 						return err
 					}
-					if settled.State != graphstore.DeliverySent {
-						return fmt.Errorf("the attempt settled %s, want %s", settled.State, graphstore.DeliverySent)
+					if settled.State != model.DeliveryStateSent {
+						return fmt.Errorf("the attempt settled %s, want %s", settled.State, model.DeliveryStateSent)
 					}
 					return nil
 				},
@@ -359,8 +359,8 @@ func (r *storeWriterRig) messageDeliverySettle() storeWriter {
 					if err != nil {
 						return err
 					}
-					if settled.State != graphstore.DeliverySent {
-						return fmt.Errorf("the attempt settled %s, want %s", settled.State, graphstore.DeliverySent)
+					if settled.State != model.DeliveryStateSent {
+						return fmt.Errorf("the attempt settled %s, want %s", settled.State, model.DeliveryStateSent)
 					}
 					return nil
 				},
@@ -369,19 +369,21 @@ func (r *storeWriterRig) messageDeliverySettle() storeWriter {
 	}
 }
 
-// settleSteps are the steps of a delivery's settle: the owner row, the reached session's node
-// with its base attributes, and the receipt. The attributes carry no event - the node is made at
-// the sentinel, before the receipt it is recorded beside exists - so no invariant puts them
-// after the receipt.
+// settleSteps are the steps of a delivery's settle: the owner row, the reached session's node,
+// the receipt, and the node's two base attributes appended under it. The node is made at the
+// sentinel, before the receipt it is recorded beside exists, so its attributes wait for that
+// receipt and are appended after it (graphstore.Reached, graphstore.Caused), which is what
+// keeps the node row and its base tuples naming one event.
 func (r *storeWriterRig) settleSteps() []storeStep {
 	return []storeStep{
 		r.issueOwnerStep(eventOwnerStatement),
 		{
 			name: "the session's node", order: nodeStep,
 			hold: holdNewNode, at: armsStatement,
-			takes: []tableLock{{"graph_nodes", rowExclusiveMode}, {"graph_tuples", rowExclusiveMode}},
+			takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
 		},
 		eventAppendStep(),
+		tupleAppendStep(),
 	}
 }
 

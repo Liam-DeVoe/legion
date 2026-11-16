@@ -203,73 +203,88 @@ func Authored(ctx context.Context, tx pgx.Tx, kind, id string, actor model.Actor
 	return nil
 }
 
-// DeliverySent is the one state of a delivery attempt that is a delivery: R14's "a sent attempt
-// is a delivery; a pending or failed one is not".
-const DeliverySent = "sent"
-
 // Reached records the session a delivery attempt reached, inside the transaction that settles
 // that attempt. R14 gives the store writer three first writes of a session id: "a comment whose
 // author is a session, an ask a session opened or follows, or a delivery attempt that reached
 // one" (graphstore.Authored and asks.Follow are the other two). The moment an attempt reaches a
-// session is the moment its send landed, which is where its settling transaction writes `sent`,
-// so that transaction is where the node belongs.
+// session is the moment the listener took its send, which is where its settling transaction
+// writes that state, so that transaction is where the node belongs.
 //
-// A pending or failed attempt is passed over, and so is an attempt that resolved no session:
-// neither reached anybody, so neither records one. That is the same sentence the store census
-// binds its session row side with (graphcensus's recordedSessions), so the writer and the census
-// read one rule and a reader of either finds the other.
+// An attempt the listener took is a delivery, which model.DeliveryTaken answers for: `sent` to
+// a session that is running, and `queued` for one that is not, which reaches it when it runs
+// again. A pending or failed attempt is passed over, and so is an attempt that resolved no
+// session: neither reached anybody, so neither records one. That is the same sentence the store
+// census binds its session row side with (graphcensus's recordedSessions), so the writer and
+// the census read one rule and a reader of either finds the other. The later move of a queued
+// attempt to answered states nothing new, the node being there from the settle on.
 //
 // It writes the node alone (SessionRecorded). The settle appends its receipt after this, so the
 // node is made at the sentinel and answered as a write held for its cause (Uncaused): the settle
 // moves it onto the receipt once that is appended, as a comment's node learns the event that
-// stored it. A resend of one attempt, and a second attempt reaching the same session, finds the
-// node there and answers none, so the settle moves nothing another write made.
+// stored it, and the node's two base attributes are appended there under that same event. A
+// resend of one attempt, and a second attempt reaching the same session, finds the node there
+// and answers none, so the settle moves nothing another write made.
 func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) (Uncaused, error) {
-	if state != DeliverySent {
+	if !model.DeliveryTaken(state) {
 		return Uncaused{}, nil
 	}
 	made, err := SessionRecorded(ctx, tx, strings.TrimSpace(session), who, at, NoEvent)
 	if err != nil {
 		return Uncaused{}, fmt.Errorf("record the session %s a delivery reached: %w", session, err)
 	}
-	return Uncaused{Nodes: made}, nil
+	return made, nil
 }
 
 // SessionRecorded writes the node of a session a write records, inside that write's transaction,
-// and answers the node when this write made it and nothing when the store held it already.
-// An attempt that reached a session records it here (Reached). A follow of an ask records it
-// with the same node arm spliced into its follower insert (asks.Follow), so that a follow costs
-// one statement.
+// and answers the write: the node where this write made it, and nothing at all where the store
+// held it already. An attempt that reached a session records it here (Reached). A follow of an
+// ask records it with the same node arm spliced into its follower insert (asks.Follow), so that
+// a follow costs one statement.
 //
 // It goes through the same arms every other write of this store splices in (WriteArms): the node
-// row is upserted `do nothing`, which locks no row that is already there, and the base
-// attributes are stated only for a row that insert returned, under the node's own cause. One
-// node, so the ascending (kind, id) order a multi-node write takes is kept by having nothing to
-// order. A writer whose event is appended after this passes NoEvent and moves the node it was
-// answered onto that event once it is (Caused): a node it was not answered is another write's,
-// and keeps that write's cause.
+// row is upserted `do nothing`, which locks no row that is already there. One node, so the
+// ascending (kind, id) order a multi-node write takes is kept by having nothing to order.
+//
+// Where event is NoEvent the cause comes later: the writer appends its event after this and
+// moves the node onto it (Caused over the answered write). The base attributes are then no part
+// of the statement here (WriteArmsUncaused) and are answered as facts held for that event
+// (BaseAttributeFacts), because no tuple may be updated to learn its cause afterwards and a
+// node row moved onto the event would otherwise name an event its own base tuples do not.
+// Where event names the write's own cause they are stated in the arm, under it, and the write
+// answered holds the node alone: a node this write did not make is another write's, keeps that
+// write's cause, and is described by that write's own base tuples.
 //
 // A session id carries no length bound, and a session past the store's address bound is no node
 // the store can key: nothing is written for it, as the comment path writes none for a session
 // author past the bound (AuthorFacts). The census leaves such a session out of both sides
 // (graphcensus's recordedSessions).
-func SessionRecorded(ctx context.Context, tx pgx.Tx, session string, who model.Actor, at time.Time, event int64) ([]Node, error) {
+func SessionRecorded(ctx context.Context, tx pgx.Tx, session string, who model.Actor, at time.Time, event int64) (Uncaused, error) {
 	if session == "" || !AddressFits(session) {
-		return nil, nil
+		return Uncaused{}, nil
 	}
 	node := SessionNode(session, who, at, event)
-	arms, params, err := WriteArms(1, []Node{node}, nil, nil)
+	// The arms state the node's base attributes where this write's cause is in hand, and state
+	// none where it comes later, which the write answered holds for it instead.
+	writeArms := WriteArms
+	if event == NoEvent {
+		writeArms = WriteArmsUncaused
+	}
+	arms, params, err := writeArms(1, []Node{node}, nil, nil)
 	if err != nil {
-		return nil, err
+		return Uncaused{}, err
 	}
 	var made int
 	if err := tx.QueryRow(ctx, "with "+arms+"\nselect count(*) from graph_nodes_written", params...).Scan(&made); err != nil {
-		return nil, fmt.Errorf("record the session %s: %w", session, err)
+		return Uncaused{}, fmt.Errorf("record the session %s: %w", session, err)
 	}
 	if made == 0 {
-		return nil, nil
+		return Uncaused{}, nil
 	}
-	return []Node{node}, nil
+	write := Uncaused{Nodes: []Node{node}}
+	if event == NoEvent {
+		write.Tuples = BaseAttributeFacts(write.Nodes)
+	}
+	return write, nil
 }
 
 // aliases are the tuples that tie a person to how this write names them: the session the server

@@ -29,13 +29,14 @@ const graphstoreDirectory = "internal/dispatch/graphstore"
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
 // package goes through, the same seven docs' register of the tree's passes scans for
 // (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
-// caller's transaction, WriteArms spliced into a caller's statement, Authored, Reached and
-// SessionRecorded, which run WriteArms for the writers that record an author, a reached session
-// and a session an ask names, and EraseNode, the erase's delete of a node and its tuples. Each is
-// a function of the package, never a method, so a call of one is named by the package and found
-// here wherever it is made. A write that holds a statement of its own instead is found by
-// rawStoreWrite, and none outside this package may hold one.
-var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "Caused", "Authored", "Reached", "SessionRecorded", "EraseNode"}
+// caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
+// Authored, Reached and SessionRecorded, which run those arms for the writers that record an
+// author, a reached session and a session an ask names, and EraseNode, the erase's delete of a
+// node and its tuples. Each is a function of the package, never a method, so a call of one is
+// named by the package and found here wherever it is made. A write that holds a statement of
+// its own instead is found by rawStoreWrite, and none outside this package may hold one.
+var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
+	"Authored", "Reached", "SessionRecorded", "EraseNode"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -50,13 +51,15 @@ var rawStoreWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|update|delete\s+
 // fails here until it joins this list.
 var storeWriteCallSites = []string{
 	// The follow of an ask, which records the following session's node in the caller's
-	// transaction, and each site that moves that node onto the event it appends after the follow
-	// through Caused: the follower route, an ask's create, the comment path and a delivery's
-	// reply below, and a settlement's asks (asks' TestAFollowTakesTheStoreLockOrder proves both
-	// steps).
+	// transaction, and each site that moves that node onto the event it appends after the
+	// follow, and appends the node's base attributes under it, through Caused: the follower
+	// route, an ask's create, an approval request renewed, and a settlement's asks (asks'
+	// TestAFollowTakesTheStoreLockOrder proves both steps). The comment path and a delivery's
+	// reply give the follow their own event instead, which it states in its own statement.
 	"asks/followers.go#Follow",
 	"api/ask_followers.go#changeAskFollower",
 	"api/asks.go#createAskFor",
+	"api/reviews.go#renewApprovalAsk",
 	"docs/ask_blocks.go#causeFollows",
 	// The block index's cause: each site that appends what a version's index pass stated under
 	// the event that recorded the version, through Caused (refs' TestCausedTakesTheStoreLockOrder
@@ -74,8 +77,11 @@ var storeWriteCallSites = []string{
 	"api/comment_create.go#createCommentFor",
 	"api/comment_create.go#writeNode",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
-	// attempt reached.
+	// attempt reached, and the one record both replies share of what their answer makes of the
+	// attempt they answer: an attempt the answer flips to sent is one the listener took, and
+	// its session is owed a node (recordAnsweredDelivery).
 	"api/comment_delivery.go#completeCommentDelivery",
+	"api/comment_delivery.go#recordAnsweredDelivery",
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
 	// The seed's comments, with their author's person node and each comment's authored_by

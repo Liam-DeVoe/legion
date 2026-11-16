@@ -47,14 +47,14 @@ type resolvedRole struct {
 //
 // The node side is R19's: the row a store census holds a node against is "the set of distinct
 // actors and sessions the tables this child projects hold", which for a session is a comment
-// whose author it is and a delivery attempt that settled `sent` against it. So a session is
-// recorded here only where such a row exists - the receipt of a mention attempt that settled
-// sent (mentionReached) is that row's own record - and a destination this batch reached over the
+// whose author it is and a delivery attempt the listener took against it. So a session is
+// recorded here only where such a row exists - the receipt of a mention attempt the listener
+// took (mentionReached) is that row's own record - and a destination this batch reached over the
 // bus is not: a route delivery leaves no row in `comment_deliveries` or `message_deliveries`,
 // so no table this child projects holds that session and a node for it would be a node the
 // census rightly reports as projected by no row. The two writers that do see such a row record
 // it there: graphstore.Authored for a comment's author, and graphstore.Reached where an attempt
-// settles sent.
+// settles in a state the listener took it in.
 //
 // The tuple side is R1's: a tuple's far end is an address and never a foreign key, and a tuple
 // may point at an address a later child writes. So the delivered_to tuple of a destination this
@@ -64,12 +64,12 @@ type resolvedRole struct {
 // tuple at all; the children that give an issue, an ask and a message their nodes append those
 // (dispatch://INFRA-1253, dispatch://INFRA-1152).
 //
-// A delivery is a destination this batch reached, and a mention attempt that settled sent. A
+// A delivery is a destination this batch reached, and a mention attempt the listener took. A
 // mention's is recorded under the comment.delivery receipt its settle appended (mentionReached),
-// by the batch that reads that receipt: the receipt is the one event that says the attempt was
-// sent, and an attempt carries exactly one (api's settleDeliveryAttempt), so each sent attempt
-// is recorded once, however long after its comment it settled. The comment's own event cannot
-// record it. Its batch reads the attempt as it stands then, and nothing holds the comment back
+// by the batch that reads that receipt: the receipt is the one event that says the listener took
+// the attempt, and an attempt carries exactly one (api's settleDeliveryAttempt), so each taken
+// attempt is recorded once, however long after its comment it settled. The comment's own event
+// cannot record it. Its batch reads the attempt as it stands then, and nothing holds the comment back
 // for a mention of a session it sends no copy to, so that batch commonly runs before the send is
 // answered and a delivery that settled after it would be recorded nowhere; and stated by both
 // events, one delivery would be two rows of the log. The outbox sends a session a mention
@@ -307,13 +307,16 @@ func deliveredItem(event model.Event) (kind, id string, ok bool) {
 }
 
 // mentionReached is the delivery a comment.delivery receipt states: the comment its attempt
-// carried and the session that attempt reached. Only the receipt of an attempt that settled sent
-// against a session states one, R14's "a sent attempt is a delivery; a pending or failed one is
-// not" (graphstore.DeliverySent): a failed attempt reached nobody, and a sent one whose
-// resolution named no session reached nobody the store can name. The session is trimmed as
-// graphstore.Reached trims it, so the tuple points at the node that settle made.
+// carried and the session that attempt reached. Only the receipt of an attempt the listener
+// took against a session states one, R14's "an attempt the listener took is a delivery; a
+// pending or failed one is not" (model.DeliveryTaken, which answers `sent` and `queued`): a
+// failed attempt reached nobody, and a taken one whose resolution named no session reached
+// nobody the store can name. A queued attempt is one the listener stored for a session that is
+// not running, and it reaches that session when it runs again, so the later move of such an
+// attempt to answered states nothing new. The session is trimmed as graphstore.Reached trims
+// it, so the tuple points at the node that settle made.
 func mentionReached(event model.Event) (comment, session string, ok bool) {
-	if event.Type != "comment.delivery" || payloadString(event.Payload, "state") != graphstore.DeliverySent {
+	if event.Type != "comment.delivery" || !model.DeliveryTaken(payloadString(event.Payload, "state")) {
 		return "", "", false
 	}
 	comment = payloadString(event.Payload, "comment_id")
@@ -321,7 +324,8 @@ func mentionReached(event model.Event) (comment, session string, ok bool) {
 	return comment, session, comment != "" && session != ""
 }
 
-// sessionsInARole are the sessions the sent mention receipts among events reached that the store
+// sessionsInARole are the sessions the mention receipts among events reached, the attempts the
+// listener took (mentionReached), that the store
 // already holds in a role: a role's current held_by into the session, or the session's current
 // part_of a role, each read as every current read reads a relation (graphstore.CurrentIn,
 // graphstore.CurrentOut). A session that claimed a role carries no page of its own

@@ -178,7 +178,7 @@ func TestALateMentionOfASessionThatClaimedARoleGivesItNoPageOfItsOwn(t *testing.
 func settleMention(t *testing.T, database *store.Store, broker *events.Broker, commentID, session string, actor model.Actor, failure string) model.Event {
 	t.Helper()
 	ctx := context.Background()
-	state, failedWith := graphstore.DeliverySent, (*string)(nil)
+	state, failedWith := model.DeliveryStateSent, (*string)(nil)
 	if failure != "" {
 		state, failedWith = "failed", &failure
 	}
