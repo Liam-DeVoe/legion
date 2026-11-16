@@ -84,12 +84,10 @@ import {
   seedChildWithSpec,
   specRuns,
   statementBlock,
-  TYPEFACE,
   threeThings,
-  typefaceAddress,
-  typefaceStatuses,
 } from "./issue-page-j";
 import { withIssuePage } from "./issue-page-option";
+import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
@@ -101,7 +99,8 @@ import { asUser } from "./users";
  * because they read the server's stored decisions, asks, coverage and results. Each row turns
  * the new page on for alice with `withIssuePage` through D's `phase`, seeds what it reads with
  * the seeds of `e2e/issue-layout-seed.ts`, and reads the page through D's `e2e/issue-page.ts`,
- * G's `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and this part's `e2e/issue-page-j.ts`.
+ * G's `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts`, the typeface's
+ * `e2e/issue-page-typeface.ts` and this part's `e2e/issue-page-j.ts`.
  *
  * The rows come from the checkpoint's `e2e/issue-layout.e2e.ts`, each under the title its
  * check names (`verification.md` of dispatch://INFRA-3939, c-rows).

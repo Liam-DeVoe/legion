@@ -182,11 +182,7 @@ test("a summary node whose reading has not come says nothing", () => {
     expect(lines).toEqual([]);
     const head = screen.getByTestId("issue-three-things").textContent;
     expect(head).not.toContain("The page is one outline.");
-    for (const line of [
-      EMPTY_STATE_LINES.spec_summary,
-      EMPTY_STATE_LINES.spec_summary_cut,
-      EMPTY_STATE_LINES.spec_summary_unended,
-    ]) {
+    for (const line of Object.values(EMPTY_STATE_LINES)) {
       expect(head).not.toContain(line);
     }
   } finally {
@@ -212,8 +208,9 @@ test("a summary with no sentence end draws its first line as one sentence", () =
     try {
       expect(lines).toEqual([line]);
       const head = screen.getByTestId("issue-three-things").textContent;
-      expect(head).not.toContain(EMPTY_STATE_LINES.spec_summary_cut);
-      expect(head).not.toContain(EMPTY_STATE_LINES.spec_summary_unended);
+      for (const empty of Object.values(EMPTY_STATE_LINES)) {
+        expect(head).not.toContain(empty);
+      }
     } finally {
       unmount();
     }
