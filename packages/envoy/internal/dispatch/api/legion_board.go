@@ -324,7 +324,8 @@ type legionBoardIssue struct {
 // legion's ErrNoSettings, which the route answers 404 and the live hub refuses the subscription
 // with.
 //
-// The stored facts are one read of one project's rows, by the index on (project_key, issue_key),
+// The stored facts are one read of one project's rows, through an index that leads with
+// project_key (the planner takes issue_facts_closed or the primary key, whichever it costs lower),
 // and the board serves what that read answered. Nothing here computes a fact: no metrics function
 // is called and no population is held between calls. The one computation of the read is
 // legionfacts.Row.At, which closes each part of an open issue still running at now, the moment
