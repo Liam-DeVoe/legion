@@ -157,10 +157,13 @@ export interface ProofEditorUser {
 }
 
 export interface CreateProofEditorOptions {
-  /** Host-owned Yjs document. Must contain (or will lazily grow) an XmlFragment
-   *  named 'prosemirror' — see CollabService#bindDoc, which calls
-   *  `doc.getXmlFragment('prosemirror')` for us. */
+  /** Host-owned Yjs document. Must contain (or will lazily grow) the XmlFragment
+   *  `fragment` names — see CollabService#bindXmlFragment, which is handed
+   *  `doc.getXmlFragment(fragment)` for us. */
   ydoc: Y.Doc;
+  /** The XmlFragment of `ydoc` the editor binds: the one holding its document, where the
+   *  host's Yjs document holds several (INFRA-1253). Defaults to 'prosemirror'. */
+  fragment?: string;
   /** Host-owned awareness instance (e.g. from HocuspocusProvider#awareness).
    *  Pass null/undefined to run without collaborative cursors. */
   awareness?: Awareness | null;
@@ -531,7 +534,7 @@ export async function createProofEditor(
     // Before the shared document renders: an ask or a decision two collaborators left off its
     // content rule must not be deleted from it (see ./ask-content.ts).
     relaxAskContentCheck(ctx.get(schemaCtx));
-    collabService.bindDoc(opts.ydoc);
+    collabService.bindXmlFragment(opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror'));
     collabService.mergeOptions({
       yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
     });
