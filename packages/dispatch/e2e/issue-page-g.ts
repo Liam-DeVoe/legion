@@ -695,9 +695,12 @@ export function rowGroups(page: Page): Promise<RowGroup[]> {
           id: row.getAttribute("data-node-id") ?? "",
           ink,
           links: [...(words?.querySelectorAll("a[href]") ?? [])]
-            // The node's own words and a child's facts, not its chips, which are links of the
-            // muted grey.
-            .filter((link) => link.closest("[data-node-trail]") === null)
+            // The node's own words and a child's facts, not its chips - at the end of the words
+            // or in place (`data-row-chip`) - which are links of the muted grey.
+            .filter(
+              (link) =>
+                link.closest("[data-node-trail]") === null && !link.hasAttribute("data-row-chip")
+            )
             .map((link) => ({
               color: getComputedStyle(link).color,
               facts: link.closest("[data-child-facts]") !== null,
@@ -895,8 +898,10 @@ async function uploadPicture(key: string, name: string): Promise<string> {
 /**
  * One issue holding every node part G's rows read (c-row-layout, c-cut, c-author, c-writer of
  * dispatch://INFRA-3947/artifact/verification-md): a child with a blocker and a session's
- * claim; the reader's comment; an agent's message with a link and "UTF-16"; the statement
- * `r-cites`, citing `notes.md` and the child, with bold words and a list; a one-line statement;
+ * claim; the reader's comment; an agent's message with a link and "UTF-16", and the reader's
+ * reply to each of the agent's messages; the statement `r-cites`, citing `notes.md` and the
+ * child, with bold words and two paragraphs (a `requirement` holds paragraphs and no list,
+ * `blocks.json`); a one-line statement;
  * a plan task that needs one opening "**1\. Stand"; a check, with a result an untitled session
  * recorded; a decision that shaped a statement, one opening "Unsure:", one holding
  * `:::requirement{#r1}` and a block's address, and one a person asked to change; a picture; an
@@ -942,7 +947,7 @@ export async function seedRows(): Promise<RowSeed> {
         markdown:
           ":::requirement{#r-cites}\n" +
           `The **measured** rows are in dispatch://${key}/artifact/${notes.artifact.slug}, and ` +
-          `dispatch://${child.key} draws them.\n\n- one row per node\n- one edge per row\n:::\n`,
+          `dispatch://${child.key} draws them.\n\nOne row per node, and one edge per row.\n:::\n`,
         op: "insert",
       },
     ],
@@ -1033,6 +1038,11 @@ export async function seedRows(): Promise<RowSeed> {
     },
     asPlanner
   );
+  // The outline draws a message thread only once a person wrote in it (`agents-only.ts`), so the
+  // reader answers each of the planner's two messages.
+  for (const message of [longMessage, linked]) {
+    await createMessage(key, { body: "Read.", in_reply_to: message.id });
+  }
   const picture = await uploadPicture(key, "layout.png");
   const pictured = await createComment(key, {
     body: `The layout at 1440 px:\n\n![The layout at 1440 px](dispatch://${key}/artifact/${picture})`,

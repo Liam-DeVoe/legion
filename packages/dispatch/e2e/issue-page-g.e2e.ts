@@ -4,7 +4,7 @@ import {
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
 } from "../web/src/features/issue-page/page-words";
-import { getAsk, listComments } from "./api";
+import { getAsk, getIssue, listComments } from "./api";
 import {
   DESKTOP,
   drawnRows,
@@ -107,7 +107,7 @@ test("a node draws its kind at the right of its row and every node starts at one
     // A child: its status, what blocks it and who holds it, and no author (R5).
     const child = nodeRow(page, seeded.child).first();
     const facts = child.locator("[data-child-facts]");
-    await expect(facts).toContainText(issueStatusWord("todo"));
+    await expect(facts).toContainText(issueStatusWord((await getIssue(seeded.child)).status));
     await expect(facts).toContainText(seeded.blocker);
     await expect(
       facts.locator("[data-child-holder]"),
@@ -120,7 +120,7 @@ test("a node draws its kind at the right of its row and every node starts at one
     await expect(child.locator("[data-node-margin] [data-node-author]")).toHaveCount(0);
 
     // `r-cites`: the document it cites by the page's word, the child it cites by its key, among
-    // its bold words and its list (R4, F14).
+    // its bold words and its two paragraphs (R4, F14).
     const cites = nodeRow(page, `${seeded.slugs.spec}#b-r-cites`).first();
     await expect(cites.locator("a[data-row-chip]").first()).toHaveText(NODE_TYPE_NAMES.document);
     await expect(rowWords(cites)).not.toContainText("notes.md");
@@ -128,7 +128,7 @@ test("a node draws its kind at the right of its row and every node starts at one
       new RegExp(`^${seeded.child}\\b`, "u")
     );
     await expect(rowWords(cites).locator("strong")).toHaveCount(1);
-    await expect(rowWords(cites).locator("li")).toHaveCount(2);
+    await expect(rowWords(cites).locator("p")).toHaveCount(2);
 
     // The needs chip names its target by its first words, with no mark of markdown (F18).
     const needs = rowOf(rows, `${seeded.slugs.plan}#b-t2`);
