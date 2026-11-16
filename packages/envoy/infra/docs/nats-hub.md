@@ -255,8 +255,9 @@ With `authCallout`, the server admits every client that is not one of its users 
 service (dispatch://INFRA-840), which reads the client's token and answers with that connection's
 grant, as [NATS authorization](../README.md#nats-authorization) renders it: one `auth_callout`
 block inside the authorization block, whose `auth_users` is the key of every user above, the
-listener's and the session user's included, so each of them still connects by its seed, or with
-no credential, and reaches no callout. The authorization block sets no `timeout`, so nats-server's
+session user's included (a hub with `authCallout` has no listener user, below). A static user
+connects by its seed and the session user's client with no credential, and neither reaches the
+callout. The authorization block sets no `timeout`, so nats-server's
 default authorization timeout of 2 s stands, and the auth service must answer within 1.5 s:
 whatever the timeout, a Go client (nats.go) fails at about 2 s, since the server sends it its first
 PING after 2 s plus up to 20% (nats-server's server/client.go `setFirstPingTimer`) even while its
@@ -296,6 +297,15 @@ naming no user, names `authCallout`, as `authCallout: callout.issuer is not an a
 …` or `authCallout: callout.xkey is required: …`. A seed in any of its fields is refused naming the
 field by the hub's path, as `authCallout.issuer: an nkey user seed, which is never an input of the
 hub (not echoed)`.
+
+`privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
+(the callout, no session user, no client user beside the auth service's) reaches a running server
+only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes it as the pod roll
+restarts that pod (below), and until then it keeps its old `no_auth_user` and seeded users. On
+`gcp:NatsHub` the VM takes it when the group replaces the VM. So the order holds both ways. Turn
+on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's update has completed on every server:
+every pod of the clustered hub has restarted, or the VM hub's new VM is up. Turn the hub's
+`privateProjects` off only after no project is private.
 
 ## The hub's listener
 
@@ -924,7 +934,7 @@ session user's public key into the hub pods' annotation `envoy-infra.sjawhar.dev
 template, and the StatefulSet replaces its pods one at a time, each server restarting on its own
 claim while the other two serve. Without `authCallout`, any other users change leaves the pod
 template as it was; while `authCallout` is set, a users change that adds, removes or rekeys a user
-rolls the pods too (the callout, below), and only a grant change leaves the template as it was. A
+rolls the pods too (the callout, below), and only a change of a grant, or of a name, which is only a comment beside its key, leaves the template as it was. A
 users change made in the same update as a session-user change applies, with it, as each pod
 restarts. The roll must start from the new `auth.conf`: a pod restarted on the old file keeps the
 old session user, and the reload that later brings the new file is refused. The same holds for the
@@ -958,8 +968,8 @@ block (there is no `timeout` line), into the hub pods' annotation
 `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the pods, by the
 same depends-on order as the session user's roll, on any such change: a pod restarted on the old
 `auth.conf` would keep the old callout, and the reload that later brings the new one would be
-refused. A change of a user's grant alone leaves the lines and the pods as they were, and the
-reloader applies it.
+refused. A change of a user's grant or name alone leaves the lines and the pods as they were, and
+the reloader applies it.
 
 ### Two ports, guarded by the NetworkPolicy alone
 

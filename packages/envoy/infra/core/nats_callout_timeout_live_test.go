@@ -75,9 +75,11 @@ func (r *calloutRig) restartWithAuthServiceDelay(t *testing.T, ctr hubContainer,
 // (DisableShortFirstPing is `json:"-"` in server/opts.go). So the block renders no timeout, the
 // server's default of 2 s stands, and the service's budget is 1.5 s.
 //
-// Each row's answer comes inside both: 1.5 s before the rendered timeout (0.5 s at the default),
-// and at the stated budget. The control that the rig would admit a client at all is an answer at
-// 0.5 s, which e7c174fa1b admitted while it refused the 3.5 s one.
+// Each row's answer comes inside both: 0.5 s before the rendered timeout (1.5 s at the default),
+// and at the stated budget. The first row is the guard against a longer timeout: a block that
+// rendered `timeout: 3` or more would put that answer at 2.5 s or later, past the first PING, and
+// the row fails. The control that the rig would admit a client at all is an answer at 0.5 s, which
+// e7c174fa1b admitted while it refused the 3.5 s one.
 func TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient(t *testing.T) {
 	rig := newCalloutRig(t, false)
 	text := rig.render(t, true)
@@ -86,7 +88,7 @@ func TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient(t *testing.T) {
 		name  string
 		delay time.Duration
 	}{
-		{"1.5 s before the rendered timeout", time.Duration(timeout)*time.Second - 1500*time.Millisecond},
+		{"0.5 s before the rendered timeout", time.Duration(timeout)*time.Second - 500*time.Millisecond},
 		{"at the stated budget", calloutAnswerBudget},
 	} {
 		t.Run(row.name, func(t *testing.T) {

@@ -394,10 +394,11 @@ and no credential are refused, a session `noAuthUser` is reached with no callout
 as the control that `auth_users` must be derived, a static user edited out of it is sent to the
 callout and refused.
 `core/nats_callout_timeout_live_test.go`, on the same image, holds the rendered block to its
-answer budget: a nats.go client is admitted when the auth service answers 1.5 s before the
+answer budget: a nats.go client is admitted when the auth service answers 0.5 s before the
 rendered authorization timeout (nats-server's default 2 s, since the block sets none) and at
-1.5 s. A block that renders a longer timeout fails it: the server's first PING, about 2 s after
-the connect, fails a nats.go client still waiting on the callout.
+1.5 s. A block that renders a timeout of 3 s or more fails it: the first answer then comes at
+2.5 s or later, after the server's first PING (2 s after the connect, plus up to 20%), which fails
+a nats.go client still waiting on the callout.
 `gcp/clusteredhub_callout_live_test.go` carries the tag too and starts no container: it reloads the
 clustered hub's rendered `auth.conf` on the nats-server v2.15.1 the test binary links in, which
 takes a grant change and refuses any change of the callout's lines, the reason the hub's pods carry

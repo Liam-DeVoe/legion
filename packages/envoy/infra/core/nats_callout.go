@@ -16,7 +16,9 @@ import (
 // $G, beside the static users.
 type AuthCallout struct {
 	// Issuer is the public key of the account (A and 55 base32 characters) whose seed signs the
-	// auth service's answers; the server refuses an answer another key signed.
+	// auth service's answers. The server admits only a user whose JWT that key issued (v2.15.1
+	// server/auth_callout.go:166-193); for a sealed answer it does not check who signed the answer
+	// itself (:135-152), so the issuer of the user is the check that holds.
 	Issuer string `json:"issuer"`
 	// XKey is a curve public key (X and 55 base32 characters). The server seals each request to the
 	// service with it, so only the service reads a client's token; without it the request, the
@@ -34,7 +36,8 @@ type AuthCallout struct {
 // as an error ("nats: expected 'PONG', got 'PING'"), so a Go client fails at about 2 s whatever
 // timeout is set (nats_callout_timeout_live_test.go). nats.js 2.29.3 waits out that PING and was
 // admitted on an answer at 1.0 s, 1.8 s and, under a 5 s timeout, 3.5 s. No nats-server 2.15.1
-// setting moves the first PING (DisableShortFirstPing is `json:"-"` in server/opts.go).
+// setting delays the first PING past 2 s: a ping_interval below 2 s moves it earlier, and
+// DisableShortFirstPing is `json:"-"` in server/opts.go (server/client.go:7122-7139).
 
 // The auth service's grant as NATS defines it: the service subscribes to the authorization
 // requests (server/auth_callout.go AuthCalloutSubject) and publishes only its answers, to the
@@ -164,7 +167,7 @@ func (a Authorization) CalloutBlock() string {
 // xkey. It writes no authorization timeout (see the budget above). auth_users is derived from
 // users and never given: in config mode nats-server sends a keyed user it does not list to the
 // callout, even one whose nkey signature was valid (v2.15.1 server/auth.go:739-761), so a static
-// user left out of it would be refused at connect.
+// user left out of it would be sent to the auth service, which knows no such client.
 func (c AuthCallout) render(b *strings.Builder, users []User) {
 	keys := []string{}
 	for _, u := range users {

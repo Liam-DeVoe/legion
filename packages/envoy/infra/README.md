@@ -175,7 +175,7 @@ to `maxFileStoreGb`, with no memory store, and monitoring listens on 8222. The p
 zone, held hard (`topology.kubernetes.io/zone`, `maxSkew: 1`, `DoNotSchedule`, `minDomains: 3`), so
 on a cluster with nodes in fewer than three zones a pod stays Pending rather than share a zone. A
 change of `users` rewrites `auth.conf` alone, which the reloader applies without restarting a
-server; while `authCallout` is set, only a change of a user's grant does. Three changes restart
+server; while `authCallout` is set, only a change of a user's grant or name does, since a name is only a comment in `auth.conf` and keeps its key in `auth_users`. Three changes restart
 the hub pods one at a time instead, each through an annotation on the pod template, since
 nats-server refuses to reload them: a change of `sessionUser` (a changed `no_auth_user`); a change
 of the file store's limit, `maxFileStoreGb` given or derived (a lower `max_file_store` is refused,
@@ -2892,7 +2892,7 @@ none.
 | `users[].publish`, `users[].subscribe` | Each an `allow` list and an optional `deny` list of subject patterns. A subscribe `allow` entry may instead be `<subject> <queue>`, which scopes it to that queue group. |
 | `users[].hasSeed` | The consumer stores a seed for this user. |
 | `noAuthUser` | Optional: the name of a keyed user without a seed, whom a client presenting no credential becomes. |
-| `callout.issuer` | With a callout: the public key of the account, `A` and 55 more characters, whose seed signs the auth service's answers. The server refuses an answer another key signed. |
+| `callout.issuer` | With a callout: the public key of the account, `A` and 55 more characters, whose seed signs the auth service's answers. The server admits only a user whose JWT that key issued. |
 | `callout.xkey` | With a callout: a curve public key, `X` and 55 more characters. The server seals each request to the auth service with it, so only the service reads a client's token. Required: without it nats-server sends each connecting client's token to the auth service unsealed, on `$SYS.REQ.USER.AUTH`. |
 | `callout.serviceUser` | With a callout: the name of the keyed user the auth service connects as. |
 | `privateProjects` | Optional: the deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862), R12). It needs `callout`, no user but the auth service's, and that user granted no more than the auth service's grant. |
@@ -2951,9 +2951,9 @@ An authorization is refused, with an error naming the field and, for a user's fi
   token's projects allow, so the server keeps no user a client could become or authenticate as
   past it.
 
-Each refusal of the callout is a `core.InputError` naming `callout`, and each of `privateProjects`
-one naming `privateProjects`, so a component that carries them under its own names, as the hubs'
-`authCallout`, names its own input.
+Each refusal of the callout is a `core.InputError` naming `callout`, except the refusal of a seed in
+one of its fields, and each of `privateProjects` one naming `privateProjects`, so a component that
+carries them under its own names, as the hubs' `authCallout`, names its own input.
 
 `Render` writes the header lines it is given, each as a `# ` comment, which may not hold a line
 break or an nkey seed. Then comes the block: a comment naming each keyed user, in order, and
@@ -2971,14 +2971,14 @@ block:
 
 `issuer` and `xkey` are the callout's. `auth_users` is the key of every keyed user, in order, and
 is never given: the server sends a keyed user it does not list to the auth service, even one whose
-nkey signature is valid, so a static user left out would be refused. The authorization block sets
+nkey signature is valid, and the auth service knows no static client. The authorization block sets
 no `timeout`, so nats-server's default authorization timeout of 2 s (`AUTH_TIMEOUT` in its
 server/const.go) bounds its wait for the auth service's answer to a client, and the auth service
 must answer within 1.5 s. A longer timeout would not give it longer: the server sends a client its
 first PING after 2 s plus up to 20% (nats-server's server/client.go `setFirstPingTimer`), even
 while the client's CONNECT still waits for the callout, and a Go client (nats.go) reads anything
 but PONG there as an error, `nats: expected 'PONG', got 'PING'`, so it fails at about 2 s whatever
-the timeout. No nats-server 2.15.1 setting moves that first PING. Measured on the hub's image
+the timeout. No nats-server 2.15.1 setting delays that first PING past 2 s (a `ping_interval` below 2 s moves it earlier). Measured on the hub's image
 (nats-server 2.15.1, nats.go v1.53.1): under an authorization timeout of 5 s, an answer after
 3.5 s failed the client at 2.1 s. The TypeScript client the plugins use (nats.js 2.29.3) waits that
 PING out: on nats-server 2.15.1 it was admitted on answers at 1.0 s and 1.8 s under the default

@@ -264,7 +264,7 @@ func isSubjectPattern(s string) bool {
 // Render returns the authorization block nats-server reads: the header lines, each as
 // "# <line>", then the block. Each keyed user is a comment naming it and one JSON object (keys
 // sorted, non-ASCII raw: nats-server's config strings take no \u escape); a pending user is not
-// rendered. With a callout, its timeout and auth_callout lines follow the users inside the block
+// rendered. With a callout, its auth_callout block follows the users inside the block
 // (AuthCallout.render); without one the text is exactly what it was before callouts existed.
 // no_auth_user is a top-level option, so it follows the block, naming the fallback user's key. The
 // text ends with one newline.
