@@ -1309,6 +1309,59 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 	machines.introspectsProjects(t, machines.exchanged(t, form, key), oauthwire.ProjectScopeNamed, []string{project})
 }
 
+// TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject: the shared public-session
+// account's entry names a person and no project. Its pod's token introspects named, with the
+// entry's person and no project; when Dispatch calls that person a restricted member, who sees
+// only the projects that name them, the trade is refused; a broker with no check, and one whose
+// Dispatch cannot be reached, mint it as they would any entry's token. A workflow entry may not
+// leave its project empty.
+func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) {
+	trade := func(t *testing.T, access projectaccess.Access) (*exchangeFixture, int, map[string]any) {
+		t.Helper()
+		f := newExchangeFixture(t, func(c *oauth.Config) {
+			c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
+			c.Exchange.Projects = access
+		})
+		f.registers(t, account, "pod-uid-1", "public-session-1")
+		status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
+		return f, status, body
+	}
+	mints := func(t *testing.T, access projectaccess.Access) {
+		t.Helper()
+		f, status, body := trade(t, access)
+		token := accessTokenOf(t, status, body)
+		f.introspectsProjects(t, token, oauthwire.ProjectScopeNamed, nil)
+		answer, err := f.provider.Introspect(context.Background(), token)
+		if err != nil || answer.Person != person {
+			t.Fatalf("Introspect = %+v, %v; want the entry's person %s", answer, err, person)
+		}
+	}
+
+	t.Run("a full member's entry mints a named token naming no project", func(t *testing.T) {
+		access := newFakeAccess()
+		access.kinds[person] = projectaccess.MemberFull
+		mints(t, access)
+	})
+	t.Run("a restricted member's entry is refused", func(t *testing.T) {
+		access := newFakeAccess()
+		access.kinds[person] = projectaccess.MemberRestricted
+		_, status, body := trade(t, access)
+		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names no project, and its person "+person+" is a restricted member")
+	})
+	t.Run("with no check, and with Dispatch down, it mints as any entry's token", func(t *testing.T) {
+		mints(t, nil)
+		down := newFakeAccess()
+		down.kinds[person] = projectaccess.MemberRestricted
+		down.down = true
+		mints(t, down)
+	})
+	t.Run("a workflow entry may not leave its project empty", func(t *testing.T) {
+		if _, err := exchange.NewSet(nil, []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Person: person}}, nil, signInDomain); err == nil {
+			t.Fatal("NewSet with a workflow entry naming no project = nil error, want a refusal")
+		}
+	})
+}
+
 // TestANamedTradeMintsAsTodayWithNoProjectAccess: a broker with no project-access check, and one
 // whose Dispatch cannot be reached, mint an entry's token as they always have: the operator's own
 // setting is what chose its project.

@@ -8,4 +8,4 @@ body: |-
   Dispatch nothing and behaves as before.
 time: 2026-11-16T01:48:34Z
 custom:
-    Issue: INFRA-3862
+    Issue: pr4119

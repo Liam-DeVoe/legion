@@ -357,7 +357,7 @@ form). Here the `listener` token, which may do that and nothing else:
 
 ```console
 $ curl -s -H "Authorization: Bearer $(cat "$DEV_BROKER_DIR/listener-token")" -d "token=<access token>" "$AGENT_SECRETS_URL/v1/oauth/introspect"
-{"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","project":"EXAMPLE","exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
+{"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","projects":["EXAMPLE"],"exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
 ```
 
 `POST /v1/oauth/revoke` (RFC 7009) ends one before its expiry, and is the only thing that can: an

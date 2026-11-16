@@ -3,10 +3,12 @@ package projectaccess_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,10 +34,15 @@ func clientOf(server *projectaccesstest.Server) *projectaccess.Client {
 // project's list names and for one it does not.
 func TestAccessReadsTheK3Answer(t *testing.T) {
 	client := clientOf(standIn(t))
+	before := time.Now()
 	got, err := client.Access(t.Context(), "PRIV", "carol@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got.AskedAt.Before(before) || got.AskedAt.After(time.Now()) {
+		t.Fatalf("Access(PRIV, carol).AskedAt = %v, want the moment the question was asked", got.AskedAt)
+	}
+	got.AskedAt = time.Time{}
 	want := projectaccess.Answer{
 		Project: "PRIV", Visibility: "private", Owner: "carol@example.com", Person: "carol@example.com",
 		MemberKind: projectaccess.MemberFull, Visible: true, Repositories: []string{"example/priv", "example/priv-old"},
@@ -287,7 +294,134 @@ func TestAccessRefusesAnOversizedAnswer(t *testing.T) {
 	}))
 	t.Cleanup(huge.Close)
 	client := projectaccess.New(huge.URL, projectaccesstest.StaticAccount("token"), nil)
-	if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err == nil {
-		t.Fatal("Access of a 64 KiB answer succeeded, want it refused")
+	_, err := client.Access(t.Context(), "PRIV", "carol@example.com")
+	if err == nil || !strings.Contains(err.Error(), "is over 65536 bytes") {
+		t.Fatalf("Access of an answer past 64 KiB = %v, want it refused as over 65536 bytes, not read or failed some other way", err)
+	}
+}
+
+// fakeClock is a clock a test and the handlers it serves move together.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) read() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// projectServer answers every project route visible, after running during (which may move the
+// clock or block), and counts the questions per project.
+func projectServer(t *testing.T, during func(project string, call int) bool) (*httptest.Server, func(string) int) {
+	t.Helper()
+	var mu sync.Mutex
+	calls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		project := strings.TrimPrefix(r.URL.Path, "/api/v1/access/projects/")
+		mu.Lock()
+		calls[project]++
+		call := calls[project]
+		mu.Unlock()
+		visible := during(project, call)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"project":%q,"visibility":"private","person":"carol@example.com","member_kind":"full","visible":%t}`, project, visible)
+	}))
+	t.Cleanup(server.Close)
+	return server, func(project string) int { mu.Lock(); defer mu.Unlock(); return calls[project] }
+}
+
+// TestAnAnswerIsAgedFromBeforeItsQuestion: a slow answer's age runs from before the question was
+// asked, so an answer that took 20 s to arrive is kept 10 s more and no longer.
+func TestAnAnswerIsAgedFromBeforeItsQuestion(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+	server, calls := projectServer(t, func(_ string, call int) bool {
+		if call == 1 {
+			clock.advance(20 * time.Second)
+		}
+		return true
+	})
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	projectaccess.SetClock(client, clock.read)
+	ask := func() {
+		t.Helper()
+		if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ask()
+	clock.advance(projectaccess.CacheTTL - 20*time.Second - time.Second)
+	ask()
+	if got := calls("PRIV"); got != 1 {
+		t.Fatalf("a question %s after the first was asked was answered by Dispatch %d times, want 1: the answer is still young", projectaccess.CacheTTL-time.Second, got)
+	}
+	clock.advance(time.Second)
+	ask()
+	if got := calls("PRIV"); got != 2 {
+		t.Fatalf("a question %s after the first was asked was answered by Dispatch %d times in all, want 2: an answer is aged from before its question, so a slow one is kept no longer than %s", projectaccess.CacheTTL, got, projectaccess.CacheTTL)
+	}
+}
+
+// TestVisibleAsksAgainForAnAnswerThatAgedDuringTheCheck: a list is checked one project at a time,
+// so an answer that was young when the check began can be older than CacheTTL by its end; Visible
+// asks again for each such answer, so every answer it passes is younger than CacheTTL when it
+// returns.
+func TestVisibleAsksAgainForAnAnswerThatAgedDuringTheCheck(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+	server, calls := projectServer(t, func(project string, _ int) bool {
+		if project == "SLOW" {
+			clock.advance(10 * time.Second)
+		}
+		return true
+	})
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	projectaccess.SetClock(client, clock.read)
+	if _, err := client.Access(t.Context(), "AGED", "carol@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(projectaccess.CacheTTL - 5*time.Second)
+	if err := projectaccess.Visible(t.Context(), client, "carol@example.com", []string{"AGED", "SLOW"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls("AGED"); got != 2 {
+		t.Fatalf("AGED was asked %d times, want 2: its answer was %s old when the check began and older than %s by its end, so Visible asks again", got, projectaccess.CacheTTL-5*time.Second, projectaccess.CacheTTL)
+	}
+}
+
+// TestAnOlderAnswerDoesNotReplaceANewerOne: two questions about one project and person in flight
+// at once; the one asked first answers last, and the cache keeps the answer to the question asked
+// later.
+func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+	release := make(chan struct{})
+	server, _ := projectServer(t, func(_ string, call int) bool {
+		if call == 1 {
+			<-release
+			return true
+		}
+		return false
+	})
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	projectaccess.SetClock(client, clock.read)
+	first := make(chan error, 1)
+	go func() {
+		_, err := client.Access(context.Background(), "PRIV", "carol@example.com")
+		first <- err
+	}()
+	for !projectaccess.InFlight(client) {
+		time.Sleep(time.Millisecond)
+	}
+	clock.advance(time.Second)
+	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
+		t.Fatalf("the later question = %+v, %v; want not visible", answer, err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
+		t.Fatalf("the cached answer after both arrived = %+v, %v; want the later question's, not visible", answer, err)
 	}
 }

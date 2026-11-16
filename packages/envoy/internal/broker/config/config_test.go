@@ -229,10 +229,10 @@ func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 }
 
 // TestLoadRefusesDispatchVariables pins that the removed Dispatch variables fail loudly rather
-// than being silently ignored: the broker asks and issues nothing in Dispatch, and the one
-// thing it does read there, whether an issue is open, is the judge's read under
-// BROKER_JUDGE_DISPATCH_URL, so a stale deployment env still setting one of the five must
-// refuse to start, naming the variable.
+// than being silently ignored: the broker asks and issues nothing in Dispatch, and the two things
+// it does read there, whether an issue is open and whether a person may see a project, are read
+// under settings of their own (BROKER_JUDGE_DISPATCH_URL, BROKER_PROJECT_ACCESS_URL), so a stale
+// deployment env still setting one of the five must refuse to start, naming the variable.
 func TestLoadRefusesDispatchVariables(t *testing.T) {
 	e := validEnv()
 	e["BROKER_DISPATCH_URL"] = "https://dispatch.internal.example"
@@ -1632,9 +1632,10 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
 // <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
-// itself carry "=", and refusals naming the entry for one that is not of that form, has a blank
-// field, names a namespace's default account or lists an account twice. It needs the cluster
-// issuer and the exchange audience, whose tokens its pods present.
+// itself carry "=", an empty project (the shared public-session account's entry, whose named
+// tokens name no project), and refusals naming the entry for one that is not of that form, has a
+// blank account or person, names a namespace's default account or lists an account twice. It
+// needs the cluster issuer and the exchange audience, whose tokens its pods present.
 func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -1650,7 +1651,8 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	}
 	e := withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com\n" +
-		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1 "
+		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1 " +
+		"system:serviceaccount:example-ns:example-public==ada@example.com"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
@@ -1658,13 +1660,14 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	want := []exchange.AccountEntry{
 		{Account: "system:serviceaccount:example-ns:example-worker", Project: "EXAMPLE", Person: "ada@example.com"},
 		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE=1"},
+		{Account: "system:serviceaccount:example-ns:example-public", Project: "", Person: "ada@example.com"},
 	}
 	if !slices.Equal(cfg.ExchangeAccounts, want) {
 		t.Fatalf("ExchangeAccounts = %v, want %v", cfg.ExchangeAccounts, want)
 	}
 	for _, bad := range []string{
 		"system:serviceaccount:example-ns:example-worker", "system:serviceaccount:example-ns:example-worker=EXAMPLE",
-		"system:serviceaccount:example-ns:example-worker==ada@example.com", "=EXAMPLE=ada@example.com",
+		"system:serviceaccount:example-ns:example-worker=EXAMPLE=", "=EXAMPLE=ada@example.com",
 		"example-worker=EXAMPLE=ada@example.com", "system:serviceaccount:example-ns:default=EXAMPLE=ada@example.com",
 	} {
 		e := withExchange()

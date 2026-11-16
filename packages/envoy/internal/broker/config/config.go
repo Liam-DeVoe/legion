@@ -311,8 +311,9 @@ type Config struct {
 	// is private, whether a person may see it, and what kind of member a person is
 	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
 	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
-	// Dispatch nothing, a token or an enrollment that names no project is made as before, and
-	// one that names a project is refused, since nothing could say its person may see it.
+	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
+	// project that operator's own setting chose, are minted as before; a person's trade that
+	// names a project is refused, since nothing could say that person may see it.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
@@ -474,7 +475,9 @@ type Config struct {
 	// system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com. The token minted
 	// for a pod of the account may write that one project, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
-	// session. The session is everything after the third "=", so it alone may carry one. A
+	// session. An entry may name no project (<service account>==<person>): the shared
+	// public-session account's, whose tokens act for that person and name no project. The
+	// session is everything after the third "=", so it alone may carry one. A
 	// namespace's default account is refused, as is an account listed twice. Needs
 	// BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present.
 	// Unset, no account exchanges.
@@ -612,11 +615,12 @@ var judgeModelProtocols = []string{"anthropic-messages", "openai-responses", "op
 const noUIToken = "the broker's approval routes take the calling service's own Kubernetes ServiceAccount token, verified against BROKER_K8S_OIDC_ISSUER, so list that account in BROKER_API_ACCOUNTS instead of sharing a bearer with Dispatch's server"
 
 // noDispatchCredential is why the broker's five Dispatch variables are gone: they named a
-// Dispatch the broker asked and issued in, which it still does not do. The one thing it reads
-// there now, whether an issue is open, is the model judge's read under its own settings, so a
-// deployment that still sets one of the five is configured for a Dispatch the broker never
-// writes to and a credential it never holds.
-const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; its model judge reads one thing there, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL and with the broker's own projected ServiceAccount token (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and writes nothing"
+// Dispatch the broker asked and issued in, which it still does not do. What it reads there now is
+// two things, each under settings of its own: the model judge's read of whether an issue is open,
+// and the token exchange's read of whether a person may see a project. So a deployment that still
+// sets one of the five is configured for a Dispatch the broker never writes to and a credential it
+// never holds.
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads two things there, each with its own projected ServiceAccount token, and writes nothing: its model judge, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its token exchange, whether a person may see a project, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.
@@ -989,17 +993,19 @@ func exchangeFields(text string, want int) ([]string, bool) {
 
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
-// lists, in order. It refuses, naming the entry: one not of that form or with a blank field; an
-// account that is not system:serviceaccount:<namespace>:<name>; a namespace's default account; and
-// an account listed twice, since one account writes as one identity. exchange.NewSet is the second
+// lists, in order. The project may be empty (<service account>==<person>), which is the shared
+// public-session account's entry: its named tokens act for the person and name no project. It
+// refuses, naming the entry: one not of that form or with a blank account or person; an account
+// that is not system:serviceaccount:<namespace>:<name>; a namespace's default account; and an
+// account listed twice, since one account writes as one identity. exchange.NewSet is the second
 // gate, and the session name's own form is its to refuse.
 func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, error) {
 	var entries []exchange.AccountEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
 		fields, ok := exchangeFields(text, 4)
-		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
-			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the session everything after the third =, got %q", setting, text)
+		if !ok || fields[0] == "" || fields[2] == "" {
+			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none and the session everything after the third =, got %q", setting, text)
 		}
 		if !serviceAccountPattern.MatchString(fields[0]) {
 			return nil, fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)

@@ -183,10 +183,10 @@ func serviceToken(jkt string, life time.Duration) brokertoken.Introspection {
 // this check to fill in. Each leg of the rule is its own token: a machine login's own, one the
 // exchange issued that names neither a person nor a service, one that names a session and a
 // person but comes from
-// another client, and the five whose project scope or list this package cannot read — an answer
-// carrying no scope, one carrying a word it does not know, a named scope with no project beside
-// it, a named scope with more projects than any token names, and a list no exchange could have
-// minted. Those are refused rather than read as a token that names no project, which would hand
+// another client, and the six whose project scope or list this package cannot read — an answer
+// carrying no scope, one carrying a word it does not know, a named scope with no project and no
+// person, a named scope with two projects, and a list no exchange could have minted. Those are
+// refused rather than read as a token that names no project, which would hand
 // their caller every project the person may write; the one naming a project under no scope would
 // otherwise be the louder of the two, since the project beside the scope is then read under
 // nothing at all. The proof-checked Verify and the answer-only Live refuse every one, so an open
@@ -202,18 +202,21 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	noScope.ProjectScope = ""
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "organisation"
-	namedNoProject := liveToken(caller.jkt, time.Hour)
-	namedNoProject.Projects = nil
+	namedNoOne := liveToken(caller.jkt, time.Hour)
+	namedNoOne.Person, namedNoOne.Service, namedNoOne.Projects = "", "example-fleet", nil
+	namedTwo := liveToken(caller.jkt, time.Hour)
+	namedTwo.Projects = []string{"INFRA", "PRIV"}
 	unsorted := liveToken(caller.jkt, time.Hour)
 	unsorted.ProjectScope, unsorted.Projects = brokertoken.ProjectScopePerson, []string{"PUB", "PRIV"}
 	for name, answer := range map[string]brokertoken.Introspection{
-		"a machine login's own token":                 machineLoginToken(caller.jkt, time.Hour),
-		"a token naming neither a person nor service": noOwner,
-		"a token of another client":                   anotherClient,
-		"a token naming no project scope":             noScope,
-		"a token of an unknown project scope":         unknownScope,
-		"a named scope naming no project":             namedNoProject,
-		"a list no exchange mints":                    unsorted,
+		"a machine login's own token":                   machineLoginToken(caller.jkt, time.Hour),
+		"a token naming neither a person nor service":   noOwner,
+		"a token of another client":                     anotherClient,
+		"a token naming no project scope":               noScope,
+		"a token of an unknown project scope":           unknownScope,
+		"a named scope naming no project and no person": namedNoOne,
+		"a named scope naming two projects":             namedTwo,
+		"a list no exchange mints":                      unsorted,
 	} {
 		t.Run(name, func(t *testing.T) {
 			token := "a-token-that-is-" + strings.ReplaceAll(name, " ", "-")
@@ -245,23 +248,53 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	}
 }
 
-// TestLiveRefusesANamedAnswerWithNoProject: a named token is an operator's entry's, which names
-// one project; an answer of that scope naming none, or more than a token names, is no token the
-// exchange minted and is refused rather than read as a caller no project check covers.
-func TestLiveRefusesANamedAnswerWithNoProject(t *testing.T) {
+// TestLiveRefusesANamedAnswerItCannotRead: a named token is an operator's entry's, which names
+// one project, or none for an account entry naming none, and always a person. An answer of that
+// scope naming two or more projects, or none and no person, is no token the exchange minted and is
+// refused, so a Dispatch reader never takes it as a caller no project limits.
+func TestLiveRefusesANamedAnswerItCannotRead(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
 	tooMany := make([]string, 17)
 	for i := range tooMany {
 		tooMany[i] = fmt.Sprintf("P%02d", i)
 	}
-	for name, projects := range map[string][]string{"none": nil, "empty": {}, "seventeen": tooMany} {
+	for name, projects := range map[string][]string{"two": {"INFRA", "PRIV"}, "sixteen": tooMany[:16], "seventeen": tooMany} {
 		answer := liveToken(caller.jkt, time.Hour)
 		answer.Projects = projects
 		token := "a-named-token-naming-" + name
 		rig.broker.Says(token, answer)
 		if _, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) {
-			t.Errorf("Live of a named answer naming %s = %v, want ErrNotASession", name, err)
+			t.Errorf("Live of a named answer naming %s projects = %v, want ErrNotASession", name, err)
+		}
+		if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) {
+			t.Errorf("Verify of a named answer naming %s projects = %v, want ErrNotASession", name, err)
+		}
+	}
+}
+
+// TestANamedAnswerNamingNoProjectIsAPublicSession: an account entry naming a person and no project
+// (the shared public-session account's) mints a named token naming no project; its answer is the
+// caller it says, with the named scope and no project.
+func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	answer := liveToken(caller.jkt, time.Hour)
+	answer.Projects = nil
+	const token = "a-public-session-token"
+	rig.broker.Says(token, answer)
+	want := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: brokertoken.ProjectScopeNamed}
+	for name, decide := range map[string]func() (brokertoken.Caller, error){
+		"Verify": func() (brokertoken.Caller, error) {
+			return rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+		},
+		"Live": func() (brokertoken.Caller, error) {
+			return rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+		},
+	} {
+		decided, err := decide()
+		if err != nil || !reflect.DeepEqual(decided, want) {
+			t.Errorf("%s = %+v, %v; want %+v", name, decided, err, want)
 		}
 	}
 }

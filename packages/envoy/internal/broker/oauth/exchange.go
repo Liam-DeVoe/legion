@@ -674,11 +674,15 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	} else {
 		session.Extra[ClaimMachine] = claims.Actor
 	}
+	// Every exchange constructor sets the scope; an unset one is a decision nobody made, and is
+	// the broker's own failure rather than a token whose empty list reads as either scope.
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNamed
-	default:
+	case exchange.ProjectScopePerson:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopePerson
+	default:
+		return "", oauth2.ErrServerError.WithDebugf("the exchange decided %s for %s", claims.Scope, claims.Principal)
 	}
 	session.Extra[ClaimProjects] = oauthwire.JoinProjects(claims.Projects)
 	return claims.Principal, nil
@@ -699,9 +703,11 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 // temporarily_unavailable, which a client asks again on.
 //
 // A token an operator's entry maps: its one project must be one Dispatch says the entry's person
-// sees, and a pairing Dispatch refuses is refused invalid_request naming both. With no check
-// configured, or while Dispatch cannot be reached, it mints as it always has, since the
-// operator's own setting is what chose that project.
+// sees, and a pairing Dispatch refuses is refused invalid_request naming both. An account entry
+// that names no project (the shared public-session account's) is refused when Dispatch calls its
+// person a restricted member, who sees only the projects that name them (projectaccess.ListAllowed).
+// With no check configured, or while Dispatch cannot be reached, either mints as it always has,
+// since the operator's own setting is what chose the project, or chose none.
 //
 // A token that names no person names no project (exchange.ErrProjectsNoPerson) and asks nothing.
 func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) error {
@@ -720,11 +726,13 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		if access == nil {
 			return nil
 		}
-		err := projectaccess.Visible(ctx, access, person, projects)
+		err := projectaccess.ListAllowed(ctx, access, person, projects)
 		var unseen *projectaccess.NotVisibleError
 		switch {
 		case errors.As(err, &unseen):
 			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names the project %s, which its person %s cannot see.", unseen.Project, person).WithWrap(err).WithDebugError(err)
+		case errors.Is(err, projectaccess.ErrListRequired):
+			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", person).WithWrap(err).WithDebugError(err)
 		case err != nil:
 			slog.WarnContext(ctx, "broker: the token exchange minted an entry's token unchecked, since Dispatch could not be asked whether its person sees its project",
 				"person", person, "projects", stored, "error", err)

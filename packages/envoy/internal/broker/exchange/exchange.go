@@ -112,7 +112,7 @@ const (
 	// nothing, and 'no project named' must not read as 'no oversight'.
 	ProjectScopeUnset ProjectScope = iota
 	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person,
-	// and Claims.Projects holds the entry's one project.
+	// and Claims.Projects holds the entry's one project, or none for an account entry naming none.
 	ProjectScopeNamed
 	// ProjectScopePerson is a token that acts as its person: Claims.Projects holds the projects
 	// its trade asked for, none or more, which the exchange holds to what Dispatch says that
@@ -345,8 +345,9 @@ type Claims struct {
 	// as either.
 	Scope ProjectScope
 	// Projects is the token's list of projects, sorted, each once: the entry's one project for a
-	// ProjectScopeNamed token, and for a ProjectScopePerson token the projects its trade asked
-	// for, nil for none. The slice is this Claims' own.
+	// ProjectScopeNamed token (none for an account entry naming none), and for a
+	// ProjectScopePerson token the projects its trade asked for, nil for none. The slice is this
+	// Claims' own.
 	Projects []string
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
@@ -389,13 +390,15 @@ type Reservation struct {
 	Principal string
 }
 
-// AccountEntry lists one Kubernetes service account and what a pod running as it may write. Every
-// field but Session is required.
+// AccountEntry lists one Kubernetes service account and what a pod running as it may write.
+// Account and Person are required; Project and Session are not.
 type AccountEntry struct {
 	// Account is the subject a pod's projected token carries,
 	// system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard.
 	Account string
-	// Project is the one project key the minted token may write.
+	// Project is the one project key the minted token may write, or empty for an entry that names
+	// none: the shared public-session account, whose named tokens act for Person and name no
+	// project. Only an account entry may leave it empty.
 	Project string
 	// Person is who the account's pods act for.
 	Person string
@@ -524,7 +527,7 @@ func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []Googl
 		if !accountPattern.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
-		if err := checkGrant(where, entry.Project, entry.Person, entry.Session); err != nil {
+		if err := checkGrant(where, entry.Project, entry.Person, entry.Session, true); err != nil {
 			return nil, err
 		}
 		if _, listed := set.accounts[entry.Account]; listed {
@@ -547,7 +550,7 @@ func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []Googl
 		if strings.TrimSpace(entry.Ref) == "" {
 			return nil, fmt.Errorf("exchange: %s: the ref is required, since an entry with no ref matches no run", where)
 		}
-		if err := checkGrant(where, entry.Project, entry.Person, entry.Session); err != nil {
+		if err := checkGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
 			return nil, err
 		}
 		key := workflowKey{entry.Repository, entry.Workflow, entry.Ref}
@@ -583,7 +586,7 @@ func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []Googl
 			return nil, fmt.Errorf("exchange: %s: an entry names the person and the project together or neither (project %q, person %q)", where, entry.Project, entry.Person)
 		}
 		if entry.Person != "" {
-			if err := checkGrant(where, entry.Project, entry.Person, entry.Session); err != nil {
+			if err := checkGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
 				return nil, err
 			}
 		} else if entry.Session != "" && !validSession(entry.Session) {
@@ -639,10 +642,18 @@ func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
 	return projects, ok
 }
 
-// entryProjects is the list a token an operator's entry maps carries: that entry's one project.
-// A request may name it or name nothing; one naming anything else is refused, since the entry is
-// what chose the project and a trade may neither widen nor change it.
+// entryProjects is the list a token an operator's entry maps carries: that entry's one project,
+// or none for an account entry that names none. A request may name the entry's project or name
+// nothing; one naming anything else is refused, since the entry is what chose the project and a
+// trade may neither widen nor change it.
 func entryProjects(identity, project string, asked []string) ([]string, error) {
+	if project == "" {
+		if len(asked) == 0 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%w: %s's entry names no project, and the request named %s",
+			ErrProjectsFixed, identity, strings.Join(asked, " "))
+	}
 	if len(asked) == 0 || (len(asked) == 1 && asked[0] == project) {
 		return []string{project}, nil
 	}
@@ -650,10 +661,14 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 		ErrProjectsFixed, identity, project, strings.Join(asked, " "))
 }
 
-// checkGrant refuses what every entry shares: a blank project or person, which would mint a token
-// answerable to nobody, and a fixed session name no request could name back.
-func checkGrant(where, project, person, session string) error {
-	if strings.TrimSpace(project) == "" {
+// checkGrant refuses what every entry shares: a blank person, which would mint a token answerable
+// to nobody, and a fixed session name no request could name back. The project is required too,
+// except where noProject allows an empty one: an account entry may name a person and no project,
+// which is the shared public-session account's entry, minting named tokens that name no project
+// (a pod account many people launch must never act as one person's own token). A project that is
+// blank without being empty is refused everywhere.
+func checkGrant(where, project, person, session string, noProject bool) error {
+	if !(noProject && project == "") && strings.TrimSpace(project) == "" {
 		return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project", where)
 	}
 	if strings.TrimSpace(person) == "" {
