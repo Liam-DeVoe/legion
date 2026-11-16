@@ -43,8 +43,20 @@ async function navigation(page: Page): Promise<Locator> {
 }
 
 async function openSettings(page: Page): Promise<void> {
-  const links = await navigation(page);
-  await links.getByRole("link", { exact: true, name: "Settings" }).click();
+  // The new page's frame (part D) draws no navigation below 768 px until the header's menu
+  // comes, so there the reader goes to Settings with its key, `g s`, which moves with no reload
+  // as a link does.
+  const frameWithoutNavigation =
+    (await page.locator("[data-issue-page]").count()) > 0 &&
+    (await page.getByRole("button", { name: "Open navigation" }).count()) === 0;
+  if (frameWithoutNavigation) {
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("g");
+    await page.keyboard.press("s");
+  } else {
+    const links = await navigation(page);
+    await links.getByRole("link", { exact: true, name: "Settings" }).click();
+  }
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
 }
 
