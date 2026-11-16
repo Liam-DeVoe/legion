@@ -17,13 +17,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// startFromScript runs script, a StartScript, with a stub nats-server first on PATH, so the script
-// writes its configuration to configPath and its exec ends at once. It then starts nats-server in
-// this process on that file and serverArgs, through server.ConfigureOptions, the parse nats-server's
-// own main runs, so the file and the flags merge as they do in a task, on a random client port,
-// since the box's 4222 may be another program's. It returns the address the monitoring listener
-// bound.
-func startFromScript(t *testing.T, script, configPath string, serverArgs []string) *net.TCPAddr {
+// runStartScript runs script, a StartScript, with a stub nats-server first on PATH, so the script
+// writes its configuration and its exec ends at once.
+func runStartScript(t *testing.T, script string) {
 	t.Helper()
 	bin := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "nats-server"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
@@ -31,6 +27,16 @@ func startFromScript(t *testing.T, script, configPath string, serverArgs []strin
 	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "the start script: %s", out)
+}
+
+// startFromScript runs script (runStartScript), which writes its configuration to configPath, then
+// starts nats-server in this process on that file and serverArgs, through server.ConfigureOptions,
+// the parse nats-server's own main runs, so the file and the flags merge as they do in a task, on
+// a random client port, since the box's 4222 may be another program's. It returns the address the
+// monitoring listener bound.
+func startFromScript(t *testing.T, script, configPath string, serverArgs []string) *net.TCPAddr {
+	t.Helper()
+	runStartScript(t, script)
 
 	fs := flag.NewFlagSet("nats-server", flag.ContinueOnError)
 	opts, err := natsserver.ConfigureOptions(fs, append([]string{"--config", configPath}, serverArgs...), nil, nil, nil)
@@ -123,12 +129,7 @@ func TestAPrivateStartScriptOpensNoMonitoringOfItsOwn(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "nats-server.conf")
 	script, err := privateOnly().StartScript(nil, nil, configPath)
 	require.NoError(t, err)
-	bin := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "nats-server"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
-	cmd := exec.Command("sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "the start script: %s", out)
+	runStartScript(t, script)
 	opts, err := natsserver.ProcessConfigFile(configPath)
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1", opts.HTTPHost)

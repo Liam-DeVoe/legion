@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,12 +44,7 @@ func taskHealthCheck(t *testing.T, a core.Authorization) (command, config string
 
 	// Run the start script with a stub nats-server first on PATH: it writes the configuration the
 	// task's server reads and its exec ends at once.
-	bin := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "nats-server"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
-	cmd := exec.Command("sh", "-c", script)
-	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "the start script: %s", out)
+	runStartScript(t, script)
 	written, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	return check[1].(string), string(written)
