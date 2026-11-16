@@ -69,6 +69,11 @@ create table claim_sessions (
   recorded_at timestamptz not null default now(),
   primary key (project, kind, name));
 
+-- A claim holds at most supervise.MaxHeldNamesPerClaim names: nothing deletes a hold, so without a
+-- bound one role could grow the table without end. A registration that adds names counts the
+-- claim's rows (store.HoldSessions), which this index serves.
+create index claim_sessions_claim on claim_sessions (project, claim);
+
 with recorded as (
   select project, token, session, session_file as file from claims
   union all

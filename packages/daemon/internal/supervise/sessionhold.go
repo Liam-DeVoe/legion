@@ -15,6 +15,27 @@ import (
 // claim or its session, so it refuses nothing and is charged to no budget.
 var errHoldUnanswered = errors.New("the store did not answer the session's hold")
 
+// MaxHeldNamesPerClaim is the most names of sessions one claim may hold (holdRecorded). Every
+// registration of a new session, and every re-registration naming a new file, holds its names,
+// and nothing deletes a hold, so without a bound one role could grow claim_sessions without end
+// and make every boot that reads it slower (review N2 of #4220).
+//
+// The number: 10× what the busiest claim in production could hold, rounded up to a power of two.
+// Over 28 days of the daemons' `supervise: launched` lines (2026-10-20 to 2026-11-16: 11,391
+// claims, 36,345 launches), the most fresh sessions one claim launched was 42
+// (legion-infra-infra-3330-planner); a resumed launch registers the session and file it recorded,
+// which holds nothing new; and the launched controllers re-registered at most 5 sessions. A session
+// gives at most 4 names (RecordedHolds), so that claim holds at most 42 × 4 + 8 (the two sessions
+// the migration held for it) = 176 names, and 10× is 1,760. Even the most-launched claim, at
+// generation 193 (legion-infra-infra-1148-architect), would hold 193 × 4 + 8 = 780 if every launch
+// had started a fresh session. The average is about 4.5.
+const MaxHeldNamesPerClaim = 2048
+
+// ErrHeldNamesCap is the store's answer to a hold that would take its claim past
+// MaxHeldNamesPerClaim (Store.HoldSessions): it records none of the call's names, and the claim
+// keeps every name it holds.
+var ErrHeldNamesCap = errors.New("the claim would hold more session names than one claim may")
+
 // HoldKind is which of a session's names a hold keeps (Hold): each is a key some resume path
 // finds a session by.
 type HoldKind string
@@ -110,10 +131,12 @@ func checkSessionNames(session, sessionFile string) error {
 // A name the store answered as this claim's is kept and not asked again, since a claim's hold
 // never changes once made: the enrollment that follows a registration asks nothing more. A refusal
 // is asked again every time, because an operator settles a name held for no claim by recording its
-// rightful holder, and that claim's next decision on this same machine must see it. A store that
-// does not answer refuses nothing: its error wraps errHoldUnanswered, which a launch tries again at
-// the probe interval charging nothing (launchNow), and any other decision is asked again by the
-// next one.
+// rightful holder, and that claim's next decision on this same machine must see it. A hold that
+// would take the claim past MaxHeldNamesPerClaim is refused with claim.HeldNamesCapRefusal and
+// records nothing; one of names the claim holds already adds none, so the claim still resumes its
+// own session. A store that does not answer refuses nothing: its error wraps errHoldUnanswered,
+// which a launch tries again at the probe interval charging nothing (launchNow), and any other
+// decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
 	var ask []Hold
 	for _, h := range RecordedHolds(session, sessionFile) {
@@ -129,7 +152,11 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		var err error
 		holders, err = m.deps.Store.HoldSessions(ctx, m.claim.Project, m.claim.Token, ask)
 		return err
-	}); err != nil {
+	}); errors.Is(err, ErrHeldNamesCap) {
+		m.log.Warn("supervise: refused a session whose names would take the claim past the most one claim may hold",
+			"claim", m.claim.Token, "names", len(ask), "cap", MaxHeldNamesPerClaim, "error", err)
+		return fmt.Errorf("hold the session of %s: %w", m.claim.Token, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
+	} else if err != nil {
 		return fmt.Errorf("hold the session of %s: %w: %w", m.claim.Token, errHoldUnanswered, err)
 	}
 	if len(holders) != len(ask) {

@@ -4,6 +4,7 @@ package supervisetest
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -23,7 +24,8 @@ type holdKey struct {
 	hold    supervise.Hold
 }
 
-// HoldSessions is supervise.Store.HoldSessions.
+// HoldSessions is supervise.Store.HoldSessions: a call whose new names take its claim past
+// supervise.MaxHeldNamesPerClaim records none and answers supervise.ErrHeldNamesCap.
 func (h *Holds) HoldSessions(_ context.Context, project string, token claim.Token, holds []supervise.Hold) ([]claim.Token, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -31,19 +33,32 @@ func (h *Holds) HoldSessions(_ context.Context, project string, token claim.Toke
 		h.holds = map[holdKey]claim.Token{}
 	}
 	holders := make([]claim.Token, len(holds))
-	mine := true
+	mine, added := true, map[holdKey]bool{}
 	for i, hold := range holds {
 		holder, held := h.holds[holdKey{project, hold}]
 		if !held {
 			holder = token
+			added[holdKey{project, hold}] = true
 		}
 		holders[i] = holder
 		mine = mine && holder == token
 	}
-	if mine {
-		for _, hold := range holds {
-			h.holds[holdKey{project, hold}] = token
+	if !mine {
+		return holders, nil
+	}
+	if len(added) > 0 {
+		held := len(added)
+		for k, holder := range h.holds {
+			if k.project == project && holder == token {
+				held++
+			}
 		}
+		if held > supervise.MaxHeldNamesPerClaim {
+			return nil, fmt.Errorf("%d names held with this call's %d new ones: %w", held, len(added), supervise.ErrHeldNamesCap)
+		}
+	}
+	for _, hold := range holds {
+		h.holds[holdKey{project, hold}] = token
 	}
 	return holders, nil
 }

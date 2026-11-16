@@ -22,15 +22,20 @@ var errHeldElsewhere = errors.New("a name is held for another claim")
 // (supervise.Store.HoldSessions): token itself when it recorded the name before or no claim had,
 // another claim when that one recorded it first, and the empty token for a name two claims recorded
 // before the table existed, which is held for none (migration 20261116144907_claim_sessions). It
-// records all of holds or none: a name another claim holds rolls back every row this call wrote. A
-// row is never deleted, and nothing but an operator settling a held-for-none name moves one, so the
-// answer about a name never changes once it names a claim.
+// records all of holds or none: a name another claim holds rolls back every row this call wrote,
+// and so does a call whose new rows take token's claim past supervise.MaxHeldNamesPerClaim, which
+// answers an error wrapping supervise.ErrHeldNamesCap. A call of names the claim holds already adds
+// no row, so it is never refused for the bound. A row is never deleted, and nothing but an operator
+// settling a held-for-none name moves one, so the answer about a name never changes once it names a
+// claim.
 //
 // Each name is an insert and then a read, two statements of one transaction, so two claims
 // registering one new name at once cannot both take it: the second's insert waits on the first's
 // row, finds the conflict once the first commits, and its read, a statement of its own, sees the row
 // the first committed. The names are taken in one order, kind then name, in every transaction, so
-// two registrations sharing several names wait on each other one way and never deadlock.
+// two registrations sharing several names wait on each other one way and never deadlock. The bound
+// is counted after the inserts, over the rows the claim holds then, so it is exact: the claim's own
+// registrations are one machine's decisions, one after another.
 func (s *Store) HoldSessions(ctx context.Context, project string, token claim.Token, holds []supervise.Hold) ([]claim.Token, error) {
 	order := make([]int, len(holds))
 	for i := range order {
@@ -41,12 +46,15 @@ func (s *Store) HoldSessions(ctx context.Context, project string, token claim.To
 	})
 	holders := make([]claim.Token, len(holds))
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		added := int64(0)
 		for _, i := range order {
 			h := holds[i]
-			if _, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ($1, $2, $3, $4)
-				on conflict (project, kind, name) do nothing`, project, string(h.Kind), h.Name, string(token)); err != nil {
+			tag, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ($1, $2, $3, $4)
+				on conflict (project, kind, name) do nothing`, project, string(h.Kind), h.Name, string(token))
+			if err != nil {
 				return err
 			}
+			added += tag.RowsAffected()
 			var holder string
 			if err := tx.QueryRow(ctx, `select claim from claim_sessions where project = $1 and kind = $2 and name = $3`,
 				project, string(h.Kind), h.Name).Scan(&holder); err != nil {
@@ -56,6 +64,17 @@ func (s *Store) HoldSessions(ctx context.Context, project string, token claim.To
 		}
 		if slices.ContainsFunc(holders, func(holder claim.Token) bool { return holder != token }) {
 			return errHeldElsewhere
+		}
+		if added == 0 {
+			return nil
+		}
+		var held int
+		if err := tx.QueryRow(ctx, `select count(*) from claim_sessions where project = $1 and claim = $2`,
+			project, string(token)).Scan(&held); err != nil {
+			return err
+		}
+		if held > supervise.MaxHeldNamesPerClaim {
+			return fmt.Errorf("%d names held with this call's %d new ones, past %d: %w", held, added, supervise.MaxHeldNamesPerClaim, supervise.ErrHeldNamesCap)
 		}
 		return nil
 	})

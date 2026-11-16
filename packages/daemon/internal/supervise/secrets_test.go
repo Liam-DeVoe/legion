@@ -502,6 +502,85 @@ func TestAnUnansweredHoldAtAResumeChargesNothing(t *testing.T) {
 	}
 }
 
+// A claim holds at most MaxHeldNamesPerClaim names of sessions (review N2 of #4220): nothing
+// deletes a hold, so without a bound one role could grow the daemon's record without end. A
+// registration whose new names would take the claim past it is refused 409 with
+// claim.HeldNamesCapRefusal, recording, enrolling and holding nothing; one that fills the cap
+// exactly registers; and a claim at the cap still resumes the session it recorded, whose names it
+// holds already, and registers it again.
+//
+// The control (the pull request records the run): holdRecorded reading the store's cap error as a
+// store that did not answer, as before the cap: the registration past the cap answers
+// errHoldUnanswered, not the refusal.
+func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
+	fill := func(h *harness, n int) {
+		h.t.Helper()
+		for i := range n {
+			h.store.setHold(sessionID(fmt.Sprintf("ses_earlier_%d", i)), h.token)
+		}
+	}
+	register := func(h *harness) error {
+		return h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+			CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+	}
+	names := len(RecordedHolds(session, sessionFile))
+
+	t.Run("a registration one name past the cap", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		fill(h, MaxHeldNamesPerClaim-names+1)
+		h.launch()
+		h.helloWithIdentity()
+		err := register(h)
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim) || refusal.Status != http.StatusConflict {
+			t.Fatalf("registering a session past the cap = %v, want %v", err, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
+		}
+		if c := h.claim(); c.Session != "" || c.SessionFile != "" || c.CapabilityHash != nil {
+			t.Fatalf("the refused registration left the claim recording %q, %q and capability %x", c.Session, c.SessionFile, c.CapabilityHash)
+		}
+		if enrolled := broker.enrolled(); len(enrolled) != 0 {
+			t.Fatalf("the refused registration enrolled %+v", enrolled)
+		}
+		if got, want := h.store.heldBy(h.token), MaxHeldNamesPerClaim-names+1; got != want {
+			t.Fatalf("the claim holds %d names after the refusal, want the %d it held before", got, want)
+		}
+	})
+
+	t.Run("a registration that fills the cap exactly", func(t *testing.T) {
+		h := newHarness(t)
+		fill(h, MaxHeldNamesPerClaim-names)
+		h.launch()
+		h.connect()
+		if err := register(h); err != nil {
+			t.Fatalf("registering a session that fills the cap = %v, want it admitted", err)
+		}
+		if got := h.store.heldBy(h.token); got != MaxHeldNamesPerClaim {
+			t.Fatalf("the claim holds %d names, want %d", got, MaxHeldNamesPerClaim)
+		}
+	})
+
+	t.Run("a claim at the cap resumes its own session", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		fill(h, MaxHeldNamesPerClaim-h.store.heldBy(h.token))
+		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+		h.restart()
+		resumes := len(h.calls("Resume"))
+		h.must(RequestResume{Claim: h.token})
+		if calls := h.calls("Resume")[resumes:]; len(calls) != 1 || calls[0].Spec.ResumeSessionFile != sessionFile {
+			t.Fatalf("the claim at the cap resumed %+v, want its own session once", calls)
+		}
+		h.connect()
+		if err := register(h); err != nil {
+			t.Fatalf("the claim at the cap registering its own session again = %v, want it admitted", err)
+		}
+		if got := h.store.heldBy(h.token); got != MaxHeldNamesPerClaim {
+			t.Fatalf("the claim holds %d names, want %d: resuming its own session adds none", got, MaxHeldNamesPerClaim)
+		}
+	})
+}
+
 // A session id, and a session file's base name, are at most claim.MaxSessionNameBytes: past it a
 // name could not be held, since a btree row of claim_sessions' primary key holds at most 2,704
 // bytes and one such name would stop the boot that holds it (review N3 of #4220). A registration of

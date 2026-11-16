@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -369,6 +370,69 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 			t.Errorf("the session conflicts read %+v, want the four held for none and %+v", conflicts, took)
 		}
 	})
+}
+
+// A claim holds at most supervise.MaxHeldNamesPerClaim names (review N2 of #4220). A call whose new
+// names fill the cap exactly records them; one whose new names would take the claim past it answers
+// supervise.ErrHeldNamesCap and records none of them, the claim keeping every row it held; a call of
+// names the claim holds already adds none and is answered as before; and another claim of the
+// project holds its own names as before. However many calls a claim makes, its rows stop at the cap.
+//
+// The control (the pull request records the run): HoldSessions with no count after its inserts;
+// the calls past the cap are admitted, and the claim's rows grow past it.
+func TestAClaimsHeldNamesStopAtTheCap(t *testing.T) {
+	const holder, other = claim.Token("legion-LEGION-401-implementer"), claim.Token("legion-LEGION-402-implementer")
+	ctx := context.Background()
+	store := migratedStore(t)
+	heldBy := func(token claim.Token) int {
+		t.Helper()
+		var n int
+		if err := store.Pool().QueryRow(ctx, `select count(*) from claim_sessions where project = 'legion' and claim = $1`, string(token)).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// The holder registers sessions of three names each, as an Oh My Pi session gives, until the
+	// next would pass the cap.
+	session := func(i int) []supervise.Hold {
+		return supervise.RecordedHolds(fmt.Sprintf("ses_%04d", i), fmt.Sprintf("/state/sessions/--w--/2026-11-16T00-00-00-000Z_ses_%04d.jsonl", i))
+	}
+	if got := len(session(0)); got != 3 {
+		t.Fatalf("an Oh My Pi session gives %d names, want 3", got)
+	}
+	full := supervise.MaxHeldNamesPerClaim / 3
+	for i := range full {
+		if _, err := store.HoldSessions(ctx, "legion", holder, session(i)); err != nil {
+			t.Fatalf("session %d of %d under the cap: %v", i, full, err)
+		}
+	}
+	// Fill the cap exactly with single names.
+	for i := heldBy(holder); i < supervise.MaxHeldNamesPerClaim; i++ {
+		if holders, err := store.HoldSessions(ctx, "legion", holder, []supervise.Hold{sessionHold(fmt.Sprintf("ses_fill_%d", i))}); err != nil || holders[0] != holder {
+			t.Fatalf("a name up to the cap answers %v, %v", holders, err)
+		}
+	}
+	if got := heldBy(holder); got != supervise.MaxHeldNamesPerClaim {
+		t.Fatalf("the claim holds %d names, want the cap, %d", got, supervise.MaxHeldNamesPerClaim)
+	}
+
+	for attempt := range 5 {
+		_, err := store.HoldSessions(ctx, "legion", holder, session(full+attempt))
+		if !errors.Is(err, supervise.ErrHeldNamesCap) {
+			t.Fatalf("a session past the cap (attempt %d) answers %v, want supervise.ErrHeldNamesCap", attempt, err)
+		}
+	}
+	if got := heldBy(holder); got != supervise.MaxHeldNamesPerClaim {
+		t.Errorf("the claim holds %d names after calls past the cap, want %d: its rows stop at the cap", got, supervise.MaxHeldNamesPerClaim)
+	}
+	for _, h := range session(full) {
+		if holder := holdOne(ctx, t, store, "legion", other, h); holder != other {
+			t.Errorf("%s %s, which the refused call named, is held for %q; want it free, so the other claim takes it", h.Kind, h.Name, holder)
+		}
+	}
+	if holders, err := store.HoldSessions(ctx, "legion", holder, session(0)); err != nil || slices.ContainsFunc(holders, func(c claim.Token) bool { return c != holder }) {
+		t.Errorf("the claim at the cap holding its own first session answers %v, %v; want it answered as its own", holders, err)
+	}
 }
 
 // statementTracer counts every statement a pool sends and holds each back by delay before it goes,

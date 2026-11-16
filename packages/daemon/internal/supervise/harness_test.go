@@ -167,7 +167,8 @@ func newMemStore() *memStore {
 }
 
 // HoldSessions is the store's: the first claim to record a name holds it, all of one call's names
-// or none, and the answer about a name never changes after.
+// or none, a call whose new names take the claim past MaxHeldNamesPerClaim records none, and the
+// answer about a name never changes after. Every claim of a harness is of one project.
 func (s *memStore) HoldSessions(_ context.Context, _ string, token claim.Token, holds []Hold) ([]claim.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,7 +176,7 @@ func (s *memStore) HoldSessions(_ context.Context, _ string, token claim.Token, 
 		return nil, err
 	}
 	holders := make([]claim.Token, len(holds))
-	mine := true
+	mine, added := true, map[Hold]bool{}
 	for i, h := range holds {
 		if h.Name == "" {
 			return nil, errors.New("hold session: an empty name")
@@ -183,16 +184,42 @@ func (s *memStore) HoldSessions(_ context.Context, _ string, token claim.Token, 
 		holder, held := s.holds[h]
 		if !held {
 			holder = token
+			added[h] = true
 		}
 		holders[i] = holder
 		mine = mine && holder == token
 	}
-	if mine {
-		for _, h := range holds {
-			s.holds[h] = token
+	if !mine {
+		return holders, nil
+	}
+	if len(added) > 0 {
+		held := len(added)
+		for _, holder := range s.holds {
+			if holder == token {
+				held++
+			}
+		}
+		if held > MaxHeldNamesPerClaim {
+			return nil, fmt.Errorf("%d names held with this call's %d new ones: %w", held, len(added), ErrHeldNamesCap)
 		}
 	}
+	for _, h := range holds {
+		s.holds[h] = token
+	}
 	return holders, nil
+}
+
+// heldBy is how many names the store holds for token.
+func (s *memStore) heldBy(token claim.Token) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, holder := range s.holds {
+		if holder == token {
+			n++
+		}
+	}
+	return n
 }
 
 // setHold records holder as h's, as an operator settling a held-for-none name or a migration
