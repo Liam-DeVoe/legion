@@ -215,6 +215,8 @@ func referenceTargetsOf(references ...string) string {
 // would start front matter that swallows the content up to the second rule. A comment's typed
 // block whose closing fence stands two spaces in, or three, while its line of content stands at
 // column 0, answers that line: the block's lines start at column 0, where such a fence closes it.
+// A comment's typed block whose fence and lines stand two spaces in, with a line four spaces in
+// between them, answers that line as the comment's own parse reads it: a code block, not a heading.
 // A member that names no block carries no tree, and neither does any member of a read that asked
 // for none. The names are the same either way.
 //
@@ -273,9 +275,10 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	if stored := storedBlockText(t, database, notesDocument.Artifact.ID, "l10"); !strings.Contains(stored, "\n    Nested in item 10.") {
 		t.Fatalf("the requirement in item 10 has the stored text %q, want its lines four spaces in", stored)
 	}
-	for _, id := range []string{"r2", "f1"} {
-		if stored := storedBlockText(t, database, notesDocument.Artifact.ID, id); !strings.Contains(stored, "requirement{") {
-			t.Fatalf("the requirement %s has the stored text %q, want its opening line in it", id, stored)
+	for id, content := range map[string]string{"r2": deep, "f1": footnoted} {
+		if stored := storedBlockText(t, database, notesDocument.Artifact.ID, id); !strings.Contains(stored, "requirement{") ||
+			!strings.Contains(stored, "\n    "+content) {
+			t.Fatalf("the requirement %s has the stored text %q, want its opening line and its lines four spaces in", id, stored)
 		}
 	}
 	const commentBlock = "Its second block, with [a link](https://example.com/second)."
@@ -297,6 +300,11 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	// at column 0, so the cut takes the lines as written there too.
 	const threeSpaceFence = ":::callout{}\nText of the callout, its fence three spaces in.\n   :::"
 	fencedThree := createReferenceAPIComment(t, handler, issue.Key, threeSpaceFence)
+	// A typed block whose fence and lines stand two spaces in, with a line four spaces in: the
+	// comment's own parse reads that line as an indented code block, so its content is its lines
+	// as written, and with the fence's two spaces taken out the line would read as a heading.
+	const notAHeading = "  Intro\n\n    # Not a heading"
+	codeLine := createReferenceAPIComment(t, handler, issue.Key, ":::callout{}\n"+notAHeading+"\n  :::")
 	const messageBlock = "A message's second block, with dispatch://TBT-1 in it."
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message's first block.\n\n" + messageBlock}, "alice")
 	ask := readPartAsk(t, handler, createPartAsk(t, handler, issue.Key, "Which day do we ship?",
@@ -326,6 +334,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		notesRef + "#b-f1",
 		"dispatch://" + issue.Key + "/comment/" + fenced.ID + "#b-b1",
 		"dispatch://" + issue.Key + "/comment/" + fencedThree.ID + "#b-b1",
+		"dispatch://" + issue.Key + "/comment/" + codeLine.ID + "#b-b1",
 	}
 	target := referenceTargetsOf(references...)
 	plain := treesRequest(t, handler, target, false)
@@ -361,6 +370,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quoted, 7: listed,
 		8: numbered, 9: ":::callout{}\nInner words.\n:::", 10: "***\n\nAfter a rule.\n\n---\n\nTail.",
 		11: deep, 12: footnoted, 13: "Text of the callout.", 14: "Text of the callout, its fence three spaces in.",
+		15: notAHeading,
 	} {
 		want := sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest))
 		if read[index].TextTree == nil {
@@ -380,13 +390,11 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	if strings.Contains(string(read[7].TextTree), "requirement{") {
 		t.Errorf("the listed requirement's text_tree holds its opening line:\n\t%s", read[7].TextTree)
 	}
-	for _, index := range []int{11, 12} {
-		if strings.Contains(string(read[index].TextTree), "requirement{") {
-			t.Errorf("%s: text_tree holds the requirement's opening line:\n\t%s", read[index].Ref, read[index].TextTree)
-		}
-	}
 	if tree := string(read[8].TextTree); strings.Contains(tree, "code_block") || strings.Count(tree, `"paragraph"`) != 2 {
 		t.Errorf("the requirement in item 10 answers the text_tree\n\t%s\nwant its content as two paragraphs, not a code block", tree)
+	}
+	if tree := string(read[15].TextTree); !strings.Contains(tree, `"code_block"`) || strings.Contains(tree, `"heading"`) {
+		t.Errorf("the comment's block with a line four spaces in answers the text_tree\n\t%s\nwant that line as a code block, not a heading", tree)
 	}
 
 	nestedTarget := referenceTargetsOf(references[9])
