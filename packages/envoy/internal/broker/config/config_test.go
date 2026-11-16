@@ -229,10 +229,10 @@ func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 }
 
 // TestLoadRefusesDispatchVariables pins that the removed Dispatch variables fail loudly rather
-// than being silently ignored: the broker asks and issues nothing in Dispatch, and the one
-// thing it does read there, whether an issue is open, is the judge's read under
-// BROKER_JUDGE_DISPATCH_URL, so a stale deployment env still setting one of the five must
-// refuse to start, naming the variable.
+// than being silently ignored: the broker asks and issues nothing in Dispatch, and the two things
+// it does read there, whether an issue is open and whether a person may see a project, are read
+// under settings of their own (BROKER_JUDGE_DISPATCH_URL, BROKER_PROJECT_ACCESS_URL), so a stale
+// deployment env still setting one of the five must refuse to start, naming the variable.
 func TestLoadRefusesDispatchVariables(t *testing.T) {
 	e := validEnv()
 	e["BROKER_DISPATCH_URL"] = "https://dispatch.internal.example"

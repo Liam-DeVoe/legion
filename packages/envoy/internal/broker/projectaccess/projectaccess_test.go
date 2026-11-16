@@ -287,7 +287,8 @@ func TestAccessRefusesAnOversizedAnswer(t *testing.T) {
 	}))
 	t.Cleanup(huge.Close)
 	client := projectaccess.New(huge.URL, projectaccesstest.StaticAccount("token"), nil)
-	if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err == nil {
-		t.Fatal("Access of a 64 KiB answer succeeded, want it refused")
+	_, err := client.Access(t.Context(), "PRIV", "carol@example.com")
+	if err == nil || !strings.Contains(err.Error(), "is over 65536 bytes") {
+		t.Fatalf("Access of an answer past 64 KiB = %v, want it refused as over 65536 bytes, not read or failed some other way", err)
 	}
 }
