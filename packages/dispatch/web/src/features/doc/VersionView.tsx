@@ -250,6 +250,9 @@ export function VersionView({
         onClick={followReference}
       >
         <div ref={root} />
+        {/* The read-only editor paints the version itself and draws its references as
+            decorations: why the renderer has no mount here is the reading list's
+            `document-version-body` (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);

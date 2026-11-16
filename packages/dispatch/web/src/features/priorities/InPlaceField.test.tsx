@@ -212,13 +212,19 @@ test("a text written before the value moved is written again when the reader wri
  * A field over a server the test answers by hand, from outside the field: a button would take
  * the focus out of it, and most answers these rows are about land while the reader holds it.
  * Every text the field sends is recorded in `saves`, in order, and stays out until the test
- * refuses it (`refuse`) or a read brings a text back as `value` (`lands`) - a text the field
- * sent, or another writer's. The rows below are the transitions `useInPlaceDraft` names, one
- * row each.
+ * answers it (`answer`, which lands the oldest write of a text still out, as writes to one
+ * priority land in press order) or refuses it (`refuse`). A read brings a text back as `value`
+ * (`lands`) - a text the field sent, or another writer's - and is the test's to make, since an
+ * answer moves no read of its own. The rows below are the transitions `useInPlaceDraft` names,
+ * one row each.
  */
 function heldServer() {
   const saves: string[] = [];
-  const out: { readonly refuse: (refusal: Error) => void; readonly text: string }[] = [];
+  const out: {
+    readonly land: () => void;
+    readonly refuse: (refusal: Error) => void;
+    readonly text: string;
+  }[] = [];
   let read: (text: string) => void = () => {
     throw new Error("the field has not rendered");
   };
@@ -231,7 +237,7 @@ function heldServer() {
         onSave={(next) => {
           saves.push(next);
           const write = Promise.withResolvers<void>();
-          out.push({ refuse: write.reject, text: next });
+          out.push({ land: write.resolve, refuse: write.reject, text: next });
           return write.promise;
         }}
         value={value}
@@ -240,6 +246,14 @@ function heldServer() {
   };
   const view = render(<ServerField />);
   return {
+    /** Lands the oldest write of `text` still out. */
+    answer: (text: string) =>
+      act(async () => {
+        const at = out.map((write) => write.text).indexOf(text);
+        const [write] = at === -1 ? [] : out.splice(at, 1);
+        if (write === undefined) throw new Error(`no write of ${text} is out`);
+        write.land();
+      }),
     field: within(view.container).getByRole<HTMLInputElement>("textbox", { name: "Title" }),
     lands: (text: string) => act(() => read(text)),
     /** Refuses the newest write of `text` still out. */
@@ -415,6 +429,84 @@ test("a stale read landing while a newer write is out leaves the newer text in t
     await user.click(field);
     await user.tab();
     expect(saves).toEqual(["Old A", "Old AB"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// A read answers the earliest send of its text: writes to one priority land in press order, so
+// the second send of `Old A` cannot land before `Old AB` has. The reader sends `Old A`, `Old AB`
+// and `Old A` again; the first lands and is read, then `Old AB` lands and is read. The second
+// `Old A` is still out, so the Enter after it sends nothing more.
+test("a read of a text sent twice answers its earliest send, leaving the later sends out", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { answer, field, lands, saves, view } = heldServer();
+  try {
+    await user.type(field, " A");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.keyboard("{Backspace}");
+    await jump(SAVE_AFTER_MS + 1);
+    expect(saves).toEqual(["Old A", "Old AB", "Old A"]);
+    await answer("Old A");
+    await lands("Old A");
+    await answer("Old AB");
+    await lands("Old AB");
+    await user.keyboard("{Enter}");
+    expect(saves).toEqual(["Old A", "Old AB", "Old A"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// A landed send leaves what is out on the next move of `value`, so two answers read out of
+// order leave nothing behind: both writes land, and the read brings the earlier text. The
+// later text is no longer what Dispatch is about to hold, so the reader's Enter writes it again.
+test("two landed writes read out of order have the reader's later text written again", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { answer, field, lands, saves, view } = heldServer();
+  try {
+    await user.type(field, " A");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS + 1);
+    await answer("Old A");
+    await answer("Old AB");
+    await lands("Old A");
+    await user.keyboard("{Enter}");
+    expect(saves).toEqual(["Old A", "Old AB", "Old AB"]);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// A write of the text Dispatch already holds moves no read: the reader sends `Old X`, types back
+// to `Old`, which is sent too, and leaves; both land and `value` stays `Old`. When another writer
+// then picks `Old X`, nothing the field sent is still about to be held, so the field shows it.
+test("a landed write of the text Dispatch held leaves nothing behind when the value next moves", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { answer, field, lands, saves, view } = heldServer();
+  try {
+    await user.type(field, " X");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.keyboard("{Backspace}{Backspace}");
+    await jump(SAVE_AFTER_MS + 1);
+    await user.tab();
+    expect(saves).toEqual(["Old X", "Old"]);
+    await answer("Old X");
+    await answer("Old");
+    await lands("Old X");
+    expect(field.value).toBe("Old X");
+    await user.click(field);
+    await user.tab();
+    expect(saves).toEqual(["Old X", "Old"]);
   } finally {
     realClock();
     view.unmount();

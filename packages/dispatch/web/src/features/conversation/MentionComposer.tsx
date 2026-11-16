@@ -3,7 +3,7 @@ import {
   type DispatchWritingBox,
   dispatchWritingBox,
 } from "@legion/contracts";
-import { hashKey, type MutationKey, useQuery } from "@tanstack/react-query";
+import { hashKey, type MutationKey } from "@tanstack/react-query";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -35,7 +35,6 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
-  badgeMed,
   borderDefault,
   borderStrong,
   calloutInfoBg,
@@ -44,7 +43,6 @@ import {
   calloutWarningBorder,
   calloutWarningText,
   checkboxAccent,
-  controlHoverBorder,
   dangerHoverBorder,
   dangerText,
   dismissButtonText,
@@ -55,10 +53,8 @@ import {
   primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
-  referencePillBorder,
   secondaryButtonText,
   surfaceBg,
-  surfaceRecessedBg,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
@@ -69,19 +65,8 @@ import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
-import {
-  draftParties,
-  isPartyMention,
-  linkOf,
-  partyMention,
-  partyMentionSpan,
-} from "../refs/party-references";
-import { type ReferenceReading, RefLink } from "../refs/RefLink";
-import { issueSummaryQuery, summarySpec } from "../refs/reference-target";
-import { type DispatchReferenceRoute, referenceHref } from "../refs/routes";
-import { readTextReferences, type TextSource, textSourceOf } from "../refs/text-references";
-import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
-import { useTextReferences } from "../refs/useTextReferences";
+import { draftParties, partyMention, partyMentionSpan } from "../refs/party-references";
+import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
@@ -93,6 +78,7 @@ import type {
   ReplyTarget,
 } from "./composer-model";
 import { MODE_LABELS, plainDelivery } from "./delivery";
+import { DraftPills, draftSource, useDraftPills } from "./draft-pills";
 import type { HeldSend } from "./held-sends";
 import { MentionField, type MentionFieldChange, type MentionFieldHandle } from "./MentionField";
 import { ReplyQuote } from "./ReplyQuote";
@@ -122,62 +108,6 @@ interface AskOptionDraft {
   description: string;
   id: number;
   label: string;
-}
-
-/** One pill under the draft: a reference as a reader of the stored text will read it - what it
- *  names, the page it opens, the words the draft wrote it in and what those words read as
- *  (`RefLink`). */
-interface ReferencePill {
-  readonly href: string;
-  readonly reads: ReferenceReading;
-  readonly reference: string;
-  readonly route: DispatchReferenceRoute;
-  readonly text: string;
-}
-
-/** A pill drawn by the renderer's own portal content (`RefLink`) inside the pill's link, so it
- *  reads as the same reference reads in the stored record: the target's current name, a party's
- *  mention as `@` and that name, an author's own words as they are, and words with no link once
- *  Dispatch answers that the target does not exist. `RefLink` keeps the link's href as its own
- *  reading has it - a pinned block of a spec once the issue names the spec's slug. */
-function DraftReferencePill({ pill }: { pill: ReferencePill }): ReactNode {
-  const [anchor, setAnchor] = useState<HTMLAnchorElement | null>(null);
-  return (
-    <a
-      className={`rounded-full border px-2 py-1 text-xs font-medium ${referencePillBorder} ${surfaceRecessedBg} ${badgeMed.text} ${controlHoverBorder}`}
-      href={pill.href}
-      ref={setAnchor}
-    >
-      <RefLink
-        anchor={anchor ?? undefined}
-        reads={pill.reads}
-        route={pill.route}
-        text={pill.text}
-      />
-    </a>
-  );
-}
-
-/**
- * The record a `#id` in the draft resolves against once the draft is written, as the server will
- * read it (`refs.ScopeOf`, through `GET /api/v1/references/questions`): a comment or an ask on a
- * document is that document; a reply to a comment is in its parent's scope; a comment or an ask
- * anchored to a document's text is that document; and anything else written on an issue - a
- * comment, an ask, a reply to a message - is its issue's spec, `spec` once the issue's summary
- * names it. A message to one session belongs to no document and resolves no `#id`, as the stored
- * message does not. An edit reads none: it is a compact box, which shows no pills.
- */
-function draftSource(
-  owner: ComposerOwner,
-  replyTo: ReplyTarget | null,
-  anchor: ComposerAnchor | undefined,
-  spec: string | undefined
-): TextSource | undefined {
-  if (owner.kind === "session") return undefined;
-  if (owner.kind === "artifact") return { id: owner.artifactId, kind: "artifact" };
-  if (replyTo?.parentKind === "comment") return { id: replyTo.id, kind: "comment" };
-  if (replyTo === null && anchor !== undefined) return { id: anchor.artifact, kind: "artifact" };
-  return spec === undefined ? undefined : { id: spec, kind: "artifact" };
 }
 
 /** How long after the last keystroke what the reader wrote over a refusal is written back to the
@@ -495,76 +425,10 @@ export function MentionComposer({
     replaceDraft({ body: seededDraft(seedMentions, "", owner) });
     setAskOptions([emptyAskOption()]);
   };
-  // The pills read the draft as a reader of the stored text will read it: through the one reader
-  // and the facts the renderer's link pass is held to (`useTextReferences`), with the record the
-  // write will have (`draftSource`), so a bare key whose issue exists and a `#id` its document
-  // declares get the pill the stored record's link is, and one that names nothing gets none. A
-  // compact box - an inline reply, an edit - shows no pills and asks nothing for them.
-  const pillDraft = compact ? "" : body;
-  // They read the draft once the typing rests, as the picker's search does: a key typed a letter
-  // at a time (`CORE-1`, `CORE-12`, `CORE-123`) is one read of the key the reader stopped at, not
-  // one for every key it passes through. A draft emptied - sent, discarded - takes its pills
-  // with it at once.
-  const [pillText, setPillText] = useState(pillDraft);
-  if (pillDraft === "" && pillText !== "") setPillText("");
-  useEffect(() => {
-    const timer = window.setTimeout(() => setPillText(pillDraft), SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [pillDraft]);
-  // Only a draft that writes a `#id` on an issue's own spec reads which document that is.
-  const writesQuestion = useMemo(() => readTextReferences(pillText).needs.questions, [pillText]);
-  const specKey =
-    writesQuestion &&
-    owner.kind === "issue" &&
-    replyTo?.parentKind !== "comment" &&
-    (replyTo !== null || anchor === undefined)
-      ? owner.issueKey
-      : undefined;
-  const issueSummary = useQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
-  const { reading } = useTextReferences(
-    pillText,
-    draftSource(owner, replyTo, anchor, summarySpec(issueSummary.data)?.id)
-  );
-  // One pill per reference the renderer would link - none in code, where no renderer links one,
-  // and none for a picture, which the record draws as the picture - at its first appearance,
-  // however often the body repeats it.
-  const references = useMemo(() => {
-    const pills: ReferencePill[] = [];
-    const seen = new Set<string>();
-    for (const found of reading.references) {
-      if (
-        found.reference === undefined ||
-        found.route === undefined ||
-        found.inCode ||
-        seen.has(found.reference)
-      ) {
-        continue;
-      }
-      // The one gate between a reference the writer typed and an `href` (`routes.ts`'s
-      // `appHref`): a reference that opens no page of this dashboard - a person, whom nothing
-      // shows - gets no pill, rather than one whose empty `href` would navigate to this very
-      // page and take the draft with it.
-      const link = linkOf(pillText, found);
-      const href = referenceHref(found.route);
-      if (link?.picture === true || href === undefined) {
-        continue;
-      }
-      seen.add(found.reference);
-      pills.push({
-        href,
-        reads:
-          link === undefined || link.words === found.text
-            ? "name"
-            : isPartyMention(link.words, found.route)
-              ? "mention"
-              : "words",
-        reference: found.reference,
-        route: found.route,
-        text: link?.words ?? found.text,
-      });
-    }
-    return pills;
-  }, [pillText, reading]);
+  // The pills under the draft read it as a reader of the stored text will (`useDraftPills`),
+  // with the record the write will have (`draftSource`). A compact box - an inline reply, an
+  // edit - shows no pills and asks nothing for them.
+  const pills = useDraftPills(compact ? "" : body, draftSource(owner, replyTo, anchor));
   const editBody = edit?.body;
 
   // The seed belongs to the channel the host addresses. When it changes - an Agents row's issue
@@ -966,7 +830,7 @@ export function MentionComposer({
             : replyTo?.parentKind === "message"
               ? "message-reply"
               : "comment";
-  /** The issue the picker offers the people and the stopped roles of; a document of its own
+  /** The issue whose people the picker offers; a document of its own
    *  project has none, and the picker offers everyone who has signed in there. */
   const pickerIssue = owner.kind === "issue" ? owner.issueKey : undefined;
   const pickerProject = owner.kind === "artifact" ? owner.project : undefined;
@@ -1047,6 +911,7 @@ export function MentionComposer({
       )}
       {compact || anchor === undefined ? null : (
         <blockquote className={`border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}>
+          {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
           {anchor.quote}
         </blockquote>
       )}
@@ -1077,6 +942,7 @@ export function MentionComposer({
               and a newer anchor leaves it behind. */}
           {kindRefusal === undefined || kindRefusal.markId !== anchor?.mark_id ? null : (
             <p className={`text-sm ${dangerText}`} role="status">
+              {/* not stored prose: the host's own words for why the kind did not change */}
               {kindRefusal.text}
             </p>
           )}
@@ -1269,13 +1135,7 @@ export function MentionComposer({
           <p className={`text-xs ${textMutedOnSurfaceMuted}`}>
             Paste or drop a picture to show it inline, or any other file to attach it.
           </p>
-          {references.length === 0 ? null : (
-            <section aria-label="References" className="flex flex-wrap gap-2">
-              {references.map((pill) => (
-                <DraftReferencePill key={pill.reference} pill={pill} />
-              ))}
-            </section>
-          )}
+          <DraftPills pills={pills} />
         </>
       )}
       {uploadOwner === undefined ? null : <DraftUploadStatus upload={upload} />}

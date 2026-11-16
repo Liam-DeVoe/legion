@@ -29,9 +29,11 @@ import {
   blockText,
   blockTextTree,
   prefetchReference,
+  REFERENCE_READ,
   useBlockDocument,
   useReferenceData,
   useReferenceHref,
+  useReferenceQuery,
 } from "./reference-target";
 import {
   buildDispatchReference,
@@ -360,24 +362,29 @@ function Body({
 }
 
 /** The issue's full read, not the summary its links share: the card shows priority, labels, open
- *  asks and the spec, and holds that read only while it is shown. */
+ *  asks and the spec, and holds that read only while it is shown. The hover that opens the card
+ *  has already asked both reads (`prefetchReference`), so the card's own mount asks neither
+ *  again where it failed (`REFERENCE_READ`): a hover over a missing target costs one read. The
+ *  spec's text waits on the issue's read, so it is a read made after the card mounted
+ *  (`useReferenceQuery`). */
 function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const key = "key" in route ? route.key : undefined;
-  const { data: issue } = useQuery({ ...issueQuery(key), enabled: key !== undefined });
-  const spec = primarySpec(issue);
-  const specText = useQuery({
-    ...artifactTextQuery(spec?.id, undefined),
-    enabled: spec?.kind === "doc",
+  const { data: issue } = useQuery({
+    ...issueQuery(key),
+    ...REFERENCE_READ,
+    enabled: key !== undefined,
   });
+  const spec = primarySpec(issue);
+  const specText = useReferenceQuery(
+    spec?.kind === "doc" ? artifactTextQuery(spec.id, undefined) : undefined
+  )?.data;
   if (issue === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
   const specMarkdown =
-    specText.data !== undefined && "markdown" in specText.data ? specText.data.markdown : undefined;
+    specText !== undefined && "markdown" in specText ? specText.markdown : undefined;
   const specTree =
-    specText.data !== undefined && "markdown_tree" in specText.data
-      ? specText.data.markdown_tree
-      : undefined;
+    specText !== undefined && "markdown_tree" in specText ? specText.markdown_tree : undefined;
   return (
     <>
       <Heading>

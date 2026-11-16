@@ -168,6 +168,7 @@ function BroadcastRecipientRow({
             <MarkdownBody
               markdown={reply.body}
               source={textSourceOf("message", reply.id)}
+              surface="broadcast-recipient-reply"
               tree={reply.body_tree}
             />
           </div>
@@ -226,7 +227,7 @@ export function BroadcastPage(): ReactNode {
         {/* No `source`: why a broadcast's own body is no record is the reading list's
             `broadcast-sent-body` (`DISPATCH_READING_SURFACES`). */}
         <div className={`mt-2 ${textPrimaryOnCanvas}`}>
-          <MarkdownBody markdown={sent.body} tree={sent.body_tree} />
+          <MarkdownBody markdown={sent.body} surface="broadcast-sent-body" tree={sent.body_tree} />
         </div>
         {excluded.length === 0 ? null : (
           <p className={`mt-2 text-sm ${dangerText}`}>

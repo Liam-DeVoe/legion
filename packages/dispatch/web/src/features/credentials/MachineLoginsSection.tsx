@@ -29,6 +29,7 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
   },
   {
     // `== null`: a broker older than this Dispatch sends no `subject` at all.
+    // not stored prose: a login's subject is the Kubernetes identity its token names
     cell: (login) => (login.subject == null ? login.approved_by : `No one: ${login.subject}`),
     header: "Approved by",
   },
@@ -61,6 +62,7 @@ export function MachineLoginsSection(): ReactNode {
     <RevocableList
       className="pt-4"
       columns={columns}
+      // not stored prose: a login's subject is the Kubernetes identity its token names
       confirm={(login) =>
         `Revoke the machine login for ${machineName(login)}? ${
           login.service

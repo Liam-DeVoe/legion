@@ -13,13 +13,17 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { usePlainHeadline } from "../refs/plain-text";
 import { parseDispatchReference, referenceHref } from "../refs/routes";
+import { textSourceOf } from "../refs/text-references";
 import { regionOrigin } from "./ThreadList";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
  *  unsure, its heading as a link to it in `decisions.md`, and the head of its text. Selecting the
- *  card lights up the block, as selecting an anchored comment lights up its text. */
+ *  card lights up the block, as selecting an anchored comment lights up its text. The heading
+ *  names the card and words a link, neither of which holds markup, so it is read as its plain
+ *  words; the passage is the record the issue's `decisions.md` is, drawn by the renderer. */
 export function DecisionCard({
   hovered = false,
   item,
@@ -37,10 +41,14 @@ export function DecisionCard({
   // person (R5) - leaves the heading as plain words.
   const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
+  const { reads, text } = usePlainHeadline(undefined, decision.heading, {
+    surface: "margin-decision-passage",
+  });
+  const heading = text?.text ?? "";
   return (
     <article
       aria-current={selected ? "true" : undefined}
-      aria-label={`Decision: ${decision.heading}`}
+      aria-label={`Decision: ${heading}`}
       className={`rounded-xl border p-3 text-sm shadow-sm ${
         active ? `${selectedCardBorder} ${selectedCardBg}` : card
       } ${decision.unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
@@ -68,20 +76,21 @@ export function DecisionCard({
         ) : null}
       </p>
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>
+        {reads}
         {href === undefined ? (
-          decision.heading
+          heading
         ) : (
           <Link className={`${linkText} ${linkHoverText}`} to={href}>
-            {decision.heading}
+            {heading}
           </Link>
         )}
       </h3>
-      {/* No `source`: why no record reaches a margin decision card is the reading list's
-          `margin-decision-passage` (`DISPATCH_READING_SURFACES`). */}
       <MarkdownPreview
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
         markdown={decision.text}
+        source={textSourceOf("artifact", item.documentId)}
+        surface="margin-decision-passage"
         tree={decision.text_tree}
       />
     </article>

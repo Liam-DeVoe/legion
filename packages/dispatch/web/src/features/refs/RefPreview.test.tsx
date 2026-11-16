@@ -171,6 +171,34 @@ test("the card opens only after the hover delay, loads populated, and closes whe
   }
 });
 
+// The hover asks for its target before the card opens, so a card that opens on a target whose
+// read failed shows the reference's short form rather than asking the same read a second time.
+test("a hover over a target whose read fails asks for it once, not again when its card opens", async () => {
+  const getIssue = spyOn(api, "getIssue").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no issue CORE-1" })
+  );
+  jest.useFakeTimers();
+  const view = render(<Harness />);
+  try {
+    fireEvent.pointerOver(screen.getByRole("link", { name: "first" }), { pointerType: "mouse" });
+    // The mocked read settles on microtasks alone, which the async act flushes.
+    await act(async () => {});
+    expect(getIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    await act(async () => {});
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      shortForm({ key: "CORE-1", kind: "issue" })
+    );
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
 test("a pointer moved straight from a reference onto its card keeps it open, and leaving the reference for anywhere else closes it", async () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();

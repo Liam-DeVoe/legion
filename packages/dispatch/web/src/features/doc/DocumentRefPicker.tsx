@@ -50,7 +50,7 @@ export function DocumentRefPicker({
   editor: EditorHandle | undefined;
   /** False while the document takes no edits: a reader who cannot type has nothing to pick. */
   enabled: boolean;
-  /** The issue this document belongs to, whose people and stopped roles the picker offers. */
+  /** The issue this document belongs to, whose people the picker offers. */
   issueKey?: string;
   /** The project a document of a project belongs to, whose components it offers. */
   project?: string;

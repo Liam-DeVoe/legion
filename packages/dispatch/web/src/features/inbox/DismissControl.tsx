@@ -4,6 +4,7 @@ import type { MyReplyRow } from "../../api/types";
 import { linkHoverText, linkText } from "../../theme/classes";
 import { PlainText } from "../refs/plain-text";
 import type { InboxShow } from "../refs/routes";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { dismissThreadRow, type InboxDismissRow } from "./useInboxDismiss";
 
 /** What a thread row's Dismiss does, as the Inbox hands it to the three surfaces that draw one:
@@ -53,10 +54,16 @@ export function DismissControl({
   const label = restoring ? "Move to Inbox" : "Dismiss";
   const live = dismiss.pending.has(named.id);
   // The label is an `aria-label`, which can hold no markup: it takes the one plain-text
-  // projection of the subject, from the same reader that draws the row's own line, so what a
-  // reader hears and what they see are the same words - a reference named, not its address.
+  // projection of the subject, from the same reader that draws the row's own line and with the
+  // record that line names (`ThreadTitle`), so what a reader hears and what they see are the
+  // same words - a reference named, not its address.
   return (
-    <PlainText markdown={thread.subject} tree={thread.subject_tree}>
+    <PlainText
+      markdown={thread.subject}
+      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id)}
+      surface="inbox-thread-title"
+      tree={thread.subject_tree}
+    >
       {(subject) => (
         <button
           aria-label={`${label}: ${subject ?? ""}`}

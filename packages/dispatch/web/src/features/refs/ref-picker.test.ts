@@ -80,11 +80,36 @@ test("each group is headed by its kind's own name", () => {
 });
 
 test("a trigger opens only at a word boundary", () => {
-  expect(readTrigger("@")).toEqual({ chars: "@", door: "parties", query: "", start: 0 });
-  expect(readTrigger("see @pl")).toEqual({ chars: "@", door: "parties", query: "pl", start: 4 });
-  expect(readTrigger("(#CO")).toEqual({ chars: "#", door: "issues", query: "CO", start: 1 });
-  expect(readTrigger("a line\n#")).toEqual({ chars: "#", door: "issues", query: "", start: 7 });
-  expect(readTrigger("see [[go")).toEqual({ chars: "[[", door: "all", query: "go", start: 4 });
+  const opens = { inAddress: false };
+  expect(readTrigger("@")).toEqual({ ...opens, chars: "@", door: "parties", query: "", start: 0 });
+  expect(readTrigger("see @pl")).toEqual({
+    ...opens,
+    chars: "@",
+    door: "parties",
+    query: "pl",
+    start: 4,
+  });
+  expect(readTrigger("(#CO")).toEqual({
+    ...opens,
+    chars: "#",
+    door: "issues",
+    query: "CO",
+    start: 1,
+  });
+  expect(readTrigger("a line\n#")).toEqual({
+    ...opens,
+    chars: "#",
+    door: "issues",
+    query: "",
+    start: 7,
+  });
+  expect(readTrigger("see [[go")).toEqual({
+    ...opens,
+    chars: "[[",
+    door: "all",
+    query: "go",
+    start: 4,
+  });
 
   // Mid-word: an email's `@`, an anchor's `#`, and a `[[` glued to a word open nothing.
   expect(readTrigger("alice@theorem.dev")).toBeUndefined();
@@ -100,6 +125,7 @@ test("a space typed after a trigger closes it, which leaves a heading a heading"
   expect(readTrigger("# Heading with @pl")).toEqual({
     chars: "@",
     door: "parties",
+    inAddress: false,
     query: "pl",
     start: 15,
   });
@@ -107,7 +133,8 @@ test("a space typed after a trigger closes it, which leaves a heading a heading"
 
 // A mention's words start with `@` right after a `[`, which is a word boundary: the picker must
 // open neither over the mention it has just written nor where the caret moves into a written
-// link's words or address, since a pick there would write a link inside a link.
+// link's words, since a pick there would write a link inside a link. In the mention's address
+// the `@` stands before the address begins, so it is no door there either.
 test("no trigger opens over a written link, though a mention's words start with one", () => {
   const mention = "[@Planner](dispatch://agent/planner-session)";
   expect(readTrigger("[@reviewer](dispatch://role/reviewer)")).toBeUndefined();
@@ -118,21 +145,48 @@ test("no trigger opens over a written link, though a mention's words start with 
   expect(readTrigger(mention, "[@Planner](dispatch://agent/plan".length)).toBeUndefined();
   // Words that hold an escaped bracket, as `partyLink` writes a title holding one.
   expect(readTrigger("[@A\\[b\\]](dispatch://agent/a)", "[@A\\[b".length)).toBeUndefined();
-  // A `#` right after the `](` that opens an address is that address, not a door.
-  expect(readTrigger("[the plan](#plan)", "[the plan](#pl".length)).toBeUndefined();
   // A `[` the reader typed is still a word boundary while no link closes after the caret, and a
   // link later in the text does not close the words the reader is typing now.
   expect(readTrigger("[@reviewer")).toEqual({
     chars: "@",
     door: "parties",
+    inAddress: false,
     query: "reviewer",
     start: 1,
   });
   expect(readTrigger(`ask @pl then ${mention}`, "ask @pl".length)).toEqual({
     chars: "@",
     door: "parties",
+    inAddress: false,
     query: "pl",
     start: 4,
+  });
+});
+
+// A reader writing a link's address reaches for a door to fill it: every door opens on a trigger
+// typed in the address, and says it stands there, so the pick writes the address alone.
+test("each door opens in a link's address on a trigger typed there, and says it stands there", () => {
+  const start = "[the plan](".length;
+  const opens = { inAddress: true, start };
+  expect(readTrigger("[the plan](#pl")).toEqual({
+    ...opens,
+    chars: "#",
+    door: "issues",
+    query: "pl",
+  });
+  expect(readTrigger("[the plan](@")).toEqual({ ...opens, chars: "@", door: "parties", query: "" });
+  expect(readTrigger("[the plan]([[go")).toEqual({
+    ...opens,
+    chars: "[[",
+    door: "all",
+    query: "go",
+  });
+  // The caret in the middle of an address already closed.
+  expect(readTrigger("[the plan](#plan)", "[the plan](#pl".length)).toEqual({
+    ...opens,
+    chars: "#",
+    door: "issues",
+    query: "pl",
   });
 });
 
@@ -149,31 +203,83 @@ test("the browser-side filter matches a row's words, its detail and its address"
 });
 
 test("a party pick inserts its mention and every other pick the bare address", () => {
+  const prose = { inAddress: false };
   // A mention's words are `@` and the name: a reader reads it as `@` and the party's current
   // name, so a session renamed since still reads as it is called now (R4).
-  expect(insertionText(row("agent", "Planner", "dispatch://agent/planner-session"))).toBe(
+  expect(insertionText(row("agent", "Planner", "dispatch://agent/planner-session"), prose)).toBe(
     "[@Planner](dispatch://agent/planner-session)"
   );
-  expect(insertionText(row("role", "reviewer", "dispatch://role/reviewer"))).toBe(
+  expect(insertionText(row("role", "reviewer", "dispatch://role/reviewer"), prose)).toBe(
     "[@reviewer](dispatch://role/reviewer)"
   );
   expect(
-    insertionText(row("person", "alice@theorem.dev", "dispatch://person/alice@theorem.dev"))
+    insertionText(row("person", "alice@theorem.dev", "dispatch://person/alice@theorem.dev"), prose)
   ).toBe("[@alice@theorem.dev](dispatch://person/alice@theorem.dev)");
   // A name holding a bracket cannot break out of the link's words.
-  expect(insertionText(row("agent", "Planner [2]", "dispatch://agent/two"))).toBe(
+  expect(insertionText(row("agent", "Planner [2]", "dispatch://agent/two"), prose)).toBe(
     "[@Planner \\[2\\]](dispatch://agent/two)"
   );
 
-  expect(insertionText(row("issue", "Fix the thing", "dispatch://CORE-1"))).toBe(
+  expect(insertionText(row("issue", "Fix the thing", "dispatch://CORE-1"), prose)).toBe(
     "dispatch://CORE-1"
   );
-  expect(insertionText(row("component", "The relay", "dispatch://CORE/component/relay"))).toBe(
-    "dispatch://CORE/component/relay"
-  );
-  expect(insertionText(row("document-block", "First words", "dispatch://CORE-1/spec#b-one"))).toBe(
-    "dispatch://CORE-1/spec#b-one"
-  );
+  expect(
+    insertionText(row("component", "The relay", "dispatch://CORE/component/relay"), prose)
+  ).toBe("dispatch://CORE/component/relay");
+  expect(
+    insertionText(row("document-block", "First words", "dispatch://CORE-1/spec#b-one"), prose)
+  ).toBe("dispatch://CORE-1/spec#b-one");
+});
+
+// In a link's address the link around the pick already has its words: a party is its bare
+// address there, as every other kind is, and a mention would be a link inside a link.
+test("a pick in a link's address inserts the bare address, a party's too, and no link", () => {
+  const text = "[the plan](@";
+  const trigger = readTrigger(text);
+  if (trigger === undefined) throw new Error("the trigger reads nothing");
+  for (const party of [
+    row("agent", "Planner", "dispatch://agent/planner-session"),
+    row("role", "reviewer", "dispatch://role/reviewer"),
+    row("person", "alice@theorem.dev", "dispatch://person/alice@theorem.dev"),
+  ]) {
+    expect(insertionText(party, trigger)).toBe(party.reference);
+    expect(insertionFor(party, trigger, text.length)).toEqual({
+      end: text.length,
+      start: "[the plan](".length,
+      text: party.reference,
+      trigger: "@",
+    });
+  }
+  expect(
+    applyInsertion(
+      text,
+      insertionFor(
+        row("agent", "Planner", "dispatch://agent/planner-session"),
+        trigger,
+        text.length
+      )
+    )
+  ).toEqual({
+    caret: "[the plan](dispatch://agent/planner-session".length,
+    text: "[the plan](dispatch://agent/planner-session",
+  });
+});
+
+test("an issue picked in a link's address completes the link", () => {
+  const text = "[the plan](#CO";
+  const trigger = readTrigger(text);
+  if (trigger === undefined) throw new Error("the trigger reads nothing");
+  const insertion = insertionFor(row("issue", "Fix", "dispatch://CORE-1"), trigger, text.length);
+  expect(insertion).toEqual({
+    end: text.length,
+    start: "[the plan](".length,
+    text: "dispatch://CORE-1",
+    trigger: "#",
+  });
+  expect(applyInsertion(`${text}) first`, insertion)).toEqual({
+    caret: "[the plan](dispatch://CORE-1".length,
+    text: "[the plan](dispatch://CORE-1) first",
+  });
 });
 
 test("an insertion replaces the trigger through the caret and keeps the text after it", () => {

@@ -136,7 +136,7 @@ export type { MarkAction, RecordMarkPlacement, SelectionBarActionKind, PopoverAc
 export type { ProofEditorAccess } from './dispatch-action-bar';
 export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOutcome } from './record-mark-retype';
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
-export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
+export type { EditorReferences, OfferedReference, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
 export type { EditorReferencePicker, ReferenceInsertion, ReferencePickerCaret } from './reference-picker';
 export type { BlockMark } from './editor-highlights';
 export type { DocumentJSON, DocumentMarkJSON } from './document-json';

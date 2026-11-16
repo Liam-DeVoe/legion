@@ -73,6 +73,10 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: Decision;
+  /** The artifact id of the issue's `decisions.md`, the record the decision's text is, which a
+   *  `#id` in that text names a question block of; undefined until the issue's documents are
+   *  read. */
+  readonly documentId: string | undefined;
   /** `decision:<decision heading block>:<spec block>`. */
   readonly id: string;
   readonly kind: "decision";
@@ -311,9 +315,13 @@ export function useMarginItems(
   blockPlacements: ReadonlyMap<string, MarkPlacement>,
   blockFilterId: string | undefined,
   {
+    decisionsDocumentId,
     documentShown = false,
     held = NO_THREADS,
   }: {
+    /** The artifact id of the issue's `decisions.md`, from the issue read the margin already
+     *  holds: the record each decision card's text is drawn as. */
+    readonly decisionsDocumentId?: string;
     /** Whether the document whose margin this is has reported its layout: the issue page keeps
      *  its Spec editor mounted while the Conversation covers it, so without this the decisions
      *  of every issue page would be read where nothing shows them. */
@@ -505,6 +513,7 @@ export function useMarginItems(
         .map((blockId) => ({
           blockId,
           decision,
+          documentId: decisionsDocumentId,
           id: `decision:${decision.block_id}:${blockId}`,
           kind: "decision" as const,
         }));
@@ -515,7 +524,14 @@ export function useMarginItems(
         placedItem(right, markPlacements, blockPlacements)
       )
     );
-  }, [blockFilterId, blockPlacements, decisionsView.data, markPlacements, showsDecisions]);
+  }, [
+    blockFilterId,
+    blockPlacements,
+    decisionsDocumentId,
+    decisionsView.data,
+    markPlacements,
+    showsDecisions,
+  ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({
       comment: root.comment,

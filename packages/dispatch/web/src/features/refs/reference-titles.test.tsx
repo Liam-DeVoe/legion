@@ -166,3 +166,38 @@ test("a reference whose id is a prefix reads the item under the whole id, cachin
     view.unmount();
   }
 });
+
+/** The issue summary reads a body draws `markdown` with, once its one real key has drawn. */
+async function summaryReads(markdown: string, projects?: readonly string[]): Promise<string[]> {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation((key: string) =>
+    key === "CORE-1"
+      ? Promise.resolve(summary)
+      : Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: `no issue ${key}` }))
+  );
+  const queryClient = freshClient();
+  if (projects !== undefined) {
+    queryClient.setQueryData(
+      ["projects"],
+      projects.map((key) => ({ key, name: key }))
+    );
+  }
+  const view = render(withQueries(queryClient, <MarkdownBody markdown={markdown} />));
+  try {
+    // Every key the body writes is asked in the one batch its first render starts, so once the
+    // real one has drawn, every read the body makes has been made.
+    await within(view.container).findByRole("link", { name: "CORE-1 Fix the thing" });
+    return getIssueSummary.mock.calls.map(([key]) => key);
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+}
+
+// A word of prose shaped like an issue key - `UTF-16`, `SHA-256` - is a key only where its
+// prefix is a project. Where the page already holds its project list (the sidebar reads it),
+// no such word costs a read; where it holds none yet, every key-shaped word is asked, as before.
+test("a key-shaped word whose prefix is no project asks nothing where the page holds its projects", async () => {
+  const markdown = "Encoded as UTF-16, tracked in CORE-1.";
+  expect(await summaryReads(markdown, ["CORE"])).toEqual(["CORE-1"]);
+  expect(await summaryReads(markdown)).toEqual(["UTF-16", "CORE-1"]);
+});

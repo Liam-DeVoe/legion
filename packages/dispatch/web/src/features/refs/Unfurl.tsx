@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 
 import { MarkdownPreview } from "./MarkdownPreview";
+import { PlainText } from "./plain-text";
 import { ReferenceHostIs } from "./reference-host";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferenceHref, useReferenceTarget } from "./reference-target";
@@ -62,7 +63,8 @@ function cardRecord(route: DispatchReferenceRoute): TextSource | undefined {
 
 /** A card for one Dispatch reference: the route it resolved to, its `dispatch://` form (the
  *  card's identity, one card per distinct reference), and the words the body wrote for it, which
- *  the card shows while the target's title loads and for a target that has none. */
+ *  the card shows - as their plain-text projection, since the body may have written a link -
+ *  while the target's title loads and for a target that has none. */
 interface DispatchCard {
   readonly reference: string;
   readonly route: DispatchReferenceRoute;
@@ -91,7 +93,13 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
         className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
         href={href}
       >
-        <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
+        <span className={`block font-medium ${linkText}`}>
+          {title ?? (
+            <PlainText markdown={card.text} surface="dispatch-reference-card">
+              {(words) => words ?? ""}
+            </PlainText>
+          )}
+        </span>
         {description === undefined ? null : (
           <MarkdownPreview
             className={CARD_BODY_CLASS}

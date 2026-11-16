@@ -160,9 +160,9 @@ test("a pick replaces the trigger and leaves the text after the caret", async ()
   }
 });
 
-// A door never opens in a written link's words or address: a pick there would write a link
-// inside a link. The caret moved back into a mention's words opens no list, and Enter keeps its
-// ordinary meaning: the host is handed it, and the box types its line break.
+// A door never opens in a written link's words: a pick there would write a link inside a link.
+// The caret moved back into a mention's words opens no list, and Enter keeps its ordinary
+// meaning: the host is handed it, and the box types its line break.
 test("the caret inside a written mention opens no list, and Enter is the host's", async () => {
   const user = userEvent.setup();
   const { keys, restore } = renderField();
@@ -181,6 +181,24 @@ test("the caret inside a written mention opens no list, and Enter is the host's"
     await user.keyboard("{Enter}");
     expect(keys.fromField).toEqual(["Enter"]);
     await waitFor(() => expect(field.value).toBe("[@Plan\nner](dispatch://agent/planner-session)"));
+  } finally {
+    restore();
+  }
+});
+
+// A door opens in a link's address on a trigger typed there, and its pick writes the address
+// alone: the link around it already has its words, so a party is no mention there.
+test("a door opens in a link's address, and a party picked there is its bare address", async () => {
+  const user = userEvent.setup();
+  const { restore } = renderField();
+
+  try {
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste("[the plan](@");
+    await screen.findByText("Planner");
+    await user.keyboard("{ArrowDown}{Enter}");
+    await waitFor(() => expect(field.value).toBe("[the plan](dispatch://agent/planner-session"));
   } finally {
     restore();
   }

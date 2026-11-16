@@ -10,6 +10,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { PlainText } from "../refs/plain-text";
 import { parseDispatchReference, referenceHref, shortForm } from "../refs/routes";
 import type { ItemRoute } from "./useItemLanding";
 
@@ -86,8 +87,8 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
   const href = reference === undefined ? undefined : referenceHref(reference);
   const owner = ownerOf(candidate);
   // The first line tells two matches apart; where the server gave none, the whole id does, so
-  // the link always has words of its own.
-  const words = candidate.first_line ?? "";
+  // the link always has words of its own. It is the head of the item's text, which the server
+  // cuts, and a link's words hold no markup, so it is read as its plain words.
   return (
     <li className="min-w-0">
       <div
@@ -105,7 +106,11 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
           className={`block min-w-0 [overflow-wrap:anywhere] ${linkText} ${linkHoverText}`}
           to={href}
         >
-          {words === "" ? candidate.id : words}
+          <PlainText markdown={candidate.first_line} surface="item-match-first-line">
+            {/* The first line as its plain words, and as written until the engine has answered:
+                the reading list's `item-match-first-line`. */}
+            {(line) => (line ?? candidate.first_line) || candidate.id}
+          </PlainText>
         </Link>
       )}
     </li>

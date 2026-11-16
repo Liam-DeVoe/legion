@@ -32,6 +32,7 @@ function OptionText({
         <MarkdownBody
           markdown={option.label}
           source={source}
+          surface="ask-option-text"
           tree={option.label_tree}
           variant="inline"
         />
@@ -41,6 +42,7 @@ function OptionText({
           <MarkdownBody
             markdown={option.description}
             source={source}
+            surface="ask-option-text"
             tree={option.description_tree}
             variant="inline"
           />

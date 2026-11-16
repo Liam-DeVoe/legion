@@ -1,18 +1,20 @@
 import { afterEach, expect, jest, type Mock, mock, test } from "bun:test";
 import type { AgentStreamSettingsReported } from "@legion/contracts";
 // biome-ignore lint/style/noRestrictedImports: the same-task pair a closed select's own key makes (`stepWithKey`), and the blur that leaves a picker
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { renderWithQueries } from "../../__tests__/query-provider";
 import { userOnFakeClock } from "../../__tests__/user";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { SessionSettingsView } from "./conversation";
 import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
 import type { SwitchRequest } from "./use-session-switch";
 
-/** What the page passes the row: the pickers' props, and the switch status the lines under the
- *  row show. */
+/** What the page passes the row: the pickers' props, and the words of the switch status the
+ *  lines under the row show, which quote no reply here. */
 type Props = ComponentProps<typeof SessionSettings> & { status: string | undefined };
 
 afterEach(cleanup);
@@ -74,7 +76,10 @@ function renderSettings(props: Partial<Omit<Props, "onPick">> = {}): Header {
   const draw = ({ status, ...settings }: Props) => (
     <>
       <SessionSettings {...settings} />
-      <SessionSwitchLines notice={settings.view.notice} status={status} />
+      <SessionSwitchLines
+        notice={settings.view.notice}
+        status={status === undefined ? undefined : { words: status }}
+      />
     </>
   );
   const { rerender } = render(draw(current));
@@ -332,6 +337,31 @@ test("a held picker's steps survive the switch, and Enter after it ends picks th
     ]);
   } finally {
     realClock();
+  }
+});
+
+// The line quotes the session's reply, a stored message, as the one reader's plain-text
+// projection of it: the formatting goes, and a reference in it would read as its target's name.
+// Drawn as the characters the message stores, the line would keep the asterisks.
+test("the line quotes the session's reply as its plain words, never as its source", async () => {
+  await warmMarkdownRenderer();
+  const view = renderWithQueries(
+    <SessionSwitchLines
+      notice={undefined}
+      status={{
+        reply: { body: "Model set to **openai/model-c**.", id: "r1", tree: undefined },
+        words: "The session answered: ",
+      }}
+    />
+  );
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-switch-status").textContent).toBe(
+        "The session answered: Model set to openai/model-c."
+      )
+    );
+  } finally {
+    view.unmount();
   }
 });
 

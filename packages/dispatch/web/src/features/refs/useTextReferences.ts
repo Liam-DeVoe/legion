@@ -1,13 +1,18 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
+import { projectsQuery } from "../../api/queries";
+import type { Project } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import type { ReferenceLinking } from "./RefLink";
 import {
   issueSummaryQuery,
   questionReferences,
   questionsQuery,
+  REFERENCE_READ,
   referencesQuery,
   resolvedPrefixItems,
+  useReferenceQuery,
 } from "./reference-target";
 import {
   readTextCandidates,
@@ -23,6 +28,11 @@ function readText(text: string | readonly string[], facts: TextReferenceFacts): 
   return typeof text === "string"
     ? readTextReferences(text, facts)
     : readTextCandidates(text, facts);
+}
+
+/** The keys of a project list, which say which prefixes an issue key can have. */
+function projectKeys(projects: readonly Project[]): ReadonlySet<string> {
+  return new Set(projects.map((project) => project.key));
 }
 
 /** The empty question map, shared so a body that needs none keeps one identity across renders
@@ -48,12 +58,14 @@ export interface TextReferences extends ReferenceLinking {
  *
  * A bare issue key links only while its issue exists, which is its summary read answering: the
  * same read the link's own title comes from, so a key costs one request and a 404 for it is
- * final (`api/event-refresh.ts` re-asks it on `issue.created` alone). A `#id` resolves against
- * the question map of the document the text's own source belongs to, which the server says and
- * `questionsQuery` reads; a text naming no source, or one whose text belongs to no document,
- * links no `#id`. An id written as a prefix is resolved by the graph read of the reference as
- * written (`referencesQuery`), and the item is then read under the whole id the answer carries,
- * so nothing is ever cached under a prefix.
+ * final (`api/event-refresh.ts` re-asks it on `issue.created` alone): no body that mounts later
+ * naming the same key asks it again, and neither does a later body asking a question map or a
+ * prefix whose read failed (`REFERENCE_READ`). A `#id` resolves against the question map of the
+ * document the text's own source belongs to, which the server says and `questionsQuery` reads;
+ * a text naming no source, or one whose text belongs to no document, links no `#id`. An id
+ * written as a prefix is resolved by the graph read of the reference as written
+ * (`referencesQuery`), and the item is then read under the whole id the answer carries, so
+ * nothing is ever cached under a prefix.
  *
  * `text` is a body's markdown, or the distinct candidates a document editor's own reader found,
  * which are read one by one rather than joined into a text (`readTextCandidates`).
@@ -69,29 +81,46 @@ export function useTextReferences(
   // The first reading: it resolves every `dispatch://` reference and dashboard address on its
   // own, and says which keys, question and prefixes the rest waits on.
   const written = useMemo(() => readText(text, { origin }), [origin, text]);
-  const { keys, prefixes, questions } = written.needs;
+  const { keys: writtenKeys, prefixes, questions } = written.needs;
+
+  // A word of prose shaped like an issue key - `UTF-16`, `SHA-256` - names an issue only where
+  // its prefix is a project. Where the page already holds its project list (the sidebar reads
+  // it), a key of no project is asked nothing and stays the words written; where it holds none
+  // yet, every key is asked. The list is observed here and never read for this.
+  const projects = useQuery({ ...projectsQuery(), enabled: false, select: projectKeys }).data;
+  const keys = useMemo(
+    () =>
+      projects === undefined
+        ? writtenKeys
+        : writtenKeys.filter((key) => projects.has(issueProject(key))),
+    [projects, writtenKeys]
+  );
 
   // `combine` is held to its last answer by structural sharing, so these keep one identity
   // while the set of issues that exist is unchanged, however often the queries report.
   const issues = useQueries({
-    queries: keys.map((key) => ({ ...issueSummaryQuery(key), retry: false })),
+    queries: keys.map((key) => ({ ...issueSummaryQuery(key), ...REFERENCE_READ, retry: false })),
     combine: (summaries): readonly string[] =>
       keys.filter((_, index) => summaries[index]?.isSuccess === true),
   });
 
   // Only a text that writes a `#id` asks for the map (`needs.questions`), and only one that
-  // names the record its text is can: the route answers for a source, not for a page.
-  const questionRead = useQuery({
-    ...questionsQuery(source),
-    enabled: questions && source !== undefined,
-  });
+  // names the record its text is can: the route answers for a source, not for a page. A `#id`
+  // typed after the text mounted is such a read made late (`useReferenceQuery`).
+  const questionRead = useReferenceQuery(
+    questions && source !== undefined ? questionsQuery(source) : undefined
+  );
   const askedQuestions = useMemo(
-    () => questionReferences(questionRead.data) ?? NO_MAP,
-    [questionRead.data]
+    () => questionReferences(questionRead?.data) ?? NO_MAP,
+    [questionRead?.data]
   );
 
   const items = useQueries({
-    queries: prefixes.map((reference) => ({ ...referencesQuery(reference), retry: false })),
+    queries: prefixes.map((reference) => ({
+      ...referencesQuery(reference),
+      ...REFERENCE_READ,
+      retry: false,
+    })),
     combine: (resolutions): Readonly<Record<string, string>> => {
       const resolved: Record<string, string> = {};
       for (const answer of resolutions) {

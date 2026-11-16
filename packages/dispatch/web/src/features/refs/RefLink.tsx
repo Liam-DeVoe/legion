@@ -1,8 +1,16 @@
+import {
+  mentionDrawn,
+  type ReferenceReading,
+  referenceReading,
+  type WordsFormatting,
+  type WordsPiece,
+  wordsAreAddress,
+  wordsFormatting,
+} from "@legion/contracts";
 import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
 
 import { borderDefault } from "../../theme/classes";
-import { isPartyMention } from "./party-references";
-import { MENTION_SIGN } from "./ref-picker";
+import { isPartyRoute } from "./party-references";
 import { useReferenceHref, useReferenceTarget } from "./reference-target";
 import {
   buildDispatchReference,
@@ -10,6 +18,7 @@ import {
   nodeRouteFromHref,
   referenceHref,
   referenceRouteFromHref,
+  shortForm,
 } from "./routes";
 import {
   SEARCH_HIGHLIGHT_ATTRIBUTE,
@@ -27,14 +36,6 @@ export interface WordStretch {
 /** A reference whose words hold no search mark of their own. */
 const NO_STRETCHES: readonly WordStretch[] = [];
 
-/** What a reference reads as, by the one rule every record is read under (R8):
- *  - `name`: the target's current name - an address standing on its own, and a link whose words
- *    are that same address, what a Markdown autolink is stored as;
- *  - `mention`: the mention sign and the target's current name - a party's link whose words
- *    start with that sign, as the picker writes a mention (`isPartyMention`, R4);
- *  - `words`: the words its author wrote, for every other link with words of its own. */
-export type ReferenceReading = "mention" | "name" | "words";
-
 export interface ReferenceAnchor {
   /** The element the `RefLink` portal renders into: the `<a>` itself, or whatever a surface put
    *  in its place (a host that is one control keeps no link inside its link, and a person, whom
@@ -45,7 +46,7 @@ export interface ReferenceAnchor {
   /** The words the anchor showed before they were cleared for the portal: a bare reference's
    *  `dispatch://…`, or the text a Markdown link gave it. */
   readonly text: string;
-  /** What the anchor's words read as (`ReferenceReading`). */
+  /** What the anchor's words read as (`@legion/contracts`'s `ReferenceReading`). */
   readonly reads: ReferenceReading;
   /** The stretches of `text` the server marked as matching a search, in order and apart, each
    *  under a mark inside the anchor (`collectReferenceAnchors`); none where the anchor's words
@@ -74,12 +75,14 @@ export interface ReferenceLinking {
  * every other record (`reads`): an address standing on its own, and a link whose words are that
  * same address, read as the target's current name once `useReferenceTarget` has it; a party's
  * mention reads as the mention sign and that name, so a session renamed since the mention was
- * written reads as it is called now (R4); a link whose words its author wrote another way keeps
- * those words, since the author already said what the reference is there to say. A reference
- * the reader may not see is the same case as the words themselves: the words the writer wrote,
- * with no title drawn over them. A reference whose target Dispatch answered does not exist is its
- * words with no link at all (R8), as the document editor draws it: the element it renders into
- * stops being a link (`unlinkMissingReference`).
+ * written reads as it is called now (R4), and as the sign and the session's short form where
+ * Dispatch holds a record of the session with no title, so the words its writer chose never
+ * pass for a current name (`@legion/contracts`'s `mentionDrawn`); a link whose words its author
+ * wrote another way keeps those words, since the author already said what the reference is
+ * there to say. A reference the reader may not see is the same case as the words themselves:
+ * the words the writer wrote, with no title drawn over them. A reference whose target Dispatch
+ * answered does not exist is its words with no link at all (R8), as the document editor draws
+ * it: the element it renders into stops being a link (`unlinkMissingReference`).
  *
  * A search hit's marks follow the same rule (`marked`). Wherever the words are drawn, the server's
  * marks stay on them exactly as it sent them; only a title drawn in their place is marked, whole,
@@ -110,7 +113,7 @@ export function RefLink({
    *  author wrote it, or a Markdown link's own text. */
   text: string;
 }): ReactNode {
-  const { missing, picture, title } = useReferenceTarget(route, { text: false });
+  const { known, missing, picture, title } = useReferenceTarget(route, { text: false });
   // A reference opening no page of this dashboard - a person, whom nothing shows (R5), and any
   // path the gate refuses - gets no href: its element stays no link.
   const href = useReferenceHref(route);
@@ -128,12 +131,16 @@ export function RefLink({
   // The address that failed, not a flag: a plain reference names the latest version, so a version
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();
-  // Until the title resolves, for an issue the reader cannot read, for a target that does not
+  // Until the target answers, for an issue the reader cannot read, for a target that does not
   // exist and for a link whose words its author wrote, the words the author wrote stand.
   const named =
-    reads === "words" || missing || title === undefined
+    reads === "words" || missing
       ? undefined
-      : drawnName(reads, route, title);
+      : reads === "mention"
+        ? mentionDrawn({ known, title }, shortForm(route))
+        : title === undefined
+          ? undefined
+          : drawnName(route, title);
   return (
     <>
       {picture === undefined || picture === failedPicture ? null : (
@@ -158,18 +165,11 @@ export function RefLink({
   );
 }
 
-/** The name a reference whose title resolved draws in place of its words, as `reads` reads it:
- *  an issue as its key then its title, as the project's issues table writes a key beside one
- *  (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the thing`; a
- *  mention as the mention sign and the party's name; anything else as its title. */
-function drawnName(
-  reads: Exclude<ReferenceReading, "words">,
-  route: DispatchReferenceRoute,
-  title: string
-): ReactNode {
-  if (reads === "mention") {
-    return `${MENTION_SIGN}${title}`;
-  }
+/** The name a reference standing as its own words draws in place of them once its title
+ *  resolved: an issue as its key then its title, as the project's issues table writes a key
+ *  beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
+ *  thing`; anything else as its title. */
+function drawnName(route: DispatchReferenceRoute, title: string): ReactNode {
   return route.kind === "issue" ? (
     <>
       <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
@@ -490,35 +490,71 @@ export function linkifyDispatchRefs(root: HTMLElement, linking: ReferenceLinking
   }
 }
 
-/**
- * Whether an anchor's target is a URL its author left as text: what GFM autolinks, a bare
- * `https://…` (a bare `www.…`, whose target gains `http://`) or one in angle brackets
- * (`<dispatch://…>` too), and the anchor `linkifyDispatchRefs` wraps around a bare
- * `dispatch://…`, all show their target as their words. A Markdown link whose words are its own
- * target (`[dispatch://X](dispatch://X)`, the form a document stores an autolink in) reads the
- * same, and is the same text to the server. `target` is the anchor's own target: Proof's
- * serializer moves a `dispatch://` target into `data-dispatch-href` and empties `href`.
- */
-function isTextUrl(target: string, text: string): boolean {
-  return target === text || target === `http://${text}`;
+/** The elements Proof's emphasis, strong and strikethrough marks draw as, which with `code` are
+ *  what formats a link's words in a rendered body. */
+const WORD_FORMATTING = "em, strong, del";
+const WORD_FORMATTING_OR_CODE = `${WORD_FORMATTING}, code`;
+
+/** The address an anchor carries, as its author wrote it (`collectReferenceAnchors`). */
+function addressOf(anchor: Element): string | null {
+  return anchor.getAttribute("data-dispatch-href") ?? anchor.getAttribute("href");
 }
 
 /**
- * Whether an anchor's words open outside code: the first character a reader sees in them sits
- * under no `code` element, the link's own or one around it. A mention's sign is words its writer
- * wrote; an `@` in a code span is the code's characters, so a link whose words open in code keeps
- * them, as the plain-text projection keeps them (`markdown-engine.ts`'s `plainLines`, which
- * reads a link's words in code as no mention).
+ * Whether `anchor` stands against another anchor of its own address on one side, with nothing
+ * between them but formatting. Proof's schema draws emphasis, strong and code outside a link, so
+ * a link formatted in part is drawn as more than one anchor - `[@x **y**](…)` as
+ * `<a>@x </a><strong><a>y</a></strong>` - and each of them is a part of that one link.
  */
-function opensInWords(anchor: HTMLElement): boolean {
+function adjoinsItsLink(
+  anchor: HTMLAnchorElement,
+  side: "nextSibling" | "previousSibling"
+): boolean {
+  let node: Node = anchor;
+  while (node[side] === null && node.parentElement?.matches(WORD_FORMATTING_OR_CODE) === true) {
+    node = node.parentElement;
+  }
+  let beside = node[side];
+  while (beside instanceof HTMLElement && beside.matches(WORD_FORMATTING_OR_CODE)) {
+    beside = side === "nextSibling" ? beside.firstChild : beside.lastChild;
+  }
+  return beside instanceof HTMLAnchorElement && addressOf(beside) === addressOf(anchor);
+}
+
+/**
+ * How the words of the link `anchor` draws are formatted, by the rule every reader of a record
+ * applies (`@legion/contracts`'s `WordsFormatting`), read off the elements as the plain-text
+ * projection and the document editor read it off the marks: code anywhere in the words, or
+ * formatting over some of them, makes them their author's words, and formatting over all of them
+ * leaves the link what it reads as. An anchor that is one part of a link drawn as several
+ * (`adjoinsItsLink`) is formatted in part. A search hit's mark formats nothing.
+ */
+function anchorFormatting(anchor: HTMLAnchorElement, root: HTMLElement): WordsFormatting {
+  if (adjoinsItsLink(anchor, "previousSibling") || adjoinsItsLink(anchor, "nextSibling")) {
+    return "mixed";
+  }
+  const pieces: WordsPiece[] = [];
   const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     if (node.textContent === "") {
       continue;
     }
-    return node.parentElement?.closest("code") == null;
+    const formatting: string[] = [];
+    let code = false;
+    for (
+      let holder = node.parentElement;
+      holder !== null && holder !== root;
+      holder = holder.parentElement
+    ) {
+      if (holder.tagName === "CODE") {
+        code = true;
+      } else if (holder.matches(WORD_FORMATTING)) {
+        formatting.push(holder.tagName);
+      }
+    }
+    pieces.push({ code, formatting: [...new Set(formatting)].sort().join(" ") });
   }
-  return true;
+  return wordsFormatting(pieces);
 }
 
 /**
@@ -526,8 +562,12 @@ function opensInWords(anchor: HTMLElement): boolean {
  * same-origin dashboard path — a link `linkifyDispatchRefs` just inserted, an ordinary Markdown
  * link a user wrote by hand, or a bare `http(s)://` URL remark-gfm autolinked — rewrites its href
  * to the SPA route via `buildReferencePath`, and clears its text so the caller can
- * portal a `RefLink` in to render the resolved title. A URL its author left as text
- * (`isTextUrl`) is read as the server's `text.Extract` reads text (`referenceRouteFromHref`): one
+ * portal a `RefLink` in to render the resolved title. A URL its author left as text - what GFM
+ * autolinks, a bare `https://…` (a bare `www.…`, whose target gains `http://`) or one in angle
+ * brackets (`<dispatch://…>` too), the anchor `linkifyDispatchRefs` wraps around a bare
+ * `dispatch://…`, and a Markdown link whose words are its own target, the form a document stores
+ * an autolink in (`@legion/contracts`'s `wordsAreAddress`) - is read as the server's
+ * `text.Extract` reads text (`referenceRouteFromHref`): one
  * whose block is past the bounds the index keys names its document, as the server cites it; an
  * `http(s)://` one past them stays the link it is; and a `dispatch://` one that names nothing
  * becomes its words as they were drawn, as a bare one already renders, with no link to click and
@@ -556,19 +596,25 @@ export function collectReferenceAnchors(
   appOrigin: string = window.location.origin
 ): ReferenceAnchor[] {
   const targets: ReferenceAnchor[] = [];
-  let index = 0;
-  for (const anchor of root.querySelectorAll<HTMLAnchorElement>("a:not([data-dispatch-picture])")) {
-    const href = anchor.getAttribute("data-dispatch-href") ?? anchor.getAttribute("href");
+  const anchors = Array.from(
+    root.querySelectorAll<HTMLAnchorElement>("a:not([data-dispatch-picture])")
+  );
+  // Read before any anchor is rewritten below: a link formatted in part is told by the anchors
+  // that stand against it, each still carrying the address its author wrote.
+  const formatting = anchors.map((anchor) => anchorFormatting(anchor, root));
+  for (const [position, anchor] of anchors.entries()) {
+    const href = addressOf(anchor);
     if (href === null) {
       continue;
     }
     const text = anchor.textContent ?? "";
-    // What reads as the target's current name: an address standing on its own, which the link
-    // pass marks as it wraps one (`data-dispatch-bare`), and a link whose words are its own
-    // address (`isTextUrl`), the form a document stores an autolink in. A party's mention reads
-    // as the mention sign and that name, where the sign its words open with is words rather than
-    // code (`opensInWords`). A link whose words its author wrote another way keeps those words.
-    const textUrl = isTextUrl(href, text);
+    // What the anchor's words read as, by the one rule (`@legion/contracts`'s
+    // `referenceReading`): an address standing on its own, which the link pass marks as it wraps
+    // one (`data-dispatch-bare`), and a link whose words are its own address, read as the
+    // target's current name; a party's mention, whose words hold no code and no formatting over
+    // a part of them (`anchorFormatting`), as the mention sign and that name; and a link whose
+    // words its author wrote another way as those words.
+    const textUrl = wordsAreAddress(text, href);
     const route = textUrl
       ? referenceRouteFromHref(href, appOrigin)
       : nodeRouteFromHref(href, appOrigin);
@@ -585,36 +631,42 @@ export function collectReferenceAnchors(
       }
       continue;
     }
-    const reads: ReferenceReading =
-      anchor.hasAttribute("data-dispatch-bare") || textUrl
-        ? "name"
-        : isPartyMention(text, route) && opensInWords(anchor)
-          ? "mention"
-          : "words";
+    const reads = referenceReading({
+      address: href,
+      party: isPartyRoute(route),
+      words: anchor.hasAttribute("data-dispatch-bare") ? undefined : text,
+      wordsFormatting: formatting[position],
+    });
     const reference = buildDispatchReference(route);
     const marked = markedStretches(anchor);
     // A reference that opens no page of this dashboard is its words, as one that cites nothing
     // is: anything that does not resolve to this origin, which no route writes today and none
-    // may start writing unnoticed, and a person, whom nothing in Dispatch shows (R5). A person
-    // whose words are not the author's own still reads as their login: in a `<span>`, which is
-    // no link and opens no hover card.
+    // may start writing unnoticed, and a person, whom nothing in Dispatch shows (R5).
     const path = referenceHref(route);
-    if (path === undefined) {
-      if (reads === "words" || !namedWithoutPage(route)) {
-        anchor.replaceWith(...anchor.childNodes);
-        continue;
-      }
-      const named = document.createElement("span");
-      anchor.replaceWith(named);
-      targets.push({ anchor: named, key: `${reference}:${index}`, marked, reads, route, text });
-      index += 1;
+    if (path === undefined && (reads === "words" || !namedWithoutPage(route))) {
+      anchor.replaceWith(...anchor.childNodes);
       continue;
     }
-    anchor.setAttribute("href", path);
-    anchor.setAttribute("data-dispatch-ref", reference);
-    anchor.replaceChildren();
-    targets.push({ anchor, key: `${reference}:${index}`, marked, reads, route, text });
-    index += 1;
+    // The element the portal draws into: the anchor itself, or, for a person whose words are
+    // not the author's own, who still reads as their login, a `<span>` in its place, which is no
+    // link and opens no hover card.
+    let host: HTMLElement = anchor;
+    if (path === undefined) {
+      host = document.createElement("span");
+      anchor.replaceWith(host);
+    } else {
+      anchor.setAttribute("href", path);
+      anchor.setAttribute("data-dispatch-ref", reference);
+      anchor.replaceChildren();
+    }
+    targets.push({
+      anchor: host,
+      key: `${reference}:${targets.length}`,
+      marked,
+      reads,
+      route,
+      text,
+    });
   }
   return targets;
 }

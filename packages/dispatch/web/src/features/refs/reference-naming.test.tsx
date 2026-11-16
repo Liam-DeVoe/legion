@@ -1,14 +1,20 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import type { Agent, IssueReferenceSummary, MyReplyRow } from "../../api/types";
+import { graphNode } from "../../__tests__/graph-fixture";
+import { ApiError, api } from "../../api/client";
+import type { Agent, AskRead, IssueReferenceSummary, MyReplyRow } from "../../api/types";
+import { DismissControl, RowDismissContext } from "../inbox/DismissControl";
 import { ThreadTitle } from "../inbox/ThreadTitle";
 import { MarkdownBody } from "./MarkdownBody";
+import { useMarkdownHeadline } from "./markdown-engine";
 import { PlainText } from "./plain-text";
 import { ReferenceHostIs } from "./reference-host";
+import { shortForm } from "./routes";
+import type { TextSource } from "./text-references";
 
 /**
  * The one naming rule and the four host shapes, read on a painted body and on the plain-text
@@ -143,12 +149,23 @@ const reviewing: Agent = {
   title: "Reviewer",
 };
 
-/** A query client holding the registry's answer - the renamed session, and the session that
- *  holds the reviewer role - and the people Dispatch knows, of whom dana is one and nobody is
- *  not. */
+/** A session the registry lists past its live window, holding the watcher role: an unresponsive
+ *  session keeps its roles, and the server delivers a role's mention to it. */
+const stalled: Agent = {
+  ...renamed,
+  dir: "/workspaces/watcher",
+  roles: ["watcher"],
+  session_id: "01a1058e-f14f-7684-87eb-3dc885955553",
+  state: "unresponsive",
+  title: "Watcher",
+};
+
+/** A query client holding the registry's answer - the renamed session, the session that holds
+ *  the reviewer role and the unresponsive one that holds the watcher role - and the people
+ *  Dispatch knows, of whom dana is one and nobody is not. */
 function clientWithParties(): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["agents"], [renamed, reviewing]);
+  client.setQueryData(["agents"], [renamed, reviewing, stalled]);
   client.setQueryData(["users"], [{ login: "dana@example.test" }]);
   return client;
 }
@@ -207,23 +224,26 @@ test("a known person reads as their login with no link, an unknown one as writte
   }
 });
 
-// R5 and R8: a role no session in the registry holds names nobody the picker would offer, so it
-// reads as the words its writer wrote, with no link - bare or as a mention - as an unknown
-// person does.
-test("a role no session holds reads as the words written, with no link", async () => {
+// R5 and R8, by the one rule of a known role (`roleHolders`), which the picker's role rows
+// follow: a role a session the registry lists holds is named and linked, whether that session is
+// live or unresponsive, as the server delivers to either; a role no listed session holds names
+// nobody the picker would offer, so it reads as the words its writer wrote, with no link - bare
+// or as a mention - as an unknown person does.
+test("a role no session holds reads as the words written, and one an unresponsive session holds is linked", async () => {
   const view = draw(
-    <MarkdownBody markdown="Ask dispatch://role/release-captain, [@captain](dispatch://role/release-captain) and dispatch://role/reviewer." />,
+    <MarkdownBody markdown="Ask dispatch://role/release-captain, [@captain](dispatch://role/release-captain), dispatch://role/reviewer and dispatch://role/watcher." />,
     clientWithParties()
   );
   try {
     const role = await within(view.container).findByRole("link", { name: "reviewer" });
+    const unresponsive = await within(view.container).findByRole("link", { name: "watcher" });
     await waitFor(() =>
       expect(view.container.querySelectorAll("[data-dispatch-missing]")).toHaveLength(2)
     );
     expect(words(view.container)).toBe(
-      "Ask dispatch://role/release-captain, @captain and reviewer."
+      "Ask dispatch://role/release-captain, @captain, reviewer and watcher."
     );
-    expect(within(view.container).getAllByRole("link")).toEqual([role]);
+    expect(within(view.container).getAllByRole("link")).toEqual([role, unresponsive]);
   } finally {
     view.unmount();
   }
@@ -422,6 +442,389 @@ test("an Inbox thread title draws its line through the renderer", async () => {
     expect(words(view.container)).toBe("Ship behind a flag, or wait?");
     // One line, never the heading's own block.
     expect(view.container.querySelector("h1, h2, h3, p, ul")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The spies a row put on the API client, taken off again once it ends. */
+const spies: { mockRestore(): void }[] = [];
+
+afterEach(() => {
+  for (const spy of spies.splice(0)) {
+    spy.mockRestore();
+  }
+});
+
+const ASK_ID = "2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b";
+const ASK = `dispatch://CORE-1/ask/${ASK_ID}`;
+
+/** The comment a row below is the text of: its document declares the ask above as `q2`. */
+const COMMENT: TextSource = { id: "comment-1", kind: "comment" };
+
+/** An ask of CORE-1 whose question is `Ship it?`, as its own read answers it. */
+const shipIt = {
+  answers: [],
+  ask: {
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "planner", kind: "session" },
+    block_id: "q2",
+    created_at: "2026-01-01T00:00:00Z",
+    edited_at: null,
+    id: ASK_ID,
+    issue_key: "CORE-1",
+    kind: "question",
+    multiple: false,
+    opened_event_id: 1,
+    options: [],
+    question: "Ship it?",
+    state: "open",
+    urgency: "med",
+  },
+  claimant: null,
+  edits: [],
+  followers: [],
+  replies: [],
+  route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+} as AskRead;
+
+/** Answers the three reads the ask is reached through: its own, the graph read that resolves
+ *  its id written short, and the question map of the comment above. */
+function answerTheAsk(): void {
+  spies.push(
+    spyOn(api, "getAsk").mockResolvedValue(shipIt),
+    spyOn(api, "getReferences").mockResolvedValue({
+      edges: [],
+      node: graphNode({ id: ASK_ID, kind: "ask", ref: ASK }),
+    }),
+    spyOn(api, "getReferenceQuestions").mockResolvedValue({
+      document: "artifact-1",
+      questions: [{ ask: ASK_ID, block_id: "q2", reference: ASK }],
+    })
+  );
+}
+
+/** A text's plain-text projection, drawn where a row can read it. */
+function Line({
+  id = "line",
+  markdown,
+  source,
+}: {
+  id?: string;
+  markdown: string;
+  source?: TextSource;
+}): ReactNode {
+  return (
+    <PlainText markdown={markdown} source={source}>
+      {(text) => <span data-testid={id}>{text ?? ""}</span>}
+    </PlainText>
+  );
+}
+
+/** A text's projection by a reader that resolves nothing: a title drawn over a record's text. */
+function Headline({ markdown }: { markdown: string }): ReactNode {
+  return <span data-testid="headline">{useMarkdownHeadline(undefined, 200, markdown)?.text}</span>;
+}
+
+// R8 in the projection: an address Dispatch answers does not exist is the words its writer
+// wrote, bare or as its own link's words, as the painted line reads it - never its short form,
+// which would pass for a name.
+test("an address whose target does not exist projects as the words written", async () => {
+  spies.push(
+    spyOn(api, "getIssueSummary").mockRejectedValue(
+      new ApiError(404, { code: "NOT_FOUND", error: "no issue" })
+    )
+  );
+  const markdown =
+    "Tied to dispatch://CORE-404 and [dispatch://CORE-404](dispatch://CORE-404) here.";
+  const written = "Tied to dispatch://CORE-404 and dispatch://CORE-404 here.";
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = draw(
+    <>
+      <div data-testid="painted">
+        <MarkdownBody markdown={markdown} />
+      </div>
+      <Line markdown={markdown} />
+    </>,
+    client
+  );
+  try {
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-dispatch-missing]")).toHaveLength(2)
+    );
+    expect(words(view.getByTestId("painted"))).toBe(written);
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe(written));
+  } finally {
+    view.unmount();
+  }
+});
+
+// The projection reads every form the painted line reads, and names each as it does: an issue
+// key and a dashboard address as the issue's key and title, and an id written short as the
+// record it names.
+test("a bare key, a dashboard address and a short id project as the painted line draws them", async () => {
+  answerTheAsk();
+  const markdown = `See CORE-1, ${window.location.origin}/issues/CORE-1 and dispatch://CORE-1/ask/2a7f1c90 here.`;
+  const drawn = "See CORE-1 Fix the thing, CORE-1 Fix the thing and Ship it? here.";
+  const view = draw(
+    <>
+      <div data-testid="painted">
+        <MarkdownBody markdown={markdown} />
+      </div>
+      <Line markdown={markdown} />
+    </>
+  );
+  try {
+    await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(drawn));
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe(drawn));
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reader that holds no facts for a form writes it as its author did: a title drawn over a
+// record's text resolves nothing, so only a `dispatch://` address is shortened there, and a line
+// that names no record reads a `#id` as written, since only a record's document declares one.
+test("a reader with no facts for a form projects it as written", async () => {
+  const written = `See CORE-1, ${window.location.origin}/issues/CORE-1 and #q2`;
+  const view = draw(
+    <>
+      <Headline markdown={`${written}, not dispatch://CORE-1.`} />
+      <Line markdown="Decide #q2 now." />
+    </>
+  );
+  try {
+    await waitFor(() =>
+      expect(view.getByTestId("headline").textContent).toBe(`${written}, not CORE-1.`)
+    );
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe("Decide #q2 now."));
+  } finally {
+    view.unmount();
+  }
+});
+
+// A session Dispatch holds a record of that has no title has no name to draw: its bare address
+// is the words its writer wrote, linked in the painted line and written out in the projection.
+test("a known session with no title, written as its bare address, projects as written", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["agents"], [{ ...renamed, title: "" }]);
+  const markdown = `Ask dispatch://agent/${SESSION} now.`;
+  const view = draw(
+    <>
+      <div data-testid="painted">
+        <MarkdownBody markdown={markdown} />
+      </div>
+      <Line markdown={markdown} />
+    </>,
+    client
+  );
+  try {
+    await within(view.getByTestId("painted")).findByRole("link", {
+      name: `dispatch://agent/${SESSION}`,
+    });
+    expect(words(view.getByTestId("painted"))).toBe(markdown);
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe(markdown));
+  } finally {
+    view.unmount();
+  }
+});
+
+// The painted line links no reference a link's words hold (`RefLink.tsx`'s `linkPassReads`), so
+// the projection names none there: the words are the author's, and the same key after the link
+// is named.
+test("a reference inside a link's own words is not named", async () => {
+  const markdown = "[see dispatch://CORE-1 and CORE-1](https://example.test/x) for CORE-1.";
+  const drawn = "see dispatch://CORE-1 and CORE-1 for CORE-1 Fix the thing.";
+  const view = draw(
+    <>
+      <div data-testid="painted">
+        <MarkdownBody markdown={markdown} />
+      </div>
+      <Line markdown={markdown} />
+    </>
+  );
+  try {
+    await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(drawn));
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe(drawn));
+  } finally {
+    view.unmount();
+  }
+});
+
+// A `#id` is declared by the document of the record a text is, so the Inbox's label names one
+// because it says which record its subject is, as the row's own line does (`ThreadTitle`); the
+// same subject projected with no record named keeps the `#id`.
+test("a #id in an Inbox thread subject projects as its question where the row names its record", async () => {
+  answerTheAsk();
+  const thread = { ...threadRow, subject: "Decide #q2 now" } as MyReplyRow;
+  const view = draw(
+    <RowDismissContext.Provider value={{ dismiss: () => {}, pending: new Set(), show: "inbox" }}>
+      <DismissControl shown thread={thread} />
+      <Line markdown={thread.subject} />
+    </RowDismissContext.Provider>
+  );
+  try {
+    await waitFor(() =>
+      expect(view.getByRole("button").getAttribute("aria-label")).toBe(
+        "Dismiss: Decide Ship it? now"
+      )
+    );
+    expect(view.getByTestId("line").textContent).toBe("Decide #q2 now");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Markdown drops the backslash of an escaped `\#q2`, so the words hold a `#q2` the source never
+// wrote. The painted line links only what the source cites, and the projection is held to the
+// same: the escaped one stays its words in both, beside the one written plain, which is named.
+test("an escaped #id stays its words, painted and projected alike", async () => {
+  answerTheAsk();
+  const escaped = "Decide \\#q2 now.";
+  const view = draw(
+    <>
+      <div data-testid="painted">
+        <MarkdownBody markdown={escaped} source={COMMENT} />
+      </div>
+      <Line markdown={escaped} source={COMMENT} />
+      <Line id="plain" markdown="Decide #q2 now." source={COMMENT} />
+    </>
+  );
+  try {
+    await waitFor(() => expect(view.getByTestId("plain").textContent).toBe("Decide Ship it? now."));
+    expect(view.getByTestId("line").textContent).toBe("Decide #q2 now.");
+    expect(words(view.getByTestId("painted"))).toBe("Decide #q2 now.");
+    expect(within(view.getByTestId("painted")).queryByRole("link")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A mention's sign may be written escaped: Markdown reads `\@` as `@`, so the link is the
+// mention it reads as, in the painted line and the projection - and in a draft's chips, which
+// read the same words through `@legion/contracts`'s `readWrittenWords`
+// (`party-references.test.ts`).
+test("a mention whose sign is written escaped reads as the party's current name", async () => {
+  const markdown = `Ask [\\@Old name](dispatch://agent/${SESSION}) now.`;
+  const view = draw(
+    <>
+      <div data-testid="painted">
+        <MarkdownBody markdown={markdown} />
+      </div>
+      <Line markdown={markdown} />
+    </>,
+    clientWithParties()
+  );
+  try {
+    await within(view.getByTestId("painted")).findByRole("link", { name: "@Planner now" });
+    expect(words(view.getByTestId("painted"))).toBe("Ask @Planner now now.");
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe("Ask @Planner now now."));
+  } finally {
+    view.unmount();
+  }
+});
+
+// A session Dispatch holds a record of that has no title has no name for a mention to read as.
+// Its mention reads as the mention sign and the session's short form - never as the words its
+// writer chose, which would pass for a current name - in the painted line, where it is still
+// the link to the session, and in the projection alike.
+test("a mention of a known session with no title reads as @ and its short form", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["agents"], [{ ...renamed, title: "" }]);
+  const markdown = `Ask [@Alice](dispatch://agent/${SESSION}) now.`;
+  const short = shortForm({ kind: "agent-session", session: SESSION });
+  const view = draw(
+    <>
+      <div data-testid="painted">
+        <MarkdownBody markdown={markdown} />
+      </div>
+      <Line markdown={markdown} />
+    </>,
+    client
+  );
+  try {
+    const mention = await within(view.getByTestId("painted")).findByRole("link", {
+      name: `@${short}`,
+    });
+    expect(mention).toHaveAttribute("href", `/agents/${SESSION}/live`);
+    expect(words(view.getByTestId("painted"))).toBe(`Ask @${short} now.`);
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe(`Ask @${short} now.`));
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A text drawn as a painted body and as its plain-text projection, side by side. */
+function PaintedAndProjected({ markdown }: { markdown: string }): ReactNode {
+  return (
+    <>
+      <div data-testid="painted">
+        <MarkdownBody markdown={markdown} />
+      </div>
+      <Line markdown={markdown} />
+    </>
+  );
+}
+
+// The formatting rule every reader of a record applies (`@legion/contracts`'s
+// `dispatch-mentions.ts`), in its three cases, painted and projected alike. First: code anywhere
+// in a link's words keeps the words - all of them code, code that opens them, or code after the
+// sign.
+test("a party's link with code anywhere in its words keeps them, painted and projected alike", async () => {
+  const agent = `dispatch://agent/${SESSION}`;
+  const markdown = `Ask [\`@x\`](${agent}), [\`@y\` too](${agent}) and [@z \`now\`](${agent}) here.`;
+  const written = "Ask @x, @y too and @z now here.";
+  const view = draw(<PaintedAndProjected markdown={markdown} />, clientWithParties());
+  try {
+    await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(written));
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe(written));
+    // The session's title is in the cache: no link draws it.
+    expect(within(view.getByTestId("painted")).queryByText(/Planner now/)).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Second: emphasis, strong or strikethrough over all of a link's words is the same record as
+// that formatting around the link, so the link is still a mention, drawn in that formatting -
+// written inside the brackets, around the link, or around the sentence.
+test("a party's link whose words are all under one formatting reads as its current name", async () => {
+  const agent = `dispatch://agent/${SESSION}`;
+  const markdown = `Ask [**@Old**](${agent}), *[@Old](${agent})* and ~~cc [@Old](${agent}) now~~ here.`;
+  const drawn = "Ask @Planner now, @Planner now and cc @Planner now now here.";
+  const view = draw(<PaintedAndProjected markdown={markdown} />, clientWithParties());
+  try {
+    await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(drawn));
+    const painted = view.getByTestId("painted");
+    expect(painted.querySelector("strong a")?.textContent).toBe("@Planner now");
+    expect(painted.querySelector("em a")?.textContent).toBe("@Planner now");
+    expect(within(painted).getAllByRole("link", { name: "@Planner now" })).toHaveLength(3);
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe(drawn));
+  } finally {
+    view.unmount();
+  }
+});
+
+// Third: formatting over some of a link's words makes them the author's words. Proof's schema
+// draws strong and emphasis outside a link, so such a link is painted as more than one anchor,
+// and the painted line reads them as the one link they are.
+test("a party's link whose words are formatted in part keeps them, painted and projected alike", async () => {
+  const agent = `dispatch://agent/${SESSION}`;
+  const markdown = `Ask [@Old **name**](${agent}), [*@Old* name](${agent}) and [@Old ~~name~~](${agent}) here.`;
+  const written = "Ask @Old name, @Old name and @Old name here.";
+  const view = draw(<PaintedAndProjected markdown={markdown} />, clientWithParties());
+  try {
+    await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(written));
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe(written));
+    expect(within(view.getByTestId("painted")).queryByText(/Planner now/)).toBeNull();
   } finally {
     view.unmount();
   }

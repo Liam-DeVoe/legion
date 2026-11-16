@@ -4,6 +4,8 @@ import { approvalPillClassName } from "../../components/Pill";
 import { textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { ApprovalChip, approvalVersion } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import { textSourceOf } from "../refs/text-references";
 import type { StepEntry } from "./gated-steps";
 
 /** The state of one step: its document's chip, or the dashed pill that says nobody has asked for
@@ -37,7 +39,8 @@ function StepState({
 
 /** Why a step's reviewer sent its document back, as one wrapping line: the chip says only
  *  `Changes requested`, and the reason is the whole of what the writer must act on. It is given
- *  no width, no clamp and no tooltip, so a phone reads all of it. */
+ *  no width, no clamp and no tooltip, so a phone reads all of it. The reason is the reviewer's
+ *  own text on that document, drawn by the renderer as the Reviews dialog draws it. */
 function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   const approval = entry.document?.approval;
   if (approval === undefined || approval.state !== "changes_requested") {
@@ -59,7 +62,17 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
           {` requested changes on v${version}`}
         </>
       )}
-      {reason === null ? null : ` · ${reason}`}
+      {reason === null ? null : (
+        <>
+          {" · "}
+          <MarkdownBody
+            markdown={reason}
+            source={textSourceOf("artifact", entry.document?.id)}
+            surface="approval-review-reason"
+            variant="inline"
+          />
+        </>
+      )}
     </p>
   );
 }

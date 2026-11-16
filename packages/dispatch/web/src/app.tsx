@@ -932,7 +932,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        <RefPreviewHost surface="reference-hover-card" />
       </div>
     </MarginProvider>
   );

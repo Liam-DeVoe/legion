@@ -42,7 +42,10 @@ test("an issue and its ask show a cross-project message and structural backlinks
     name: "Referenced by",
   });
   await expect(issueReferences).toContainText(`Message · ${source.key}`);
-  await expect(issueReferences).toContainText(`Depends on dispatch://${target.key}`);
+  // The excerpt is the head of the message's own body, drawn by the renderer: each address in
+  // it reads as its target's name, and none is left as text.
+  await expect(issueReferences).toContainText(`Depends on ${target.key} Target issue and`);
+  await expect(issueReferences).not.toContainText("dispatch://");
   await expect(issueReferences).toContainText(`Child issue · ${child.key}`);
   await expect(issueReferences).toContainText("Child issue");
   await expect(issueReferences).toContainText(`Attached document · ${target.key}`);
@@ -390,7 +393,7 @@ test("an issue's backlinks skip an edge of a node kind this build does not know"
   await header.getByRole("button", { name: /^Referenced by \(2\)$/ }).click();
   const references = header.getByRole("region", { name: "Referenced by" });
   await expect(references).toContainText(`Message · ${source.key}`);
-  await expect(references).toContainText(`Waiting on dispatch://${target.key}`);
+  await expect(references).toContainText(`Waiting on ${target.key} Cited by two builds to land.`);
   await expect(references).not.toContainText("Referenced by unavailable.");
 });
 

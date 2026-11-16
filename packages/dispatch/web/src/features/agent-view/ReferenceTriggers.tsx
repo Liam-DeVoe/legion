@@ -67,28 +67,32 @@ function doorChars(door: RefPickerDoor): string {
   return trigger.chars;
 }
 
+/** Whether each door's trigger stands in a written link's address, as that door's matcher last
+ *  read it (`RefPickerTrigger.inAddress`). */
+type DoorsInAddress = Record<RefPickerDoor, boolean>;
+
 /**
  * Where this door stands open, by the picker's own rule (`readTrigger`), so the three doors
  * cannot be open at once and a door opens here exactly where it opens in every other box: at a
- * word boundary, with no space typed since, and never in a written link's words or address. The
- * rule reads the text on both sides of the caret, so the whole message goes to it. The replaced
- * stretch runs from the trigger's first character to the caret, which is what a pick writes over.
+ * word boundary, with no space typed since, never in a written link's words, and in its address
+ * only on a trigger typed there. The rule reads the text on both sides of the caret, so the whole
+ * message goes to it. The replaced stretch runs from the trigger's first character to the caret,
+ * which is what a pick writes over. The matcher is the one reader that sees the whole message
+ * and the caret, and assistant-ui hands the formatter the picked item alone, so the matcher
+ * leaves in `inAddress` whether its door stands in a link's address, which decides what a pick
+ * there writes (`insertionText`).
  */
-function doorMatcher(door: RefPickerDoor): Unstable_TriggerMatcher {
+function doorMatcher(
+  door: RefPickerDoor,
+  inAddress: RefObject<DoorsInAddress>
+): Unstable_TriggerMatcher {
   return (text, _trigger, cursor) => {
     const found = readTrigger(text, cursor);
     if (found === undefined || found.door !== door) return null;
+    inAddress.current[door] = found.inAddress;
     return { endOffset: cursor, offset: found.start, query: found.query };
   };
 }
-
-/** One matcher per door, built once: a fresh one on every render would be a fresh detection on
- *  every render. */
-const DOOR_MATCHERS: Record<RefPickerDoor, Unstable_TriggerMatcher> = {
-  all: doorMatcher("all"),
-  issues: doorMatcher("issues"),
-  parties: doorMatcher("parties"),
-};
 
 /** One row of the list: its kind's icon, its words, what it is or where it is under them, and
  *  the control that opens its parts where it holds any. */
@@ -101,8 +105,8 @@ function RefRow({
   index: number;
   item: Unstable_TriggerItem;
   picker: RefPicker;
-  /** The picker's row this item draws, which says whether it holds parts. */
-  row: RefPickerRow | undefined;
+  /** The picker's row this item draws: its kind, and whether it holds parts. */
+  row: RefPickerRow;
 }): ReactNode {
   const highlighted = unstable_useTriggerPopoverScopeContext().highlightedIndex === index;
   const element = useRef<HTMLDivElement>(null);
@@ -127,7 +131,7 @@ function RefRow({
         role="option"
         tabIndex={-1}
       >
-        <RefKindIcon kind={item.type as RefPickerKind} />
+        <RefKindIcon kind={row.kind} />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className={`truncate font-medium ${textPrimaryOnSurface}`}>{item.label}</span>
           {item.description === undefined ? null : (
@@ -139,7 +143,7 @@ function RefRow({
             </TruncatedText>
           )}
         </span>
-        {row === undefined ? null : <RefPartsControl picker={picker} row={row} />}
+        <RefPartsControl picker={picker} row={row} />
       </div>
     </ComposerPrimitive.Unstable_TriggerPopoverItem>
   );
@@ -152,22 +156,23 @@ function refRows(
   picker: RefPicker
 ): ReactNode[] {
   const drawn: ReactNode[] = [];
-  let kind: string | undefined;
+  let kind: RefPickerKind | undefined;
   items.forEach((item, index) => {
-    if (item.type !== kind) {
-      kind = item.type;
+    // Every item is built from one of these rows, so each has one.
+    const row = rows.get(item.id);
+    if (row === undefined) return;
+    if (row.kind !== kind) {
+      kind = row.kind;
       drawn.push(
         <div
           className={`px-3 pt-2 pb-1 text-xs font-semibold ${textMutedOnSurface}`}
-          key={`heading-${item.type}`}
+          key={`heading-${row.kind}`}
         >
-          {REF_PICKER_HEADINGS[item.type as RefPickerKind]}
+          {REF_PICKER_HEADINGS[row.kind]}
         </div>
       );
     }
-    drawn.push(
-      <RefRow index={index} item={item} key={item.id} picker={picker} row={rows.get(item.id)} />
-    );
+    drawn.push(<RefRow index={index} item={item} key={item.id} picker={picker} row={row} />);
   });
   return drawn;
 }
@@ -257,18 +262,32 @@ export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | nu
     () => ({ categories: () => [], categoryItems: () => [], search: () => items }),
     [items]
   );
-  // What each row writes, by the one rule every box writes a pick by: a party as a link naming
-  // it, every other kind as its bare address.
-  const formatter = useMemo<Unstable_DirectiveFormatter>(
+  // One matcher per door, built once: a fresh one on every render would be a fresh detection on
+  // every render. Each leaves here whether its door stands in a link's address.
+  const inAddress = useRef<DoorsInAddress>({ all: false, issues: false, parties: false });
+  const matchers = useMemo<Record<RefPickerDoor, Unstable_TriggerMatcher>>(
     () => ({
+      all: doorMatcher("all", inAddress),
+      issues: doorMatcher("issues", inAddress),
+      parties: doorMatcher("parties", inAddress),
+    }),
+    []
+  );
+  // What each row writes, by the one rule every box writes a pick by: a party as a link naming
+  // it, every other kind as its bare address, and any kind as its bare address where its door
+  // stands in a link's address.
+  const formatters = useMemo<Record<RefPickerDoor, Unstable_DirectiveFormatter>>(() => {
+    const formatter = (door: RefPickerDoor): Unstable_DirectiveFormatter => ({
       parse: (value: string) => [{ kind: "text" as const, text: value }],
       serialize: (item: Unstable_TriggerItem) => {
         const row = rows.get(item.id);
-        return row === undefined ? item.label : insertionText(row);
+        return row === undefined
+          ? item.label
+          : insertionText(row, { inAddress: inAddress.current[door] });
       },
-    }),
-    [rows]
-  );
+    });
+    return { all: formatter("all"), issues: formatter("issues"), parties: formatter("parties") };
+  }, [rows]);
 
   // ArrowRight opens the highlighted row's parts and ArrowLeft closes them, as they do in every
   // other box (`useRefPicker`'s `pressKey`). assistant-ui reads neither key, so the input would
@@ -307,9 +326,9 @@ export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | nu
           className={`absolute right-0 bottom-full left-0 z-10 mb-2 flex max-h-72 flex-col gap-1 overflow-y-auto rounded-lg border p-1 shadow-lg ${card}`}
           isLoading={picker.state === "loading"}
           key={chars}
-          matcher={DOOR_MATCHERS[door]}
+          matcher={matchers[door]}
         >
-          <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={formatter} />
+          <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={formatters[door]} />
           <ComposerPrimitive.Unstable_TriggerPopoverItems className="contents">
             {(shown) => refRows(shown, rows, picker)}
           </ComposerPrimitive.Unstable_TriggerPopoverItems>

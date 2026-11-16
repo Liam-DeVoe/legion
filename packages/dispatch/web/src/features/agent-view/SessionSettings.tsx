@@ -11,8 +11,10 @@ import {
 import { pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import { inputClasses, textMutedOnCanvas } from "../../theme/classes";
+import { PlainText } from "../refs/plain-text";
+import { textSourceOf } from "../refs/text-references";
 import type { SessionSettingsView } from "./conversation";
-import type { SwitchRequest } from "./use-session-switch";
+import type { SwitchRequest, SwitchStatus } from "./use-session-switch";
 
 /** A picker in the row under the message box: a native `<select>`, as the delivery control is. A
  *  long model id is clipped on screen only (the option's value, which a pick sends, is the whole
@@ -192,13 +194,16 @@ export function SessionSettings({
  * other, shrinks to a sliver beside the pickers and stacks a word per line, which made the row
  * taller than the transcript on a 390 px screen and pushed the message box under the keyboard.
  * A line under the row is read where it always was, at any width.
+ *
+ * The line is plain text. Where it quotes the session's reply, a stored message, it draws the
+ * reply's plain-text projection as that message, so a key or a mention in it reads as a name.
  */
 export function SessionSwitchLines({
   notice,
   status,
 }: {
   notice: string | undefined;
-  status: string | undefined;
+  status: SwitchStatus | undefined;
 }): ReactNode {
   return (
     <>
@@ -208,7 +213,19 @@ export function SessionSwitchLines({
           data-testid="agent-switch-status"
           role="status"
         >
-          {status}
+          {status.words}
+          {status.reply === undefined ? null : (
+            <PlainText
+              markdown={status.reply.body}
+              source={textSourceOf("message", status.reply.id)}
+              surface="session-switch-answer"
+              tree={status.reply.tree}
+            >
+              {/* The reply as its plain words, and as written until the engine has answered:
+                  the reading list's `session-switch-answer`. */}
+              {(line) => line ?? status.reply?.body}
+            </PlainText>
+          )}
         </p>
       )}
       {notice === undefined ? null : (

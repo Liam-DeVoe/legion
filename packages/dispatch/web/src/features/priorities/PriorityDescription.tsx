@@ -52,8 +52,8 @@ export function PriorityDescription({
   // write is still out when the reader leaves, and a refused text they open the editor on again,
   // are still theirs (`useInPlaceDraft`).
   const edit = useInPlaceDraft(description, onSave, () => setEditing(false));
-  // The rendered block reads what Dispatch is about to hold: the reader's text while its write is
-  // out, and Dispatch's own once the write lands, or is refused.
+  // The rendered block reads what Dispatch is about to hold: the reader's text until the write's
+  // answer is read, and Dispatch's own after that, or once the write is refused.
   const shown = edit.sending ?? description;
 
   if (canWrite && editing) return <DescriptionEditor edit={edit} label={label} rows={rows} />;

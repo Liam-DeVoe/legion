@@ -123,6 +123,7 @@ function ReviewsDialog({
                       <MarkdownBody
                         markdown={review.reason}
                         source={textSourceOf("artifact", artifactId)}
+                        surface="approval-review-reason"
                         tree={review.reason_tree}
                       />
                     </div>
@@ -148,7 +149,7 @@ function RequestChangesDialog({
   /** What the server answered the last request with, or null while none was refused. */
   error: Error | null;
   /** The issue the document under review belongs to, where it has one: the picker offers that
-   *  issue's people and the Legion roles nobody is running. */
+   *  issue's people. */
   issueKey?: string;
   onClose: () => void;
   onSubmit: (reason: string) => void;

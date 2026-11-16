@@ -61,6 +61,7 @@ function AskReply({
         <MarkdownBody
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
+          surface="ask-thread-reply"
           tree={comment.body_tree}
         />
       </div>

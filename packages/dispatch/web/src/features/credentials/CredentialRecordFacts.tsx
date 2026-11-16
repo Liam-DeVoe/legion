@@ -87,6 +87,7 @@ export function CredentialRecordFacts({ record }: { record: RecordResponse }): R
           <blockquote
             className={`mt-1 border-l-2 pl-3 text-sm whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
           >
+            {/* not stored prose: the secrets broker's record of what the agent typed */}
             {record.reason}
           </blockquote>
         </div>

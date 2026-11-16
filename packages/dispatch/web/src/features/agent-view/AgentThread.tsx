@@ -115,12 +115,16 @@ const ToolCall: ToolCallMessagePartComponent = ({ toolName, argsText, result, is
 // No `source` here or on the reasoning below: why a session's own turn is no record is the
 // reading list's `agent-turn-text` and `agent-turn-reasoning` (`DISPATCH_READING_SURFACES`).
 const MarkdownText: TextMessagePartComponent = ({ text }) => (
-  <MarkdownBody markdown={useFrameCoalesced(text)} softBreaks="line" />
+  <MarkdownBody markdown={useFrameCoalesced(text)} softBreaks="line" surface="agent-turn-text" />
 );
 
 const Reasoning: ReasoningMessagePartComponent = ({ text }) => (
   <div className={`my-1 text-xs italic ${textMutedOnCanvas}`} data-testid="agent-reasoning">
-    <MarkdownBody markdown={useFrameCoalesced(text)} softBreaks="line" />
+    <MarkdownBody
+      markdown={useFrameCoalesced(text)}
+      softBreaks="line"
+      surface="agent-turn-reasoning"
+    />
   </div>
 );
 

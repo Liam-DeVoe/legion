@@ -71,7 +71,11 @@ export function IssueComponentsLine({
           None —{" "}
           {/* No `source`: why the reason is no record is the reading list's
               `issue-components-reason` (`DISPATCH_READING_SURFACES`). */}
-          <MarkdownBody markdown={components.reason ?? ""} variant="inline" />
+          <MarkdownBody
+            markdown={components.reason ?? ""}
+            surface="issue-components-reason"
+            variant="inline"
+          />
         </span>
       ) : (
         <>

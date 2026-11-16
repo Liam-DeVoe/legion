@@ -1,5 +1,5 @@
 import { actorActText } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type {
@@ -57,6 +57,7 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
                   <MarkdownBody
                     markdown={edit.previous.question}
                     source={textSourceOf("ask", ask.id)}
+                    surface="ask-edit-history"
                     tree={edit.previous.question_tree}
                   />
                 </div>
@@ -107,11 +108,26 @@ export function AskAnswerHistory({
             const selected = previous.selected ?? [];
             return (
               <div key={previous.at}>
-                {selected.length === 0 ? null : <p>{selected.join(", ")}</p>}
+                {selected.length === 0 ? null : (
+                  <p>
+                    {selected.map((label, index) => (
+                      <Fragment key={label}>
+                        {index === 0 ? null : ", "}
+                        <MarkdownBody
+                          markdown={label}
+                          source={textSourceOf("ask", askId)}
+                          surface="ask-answer-history"
+                          variant="inline"
+                        />
+                      </Fragment>
+                    ))}
+                  </p>
+                )}
                 {previous.text === null || previous.text === "" ? null : (
                   <MarkdownBody
                     markdown={previous.text}
                     source={textSourceOf("ask", askId)}
+                    surface="ask-answer-history"
                     tree={previous.text_tree}
                   />
                 )}
@@ -199,6 +215,7 @@ function AnsweredAsk({
           <MarkdownBody
             markdown={ask.question}
             source={textSourceOf("ask", ask.id)}
+            surface="answered-ask"
             tree={ask.question_tree}
           />
         </div>
@@ -224,6 +241,7 @@ function AnsweredAsk({
             <MarkdownBody
               markdown={otherText}
               source={textSourceOf("ask", ask.id)}
+              surface="answered-ask"
               tree={answer?.text_tree}
             />
           </div>
@@ -233,6 +251,7 @@ function AnsweredAsk({
           <MarkdownBody
             markdown={answer.text}
             source={textSourceOf("ask", ask.id)}
+            surface="answered-ask"
             tree={answer.text_tree}
           />
         </div>
@@ -286,6 +305,7 @@ function ResolvedAsk({
           <MarkdownBody
             markdown={ask.question}
             source={textSourceOf("ask", ask.id)}
+            surface="resolved-ask"
             tree={ask.question_tree}
           />
         </div>
@@ -319,6 +339,7 @@ function ResolvedAsk({
             <MarkdownBody
               markdown={reason}
               source={textSourceOf("ask", ask.id)}
+              surface="resolved-ask"
               tree={ask.resolution.reason_tree}
               variant="inline"
             />

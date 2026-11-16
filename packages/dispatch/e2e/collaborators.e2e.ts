@@ -22,8 +22,9 @@ import { asUser } from "./users";
 
 // An issue's agents stay reachable from its page once they stop (dispatch://INFRA-470): the
 // Collaborators tab lists everyone who worked the issue, running or not, each agent one click from
-// its live conversation, and the mention picker offers the issue's Legion roles nobody live holds
-// under "Not running", addressed to the role rather than to a session that has ended.
+// its live conversation. The mention picker offers a role only while a session the registry lists
+// holds it (`roleHolders`), since only such a role is linked and told: an issue's stopped roles are
+// no rows.
 //
 // Fixture: a closed issue assigned to alice, which bob commented on and messaged before the close;
 // one live Legion tester, two reviewer sessions of one role token (the old one started first) and a
@@ -237,7 +238,7 @@ test("the Collaborators tab says so when Legion's record of the issue cannot be 
   }
 });
 
-test("the mention picker offers the issue's stopped roles and sends one as a role mention", async ({
+test("the mention picker offers only the roles a listed session holds, and sends one as a role mention", async ({
   browser,
 }) => {
   const { issueKey, tokens } = await seed();
@@ -253,36 +254,35 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
     const field = form.getByLabel("Comment");
     const list = await openRefPicker(field, "@");
 
-    // Every role is one group, the live one and the two nobody holds alike, each row its own
-    // token: the live tester first, then the issue's stopped roles in workflow order, the
-    // implementer before the reviewer. The two reviewer sessions of one token are one row.
+    // The issue's people are the collaborators' read, which also records the stopped roles: once
+    // they are drawn, that read has answered.
     await expect
-      .poll(async () => (await pickerRows(list)).filter((row) => row.startsWith("Roles: ")))
-      .toEqual([
-        `Roles: ${tokens.tester}`,
-        `Roles: ${tokens.implementer}`,
-        `Roles: ${tokens.reviewer}`,
-      ]);
-    // A role no live agent holds says so under its token, beside the session that held it last.
-    const reviewer = list.getByRole("option", { name: tokens.reviewer });
-    await expect(reviewer).toContainText("reviewer · not running");
-    await expect(reviewer).toContainText(`Legion reviewer · ${issueKey}`);
+      .poll(async () => (await pickerRows(list)).some((row) => row.startsWith("People: ")))
+      .toBe(true);
+    // The live tester's role is the one role a listed session holds. The implementer's and the
+    // reviewers' sessions have stopped, so their roles have no holder: the server would tell
+    // nobody of them, and the picker offers neither.
+    expect((await pickerRows(list)).filter((row) => row.startsWith("Roles: "))).toEqual([
+      `Roles: ${tokens.tester}`,
+    ]);
+    await expect(list.getByRole("option", { name: tokens.reviewer })).toHaveCount(0);
+    await expect(list.getByRole("option", { name: tokens.implementer })).toHaveCount(0);
 
-    // Choosing the reviewer addresses the comment to its role, not to a session that has ended.
-    await reviewer.click();
-    await expect(field).toHaveValue(`[@${tokens.reviewer}](dispatch://role/${tokens.reviewer})`);
+    // Choosing the tester addresses the comment to its role.
+    await list.getByRole("option", { name: tokens.tester }).click();
+    await expect(field).toHaveValue(`[@${tokens.tester}](dispatch://role/${tokens.tester})`);
     await field.press("End");
-    await field.pressSequentially(" please review the fix");
+    await field.pressSequentially(" please test the fix");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toHaveValue("");
     await expect
       .poll(
         async () =>
           (await listComments(issueKey)).find((comment) =>
-            comment.body.endsWith("please review the fix")
+            comment.body.endsWith("please test the fix")
           )?.mentions?.[0]?.target
       )
-      .toBe(`role:${tokens.reviewer}`);
+      .toBe(`role:${tokens.tester}`);
   } finally {
     await alice.close();
   }

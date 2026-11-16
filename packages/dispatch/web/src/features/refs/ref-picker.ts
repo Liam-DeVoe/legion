@@ -1,3 +1,5 @@
+import { mentionName } from "@legion/contracts";
+
 import type { SearchResultKind } from "../../api/types";
 
 /**
@@ -34,7 +36,8 @@ export const REF_PICKER_KINDS = [
 
 export type RefPickerKind = (typeof REF_PICKER_KINDS)[number];
 
-/** The parties: the kinds whose pick inserts a worded link rather than a bare address (R4). */
+/** The parties: the kinds whose pick inserts a worded link rather than a bare address (R4),
+ *  anywhere but a link's address (`insertionText`). */
 const REF_PICKER_PARTY_KINDS = ["person", "agent", "role"] as const;
 
 export type RefPickerPartyKind = (typeof REF_PICKER_PARTY_KINDS)[number];
@@ -143,6 +146,14 @@ export function kindOrder(door: RefPickerDoor): readonly RefPickerKind[] {
   return [...lifted, ...BASE_KIND_ORDER.filter((kind) => !lifted.some((one) => one === kind))];
 }
 
+/** What a row opens, for a row that holds anything a reference can name on its own, by what it
+ *  holds: a node's blocks, read as the `part_of` backlinks of the node's address, or an agent's
+ *  documents, read as its conversation's artifacts by its session. A host opens them with
+ *  `openParts`. */
+export type RefPickerParts =
+  | { readonly kind: "blocks"; readonly address: string }
+  | { readonly kind: "documents"; readonly session: string };
+
 /** One row of the picker. `id` is unique within one open: it is the row's React key and the
  *  value a host puts in `aria-activedescendant`. */
 export interface RefPickerRow {
@@ -156,10 +167,7 @@ export interface RefPickerRow {
   readonly detail: string;
   /** The `dispatch://` address the row names. */
   readonly reference: string;
-  /** The address of what this row opens, for a row that holds anything a reference can name on
-   *  its own: a node's blocks, its `part_of` backlinks, or an agent's documents, its
-   *  conversation's artifacts. A host opens them with `openParts`. */
-  readonly parts?: string;
+  readonly parts?: RefPickerParts;
 }
 
 /** One kind's rows, under that kind's heading. */
@@ -208,6 +216,10 @@ export interface RefPickerTrigger {
   /** Never holds a space or a `]`: a space typed before a row is taken closes the picker, and a
    *  `]` ends the link's words the trigger stood in. */
   readonly query: string;
+  /** Whether the trigger stands in a written link's address (`[the plan](#pl`): a pick there
+   *  writes the address alone, since the link around it already has its words and a mention
+   *  there would be a link inside a link. */
+  readonly inAddress: boolean;
 }
 
 /** A trigger opens only at a word boundary - the start of the text, or after a space, a line
@@ -231,23 +243,31 @@ const LINK_ADDRESS_BEHIND = /\]\([^\s)]*$/u;
  * The door open at `caret` in `text`, read from the text before it: the last trigger the reader
  * typed that still stands - at a word boundary, with no space typed since. Undefined when none
  * does, which is how the picker closes on a space and how it never opens mid-word. Nor does it
- * stand past a `]`, nor anywhere in a written link's words or address: the `@` a mention's words
- * start with (`[@Planner](dispatch://agent/…)`) follows a `[`, and the picker must open neither
- * over the mention it has just written nor where the reader moves the caret into one, since a
- * pick there would write a link inside a link. The caret defaults to the end of the text.
+ * stand past a `]`, nor anywhere in a written link's words: the `@` a mention's words start with
+ * (`[@Planner](dispatch://agent/…)`) follows a `[`, and the picker must open neither over the
+ * mention it has just written nor where the reader moves the caret into one, since a pick there
+ * would write a link inside a link. In a link's address a door opens on a trigger typed in that
+ * address - `[the plan](#pl`, `[the plan](@`, `[the plan]([[go` - and says so (`inAddress`), so
+ * its pick writes the address alone; a trigger before the address's first character is not this
+ * door, which is why the caret in a mention's own address opens nothing. The caret defaults to
+ * the end of the text.
  */
 export function readTrigger(text: string, caret = text.length): RefPickerTrigger | undefined {
+  if (LINK_WORDS_AHEAD.test(text.slice(caret))) return undefined;
   const before = text.slice(0, caret);
-  if (LINK_ADDRESS_BEHIND.test(before) || LINK_WORDS_AHEAD.test(text.slice(caret))) {
-    return undefined;
-  }
+  // The address the caret stands in begins after the `](` that opens it.
+  const opened = LINK_ADDRESS_BEHIND.exec(before);
+  const address = opened === null ? undefined : opened.index + "](".length;
   let found: RefPickerTrigger | undefined;
   for (const { chars, door } of REF_PICKER_TRIGGERS) {
     const start = before.lastIndexOf(chars);
     if (start < 0 || (found !== undefined && start < found.start)) continue;
+    if (address !== undefined && start < address) continue;
     if (!atWordBoundary(before, start)) continue;
     const query = before.slice(start + chars.length);
-    if (!/[\s\]]/u.test(query)) found = { chars, door, query, start };
+    if (!/[\s\]]/u.test(query)) {
+      found = { chars, door, inAddress: address !== undefined, query, start };
+    }
   }
   return found;
 }
@@ -263,10 +283,11 @@ export interface RefPickerInsertion {
    *  document other writers share hands them on, so a stretch that has moved under the open
    *  list is refused rather than written over (`RefPickerTrigger.chars`). */
   readonly trigger: string;
-  /** A party's pick, for a host that writes marks rather than Markdown: the words the mention
+  /** A mention's pick, for a host that writes marks rather than Markdown: the words the mention
    *  shows and the address it names (R4). `text` is that same mention written as Markdown,
    *  which is what a `<textarea>` host writes; a ProseMirror host writes these two instead, a
-   *  link mark over the words, since plain text holding that Markdown is stored escaped. */
+   *  link mark over the words, since plain text holding that Markdown is stored escaped. A party
+   *  picked in a link's address is its bare address, as any other pick is, and carries none. */
   readonly link?: { readonly href: string; readonly words: string };
 }
 
@@ -275,25 +296,27 @@ function linkWords(label: string): string {
   return label.replace(/[[\]]/gu, (bracket) => `\\${bracket}`);
 }
 
-/** The sign a mention's words start with: `[@Planner](dispatch://agent/…)`. A link whose words
- *  start with it and whose address names a party reads as the sign and that party's current
- *  name wherever it is shown, so a session renamed since the pick reads as it is called now
- *  (R4); a link whose words its author wrote another way keeps those words (R8), and an `@` and
- *  a word with no link around it is no reference at all (R10). */
-export const MENTION_SIGN = "@";
-
 /** The mention of a party: a link whose words are the mention sign and its name and whose
  *  address names it (R4), so the stored text reads as the person, session or role it mentions
- *  and still names it after an edit of the words. The one writer of that shape, read by the
- *  picker's pick below and by the seed a channel owes its own party (`party-references.ts`). */
+ *  and still names it after an edit of the words. A link whose words start with the sign and
+ *  whose address names a party reads as the sign and that party's current name wherever it is
+ *  shown (`@legion/contracts`'s `mentionName`); a link whose words its author wrote another way
+ *  keeps those words (R8). The one writer of that shape, read by the picker's pick below and by
+ *  the seed a channel owes its own party (`party-references.ts`). */
 export function partyLink(name: string, reference: string): string {
-  return `[${MENTION_SIGN}${linkWords(name)}](${reference})`;
+  return `[${mentionName(linkWords(name))}](${reference})`;
 }
 
-/** The text a pick inserts: a party as its mention; every other kind as the bare address, which
- *  the renderer draws by its target's own title (R8). */
-export function insertionText(row: RefPickerRow): string {
-  return isPartyKind(row.kind) ? partyLink(row.label, row.reference) : row.reference;
+/** The text a pick of `row` at `trigger` inserts: a party as its mention; every other kind, and
+ *  any kind in a link's address, as the bare address, which the renderer draws by its target's
+ *  own title (R8) and which there completes the link the reader is writing. */
+export function insertionText(
+  row: RefPickerRow,
+  trigger: Pick<RefPickerTrigger, "inAddress">
+): string {
+  return isPartyKind(row.kind) && !trigger.inAddress
+    ? partyLink(row.label, row.reference)
+    : row.reference;
 }
 
 /** The insertion a pick of `row` makes in a draft whose caret is at `caret`. */
@@ -302,15 +325,13 @@ export function insertionFor(
   trigger: RefPickerTrigger,
   caret: number
 ): RefPickerInsertion {
-  const insertion = {
-    end: caret,
-    start: trigger.start,
-    text: insertionText(row),
-    trigger: trigger.chars,
-  };
-  return isPartyKind(row.kind)
-    ? { ...insertion, link: { href: row.reference, words: `${MENTION_SIGN}${row.label}` } }
-    : insertion;
+  const text = insertionText(row, trigger);
+  const insertion = { end: caret, start: trigger.start, text, trigger: trigger.chars };
+  // A pick that writes more than its bare address writes a mention, which a host that writes
+  // marks takes apart.
+  return text === row.reference
+    ? insertion
+    : { ...insertion, link: { href: row.reference, words: mentionName(row.label) } };
 }
 
 /** `insertion` applied to a plain string, with the caret that follows it: what a `<textarea>`
@@ -362,13 +383,16 @@ export const REF_PICKER_PARTY_WORDS: Record<"loading" | "unreachable", string> =
   unreachable: "Could not load live agents — Envoy listener unreachable.",
 };
 
-/** The words under a row whose parts the reader opened and whose read answered none: an agent's
- *  conversation that holds no file, or a node that holds no block. Without them an opened row
- *  that lists nothing reads as a control that did nothing. The words name the parts as the
- *  row's control does (`RefPartsControl`). */
-export const REF_PICKER_NO_PARTS_WORDS: Record<"blocks" | "documents", string> = {
-  blocks: "No blocks.",
-  documents: "No documents.",
+/** The words of each kind of parts: the control on a row that holds them (`RefPartsControl`),
+ *  and the line under a row whose parts the reader opened and whose read answered none - an
+ *  agent's conversation that holds no file, or a node that holds no block. Without that line an
+ *  opened row that lists nothing reads as a control that did nothing. */
+export const REF_PICKER_PARTS_WORDS: Record<
+  RefPickerParts["kind"],
+  { readonly control: string; readonly none: string }
+> = {
+  blocks: { control: "Blocks", none: "No blocks." },
+  documents: { control: "Documents", none: "No documents." },
 };
 
 /** What the instruction below calls one searched kind's rows. */

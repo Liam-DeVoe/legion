@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithQueries } from "../../__tests__/query-provider";
 import type { Artifact, ArtifactApproval } from "../../api/types";
@@ -146,7 +146,7 @@ test("a draft primary document reads `Not requested` and carries no actions", ()
   }
 });
 
-test("a changes-requested step says who sent it back, on which version, and why", () => {
+test("a changes-requested step says who sent it back, on which version, and why", async () => {
   const view = renderSteps([
     decisionsEntry({
       by: { id: "alice", kind: "user" },
@@ -159,8 +159,11 @@ test("a changes-requested step says who sent it back, on which version, and why"
   ]);
   try {
     const line = view.container.querySelector('[data-approval-step-reason="decisions"]');
-    expect(line?.textContent).toBe(
-      "Decisions: alice requested changes on v2 · Name the rollback step."
+    // The reason is the reviewer's own text, drawn by the renderer once its engine has answered.
+    await waitFor(() =>
+      expect(line?.textContent).toBe(
+        "Decisions: alice requested changes on v2 · Name the rollback step."
+      )
     );
     // The whole reason is readable on a phone: no tooltip standing in for clipped text.
     expect(line?.getAttribute("title")).toBeNull();
@@ -171,7 +174,7 @@ test("a changes-requested step says who sent it back, on which version, and why"
   }
 });
 
-test("a reason line leaves out an absent reason and an absent reviewer", () => {
+test("a reason line leaves out an absent reason and an absent reviewer", async () => {
   const view = renderSteps([
     decisionsEntry({
       by: { id: "alice", kind: "user" },
@@ -190,8 +193,36 @@ test("a reason line leaves out an absent reason and an absent reviewer", () => {
     expect(
       view.container.querySelector('[data-approval-step-reason="decisions"]')?.textContent
     ).toBe("Decisions: alice requested changes on v2");
-    expect(view.container.querySelector('[data-approval-step-reason="spec"]')?.textContent).toBe(
-      "Spec: Changes requested on v4 · Split the rollout."
+    await waitFor(() =>
+      expect(view.container.querySelector('[data-approval-step-reason="spec"]')?.textContent).toBe(
+        "Spec: Changes requested on v4 · Split the rollout."
+      )
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reason is markdown its reviewer wrote, and the Reviews dialog draws it by the renderer: so
+// does this line, where a link in it is a link and its words are the words. Drawn as the
+// characters it is, the line ends `· See [the plan](https://example.test/plan) **first**.`.
+test("a reason that holds markdown is drawn by the renderer", async () => {
+  const view = renderSteps([
+    specEntry({
+      latest_version: 4,
+      reason: "See [the plan](https://example.test/plan) **first**.",
+      state: "changes_requested",
+      version: 4,
+    }),
+  ]);
+  try {
+    const line = view.container.querySelector('[data-approval-step-reason="spec"]');
+    await waitFor(() =>
+      expect(line?.textContent).toBe("Spec: Changes requested on v4 · See the plan first.")
+    );
+    expect(within(line as HTMLElement).getByRole("link", { name: "the plan" })).toHaveAttribute(
+      "href",
+      "https://example.test/plan"
     );
   } finally {
     view.unmount();

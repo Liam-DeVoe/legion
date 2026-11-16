@@ -4,10 +4,11 @@
  * on its project's Architecture page, a priority's description on the priority's own page, and
  * an issue's reason for touching no component, on the Architecture page's Not architectural list
  * and in the issue header's Components line. None of these texts is a `TextSource`, so a `#id`
- * in it names nothing, but a bare key, an address and a picked party in it are read as every
- * stored text reads them (R6): each draws as its issue's key and current title or as `@` and the
- * session's current name, and none is left as a raw `dispatch://`. Every host here is a page a
- * reader reads, not a link or a button, so each of the three is a link there.
+ * in it names nothing, as each row of the list says (`cannotCarry`), but the five other forms a
+ * text names a node by are read in it as every stored text reads them (R6): each draws as its
+ * node's current name, the party as `@` and the session's current name, and none is left as
+ * the characters written. Every host here is a page a reader reads, not a link or a button, so
+ * each reference is a link there.
  *
  * Each row writes `readingText` where its page reads it from: into the component model file the
  * fake GitHub serves, whose body is the component's prose, and into the priority's description
@@ -36,9 +37,9 @@ async function seedArchitecture(prose: string): Promise<void> {
   expect(source.last_error).toBeNull();
 }
 
-// SLOW(>=2s): the world's three issues, the fake GitHub's model read in by a source sync, and the
+// SLOW(>=2s): the reading world, the fake GitHub's model read in by a source sync, and the
 // Architecture page drawn with the component's details open.
-test("component-prose: a component's prose draws a stored key, an address and a party through the renderer", async ({
+test("component-prose: a component's prose draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -53,8 +54,8 @@ test("component-prose: a component's prose draws a stored key, an address and a 
   await expectReadsReferences(details.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues and the priority's own page drawn with its description.
-test("priority-description: a priority's description draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world and the priority's own page drawn with its description.
+test("priority-description: a priority's description draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -72,10 +73,10 @@ test("priority-description: a priority's description draws a stored key, an addr
   await expectReadsReferences(description, world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, the fake GitHub's model read in by a source sync, the host
+// SLOW(>=2s): the reading world, the fake GitHub's model read in by a source sync, the host
 // declared not architectural, and the Architecture page drawn with its Not architectural list
 // open.
-test("not-architectural-reason: a Not architectural row's reason draws a stored key, an address and a party through the renderer", async ({
+test("not-architectural-reason: a Not architectural row's reason draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -93,9 +94,9 @@ test("not-architectural-reason: a Not architectural row's reason draws a stored 
   await expectReadsReferences(row.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, the host declared not architectural, and the host's page
-// drawn with its header.
-test("issue-components-reason: the issue header's Components line draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, the host declared not architectural, and the host's page drawn
+// with its header.
+test("issue-components-reason: the issue header's Components line draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();

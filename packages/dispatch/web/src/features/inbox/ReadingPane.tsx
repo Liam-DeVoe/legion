@@ -278,6 +278,7 @@ function ApprovalBody({
         <MarkdownBody
           markdown={ask.question}
           source={textSourceOf("ask", ask.id)}
+          surface="approval-ask-question"
           tree={ask.question_tree}
         />
       </div>

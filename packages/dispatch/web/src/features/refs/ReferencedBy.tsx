@@ -12,11 +12,14 @@ import {
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
+import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownPreview } from "./MarkdownPreview";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
 import { parseNodeReference, referenceHref } from "./routes";
 import { Timestamp } from "./Timestamp";
+import { type TextSource, textSourceKind, textSourceOf } from "./text-references";
 
 const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   artifact: "Artifact",
@@ -170,17 +173,67 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
   });
 }
 
-function Excerpt({ text }: { text: string }): ReactNode {
+/** The citing nodes whose excerpt is the head of their own stored text. */
+const BODY_NODE_KINDS: readonly string[] = ["ask", "block", "comment", "message"];
+
+/** Whether `edge`'s excerpt is the head of a stored body rather than a title or a name. A citing
+ *  block, ask, comment or message is listed by the head of its own text, and a document's
+ *  mention by the block that holds it (`excerpt.block_id`): each is a bounded head the server
+ *  cuts, which the renderer draws. A citing issue, document, component or session is listed by
+ *  its title or name, which is one line of text already. */
+function excerptIsBody(edge: GraphEdge): boolean {
+  return edge.excerpt?.block_id !== undefined || BODY_NODE_KINDS.includes(edge.node.kind);
+}
+
+/** The record a body excerpt is the head of, where the citing node is one a `TextSource` names:
+ *  an ask, a comment or a message, a block of one, or a document. A block of a document names
+ *  its document by address rather than by the artifact id a source is, so its excerpt is drawn
+ *  as no record's and a `#id` in it names nothing. */
+function excerptSource(node: GraphEdge["node"]): TextSource | undefined {
+  const item = blockItem(node) ?? node;
+  return textSourceOf(textSourceKind(item.kind), item.id);
+}
+
+function Excerpt({
+  rendered,
+  source,
+  text,
+}: {
+  /** Whether the text is the head of a stored body, which the renderer draws (`excerptIsBody`). */
+  rendered: boolean;
+  source: TextSource | undefined;
+  text: string;
+}): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
+  const clamped = clampable && !expanded;
 
   return (
     <>
-      <p
-        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${textSecondaryOnSurface}`}
-      >
-        {text}
-      </p>
+      {rendered ? (
+        // The head of a stored body, parsed here and drawn by the renderer: one clamped run
+        // until the reader opens it, the whole of it after.
+        clamped ? (
+          <MarkdownPreview
+            className={`mt-1 text-sm ${textSecondaryOnSurface}`}
+            lines={3}
+            markdown={text}
+            source={source}
+            surface="referenced-by-excerpt"
+          />
+        ) : (
+          <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
+            <MarkdownBody markdown={text} source={source} surface="referenced-by-excerpt" />
+          </div>
+        )
+      ) : (
+        <p
+          className={`mt-1 whitespace-pre-wrap text-sm ${clamped ? "line-clamp-3" : ""} ${textSecondaryOnSurface}`}
+        >
+          {/* A title or a name, as the line it is: the reading list's `referenced-by-title`. */}
+          {text}
+        </p>
+      )}
       {clampable ? (
         <button
           aria-expanded={expanded}
@@ -353,7 +406,16 @@ export function ReferencedBy({
                           </>
                         )}
                       </div>
-                      {edge.excerpt === undefined ? null : <Excerpt text={edge.excerpt.text} />}
+                      {/* A block whose text opens with a reference longer than the server's cut
+                          has an empty excerpt that still names the block it links to: the row
+                          then draws no excerpt rather than an empty paragraph. */}
+                      {edge.excerpt === undefined || edge.excerpt.text === "" ? null : (
+                        <Excerpt
+                          rendered={excerptIsBody(edge)}
+                          source={excerptSource(edge.node)}
+                          text={edge.excerpt.text}
+                        />
+                      )}
                     </li>
                   );
                 })}

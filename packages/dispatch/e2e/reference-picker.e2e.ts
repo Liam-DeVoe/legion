@@ -29,11 +29,12 @@ import { asUser } from "./users";
  *
  * All three doors open the same list over the same rows, grouped by kind, each ranking the
  * kinds its own door names first (`kindOrder`); the arrows move, Enter and Tab take the row,
- * and what a pick writes lands at the caret with the words after it untouched. The rows the
- * server searches for are reached through `GET /api/v1/search`, which finds a node of another
- * project and refuses a query under two characters - so at no characters at all the picker
- * lists the kinds whose sources need no query, the parties and the components, with one row
- * saying what the next two letters will add.
+ * and what a pick writes lands at the caret with the words after it untouched - in a link's
+ * address too, where a door opens on a trigger typed there and a pick writes the address alone.
+ * The rows the server searches for are reached through `GET /api/v1/search`, which finds a node
+ * of another project and refuses a query under two characters - so at no characters at all the
+ * picker lists the kinds whose sources need no query, the parties and the components, with one
+ * row saying what the next two letters will add.
  *
  * One box carries all of it: the issue Conversation's comment composer, which offers every
  * kind. That each of the other boxes opens the same doors over the same rows is
@@ -180,6 +181,14 @@ test("the arrows move, Enter and Tab take the row, and the pick lands at the car
     await field.press("Tab");
     await expect(field).toHaveValue(`[@${SESSION_TITLE}](${SESSION_REFERENCE})`);
     await expect(field).toBeFocused();
+
+    // A door opens in the address of a link the reader is writing, and the pick there is the
+    // address alone, which completes that link. The query is a whole word: the search route
+    // matches words, not the first letters of one.
+    await field.fill("");
+    await field.pressSequentially("[the warm one](#cache");
+    await list.getByRole("option", { name: world.target.title }).click();
+    await expect(field).toHaveValue(`[the warm one](dispatch://${world.target.key}`);
   } finally {
     await alice.close();
   }

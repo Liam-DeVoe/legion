@@ -3,12 +3,11 @@
  * ask or in a thread and reads back on their own pages: the Answers page's three texts - the
  * question a row answers, the answer written on it, and a reply written in its thread - and the
  * subject line the Inbox's reading column opens a Reply thread under, which is where `/replies`
- * lands. Each is a stored record, and each draws a bare key, an address and a picked party
- * through the one renderer (R6): the key and the address as their issue's key and current title,
- * the party as `@` and the session's name, and no `dispatch://` left as text. None of the four
- * hosts is a link or a button - an Answers row's Open is a link beside its texts, never around
- * them, and the reading column's subject line is a heading - so each of the three is a link
- * there.
+ * lands. Each is a stored record, and each draws every form a text names a node by through the
+ * one renderer (R6): as its node's current name, the party as `@` and the session's name, and
+ * none left as the characters written. None of the four hosts is a link or a button - an
+ * Answers row's Open is a link beside its texts, never around them, and the reading column's
+ * subject line is a heading - so each reference is a link there.
  *
  * Each row writes `readingText` into the one record its surface shows and plain words into any
  * other record the surface needs: the question the reading session asks, the answer and the
@@ -20,6 +19,7 @@ import { inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import {
   expectReadsReferences,
+  firstLineForms,
   READING_SESSION_ID,
   readingText,
   seedReadingWorld,
@@ -46,8 +46,8 @@ function answerRow(page: Page, askId: string): Locator {
   return page.locator(`[data-answer-row="${askId}"]`);
 }
 
-// SLOW(>=2s): the world's three issues, an ask asked and answered, and the Answers page drawn.
-test("answers-subject: an Answers row's question draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, an ask asked and answered, and the Answers page drawn.
+test("answers-subject: an Answers row's question draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -66,8 +66,8 @@ test("answers-subject: an Answers row's question draws a stored key, an address 
   await expectReadsReferences(answeredQuestionPreview(page, ask.id), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, an ask asked and answered, and the Answers page drawn.
-test("answers-answer: an Answers row's answer draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, an ask asked and answered, and the Answers page drawn.
+test("answers-answer: an Answers row's answer draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -88,9 +88,8 @@ test("answers-answer: an Answers row's answer draws a stored key, an address and
   await expectReadsReferences(answerRow(page, ask.id).locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, an ask and a reply in its thread, and the Answers page
-// drawn.
-test("answers-reply: an Answers row's reply draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, an ask and a reply in its thread, and the Answers page drawn.
+test("answers-reply: an Answers row's reply draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -110,16 +109,22 @@ test("answers-reply: an Answers row's reply draws a stored key, an address and a
   await expectReadsReferences(row.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, a comment thread and its reply, and the Inbox drawn with
-// the thread open in its reading column.
-test("my-reply-subject: a Reply thread's subject line draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, a comment thread and its reply for each group of forms a first
+// line holds, and the Inbox drawn with each thread open in its reading column.
+test("my-reply-subject: a Reply thread's subject line draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
   // Alice's root and the session's reply under it make the thread a Reply row of hers, and its
-  // subject line is the root's first line, which is the whole text.
-  const root = await createComment(world.host.key, { body: readingText(world) });
-  await createComment(world.host.key, { body: "On it.", reply_to: root.id }, asReadingSession);
+  // subject line is the root's first line as the server cuts it: one thread for each group of
+  // forms a first line holds whole (`firstLineForms`).
+  const groups = firstLineForms(world);
+  const roots: string[] = [];
+  for (const forms of groups) {
+    const root = await createComment(world.host.key, { body: readingText(world, forms) });
+    await createComment(world.host.key, { body: "On it.", reply_to: root.id }, asReadingSession);
+    roots.push(root.id);
+  }
 
   // `/replies` lands on the Inbox's Reply rows. The address is read parameter by parameter, since
   // the reading column writes the row it selects into it the moment it opens (`?item=`). At this
@@ -129,7 +134,9 @@ test("my-reply-subject: a Reply thread's subject line draws a stored key, an add
   await expect(page).toHaveURL(
     (url) => url.pathname === "/" && url.searchParams.get("type") === "reply"
   );
-  await selectRow(page, replyRowId(root.id));
-  const subject = inboxPane(page).locator("[data-inbox-thread-subject]");
-  await expectReadsReferences(subject, world, "link");
+  for (const [index, forms] of groups.entries()) {
+    await selectRow(page, replyRowId(roots[index] ?? ""));
+    const subject = inboxPane(page).locator("[data-inbox-thread-subject]");
+    await expectReadsReferences(subject, world, "link", forms);
+  }
 });

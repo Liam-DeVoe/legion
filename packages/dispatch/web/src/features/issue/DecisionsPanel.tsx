@@ -29,6 +29,7 @@ import {
 import { MentionField } from "../conversation/MentionField";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { PlainText, usePlainHeadline } from "../refs/plain-text";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -70,6 +71,7 @@ function wordsOf(node: DisplayTree): string {
   let apart = false;
   const read = (current: DisplayTree): void => {
     if (typeof current.text === "string") {
+      // not stored prose: a tree's words joined to match a quote against, drawn nowhere
       words += apart && words !== "" ? ` ${current.text}` : current.text;
       apart = false;
       return;
@@ -209,7 +211,11 @@ function ShapedLinks({
                 className={`${linkText} ${linkHoverText}`}
                 to={specBlockPath(issueKey, spec, blockId)}
               >
-                {link.to.text?.trim() || `Block ${blockId}`}
+                <PlainText markdown={link.to.text} surface="issue-decision-link">
+                  {/* The head of the block's text as its plain words, and as written until the
+                      engine has answered: the reading list's `issue-decision-link`. */}
+                  {(words) => (words ?? link.to.text)?.trim() || `Block ${blockId}`}
+                </PlainText>
               </Link>
               {link.stale ? (
                 <span className={`ml-2 text-xs ${textMutedOnSurface}`}>out of date</span>
@@ -223,22 +229,24 @@ function ShapedLinks({
 }
 
 function ChangeComposer({
-  decision,
   documentId,
   issueKey,
+  name,
   onDone,
   quote,
 }: {
-  decision: Decision;
   documentId: string;
   issueKey: string;
+  /** The decision's heading as plain words (`usePlainHeadline`), which the form and its write
+   *  are named after. */
+  name: string;
   onDone: () => void;
   quote: string;
 }): ReactNode {
   const [body, setBody] = useState("");
   const send = useKeyedWrite({
     inline: true,
-    label: () => `Change to ${decision.heading}`,
+    label: () => `Change to ${name}`,
     // The decisions document belongs to an issue, and a comment on an issue's document is the
     // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
     // follows the same rule for a thread's replies).
@@ -255,7 +263,7 @@ function ChangeComposer({
   });
   return (
     <form
-      aria-label={`Change ${decision.heading}`}
+      aria-label={`Change ${name}`}
       className="space-y-2"
       onSubmit={(event) => {
         event.preventDefault();
@@ -268,6 +276,7 @@ function ChangeComposer({
         className={`border-l-2 pl-2 text-sm ${textSecondaryOnSurface}`}
         data-testid="decision-quote"
       >
+        {/* The decision's own words, as they are: the reading list's `anchor-quote`. */}
         {quote}
       </blockquote>
       <MentionField
@@ -322,7 +331,14 @@ function DecisionCard({
   const source = textSourceOf("artifact", documentId);
   return (
     <li className={`space-y-2 rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
-      <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>{decision.heading}</h3>
+      <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>
+        <MarkdownBody
+          markdown={decision.heading}
+          source={source}
+          surface="issue-decision"
+          variant="inline"
+        />
+      </h3>
       {blocks.map((block, index) =>
         block.unsure ? (
           <div
@@ -335,6 +351,7 @@ function DecisionCard({
               markdown={block.text}
               referenceText={block.references}
               source={source}
+              surface="issue-decision"
               tree={block.tree}
             />
           </div>
@@ -345,6 +362,7 @@ function DecisionCard({
             markdown={block.text}
             referenceText={block.references}
             source={source}
+            surface="issue-decision"
             tree={block.tree}
           />
         )
@@ -385,9 +403,15 @@ function WaitingDecision({
   // holds: an anchor quote names the document's own text, which is what the server matches it
   // against (`pmdoc.FindQuote`).
   const quote = blocks[0]?.text;
+  // The heading as plain words, which the Keep and the Change are named after: a write's label
+  // and a form's name hold no markup.
+  const { reads, text: heading } = usePlainHeadline(undefined, decision.heading, {
+    surface: "issue-decision",
+  });
+  const name = heading?.text ?? "";
   const keep = useKeyedWrite({
     inline: true,
-    label: () => `Keep ${decision.heading}`,
+    label: () => `Keep ${name}`,
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
     write: (id: string, bounds) =>
@@ -421,6 +445,7 @@ function WaitingDecision({
       actions={
         writable ? (
           <div className="space-y-2">
+            {reads}
             <div className="flex gap-2">
               <button
                 className={secondaryButtonCompact}
@@ -448,9 +473,9 @@ function WaitingDecision({
             )}
             {changing && quote !== undefined ? (
               <ChangeComposer
-                decision={decision}
                 documentId={documentId}
                 issueKey={issueKey}
+                name={name}
                 onDone={() => setChanging(false)}
                 quote={quote}
               />
@@ -483,7 +508,11 @@ function OpenQuestion({
   return (
     <li className={`rounded-lg border p-3 ${card}`}>
       <Link className={`text-sm ${linkText} ${linkHoverText}`} to={path}>
-        {ask.question}
+        <PlainText markdown={ask.question} surface="issue-open-question" tree={ask.question_tree}>
+          {/* The question as its plain words, and as written until the engine has answered:
+              the reading list's `issue-open-question`. */}
+          {(words) => words ?? ask.question}
+        </PlainText>
       </Link>
     </li>
   );

@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { DISPATCH_READING_SURFACES } from "@legion/contracts";
 
@@ -15,6 +17,14 @@ import { listing, projectArguments, retained } from "./playwright-listing";
  * The drivers are the rows Playwright itself lists, not titles read out of the specs' text: a
  * title in a comment declares no row, and a row marked `test.fixme` or `test.skip` declares one
  * Playwright never runs, so neither can stand in for a driver here.
+ *
+ * Two more rules hold what a driver reads and where it runs. A driver stores every form its
+ * row's surface carries (`cannotCarry`), so a rendered row whose text is no record must say it
+ * carries no question id, or its driver would hold it to a `#id` that names nothing there; and
+ * a row that names a form it cannot carry must say why, or the list would let a surface off a
+ * form with nothing a reader could check. And the references lane names its spec files one by
+ * one, so a reading spec it does not name would pass every rule above and run on no pull
+ * request.
  */
 
 /** The project the references lane runs the reading specs in (`.github/workflows/
@@ -130,3 +140,65 @@ test("every row the list does not render says why", () => {
   ).map((row) => row.surface);
   expect(silent).toEqual([]);
 });
+
+test.each(
+  DISPATCH_READING_SURFACES.filter((row) => row.rendered && !row.record).map(
+    (row) => [row.surface, row] as const
+  )
+)("the rendered surface %s, whose text is no record, says it carries no question id", (surface, row) => {
+  expect(
+    row.cannotCarry?.forms.includes("question-id") === true
+      ? surface
+      : `${surface} draws no record and does not say it cannot carry a question id (cannotCarry)`
+  ).toBe(surface);
+});
+
+test("every row that names a form it cannot carry says why", () => {
+  const silent = DISPATCH_READING_SURFACES.filter(
+    (row) =>
+      row.cannotCarry !== undefined &&
+      (row.cannotCarry.forms.length === 0 || row.cannotCarry.why.trim() === "")
+  ).map((row) => row.surface);
+  expect(silent).toEqual([]);
+});
+
+/** The workflow whose `references` lane runs the reading specs on a pull request. */
+const BROWSER_WORKFLOW = fileURLToPath(
+  new URL("../../../../.github/workflows/dispatch-browser.yaml", import.meta.url)
+);
+
+/**
+ * The spec files the references lane runs: the entries of the `lane_files="..."` a step of the
+ * workflow sets in the `references)` arm of its script, read as
+ * `.github/scripts/ci_filter_coverage.py`'s `check_references_lane` reads them, with the
+ * script's comments and blank lines aside, so a comment that spells an assignment is no entry.
+ */
+function referencesLaneFiles(): string[] {
+  const workflow = Bun.YAML.parse(readFileSync(BROWSER_WORKFLOW, "utf8")) as {
+    jobs?: Record<string, { steps?: { run?: string }[] } | null>;
+  };
+  return Object.values(workflow.jobs ?? {})
+    .flatMap((job) => job?.steps ?? [])
+    .flatMap((step) => {
+      const script = (step.run ?? "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "" && !line.startsWith("#"))
+        .join("\n");
+      const arm = /^references\)$(.*?)^;;$/msu.exec(script)?.[1] ?? "";
+      return (/^lane_files="([^"]*)"/mu.exec(arm)?.[1] ?? "").split(/\s+/u);
+    })
+    .filter((entry) => entry !== "");
+}
+
+test(
+  "the references lane runs every reading spec",
+  async () => {
+    const lane = new Set(referencesLaneFiles());
+    const unrun = [...new Set((await drivers).map((driver) => `e2e/${driver.file}`))].filter(
+      (file) => !lane.has(file)
+    );
+    expect(unrun).toEqual([]);
+  },
+  listingTimeout
+);

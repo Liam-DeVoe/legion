@@ -90,12 +90,16 @@ function SuggestionDiff({
       <del
         className={`block rounded px-2 py-1 ${clampClass} ${suggestionRemovedBg} ${suggestionRemovedText}`}
       >
-        <MarkdownBody markdown={quote} variant="inline" />
+        <MarkdownBody markdown={quote} surface="margin-suggestion-diff" variant="inline" />
       </del>
       <ins
         className={`block rounded px-2 py-1 ${clampClass} ${suggestionAddedBg} ${suggestionAddedText}`}
       >
-        <MarkdownBody markdown={suggestion.replace_with} variant="inline" />
+        <MarkdownBody
+          markdown={suggestion.replace_with}
+          surface="margin-suggestion-diff"
+          variant="inline"
+        />
       </ins>
     </ReferenceHostIs>
   );
@@ -199,6 +203,7 @@ function CommentBody({
     <>
       {anchor === null ? null : (
         <blockquote className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}>
+          {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
           {anchor.quote}
         </blockquote>
       )}
@@ -207,6 +212,7 @@ function CommentBody({
         <MarkdownBody
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
+          surface="margin-comment-body"
           tree={comment.body_tree}
         />
       ) : null}
@@ -218,6 +224,7 @@ function CommentBody({
               <MarkdownBody
                 markdown={comment.body}
                 source={textSourceOf("comment", comment.id)}
+                surface="margin-comment-body"
                 tree={comment.body_tree}
               />
             </div>
@@ -570,6 +577,7 @@ export function ThreadCard({
                       lines={1}
                       markdown={root.body}
                       source={textSourceOf("comment", root.id)}
+                      surface="margin-thread-preview"
                       tree={root.body_tree}
                     />
                   )}
@@ -580,6 +588,7 @@ export function ThreadCard({
                     <blockquote
                       className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
                     >
+                      {/* The document's own words: the reading list's `anchor-quote`. */}
                       {root.anchor.quote}
                     </blockquote>
                   )}
@@ -587,6 +596,7 @@ export function ThreadCard({
                     lines={2}
                     markdown={root.body}
                     source={textSourceOf("comment", root.id)}
+                    surface="margin-thread-preview"
                     tree={root.body_tree}
                   />
                 </>

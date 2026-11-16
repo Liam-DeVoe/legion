@@ -27,10 +27,10 @@ import { applyInsertion, type RefPickerInsertion } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { TextEditRange } from "./block-spans";
 
-/** The parties a pick can name - the live sessions, the roles their holders carry, and the
- *  issue's Legion roles nobody holds - are `features/refs/party-options.ts`, not this file:
- *  the picker builds its agent and role rows from them, and this field hosts that picker, so
- *  holding them here would make the two modules import each other (`noImportCycles`). */
+/** The parties a pick can name - the sessions the registry lists and the roles they hold - are
+ *  `features/refs/party-options.ts`, not this file: the picker builds its agent and role rows
+ *  from them, and this field hosts that picker, so holding them here would make the two modules
+ *  import each other (`noImportCycles`). */
 
 /** One edit of the field: the text now, and the edit the browser named, which a host following
  *  block spans maps its spans through (`followEdit`). */
@@ -117,9 +117,8 @@ export function MentionField({
   readonly hintClassName?: string;
   /** A one-line field that grows with what is typed, as a reply's does. */
   readonly inline?: boolean;
-  /** The issue this box writes on, where it has one: the picker offers that issue's people and
-   *  the Legion roles it records that nobody is running. A box with none offers everyone who
-   *  has signed in (`DISPATCH_WRITING_BOXES`'s `issueRows`). */
+  /** The issue this box writes on, where it has one: the picker offers that issue's people. A
+   *  box with none offers everyone who has signed in (`DISPATCH_WRITING_BOXES`'s `issueRows`). */
   readonly issueKey?: string;
   /** The field's accessible name, shown above it unless `labelHidden`. */
   readonly label: string;

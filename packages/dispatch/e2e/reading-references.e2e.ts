@@ -2,15 +2,16 @@
  * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over the surfaces that show a
  * record through another record's reference to it, and over the search palette: the cards under
  * a body that is nothing but references, the two lines a Dispatch card draws of its target, the
- * hover card over a reference to a comment and to an ask, and the palette's hits. Each is a
- * stored record drawn by the one renderer (R6), so a bare key, an address and a picked party in
- * it draw as their issue's key and current title or as `@` and the session's name, and none is
- * left as a raw `dispatch://`.
+ * hover card over a reference to a comment and to an ask, the palette's hits, and the excerpt a
+ * backlink panel lists a citing record by. Each is a stored record drawn by the one renderer
+ * (R6), so every form a text names a node by draws in it as its node's current name, the party
+ * as `@` and the session's name, and none is left as the characters written.
  *
- * Where each of the three is a link is the host's to say. A body in the Conversation is a record
- * a reader reads, so its references and the cards after it are links. A card, the hover card and
- * a palette row are each one link or one button already, so what they draw of a record links
- * nothing of its own: the references there are inert names.
+ * Where each reference is a link is the host's to say. A body in the Conversation is a record
+ * a reader reads, so its references and the cards after it are links, and so is a backlink's
+ * excerpt, which the panel draws beside the link to its source rather than inside it. A card,
+ * the hover card and a palette row are each one link or one button already, so what they draw
+ * of a record links nothing of its own: the references there are inert names.
  *
  * Each row writes `readingText` through the API into the record its surface shows - a message,
  * a comment or an ask's question as an agent, the ask's answer as alice - and reaches the surface
@@ -19,10 +20,10 @@
  */
 import { answerAsk, createAsk, createComment, createMessage } from "./api";
 import {
+  expectReadsForms,
   expectReadsReferences,
-  READING_SESSION_ID,
-  READING_SESSION_REFERENCE,
-  READING_SESSION_TITLE,
+  formReadings,
+  READING_LEAD,
   type ReadingWorld,
   readingText,
   seedReadingWorld,
@@ -30,15 +31,12 @@ import {
 import { conversationTurn, RENDERED_BODY, referenceAgent } from "./reference-surfaces";
 import { expect, type Locator, type Page, test } from "./test";
 
-/** The word the palette rows search for: a word of `readingText` that no title of the world
- *  holds, so the hits are the records holding the text and no issue besides. The text is nine
- *  words, and an ask is searched by its question and then its answer, eighteen: either is inside
- *  the 24 words of the headline's window, so a hit's snippet is its whole text
+/** Opens the search palette with Ctrl+K, as a reader does on any route, searches for the word
+ *  every reading text opens with, and answers the palette. No title of the world holds that
+ *  word, so the hits are the records holding the text and no issue besides. The text is no
+ *  more than nine words, and an ask is searched by its question and then its answer, eighteen:
+ *  either is inside the 24 words of the headline's window, so a hit's snippet is its whole text
  *  (`pmdoc.SearchSnippet`) whichever of its words matched. */
-const SEARCH_WORD = "ask";
-
-/** Opens the search palette with Ctrl+K, as a reader does on any route, searches for
- *  `SEARCH_WORD`, and answers the palette. */
 async function searchPalette(page: Page): Promise<Locator> {
   await page.goto("/");
   await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
@@ -46,7 +44,7 @@ async function searchPalette(page: Page): Promise<Locator> {
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Search" });
   await expect(dialog).toBeVisible();
-  await page.getByRole("combobox", { name: "Search" }).fill(SEARCH_WORD);
+  await page.getByRole("combobox", { name: "Search" }).fill(READING_LEAD);
   return dialog;
 }
 
@@ -70,57 +68,47 @@ async function hoverCard(page: Page, world: ReadingWorld, reference: string): Pr
   return card;
 }
 
-// SLOW(>=2s): the world's three issues and the host's Conversation drawn with a message's body
-// and the three cards after it.
-test("body-reference-cards: a body of a stored key, an address and a party draws each as its name, and a card for each after it", async ({
+// SLOW(>=2s): the reading world and the host's Conversation drawn with a message's body and the
+// card for each reference after it.
+test("body-reference-cards: a body of nothing but references draws each form as its node's name, and a card for each after it", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
   // A body has cards only when it is its references and nothing else (`Unfurl.tsx`'s
   // `referencesOnly`), so this one is not `readingText`: the picker's party is a link whose words
-  // stand beside its address, and the prose around the other two is words of its own. It holds
-  // the same three references, the party written as its bare address, which reads as the
-  // session's current name alone: the `@` of `readingText` is the words the picker wrote.
-  const body = `${world.keyed.key} dispatch://${world.addressed.key} ${READING_SESSION_REFERENCE}`;
+  // stand beside its address, and the prose around the others is words of its own. It holds the
+  // same forms with only spaces between them, the party written as its bare address, which
+  // reads as the session's current name alone: the `@` of `readingText` is the words the picker
+  // wrote.
+  const forms = formReadings(world).map((reading) =>
+    reading.form === "party"
+      ? { ...reading, reads: reading.name, unread: undefined, written: reading.reference }
+      : reading
+  );
+  const body = forms.map((reading) => reading.written).join(" ");
   const message = await createMessage(world.host.key, { body }, referenceAgent);
 
   await page.goto(`/issues/${world.host.key}/conversation`);
   const turn = conversationTurn(page, "message", message.id);
-  // The body is a record a reader reads, so each reference is a link reading as its target's
-  // current name, and no address is left as text.
-  const rendered = turn.locator(RENDERED_BODY);
-  const drawn = (reference: string) => rendered.locator(`[data-dispatch-ref="${reference}"]`);
-  const keyed = drawn(`dispatch://${world.keyed.key}`);
-  const addressed = drawn(`dispatch://${world.addressed.key}`);
-  const party = drawn(READING_SESSION_REFERENCE);
-  await expect(keyed).toHaveText(`${world.keyed.key} ${world.keyed.title}`);
-  await expect(addressed).toHaveText(`${world.addressed.key} ${world.addressed.title}`);
-  await expect(party).toHaveText(READING_SESSION_TITLE);
-  for (const reference of [keyed, addressed, party]) {
-    await expect(reference).toHaveAttribute("href", /.+/);
-  }
-  await expect(rendered).not.toContainText("dispatch://");
+  // The body is a record a reader reads, so each reference is a link reading as its node's
+  // current name, and none is left as written.
+  await expectReadsForms(turn.locator(RENDERED_BODY), forms, "link");
 
   // The cards after it: one for each reference, in the order the body writes them, each a link
-  // to its target reading as the target's own name, which for an issue is its title alone.
+  // to its node reading as the node's own name, which for an issue is its title alone.
   const region = turn.getByRole("region", { name: "References" });
   const cards = region.getByRole("link");
-  const expected = [
-    { href: `/issues/${world.keyed.key}`, title: world.keyed.title },
-    { href: `/issues/${world.addressed.key}`, title: world.addressed.title },
-    { href: `/agents/${READING_SESSION_ID}/live`, title: READING_SESSION_TITLE },
-  ];
-  await expect(cards).toHaveCount(expected.length);
-  for (const [index, { href, title }] of expected.entries()) {
-    await expect(cards.nth(index)).toHaveAttribute("href", href);
-    await expect(cards.nth(index).locator("span").first()).toHaveText(title);
+  await expect(cards).toHaveCount(forms.length);
+  for (const [index, { name, opens }] of forms.entries()) {
+    await expect(cards.nth(index)).toHaveAttribute("href", opens);
+    await expect(cards.nth(index).locator("span").first()).toHaveText(name);
   }
   await expect(region).not.toContainText("dispatch://");
 });
 
-// SLOW(>=2s): the world's three issues, two messages, and the host's Conversation drawn with the
-// card under the second.
-test("dispatch-reference-card: a card's two lines draw its target's stored key, address and party as names that link nothing", async ({
+// SLOW(>=2s): the reading world, two messages, and the host's Conversation drawn with the card
+// under the second.
+test("dispatch-reference-card: a card's two lines draw every form of its target's stored references as names that link nothing", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -142,9 +130,9 @@ test("dispatch-reference-card: a card's two lines draw its target's stored key, 
   await expectReadsReferences(card.locator("[data-markdown-preview]"), world, "inert");
 });
 
-// SLOW(>=2s): the world's three issues, a comment and a message, and the host's Conversation
-// drawn before the hover card opens over it.
-test("reference-hover-card: the hover card over a reference to a comment draws its stored key, address and party as names that link nothing", async ({
+// SLOW(>=2s): the reading world, a comment and a message, and the host's Conversation drawn
+// before the hover card opens over it.
+test("reference-hover-card: the hover card over a reference to a comment draws every form of its stored references as names that link nothing", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -154,9 +142,9 @@ test("reference-hover-card: the hover card over a reference to a comment draws i
   await expectReadsReferences(card, world, "inert");
 });
 
-// SLOW(>=2s): the world's three issues, an ask and a message, and the host's Conversation drawn
-// before the hover card opens over it.
-test("reference-hover-card-ask: the hover card over a reference to an ask draws its stored key, address and party as names that link nothing", async ({
+// SLOW(>=2s): the reading world, an ask and a message, and the host's Conversation drawn before
+// the hover card opens over it.
+test("reference-hover-card-ask: the hover card over a reference to an ask draws every form of its stored references as names that link nothing", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -166,9 +154,9 @@ test("reference-hover-card-ask: the hover card over a reference to an ask draws 
   await expectReadsReferences(card, world, "inert");
 });
 
-// SLOW(>=2s): the world's three issues, an ask answered by alice, and the palette's search
-// answered by Postgres's headline.
-test("search-ask-status: an ask hit draws its stored question's and answer's key, address and party as names that link nothing", async ({
+// SLOW(>=2s): the reading world, an ask answered by alice, and the palette's search answered by
+// Postgres's headline.
+test("search-ask-status: an ask hit draws every form of its stored question's and answer's references as names that link nothing", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -192,9 +180,9 @@ test("search-ask-status: an ask hit draws its stored question's and answer's key
   await expectReadsReferences(previews.nth(1), world, "inert");
 });
 
-// SLOW(>=2s): the world's three issues, a comment, and the palette's search answered by
-// Postgres's headline.
-test("search-result: a result row's snippet draws a stored key, an address and a party as names that link nothing", async ({
+// SLOW(>=2s): the reading world, a comment, and the palette's search answered by Postgres's
+// headline.
+test("search-result: a result row's snippet draws every form of a stored reference as a name that links nothing", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -205,4 +193,25 @@ test("search-result: a result row's snippet draws a stored key, an address and a
   await expect(hit).toBeVisible();
   // The row is one button, a `control` host, so the snippet links nothing.
   await expectReadsReferences(hit.locator("[data-markdown-preview]"), world, "inert");
+});
+
+// SLOW(>=2s): the reading world, a comment, and the cited issue's page drawn with its header's
+// backlink panel open.
+test("referenced-by-excerpt: a backlink's excerpt draws every form of a stored reference through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // The comment cites the issue its text names by address, so it is one of that issue's
+  // backlinks, and the panel lists it by the head of its own body.
+  await createComment(world.host.key, { body: readingText(world) }, referenceAgent);
+
+  await page.goto(`/issues/${world.addressed.key}`);
+  const header = page.getByTestId("issue-header");
+  await header.getByRole("button", { name: /^Referenced by/ }).click();
+  const panel = header.getByRole("region", { name: "Referenced by" });
+  await expect(panel).toContainText(`Comment · ${world.host.key}`);
+  // The one excerpt the renderer draws here: the issue's other backlink is its own spec
+  // document, which is listed by its name, a line of text. A head short enough to show whole is
+  // a body and a longer one a clamped preview, and both are the renderer's.
+  await expectReadsReferences(panel.locator(".dispatch-markdown"), world, "link");
 });

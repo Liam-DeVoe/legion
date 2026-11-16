@@ -20,17 +20,14 @@ import type {
   Agent,
   AskRead,
   Comment,
-  IssueCollaborators,
   IssueReferenceSummary,
   ItemBlock,
   ItemBlocks,
   Message,
 } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
-import type { AgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { stoppedRoleOptions } from "../refs/party-options";
 import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -182,12 +179,11 @@ function holdControls(): HTMLFieldSetElement {
 }
 
 /** Every source the picker reads when a door opens over the composer, and a read no handler
- *  answers fails its test: the issue's collaborators (its people and the roles nobody is
- *  running), the project's components and the search behind the kinds that need a query. The
- *  rows that are about a stopped role answer the collaborators themselves. The pills under a
- *  draft draw each reference as the stored record will (`RefLink`), so an issue a pill names is
- *  read for its title (`summaryOf`), and a session the registry does not list is asked about
- *  once: Dispatch holds no record of one here. */
+ *  answers fails its test: the issue's collaborators (its people), the project's components and
+ *  the search behind the kinds that need a query. The pills under a draft draw each reference as
+ *  the stored record will (`RefLink`), so an issue a pill names is read for its title
+ *  (`summaryOf`), and a session the registry does not list is asked about once: Dispatch holds
+ *  no record of one here. */
 let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
 let architectureRead: Mock<typeof api.getArchitecture>;
 let searchRead: Mock<typeof api.search>;
@@ -399,6 +395,30 @@ test("a key typed letter by letter reads only the summary of the key the typing 
   }
 });
 
+// A draft emptied takes its pills with it at once, rather than once the typing rests: the clock
+// does not move between the clear and the check.
+test("an emptied draft takes its pills with it at once", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.paste("See CORE-2");
+    await jump(SEARCH_DEBOUNCE_MS);
+    await tick(20);
+    expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([
+      { href: "/issues/CORE-2", name: "CORE-2 Warm the cache" },
+    ]);
+    await user.clear(field);
+    expect(screen.queryByRole("region", { name: "References" })).toBeNull();
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
 // R7: the pills read the draft with the facts the renderer reads the stored record with, and
 // with the record the write will have - here an issue comment, whose `#id`s resolve against its
 // issue's spec. So a bare key whose issue exists and a `#id` the spec declares get the titled
@@ -456,6 +476,112 @@ test("a draft's bare key and #id get the titled pills a reader of the stored tex
   }
 });
 
+// The record the write will have decides which question map a draft's `#id` reads, and nothing
+// else does (`draftSource`): a reply to a comment on an issue is in its parent's scope, so its
+// `#q2` gets the pill that scope declares, never the one the issue's spec would.
+test("a reply's #id gets the pill its parent comment's scope declares, not the spec's", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockImplementation(
+    async (kind) =>
+      kind === "comment"
+        ? {
+            document: "notes-1",
+            questions: [{ ask: "ask-2", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-2" }],
+          }
+        : {
+            document: "spec-1",
+            questions: [{ ask: "ask-3", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-3" }],
+          }
+  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation((id) => Promise.resolve(askRead(id)));
+  const { view } = renderComposer({
+    replyTo: { actor: plannerAuthor, excerpt: "Question", id: "comment-9" },
+  });
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.paste("See #q2 here.");
+    const pills = await screen.findByRole("region", { name: "References" });
+    await waitFor(() =>
+      expect(pillsDrawn(pills)).toEqual([
+        { href: "/issues/CORE-1/asks/ask-2", name: "Which way round?" },
+      ])
+    );
+    expect(getReferenceQuestions.mock.calls).toEqual([["comment", "comment-9"]]);
+  } finally {
+    view.unmount();
+    getReferenceQuestions.mockRestore();
+    getAsk.mockRestore();
+  }
+});
+
+/** The links of this dashboard a rendered body draws, by what each reads as and the page it
+ *  opens. A link whose words are partly formatted is drawn as one anchor for each stretch of
+ *  them, so anchors that follow each other to one page are read as the one link they are. An
+ *  author's link to somewhere else is no reference and is left out. */
+function storedLinks(body: HTMLElement): { href: string | null; name: string }[] {
+  const links: { href: string | null; name: string }[] = [];
+  for (const anchor of within(body).getAllByRole("link")) {
+    const href = anchor.getAttribute("href");
+    if (href?.startsWith("/") !== true) continue;
+    const last = links.at(-1);
+    if (last?.href === href) last.name += anchor.textContent ?? "";
+    else links.push({ href, name: anchor.textContent ?? "" });
+  }
+  return links;
+}
+
+/** Pastes `text` into a comment's draft and holds its pills to `expected`, and to the links the
+ *  stored comment draws for the same text (`storedLinks`). */
+async function expectPillsAsStored(
+  text: string,
+  expected: { href: string; name: string }[]
+): Promise<void> {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+  const stored = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <MarkdownBody markdown={text} source={{ id: "comment-1", kind: "comment" }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await user.click(screen.getByLabelText("Comment"));
+    await user.paste(text);
+    const pills = await screen.findByRole("region", { name: "References" });
+    await waitFor(() => expect(pillsDrawn(pills)).toEqual(expected));
+    await waitFor(() => expect(storedLinks(stored.container)).toEqual(expected));
+  } finally {
+    view.unmount();
+    stored.unmount();
+  }
+}
+
+// A reference written in another link's words is part of those words: the renderer links none
+// under a link (`RefLink.tsx`'s `excludedRefAncestorTags`), so the draft shows no pill for it.
+// The key in the words of a link to somewhere else gets none, and the address beside it gets its
+// own.
+test("a key in the words of a link to somewhere else gets no pill", async () => {
+  await expectPillsAsStored("[see CORE-1 here](https://x) and dispatch://CORE-2", [
+    { href: "/issues/CORE-2", name: "CORE-2 Warm the cache" },
+  ]);
+});
+
+// A link whose words are one issue's key and whose address is another's is one reference, to
+// the issue its address names, read as the words its author wrote.
+test("a key that is the words of a reference's link gets no pill of its own", async () => {
+  await expectPillsAsStored("[CORE-1](dispatch://CORE-2)", [
+    { href: "/issues/CORE-2", name: "CORE-1" },
+  ]);
+});
+
 // R4: a seeded mention's pill reads as `@` and the party's current name, as the stored record
 // will, though the draft wrote the name the session had when the channel seeded it.
 test("a mention's pill reads as @ and the party's current name", async () => {
@@ -479,6 +605,35 @@ test("a mention's pill reads as @ and the party's current name", async () => {
     view.unmount();
     listAgents.mockRestore();
   }
+});
+
+/** The registry names the planner as it is called now, while `text` is read as a draft and as
+ *  the stored comment (`expectPillsAsStored`). */
+async function expectPlannerPillAsStored(text: string, name: string): Promise<void> {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([
+    { ...planner, title: "Planner renamed" },
+  ]);
+  try {
+    await expectPillsAsStored(text, [{ href: "/agents/A/live", name }]);
+  } finally {
+    listAgents.mockRestore();
+  }
+}
+
+// Formatting over all of a mention's words is formatting around the link, so the pill still
+// reads as `@` and the party's current name, as the stored record does.
+test("a mention written bold whole reads as @ and the party's current name in its pill", async () => {
+  await expectPlannerPillAsStored("[**@Planner**](dispatch://agent/A)", "@Planner renamed");
+});
+
+// Formatting over some of a link's words makes them words its author wrote, and so does a code
+// span: the pill keeps them, as the stored record does, rather than reading them as a mention.
+test("a mention's link with part of its words bold reads as the words written in its pill", async () => {
+  await expectPlannerPillAsStored("[@Planner **now**](dispatch://agent/A)", "@Planner now");
+});
+
+test("a mention's link whose words are code reads as the words written in its pill", async () => {
+  await expectPlannerPillAsStored("[`@Planner`](dispatch://agent/A)", "@Planner");
 });
 
 // A mention reaches a draft from the channel it is written in (`seedMentions`) or from the
@@ -1040,74 +1195,6 @@ test("a mention survives its target going offline before Send", async () => {
   }
 });
 
-/** One collaborators answer in the order the server sends it (the contract's: the registry's
- *  agents by role in workflow order and then newest first, then the rest newest first) - the
- *  planner, the reviewer role's newest session and the one it replaced, then a session with no
- *  registry entry. */
-const collaboratorsAnswer: IssueCollaborators = {
-  agents: [
-    {
-      kind: "session",
-      last_at: null,
-      legion: {
-        replaced_at: null,
-        replaced_by: null,
-        role: "planner",
-        role_token: "legion-planner",
-        started_at: "2026-10-26T00:00:00Z",
-      },
-      reasons: [],
-      session_id: "old-planner",
-      title: "Old planner",
-    },
-    {
-      kind: "session",
-      last_at: null,
-      legion: {
-        replaced_at: null,
-        replaced_by: null,
-        role: "reviewer",
-        role_token: "legion-p-core-1-reviewer",
-        started_at: "2026-10-26T02:00:00Z",
-      },
-      reasons: [],
-      session_id: "new-reviewer",
-      title: "New reviewer",
-    },
-    {
-      kind: "session",
-      last_at: null,
-      legion: {
-        replaced_at: "2026-10-26T02:00:00Z",
-        replaced_by: "new-reviewer",
-        role: "reviewer",
-        role_token: "legion-p-core-1-reviewer",
-        started_at: "2026-10-26T01:00:00Z",
-      },
-      reasons: [],
-      session_id: "old-reviewer",
-      title: "Old reviewer",
-    },
-    {
-      kind: "session",
-      last_at: "2026-10-26T03:00:00Z",
-      legion: null,
-      reasons: ["posted"],
-      session_id: "helper",
-      title: "Helper",
-    },
-  ],
-  issue_key: "CORE-1",
-  legion_registry: "ok",
-  people: [],
-};
-
-/** The naming the picker does outside React: no stopped session is in the registry cache, so each
- *  name falls back to the title the collaborators read stamped on it. */
-const storedNames: Pick<AgentText, "sessionText"> = {
-  sessionText: (_sessionId, storedTitle) => storedTitle ?? "",
-};
-
 // An ask option's Enter adds the next option, and the picker's Enter takes the row under it:
 // the field's own listener is in front of the box's handler, so one key cannot do both.
 test("Enter in an ask option takes the picker's row, and adds an option once it is closed", async () => {
@@ -1135,31 +1222,6 @@ test("Enter in an ask option takes the picker's row, and adds an option once it 
     view.unmount();
     listAgents.mockRestore();
   }
-});
-
-// The rule the "Not running" options follow: a role a live agent holds is the live options'
-// (never offered twice), and a role is offered once by its newest session whatever replaced it.
-// A live list whose state is unknown offers no stopped role at all, which `useRefPicker` holds
-// to where it builds the picker's party rows.
-test("stopped role options leave out held roles and name each role once", () => {
-  const answerAgents = collaboratorsAnswer.agents ?? [];
-  const reviewerOnly = stoppedRoleOptions([planner], answerAgents, storedNames);
-  expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
-    ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running"],
-  ]);
-  // The holder the filter matches and the detail tooltip names: that session's own name.
-  expect(reviewerOnly.map((option) => option.holder)).toEqual(["New reviewer"]);
-  // Nobody live holds either role: both, in the order the server sent them (planner, reviewer).
-  expect(
-    stoppedRoleOptions([worker], answerAgents, storedNames).map((option) => option.target)
-  ).toEqual(["role:legion-planner", "role:legion-p-core-1-reviewer"]);
-  // A session the live list names is no stopped option, whatever roles it claims: offered here it
-  // would draw its own `Running` mark inside the "Not running" group.
-  expect(
-    stoppedRoleOptions([{ ...worker, session_id: "new-reviewer" }], answerAgents, storedNames).map(
-      (option) => option.target
-    )
-  ).toEqual(["role:legion-planner"]);
 });
 
 test("two seeded mentions receive one comment-level delivery mode", async () => {
@@ -3168,5 +3230,127 @@ test("a reply that lands while its composer is unmounted refreshes the thread an
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+const remountedDraftKey: MutationKey = ["conversation-composer", "CORE-1", "remounted-draft"];
+
+/** A host that takes its composer off the page and puts it back over one cache, as leaving the
+ *  issue and coming back does: the composer unmounts and a new one mounts, under `mutationKey`
+ *  where the row needs a refused send's draft to come back with it. No issue is found, so the
+ *  read of which document CORE-1's spec is fails. */
+function renderLeavableComposer(mutationKey?: MutationKey) {
+  summaryRead.mockImplementation(() =>
+    Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "no such issue" }))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  function Host(): ReactNode {
+    const [shown, setShown] = useState(true);
+    return (
+      <>
+        <button onClick={() => setShown((current) => !current)} type="button">
+          {shown ? "Leave the page" : "Come back"}
+        </button>
+        {shown ? (
+          <MentionComposer
+            box="conversation-composer"
+            mutationKey={mutationKey}
+            onClose={() => {}}
+            onSent={() => {}}
+            owner={{ issueKey: "CORE-1", kind: "issue" }}
+          />
+        ) : null}
+      </>
+    );
+  }
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <Host />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { specRead: () => queryClient.getQueryState(["issue-summary", "CORE-1"]), view };
+}
+
+// The read of which document an issue's spec is belongs to a reference (`useReferenceQuery`):
+// once it has failed, a composer that mounts again with the draft that asked for it reads the
+// failure that is there. The draft comes back with the composer because its send was refused.
+test("a spec summary read that failed is not asked again when the composer mounts again with its draft", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(commentRefused);
+  const { specRead, view } = renderLeavableComposer(remountedDraftKey);
+
+  try {
+    await user.click(screen.getByLabelText("Comment"));
+    await user.paste("See #q2 here.");
+    await waitFor(() => expect(specRead()?.status).toBe("error"));
+    expect(summaryRead).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+
+    await user.click(screen.getByRole("button", { name: "Leave the page" }));
+    await user.click(screen.getByRole("button", { name: "Come back" }));
+    expect(screen.getByLabelText<HTMLTextAreaElement>("Comment").value).toBe("See #q2 here.");
+    // A mount that asks starts its read as it subscribes, inside the render's own `act`, so the
+    // read stands idle after one that asks nothing.
+    expect(specRead()?.fetchStatus).toBe("idle");
+    expect(summaryRead).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+/** Pastes `draft` into the composer on the page and lets the pills read it: the typing rests,
+ *  and whatever that asks is answered. The rows that call it hold the clock. */
+async function draftRested(user: UserEvent, draft: string): Promise<void> {
+  await user.click(screen.getByLabelText("Comment"));
+  await user.paste(draft);
+  await jump(SEARCH_DEBOUNCE_MS);
+  await tick(20);
+}
+
+// A draft comes to name a `#id` after its composer mounted, which is when the read is first
+// wanted. Here it is the same composer's draft, which loses its `#id` and names one again: the
+// read that failed is not asked again.
+test("a draft that names a #id again does not ask a failed spec summary read again", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { specRead, view } = renderLeavableComposer();
+
+  try {
+    await draftRested(user, "See #q2 here.");
+    expect(specRead()?.status).toBe("error");
+    expect(summaryRead).toHaveBeenCalledTimes(1);
+    await user.clear(screen.getByLabelText("Comment"));
+    await draftRested(user, "See #q2 again.");
+    expect(summaryRead).toHaveBeenCalledTimes(1);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// And here it is a new composer's draft, empty when it mounts, which names a `#id` once the
+// reader types it: the read that failed for the composer before it is not asked again.
+test("a new composer's draft that comes to name a #id does not ask a failed spec summary read again", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { specRead, view } = renderLeavableComposer();
+
+  try {
+    await draftRested(user, "See #q2 here.");
+    expect(specRead()?.status).toBe("error");
+    expect(summaryRead).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Leave the page" }));
+    await user.click(screen.getByRole("button", { name: "Come back" }));
+    await draftRested(user, "See #q2 here.");
+    expect(summaryRead).toHaveBeenCalledTimes(1);
+  } finally {
+    realClock();
+    view.unmount();
   }
 });

@@ -2,12 +2,13 @@
  * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over the four places a
  * broadcast shows text: a recipient's reply and the broadcast's own body on the broadcast's page,
  * the one-line body of its row on the Broadcasts list, and the row its send leaves on the Agents
- * page. The reply is a message, a record of this Dispatch; the other three are the broadcast,
- * which is no record of the reference graph (the reading list's `BROADCAST_REASON`), so a `#id`
- * in them names nothing. That changes nothing about a bare key, an address or a picked party,
- * which each of the four draws through the one renderer (R6): the key and the address as their
- * issue's key and current title, the party as `@` and the session's name, and no `dispatch://`
- * left as text.
+ * page. The reply is a message, a record of this Dispatch, though one on no issue, so it
+ * belongs to no document; the other three are the broadcast, which is no record of the
+ * reference graph (the reading list's `BROADCAST_REASON`). So a `#id` in any of the four names
+ * nothing, as each row of the list says (`cannotCarry`). That changes nothing about the five
+ * other forms a text names a node by, which each of the four draws through the one renderer
+ * (R6): as its node's current name, the party as `@` and the session's name, and none left as
+ * the characters written.
  *
  * The host decides whether those are links. The broadcast's page draws the reply and the body
  * in its own article and header, and a send row draws its text beside its status and its
@@ -41,9 +42,9 @@ async function broadcastToReadingSession(body: string) {
   return sent;
 }
 
-// SLOW(>=2s): the world's three issues, a broadcast sent and answered, and the broadcast's page
-// drawn with each reference's title read.
-test("broadcast-recipient-reply: a recipient's reply on the broadcast's page draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, a broadcast sent and answered, and the broadcast's page drawn
+// with each reference's title read.
+test("broadcast-recipient-reply: a recipient's reply on the broadcast's page draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -65,9 +66,9 @@ test("broadcast-recipient-reply: a recipient's reply on the broadcast's page dra
   await expectReadsReferences(row.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, a broadcast sent, and the broadcast's page drawn with each
+// SLOW(>=2s): the reading world, a broadcast sent, and the broadcast's page drawn with each
 // reference's title read.
-test("broadcast-sent-body: the broadcast's body under its page's heading draws a key, an address and a party through the renderer", async ({
+test("broadcast-sent-body: the broadcast's body under its page's heading draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -78,9 +79,9 @@ test("broadcast-sent-body: the broadcast's body under its page's heading draws a
   await expectReadsReferences(header.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, the Agents page drawn, a recipient ticked, the text typed
-// and sent, and the refused send's row drawn.
-test("broadcast-send-row: a send's row on the Agents page draws a key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, the Agents page drawn, a recipient ticked, the text typed and
+// sent, and the refused send's row drawn.
+test("broadcast-send-row: a send's row on the Agents page draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -102,7 +103,7 @@ test("broadcast-send-row: a send's row on the Agents page draws a key, an addres
   await expectReadsReferences(row.locator("[data-markdown-preview]"), world, "link");
 });
 
-test("broadcasts-list-body: a Broadcasts row's one-line body draws a key, an address and a party as names inside the row's link", async ({
+test("broadcasts-list-body: a Broadcasts row's one-line body draws every form but a question id as a name inside the row's link", async ({
   page,
 }) => {
   const world = await seedReadingWorld();

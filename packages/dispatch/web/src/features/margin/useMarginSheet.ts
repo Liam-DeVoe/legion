@@ -13,7 +13,7 @@ import type { CarriedBlockIds } from "../conversation/send-request";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
-import { parseIssuePath, parseProjectPath } from "../refs/routes";
+import { DECISIONS_DOCUMENT_SLUG, parseIssuePath, parseProjectPath } from "../refs/routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";
@@ -158,6 +158,11 @@ export function useMarginSheet(): MarginSheetModel {
         : artifactAtAddress(issue.data?.artifacts, routeArtifactSlug)
       : documentArtifact.data;
   const visibleArtifactId = visibleArtifact?.id;
+  // The issue's `decisions.md`, by the same find the Decisions panel makes: the record a margin
+  // decision card's text is, so a `#id` in it names a question block of that document.
+  const decisionsDocumentId = issue.data?.artifacts?.find(
+    (artifact) => artifact.slug === DECISIONS_DOCUMENT_SLUG && artifact.kind === "doc"
+  )?.id;
   const removePin = useCallback(
     (id: string) => {
       if (owner?.kind === "issue") writePin(queryClient, owner.key, { id, op: "unpin" });
@@ -201,6 +206,7 @@ export function useMarginSheet(): MarginSheetModel {
     retryItem,
     threads,
   } = useMarginItems(owner, tab, visibleArtifact, markPlacements, blockPlacements, blockFilterId, {
+    decisionsDocumentId,
     documentShown: placementsPublished,
     held: heldReplyKeys,
   });

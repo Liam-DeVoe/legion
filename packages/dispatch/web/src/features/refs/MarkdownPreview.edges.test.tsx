@@ -312,10 +312,12 @@ test("an ask's unfurl card never borrows its issue's status, and reads no issue,
   );
   try {
     await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-1"));
-    // The ask has not answered: the card says what it is, not the issue's status.
+    // The ask has not answered: the card says what it is, not the issue's status. Its words are
+    // the body's own, read by the one reader as every body reads them - an address not yet
+    // resolved is its short form - never the characters the body stores.
     await tick(20);
     const card = within(view.container).getByRole("link");
-    expect(card.textContent).toBe("dispatch://CORE-1/ask/ask-1");
+    expect(card.textContent).toBe("CORE-1 ask");
     expect(card.textContent).not.toContain("in_progress");
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();

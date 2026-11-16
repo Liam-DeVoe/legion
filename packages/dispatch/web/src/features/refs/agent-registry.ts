@@ -7,12 +7,15 @@ import type { Agent } from "../../api/types";
 /**
  * The agent registry (`GET /api/v1/agents`: the sessions the Envoy listener lists, as of
  * Dispatch's copy of its list, at most 5 s old) as every surface reads it. One query key, one
- * lookup built per response, and one poller:
- * `AgentRegistryPoller`, mounted once in the app shell, refreshes the registry every 15 s while
- * anything registered through `useRegistryPolling` is mounted (each session `AgentName`, each
- * `useAgents(…, true)` caller). A reader never polls on its own: TanStack runs one interval
- * per observer, so N readers mounted at different times would fetch up to N times per 15 s.
- * The poller keeps TanStack's default of not polling a hidden tab.
+ * lookup built per response, and one poller: `AgentRegistryPoller`, mounted once in the app
+ * shell, refreshes the registry every 15 s while anything registered through `useRegistryPolling`
+ * is mounted: each enabled `useAgentRegistry` reader (a session's `AgentName`, a claim chip, the
+ * issues table's claim filter, the search palette's send offer), each `useAgents(…, true)`
+ * caller, and each reference to a session or a role a surface draws (`useReferenceData` in
+ * `reference-target.ts`), so a session renamed or a role taken up while the page is open reads
+ * as it is now. A reader never polls on its own: TanStack runs one interval per observer, so N
+ * readers mounted at different times would fetch up to N times per 15 s. The poller keeps
+ * TanStack's default of not polling a hidden tab.
  */
 
 /** A session's running state, from the registry only. `running`: listed by the latest
@@ -145,6 +148,10 @@ export interface AgentRegistry {
  * Reads the registry. `enabled` fetches it (a first load only: it never refetches on mount, the
  * shell's poller refreshes it) and registers with the poller; disabled, it still reads whatever
  * the cache holds, so its titles name agents but its states stay `unknown` until a read lands.
+ * A read that failed is not asked again by a reader that mounts after it either: a page draws an
+ * agent's name in many places, and each of them would ask a failed registry again with every
+ * try the dashboard's retry rule allows, where the poller's own interval already asks it again
+ * every 15 s (INFRA-1196, build rulings part 6).
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
@@ -152,6 +159,7 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,
+    retryOnMount: false,
   });
   const agents = data ?? EMPTY_AGENTS;
   const lookup = registryLookup(agents);

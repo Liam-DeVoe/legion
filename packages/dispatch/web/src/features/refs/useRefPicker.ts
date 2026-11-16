@@ -1,23 +1,24 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { api, isSourceNotFound } from "../../api/client";
 import { issueCollaboratorsQuery, usersQuery } from "../../api/queries";
 import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api/types";
+import { useSettled } from "../../hooks/useSettled";
 import { useAgents } from "../conversation/useAgents";
 import { searchResultKind, stepActive } from "../search/search-model";
 import { useAgentText } from "./AgentName";
 import { withBlock } from "./block-reference";
-import { type MentionOption, mentionOptions, stoppedRoleOptions } from "./party-options";
+import { type MentionOption, mentionOptions } from "./party-options";
 import {
   groupRows,
   insertionFor,
   matchesQuery,
   orderedRows,
   REF_PICKER_INSTRUCTION,
-  REF_PICKER_NO_PARTS_WORDS,
+  REF_PICKER_PARTS_WORDS,
   REF_PICKER_QUERY_MIN,
   REF_PICKER_SEARCH_LIMIT,
   REF_PICKER_SEARCHED_KINDS,
@@ -27,6 +28,7 @@ import {
   type RefPickerKeyResult,
   type RefPickerKind,
   type RefPickerParties,
+  type RefPickerParts,
   type RefPickerRow,
   type RefPickerState,
   type RefPickerTrigger,
@@ -44,7 +46,7 @@ import {
 
 /** How long after the last keystroke the search goes out, here and in the search palette
  *  (`features/search/SearchPalette.tsx`), so the two surfaces put the same load on the route;
- *  and how long a draft's pills wait before they read it (`MentionComposer.tsx`). */
+ *  and how long a draft's pills wait before they read it (`draft-pills.tsx`). */
 export const SEARCH_DEBOUNCE_MS = 150;
 
 /** How much of a snippet or of a block's text a row shows: enough to tell two rows apart, short
@@ -58,8 +60,8 @@ const ROW_TEXT_MAX = 120;
 export interface RefPickerOptions {
   readonly text: string;
   readonly caret: number;
-  /** The issue the box writes on, when it has one: its collaborators are the people and the
-   *  stopped Legion roles this box offers. A box with none offers everyone who has signed in. */
+  /** The issue the box writes on, when it has one: its collaborators are the people this box
+   *  offers. A box with none offers everyone who has signed in. */
   readonly issueKey?: string;
   /** The project whose components the picker offers; taken from the issue's key when the box
    *  names an issue and no project of its own. */
@@ -84,11 +86,8 @@ export interface RefPicker {
   readonly parties: RefPickerParties;
   /** The one instruction row, while the query is too short for the search route to answer. */
   readonly instruction: string | undefined;
-  /** The address whose parts are listed - a node's blocks, or an agent's documents - while the
-   *  reader has a row open for them. */
-  readonly openedParts: string | undefined;
-  /** What the list says under the opened row once its parts are read and hold none
-   *  (`REF_PICKER_NO_PARTS_WORDS`); undefined otherwise. */
+  /** What the list says under the opened row once its parts are read and hold none, in the
+   *  words of their kind (`REF_PICKER_PARTS_WORDS`); undefined otherwise. */
   readonly partsNote: string | undefined;
   /** What the picker did with a key the host handed it, and the insertion when it took a row. */
   readonly pressKey: (key: string) => RefPickerKeyResult;
@@ -138,6 +137,7 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
     const kind = searchResultKind(hit.kind);
     if (route === undefined || kind === undefined) return [];
     const reference = buildDispatchReference(route);
+    const parts: RefPickerParts = { address: reference, kind: "blocks" };
     return [
       {
         detail: shortForm(route),
@@ -145,16 +145,16 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
         kind,
         label: hitLabel(hit),
         reference,
-        ...(kind === "issue" ? {} : { parts: reference }),
+        ...(kind === "issue" ? {} : { parts }),
       },
     ];
   });
 }
 
-/** A party's row: a session, or a role, by the one list the composer's delivery modes read
- *  (`party-options.ts`), so a party offered here and the same party offered as a mention cannot
- *  be two rules about who is running. A session's row opens its conversation's documents, as a
- *  node's opens its blocks; a role holds none of its own. */
+/** A party's row: a session, or a role a session holds, by the one list the composer's delivery
+ *  modes read (`party-options.ts`), so a party offered here and the same party offered as a
+ *  mention cannot be two rules about who is running. A session's row opens its conversation's
+ *  documents, as a node's opens its blocks; a role holds none of its own. */
 function partyRow(option: MentionOption): RefPickerRow {
   // A `role:<token>` option names a role; a `session:` one names a session, which is the pair
   // `partyOfAddress` reads an address by (`routes.ts`).
@@ -174,7 +174,7 @@ function partyRow(option: MentionOption): RefPickerRow {
     id: `ref-picker-agent-${option.sessionId}`,
     kind: "agent",
     label: option.title,
-    parts: reference,
+    parts: { kind: "documents", session: option.sessionId },
     reference,
   };
 }
@@ -254,9 +254,10 @@ function partiesState(live: {
  * The reference picker's rows and its keyboard, over every kind Dispatch holds. Each source is
  * read only while a door is open, and only the search is read per keystroke - debounced, with
  * the door's kinds and a small limit, and never below two characters, which the route refuses.
- * The parties come from the registry the shell already polls and from the issue's collaborators;
- * a project's components are read once and filtered here; a node's blocks are read only when the
- * reader opens that node's row, and an agent's documents only when the reader opens its row.
+ * The parties come from the registry the shell already polls, and the people from the issue's
+ * collaborators; a project's components are read once and filtered here; a node's blocks are
+ * read only when the reader opens that node's row, and an agent's documents only when the reader
+ * opens its row.
  */
 export function useRefPicker({
   caret,
@@ -272,19 +273,16 @@ export function useRefPicker({
   if (dismissed !== undefined && trigger?.start !== dismissed.start) setDismissed(undefined);
   const open = trigger !== undefined && trigger.start !== dismissed?.start;
   const query = open ? trigger.query : "";
-  const [debounced, setDebounced] = useState("");
+  const debounced = useSettled(query, SEARCH_DEBOUNCE_MS);
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
-  const [openedParts, setOpenedParts] = useState<string | undefined>(undefined);
+  /** The row whose parts the reader opened - its id, so a row the query lists again is the
+   *  same row - while they are open. */
+  const [openedId, setOpenedId] = useState<string | undefined>(undefined);
   // A closed picker holds no highlight: the next open starts on its own first row, rather than
   // on a row this open never drew - the same row, listed again, would otherwise be what Enter
   // takes.
   if (!open && activeId !== undefined) setActiveId(undefined);
-  if (!open && openedParts !== undefined) setOpenedParts(undefined);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(query), SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [query]);
+  if (!open && openedId !== undefined) setOpenedId(undefined);
 
   const typing = query !== debounced;
   const searching =
@@ -317,32 +315,14 @@ export function useRefPicker({
     ...architectureQuery(componentProject),
     enabled: readsComponents,
   });
-  // What an opened row lists, which its address says: an agent's row its conversation's
-  // documents, any other row its node's blocks. Each read runs only for the row it serves.
-  const openedRoute = openedParts === undefined ? undefined : parseNodeReference(openedParts);
-  const openedSession = openedRoute?.kind === "agent-session" ? openedRoute.session : undefined;
-  const readsBlocks = openedParts !== undefined && openedSession === undefined;
-  const parts = useQuery({
-    enabled: readsBlocks,
-    queryFn: () => api.getReferences(openedParts ?? "", { kind: "part_of" }),
-    queryKey: ["references", "to", openedParts, "part_of"],
-  });
-  const documents = useQuery({
-    ...agentArtifactsQuery(openedSession),
-    enabled: openedSession !== undefined,
-  });
-
   // The rows whose source is a list rather than the query: the parties, the people and the
   // components, built once per answer and filtered below. A keystroke changes the query alone,
   // so it re-runs no sort of the live registry and no date of a row it already has.
   const listed = useMemo(() => {
     if (!open) return [];
-    // A live list that is not current says nothing about who is absent, so no role is offered as
-    // not running under it - the rule the composer's own options follow.
-    const stopped = live.current
-      ? stoppedRoleOptions(live.agents, collaborators.data?.agents ?? [], agentText)
-      : [];
-    const parties = [...mentionOptions(live.agents, agentText), ...stopped].map(partyRow);
+    // The registry's sessions and the roles they hold: a role nobody holds is no party, since
+    // the reader draws it as the words written and the server tells nobody of it (`roleHolders`).
+    const parties = mentionOptions(live.agents, agentText).map(partyRow);
     const logins =
       issueKey === undefined
         ? (users.data ?? []).map((user) => user.login)
@@ -378,42 +358,60 @@ export function useRefPicker({
     componentProject,
     issueKey,
     live.agents,
-    live.current,
     open,
     users.data,
   ]);
+
+  // The parties, the people and the components are listed whole and filtered here; the hits the
+  // server ranked for this query are not filtered again (`matchesQuery`).
+  const drawn = useMemo(
+    () =>
+      open
+        ? [
+            ...listed.filter((row) => matchesQuery(row, query)),
+            ...searchRows(search.data?.results ?? []),
+          ]
+        : [],
+    [listed, open, query, search.data]
+  );
+  // The row whose parts the reader opened, while the list still draws it. What its parts are
+  // says what to read - a node's blocks, or an agent's documents - and each read runs only for
+  // the row it serves.
+  const opened = openedId === undefined ? undefined : drawn.find((row) => row.id === openedId);
+  const openedParts = opened?.parts;
+  const openedNode = openedParts?.kind === "blocks" ? openedParts.address : undefined;
+  const openedSession = openedParts?.kind === "documents" ? openedParts.session : undefined;
+  const parts = useQuery({
+    enabled: openedNode !== undefined,
+    queryFn: () => api.getReferences(openedNode ?? "", { kind: "part_of" }),
+    queryKey: ["references", "to", openedNode, "part_of"],
+  });
+  const documents = useQuery({
+    ...agentArtifactsQuery(openedSession),
+    enabled: openedSession !== undefined,
+  });
 
   const { partsNote, rows } = useMemo((): {
     readonly partsNote: string | undefined;
     readonly rows: readonly RefPickerRow[];
   } => {
-    if (!open) return { partsNote: undefined, rows: [] };
-    // The parties, the people and the components are listed whole and filtered here; the hits
-    // the server ranked for this query are not filtered again (`matchesQuery`).
-    const drawn = [
-      ...listed.filter((row) => matchesQuery(row, query)),
-      ...searchRows(search.data?.results ?? []),
-    ];
     // An opened row's parts are listed while that row is: they are its, and reached by it. Once
     // their read answers none, the list says so under them.
-    const opened =
-      openedParts === undefined ? undefined : drawn.find((row) => row.parts === openedParts);
     if (opened === undefined || openedParts === undefined)
       return { partsNote: undefined, rows: drawn };
-    const agent = opened.kind === "agent";
-    const held = agent
-      ? documents.data === undefined
-        ? undefined
-        : documentRows(documents.data)
-      : parts.data === undefined
-        ? undefined
-        : blockRows(openedParts, opened.kind, parts.data);
+    const held =
+      openedParts.kind === "documents"
+        ? documents.data === undefined
+          ? undefined
+          : documentRows(documents.data)
+        : parts.data === undefined
+          ? undefined
+          : blockRows(openedParts.address, opened.kind, parts.data);
     return {
-      partsNote:
-        held?.length === 0 ? REF_PICKER_NO_PARTS_WORDS[agent ? "documents" : "blocks"] : undefined,
+      partsNote: held?.length === 0 ? REF_PICKER_PARTS_WORDS[openedParts.kind].none : undefined,
       rows: held === undefined ? drawn : [...drawn, ...held],
     };
-  }, [documents.data, listed, open, openedParts, parts.data, query, search.data]);
+  }, [documents.data, drawn, opened, openedParts, parts.data]);
 
   const groups = useMemo(
     () => (trigger === undefined || !open ? [] : groupRows(rows, trigger.door)),
@@ -437,7 +435,7 @@ export function useRefPicker({
       failed: architecture.isError && !isSourceNotFound(architecture.error),
       pending: architecture.isPending,
     },
-    { asked: readsBlocks, failed: parts.isError, pending: parts.isPending },
+    { asked: openedNode !== undefined, failed: parts.isError, pending: parts.isPending },
     {
       asked: openedSession !== undefined,
       failed: documents.isError,
@@ -470,11 +468,11 @@ export function useRefPicker({
       return { action: "moved" };
     }
     if (key === "ArrowRight" && active?.parts !== undefined) {
-      setOpenedParts(active.parts);
+      setOpenedId(active.id);
       return { action: "opened-parts" };
     }
-    if (key === "ArrowLeft" && openedParts !== undefined) {
-      setOpenedParts(undefined);
+    if (key === "ArrowLeft" && openedId !== undefined) {
+      setOpenedId(undefined);
       return { action: "opened-parts" };
     }
     if (key === "Enter" || key === "Tab") {
@@ -491,10 +489,9 @@ export function useRefPicker({
     highlight: setActiveId,
     instruction: open && query.length < REF_PICKER_QUERY_MIN ? REF_PICKER_INSTRUCTION : undefined,
     open,
-    openedParts,
     openParts: (id: string) => {
       const row = ordered.find((candidate) => candidate.id === id);
-      if (row?.parts !== undefined) setOpenedParts(row.parts);
+      if (row?.parts !== undefined) setOpenedId(row.id);
     },
     parties,
     partsNote,

@@ -3,7 +3,9 @@ import {
   expectReadsReferences,
   READING_SESSION_ID,
   READING_SESSION_TITLE,
+  readingQuestionBlock,
   readingText,
+  scopedTo,
   seedReadingWorld,
 } from "./reading-rows";
 import { conversationTurn, RENDERED_BODY } from "./reference-surfaces";
@@ -14,8 +16,8 @@ import { expect, test } from "./test";
  * the Activity tab's event body, the three turns of the Conversation tab and the quote above a
  * reply there, and a decision on the Decisions tab. Each row writes the one reading text into
  * the record its surface shows, through the API as an agent or a person writes it, reaches the
- * surface the way its row of `DISPATCH_READING_SURFACES` says, and reads there a bare key, a
- * `dispatch://` address and a picked party drawn through the one renderer (R6).
+ * surface the way its row of `DISPATCH_READING_SURFACES` says, and reads there every form a
+ * text names a node by, drawn through the one renderer (R6).
  *
  * Every surface here is a record a reader reads, so each reference is a link, but for the quote
  * above a reply: the quote is the link to its parent's turn, so the references inside it draw as
@@ -33,7 +35,7 @@ const DECISION = "Read the references";
 
 // SLOW(>=2s): seeds the reading world and a comment, loads the Activity tab, pins the comment's
 // row, and opens the margin's Pinned tab, which reads the pinned event back before it draws it.
-test("activity-event-body: a pinned Activity event draws a stored key, an address and a party through the renderer", async ({
+test("activity-event-body: a pinned Activity event draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -55,9 +57,10 @@ test("activity-event-body: a pinned Activity event draws a stored key, an addres
   await expectReadsReferences(margin.locator("article").locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): seeds the reading world - a project, the fake registry's session and three issues -
-// and a two-message thread before one cold load of the Conversation.
-test("conversation-reply: a reply turn draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): seeds the reading world - a project, the fake registry's session, four issues, a
+// comment and a settled question - and a two-message thread before one cold load of the
+// Conversation.
+test("conversation-reply: a reply turn draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -76,7 +79,7 @@ test("conversation-reply: a reply turn draws a stored key, an address and a part
   await expectReadsReferences(turn.locator(RENDERED_BODY), world, "link");
 });
 
-test("conversation-message: a message turn draws a stored key, an address and a party through the renderer", async ({
+test("conversation-message: a message turn draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -91,7 +94,7 @@ test("conversation-message: a message turn draws a stored key, an address and a 
   );
 });
 
-test("conversation-targeted-message: a message sent to a session draws a stored key, an address and a party through the renderer", async ({
+test("conversation-targeted-message: a message sent to a session draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -110,7 +113,7 @@ test("conversation-targeted-message: a message sent to a session draws a stored 
   await expectReadsReferences(card.locator(RENDERED_BODY), world, "link");
 });
 
-test("reply-quote: the quote above a reply draws its parent's key, address and party as names inside its link", async ({
+test("reply-quote: the quote above a reply draws every form of its parent's references as a name inside its link", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -130,23 +133,31 @@ test("reply-quote: the quote above a reply draws its parent's key, address and p
   await expectReadsReferences(quote, world, "inert");
 });
 
-test("issue-decision: a decision's paragraph draws a stored key, an address and a party through the renderer", async ({
+test("issue-decision: a decision's paragraph draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const seeded = await seedReadingWorld();
+  // A decision is a passage of `decisions.md`, so a `#id` in it is read against that document:
+  // the document declares the question block itself, ahead of its first decision, and the world
+  // is scoped to it.
   const decisions = await createIssueArtifact(
-    world.host.key,
-    { content: `## ${DECISION}\n\n${readingText(world)}\n`, name: "decisions.md" },
+    seeded.host.key,
+    {
+      content: `${readingQuestionBlock()}\n\n## ${DECISION}\n\n${readingText(seeded)}\n`,
+      name: "decisions.md",
+    },
     readingAgent
   );
   expect(decisions.artifact.slug).toBe("decisions-md");
+  const world = await scopedTo(seeded, decisions.artifact.id);
 
-  // An agent's decision that nobody has kept waits for the reader's review.
+  // A decision whose text names a question is one a person's answer made (`readDecisions`), so
+  // the panel lists it among the reader's own rather than as an agent's waiting for review.
   await page.goto(`/issues/${world.host.key}/decisions`);
-  const card = page
-    .getByRole("region", { name: "Waiting for your review" })
-    .locator("[data-decision]");
+  const card = page.getByRole("region", { name: "Your decisions" }).locator("[data-decision]");
   await expect(card.getByRole("heading", { name: DECISION })).toBeVisible();
 
-  await expectReadsReferences(card.locator(RENDERED_BODY), world, "link");
+  // The card draws its heading through the renderer as well, as one line; its paragraphs are
+  // its one block body, which is where the stored text is.
+  await expectReadsReferences(card.locator(`div${RENDERED_BODY}`), world, "link");
 });

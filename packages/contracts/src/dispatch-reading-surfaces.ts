@@ -19,11 +19,17 @@
  *
  * Either way the row carries the `reason`, and the call site carries a pointer to the row
  * rather than a second copy of the words that can drift from it.
+ *
+ * Every mount of the renderer, of a reference card and of the plain-text projection names its
+ * row in its own `surface`, typed by `DispatchReadingSurface` so a misspelt id does not compile.
+ * A unit test (`surface-lists.test.ts`) holds this list to those mounts, and fails on a stored
+ * text the dashboard draws as its characters with no excluded row named beside it.
  */
 
 /** Where a reader reads a stored record: one id per surface, whatever route draws it. */
 export type DispatchReadingSurface =
   | "activity-event-body"
+  | "event-line"
   | "agents-row-reply"
   | "agents-row-message"
   | "agent-turn-text"
@@ -42,6 +48,9 @@ export type DispatchReadingSurface =
   | "conversation-targeted-message"
   | "reply-quote"
   | "approval-review-reason"
+  | "agent-held-send"
+  | "session-switch-answer"
+  | "conversation-handoff-body"
   | "ask-card-question"
   | "ask-edit-history"
   | "ask-answer-history"
@@ -50,17 +59,32 @@ export type DispatchReadingSurface =
   | "ask-option-text"
   | "ask-thread-reply"
   | "inbox-ask-row"
+  | "inbox-control-name"
   | "approval-ask-question"
   | "inbox-thread-turn"
   | "my-reply-subject"
   | "inbox-thread-title"
   | "issue-decision"
+  | "issue-decision-link"
+  | "issue-open-question"
+  | "item-match-first-line"
   | "issue-components-reason"
   | "margin-decision-passage"
   | "margin-pinned-conversation"
   | "margin-suggestion-diff"
   | "margin-comment-body"
   | "margin-thread-preview"
+  | "anchor-quote"
+  | "document-body"
+  | "document-version-body"
+  | "document-open-decision"
+  | "check-text"
+  | "check-negative-control"
+  | "check-result-observed"
+  | "check-result-negative-control"
+  | "check-retraction-reason"
+  | "referenced-by-excerpt"
+  | "referenced-by-title"
   | "priority-description"
   | "body-reference-cards"
   | "dispatch-reference-card"
@@ -78,12 +102,32 @@ export type DispatchReadingSurface =
   | "delivery-population-authors"
   | "delivery-excluded-repos";
 
+/**
+ * The six ways a stored text names a node, each of which a rendered surface reads as the node's
+ * name and opens (INFRA-1702's check A7): an issue key written bare, a `dispatch://` address, a
+ * URL of this dashboard, a question block's `#id`, an address whose item id is written short,
+ * and a mention of a party. Five of them are read from the text and the graph alone. A
+ * question id is read against the document the text's own record belongs to, so a surface
+ * whose text is no record, or is a record that belongs to no document, cannot carry it.
+ */
+export const DISPATCH_READING_FORMS = [
+  "bare-key",
+  "address",
+  "dashboard-url",
+  "question-id",
+  "short-id",
+  "party",
+] as const;
+
+export type DispatchReadingForm = (typeof DISPATCH_READING_FORMS)[number];
+
 /** One row of DISPATCH_READING_SURFACES: one surface a reader reads a record on. */
 export interface DispatchReadingSurfaceRow {
   readonly surface: DispatchReadingSurface;
   /** The source files that draw it, from the repository root. A rendered surface is found in
-   *  one of them by its renderer mount; an excluded one by the comment there naming this row,
-   *  which is the whole tie between the reason and the place it excuses. */
+   *  one of them by a mount of the renderer, a card or the plain-text projection whose `surface`
+   *  names this row; an excluded one by the comment there naming this row, which is the whole
+   *  tie between the reason and the place it excuses. */
   readonly files: readonly string[];
   /** How a test reaches it: the route that draws it and the handle under that route. A route
    *  that names an issue, a project, a document or a session writes that part as `<ISSUE>`,
@@ -99,7 +143,25 @@ export interface DispatchReadingSurfaceRow {
   /** Why the surface is excluded: why it does not render through the one renderer, or why its
    *  text is no record. Only a row with `record` or `rendered` false carries one. */
   readonly reason?: string;
+  /** The forms of `DISPATCH_READING_FORMS` this surface cannot carry, and why. A rendered
+   *  surface whose text is no record names the question id here, and so does one whose record
+   *  belongs to no document. The row's browser driver reads this, so the text it stores holds
+   *  every other form and the surface is held to each of them (`e2e/reading-rows.ts`). */
+  readonly cannotCarry?: DispatchReadingUncarried;
 }
+
+/** The forms a surface cannot carry, and what about the surface's text makes that so. */
+export interface DispatchReadingUncarried {
+  readonly forms: readonly DispatchReadingForm[];
+  readonly why: string;
+}
+
+/** What a rendered surface whose text is no record cannot carry, which is what each such row's
+ *  `reason` says of its own text. */
+const NO_QUESTION_ID: DispatchReadingUncarried = {
+  forms: ["question-id"],
+  why: "The text is no record, so the renderer is given no `source` for it and a `#id` in it names nothing.",
+};
 
 /** Why a broadcast's own text is no record: the graph holds the copy each recipient got, never
  *  the broadcast, which is what the three broadcast surfaces say. */
@@ -122,6 +184,27 @@ const SETTINGS_REASON =
 const NOT_ARCHITECTURAL_REASON =
   "An issue's reason for touching no component is no record of the reference graph: it is none of the four kinds a `TextSource` names (an artifact, an ask, a comment, a message), and the components write stores it as an attribute of the issue's attachment and indexes nothing from it - so a `#id` in it declares nothing and names nothing.";
 
+/** Why a link's words, a `title` and a control's name draw a stored text as plain words: none of
+ *  the three can hold markup, so each takes the one reader's plain-text projection of the text
+ *  rather than the text as its writer wrote it. */
+const PLAIN_WORDS_REASON =
+  "The place holds no markup, so it draws the text's plain-text projection (`PlainText`, `usePlainHeadline`): its words with the formatting gone and each reference read as its target's name, never the text's source.";
+
+/** What a place that draws the projection shows before the reader's engine has answered, where
+ *  a blank there would leave a link with no words or a control with no name. */
+const LOAD_STATE_REASON =
+  "Until the reader's engine has answered, the place carries the text as written, which is a load state rather than a second reader.";
+
+/** Why what a check says and what a run of it printed are shown as written, which is what the
+ *  five surfaces of the Verification tab that draw them say. */
+const COMMAND_OUTPUT_REASON =
+  "A check's words and a result's report are commands and what running them printed - a shell line, a log, a diff - where a `*`, a `_` or a `[` is a character of the output, so reading them as markdown would change what they say. They are shown as the characters they are.";
+
+/** Why the Proof editor's own drawing of a document is no mount of the renderer, which is what
+ *  the live document and a past version of one both say. */
+const EDITOR_REASON =
+  "The Proof editor paints a document's body itself, from the document it edits, and draws each reference the body holds as a decoration over the stored text (`doc/document-references.tsx`, `@legion/proof-editor`'s `src/reference-decorations.ts`) - the renderer draws a read-only copy and the editor cannot be one. The references are read by the one reader every rendered body is read by (`refs/text-references.ts`), so a bare key, a `#id`, an address and a mention resolve by the same rules there.";
+
 export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's Activity tab: one event's body, which is an ask's question, its answer, its
   // resolution reason, or the body of a comment or a message. The tab lists each event's line;
@@ -132,6 +215,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: true,
     surface: "activity-event-body",
+  },
+  // An event's one line, in the Activity tab and above its body in the margin's Pinned tab.
+  {
+    files: [
+      "packages/dispatch/web/src/features/activity/SentenceParts.tsx",
+      "packages/dispatch/web/src/features/activity/activity-model.ts",
+      "packages/dispatch/web/src/features/issue/event-description.ts",
+    ],
+    reach: "/issues/<ISSUE>/activity, an event's line; the same line in the margin's Pinned tab",
+    reason: `An event's line is one sentence in the dashboard's own words around a text of the record - the question in \`asked “…”\`, the question a reply answers, a resolution's reason - so the sentence carries that text as its plain-text projection (\`SentenceParts\`, over \`PlainText\`): its words with the formatting gone and each reference read as its target's name, never the text's source. ${LOAD_STATE_REASON} The event's body is drawn by the renderer once the event is pinned (\`activity-event-body\`).`,
+    record: true,
+    rendered: false,
+    surface: "event-line",
   },
   // The Agents page: a reply under a row's exchange, and the targeted message a row shows.
   {
@@ -150,6 +246,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // A session's live conversation, which Dispatch stores nothing of and indexes nothing from.
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/agent-view/AgentThread.tsx"],
     reach: "/agents/<SESSION>/live, a turn's text part",
     reason:
@@ -159,6 +256,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "agent-turn-text",
   },
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/agent-view/AgentThread.tsx"],
     reach: '/agents/<SESSION>/live, `[data-testid="agent-reasoning"]`',
     reason:
@@ -167,9 +265,34 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "agent-turn-reasoning",
   },
-  // A broadcast's page: a recipient's reply is a message of its issue and a record; the
-  // broadcast's own body is not.
+  // The header's line about a `/model` or `/effort` switch, and a message of the viewer's that
+  // Dispatch has not made yet.
   {
+    files: [
+      "packages/dispatch/web/src/features/agent-view/SessionSettings.tsx",
+      "packages/dispatch/web/src/features/agent-view/use-session-switch.ts",
+    ],
+    reach: "/agents/<SESSION>/live, the header's line after a model or thinking-level switch",
+    reason: `The header's line about a switch quotes the session's reply to it inside one line of the page's own words. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON} The same reply is a turn of the thread below, which the renderer draws.`,
+    record: true,
+    rendered: false,
+    surface: "session-switch-answer",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/conversation/PendingSendTurn.tsx"],
+    reach: '/agents/<SESSION>/live, `[data-testid="agent-send-held"]`',
+    reason: `A message Dispatch has not made yet is the viewer's own draft rather than a record: its turn names it as theirs, \`Your message: “…”\`, in one line of plain text that is never rendered as markdown. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON} Once Dispatch makes the message, the stored one takes its place, which the renderer draws.`,
+    record: false,
+    rendered: false,
+    surface: "agent-held-send",
+  },
+  // A broadcast's page: a recipient's reply is a message and a record; the broadcast's own body
+  // is not. The reply answers the copy the recipient got, which is a message on no issue.
+  {
+    cannotCarry: {
+      forms: ["question-id"],
+      why: "A recipient's reply answers the copy of the broadcast it got, a message on no issue, so it belongs to no document whose question a `#id` could name (`refs.ScopeOf`).",
+    },
     files: ["packages/dispatch/web/src/features/agents/BroadcastPage.tsx"],
     reach: "/agents/broadcasts/<ID>, a recipient row's reply",
     record: true,
@@ -177,6 +300,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "broadcast-recipient-reply",
   },
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/agents/BroadcastPage.tsx"],
     reach: "/agents/broadcasts/<ID>, the body under the heading",
     reason: BROADCAST_REASON,
@@ -185,6 +309,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "broadcast-sent-body",
   },
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/agents/BroadcastSends.tsx"],
     reach: "/agents, the Sends strip's row for a send Dispatch refused",
     reason: `${BROADCAST_REASON} A send still queued has not reached the server at all.`,
@@ -193,6 +318,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "broadcast-send-row",
   },
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/agents/BroadcastsPage.tsx"],
     reach: "/agents/broadcasts, a row's one-line body",
     reason: BROADCAST_REASON,
@@ -210,7 +336,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
-    reach: "/answers, a row's answer text",
+    reach: "/answers, a row's answer: the options it chose and its text",
     record: true,
     rendered: true,
     surface: "answers-answer",
@@ -224,6 +350,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // A component's prose, which belongs to the architecture model rather than to Dispatch.
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/architecture/ComponentDetails.tsx"],
     reach: "/projects/<PROJECT>/architecture, a component's Code & definition prose",
     reason:
@@ -235,6 +362,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's reason for touching no component, on its row of the Not architectural list. The
   // issue header's Components line draws the same reason (`issue-components-reason`).
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/architecture/AttachmentLists.tsx"],
     reach: "/projects/<PROJECT>/architecture?view=none, a Not architectural row's reason",
     reason: NOT_ARCHITECTURAL_REASON,
@@ -264,6 +392,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "conversation-targeted-message",
   },
+  // A handoff's card, whose body is the JSON its phase wrote.
+  {
+    files: ["packages/dispatch/web/src/features/conversation/ConversationTab.tsx"],
+    reach: "/issues/<ISSUE>/conversation, a handoff card opened on its body",
+    reason:
+      "A handoff's body is the JSON its phase wrote rather than a markdown body: each field is shown as the value it is, and a body that is no JSON object as the text it is. A handoff is no record of the reference graph either (`textSourceKind`).",
+    record: false,
+    rendered: false,
+    surface: "conversation-handoff-body",
+  },
   // The line a reply quotes of what it answers, wherever a reply is drawn.
   {
     files: ["packages/dispatch/web/src/features/conversation/ReplyQuote.tsx"],
@@ -272,9 +410,13 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "reply-quote",
   },
-  // A document's reviews dialog: the reason a reviewer asked for changes.
+  // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
+  // under the design gate's steps in a root issue's header.
   {
-    files: ["packages/dispatch/web/src/features/doc/ApprovalChip.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/doc/ApprovalChip.tsx",
+      "packages/dispatch/web/src/features/issue/ApprovalSteps.tsx",
+    ],
     reach: "/projects/<PROJECT>/documents/<SLUG>, the Reviews dialog's reason",
     record: true,
     rendered: true,
@@ -339,6 +481,17 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "inbox-ask-row",
   },
   {
+    files: [
+      "packages/dispatch/web/src/features/inbox/useControlName.ts",
+      "packages/dispatch/web/src/features/inbox/ask-name.ts",
+    ],
+    reach: "/, the name of an ask row's checkbox, of its Snooze and of the reading column's head",
+    reason: `An Inbox row's controls are named in an \`aria-label\`, after the row's owner and the start of its question. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "inbox-control-name",
+  },
+  {
     files: ["packages/dispatch/web/src/features/inbox/ReadingPane.tsx"],
     reach: "/, an approval's question in the reading column",
     record: true,
@@ -359,23 +512,56 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "my-reply-subject",
   },
+  // A thread row's title. The row's checkbox and its Dismiss name the row by the same subject,
+  // in an `aria-label` that holds no markup, so they draw its plain-text projection.
   {
-    files: ["packages/dispatch/web/src/features/inbox/ThreadTitle.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/inbox/ThreadTitle.tsx",
+      "packages/dispatch/web/src/features/inbox/Inbox.tsx",
+      "packages/dispatch/web/src/features/inbox/DismissControl.tsx",
+    ],
     reach: "/, a thread row's title",
     record: true,
     rendered: true,
     surface: "inbox-thread-title",
   },
-  // The issue's Decisions panel, which names the decisions document by its artifact id.
+  // The issue's Decisions panel, which names the decisions document by its artifact id: a
+  // decision's heading and paragraphs, the spec blocks it shaped, and the open questions.
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
-    reach: "/issues/<ISSUE>/decisions, a decision's paragraphs",
+    reach: "/issues/<ISSUE>/decisions, a decision's heading and paragraphs",
     record: true,
     rendered: true,
     surface: "issue-decision",
   },
+  {
+    files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
+    reach: "/issues/<ISSUE>/decisions, a link under Shaped in the spec",
+    reason: `The link to a spec block a decision shaped is worded with the head of that block's text. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-decision-link",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
+    reach: "/issues/<ISSUE>/decisions, a link under Open questions",
+    reason: `An open question is a link to its ask, worded with the question. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-open-question",
+  },
+  // The list an address shows when its short id names more than one item of the issue.
+  {
+    files: ["packages/dispatch/web/src/features/issue/ItemMatchList.tsx"],
+    reach: "An issue address whose short id names several items, a match's link",
+    reason: `A match is a link to its item, worded with the first line of the item's text, which the server cuts. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "item-match-first-line",
+  },
   // The issue header's Components line, which shows the reason an issue touches no component.
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue/IssueComponentsLine.tsx"],
     reach: "/issues/<ISSUE>, the header's Components line",
     reason: NOT_ARCHITECTURAL_REASON,
@@ -384,13 +570,13 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "issue-components-reason",
   },
   // A document's margin: the decision card and the pinned conversations, which an issue's page
-  // shows beside its spec, a suggestion's two sides and a thread's comments.
+  // shows beside its spec, a suggestion's two sides and a thread's comments. The decision card's
+  // text is a passage of the issue's `decisions.md`, named by that document's artifact id as the
+  // Decisions panel names it (`issue-decision`).
   {
     files: ["packages/dispatch/web/src/features/margin/DecisionCard.tsx"],
-    reach: "/issues/<ISSUE>/spec, a margin decision card's passage",
-    reason:
-      "This is a passage of the issue's `decisions.md`, and the decisions view names that document by its address alone (`IssueDecisions.document`) - never by the artifact id a `TextSource` is - so no record reaches this surface. The Decisions panel draws the same passages with theirs (`issue-decision`).",
-    record: false,
+    reach: "/issues/<ISSUE>/spec, a margin decision card's heading and passage",
+    record: true,
     rendered: true,
     surface: "margin-decision-passage",
   },
@@ -402,6 +588,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "margin-pinned-conversation",
   },
   {
+    cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/margin/ThreadCard.tsx"],
     reach: "/projects/<PROJECT>/documents/<SLUG>, a suggestion card's `<del>` and `<ins>`",
     reason:
@@ -424,9 +611,123 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "margin-thread-preview",
   },
-  // A priority's description, on its own page and on the open row of the priorities table.
+  // The quote a comment or an ask was left on, wherever one is drawn: over a thread card and
+  // its preview, over an ask's card, over a thread in the Inbox's reading column, in the
+  // composer that is writing on it, in the Decisions panel's Change form, and in the Activity
+  // tab's line for the comment.
   {
-    files: ["packages/dispatch/web/src/features/priorities/PriorityDescription.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/margin/ThreadCard.tsx",
+      "packages/dispatch/web/src/features/inbox/AskAnchorLink.tsx",
+      "packages/dispatch/web/src/features/inbox/ThreadBody.tsx",
+      "packages/dispatch/web/src/features/conversation/MentionComposer.tsx",
+      "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
+      "packages/dispatch/web/src/features/activity/activity-model.ts",
+    ],
+    reach: "/projects/<PROJECT>/documents/<SLUG>, the quote over a thread card's comment",
+    reason:
+      "An anchor's quote is the document's own words at the place a comment or an ask was left, not a text anyone wrote for this surface: the server matches and stores it as the document's flattened text, never its markdown (`pmdoc.FindQuote`), so a mention in the document is already the words it reads as there, and nothing in the quote is markdown to render. It is shown as the characters it is.",
+    record: false,
+    rendered: false,
+    surface: "anchor-quote",
+  },
+  // A document's own body, live and at a past version, which the Proof editor draws.
+  {
+    files: [
+      "packages/dispatch/web/src/features/doc/ProofDocument.tsx",
+      "packages/dispatch/web/src/features/doc/document-references.tsx",
+    ],
+    reach: "/projects/<PROJECT>/documents/<SLUG>, the document's body",
+    reason: EDITOR_REASON,
+    record: true,
+    rendered: false,
+    surface: "document-body",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/doc/VersionView.tsx"],
+    reach: "/projects/<PROJECT>/documents/<SLUG>?v=<N>, a past version's body",
+    reason: `${EDITOR_REASON} A past version is drawn by the same editor, read-only.`,
+    record: true,
+    rendered: false,
+    surface: "document-version-body",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/doc/ProofDocument.tsx"],
+    reach: "/projects/<PROJECT>/documents/<SLUG>, the open decision named above the document",
+    reason: `The bar above a document names its open decision in a link and in that link's \`title\`. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "document-open-decision",
+  },
+  // The Verification tab: what a check says, and what a result of it reports.
+  {
+    files: ["packages/dispatch/web/src/features/verification/VerificationTab.tsx"],
+    reach: "/issues/<ISSUE>/verification, a check's text",
+    reason: COMMAND_OUTPUT_REASON,
+    record: true,
+    rendered: false,
+    surface: "check-text",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/verification/VerificationTab.tsx"],
+    reach: "/issues/<ISSUE>/verification, a check's negative control",
+    reason: COMMAND_OUTPUT_REASON,
+    record: true,
+    rendered: false,
+    surface: "check-negative-control",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/verification/VerificationTab.tsx"],
+    reach: "/issues/<ISSUE>/verification, a result's Observed",
+    reason: COMMAND_OUTPUT_REASON,
+    record: true,
+    rendered: false,
+    surface: "check-result-observed",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/verification/VerificationTab.tsx"],
+    reach: "/issues/<ISSUE>/verification, a result's Negative control",
+    reason: COMMAND_OUTPUT_REASON,
+    record: true,
+    rendered: false,
+    surface: "check-result-negative-control",
+  },
+  {
+    files: [
+      "packages/dispatch/web/src/features/verification/VerificationTab.tsx",
+      "packages/dispatch/web/src/features/activity/activity-model.ts",
+      "packages/dispatch/web/src/features/issue/event-description.ts",
+    ],
+    reach: "/issues/<ISSUE>/verification, a retracted result's reason; the retraction's event line",
+    reason: `${COMMAND_OUTPUT_REASON} A retraction's reason is written beside the result it withdraws, in the same hand, and is shown the same way.`,
+    record: true,
+    rendered: false,
+    surface: "check-retraction-reason",
+  },
+  // The Referenced by panel: what cites a node, each with the head of its text the graph holds.
+  {
+    files: ["packages/dispatch/web/src/features/refs/ReferencedBy.tsx"],
+    reach: "/issues/<ISSUE>, the Referenced by panel, a citing comment's excerpt",
+    record: true,
+    rendered: true,
+    surface: "referenced-by-excerpt",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/refs/ReferencedBy.tsx"],
+    reach: "/issues/<ISSUE>, the Referenced by panel, a citing issue's title",
+    reason: `${NO_MARKUP_REASON} A citing issue, document, component or session is listed by its title or name, which is that one line; a citing block, ask, comment or message is listed by the head of its body, which the renderer draws (\`referenced-by-excerpt\`).`,
+    record: false,
+    rendered: false,
+    surface: "referenced-by-title",
+  },
+  // A priority's description, on its own page and on the open row of the priorities table, and
+  // its first line on a closed row of that table.
+  {
+    cannotCarry: NO_QUESTION_ID,
+    files: [
+      "packages/dispatch/web/src/features/priorities/PriorityDescription.tsx",
+      "packages/dispatch/web/src/features/priorities/priorities-columns.tsx",
+    ],
     reach: "/priorities/<ID>, the Description of P1 group",
     reason:
       "A priority's description is no record of the reference graph: a priority is none of the four kinds a `TextSource` names (an artifact, an ask, a comment, a message), and the priority write stores the description as an attribute of the priority and indexes nothing from it - so a `#id` in it declares nothing and names nothing.",

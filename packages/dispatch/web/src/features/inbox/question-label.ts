@@ -2,9 +2,12 @@ import { type ReactNode, useRef } from "react";
 
 import type { DisplayTree } from "../../api/types";
 import { usePlainHeadline } from "../refs/plain-text";
+import { textSourceOf } from "../refs/text-references";
 
-/** An ask's question, with the reading Go made of it where the read carries one. */
+/** An ask's question, with the reading Go made of it where the read carries one, and the ask's
+ *  id, which names the record the question is. */
 interface Question {
+  readonly id: string;
   readonly question: string;
   readonly question_tree?: DisplayTree;
 }
@@ -15,7 +18,8 @@ interface Question {
  * `DISPATCH_READING_SURFACES`). The line is the question's plain-text projection
  * (`usePlainHeadline`), read from `question_tree` where the read carries one and from the
  * question's markdown where it does not, so `**Ship** it? dispatch://CORE-1` reads `Ship it?
- * CORE-1 Fix the thing`: the words the card draws, never their source.
+ * CORE-1 Fix the thing`: the words the card draws, never their source. The ask is the record
+ * the question is, so a `#id` in it reads as the question it names, as it does on the card.
  *
  * A write asks for its label as it goes out, after the render that drew the question, so `line`
  * reads the projection the latest render made rather than the one its own render saw. Until the
@@ -28,7 +32,10 @@ interface Question {
  * mounts it wherever it draws.
  */
 export function useQuestionLabel(ask: Question): { line: () => string; reads: ReactNode } {
-  const { reads, text } = usePlainHeadline(ask.question_tree, ask.question);
+  const { reads, text } = usePlainHeadline(ask.question_tree, ask.question, {
+    source: textSourceOf("ask", ask.id),
+    surface: "write-label",
+  });
   const latest = useRef(ask.question);
   latest.current = text?.text ?? ask.question;
   return { line: () => latest.current, reads };

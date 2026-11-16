@@ -78,6 +78,7 @@ export function ReplyQuote({
         lines={1}
         markdown={quotedText}
         source={source}
+        surface="reply-quote"
         tree={quotedTree}
       />
     ) : null;

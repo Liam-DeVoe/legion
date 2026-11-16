@@ -603,7 +603,9 @@ jobs:
               # file of that name under e2e/ and no other. A file added to this list joins
               # ci.yaml's `dispatch_references` filter, which names these files and what they
               # test: .github/scripts/check-ci-filters.sh (rule 17) fails naming an entry here
-              # that filter does not match, read from this step's directory.
+              # that filter does not match, read from this step's directory. A reading spec this
+              # list does not name runs on no pull request, so the walk's gate reads this arm the
+              # same way and fails naming it (packages/dispatch/e2e/__tests__/reading-walk.test.ts).
               projects="--project=chromium"
               lane_grep=""
               lane_files="e2e/bare-references.e2e.ts e2e/btw.e2e.ts e2e/mention-composer.e2e.ts

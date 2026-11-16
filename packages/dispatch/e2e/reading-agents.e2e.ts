@@ -4,21 +4,21 @@
  * live view that show its own turn. Each row stores `readingText` where its surface shows it - a
  * message a person sends the session, the session's reply to one, or a turn of the replay the
  * session answers a viewer with - reaches the surface as its row's `reach` says, and holds it to
- * R6: the key and the address read as their issue's key and current title, the party as `@` and
- * its current name, and no `dispatch://` is left as text.
+ * R6: each form the text names a node by reads as that node's current name and opens it, the
+ * party as `@` and its current name, and none is left as the characters written.
  *
  * All four hosts are a record a reader reads (`ReferenceHost` "record"): neither a turn of the
  * Agents page nor a part of the live view sits inside a link or a button, so each reference is a
  * link. A live turn is no record of the reference graph (the reading list's reason for both of
- * its rows), which costs it its `#id` links and nothing else: a bare key, an address and a party
- * draw there through the same renderer as they do in a stored body.
+ * its rows), which costs it its `#id` links and nothing else: every other form draws there
+ * through the same renderer as it does in a stored body.
  *
  * The text names the session whose row and live view show it as its party, which is the one
  * session the reading world lists.
  */
 import type { Message } from "../web/src/api/types";
 import { agentRow } from "./agents";
-import { createAgentMessage, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
+import { createMessage, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
 import { frontLiveView } from "./live-views";
 import {
   expectReadsReferences,
@@ -39,6 +39,17 @@ async function openReadingRow(page: Page): Promise<Locator> {
   return row;
 }
 
+/** A message a person sends the reading session on the host issue, which the session's row
+ *  shows like any message sent to it. It is the issue's message, so a `#id` in it and in a
+ *  reply to it is read against the issue's spec: a message sent to a session on no issue
+ *  belongs to no document, and a `#id` there names nothing (`refs.ScopeOf`). */
+function messageTheSession(issue: string, body: string) {
+  return createMessage(issue, {
+    body,
+    delivery: "aside",
+    target: `session:${READING_SESSION_ID}`,
+  });
+}
 /** Sets what the reading session answers a viewer's replay request with: one finished turn of
  *  its own, made of `parts`. The harness runs Dispatch with NATS disabled, so the test hook
  *  stands in for the session; answering a replay makes it a responder, as a running session
@@ -62,19 +73,16 @@ async function replayTurn(parts: readonly { text: string; type: "reasoning" | "t
   );
 }
 
-// SLOW(>=2s): the reading world's five listener and API writes, a message and the session's
-// reply to it, then the Agents page's first draw and the row's conversation read once it opens;
-// measured at 3.4 s and 5.6 s on two runs in an issue pod on one worker.
-test("agents-row-reply: a row's reply turn draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world's listener and API writes, a message and the session's reply to
+// it, then the Agents page's first draw and the row's conversation read once it opens; measured
+// at 4.9 s on one run in an issue pod on one worker.
+test("agents-row-reply: a row's reply turn draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
   // The question is plain words, so the quote of it the reply turn draws above its own body
   // holds no reference to be read in place of the reply's.
-  const asked = await createAgentMessage(READING_SESSION_ID, {
-    body: "What should I read next?",
-    delivery: "aside",
-  });
+  const asked = await messageTheSession(world.host.key, "What should I read next?");
   const reply = (await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: readingText(world) },
@@ -87,17 +95,14 @@ test("agents-row-reply: a row's reply turn draws a stored key, an address and a 
   await expectReadsReferences(body, world, "link");
 });
 
-// SLOW(>=2s): the reading world's five listener and API writes and a message, then the Agents
-// page's first draw and the row's conversation read once it opens; measured at 2.0 s and 4.6 s on
-// two runs in an issue pod on one worker.
-test("agents-row-message: a row's targeted message card draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world's listener and API writes and a message, then the Agents page's
+// first draw and the row's conversation read once it opens; measured at 3.8 s on one run in an
+// issue pod on one worker.
+test("agents-row-message: a row's targeted message card draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
-  const sent = await createAgentMessage(READING_SESSION_ID, {
-    body: readingText(world),
-    delivery: "aside",
-  });
+  const sent = await messageTheSession(world.host.key, readingText(world));
   const row = await openReadingRow(page);
   // The message's body alone: the card also names its author and the session it went to, each
   // through `AgentName`, and neither is the stored message. No reply is seeded, so the card
@@ -106,10 +111,10 @@ test("agents-row-message: a row's targeted message card draws a stored key, an a
   await expectReadsReferences(body, world, "link");
 });
 
-// SLOW(>=2s): the reading world's five listener and API writes and the session's replay, then the
+// SLOW(>=2s): the reading world's listener and API writes and the session's replay, then the
 // live view's first draw, which waits on the live socket and the replay it asks for; measured at
-// 2.0 s and 2.3 s on two runs in an issue pod on one worker.
-test("agent-turn-text: a live turn's text part draws a key, an address and a party through the renderer", async ({
+// 3.1 s on one run in an issue pod on one worker.
+test("agent-turn-text: a live turn's text part draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -121,10 +126,10 @@ test("agent-turn-text: a live turn's text part draws a key, an address and a par
   await expectReadsReferences(turn.locator("div.dispatch-markdown"), world, "link");
 });
 
-// SLOW(>=2s): the reading world's five listener and API writes and the session's replay, then the
+// SLOW(>=2s): the reading world's listener and API writes and the session's replay, then the
 // live view's first draw, which waits on the live socket and the replay it asks for; measured at
-// 1.6 s and 2.6 s on two runs in an issue pod on one worker.
-test("agent-turn-reasoning: a live turn's reasoning draws a key, an address and a party through the renderer", async ({
+// 2.7 s on one run in an issue pod on one worker.
+test("agent-turn-reasoning: a live turn's reasoning draws every form but a question id through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();

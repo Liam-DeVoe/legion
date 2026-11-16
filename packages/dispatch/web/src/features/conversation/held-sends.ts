@@ -322,6 +322,7 @@ function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
     .sort((one, other) => other.start - one.start)
     .reduce((text, mention) => {
       const { end, start } = mention;
+      // not stored prose: the words a mention was typed as, matched against the draft
       const words = `@${mention.text}`;
       if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > text.length) {
         return text;

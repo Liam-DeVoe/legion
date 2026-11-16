@@ -13,6 +13,7 @@ import {
 } from "../../theme/classes";
 import { RefKindIcon } from "./kind-icons";
 import {
+  REF_PICKER_PARTS_WORDS,
   REF_PICKER_PARTY_WORDS,
   REF_PICKER_WORDS,
   type RefPickerInsertion,
@@ -106,7 +107,7 @@ export function RefPartsControl({
       }}
       type="button"
     >
-      {row.kind === "agent" ? "Documents" : "Blocks"}
+      {REF_PICKER_PARTS_WORDS[row.parts.kind].control}
     </button>
   );
 }
@@ -190,6 +191,7 @@ export function RefPickerList({
             id={`${headingPrefix}-${group.kind}`}
             role="presentation"
           >
+            {/* not stored prose: the picker's own name for a group of rows */}
             {group.heading}
           </div>
           {group.rows.map(row)}

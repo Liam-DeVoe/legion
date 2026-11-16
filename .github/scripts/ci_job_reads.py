@@ -1175,6 +1175,7 @@ GATES = [
         ("packages/dispatch/**", f"{at('dispatch-ui', 'Lint dispatch dashboard')}, typecheck, test, build, check:classes and check:asset-sizes in packages/dispatch"),
         ("packages/proof-editor/**", f"{at('dispatch-ui', 'Lint proof editor')}, typecheck and test; packages/dispatch/web/vite.config.ts:127-147"),
         (CONTRACTS_SRC, 'packages/dispatch/web/vite.config.ts:117-126 aliases; tsc and bun read @legion/contracts through its "bun" export condition (src/)'),
+        (BROWSER_SITE, f"packages/dispatch/e2e/__tests__/reading-walk.test.ts:166-177 reads the spec files of the references lane, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:8-12"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:10, features/inbox/AskCard.test.tsx:411"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/__tests__/setup.ts:7 and features/refs/markdown-engine.test.ts:3 read blocks.json; packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275 reads block-node-types.json of the same directory"),

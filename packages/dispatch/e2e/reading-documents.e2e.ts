@@ -5,8 +5,8 @@
  * three drawings - its comment opened, its collapsed preview, and a suggestion's two sides.
  * Each row writes the one reading text into the record its surface shows, through the API as an
  * agent or a person writes it, reaches the surface the way its row of
- * `DISPATCH_READING_SURFACES` says, and reads there what the surface's host makes of a bare key,
- * a `dispatch://` address and a picked party (R6).
+ * `DISPATCH_READING_SURFACES` says, and reads there what the surface's host makes of every form
+ * a text names a node by (R6).
  *
  * Every host here but one is a record a reader reads, so each reference is a link. The one that
  * is not is the suggestion's diff, which shows the exact characters it swaps (`ReferenceHostIs
@@ -28,7 +28,13 @@ import {
   reviewArtifact,
 } from "./api";
 import { blockId, connectedDot, documentEditor, openedThreadCard, openSpec } from "./editor";
-import { expectReadsReferences, readingText, seedReadingWorld } from "./reading-rows";
+import {
+  expectReadsReferences,
+  readingQuestionBlock,
+  readingText,
+  scopedTo,
+  seedReadingWorld,
+} from "./reading-rows";
 import {
   collapsedMarginThread,
   conversationTurn,
@@ -50,11 +56,14 @@ const ANCHOR = "The reading anchor sits here.";
 const SHAPED = "The reading host stores each notice.";
 const DECISION = "Store the notices";
 
-/** Makes the project document the margin rows are reached on: one paragraph, the anchor. */
+/** Makes the project document the margin rows are reached on: one paragraph, the anchor, and
+ *  the question block. A review of the document and a comment anchored to it are read against
+ *  the document itself, so it declares the question a `#id` in them names, and a row whose text
+ *  is one of those records takes its world through `scopedTo`. */
 async function seedReadingDocument(): Promise<{ id: string; slug: string }> {
   const { artifact } = await createProjectDocument(
     "CORE",
-    { content: `${ANCHOR}\n`, name: "reading.md" },
+    { content: `${ANCHOR}\n\n${readingQuestionBlock()}\n`, name: "reading.md" },
     readingAgent
   );
   return { id: artifact.id, slug: artifact.slug };
@@ -77,13 +86,14 @@ function anchoredThread(document: { id: string; slug: string }, body: string) {
   );
 }
 
-// SLOW(>=2s): the world's three issues, a project document reviewed, and its page drawn with the
+// SLOW(>=2s): the reading world, a project document reviewed, and its page drawn with the
 // Reviews dialog open.
-test("approval-review-reason: a reviewer's reason in the Reviews dialog draws a stored key, an address and a party through the renderer", async ({
+test("approval-review-reason: a reviewer's reason in the Reviews dialog draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const seeded = await seedReadingWorld();
   const document = await seedReadingDocument();
+  const world = await scopedTo(seeded, document.id);
   await reviewArtifact(
     document.id,
     { reason: readingText(world), state: "changes_requested" },
@@ -98,9 +108,9 @@ test("approval-review-reason: a reviewer's reason in the Reviews dialog draws a 
   await expectReadsReferences(reviews.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, a spec block and the decision that shaped it, and the
-// spec drawn with its margin.
-test("margin-decision-passage: a margin decision card's passage draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, a spec block and the decision that shaped it, and the spec
+// drawn with its margin.
+test("margin-decision-passage: a margin decision card's passage draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -113,25 +123,29 @@ test("margin-decision-passage: a margin decision card's passage draws a stored k
   const shaped = await blockId(spec, SHAPED);
   // A decision stands beside a spec block it links, so its passage is the reading text and the
   // link to that block; the link draws as its block's name, which leaves no address as text.
-  await createIssueArtifact(
+  // The passage is a record of `decisions.md`, so a `#id` in it is read against that document
+  // (the card hands the renderer the document as the passage's source): the document declares
+  // the question block itself, ahead of its first decision, and the world is scoped to it.
+  const { artifact } = await createIssueArtifact(
     world.host.key,
     {
-      content: `## ${DECISION}\n\n${readingText(world)} Shapes dispatch://${world.host.key}/spec#b-${shaped}.\n`,
+      content: `${readingQuestionBlock()}\n\n## ${DECISION}\n\n${readingText(world)} Shapes dispatch://${world.host.key}/spec#b-${shaped}.\n`,
       name: "decisions.md",
     },
     readingAgent
   );
+  const scoped = await scopedTo(world, artifact.id);
 
   await openSpec(page, world.host.key, SHAPED);
   // The card is an article a click selects, never a link or a button, and its passage is drawn
   // in it, so each reference is a link.
   const card = page.getByRole("article", { name: `Decision: ${DECISION}` });
-  await expectReadsReferences(card.locator("[data-markdown-preview]"), world, "link");
+  await expectReadsReferences(card.locator("[data-markdown-preview]"), scoped, "link");
 });
 
-// SLOW(>=2s): the world's three issues, a message, and the Conversation drawn while the reader
-// pins it and opens the margin's Pinned tab.
-test("margin-pinned-conversation: a conversation pinned to the margin draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, a message, and the Conversation drawn while the reader pins it
+// and opens the margin's Pinned tab.
+test("margin-pinned-conversation: a conversation pinned to the margin draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -153,9 +167,9 @@ test("margin-pinned-conversation: a conversation pinned to the margin draws a st
   await expectReadsReferences(pinned.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, a project document and a suggestion on it, and its page
-// drawn with the suggestion's card collapsed and then opened.
-test("margin-suggestion-diff: a suggestion card's replacement draws a stored key, an address and a party as the characters written", async ({
+// SLOW(>=2s): the reading world, a project document and a suggestion on it, and its page drawn
+// with the suggestion's card collapsed and then opened.
+test("margin-suggestion-diff: a suggestion card's replacement draws every form but a question id as the characters written", async ({
   page,
 }, testInfo) => {
   const world = await seedReadingWorld();
@@ -186,13 +200,14 @@ test("margin-suggestion-diff: a suggestion card's replacement draws a stored key
   await expectReadsReferences(card.locator("ins"), world, "written");
 });
 
-// SLOW(>=2s): the world's three issues, a project document and a thread on it, and its page
-// drawn with the thread's card opened.
-test("margin-comment-body: a thread card's comment draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, a project document and a thread on it, and its page drawn with
+// the thread's card opened.
+test("margin-comment-body: a thread card's comment draws every form of a stored reference through the renderer", async ({
   page,
 }, testInfo) => {
-  const world = await seedReadingWorld();
+  const seeded = await seedReadingWorld();
   const document = await seedReadingDocument();
+  const world = await scopedTo(seeded, document.id);
   const root = await anchoredThread(document, readingText(world));
 
   await openReadingDocument(page, document.slug);
@@ -200,13 +215,14 @@ test("margin-comment-body: a thread card's comment draws a stored key, an addres
   await expectReadsReferences(card.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the world's three issues, a project document and a thread on it, and its page
-// drawn with the thread's card collapsed.
-test("margin-thread-preview: a collapsed thread card's preview draws a stored key, an address and a party through the renderer", async ({
+// SLOW(>=2s): the reading world, a project document and a thread on it, and its page drawn with
+// the thread's card collapsed.
+test("margin-thread-preview: a collapsed thread card's preview draws every form of a stored reference through the renderer", async ({
   page,
 }, testInfo) => {
-  const world = await seedReadingWorld();
+  const seeded = await seedReadingWorld();
   const document = await seedReadingDocument();
+  const world = await scopedTo(seeded, document.id);
   const root = await anchoredThread(document, readingText(world));
 
   await openReadingDocument(page, document.slug);

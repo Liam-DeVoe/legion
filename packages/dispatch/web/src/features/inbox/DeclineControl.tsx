@@ -49,7 +49,7 @@ function DeclineDialog({
   /** What the server answered the last decline with, or null while none was refused. */
   error: Error | null;
   /** The issue the question was asked on, where it has one: the picker offers that issue's
-   *  people and the Legion roles nobody is running. */
+   *  people. */
   issueKey?: string;
   onClose: () => void;
   onSubmit: (note: string) => void;

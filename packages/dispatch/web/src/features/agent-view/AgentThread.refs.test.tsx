@@ -16,7 +16,7 @@ import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
 import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api/types";
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
-import { REF_PICKER_INSTRUCTION, REF_PICKER_NO_PARTS_WORDS } from "../refs/ref-picker";
+import { REF_PICKER_INSTRUCTION, REF_PICKER_PARTS_WORDS } from "../refs/ref-picker";
 import { AgentThread } from "./AgentThread";
 
 /**
@@ -360,7 +360,7 @@ test("an agent whose conversation holds no file says so when its documents are o
   await waitFor(() => expect(pane?.listAgentArtifacts).toHaveBeenCalledWith("planner-session"));
   await waitFor(() =>
     expect(screen.getByTestId("ref-picker-no-parts").textContent).toBe(
-      REF_PICKER_NO_PARTS_WORDS.documents
+      REF_PICKER_PARTS_WORDS.documents.none
     )
   );
   expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]);
@@ -429,9 +429,9 @@ test("a picked agent is written as the mention that names it, and the hint says 
   expect(screen.queryByRole("listbox", { name: "References" })).not.toBeInTheDocument();
 });
 
-// A door never opens in a written link's words or address: a pick there would write a link
-// inside a link. The caret moved back into a mention's words opens no list, and Enter keeps its
-// ordinary meaning here, which is Send.
+// A door never opens in a written link's words: a pick there would write a link inside a link.
+// The caret moved back into a mention's words opens no list, and Enter keeps its ordinary
+// meaning here, which is Send.
 test("the caret inside a written mention opens no list, and Enter sends the message", async () => {
   const user = userEvent.setup();
   const input = renderThread();
@@ -445,4 +445,19 @@ test("the caret inside a written mention opens no list, and Enter sends the mess
 
   await user.keyboard("{Enter}");
   await waitFor(() => expect(pane?.sent).toEqual([mention]));
+});
+
+// A door opens in a link's address on a trigger typed there, as in every other box, and its pick
+// writes the address alone: assistant-ui hands the formatter the picked item alone, so this row
+// is what proves the composer tells it where the door stands.
+test("a door opens in a link's address, and an agent picked there is its bare address", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+
+  await type(user, input, "[the plan](@plan");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+  await user.keyboard("{Enter}");
+  // assistant-ui leaves a space after a pick, which a link may hold before its `)`.
+  await waitFor(() => expect(input.value).toBe("[the plan](dispatch://agent/planner-session "));
+  expect(pane?.sent).toEqual([]);
 });

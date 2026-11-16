@@ -93,6 +93,7 @@ export function BroadcastsPage(): ReactNode {
                     fullTitle
                     lines={1}
                     markdown={sent.body}
+                    surface="broadcasts-list-body"
                     tree={sent.body_tree}
                   />
                 </Link>

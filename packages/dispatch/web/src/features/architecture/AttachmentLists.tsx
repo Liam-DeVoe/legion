@@ -362,7 +362,7 @@ function NotArchitecturalRow({
       <p className={`text-sm ${textSecondaryOnSurface}`}>
         {/* No `source`: why the reason is no record is the reading list's
             `not-architectural-reason` (`DISPATCH_READING_SURFACES`). */}
-        <MarkdownBody markdown={issue.reason} variant="inline" />
+        <MarkdownBody markdown={issue.reason} surface="not-architectural-reason" variant="inline" />
       </p>
       <RowError error={write.error} />
     </div>

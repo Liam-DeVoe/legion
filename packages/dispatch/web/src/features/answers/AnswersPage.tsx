@@ -20,6 +20,7 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { PlainText } from "../refs/plain-text";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -76,16 +77,19 @@ function AnswerRow({
         lines={2}
         markdown={row.question}
         source={source}
+        surface="answers-subject"
         tree={row.question_tree}
       />
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           {(row.answer.selected ?? []).length === 0 ? null : (
             <div className="flex flex-wrap gap-1.5">
+              {/* A pill holds no markup, so a chosen option reads as its label's plain-text
+                  projection: the words the ask's own option draws, never their source. */}
               {(row.answer.selected ?? []).map((label) => (
-                <LabelPill key={label} selected>
-                  {label}
-                </LabelPill>
+                <PlainText key={label} markdown={label} surface="answers-answer">
+                  {(words) => <LabelPill selected>{words ?? ""}</LabelPill>}
+                </PlainText>
               ))}
             </div>
           )}
@@ -94,6 +98,7 @@ function AnswerRow({
               <MarkdownBody
                 markdown={row.answer.text}
                 source={source}
+                surface="answers-answer"
                 tree={row.answer.text_tree}
               />
             </div>
@@ -106,6 +111,7 @@ function AnswerRow({
           <MarkdownBody
             markdown={row.reply.body}
             source={source}
+            surface="answers-reply"
             tree={row.reply.body_tree}
             variant="inline"
           />

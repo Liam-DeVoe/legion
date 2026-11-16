@@ -472,6 +472,11 @@ export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
 
+/** `PATCH /api/v1/priorities/{id}`: one change of a priority's fields (`patchPriority`). */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
+}
+
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session
  *  (`createAgentMessage`). */
 export function agentMessageRequest(
@@ -1208,7 +1213,7 @@ export class DispatchApiClient {
    *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
    *  board's own drag names them). Each field left out is left alone. */
   patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
-    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
+    return this.send(priorityPatchRequest(id, input), bounds);
   }
 
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each

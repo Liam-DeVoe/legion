@@ -198,13 +198,14 @@ export function MarkdownPreview({
     { pictures: "inline", decorate, references }
   );
   // The whole text for a pointer reader is the one plain-text projection, where a reference
-  // reads as its target's own name rather than as its short form (`PlainText`). A text with no
-  // tree is one Dispatch does not store, and its own source is all that projection can read
-  // (`useMarkdownHeadline`).
+  // reads as its target's own name rather than as its short form (`PlainText`), by the facts
+  // the body beside it is drawn with: the record the text is (`source`), and what its markdown
+  // cites. A text with no tree is one Dispatch does not store, and its own source is all that
+  // projection can read (`useMarkdownHeadline`).
   const { reads, text: title } = usePlainHeadline(
     fullTitle ? tree : undefined,
-    fullTitle && tree === undefined ? markdown : undefined,
-    { surface }
+    fullTitle ? markdown : undefined,
+    { source, surface }
   );
 
   return (

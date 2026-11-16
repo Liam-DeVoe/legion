@@ -231,6 +231,7 @@ function ConversationReply({
         <MarkdownBody
           markdown={reply.body}
           source={textSourceOf("message", reply.id)}
+          surface="conversation-reply"
           tree={reply.body_tree}
         />
       }
@@ -366,6 +367,7 @@ function MessageTurn({
           <MarkdownBody
             markdown={item.root.body}
             source={textSourceOf("message", item.root.id)}
+            surface="conversation-message"
             tree={item.root.body_tree}
           />
         </div>
@@ -395,7 +397,9 @@ const handoffPre = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs whitespac
 
 /** A handoff's body, fetched when the reader expands its card: each top-level field a labelled
  *  row, the `proof` list one row per entry. A version never changes once written, so the read
- *  is kept for the page's life. A body that is not a JSON object is shown as the text it is. */
+ *  is kept for the page's life. A body that is not a JSON object is shown as the text it is.
+ *  Why neither is drawn by the renderer is the reading list's `conversation-handoff-body`
+ *  (`DISPATCH_READING_SURFACES`). */
 function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
   const handoff = useQuery({
     queryKey: ["handoff", handoffId],
@@ -423,6 +427,7 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
   if (fields === undefined) {
     return (
       <pre className={handoffPre} data-handoff-raw id={id}>
+        {/* The handoff's own text, as it is: the reading list's `conversation-handoff-body`. */}
         {handoff.data.body}
       </pre>
     );
@@ -869,6 +874,7 @@ function TargetedMessageTurn({
           <MarkdownBody
             markdown={item.root.body}
             source={textSourceOf("message", item.root.id)}
+            surface="conversation-targeted-message"
             tree={item.root.body_tree}
           />
         </>

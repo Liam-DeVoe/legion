@@ -12,7 +12,7 @@ export interface InPlaceDraft {
   readonly draft: string;
   /** The newest text this field sent that `value` has not reached and Dispatch has not refused:
    *  what the server is about to hold, which a reading of the field shows in place of `value`
-   *  while the write is out. Undefined while no write is out. */
+   *  while the write is out or its answer has not been read. Undefined while none is. */
   readonly sending: string | undefined;
   /** The reader typed `next`: it is kept, and saved once the typing rests. */
   readonly type: (next: string) => void;
@@ -23,9 +23,10 @@ export interface InPlaceDraft {
 }
 
 /** One text this field sent, as an object of its own: a refusal takes back this send, never a
- *  later send of the same text. */
+ *  later send of the same text. `landed` is set once Dispatch has answered it. */
 interface Sent {
   readonly text: string;
+  landed: boolean;
 }
 
 /**
@@ -47,17 +48,24 @@ interface Sent {
  * - Refused: the send leaves `out`, wherever it stands in it. The draft stays the reader's, so
  *   the next rest or leave sends it again.
  * - `value` reaches a text in `out`: that send's answer is in, and so is every older one's, so
- *   it and every send before it leave `out`. Once none is left, the draft becomes `value` unless
- *   the reader holds the field: a refresh never pulls a half-typed word out from under them.
+ *   it and every send before it leave `out`. The earliest send of that text is the one matched:
+ *   writes to one priority land in press order, so a read can answer a later send of it only
+ *   once every send between has landed, and those leave `out` as landed sends do.
+ * - A landed send leaves `out` on the next move of `value`, whatever `value` moves to: Dispatch
+ *   has answered it, so the read is what it holds, and no landed send is still about to be. A
+ *   send of the text Dispatch already held, which moves nothing, therefore stays only until
+ *   `value` moves, and two answers read out of order leave none of them behind.
+ * - Once none is left, the draft becomes `value` unless the reader holds the field: a refresh
+ *   never pulls a half-typed word out from under them.
  * - A stale read landing while a newer write is out: `value` reaches an older text in `out`, and
- *   the newer sends stay. The draft stands, since it already holds the newer text, so the field
- *   never shows the old text again and a leave sends nothing.
+ *   the newer sends still out stay. The draft stands, since it already holds the newer text, so
+ *   the field never shows the old text again and a leave sends nothing.
  * - `value` moves to a text this field never sent - another writer's, or the server's own
  *   reading of a text sent: `out` empties, since the server holds that text now, and the draft
  *   becomes `value` unless the reader holds the field. A draft that differs from it is written,
  *   even where it was sent before.
  *
- * A write that lands moves nothing here: its answer is `value` reaching its text.
+ * A write that lands is marked so and moves nothing else: its answer is `value` moving.
  */
 export function useInPlaceDraft(
   value: string,
@@ -83,7 +91,9 @@ export function useInPlaceDraft(
     if (value === seen.current) return;
     seen.current = value;
     const reached = out.current.findIndex((sent) => sent.text === value);
-    const left = reached === -1 ? [] : out.current.slice(reached + 1);
+    const left = (reached === -1 ? [] : out.current.slice(reached + 1)).filter(
+      (sent) => !sent.landed
+    );
     record(left);
     if (!editing && left.length === 0) setDraft(value);
   }, [editing, record, value]);
@@ -96,11 +106,16 @@ export function useInPlaceDraft(
     stop();
     const { draft: typed, value: saved, onSave: write } = latest.current;
     if (typed === (out.current.at(-1)?.text ?? saved)) return;
-    const sent: Sent = { text: typed };
+    const sent: Sent = { landed: false, text: typed };
     record([...out.current, sent]);
-    void write(typed).catch(() => {
-      if (out.current.includes(sent)) record(out.current.filter((entry) => entry !== sent));
-    });
+    void write(typed).then(
+      () => {
+        sent.landed = true;
+      },
+      () => {
+        if (out.current.includes(sent)) record(out.current.filter((entry) => entry !== sent));
+      }
+    );
   };
   // The timer is cleared through the ref the render that set it wrote to, so the unmount takes
   // no dependency on this render's own `stop`.

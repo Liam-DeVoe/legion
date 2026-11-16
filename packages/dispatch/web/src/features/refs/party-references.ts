@@ -1,4 +1,7 @@
-import { MENTION_SIGN, partyLink } from "./ref-picker";
+import { readWrittenWords, type WordsFormatting } from "@legion/contracts";
+
+import { codeRanges } from "./code-ranges";
+import { partyLink } from "./ref-picker";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -17,7 +20,7 @@ import { readTextReferences, type TextReference } from "./text-references";
  * of what a text cites (`readTextReferences`), the twin of the server's own. What the writer is
  * told and what the server will read can therefore never be two readings of the same draft. The
  * server reads the address alone, never a link's words, so the words decide only what a reader
- * sees (`isPartyMention`).
+ * sees (`@legion/contracts`'s `referenceReading`).
  *
  * A party reference a code context holds - a fenced code block, an indented code block or a code
  * span (`TextReference.inCode`) - names nobody, as the server reads it
@@ -31,14 +34,6 @@ import { readTextReferences, type TextReference } from "./text-references";
 /** Whether a reference names a party: an agent's session, a role, or a person. */
 export function isPartyRoute(route: DispatchReferenceRoute): route is PartyRoute {
   return route.kind === "agent-session" || route.kind === "role" || route.kind === "person";
-}
-
-/** Whether a link whose words are `words` and whose address names `route` is a party's mention
- *  (`partyLink`): its words start with the mention sign, and it reads as that sign and the
- *  party's current name rather than as its words, wherever it is shown - a hand-written one as
- *  much as a picked one (R4). Every other worded link keeps its author's words (R8). */
-export function isPartyMention(words: string, route: DispatchReferenceRoute | undefined): boolean {
-  return words.startsWith(MENTION_SIGN) && route !== undefined && isPartyRoute(route);
 }
 
 /** The mention of the party at `target`, written as the link that names it: the mention sign
@@ -82,34 +77,149 @@ export function draftParties(body: string): DraftParties {
   return { named, targets };
 }
 
-/** Where the words of the inline link whose address is `body.slice(start, end)` open - the `[`
- *  before them - or undefined where no link wraps that address. */
-function linkOpening(body: string, start: number, end: number): number | undefined {
-  if (body.charAt(end) !== ")" || body.slice(start - 2, start) !== "](") return undefined;
-  // The words run back to the `[` that opens them. A bracket among them is escaped
-  // (`partyLink`), and a line break ends the search: no link's words hold one.
-  for (let at = start - 3; at >= 0; at -= 1) {
-    const character = body.charAt(at);
-    if (character === "\n") break;
-    if (character === "[" && body.charAt(at - 1) !== "\\") return at;
+/** One inline link a text writes - `[words](address "title")` - as offsets into it: its `[`, the
+ *  `]` its words end at, its address without the angle brackets it may stand in, and one past its
+ *  `)`; `picture` where a `!` before the `[` makes it a picture's syntax (`![caption](address)`),
+ *  which a renderer draws as the picture rather than as a link. */
+interface InlineLink {
+  readonly open: number;
+  readonly wordsEnd: number;
+  readonly addressStart: number;
+  readonly addressEnd: number;
+  readonly close: number;
+  readonly picture: boolean;
+}
+
+/** The spaces, tabs and line breaks a link may hold between its parts, and a blank line, which
+ *  ends the paragraph and every bracket open in it. */
+const LINK_SPACE = /[ \t\n]*/y;
+const BLANK_LINE_AFTER = /[ \t]*\n/y;
+
+/** `at` moved past the spaces, tabs and line breaks that stand there. */
+function pastSpace(body: string, at: number): number {
+  LINK_SPACE.lastIndex = at;
+  LINK_SPACE.test(body);
+  return LINK_SPACE.lastIndex;
+}
+
+/** What closes a link's title, by what opens it. */
+const TITLE_CLOSERS: Readonly<Record<string, string>> = { '"': '"', "'": "'", "(": ")" };
+
+/** The address and the end of an inline link whose `(` stands just before `from`, read as
+ *  CommonMark reads a link's destination and title: an address in angle brackets, or one with no
+ *  space whose parentheses balance, then, after a space, a title in double quotes, single quotes
+ *  or parentheses, then the `)`. Undefined where no link ends there. */
+function linkTail(
+  body: string,
+  from: number
+): Pick<InlineLink, "addressEnd" | "addressStart" | "close"> | undefined {
+  let at = pastSpace(body, from);
+  const angled = body.charAt(at) === "<";
+  const addressStart = angled ? at + 1 : at;
+  at = addressStart;
+  if (angled) {
+    while (at < body.length && body.charAt(at) !== ">") {
+      const character = body.charAt(at);
+      if (character === "\n" || character === "<") return undefined;
+      at += character === "\\" ? 2 : 1;
+    }
+    if (body.charAt(at) !== ">") return undefined;
+  } else {
+    let depth = 0;
+    for (; at < body.length; at += 1) {
+      const character = body.charAt(at);
+      if (character <= " " || (character === ")" && depth === 0)) break;
+      if (character === "\\") at += 1;
+      else if (character === "(") depth += 1;
+      else if (character === ")") depth -= 1;
+    }
+    if (depth !== 0) return undefined;
   }
-  return undefined;
+  const addressEnd = at;
+  if (angled) at += 1;
+  const spaced = pastSpace(body, at);
+  const closer = spaced > at ? TITLE_CLOSERS[body.charAt(spaced)] : undefined;
+  at = spaced;
+  if (closer !== undefined) {
+    at += 1;
+    while (at < body.length && body.charAt(at) !== closer) {
+      at += body.charAt(at) === "\\" ? 2 : 1;
+    }
+    if (at >= body.length) return undefined;
+    at = pastSpace(body, at + 1);
+  }
+  return body.charAt(at) === ")" ? { addressEnd, addressStart, close: at + 1 } : undefined;
+}
+
+/**
+ * Every inline link `body` writes, in the order their words close, read as CommonMark and so
+ * the renderer read them: a backslash takes the character after it as a literal one, brackets
+ * that balance stand inside a link's words (`[@Planner [2]](…)`), a link holds no link - once one
+ * closes, no `[` before it opens one, a picture's caption aside - and a blank line ends every
+ * bracket open before it. Code holds no link syntax, so what the text's code contexts hold
+ * (`codeRanges`) is passed over.
+ */
+function inlineLinks(body: string): InlineLink[] {
+  const code = codeRanges(body);
+  const links: InlineLink[] = [];
+  const openers: { at: number; picture: boolean; active: boolean }[] = [];
+  let nextCode = 0;
+  for (let at = 0; at < body.length; at += 1) {
+    while (nextCode < code.length && (code[nextCode]?.end ?? 0) <= at) nextCode += 1;
+    const range = code[nextCode];
+    if (range !== undefined && range.start <= at) {
+      at = range.end - 1;
+      continue;
+    }
+    const character = body.charAt(at);
+    if (character === "\\") {
+      at += 1;
+    } else if (character === "\n") {
+      BLANK_LINE_AFTER.lastIndex = at + 1;
+      if (BLANK_LINE_AFTER.test(body)) openers.length = 0;
+    } else if (character === "[") {
+      const picture = body.charAt(at - 1) === "!" && body.charAt(at - 2) !== "\\";
+      openers.push({ active: true, at, picture });
+    } else if (character === "]") {
+      const opener = openers.pop();
+      const tail =
+        opener?.active === true && body.charAt(at + 1) === "(" ? linkTail(body, at + 2) : undefined;
+      if (opener === undefined || tail === undefined) continue;
+      links.push({ ...tail, open: opener.at, picture: opener.picture, wordsEnd: at });
+      if (!opener.picture) {
+        for (const earlier of openers) {
+          if (!earlier.picture) earlier.active = false;
+        }
+      }
+      at = tail.close - 1;
+    }
+  }
+  return links;
+}
+
+/** The inline link whose address is `body.slice(start, end)`, or undefined where none is. */
+function linkWithAddress(body: string, start: number, end: number): InlineLink | undefined {
+  return inlineLinks(body).find((link) => link.addressStart === start && link.addressEnd === end);
 }
 
 /** `[start, end)` widened over the inline link that wraps it, where one does. A mention's
  *  address is only half of what a reader sees, so a caller taking one out of the text must take
  *  its words with it rather than leave `[@Planner](` behind. */
 function linkAround(body: string, start: number, end: number): { end: number; start: number } {
-  const opening = linkOpening(body, start, end);
-  return opening === undefined ? { end, start } : { end: end + 1, start: opening };
+  const link = linkWithAddress(body, start, end);
+  return link === undefined ? { end, start } : { end: link.close, start: link.open };
 }
 
-/** The inline link `body` writes a reference's address in: its words as a reader sees them -
- *  each bracket `partyLink` escaped is a bracket again - and whether it is a picture's syntax
- *  (`![caption](address)`), which a renderer draws as the picture rather than as a link. */
+/** The inline link `body` writes a reference's address in: its words as a reader sees them and
+ *  how they are formatted, read out of the characters as a parsed record's are read out of its
+ *  marks (`@legion/contracts`'s `readWrittenWords`) - each backslash escape undone, a bracket
+ *  `partyLink` escaped among them, and the runs that write formatting gone - and whether it is a
+ *  picture's syntax (`![caption](address)`), which a renderer draws as the picture rather than
+ *  as a link. */
 export interface WrittenLink {
   readonly picture: boolean;
   readonly words: string;
+  readonly formatting: WordsFormatting;
 }
 
 /** The inline link whose address `reference` is (`WrittenLink`), or undefined where the
@@ -119,13 +229,26 @@ export function linkOf(
   body: string,
   reference: Pick<TextReference, "end" | "start">
 ): WrittenLink | undefined {
-  const opening = linkOpening(body, reference.start, reference.end);
-  return opening === undefined
+  const link = linkWithAddress(body, reference.start, reference.end);
+  return link === undefined
     ? undefined
-    : {
-        picture: body.charAt(opening - 1) === "!",
-        words: body.slice(opening + 1, reference.start - 2).replace(/\\([[\]])/gu, "$1"),
-      };
+    : { picture: link.picture, ...readWrittenWords(body.slice(link.open + 1, link.wordsEnd)) };
+}
+
+/** Whether `reference` stands in an inline link's words rather than on its own or as a link's
+ *  address: `CORE-1` in `[see CORE-1 here](https://x)`, and in `[CORE-1](dispatch://CORE-2)`,
+ *  whose address `CORE-2` is not in its words. The renderer links no reference there - its link
+ *  pass reads no text a link, a code span or a code block holds (`RefLink.tsx`'s
+ *  `excludedRefAncestorTags` and `linkPassReads`), and a link's words are text its `<a>` holds -
+ *  so what reads a draft as the record will be drawn, a draft's pills among them, links none
+ *  there either. */
+export function inLinkWords(
+  body: string,
+  reference: Pick<TextReference, "end" | "start">
+): boolean {
+  return inlineLinks(body).some(
+    (link) => link.open < reference.start && reference.end <= link.wordsEnd
+  );
 }
 
 /** Where `body` first mentions the party at `target`, taken whole - the link's words with its

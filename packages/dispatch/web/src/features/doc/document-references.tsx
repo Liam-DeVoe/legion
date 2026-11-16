@@ -1,4 +1,5 @@
-import type { EditorReferences, ReferenceTarget } from "@legion/proof-editor";
+import { mentionDrawn } from "@legion/contracts";
+import type { EditorReferences, OfferedReference, ReferenceTarget } from "@legion/proof-editor";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -10,10 +11,14 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { isPartyMention } from "../refs/party-references";
-import { MENTION_SIGN } from "../refs/ref-picker";
+import { isPartyRoute } from "../refs/party-references";
 import { fetchReferenceHref, needsSpecSlug, useReferenceTarget } from "../refs/reference-target";
-import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
+import {
+  type DispatchReferenceRoute,
+  parseNodeReference,
+  referenceHref,
+  shortForm,
+} from "../refs/routes";
 import { readTextReferences, type TextSource } from "../refs/text-references";
 import { useTextReferences } from "../refs/useTextReferences";
 import type { EditorHandle } from "./editor";
@@ -24,30 +29,34 @@ import type { EditorHandle } from "./editor";
  * dashboard reads what a text cites (`features/refs/text-references.ts`), so a bare issue key, a
  * `#id`, a bare `dispatch://` reference and a link whose text is its own address resolve under
  * exactly the rules a rendered body resolves them under. A party's mention - a link whose words
- * start with the mention sign (`isPartyMention`) - reads as that sign and the party's current
- * name, as it does in a rendered body (`RefLink`); a link whose text its author wrote another
- * way keeps those words.
+ * open with the mention sign and whose address names a party (`@legion/contracts`'s
+ * `referenceReading`) - reads as that sign and the party's current name (`mentionDrawn`), as it
+ * does in a rendered body (`RefLink`); a link whose text its author wrote another way keeps
+ * those words.
  *
  * The editor owns the positions and this owns the grammar: the plugin hands each text block's own
- * text to `scan`, which is the one reader, and reports the distinct words it found - a mention
- * as the mention sign and its address - and this resolves those words - their existence, their
- * document's question map, the whole id of a prefix - and hands back a title for each. The
- * document's stored text never changes (`@legion/proof-editor`'s `src/reference-decorations.ts`).
+ * text to `scan`, which is the one reader, and offers the distinct references it found, each a
+ * key and whether a mention names it (`OfferedReference`), and this resolves them - their
+ * existence, their document's question map, the whole id of a prefix, whether a mention's
+ * address names a party - and hands back a title for each: a plain candidate's in `targets` and
+ * a mention's in `mentions`. The document's stored text never changes (`@legion/proof-editor`'s
+ * `src/reference-decorations.ts`).
  */
 
 /** The empty answers, shared so an editor whose text cites nothing keeps one identity across
  *  renders and never hands the plugin a fresh value that says the same thing. */
-const NO_WORDS: readonly string[] = [];
+const NO_OFFERS: readonly OfferedReference[] = [];
 const NO_NAMES: Readonly<Record<string, ReferenceName>> = {};
 
 /** One reference the editor's text holds, as the host resolved it. */
 interface ResolvedReference {
-  /** The words the editor reported, which it keys its candidates by. */
+  /** The key the editor offered it by. */
   readonly words: string;
   readonly reference: string;
   readonly route: DispatchReferenceRoute;
   readonly length: number | undefined;
-  /** Whether the words are a party's mention, which reads as the mention sign and its name. */
+  /** Whether the editor offered it as a party's mention, which reads as the mention sign and the
+   *  party's name and is answered in `EditorReferences.mentions`. */
   readonly mention: boolean;
 }
 
@@ -81,18 +90,19 @@ function ReferenceTitle({
 }
 
 /** The title the editor draws over `resolved`, or undefined while it draws none. An issue reads
- *  as its key and title, and a mention as the mention sign and the party's name. A target
- *  Dispatch answered exists with no title of its own - a session it holds a record of that the
- *  registry does not name - is drawn as a link in the words of its reference, as a comment draws
- *  it, and its mention keeps its author's words; every other target is drawn once its title
- *  answers, and never without one. */
+ *  as its key and title, and a mention as a rendered body draws one (`@legion/contracts`'s
+ *  `mentionDrawn`): the mention sign and the party's name. A target Dispatch answered exists
+ *  with no title of its own - a session it holds a record of that the registry does not name -
+ *  is drawn as a link in the words of its reference, as a comment draws it, and its mention as
+ *  the sign and the session's short form, so its author's words never pass for a current name;
+ *  every other target is drawn once its title answers, and never without one. */
 function drawnTitle(
   { mention, reference, route }: ResolvedReference,
   name: ReferenceName | undefined
 ): string | undefined {
   const title = name?.title;
   if (mention) {
-    return title === undefined ? undefined : `${MENTION_SIGN}${title}`;
+    return name === undefined ? undefined : mentionDrawn(name, shortForm(route));
   }
   if (title !== undefined) {
     return route.kind === "issue" ? `${route.key} ${title}` : title;
@@ -113,14 +123,18 @@ export function DocumentReferences({
   editor: EditorHandle | undefined;
   source: TextSource | undefined;
 }): ReactNode {
-  // The words the editor last reported: every candidate its reader found in the document, which
-  // is what this resolves - never the markdown the page loaded, which a typed reference is not in.
-  const [words, setWords] = useState<readonly string[]>(NO_WORDS);
+  // The references the editor last offered: every candidate its reader found in the document,
+  // which is what this resolves - never the markdown the page loaded, which a typed reference is
+  // not in.
+  const [offered, setOffered] = useState<readonly OfferedReference[]>(NO_OFFERS);
   const [names, setNames] = useState<Readonly<Record<string, ReferenceName>>>(NO_NAMES);
 
-  const onKeys = useCallback((keys: readonly string[]) => {
-    setWords((current) =>
-      current.length === keys.length && current.every((word, index) => word === keys[index])
+  const onKeys = useCallback((keys: readonly OfferedReference[]) => {
+    setOffered((current) =>
+      current.length === keys.length &&
+      current.every(
+        (one, index) => one.key === keys[index]?.key && one.mention === keys[index]?.mention
+      )
         ? current
         : [...keys]
     );
@@ -152,33 +166,33 @@ export function DocumentReferences({
     []
   );
 
-  // The editor reports a mention as the mention sign and its address's words, which no reading
-  // of text writes: those are read here, and every other word by the one reader with its facts.
+  // A mention's key is its link's whole address, which needs no fact to read and is a mention
+  // only where it names a party; every other key is read by the one reader with its facts.
   const { mentioned, readable } = useMemo(() => {
     const mentions: ResolvedReference[] = [];
     const others: string[] = [];
-    for (const word of words) {
-      if (!word.startsWith(MENTION_SIGN)) {
-        others.push(word);
+    for (const { key, mention } of offered) {
+      if (!mention) {
+        others.push(key);
         continue;
       }
-      const [found] = readTextReferences(word.slice(MENTION_SIGN.length)).references;
+      const [found] = readTextReferences(key).references;
       if (
         found?.reference !== undefined &&
         found.route !== undefined &&
-        isPartyMention(word, found.route)
+        isPartyRoute(found.route)
       ) {
         mentions.push({
           length: undefined,
           mention: true,
           reference: found.reference,
           route: found.route,
-          words: word,
+          words: key,
         });
       }
     }
     return { mentioned: mentions, readable: others };
-  }, [words]);
+  }, [offered]);
 
   // Each candidate is read as the whole mention it was, on its own: the editor's words never
   // become one text, so nothing another word holds can end this one (`readTextCandidates`).
@@ -200,10 +214,13 @@ export function DocumentReferences({
     return found;
   }, [mentioned, reading]);
 
-  const targets = useMemo(() => {
-    const drawn = new Map<string, ReferenceTarget | null>();
-    for (const word of words) {
-      drawn.set(word, null);
+  const { mentions, targets } = useMemo(() => {
+    const answers = {
+      mentions: new Map<string, ReferenceTarget | null>(),
+      targets: new Map<string, ReferenceTarget | null>(),
+    };
+    for (const { key, mention } of offered) {
+      (mention ? answers.mentions : answers.targets).set(key, null);
     }
     for (const one of resolved) {
       const title = drawnTitle(one, names[one.reference]);
@@ -211,7 +228,7 @@ export function DocumentReferences({
         continue;
       }
       const { length, reference, route } = one;
-      drawn.set(one.words, {
+      (one.mention ? answers.mentions : answers.targets).set(one.words, {
         // A person opens no page, so their name is drawn as words and no link (R5).
         href: route.kind === "person" ? undefined : reference,
         length,
@@ -219,12 +236,12 @@ export function DocumentReferences({
         titleKey: route.kind === "issue" ? route.key : undefined,
       });
     }
-    return drawn;
-  }, [names, resolved, words]);
+    return answers;
+  }, [names, offered, resolved]);
 
   const references: EditorReferences = useMemo(
-    () => ({ onKeys, scan, targets }),
-    [onKeys, scan, targets]
+    () => ({ mentions, onKeys, scan, targets }),
+    [mentions, onKeys, scan, targets]
   );
   useEffect(() => {
     editor?.setReferences(references);

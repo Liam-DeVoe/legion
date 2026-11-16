@@ -8,6 +8,7 @@ import {
   textMutedOnCanvas,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
+import { PlainText } from "../refs/plain-text";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import type { HeldSend } from "./held-sends";
@@ -23,6 +24,10 @@ import type { SessionSends } from "./useSessionSends";
  * Discard. The session's live view and its Agents row both show it, and either's controls act on
  * the same write (`useSessionSends`). It leaves once Dispatch makes it, and the stored message
  * takes its place.
+ *
+ * The text is plain, never rendered as markdown, and it is the draft's plain-text projection
+ * rather than its source: the picker writes a mention into the draft as a link, which reads here
+ * as the party's name.
  */
 export function PendingSendTurn({
   held,
@@ -40,7 +45,15 @@ export function PendingSendTurn({
       <div
         className={`max-w-[80%] rounded-xl px-3 py-2 text-sm opacity-80 ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
       >
-        <p className="whitespace-pre-wrap break-words">Your message: “{held.draft.draft.body}”</p>
+        <p className="whitespace-pre-wrap break-words">
+          Your message: “
+          <PlainText markdown={held.draft.draft.body} surface="agent-held-send">
+            {/* The draft as its plain words, and as typed until the engine has answered: the
+                reading list's `agent-held-send`. */}
+            {(line) => line ?? held.draft.draft.body}
+          </PlainText>
+          ”
+        </p>
       </div>
       <div className="flex max-w-[80%] flex-wrap items-center justify-end gap-x-3 gap-y-1">
         {held.status === "refused" ? (

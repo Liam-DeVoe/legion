@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
+import { referenceReading } from "@legion/contracts";
 
 import {
   draftParties,
-  isPartyMention,
+  inLinkWords,
+  isPartyRoute,
   linkOf,
   partyMention,
   partyMentionSpan,
@@ -136,34 +138,159 @@ test("a party's mention is written as the mention sign and its name", () => {
 
 // A worded link reads as a party's current name only where its words start with the mention
 // sign and its address names a party, a hand-written one as much as a picked one; every other
-// worded link keeps its author's words (R8).
+// worded link keeps its author's words (R8). Which address names a party is this reader's own
+// grammar (`isPartyRoute`), and the rest of the rule is `@legion/contracts`'s.
 test("a mention is a party's link whose words start with the mention sign", () => {
-  const route = (address: string) => readTextReferences(address).references[0]?.route;
-  expect(isPartyMention("@Bob", route(AGENT))).toBe(true);
-  expect(isPartyMention("@reviewer", route("dispatch://role/reviewer"))).toBe(true);
-  expect(isPartyMention("@alice", route("dispatch://person/alice@example.com"))).toBe(true);
-  expect(isPartyMention("Bob", route(AGENT))).toBe(false);
-  expect(isPartyMention(" @Bob", route(AGENT))).toBe(false);
-  expect(isPartyMention("@the fix", route("dispatch://CORE-1"))).toBe(false);
-  expect(isPartyMention("@Bob", undefined)).toBe(false);
+  const reads = (words: string, address: string) => {
+    const route = readTextReferences(address).references[0]?.route;
+    return referenceReading({
+      address,
+      party: route !== undefined && isPartyRoute(route),
+      words,
+    });
+  };
+  expect(reads("@Bob", AGENT)).toBe("mention");
+  expect(reads("@reviewer", "dispatch://role/reviewer")).toBe("mention");
+  expect(reads("@alice", "dispatch://person/alice@example.com")).toBe("mention");
+  expect(reads("Bob", AGENT)).toBe("words");
+  expect(reads(" @Bob", AGENT)).toBe("words");
+  expect(reads("@the fix", "dispatch://CORE-1")).toBe("words");
+  expect(reads("@Bob", "dispatch://agent/")).toBe("words");
 });
+
+/** The link the first reference `body` holds stands in (`linkOf`). */
+function linkAt(body: string) {
+  const [found] = readTextReferences(body).references;
+  if (found === undefined) throw new Error(`${body} holds no reference`);
+  return linkOf(body, found);
+}
+
+/** What `partyMentionSpan` takes out of `body` for the session the tests name. */
+function mentionTaken(body: string): string | undefined {
+  const span = partyMentionSpan(body, `session:${SESSION}`);
+  return span === undefined ? undefined : body.slice(span.start, span.end);
+}
+
+/** What a draft's pill reads the first reference of `body` as, as the chips ask it
+ *  (`conversation/draft-pills.tsx`): the link around it, and the one rule over that link. */
+function pillReads(body: string): string {
+  const [found] = readTextReferences(body).references;
+  if (found?.route === undefined) throw new Error(`${body} holds no reference`);
+  const link = linkOf(body, found);
+  return referenceReading({
+    address: found.text,
+    party: isPartyRoute(found.route),
+    words: link?.words,
+    wordsFormatting: link?.formatting,
+  });
+}
 
 // What a draft's pill reads a reference by: the link around it, as a reader of the stored text
 // sees it - its words, or a picture, which is drawn as the picture and is no link.
 test("a link is read around its address, a picture is told apart, and a reference on its own has none", () => {
-  const linkAt = (body: string) => {
-    const [found] = readTextReferences(body).references;
-    if (found === undefined) throw new Error(`${body} holds no reference`);
-    return linkOf(body, found);
-  };
-  expect(linkAt(`Ask [@Planner](${AGENT}) now.`)).toEqual({ picture: false, words: "@Planner" });
+  expect(linkAt(`Ask [@Planner](${AGENT}) now.`)).toEqual({
+    formatting: "plain",
+    picture: false,
+    words: "@Planner",
+  });
   expect(linkAt(`Ask [@Planner \\[2\\]](${AGENT}) now.`)).toEqual({
+    formatting: "plain",
     picture: false,
     words: "@Planner [2]",
   });
   expect(linkAt(`Ask ${AGENT} now.`)).toBe(undefined);
   expect(linkAt("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")).toEqual({
+    formatting: "plain",
     picture: true,
     words: "shot.png",
   });
+});
+
+// A hand-written link is read as the renderer reads it, whole: its words may hold brackets that
+// balance, a title may follow its address, and its address may stand in angle brackets.
+test("a link whose words hold brackets that balance is read whole", () => {
+  const body = `Ask [@Alice [x]](${AGENT}) now.`;
+  expect(linkAt(body)?.words).toBe("@Alice [x]");
+  expect(mentionTaken(body)).toBe(`[@Alice [x]](${AGENT})`);
+});
+
+test("a link with a title after its address is read to its closing parenthesis", () => {
+  const body = `Ask [@Alice](${AGENT} "the planner") now.`;
+  expect(linkAt(body)?.words).toBe("@Alice");
+  expect(mentionTaken(body)).toBe(`[@Alice](${AGENT} "the planner")`);
+});
+
+test("a link whose address stands in angle brackets is read whole", () => {
+  const body = `Ask [@Alice](<${AGENT}>) now.`;
+  expect(linkAt(body)?.words).toBe("@Alice");
+  expect(mentionTaken(body)).toBe(`[@Alice](<${AGENT}>)`);
+});
+
+// Markdown reads `\@` as `@`, so a link whose sign is written escaped is the mention the
+// rendered record draws (`reference-naming.test.tsx`): the draft's reader takes its words
+// through the one function that reads written words (`@legion/contracts`'s `readWrittenWords`).
+test("a link whose words open with an escaped mention sign reads as the mention it is drawn as", () => {
+  const body = `Ask [\\@Alice \\(lead\\)](${AGENT}) now.`;
+  expect(linkAt(body)?.words).toBe("@Alice (lead)");
+  expect(pillReads(body)).toBe("mention");
+});
+
+// The formatting rule every reader of a record applies (`@legion/contracts`'s
+// `dispatch-mentions.ts`), read out of a draft's characters, in its three cases. First: code
+// anywhere in a link's words keeps the words.
+test("a draft's link with code anywhere in its words reads as its words", () => {
+  expect(linkAt(`Ask [\`@Alice\`](${AGENT}) now.`)).toEqual({
+    formatting: "code",
+    picture: false,
+    words: "@Alice",
+  });
+  expect(pillReads(`Ask [\`@Alice\`](${AGENT}) now.`)).toBe("words");
+  expect(pillReads(`Ask [@Alice \`lead\`](${AGENT}) now.`)).toBe("words");
+});
+
+// Second: formatting over all of a link's words is the same record as that formatting around
+// the link, so the link is still a mention, and its words are read without the runs that
+// write the formatting - inside the brackets, around the link, or around the sentence.
+test("a draft's link whose words are all under one formatting reads as a mention", () => {
+  expect(linkAt(`Ask [**@Alice**](${AGENT}) now.`)).toEqual({
+    formatting: "plain",
+    picture: false,
+    words: "@Alice",
+  });
+  expect(pillReads(`Ask [**@Alice**](${AGENT}) now.`)).toBe("mention");
+  expect(pillReads(`Ask *[@Alice](${AGENT})* now.`)).toBe("mention");
+  expect(pillReads(`~~Ask [@Alice](${AGENT}) now.~~`)).toBe("mention");
+});
+
+// Third: formatting over some of a link's words makes them the author's words.
+test("a draft's link whose words are formatted in part reads as its words", () => {
+  expect(linkAt(`Ask [@Alice **lead**](${AGENT}) now.`)).toEqual({
+    formatting: "mixed",
+    picture: false,
+    words: "@Alice lead",
+  });
+  expect(pillReads(`Ask [@Alice **lead**](${AGENT}) now.`)).toBe("words");
+  expect(pillReads(`Ask [*@Alice* lead](${AGENT}) now.`)).toBe("words");
+  expect(pillReads(`Ask [@Alice ~~lead~~](${AGENT}) now.`)).toBe("words");
+});
+
+// The renderer links no reference a link's words hold (`RefLink.tsx`'s `linkPassReads`), while a
+// link's address is the reference the link is.
+test("a reference in a link's words is told from the link's address", () => {
+  const inWords = (body: string) =>
+    readTextReferences(body).references.map((found) => [found.text, inLinkWords(body, found)]);
+  expect(inWords("[see CORE-1 here](https://x)")).toEqual([["CORE-1", true]]);
+  expect(inWords("[CORE-1](dispatch://CORE-2)")).toEqual([
+    ["CORE-1", true],
+    ["dispatch://CORE-2", false],
+  ]);
+  expect(inWords("CORE-1 and [the fix](dispatch://CORE-2)")).toEqual([
+    ["CORE-1", false],
+    ["dispatch://CORE-2", false],
+  ]);
+  // A bracket a code span holds closes no link's words, as CommonMark reads a code span first.
+  expect(inWords("[CORE-1 `]` too](dispatch://CORE-2)")).toEqual([
+    ["CORE-1", true],
+    ["dispatch://CORE-2", false],
+  ]);
 });

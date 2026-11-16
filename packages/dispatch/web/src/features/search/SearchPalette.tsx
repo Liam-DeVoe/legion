@@ -210,6 +210,7 @@ function ResultOption({
         lines={2}
         markdown={source}
         source={record}
+        surface="search-result"
         tree={result.snippet_tree}
       />
       {result.ask === undefined ? null : (

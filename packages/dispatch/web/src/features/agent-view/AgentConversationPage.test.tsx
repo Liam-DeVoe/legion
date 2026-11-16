@@ -34,6 +34,7 @@ import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/cli
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -2189,6 +2190,36 @@ test("a refused send keeps the message on screen and says why", async () => {
     within(screen.getByTestId("agent-send-held")).getByText("Your message: “try the other branch”")
   ).toBeTruthy();
   expect(composerInput().value).toBe("");
+});
+
+// The held turn shows the draft as its plain-text projection, the words a reader of the stored
+// message will read: the formatting goes, and a mention the picker wrote reads as the party's
+// name. Drawn as the characters typed, the turn would keep the asterisks and a link's address.
+test("a held message reads as its plain words, never as the source typed", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  spies.push(
+    spyOn(api, "createAgentMessage").mockRejectedValue(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" })
+    )
+  );
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+  const input = await modeSettled("steer");
+
+  await type(user, input, "try the **other** branch");
+  await user.click(sendButton());
+  await screen.findByTestId("agent-send-error");
+  await waitFor(() =>
+    expect(
+      within(screen.getByTestId("agent-send-held")).getByText(
+        "Your message: “try the other branch”"
+      )
+    ).toBeTruthy()
+  );
 });
 
 // A refusal belongs to the session that sent the message. One landing while the reader is on

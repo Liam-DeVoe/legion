@@ -48,7 +48,7 @@ import {
   parseInboxSearch,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { textSourceOf } from "../refs/text-references";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
@@ -59,7 +59,7 @@ import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
 import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
-import { type AskOrdinal, askOrdinals, controlName } from "./ask-name";
+import { type AskOrdinal, askOrdinals } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { BlockedOnYou, waitingOnHuman } from "./BlockedOnYou";
 import { BulkBar } from "./BulkBar";
@@ -97,6 +97,7 @@ import {
 } from "./sections";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
+import { useControlName } from "./useControlName";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 import { useInboxSelection } from "./useInboxSelection";
 import { useInboxThreadRows } from "./useInboxThreadRows";
@@ -193,7 +194,8 @@ function MarkCheckbox({
 
 /** A thread row's own checkbox, named after the thread it marks. The name is an `aria-label`,
  *  which can hold no markup: it is the one plain-text projection of the subject, the same
- *  reader the row's own line is drawn by, never a second stripper. */
+ *  reader the row's own line is drawn by, with the record that line names (`ThreadTitle`), never
+ *  a second stripper. */
 function ThreadMarkCheckbox({
   marked,
   onMark,
@@ -206,7 +208,12 @@ function ThreadMarkCheckbox({
   thread: MyReplyRow;
 }): ReactNode {
   return (
-    <PlainText markdown={thread.subject} tree={thread.subject_tree}>
+    <PlainText
+      markdown={thread.subject}
+      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id)}
+      surface="inbox-thread-title"
+      tree={thread.subject_tree}
+    >
       {(subject) => (
         <MarkCheckbox id={rowId(row)} marked={marked} name={subject ?? ""} onMark={onMark} />
       )}
@@ -362,16 +369,15 @@ function AskShortRow({
   section,
   selected,
 }: InboxRowProps & ShortRowProps & { ask: InboxRow }): ReactNode {
+  const control = useControlName(ask, ordinal);
   return (
     <ShortRowFrame
       age={formatAskAge(rowLastActivityAt(row))}
       check={
-        <MarkCheckbox
-          id={ask.id}
-          marked={marked}
-          name={controlName(ask, ordinal)}
-          onMark={onMark}
-        />
+        <>
+          {control.reads}
+          <MarkCheckbox id={ask.id} marked={marked} name={control.name} onMark={onMark} />
+        </>
       }
       group={groupKey}
       onRelease={onRelease}
@@ -386,6 +392,7 @@ function AskShortRow({
           lines={1}
           markdown={ask.question}
           source={textSourceOf("ask", ask.id)}
+          surface="inbox-ask-row"
           tree={ask.question_tree}
         />
       }
@@ -464,7 +471,7 @@ function InboxCardRow({
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
   viewer: string;
 }): ReactNode {
-  const name = controlName(ask, ordinal);
+  const { name, reads } = useControlName(ask, ordinal);
   return (
     <InboxRowShell
       group={groupKey}
@@ -479,6 +486,7 @@ function InboxCardRow({
           Assign to me is a full-width row inside the right group, so it never draws over the
           issue key. */}
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+        {reads}
         <MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />
         <RowKindIcon type={rowType(row)} />
         <div className="flex min-w-0 grow basis-48 items-baseline gap-2">

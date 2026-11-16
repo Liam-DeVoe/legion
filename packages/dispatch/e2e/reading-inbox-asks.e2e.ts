@@ -2,9 +2,9 @@
  * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over an ask as the Inbox
  * draws it: an open ask's row and its card's question, its options and its earlier wording, and
  * the record an answered and a resolved ask's card becomes, with its earlier answers. Each is a
- * record a reader meets on `/`, so each must draw a stored bare key, a `dispatch://` address and
- * a picked party through the one renderer (R6): the key and the address as their issue's key and
- * current title, the party as `@` and its current name, and no address left as text.
+ * record a reader meets on `/`, so each must draw every form a stored text names a node by
+ * through the one renderer (R6): as its node's current name, the party as `@` and its current
+ * name, and none left as the characters written.
  *
  * Every one of these surfaces is a record a reader reads, so each reference in it is a link. The
  * card draws its texts in plain boxes; an option's text sits in the `<label>` of its radio, which
@@ -46,7 +46,7 @@ const asker = {
 const PLAIN_QUESTION = "Which one goes first?";
 
 // SLOW(>=2s): a database reset, the reading world, an open ask, and the Inbox drawn with it.
-test("inbox-ask-row: an ask row's one-line question draws a stored key, an address and a party through the renderer", async ({
+test("inbox-ask-row: an ask row's one-line question draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -61,7 +61,7 @@ test("inbox-ask-row: an ask row's one-line question draws a stored key, an addre
 });
 
 // SLOW(>=2s): a database reset, the reading world, an open ask, and the Inbox opened on its card.
-test("ask-card-question: an ask card's question draws a stored key, an address and a party through the renderer", async ({
+test("ask-card-question: an ask card's question draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -76,7 +76,7 @@ test("ask-card-question: an ask card's question draws a stored key, an address a
 
 // SLOW(>=2s): a database reset, the reading world, an open ask with two options, and the Inbox
 // opened on its card.
-test("ask-option-text: an ask option's label and description draw a stored key, an address and a party through the renderer", async ({
+test("ask-option-text: an ask option's label and description draw every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -102,7 +102,7 @@ test("ask-option-text: an ask option's label and description draw a stored key, 
 
 // SLOW(>=2s): a database reset, the reading world, an open ask reworded once, and the Inbox
 // opened on its card with its earlier wording shown.
-test("ask-edit-history: an ask card's earlier wording draws a stored key, an address and a party through the renderer", async ({
+test("ask-edit-history: an ask card's earlier wording draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -120,7 +120,7 @@ test("ask-edit-history: an ask card's earlier wording draws a stored key, an add
 
 // SLOW(>=2s): a database reset, the reading world, an ask answered and replied under, and the
 // Inbox opened on its Reply row.
-test("answered-ask: an answered ask's question and answer draw a stored key, an address and a party through the renderer", async ({
+test("answered-ask: an answered ask's question and answer draw every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -142,7 +142,7 @@ test("answered-ask: an answered ask's question and answer draw a stored key, an 
 
 // SLOW(>=2s): a database reset, the reading world, an ask answered twice and replied under, and
 // the Inbox opened on its Reply row with its earlier answer shown.
-test("ask-answer-history: an ask card's earlier answer draws a stored key, an address and a party through the renderer", async ({
+test("ask-answer-history: an ask card's earlier answer draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -176,7 +176,7 @@ test("ask-answer-history: an ask card's earlier answer draws a stored key, an ad
 
 // SLOW(>=2s): a database reset, the reading world, an ask replied under and resolved, and the
 // Inbox opened on its Reply row.
-test("resolved-ask: a resolved ask's question and reason draw a stored key, an address and a party through the renderer", async ({
+test("resolved-ask: a resolved ask's question and reason draw every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();

@@ -616,7 +616,10 @@ test("an answer that replaced an earlier one reads as a change in the activity l
     seq: 5,
     type: "ask.answered",
   } as DispatchEvent;
-  expect(activityDescription(answered)).toEqual(["answered “Ship it?”"]);
+  // The question is a part of its own: the one reader draws it, so a mention in it reads as its
+  // target's name and never as the link's source (`SentenceParts`).
+  const question = { prose: "Ship it?", tree: undefined };
+  expect(activityDescription(answered)).toEqual(["answered “", question, "”"]);
   expect(
     activityDescription({
       ...answered,
@@ -627,5 +630,5 @@ test("an answer that replaced an earlier one reads as a change in the activity l
         state: "answered",
       },
     } as DispatchEvent)
-  ).toEqual(["changed the answer to “Ship it?”"]);
+  ).toEqual(["changed the answer to “", question, "”"]);
 });

@@ -9,9 +9,12 @@ import { askCard, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import {
   expectReadsReferences,
+  firstLineForms,
   READING_SESSION_ID,
   type ReadingWorld,
+  readingQuestionBlock,
   readingText,
+  scopedTo,
   seedReadingWorld,
 } from "./reading-rows";
 import { expect, test } from "./test";
@@ -20,9 +23,9 @@ import { expect, test } from "./test";
  * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) across the Inbox's questions
  * and threads: a reply under an ask, an approval's question in the reading column, a thread
  * turn's body in the reading column, and a thread row's title. Each is a record a reader meets
- * on `/`, so each must draw a stored bare key, a `dispatch://` address and a picked party through
- * the one renderer (R6): the key and the address as their issue's key and current title, the
- * party as `@` and its current name, and no address left as text.
+ * on `/`, so each must draw every form a stored text names a node by through the one renderer
+ * (R6): as its node's current name, the party as `@` and its current name, and none left as the
+ * characters written.
  *
  * Three of the four are records a reader reads, where each reference is a link. The fourth, a
  * thread row's title, is the link the row's `o` follows (`ThreadTitle.tsx`), so the references
@@ -72,8 +75,8 @@ async function seedHostThread(
 }
 
 // SLOW(>=2s): a database reset, the reading world, an ask with its reply, and the Inbox opened
-// on that ask's card; measured at 3.2 s and 6.1 s on two runs in an issue pod on one worker.
-test("ask-thread-reply: a reply under an ask draws a stored key, an address and a party through the renderer", async ({
+// on that ask's card; measured at 4.3 s on one run in an issue pod on one worker.
+test("ask-thread-reply: a reply under an ask draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -92,20 +95,22 @@ test("ask-thread-reply: a reply under an ask draws a stored key, an address and 
 });
 
 // SLOW(>=2s): a database reset, the reading world, a document and its approval request, and the
-// Inbox opened on that request's reading column, which reads the document under the question;
-// measured at 2.3 s, 2.7 s and 3.1 s on three runs in an issue pod on one worker.
-test("approval-ask-question: an approval's question in the reading column draws a stored key, an address and a party through the renderer", async ({
+// Inbox opened on that request's reading column, which reads the document under the question.
+test("approval-ask-question: an approval's question in the reading column draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const seeded = await seedReadingWorld();
+  // The approval's question is read against the document it asks about, so that document
+  // declares the question a `#id` in the question names, and the world is scoped to it.
   const notes = await createIssueArtifact(
-    world.host.key,
+    seeded.host.key,
     {
-      content: "# Cache notes\n\nThe cache warms before the queue drains.\n",
+      content: `# Cache notes\n\nThe cache warms before the queue drains.\n\n${readingQuestionBlock()}\n`,
       name: "cache-notes.md",
     },
     readingAgent
   );
+  const world = await scopedTo(seeded, notes.artifact.id);
   // The server writes the question as its own `Approve …?` and then the summary, so the summary
   // is where the stored text goes.
   const approval = withOpenedAsk(
@@ -119,9 +124,8 @@ test("approval-ask-question: an approval's question in the reading column draws 
 });
 
 // SLOW(>=2s): a database reset, the reading world, a comment thread, and the Inbox opened on that
-// thread in the reading column; measured between 1.6 s and 3.0 s on three runs in an issue pod on
-// one worker.
-test("inbox-thread-turn: a thread turn's body in the reading column draws a stored key, an address and a party through the renderer", async ({
+// thread in the reading column; measured at 3.9 s on one run in an issue pod on one worker.
+test("inbox-thread-turn: a thread turn's body in the reading column draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
@@ -133,19 +137,29 @@ test("inbox-thread-turn: a thread turn's body in the reading column draws a stor
   await expectReadsReferences(turn, world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, a comment thread, and the Inbox drawn with the
-// thread's row; measured between 1.5 s and 2.5 s on three runs in an issue pod on one worker.
-test("inbox-thread-title: a thread row's title draws a stored key, an address and a party as names inside its link", async ({
+// SLOW(>=2s): a database reset, the reading world, a comment thread for each group of forms a
+// first line holds, and the Inbox drawn with the threads' rows; measured at 2.8 s on one run in
+// an issue pod on one worker.
+test("inbox-thread-title: a thread row's title draws every form of a stored reference as a name inside its link", async ({
   page,
 }) => {
   const world = await seedReadingWorld();
-  // The title is the thread root's own text, so the stored text is the reader's root.
-  const thread = await seedHostThread(world, readingText(world), "It warms before the drain.");
+  // The title is the first line of the thread root's own text, as the server cuts it, so the
+  // stored text is the reader's root: one thread for each group of forms a first line holds
+  // whole (`firstLineForms`).
+  const groups = firstLineForms(world);
+  const roots: string[] = [];
+  for (const forms of groups) {
+    const text = readingText(world, forms);
+    roots.push((await seedHostThread(world, text, "It warms before the drain.")).root);
+  }
 
   await page.goto("/");
-  // The short row's title is the row's one owner link, the one `o` follows; the owner line beside
-  // it links the issue without that mark.
-  const title = inboxRow(page, replyRowId(thread.root)).locator("a[data-inbox-owner]");
-  await expect(title).toHaveCount(1);
-  await expectReadsReferences(title, world, "inert");
+  for (const [index, forms] of groups.entries()) {
+    // The short row's title is the row's one owner link, the one `o` follows; the owner line
+    // beside it links the issue without that mark.
+    const title = inboxRow(page, replyRowId(roots[index] ?? "")).locator("a[data-inbox-owner]");
+    await expect(title).toHaveCount(1);
+    await expectReadsReferences(title, world, "inert", forms);
+  }
 });

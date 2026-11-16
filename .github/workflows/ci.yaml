@@ -1479,6 +1479,10 @@ jobs:
             # Dispatch server: the job runs neither.
             dispatch_ui:
               - '.github/workflows/ci.yaml'
+              # packages/dispatch/e2e/__tests__/reading-walk.test.ts:166-177 reads the spec files
+              # of the `references` lane out of this workflow and fails on a reading spec the lane
+              # does not name, so a change to that list runs the job that runs the test.
+              - '.github/workflows/dispatch-browser.yaml'
               - *bun_install
               - *biome
               - 'packages/dispatch/**'

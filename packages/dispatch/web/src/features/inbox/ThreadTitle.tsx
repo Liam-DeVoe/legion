@@ -40,6 +40,7 @@ export function ThreadTitle({
       lines={1}
       markdown={thread.subject}
       source={textSourceOf(textSourceKind(thread.kind), thread.thread_id)}
+      surface="inbox-thread-title"
       tree={thread.subject_tree}
     />
   );

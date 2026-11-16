@@ -96,6 +96,7 @@ function ThreadQuote({ thread }: { thread: MyReplyRow }): ReactNode {
       className={`mt-2 border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}
       data-inbox-thread-quote=""
     >
+      {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
       {quote}
     </blockquote>
   );
@@ -134,6 +135,7 @@ function ThreadTurnView({
         <MarkdownBody
           markdown={turn.body}
           source={textSourceOf(turn.kind, turn.id)}
+          surface="inbox-thread-turn"
           tree={turn.tree}
         />
       </div>

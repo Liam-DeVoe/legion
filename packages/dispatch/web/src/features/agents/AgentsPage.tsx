@@ -229,6 +229,7 @@ function AgentExchangeReply({
           <MarkdownBody
             markdown={reply.body}
             source={textSourceOf("message", reply.id)}
+            surface="agents-row-reply"
             tree={reply.body_tree}
           />
         </div>
@@ -311,6 +312,7 @@ function AgentTargetedMessage({
             <MarkdownBody
               markdown={read.message.body}
               source={textSourceOf("message", read.message.id)}
+              surface="agents-row-message"
               tree={read.message.body_tree}
             />
           </div>
@@ -1165,6 +1167,7 @@ function BroadcastComposer({
                     type="button"
                   >
                     {name}
+                    {/* not stored prose: the dashboard's own word for why it gets none */}
                     {note === undefined ? "" : ` · ${note.reason}`} ✕
                   </button>
                 )}

@@ -1,5 +1,5 @@
 import { actorActText } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import type { SearchAsk } from "../../api/types";
 import {
@@ -9,6 +9,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { AskResolutionLine } from "../refs/AgentName";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
 import type { TextSource } from "../refs/text-references";
@@ -64,9 +65,24 @@ export function AskHitStatus({
             className={`min-w-0 [overflow-wrap:anywhere] ${ask.state === "resolved" ? "basis-full" : ""}`}
           >
             {actorActText(answer.user, answer.act)} · <Timestamp at={answer.at} /> ·{" "}
-            {(answer.selected ?? []).length === 0
-              ? "No option chosen"
-              : `Chose ${(answer.selected ?? []).join(", ")}`}
+            {(answer.selected ?? []).length === 0 ? (
+              "No option chosen"
+            ) : (
+              <>
+                Chose{" "}
+                {(answer.selected ?? []).map((label, index) => (
+                  <Fragment key={label}>
+                    {index === 0 ? null : ", "}
+                    <MarkdownBody
+                      markdown={label}
+                      source={source}
+                      surface="search-ask-status"
+                      variant="inline"
+                    />
+                  </Fragment>
+                ))}
+              </>
+            )}
           </span>
         )}
       </div>
@@ -76,6 +92,7 @@ export function AskHitStatus({
           lines={3}
           markdown={textHead(answer.text, ANSWER_PREVIEW_CHARS)}
           source={source}
+          surface="search-ask-status"
           tree={
             answer.text_tree === undefined
               ? undefined

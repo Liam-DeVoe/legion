@@ -21,7 +21,7 @@ import { RefPickerList } from "./RefPickerList";
 import {
   applyInsertion,
   REF_PICKER_INSTRUCTION,
-  REF_PICKER_NO_PARTS_WORDS,
+  REF_PICKER_PARTS_WORDS,
   REF_PICKER_WORDS,
   type RefPickerInsertion,
 } from "./ref-picker";
@@ -44,6 +44,8 @@ const worker: Agent = {
   title: "Worker",
 };
 
+/** The issue's collaborators: a person, and a reviewer whose session has stopped, so that the
+ *  reviewer role has no holder the registry lists. */
 const collaborators: IssueCollaborators = {
   agents: [
     {
@@ -284,20 +286,46 @@ test("every door lists the parties and the components before a character is type
   await user.keyboard("@");
 
   await screen.findByRole("listbox", { name: "References" });
-  // The `@` door: people, agents, roles, then the kinds that need no query either.
+  // The `@` door: people, agents, roles, then the kinds that need no query either. The issue
+  // records a reviewer whose session has stopped, and nobody holds that role: it is no row.
   await waitFor(() =>
     expect(drawnRows()).toEqual([
       "People: alice@theorem.dev",
       "Agents: Planner",
       "Agents: Worker",
       "Roles: planner",
-      "Roles: reviewer",
       "Components: The relay",
     ])
   );
   // The searched kinds cannot be listed yet, and the one instruction row says why.
   expect(screen.getByTestId("ref-picker-instruction").textContent).toBe(REF_PICKER_INSTRUCTION);
   expect(page.search).not.toHaveBeenCalled();
+});
+
+// One rule says which roles are known (`roleHolders`): a role a session the registry lists holds,
+// live or unresponsive, as the server delivers to either. A role the issue records only for a
+// session that has stopped has no holder: the reader draws it as the words written and the server
+// tells nobody, so the picker offers it nowhere, and the hint that a picked role is told holds.
+test("the picker offers a role a listed session holds, unresponsive or not, and no role nobody holds", async () => {
+  const user = userEvent.setup();
+  renderHost({ agents: [planner, { ...worker, roles: ["tester"], state: "unresponsive" }] });
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+
+  // The person is the collaborators' read, which also records the stopped reviewer: once it is
+  // drawn, that read has answered.
+  await waitFor(() =>
+    expect(drawnRows()).toEqual([
+      "People: alice@theorem.dev",
+      "Agents: Planner",
+      "Agents: Worker",
+      "Roles: planner",
+      "Roles: tester",
+      "Components: The relay",
+    ])
+  );
 });
 
 test("the doors differ only in their order, and `#` leads with the issues the search answers", async () => {
@@ -354,13 +382,13 @@ test("the picker filters as the reader types, moves with the arrows and takes th
   await user.keyboard("@");
   await screen.findByRole("listbox", { name: "References" });
 
-  await waitFor(() => expect(drawnRows()).toHaveLength(6));
+  await waitFor(() => expect(drawnRows()).toHaveLength(5));
 
   await user.keyboard("worker");
   await waitFor(() => expect(drawnRows()).toEqual(["Agents: Worker"]));
 
   await user.keyboard("{Backspace}".repeat("worker".length));
-  await waitFor(() => expect(drawnRows()).toHaveLength(6));
+  await waitFor(() => expect(drawnRows()).toHaveLength(5));
   // The first row is highlighted until the reader moves; one step down takes the second.
   const options = screen.getAllByRole("option");
   expect(options[0]?.getAttribute("aria-selected")).toBe("true");
@@ -370,7 +398,7 @@ test("the picker filters as the reader types, moves with the arrows and takes th
   );
   await user.keyboard("{ArrowUp}{ArrowUp}");
   await waitFor(() =>
-    expect(screen.getAllByRole("option")[5]?.getAttribute("aria-selected")).toBe("true")
+    expect(screen.getAllByRole("option")[4]?.getAttribute("aria-selected")).toBe("true")
   );
 
   await user.keyboard("{Enter}");
@@ -544,10 +572,9 @@ test("an agent whose conversation holds no file says so when its documents are o
   await waitFor(() => expect(page.listAgentArtifacts).toHaveBeenCalledWith("planner-session"));
   await waitFor(() =>
     expect(screen.getByTestId("ref-picker-no-parts").textContent).toBe(
-      REF_PICKER_NO_PARTS_WORDS.documents
+      REF_PICKER_PARTS_WORDS.documents.none
     )
   );
-  expect(REF_PICKER_NO_PARTS_WORDS.documents).toBe("No documents.");
   expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]);
 
   await user.keyboard("{ArrowLeft}");

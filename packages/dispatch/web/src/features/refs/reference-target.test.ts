@@ -14,6 +14,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
 import { artifactAtAddress } from "../../api/issue-cache";
+import { queryRetry } from "../../api/query-client";
 import type { Agent, GraphReferences, IssueReferenceSummary } from "../../api/types";
 import { agentsQuery } from "./agent-registry";
 import { warmMarkdownRenderer } from "./markdown-engine";
@@ -23,9 +24,11 @@ import {
   issueSummaryQuery,
   messageQuery,
   prefetchReference,
+  questionsQuery,
   useReferenceTarget,
   watchPicturePath,
 } from "./reference-target";
+import { useTextReferences } from "./useTextReferences";
 
 // A block reference's title is the plain words of the tree its graph read carries, which the
 // fixtures below build with the shared engine.
@@ -187,6 +190,80 @@ test("a summary or block read that failed is fetched again when the window regai
     blockQuery("dispatch://CORE-1/spec#intro"),
     reads.getReferences
   );
+});
+
+// A missing target is drawn as the words its writer wrote, so its 404 is asked once a page: the
+// first reference that mounts asks it, with the tries the dashboard's retry rule allows, and a
+// second and a third reference to it - another mention, the same body drawn again - read the
+// failure that is there rather than ask again (`REFERENCE_READ`). An event that invalidates the
+// read still asks once more.
+test("a reference read that failed is not asked again by the references that mount after it", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no issue CORE-404" })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: 0 } },
+  });
+  const route = { key: "CORE-404", kind: "issue" } as const;
+  const { queryKey } = issueSummaryQuery("CORE-404");
+  // The tries of one read: the request and the two retries `queryRetry` allows a 404.
+  const oneRun = 3;
+  const first = renderTarget(queryClient, route);
+  const mounted = [first];
+  try {
+    await waitFor(() => expect(first.result.current.missing).toBe(true));
+    expect(getIssueSummary).toHaveBeenCalledTimes(oneRun);
+
+    // A mount that asks starts its read as it subscribes, inside the render's own `act`, so the
+    // read stands idle after one that asks nothing.
+    for (const _ of [2, 3]) {
+      const later = renderTarget(queryClient, route);
+      mounted.push(later);
+      expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe("idle");
+      expect(later.result.current.missing).toBe(true);
+      expect(getIssueSummary).toHaveBeenCalledTimes(oneRun);
+    }
+
+    await act(() => queryClient.invalidateQueries({ queryKey }));
+    expect(getIssueSummary).toHaveBeenCalledTimes(2 * oneRun);
+  } finally {
+    for (const hook of mounted) hook.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
+// A read a reference makes after it mounted - here the question map of a text once a `#id` is
+// typed into it - is held to the same rule as one made at mount: over a read that failed, it
+// asks nothing again (`useReferenceQuery`). TanStack's observer that is enabled late asks a failed
+// read again whatever `retryOnMount` says.
+test("a reference read made after mount, over a read that failed, is not asked again", async () => {
+  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no document for comment c-1" })
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const source = { id: "c-1", kind: "comment" } as const;
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: queryClient }, children);
+  const first = renderHook(() => useTextReferences("Decide #q2.", source), { wrapper });
+  const later = renderHook(({ text }) => useTextReferences(text, source), {
+    initialProps: { text: "Nothing to decide yet." },
+    wrapper,
+  });
+  const { queryKey } = questionsQuery(source);
+  try {
+    await waitFor(() => expect(queryClient.getQueryState(queryKey)?.status).toBe("error"));
+    expect(getReferenceQuestions).toHaveBeenCalledTimes(1);
+
+    // A read that asks starts as its observer subscribes, inside the render's own `act`, so the
+    // read stands idle after one that asks nothing.
+    later.rerender({ text: "Decide #q2 now." });
+    expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe("idle");
+    expect(getReferenceQuestions).toHaveBeenCalledTimes(1);
+  } finally {
+    first.unmount();
+    later.unmount();
+    getReferenceQuestions.mockRestore();
+  }
 });
 
 test("a message reference's read sits outside the issue details' key", () => {

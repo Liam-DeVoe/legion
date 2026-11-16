@@ -42,6 +42,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -1139,22 +1140,32 @@ export function ProofDocument({
               ? "1 open decision"
               : `${openBlockAsks.length} open decisions`}
           </span>
-          <a
-            className={`block min-w-0 max-w-[90ch] truncate text-sm font-medium underline ${linkText} ${linkHoverText}`}
-            href={blockFragment(openDecision.block_id ?? "")}
-            onClick={(event) => {
-              event.preventDefault();
-              const blockID = openDecision.block_id;
-              if (blockID === undefined || blockID === null) {
-                return;
-              }
-              window.location.hash = blockFragment(blockID);
-              focusInEditor(() => editorRef.current?.focusBlock(blockID));
-            }}
-            title={openDecision.question}
+          {/* A link's words and its `title` hold no markup, so the question is read as its plain
+              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`). */}
+          <PlainText
+            markdown={openDecision.question}
+            surface="document-open-decision"
+            tree={openDecision.question_tree}
           >
-            <TruncatedText>{openDecision.question}</TruncatedText>
-          </a>
+            {(question) => (
+              <a
+                className={`block min-w-0 max-w-[90ch] truncate text-sm font-medium underline ${linkText} ${linkHoverText}`}
+                href={blockFragment(openDecision.block_id ?? "")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  const blockID = openDecision.block_id;
+                  if (blockID === undefined || blockID === null) {
+                    return;
+                  }
+                  window.location.hash = blockFragment(blockID);
+                  focusInEditor(() => editorRef.current?.focusBlock(blockID));
+                }}
+                title={question}
+              >
+                <TruncatedText>{question ?? ""}</TruncatedText>
+              </a>
+            )}
+          </PlainText>
           {openBlockAsks.length > 1 ? (
             <button
               aria-label="Next open decision"
@@ -1194,6 +1205,9 @@ export function ProofDocument({
         {anchoredThread === undefined || anchoredHost === undefined
           ? null
           : createPortal(anchoredThread.children, anchoredHost.slot, String(anchoredHost.key))}
+        {/* The editor paints the body itself and draws its references as decorations: why the
+            renderer has no mount here is the reading list's `document-body`
+            (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
         <DocumentRefPicker
           editor={editorHandle}

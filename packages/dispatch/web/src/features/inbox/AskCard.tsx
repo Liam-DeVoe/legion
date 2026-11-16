@@ -748,6 +748,7 @@ export function AskCard({
             <MarkdownBody
               markdown={displayedAsk.question}
               source={source}
+              surface="ask-card-question"
               tree={displayedAsk.question_tree}
             />
           </div>

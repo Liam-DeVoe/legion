@@ -6,7 +6,9 @@ import {
   type QueryObserverResult,
   type QueryStatus,
   queryOptions,
+  type UseQueryOptions,
   type UseQueryResult,
+  useQueries,
   useQuery,
 } from "@tanstack/react-query";
 
@@ -29,6 +31,7 @@ import type {
 } from "../../api/types";
 import {
   agentsQuery,
+  EMPTY_AGENTS,
   registeredAgent,
   registeredTitle,
   useRegistryPolling,
@@ -36,6 +39,7 @@ import {
 import { itemOfBlock } from "./block-reference";
 import { knownSessionQuery } from "./known-sessions";
 import { useMarkdownHeadline } from "./markdown-engine";
+import { roleHolders } from "./role-holders";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -100,6 +104,43 @@ type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
 /** How much of a target's own text becomes a reference link's title: an ask's question, a
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
 const TITLE_HEADLINE_MAX = 60;
+
+/**
+ * What every read a drawn reference observes is held to: a read that failed is not asked again
+ * because another reference to the same target mounts, or the same one mounts again. TanStack's
+ * default asks an errored read again on every mount, each time with the tries `queryRetry`
+ * allows, so a page naming one missing target in several places - and drawing them again on
+ * every render that remounts a body - asked for it over and over, where a missing target is
+ * drawn as the words its writer wrote by design (R8) and its 404 needs asking once (INFRA-1196,
+ * build rulings part 6). An invalidation still asks again, and so does a focus where the read
+ * asks for that (`refetchFailedOnFocus`, and TanStack's default for every other read). It is an
+ * observer's option, never a query's: a page of its own that observes the same key - an ask's,
+ * a document's - keeps TanStack's default.
+ */
+export const REFERENCE_READ = { retryOnMount: false } as const;
+
+/**
+ * One read a drawn reference makes, or none: `options` while the reference has what the read
+ * needs, undefined until then. TanStack reads `retryOnMount` only where an observer subscribes
+ * with its read enabled; an observer whose read is enabled later, or whose key changes - a
+ * reference whose short id resolves after it mounts, a document whose id arrives with its
+ * issue, a question map once a `#id` is typed - asks a failed read again whatever
+ * `REFERENCE_READ` says (`shouldFetchOptionally`). So the read is a list of zero or one read
+ * (`useQueries`): a read that arrives later is a new observer, which subscribes enabled and
+ * holds to `REFERENCE_READ` as a read made at mount does. Undefined while there is no read.
+ */
+export function useReferenceQuery<
+  TQueryFnData,
+  TData = TQueryFnData,
+  TQueryKey extends QueryKey = QueryKey,
+>(
+  options: UseQueryOptions<TQueryFnData, Error, TData, TQueryKey> | undefined
+): UseQueryResult<TData, Error> | undefined {
+  const queries: UseQueryOptions<TQueryFnData, Error, TData, TQueryKey>[] =
+    options === undefined ? [] : [{ ...options, ...REFERENCE_READ }];
+  const [result] = useQueries({ queries });
+  return result as UseQueryResult<TData, Error> | undefined;
+}
 
 /** What a reference to an issue, or to one of its documents, shows: the issue's title and status
  *  and each document's name, kind, latest version and whether it is the spec
@@ -454,12 +495,20 @@ export interface WholeRouteRead {
  *
  * The read itself is returned beside it, for the surfaces that show an ambiguous prefix's
  * matches (`ArtifactDocument`, `useItemLanding`); a caller that wants the route alone reads
- * `.route`.
+ * `.route`. `observer` is the caller's own options for that read: a drawn reference passes
+ * `REFERENCE_READ`, and a page of its own leaves TanStack's defaults.
  */
-export function useWholeRouteRead(route: DispatchReferenceRoute | undefined): WholeRouteRead {
+export function useWholeRouteRead(
+  route: DispatchReferenceRoute | undefined,
+  observer: { readonly retryOnMount?: boolean } = {}
+): WholeRouteRead {
   const origin = window.location.origin;
   const prefix = route === undefined ? undefined : prefixReference(route);
-  const resolution = useQuery({ ...referencesQuery(prefix), enabled: prefix !== undefined });
+  const resolution = useQuery({
+    ...referencesQuery(prefix),
+    ...observer,
+    enabled: prefix !== undefined,
+  });
   return {
     prefix,
     resolution,
@@ -475,11 +524,14 @@ function answeredNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
 }
 
+/** Every read behind one drawn reference, each made through `useReferenceQuery`, since each
+ *  waits on something the reference may not have at mount: a short id's whole id, a document's
+ *  id, the registry's answer. */
 export function useReferenceData(
   given: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceData {
-  const route = useWholeRouteRead(given).route;
+  const route = useWholeRouteRead(given, REFERENCE_READ).route;
   const blockReference = blockReferenceOf(route);
   // A block of a comment or message is read from its graph node alone, which carries its text:
   // no issue, document, ask, comment or message read behind it.
@@ -517,47 +569,44 @@ export function useReferenceData(
       : record?.kind === "document" && record.item?.kind === "comment"
         ? record.item.id
         : undefined;
-  const issue = useQuery({
-    ...issueSummaryQuery(summaryKey),
-    enabled: summaryKey !== undefined,
-  });
-  const messageQueryResult = useQuery({
-    ...messageQuery(message?.key, message?.id),
-    enabled: message !== undefined,
-  });
-  const projectDocument = useQuery({
-    ...documentSummaryQuery(document?.project, document?.slug),
-    enabled: document !== undefined,
-  });
-  const sessionArtifact = useQuery({
-    ...agentArtifactQuery(agentArtifact?.session, agentArtifact?.slug),
-    enabled: agentArtifact !== undefined,
-    select: agentReferenceArtifact,
-  });
-  const block = useQuery({
-    ...blockQuery(blockReference),
-    enabled: blockReference !== undefined,
-  });
+  const issue = useReferenceQuery(
+    summaryKey === undefined ? undefined : issueSummaryQuery(summaryKey)
+  );
+  const messageQueryResult = useReferenceQuery(
+    message === undefined ? undefined : messageQuery(message.key, message.id)
+  );
+  const projectDocument = useReferenceQuery(
+    document === undefined ? undefined : documentSummaryQuery(document.project, document.slug)
+  );
+  const sessionArtifact = useReferenceQuery(
+    agentArtifact === undefined
+      ? undefined
+      : {
+          ...agentArtifactQuery(agentArtifact.session, agentArtifact.slug),
+          select: agentReferenceArtifact,
+        }
+  );
+  const block = useReferenceQuery(
+    blockReference === undefined ? undefined : blockQuery(blockReference)
+  );
   const artifact: ReferenceArtifact | undefined =
     document !== undefined
-      ? projectDocument.data
+      ? projectDocument?.data
       : agentArtifact !== undefined
-        ? sessionArtifact.data
+        ? sessionArtifact?.data
         : route?.kind === "artifact"
-          ? artifactAtAddress(issue.data?.documents, route.slug)
+          ? artifactAtAddress(issue?.data?.documents, route.slug)
           : undefined;
-  const text = useQuery({
-    ...artifactTextQuery(artifact?.id, version),
-    enabled: options.text && artifact?.kind === "doc",
-  });
-  const ask = useQuery({ ...askQuery(askId), enabled: askId !== undefined });
-  const comment = useQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
+  const text = useReferenceQuery(
+    options.text && artifact?.kind === "doc" ? artifactTextQuery(artifact.id, version) : undefined
+  );
+  const ask = useReferenceQuery(askId === undefined ? undefined : askQuery(askId));
+  const comment = useReferenceQuery(commentId === undefined ? undefined : commentQuery(commentId));
   const componentRoute = route?.kind === "component" ? route : undefined;
-  const architecture = useQuery({
-    ...architectureQuery(componentRoute?.project),
-    enabled: componentRoute !== undefined,
-  });
-  const component = (architecture.data?.components ?? []).find(
+  const architecture = useReferenceQuery(
+    componentRoute === undefined ? undefined : architectureQuery(componentRoute.project)
+  );
+  const component = (architecture?.data?.components ?? []).find(
     (candidate) => candidate.id === componentRoute?.id
   );
   // A session is a target while Dispatch holds any record of it: listed in the registry, which
@@ -566,59 +615,57 @@ export function useReferenceData(
   // link; an id no agent ever held does not (R8). While a session reference is drawn it keeps the
   // shell's one registry poll running, so a session renamed since the page loaded reads as it is
   // called now (R4) - in a draft's pill as in the record. A role reference reads the same
-  // registry, which is where the picker's role rows come from (`party-options.ts`), and keeps the
-  // same poll running, so a role a session takes up while the page is open comes to be named.
+  // registry, by the one rule of what a known role is (`roleHolders`), which the picker's role
+  // rows follow too, and keeps the same poll running, so a role a session takes up while the
+  // page is open comes to be named.
   const sessionRoute = route?.kind === "agent-session" ? route : undefined;
   const roleRoute = route?.kind === "role" ? route : undefined;
   const readsRegistry = sessionRoute !== undefined || roleRoute !== undefined;
   useRegistryPolling(readsRegistry);
-  const registry = useQuery({
-    ...agentsQuery(),
-    enabled: readsRegistry,
-    refetchOnMount: false,
-  });
+  const registry = useReferenceQuery(
+    readsRegistry ? { ...agentsQuery(), refetchOnMount: false } : undefined
+  );
   const listed =
-    sessionRoute === undefined ? undefined : registeredAgent(registry.data, sessionRoute.session);
+    sessionRoute === undefined ? undefined : registeredAgent(registry?.data, sessionRoute.session);
   // The registry answered and does not list the session: only then is Dispatch's record of it
   // read, and only then can that record's answer make the reference missing.
   const unlisted =
-    sessionRoute !== undefined && registry.data !== undefined && listed === undefined;
-  const recorded = useQuery({
-    ...knownSessionQuery(sessionRoute?.session),
-    enabled: unlisted,
-  });
+    sessionRoute !== undefined && registry?.data !== undefined && listed === undefined;
+  const recorded = useReferenceQuery(
+    unlisted ? knownSessionQuery(sessionRoute.session) : undefined
+  );
   const listedTitle =
-    sessionRoute === undefined ? undefined : registeredTitle(registry.data, sessionRoute.session);
+    sessionRoute === undefined ? undefined : registeredTitle(registry?.data, sessionRoute.session);
   // A role is known while a session the registry lists holds it. One the latest read answered
   // with no holder is no target: it reads as the words its writer wrote, with no link.
   const roleKnown =
-    roleRoute !== undefined &&
-    (registry.data ?? []).some((agent) => agent.roles?.includes(roleRoute.role) === true);
-  const roleUnheld = roleRoute !== undefined && registry.isSuccess && !roleKnown;
+    roleRoute !== undefined && roleHolders(registry?.data ?? EMPTY_AGENTS).has(roleRoute.role);
+  const roleUnheld = roleRoute !== undefined && registry?.isSuccess === true && !roleKnown;
   // A person is named by their login, which their address holds, once Dispatch knows the login:
   // the one read of everyone who has signed in, shared with every other person reference and
   // with the pickers that list them, and made only for a person reference.
   const personRoute = route?.kind === "person" ? route : undefined;
-  const people = useQuery({ ...usersQuery(), enabled: personRoute !== undefined });
+  const people = useReferenceQuery(personRoute === undefined ? undefined : usersQuery());
   const personKnown =
     personRoute !== undefined &&
-    (people.data ?? []).some((person) => person.login === personRoute.login);
+    (people?.data ?? []).some((person) => person.login === personRoute.login);
+  const textRead = text?.data;
   return {
-    issue: issue.data,
+    issue: issue?.data,
     artifact,
-    markdown: text.data !== undefined && "markdown" in text.data ? text.data.markdown : undefined,
+    markdown: textRead !== undefined && "markdown" in textRead ? textRead.markdown : undefined,
     markdownTree:
-      text.data !== undefined && "markdown_tree" in text.data ? text.data.markdown_tree : undefined,
-    ask: ask.data,
-    comment: comment.data,
-    message: messageQueryResult.data,
+      textRead !== undefined && "markdown_tree" in textRead ? textRead.markdown_tree : undefined,
+    ask: ask?.data,
+    comment: comment?.data,
+    message: messageQueryResult?.data,
     component,
-    sessionTitle: listedTitle ?? recorded.data?.title,
-    sessionKnown: listed !== undefined || recorded.data?.known === true,
+    sessionTitle: listedTitle ?? recorded?.data?.title,
+    sessionKnown: listed !== undefined || recorded?.data?.known === true,
     personKnown,
     roleKnown,
     missing:
-      (unlisted && recorded.data?.known === false) ||
+      (unlisted && recorded?.data?.known === false) ||
       roleUnheld ||
       [
         issue,
@@ -629,11 +676,11 @@ export function useReferenceData(
         ask,
         comment,
         architecture,
-      ].some((read) => answeredNotFound(read.error)) ||
+      ].some((read) => answeredNotFound(read?.error)) ||
       (componentRoute !== undefined &&
-        architecture.data !== undefined &&
+        architecture?.data !== undefined &&
         component === undefined) ||
-      (route?.kind === "artifact" && issue.data !== undefined && artifact === undefined),
+      (route?.kind === "artifact" && issue?.data !== undefined && artifact === undefined),
     // TanStack keeps a query's last data through a failed refetch, so a link or card open when an
     // edit deletes its block would go on showing text its document or item no longer holds. The
     // read answers 404 `NOT_FOUND` for that block, and the link and card then read as a freshly
@@ -641,11 +688,11 @@ export function useReferenceData(
     // pin's `removed` state and keeps its pinned text; any other failure (a dropped connection, a
     // 5xx) leaves the last data shown.
     block:
-      block.error instanceof ApiError &&
+      block?.error instanceof ApiError &&
       block.error.status === 404 &&
       block.error.code === "NOT_FOUND"
         ? undefined
-        : block.data,
+        : block?.data,
   };
 }
 
@@ -663,9 +710,14 @@ export function useBlockDocument(
   const project = named?.kind === "document" ? named : undefined;
   const issueKey =
     named !== undefined && named.kind !== "document" && "key" in named ? named.key : undefined;
-  const issue = useQuery({ ...issueSummaryQuery(issueKey), enabled: issueKey !== undefined });
+  const issue = useQuery({
+    ...issueSummaryQuery(issueKey),
+    ...REFERENCE_READ,
+    enabled: issueKey !== undefined,
+  });
   const projectDocument = useQuery({
     ...documentSummaryQuery(project?.project, project?.slug),
+    ...REFERENCE_READ,
     enabled: project !== undefined,
   });
   switch (named?.kind) {
@@ -852,7 +904,8 @@ function picturePath(
 
 /** Calls `onPicture` with the picture path a summary's data gives, now and whenever the summary
  *  query changes (an event refreshes it, a failed read recovers), until the returned function
- *  unsubscribes. Undefined while the summary is unread or unreadable. */
+ *  unsubscribes. Undefined while the summary is unread or unreadable. The picture is a drawn
+ *  reference, so its read is observed as one (`REFERENCE_READ`). */
 function observePicturePath<TData, TKey extends QueryKey>(
   queryClient: QueryClient,
   options: QueryObserverOptions<TData, Error, TData, TData, TKey>,
@@ -860,7 +913,7 @@ function observePicturePath<TData, TKey extends QueryKey>(
   named: ReferencedArtifact,
   onPicture: (path: string | undefined) => void
 ): () => void {
-  const observer = new QueryObserver(queryClient, options);
+  const observer = new QueryObserver(queryClient, { ...options, ...REFERENCE_READ });
   const report = (result: QueryObserverResult<TData, Error>) =>
     onPicture(result.data === undefined ? undefined : picturePath(named, artifactOf(result.data)));
   const unsubscribe = observer.subscribe(report);
@@ -927,7 +980,11 @@ export function needsSpecSlug(
  *  path reads anything. */
 export function useReferenceHref(route: DispatchReferenceRoute | undefined): string | undefined {
   const specKey = route !== undefined && needsSpecSlug(route) ? route.key : undefined;
-  const issue = useQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
+  const issue = useQuery({
+    ...issueSummaryQuery(specKey),
+    ...REFERENCE_READ,
+    enabled: specKey !== undefined,
+  });
   return route === undefined ? undefined : referenceHref(route, summarySpec(issue.data)?.slug);
 }
 
