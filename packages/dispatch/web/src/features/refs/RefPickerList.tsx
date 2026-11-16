@@ -2,6 +2,7 @@ import { type ReactNode, useId } from "react";
 
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import {
   dangerText,
   selectedCardBg,
@@ -162,6 +163,9 @@ export function RefPickerList({
   picker: RefPicker;
 }): ReactNode {
   const headingPrefix = useId();
+  // A row's detail is cut to one line; a surface with no tooltips (the issue page) draws it as it
+  // is cut, and carries no `title` for it (`useTooltips`).
+  const tooltips = useTooltips();
   if (!picker.open) return null;
   const take = (id: string) => {
     const insertion = picker.take(id);
@@ -194,7 +198,10 @@ export function RefPickerList({
         {one.detail === "" ? null : (
           // The stronger muted role, which clears AA over the sky fill a highlighted row wears
           // as well as over the list's own surface.
-          <TruncatedText className={`text-xs ${textOptionDescription}`} title={one.detail}>
+          <TruncatedText
+            className={`text-xs ${textOptionDescription}`}
+            title={tooltips ? one.detail : undefined}
+          >
             {one.detail}
           </TruncatedText>
         )}

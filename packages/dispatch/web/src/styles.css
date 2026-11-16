@@ -433,6 +433,29 @@ html:has([data-issue-page]) {
   }
 }
 
+/* Below 1280 px the new issue page's box, `[data-issue-composer]` (dispatch://INFRA-3949 R1, R2,
+   R6), takes none of the 44 px floor above on its buttons and its line: at rest it is one line,
+   its form at most 40 px tall, its line 26 px, so each of its controls takes WCAG 2.2's 24 px
+   target (2.5.8) instead, and its line the height its own classes give it. Each button also takes
+   back the display its own classes give it, which the floor's `inline-flex`, in no layer, would
+   outrank: a kind's chip is hidden at 760 px and below until the box holds the caret
+   (`pageComposer.chip`). A menu or a dialog the box opens, and the reference picker's list, keep
+   the floor, as every box's do. */
+@media (max-width: 1279px) {
+  html:has([data-issue-page])
+    [data-issue-composer]
+    button:not([role="menu"] *):not([role="dialog"] *):not([role="listbox"] *) {
+    display: revert-layer;
+    min-width: 24px;
+    min-height: 24px;
+  }
+
+  html:has([data-issue-page]) [data-issue-composer] textarea:not([role="dialog"] *) {
+    min-width: revert-layer;
+    min-height: revert-layer;
+  }
+}
+
 .dispatch-doc .proof-editor {
   --bg-color: transparent;
   --text-color: currentColor;

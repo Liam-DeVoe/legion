@@ -41,6 +41,19 @@ export const saveCommentEdit: SaveCommentEdit = (id, body, carried, bounds) =>
   api.editComment(id, { body, ...carried }, bounds);
 
 /**
+ * A statement of the issue's own documents that a comment is on, as the issue page's box writes
+ * it: the document (its id or slug) and the statement's whole words, with no occurrence and no
+ * mark. The server finds those words in the document and anchors the comment to the lowest block
+ * that holds them, which for a statement of one paragraph is that paragraph, and refuses words
+ * the document holds twice. No composer holds it as its own anchor (`ComposerAnchor`): the host
+ * names it, and the send carries it beside the composer's anchor (`SentRequest.statement`).
+ */
+export interface StatementAnchor {
+  readonly artifact: string;
+  readonly quote: string;
+}
+
+/**
  * A send, whole, as it stood when Send started it: where it goes (the owner, the reply it answers,
  * its kind and anchor), what it carries (the draft and an ask's fields), and, for an edit, which
  * comment it saves and how. TanStack gives a pending mutation each new render's options and calls
@@ -83,6 +96,10 @@ export interface SentRequest {
    *  and a reload's, is that one write there. Minted when Send builds the request, and kept by a
    *  Retry of a send that ended without Dispatch's verdict (`requestFor`). */
   readonly sendKey: string;
+  /** The statement a comment with no reply is on, where the issue page's box aims at one
+   *  (`StatementAnchor`); absent from every other send. A send that carries one carries no
+   *  `anchor` of its own. */
+  readonly statement?: StatementAnchor;
 }
 
 /** The command, at the start of a body, that sends it in a mode other than the plain one (Send,
@@ -171,6 +188,8 @@ export function unedited(refused: SentRequest, next: Omit<SentRequest, "sendKey"
     JSON.stringify(refused.owner) === JSON.stringify(next.owner) &&
     refused.anchor?.artifact === next.anchor?.artifact &&
     refused.anchor?.mark_id === next.anchor?.mark_id &&
+    refused.statement?.artifact === next.statement?.artifact &&
+    refused.statement?.quote === next.statement?.quote &&
     refused.replyTo?.id === next.replyTo?.id &&
     refused.edit?.id === next.edit?.id &&
     refused.draft.body === next.draft.body &&
@@ -216,13 +235,16 @@ function attempt(
   sent: SentRequest & { readonly owner: Exclude<ComposerOwner, { kind: "session" }> },
   bounds: WriteBounds
 ): Promise<unknown> {
-  const { anchor, ask, draft, kind, owner, plainDelivery, replyTo } = sent;
+  const { anchor, ask, draft, kind, owner, plainDelivery, replyTo, statement } = sent;
   const { body, replacement } = draft;
   // A provisional mark is named by its id; a quote anchor (a closed issue's document) by its text
-  // and occurrence, where the server writes the mark.
+  // and occurrence, where the server writes the mark; a statement by its words alone, which the
+  // server finds in the document (`StatementAnchor`).
   const selection: AnchorInput | undefined =
     anchor === undefined
-      ? undefined
+      ? statement === undefined
+        ? undefined
+        : { artifact: statement.artifact, quote: statement.quote }
       : anchor.mark_id === undefined
         ? { artifact: anchor.artifact, occurrence: anchor.occurrence, quote: anchor.quote }
         : { artifact: anchor.artifact, mark_id: anchor.mark_id };
@@ -258,9 +280,18 @@ function attempt(
   const parties = draftParties(body);
   const baseBody = kind === "suggestion" && body.trim() === "" ? "Suggested replacement." : body;
   const plan = deliveryPlan(baseBody, parties.named ? plainDelivery : undefined);
+  // A reply names what it answers: a comment by `reply_to`, and an ask by `ask_id`, which the
+  // server takes under an ask in any state - an open ask's question back, and a word under an
+  // answered or resolved one, which carries no turn (dispatch://INFRA-3677).
+  const parent =
+    replyTo === null
+      ? {}
+      : replyTo.parentKind === "ask"
+        ? { ask_id: replyTo.id }
+        : { reply_to: replyTo.id };
   const comment: CreateCommentInput = {
     body: plan.body,
-    ...(replyTo === null ? {} : { reply_to: replyTo.id }),
+    ...parent,
     ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
     ...(parties.named ? { delivery: plan.delivery ?? plainDelivery } : {}),
   };

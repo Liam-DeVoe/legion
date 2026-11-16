@@ -1052,6 +1052,18 @@ export const CONTROL_LABELS = freeze({
   /** Sets the line back from the row it replies to, or the question it answers, to a new comment
    *  on the issue (the prototype's `.tgt .x`). */
   write_on_issue: "Write on the issue instead",
+  /** What the box at the foot of the outline says while it is empty and writes a comment or a
+   *  question on the issue itself (dispatch://INFRA-3949 R3): where the words go, as the reply's
+   *  and the answer's placeholders say where theirs go. */
+  issue_placeholder: "Write on the issue…  (Enter sends)",
+  /** Each placeholder of that box in the shorter words it says at 760 px and below, where its
+   *  line is about 240 px wide and a placeholder is one line, cut by the line's edge: each fits
+   *  that width whole (dispatch://INFRA-3949 R1, the tester's finding F9 of
+   *  dispatch://INFRA-1196). */
+  issue_placeholder_phone: "Write on the issue…",
+  reply_placeholder_phone: "Your reply, under the row…",
+  answer_placeholder_phone: "Answer in your own words…",
+  edit_placeholder_phone: "Your comment, rewritten…",
   /** What a decision the model marks unsure says of itself, in one word on its own row (R9):
    *  the decisions read's `unsure`, which the server sets for a decision holding a paragraph
    *  that opens `Unsure:`. */

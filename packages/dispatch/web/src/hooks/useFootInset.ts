@@ -68,6 +68,9 @@ function publish(property: FootInsetProperty): void {
  * moves it, and adds how far up from the screen's bottom edge it reaches to `property`, which
  * holds the largest of the elements published into it; a composer's by default. It counts only
  * while the element is fixed (`position: fixed`) and has a box.
+ * A sticky element counts too while its box ends at the screen's bottom edge, within 1 px - the
+ * new issue page's box, which `sticky bottom-0` holds at the foot of its column while the outline
+ * scrolls under it - and counts nothing once the page has moved it off that edge.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
@@ -85,6 +88,13 @@ export function useFootInset(
         const box = element.getBoundingClientRect();
         const fixed = box.height > 0 && getComputedStyle(element).position === "fixed";
         control.reach = fixed ? Math.max(0, window.innerHeight - box.top) : 0;
+        // A sticky element reaches up from the foot only while it is held there: one the page has
+        // scrolled away from the bottom edge sits in the page, under nothing of the shell's.
+        const stuck =
+          box.height > 0 &&
+          getComputedStyle(element).position === "sticky" &&
+          Math.abs(window.innerHeight - box.bottom) <= 1;
+        if (stuck) control.reach = Math.max(0, window.innerHeight - box.top);
         publish(property);
       },
       reach: 0,

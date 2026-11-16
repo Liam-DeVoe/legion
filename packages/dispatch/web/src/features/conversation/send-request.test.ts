@@ -1,7 +1,10 @@
+import * as bun from "bun:test";
 import { expect, test } from "bun:test";
 
+import * as client from "../../api/client";
 import { ApiError } from "../../api/client";
 import { SendInterruptedError, SendStoppedError } from "../writes/keyed-write";
+import * as sending from "./send-request";
 import { requestFor, type SentRequest } from "./send-request";
 
 /** A message to the Planner's session, as Send froze it, under key `send-1`. */
@@ -77,4 +80,67 @@ test("a comment's Retry after Dispatch's refusal is the request the composer sho
   expect(retried.plainDelivery).toBe("aside");
   expect(retried.sendKey).not.toBe("send-1");
   expect(requestFor(undefined, undefined, next).sendKey).not.toBe("send-1");
+});
+
+/** A comment on issue CORE-1 as Send froze it, under key `send-1`: the session message above,
+ *  addressed to the issue, with `request` over its fields. */
+function issueComment(request: Partial<SentRequest>): SentRequest {
+  return {
+    ...refused,
+    owner: { issueKey: "CORE-1", kind: "issue" },
+    pickedDelivery: undefined,
+    ...request,
+  };
+}
+
+// A reply to an ask names the ask by `ask_id`, which the server files under the ask in any state -
+// an open ask's question back, and a word under an answered or resolved one - where `reply_to`
+// would name a comment of that id (dispatch://INFRA-3677).
+test("a reply to an ask is sent with ask_id", async () => {
+  const createComment = bun
+    .spyOn(client.api, "createComment")
+    .mockResolvedValue(undefined as never);
+  try {
+    const sent = issueComment({
+      draft: { body: "The second layout, please.", replacement: "" },
+      replyTo: {
+        actor: { id: "planner", kind: "user" },
+        excerpt: "Which layout should the phone take?",
+        id: "ask-7",
+        parentKind: "ask",
+      },
+    });
+    const bounds = { key: sent.sendKey };
+    await sending.sendAttempt(sent)(bounds);
+
+    expect(createComment.mock.calls).toStrictEqual([
+      ["CORE-1", { ask_id: "ask-7", body: "The second layout, please." }, bounds],
+    ]);
+  } finally {
+    createComment.mockRestore();
+  }
+});
+
+// The issue page's box anchors a comment on a statement by the document and the statement's whole
+// words alone: the server finds the words and anchors the comment to the block that holds them,
+// so the request names no occurrence and no mark.
+test("a comment on a statement is sent with its quote and no occurrence", async () => {
+  const createComment = bun
+    .spyOn(client.api, "createComment")
+    .mockResolvedValue(undefined as never);
+  try {
+    const quote = "The box stays at the foot of the screen while the outline scrolls.";
+    const sent = issueComment({
+      draft: { body: "Even on a phone?", replacement: "" },
+      statement: { artifact: "core-1-spec", quote },
+    });
+    const bounds = { key: sent.sendKey };
+    await sending.sendAttempt(sent)(bounds);
+
+    expect(createComment.mock.calls).toStrictEqual([
+      ["CORE-1", { anchor: { artifact: "core-1-spec", quote }, body: "Even on a phone?" }, bounds],
+    ]);
+  } finally {
+    createComment.mockRestore();
+  }
 });

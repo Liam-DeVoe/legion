@@ -1,6 +1,7 @@
 import { DISPATCH_EVENT_BODY_MAX, dispatchWritingBox } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
@@ -40,6 +41,7 @@ import { useQuestionLabel } from "./question-label";
  */
 function DeclineDialog({
   error,
+  inDocumentRoot,
   issueKey,
   onClose,
   onSubmit,
@@ -48,6 +50,9 @@ function DeclineDialog({
 }: {
   /** What the server answered the last decline with, or null while none was refused. */
   error: Error | null;
+  /** Draws the dialog into `document.body` rather than where it is mounted (`DeclineControl`'s
+   *  `look`). */
+  inDocumentRoot: boolean;
   /** The issue the question was asked on, where it has one: the picker offers that issue's
    *  people. */
   issueKey?: string;
@@ -79,7 +84,7 @@ function DeclineDialog({
   // while none is out and the note is within the bound a pick may have carried it past.
   const canSend = !saving && left >= 0;
 
-  return (
+  const drawn = (
     <>
       <div aria-hidden="true" className={`fixed inset-0 z-40 ${backdrop40}`} onClick={close} />
       <div className="pointer-events-none fixed inset-0 z-40 flex items-start justify-center p-4 pt-20">
@@ -149,6 +154,7 @@ function DeclineDialog({
       </div>
     </>
   );
+  return inDocumentRoot ? createPortal(drawn, document.body) : drawn;
 }
 
 /**
@@ -169,10 +175,19 @@ function DeclineDialog({
 export function DeclineControl({
   ask,
   decline,
+  look,
   onDeclined,
 }: {
   ask: Ask;
   decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
+  /** The control's own box and the classes of its button, where a host draws it in a look of its
+   *  own: the issue page's answer line draws it as one of its quiet controls, inside the box held
+   *  at the screen's foot. There the dialog is drawn into `document.body`, so it is no part of the
+   *  answer's form - Ctrl/Cmd+Enter in its note declines rather than sending the answer - and it
+   *  stands over the box's sticky layer rather than inside it. React still bubbles its keys to the
+   *  host's handlers, which leave a key inside `[role="dialog"]` to it. A card's own look, and the
+   *  dialog in place, otherwise. */
+  look?: { readonly box: string; readonly button: string };
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
 }): ReactNode {
@@ -204,10 +219,13 @@ export function DeclineControl({
   });
 
   return (
-    <div className="mt-3">
+    <div className={look?.box ?? "mt-3"}>
       {question.reads}
       <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+        className={
+          look?.button ??
+          `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`
+        }
         disabled={write.isPending}
         onClick={() => setOpen(true)}
         type="button"
@@ -217,6 +235,7 @@ export function DeclineControl({
       {open ? (
         <DeclineDialog
           error={write.isError ? write.error : null}
+          inDocumentRoot={look !== undefined}
           issueKey={ask.issue_key ?? undefined}
           onClose={() => {
             write.reset();
