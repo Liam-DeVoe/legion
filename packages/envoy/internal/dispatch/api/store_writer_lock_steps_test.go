@@ -127,6 +127,11 @@ type storeWriter struct {
 	// ready writes what one run needs through the rig's own server and answers the run, not yet
 	// started.
 	ready func(t *testing.T, ctx context.Context) storeWriterRun
+	// locksOwnProject says the path takes a lock on its project's row of its own - an issue
+	// create numbers the issue under it, and a document's row's foreign key into projects takes
+	// it in key share mode - so a lock on projects is not the project of its event
+	// (eventProjectLocks).
+	locksOwnProject bool
 }
 
 // storeWriterRun is one run of a write path.
@@ -551,7 +556,7 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 			}
 		}
 		for _, lock := range eventProjectLocks {
-			if slices.Contains(held, lock) {
+			if !writer.locksOwnProject && slices.Contains(held, lock) {
 				t.Errorf("%s held at %s holds %s: it took the project of its event, which an issue's or a document's event does not name (it holds %v)",
 					writer.name, step.name, lock, held)
 			}

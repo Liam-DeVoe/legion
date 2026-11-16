@@ -6,17 +6,23 @@
 # It creates one object of each kind through the API - an issue (whose spec is a document with
 # blocks), a document uploaded to the issue, a document of the project, an ask, a comment and a
 # message on the issue - and reads each one's node in graph_nodes: in the project, with the
-# `project` value tuple that states it. It then runs `envoy-dispatch backfill-graph-store` and
-# `envoy-dispatch census --store` and holds the census to `missing=0 differs=0 unscoped=0` for
-# every project-owned kind. Last, the control: it takes the ask's node away and holds the census to
-# naming exactly that ask, `missing=1` on the ask kind and `census: project incomplete ask <id>:
-# missing`, so the zeros before are read from an instrument that sees a missing node.
+# `project` value tuple that states it. It then writes the three things no project owns - a file
+# sent in an agent's conversation, a direct message to that agent and a broadcast's copy to it -
+# and reads each one's node between its parties, with the `parties` value tuple that states them:
+# the conversation's session for the file, and for each message the session that sent it and the
+# one it went to. It then runs `envoy-dispatch backfill-graph-store` and `envoy-dispatch census
+# --store` and holds the census to `missing=0 differs=0 unscoped=0` for every project-owned kind.
+# Last, the control: it takes the ask's node away and holds the census to naming exactly that ask,
+# `missing=1` on the ask kind and `census: project incomplete ask <id>: missing`, so the zeros
+# before are read from an instrument that sees a missing node.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
-# here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
-# server serves, which `envoy-dispatch` reads from its own environment), and `envoy-dispatch` on
-# PATH. It reads this pod's own test database and never a deployment's: it refuses a DATABASE_URL
-# whose host is not loopback, and the one node it deletes is the ask this run made.
+# here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
+# server's Envoy listener lists, which takes direct messages and broadcasts), DATABASE_URL (the
+# database that server serves, which `envoy-dispatch` reads from its own environment), and
+# `envoy-dispatch` on PATH. It reads this pod's own test database and never a deployment's: it
+# refuses a DATABASE_URL whose host is not loopback, and the one node it deletes is the ask this
+# run made.
 #
 # The node writers' own grep, where a reader wants one: `graphstore\.(WriteUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
 # with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
@@ -32,21 +38,22 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/db DISPATCH_URL=http://127.0.0.1:8777 \
-         DISPATCH_TOKEN=e2e-token PROJECT=CORE node-projects.sh
+         DISPATCH_TOKEN=e2e-token PROJECT=CORE AGENT_SESSION=s1 node-projects.sh
        (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; the built
-       `envoy-dispatch` must be on PATH, and DATABASE_URL must name the database that server
-       serves, on this machine)
+       `envoy-dispatch` must be on PATH, DATABASE_URL must name the database that server
+       serves, on this machine, and AGENT_SESSION a session its listener lists)
 USAGE
 }
 
+# shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-require_env DISPATCH_URL PROJECT DATABASE_URL
+require_env DISPATCH_URL PROJECT AGENT_SESSION DATABASE_URL
 require_commands curl jq psql envoy-dispatch
 read_bearer
 
 readonly base="${DISPATCH_URL%/}"
-readonly project="$PROJECT"
-readonly database_url="$DATABASE_URL"
+# shellcheck disable=SC2153 # PROJECT and DATABASE_URL are the caller's inputs, checked by name above
+readonly project="$PROJECT" database_url="$DATABASE_URL"
 case "$database_url" in
   *@127.0.0.1:* | *@localhost:* | *@\[::1\]:* | *@127.0.0.1/* | *@localhost/*) ;;
   *)
@@ -98,6 +105,21 @@ node_names_project() {
   pass "$1" "the $2 node of $3 names $project"
 }
 
+# node_names_parties SECTION KIND ID PARTY...: the node KIND/ID is in no project and between the
+# PARTYs, and its `parties` value tuple names them sorted, each once, as the store writes them.
+node_names_parties() {
+  local section="$1" kind="$2" id="$3" want
+  shift 3
+  want="$(printf '%s\n' "$@" | LC_ALL=C sort -u | paste -sd' ' -)"
+  query "$section" "the $kind node of $id is between $want" \
+    "select coalesce((select coalesce(project_key, '-') || '|' || coalesce(array_to_string(parties, ' '), '-') from graph_nodes where kind = '$kind' and id = '$id'), '(no node)')"
+  [[ "$answer" == "-|$want" ]] || fail "$section" "the $kind node of $id is between $want" "it holds '$answer' (project|parties)"
+  query "$section" "the $kind node of $id states its parties" \
+    "select count(*) from graph_tuples where from_kind = '$kind' and from_id = '$id' and kind = 'parties' and to_kind = 'value' and to_id = '$want'"
+  [[ "$answer" == 1 ]] || fail "$section" "the $kind node of $id states its parties" "it states them $answer time(s)"
+  pass "$section" "the $kind node of $id is between $want"
+}
+
 # census_line KIND: the census's project line of KIND, from the last census run.
 census_line() { grep -E "^census: project kind=$1 " "$work/census" || true; }
 
@@ -134,6 +156,26 @@ node_names_project "$section" comment "$(jq -r .id "$work/body")"
 send POST "/api/v1/issues/$key/messages" "$(jq -cn --argjson a "$(actor)" '{body: "A message.", actor: $a}')"
 want_status 201 "$section" "write a message"
 node_names_project "$section" message "$(jq -r .id "$work/body")"
+
+section=parties
+readonly agent="$AGENT_SESSION"
+printf '\x89PNG\r\n\x1a\nnode-projects %s' "$stamp" >"$work/photo.png"
+status="$(curl -sS -X POST -o "$work/body" -w '%{http_code}' -H "@$work/auth" \
+  -F "name=photo-$stamp.png" -F "actor=$(actor)" -F "file=@$work/photo.png;type=image/png" \
+  "$base/api/v1/agents/$agent/artifacts" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+want_status 201 "$section" "send a file in $agent's conversation"
+node_names_parties "$section" artifact "$(jq -r .artifact.ref_key "$work/body")" "session:$agent"
+
+send POST "/api/v1/agents/$agent/messages" "$(jq -cn --argjson a "$(actor)" --arg b "Direct $stamp." '{body: $b, delivery: "btw", actor: $a}')"
+want_status 201 "$section" "send $agent a direct message"
+node_names_parties "$section" message "$(jq -r .id "$work/body")" "session:$session" "session:$agent"
+
+send POST /api/v1/broadcasts "$(jq -cn --argjson a "$(actor)" --arg s "$agent" --arg b "Broadcast $stamp." \
+  '{body: $b, delivery: "btw", session_ids: [$s], actor: $a}')"
+want_status 201 "$section" "broadcast to $agent"
+query "$section" "read the broadcast's copy" \
+  "select coalesce((select id::text from messages where broadcast_id is not null and body = 'Broadcast $stamp.'), '(no copy)')"
+node_names_parties "$section" message "$answer" "session:$session" "session:$agent"
 
 section=census
 envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
