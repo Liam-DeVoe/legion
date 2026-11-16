@@ -272,6 +272,23 @@ interface Sight {
   readonly boxes: Set<Element>;
   readonly element: HTMLElement;
   seen: boolean;
+  /** Whether a read since the element took the focus has found it in sight: the read at the
+   *  focus itself, or one at a scroll or a resize after it (`readSight`). */
+  shown: boolean;
+}
+
+/** Reads again whether the reader can see `watched`'s element, against the boxes it keeps. One
+ *  out of sight now is out of the reader's sight only once a read since it took the focus has
+ *  found it in sight: until then no scroll took it from them. A control focused below the fold
+ *  is one the engine is still to scroll into view - WebKit does so a frame after the focus - and
+ *  a scroll the page makes first can leave it there. Measured in WebKit at 390x664: the Inbox's
+ *  list keeping its rows in place (`ViewportAnchor`) scrolled the page 203 px before the engine's
+ *  own scroll, which had not come by the Enter on the thread's Dismiss just focused, and that
+ *  press's loss was read as one the reader had scrolled out of sight, and left on the body. */
+function readSight(watched: Sight): void {
+  const now = inSight(watched.element, watched.boxes);
+  watched.shown ||= now;
+  watched.seen = now || !watched.shown;
 }
 
 /** The page's one record of what the reader can see of the element the focus was last noted on,
@@ -602,7 +619,9 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * nothing they did not choose. The focus stays on the body, except in a dialog, which takes it
  * itself without a scroll, so the page behind a modal one is never reached (`leaveUnseen`). The
  * record is the page's one (`outOfSight`), which the component hand-offs read too, so none of
- * them answers such a loss before the rescue's check.
+ * them answers such a loss before the rescue's check. Only an element a read has found in sight
+ * since it took the focus can be read out of it (`readSight`): one focused below the fold, which
+ * a scroll the page made before the engine's own left there, was never in the reader's sight.
  */
 export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
@@ -700,8 +719,12 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       moving = null;
       focused = { element, path: window.location.pathname, region };
       // The same element taking the focus again - the window given back the focus - keeps what
-      // the scrolls since it was first noted saw.
-      if (sight?.element !== element) sight = { boxes: new Set(), element, seen: true };
+      // the scrolls since it was first noted saw. A new one is read where it took the focus,
+      // before the engine has scrolled it into view.
+      if (sight?.element !== element) {
+        const boxes = new Set<Element>();
+        sight = { boxes, element, seen: true, shown: inSight(element, boxes) };
+      }
     };
 
     const record = (event: globalThis.FocusEvent) => {
@@ -779,7 +802,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         if (!target.contains(watched.element)) return;
         watched.boxes.add(target);
       }
-      watched.seen = inSight(watched.element, watched.boxes);
+      readSight(watched);
     };
     // A resize moves the noted element with nothing scrolled - a shorter window, a zoom, a box
     // sized to the window shrinking under it - so it reads against every box around it that clips
@@ -788,7 +811,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       const watched = readable();
       if (watched === null) return;
       for (const box of clippingBoxes(watched.element)) watched.boxes.add(box);
-      watched.seen = inSight(watched.element, watched.boxes);
+      readSight(watched);
     };
     /** Records the reader's own act - a `pointerdown`, a `keydown`, or a `change` they committed, a
      *  select's pick that Playwright and assistive tech make without a key or a pointer - so a loss
