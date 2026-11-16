@@ -173,6 +173,20 @@ jobs:
           name: dispatch-e2e-binaries
           path: ${{ runner.temp }}/dispatch-e2e-bin
           if-no-files-found: error
+      # This job's own result decides a merge-group run as any job of ci.yaml does, so it ends
+      # with the router's report: a leg that fails posts the failing ci-ok at once, where before
+      # only the merge job below posted and the queue waited for every other leg first - 5.43
+      # minutes late in run 42581083401 (dispatch://INFRA-1066 R4, dispatch://INFRA-49). The step
+      # posts on a merge-group run alone, and the nightly workflow, which passes no
+      # `ci-ok-changes`, skips it.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
 
   shard:
     needs: binaries
@@ -698,6 +712,20 @@ jobs:
           name: dispatch-browser-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
+      # This job's own result decides a merge-group run as any job of ci.yaml does, so it ends
+      # with the router's report: a leg that fails posts the failing ci-ok at once, where before
+      # only the merge job below posted and the queue waited for every other leg first - 5.43
+      # minutes late in run 42581083401 (dispatch://INFRA-1066 R4, dispatch://INFRA-49). The step
+      # posts on a merge-group run alone, and the nightly workflow, which passes no
+      # `ci-ok-changes`, skips it.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
 
   alone:
     needs: binaries
@@ -1012,6 +1040,20 @@ jobs:
   # second build of the dashboard, which is what a rolling release puts in front of a browser. It
   # runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
   # suite's job does not wait on a second Vite build and two more servers.
+      # This job's own result decides a merge-group run as any job of ci.yaml does, so it ends
+      # with the router's report: a leg that fails posts the failing ci-ok at once, where before
+      # only the merge job below posted and the queue waited for every other leg first - 5.43
+      # minutes late in run 42581083401 (dispatch://INFRA-1066 R4, dispatch://INFRA-49). The step
+      # posts on a merge-group run alone, and the nightly workflow, which passes no
+      # `ci-ok-changes`, skips it.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
   multiprocess:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
@@ -1174,6 +1216,20 @@ jobs:
   # budget is those two plus that job's measured 135 s maximum for every step without one,
   # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
   # their own, as this file's head requires.
+      # This job's own result decides a merge-group run as any job of ci.yaml does, so it ends
+      # with the router's report: a leg that fails posts the failing ci-ok at once, where before
+      # only the merge job below posted and the queue waited for every other leg first - 5.43
+      # minutes late in run 42581083401 (dispatch://INFRA-1066 R4, dispatch://INFRA-49). The step
+      # posts on a merge-group run alone, and the nightly workflow, which passes no
+      # `ci-ok-changes`, skips it.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
   embedder:
     runs-on: ubuntu-24.04
     timeout-minutes: 11
@@ -1313,6 +1369,20 @@ jobs:
   # before any step budget could fire. That inverts this file's rule, which says the job budget
   # is the backstop that never fires first, so it is re-derived above from the maximum those
   # runs measured. A download this job does not control may not decide a required check.
+      # This job's own result decides a merge-group run as any job of ci.yaml does, so it ends
+      # with the router's report: a leg that fails posts the failing ci-ok at once, where before
+      # only the merge job below posted and the queue waited for every other leg first - 5.43
+      # minutes late in run 42581083401 (dispatch://INFRA-1066 R4, dispatch://INFRA-49). The step
+      # posts on a merge-group run alone, and the nightly workflow, which passes no
+      # `ci-ok-changes`, skips it.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
@@ -1435,6 +1505,20 @@ jobs:
   # behind it, and the old head would collect a red ci-ok. ci.yaml writes `!cancelled()` on its
   # own jobs for the same reason. The step-level `if: always()` inside this job are a different
   # thing and stay: a step's condition is about the steps before it, not about the run.
+      # This job's own result decides a merge-group run as any job of ci.yaml does, so it ends
+      # with the router's report: a leg that fails posts the failing ci-ok at once, where before
+      # only the merge job below posted and the queue waited for every other leg first - 5.43
+      # minutes late in run 42581083401 (dispatch://INFRA-1066 R4, dispatch://INFRA-49). The step
+      # posts on a merge-group run alone, and the nightly workflow, which passes no
+      # `ci-ok-changes`, skips it.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
   merge:
     # Every job of this workflow, the binaries job among them: a build that failed leaves the
     # shard and alone jobs skipped and no blob report anywhere, and without it in this list the
