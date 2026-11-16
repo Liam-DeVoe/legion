@@ -29,6 +29,7 @@ import {
 import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
+import { addressesAsShortForms } from "./tree-drafts";
 
 /**
  * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R1, R6, R9,
@@ -268,6 +269,23 @@ test("a folded branch draws its first line and its count, and its focus its word
     ).toBe(`3 ${CONTROL_LABELS.folded_rows}`);
   } finally {
     focused.unmount();
+  }
+});
+
+// Decision 95: a folded branch's one line writes a bare address in its words as its target's
+// short form, as every one line of a node does (`lineWords`); its body keeps the address as its
+// author wrote it.
+test("a folded branch's line writes a bare address as its short form", () => {
+  const address = "dispatch://CORE-1/spec#b-r1";
+  const text = `Read ${address} before the rows.`;
+  const folded = node({ held: 1, id: "comment-1", text, tree: displayTree(text), type: "comment" });
+  const shut = renderRow(folded, { body: false, expanded: false, folded: 1 });
+  try {
+    const line = shut.container.querySelector("[data-node-first-line]")?.textContent ?? "";
+    expect(line, "the folded line draws the address as written").not.toContain("dispatch://");
+    expect(line).toBe(`Read ${addressesAsShortForms(address)} before the rows.`);
+  } finally {
+    shut.unmount();
   }
 });
 
