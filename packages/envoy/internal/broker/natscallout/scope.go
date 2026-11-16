@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -193,9 +194,8 @@ type heldAnswer struct {
 type heldPass struct {
 	began   time.Time
 	answers map[heldKey]heldAnswer
-	// lanes is each GitHub lane (natsgrant.GitHubPrefix) a row of the mapping names, by its
-	// repository or by the repository it was renamed to, and the projects, sorted, that map one
-	// to it (lanesOf).
+	// lanes is each GitHub lane (laneOf) a row of the mapping names, by its repository or by the
+	// repository it was renamed to, and the projects, sorted, that map one to it (lanesOf).
 	lanes map[string][]string
 	// refused is Dispatch refusing the broker's own account token on any of the pass's questions,
 	// the mapping's read or a project's answer; the rest of a refused pass is never read.
@@ -205,7 +205,14 @@ type heldPass struct {
 // sharedWith reports whether a project entry does not name maps a repository to repository's lane
 // in p's mapping.
 func (p *heldPass) sharedWith(repository string, entry []string) bool {
-	return outside(p.lanes[natsgrant.GitHubPrefix(repository)], entry)
+	return outside(p.lanes[laneOf(repository)], entry)
+}
+
+// laneOf is repository's GitHub lane (natsgrant.GitHubPrefix) in lower case: GitHub names a
+// repository without case, so Acme/Widgets and acme/widgets are one repository and one lane, as
+// Dispatch's own lane rule compares them.
+func laneOf(repository string) string {
+	return strings.ToLower(natsgrant.GitHubPrefix(repository))
 }
 
 // outside reports whether a project of projects is not one of entry's.
@@ -218,7 +225,7 @@ func outside(projects, entry []string) bool {
 func lanesOf(rows []projectaccess.RepoProject) map[string][]string {
 	lanes := map[string][]string{}
 	add := func(repository, project string) {
-		lane := natsgrant.GitHubPrefix(repository)
+		lane := laneOf(repository)
 		if !slices.Contains(lanes[lane], project) {
 			lanes[lane] = append(lanes[lane], project)
 		}

@@ -11,9 +11,10 @@ body: |-
   nothing, but every refusal it got (a project not found, or no longer seen by the entry's
   person, or a repository no longer mapped to it) applies at once. A repository whose GitHub
   lane a project the daemon's entry does not name also maps, by a `renamed_to` or by a second
-  spelling of one lane, is withheld from the grant, counted in
+  spelling of one lane (lanes compared without case), is withheld from the grant, counted in
   `broker_nats_callout_shared_lanes_dropped_total` and logged at error with the lane and its
-  projects once a pass; a lane shared only among the entry's own projects is served. The guard
+  projects once a pass; a lane shared only among the entry's own projects is served, and a
+  mapping moved whole to another project is no shared lane but goes with its mapping. The guard
   sees only the mapping rows Dispatch answers the broker with: a Dispatch with private projects
   gives the broker's account the public projects' rows alone, and refuses on its own every
   mapping write that would share a lane with a private project (`REPOSITORY_LANE_SHARED`). It
