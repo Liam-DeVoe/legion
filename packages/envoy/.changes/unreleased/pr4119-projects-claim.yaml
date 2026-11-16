@@ -17,4 +17,4 @@ body: |-
   no such token is minted where no exchange entry is configured.
 time: 2026-11-16T02:16:07Z
 custom:
-    Issue: INFRA-3862
+    Issue: pr4119
