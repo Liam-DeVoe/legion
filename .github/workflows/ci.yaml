@@ -447,7 +447,8 @@ jobs:
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
-              - 'packages/envoy/internal/brokertoken/*'
+              # brokertoken's testdata too: the daemon's tests compile it through projectaccess.
+              - 'packages/envoy/internal/brokertoken/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/contracts/*'
