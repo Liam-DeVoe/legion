@@ -107,6 +107,7 @@ import {
   rowGaps,
   rowReference,
   rowTags,
+  standInControlBelow,
   standInFootBox,
   tabStopRow,
   tooltipTexts,
@@ -1736,7 +1737,8 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
 
 // c-focus-opens.
 // SLOW(>=2s): the whole issue seeded and loaded, every row hovered, every link rested on past the
-// delay a card opens after, the rows read three times, and the Inbox loaded.
+// delay a card opens after, the rows read three times, two controls outside the outline pressed,
+// one of them a view's, which the outline is waited for after, and the Inbox loaded.
 test("a body opens on focus and nothing opens on hover", async ({ browser }) => {
   // The row rests the pointer on every reference the page draws, each for longer than a card
   // takes to open elsewhere, which is a second or two of absences on top of the row's own walk.
@@ -1771,11 +1773,53 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     await page.keyboard.press("o");
     expect(await pinnedBodies(page).count(), "o did not close the pinned body").toBe(0);
 
-    // With the keyboard focus off the tree nothing is open, and the pointer opens nothing either.
+    // A press on a control of the page outside the outline fires with a row's body open (the
+    // architect's decision 105). The press focuses the control as it goes down, and the body
+    // closing as the focus left the outline shortened the page under the pointer: the press
+    // ended on something else, and the control never fired. The body stays drawn until another
+    // row takes the focus or the reader presses Escape.
+    //
+    // First a control under the focused row, which a body closing above it moves. Nothing of the
+    // page's own stands under the outline at this head, so a stand-in does
+    // (`standInControlBelow`), in the middle of the screen, under the outline's last row, which
+    // End focuses.
+    await page.keyboard.press("End");
+    const last = tabStopRow(page);
+    await expect(rowBody(last), "End opened no body on the outline's last row").toHaveCount(1);
+    const below = await standInControlBelow(page);
+    await below.control.evaluate((control) => control.scrollIntoView({ block: "center" }));
+    await below.control.click();
+    expect(
+      await below.presses(),
+      "a press on a control under the focused row, with the row's body open, did not fire it"
+    ).toBe(1);
+    await expect(rowBody(last), "the press closed the focused row's body").toHaveCount(1);
+    // Escape on the page closes the body the press kept.
+    await page.keyboard.press("Escape");
+    await expect(nodeBodies(page), "Escape on the page left the kept body drawn").toHaveCount(0);
+    await below.remove();
+
+    // Then a view control above the outline: Spec, pressed with a row's body open, draws the
+    // Spec view in the outline's place, and Conversation draws the outline again.
+    await focusRow(page, focused ?? "");
+    await presetToggle(page, "spec").click();
+    await expect(
+      page,
+      "a press on Spec with a row's body open did not open the Spec view"
+    ).toHaveURL(new RegExp(`${presetPath(seeded.key, "spec")}$`));
+    await expect(outlineRows(page), "the Spec view draws the outline").toHaveCount(0);
+    await presetToggle(page, "conversation").click();
+    await expect
+      .poll(() => outlineRows(page).count(), {
+        message: "Conversation does not draw the outline again after Spec",
+      })
+      .toBeGreaterThan(0);
+
+    // With the keyboard focus on no control nothing is open, and the pointer opens nothing either.
     await focusThePage(page);
     expect(
       await nodeBodies(page).count(),
-      "a body is drawn with the keyboard focus off the tree"
+      "a body is drawn with the keyboard focus on no control"
     ).toBe(0);
     const before = await treeText(page);
     const rows = nodeRows(page);
