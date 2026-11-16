@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
@@ -956,8 +957,12 @@ func loadAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string) (map[strin
 }
 
 // createAskBlock writes the ask a settled document's new ask block opens: its node first, in the
-// project of the issue or the document that holds the block, then its row, then its author's
-// follow. The ask.opened that records this ask is appended with the settlement's other events,
+// project of the document that holds the block, then its row, then its author's follow. The
+// project is the owner's where the caller read it with the document's own row
+// (lockArtifactOwner), so the node then costs one statement and no read of its own; an owner a
+// caller built without it (ask_lifecycle's) has it read off the document (graphstore.ScopeOf).
+// The ask's id is drawn here, as the row's default would draw it, because the node goes in
+// first. The ask.opened that records this ask is appended with the settlement's other events,
 // after this, so the ask's node and the author's node are made at the sentinel and learn it then
 // (causeFollows).
 func createAskBlock(
@@ -980,13 +985,12 @@ func createAskBlock(
 	if owner.IssueKey == nil {
 		ownerArtifactID = new(artifactID)
 	}
-	var ask model.Ask
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&ask.ID); err != nil {
-		return model.Ask{}, openedFollow{}, fmt.Errorf("draw the id of a new ask block: %w", err)
-	}
-	project, parties, err := graphstore.ScopeOf(ctx, tx, owner.IssueKey, &artifactID)
-	if err != nil {
-		return model.Ask{}, openedFollow{}, err
+	ask := model.Ask{ID: uuid.NewString()}
+	project, parties := owner.Project, []string(nil)
+	if project == "" {
+		if project, parties, err = graphstore.ScopeOf(ctx, tx, owner.IssueKey, &artifactID); err != nil {
+			return model.Ask{}, openedFollow{}, err
+		}
 	}
 	node, err := graphstore.WriteUncaused(ctx, tx,
 		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, author, time.Now().UTC())}, nil)
