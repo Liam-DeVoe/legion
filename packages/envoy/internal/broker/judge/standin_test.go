@@ -314,7 +314,7 @@ func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.De
 	return f.decision, f.withheld, f.admin, f.policyErr
 }
 
-func (f *fakeRequests) JudgeProject(_ context.Context, _, name string) (bool, error) {
+func (f *fakeRequests) JudgeProject(_ context.Context, _, name, _ string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.projectAsked = append(f.projectAsked, name)

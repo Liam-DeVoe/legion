@@ -26,11 +26,11 @@ func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 	m.Exchange = set
 	pod, _ := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-priv-"+t.Name())
 
-	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY"); err != nil || !private {
+	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY", ""); err != nil || !private {
 		t.Fatalf("JudgeProject(PRIV's pod, SHARED_KEY) = %v, %v; want true: the pod's operator entry maps it to PRIV, a private project", private, err)
 	}
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
-	if private, err := m.JudgeProject(t.Context(), enr, "SHARED_KEY"); err != nil || private {
+	if private, err := m.JudgeProject(t.Context(), enr, "SHARED_KEY", ""); err != nil || private {
 		t.Fatalf("JudgeProject(a session naming no project, SHARED_KEY) = %v, %v; want false", private, err)
 	}
 	if calls := dispatch.Calls(); calls != 0 {
@@ -53,11 +53,11 @@ func TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore(t *testing.
 	pod, _ := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-team-"+t.Name())
 
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
-	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY"); err != nil || private {
+	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY", ""); err != nil || private {
 		t.Errorf("JudgeProject(a pod mapped to public TEAM, SHARED_KEY) = %v, %v; want false, as the merge base judged it", private, err)
 	}
 	m.Projects = nil
-	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY"); err != nil || private {
+	if private, err := m.JudgeProject(t.Context(), pod, "SHARED_KEY", ""); err != nil || private {
 		t.Errorf("JudgeProject with no project-access client, a pod whose entry names TEAM, SHARED_KEY = %v, %v; want false, as the merge base judged it", private, err)
 	}
 	if got := dispatch.Calls(); got > 1 {

@@ -964,10 +964,12 @@ at the first that fails, asking the model nothing:
    release, whatever seconds a rules entry gives the judge;
 5. the name is not withheld for that session;
 6. the request is no private project's: a `dispatch-project` tag naming a private project or a key
-   Dispatch holds no project for, or a credential that names a private project (a session's list,
-   or the project a pod's or a machine's exchange entry maps it to), leaves the request to a person,
-   since the judge's own token names no person and so sees no private project. A request whose
-   secret carries no tag and whose credential names no project makes no call to Dispatch here, and
+   Dispatch holds no project for, a credential that names a private project (a session's list, or
+   the project a pod's or a machine's exchange entry maps it to), or any issue key of a private
+   project that the signed reason names leaves the request to a person, since the judge's own
+   token names no person and so sees no private project. These are the projects that hide a
+   request from a person outside them too. A request whose secret carries no tag, whose credential
+   names no project and whose reason names no issue key makes no call to Dispatch here, and
    neither does any request on a broker with no `BROKER_PROJECT_ACCESS_URL`;
 7. the request's signed reason names a Dispatch issue key, and Dispatch shows that issue at a
    status that is not `done`.

@@ -8,8 +8,9 @@ body: |-
   such request", as a request that does not exist; it is in none of their lists, and a decision's
   outcome line says nothing of it. The model judge makes a seventh check, `project`, after
   `withheld` and before `issue`: a request for a secret of a private project, or of a project
-  Dispatch does not hold, or from a credential that names a private project, is left to a person,
-  since the judge's own token names no person. A broker with no `BROKER_PROJECT_ACCESS_URL` judges
+  Dispatch does not hold, or from a credential that names a private project, or whose signed
+  reason names any issue of a private project, is left to a person, since the judge's own token
+  names no person. A broker with no `BROKER_PROJECT_ACCESS_URL` judges
   exactly as before and asks Dispatch nothing about projects.
 time: 2026-11-16T02:58:17Z
 custom:

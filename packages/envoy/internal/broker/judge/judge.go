@@ -4,7 +4,7 @@
 //
 // One run is one request. It makes seven checks of its own before any model is asked — the rules
 // entry's judge bound, the request's shape and lifetime, the tag policy re-read now, whether the
-// secret is an administrator's, what the session has had withheld from it, whether the secret
+// secret is an administrator's, what the session has had withheld from it, whether the request
 // belongs to a private project, and the Dispatch issue the signed reason names — and stops at the
 // first that fails, leaving the request pending with a request.judged row that says which check
 // it was and asking the model nothing. A request
@@ -118,16 +118,17 @@ type Requests interface {
 	// is not one to leave to two reads that may disagree.
 	JudgePolicy(ctx context.Context, enrollmentID, name string) (now policy.Decision, withheld, admin bool, err error)
 
-	// JudgeProject answers whether the request of enrollmentID for name is a private project's,
-	// which the judge must leave to a person: the secret's dispatch-project tag (policy.TagProject)
-	// names a private project or a key Dispatch holds no project for, or the credential that asked
-	// names one (a session's list, or the project a pod's operator entry maps it to). A request
-	// whose secret carries no tag and whose credential names no project answers false with no call
-	// to Dispatch at all, so a deployment that tags and names nothing asks Dispatch nothing new.
-	// The judge never decides a private project's request: its own token names no person, so it
-	// may see no private project, and whether a person may is the approval page's to check
-	// (requests.Machine.MaySee).
-	JudgeProject(ctx context.Context, enrollmentID, name string) (private bool, err error)
+	// JudgeProject answers whether the request of enrollmentID for name, signed with reason, is a
+	// private project's, which the judge must leave to a person: the secret's dispatch-project tag
+	// (policy.TagProject) names a private project or a key Dispatch holds no project for, or the
+	// credential that asked names a private project (a session's list, or the project a pod's
+	// operator entry maps it to), or any issue key the reason names is a private project's. Those
+	// are the projects the person rule reads too (requests.Machine.MaySee), so the judge never
+	// decides a request its approver may not see. A request whose secret carries no tag, whose
+	// credential names no project and whose reason names no issue key answers false with no call
+	// to Dispatch, and a broker with no project-access client answers false for an untagged secret.
+	// The judge's own token names no person, so it may see no private project.
+	JudgeProject(ctx context.Context, enrollmentID, name, reason string) (private bool, err error)
 
 	// JudgeRequestState answers the state a decision would meet now for the record a run
 	// is judging: "pending" for a request still waiting on its person, "expired" for one
@@ -315,14 +316,14 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		return checks, data
 	}
 
-	private, err := r.opts.Requests.JudgeProject(ctx, p.EnrollmentID, name)
+	private, err := r.opts.Requests.JudgeProject(ctx, p.EnrollmentID, name, p.Reason)
 	switch {
 	case err != nil:
 		if !add(checkProject, false, fmt.Sprintf("the project of %s could not be read: %v", name, err)) {
 			return checks, data
 		}
 	case private:
-		if !add(checkProject, false, fmt.Sprintf("%s belongs to a private project, or to one Dispatch does not hold, which a person decides", name)) {
+		if !add(checkProject, false, fmt.Sprintf("the request for %s belongs to a private project (by the secret, the credential that asked, or an issue its reason names), or the secret to one Dispatch does not hold, which a person decides", name)) {
 			return checks, data
 		}
 	default:
