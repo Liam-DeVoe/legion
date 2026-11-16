@@ -2854,7 +2854,7 @@ The kinds are:
   A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
 
 - `person`, `session`, `role` and a role's page, which no table projects.
-  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
+  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, and those the `made_by` of each lens, finding, risk and constraint that holds an asserted `authored_by` names the same way (`graphcensus`'s `reasoningAuthored`; a node written on the shared bearer states none, so the session its body claimed is on neither side), the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
   A role's row side also holds every role an event of the log ever addressed: the `route` of every `issue.created`, `issue.updated` and `issue.closed` event, the `target` of every `message.created` and `message.answered` event, and the `target` of each mention a `comment.created` event names.
   A node is history and never goes, so an issue routed to one role and then re-routed to another still owes the first its node and its page, and the census reads the route history the events hold rather than only the current route.
   The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
@@ -3057,7 +3057,7 @@ Each block of a document is a node of the graph too (migration `0121`; `packages
 Its reference is the document's with `#b-` and the block's id, percent-encoded as `encodeBlockId` (`@legion/contracts`) writes it:
 `dispatch://KEY/spec#b-<id>`, `dispatch://KEY/artifact/<slug>#b-<id>` or `dispatch://PROJECT/artifact/<slug>#b-<id>`.
 Text cites a block only while its id holds at most 256 bytes decoded (`text.MaxBlockIDBytes`), and any node only while its target id, the id its edge is stored under (`text.TargetID`:
-an issue's key, a document's `<KEY or PROJECT>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<id>`, a comment's or message's block's or an ask's part's `<item kind>/<item id>#<id>` (`ask/<ask uuid>#<part id>`), an ask's, a comment's or a message's id), holds at most 2048 bytes (`text.MaxTargetBytes`), since `refs` and `block_refs` hold it in B-tree keys and neither a slug nor an item id has a bound of its own:
+an issue's key, a document's `<KEY or PROJECT>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<id>`, a comment's or message's block's, an ask's part's or a lens's finding's `<item kind>/<item id>#<id>` (`ask/<ask uuid>#<part id>`, `lens/<lens uuid>#<id>`), an ask's, a comment's or a message's id, and an interaction's, a lens's, a risk's or a constraint's uuid or a lens kind's slug), holds at most 2048 bytes (`text.MaxTargetBytes`), since `refs` and `block_refs` hold it in B-tree keys and neither a slug nor an item id has a bound of its own:
 text citing past either is written with no edge.
 The bounds decide only what the graph indexes.
 Every write is taken whatever the length of a block id it names (a seeded spec, an upload, an `insert`, a rebuild, an accepted suggestion, a browser's edit);
@@ -3111,6 +3111,10 @@ a reply to a comment names a block of that comment, whether or not the comment's
 A reference to a part no current revision of the ask holds is `404 NOT_FOUND` `no part "<part>" in ask <id>`.
 An ask any build writes is owed a part index (`20261101143212`'s trigger on `asks`), which the same block-index reconciliation drains.
 
+A node the node and tuple store addresses by its own id carries no issue key in its reference, since where it stands is a `part_of` tuple and a move changes no address:
+`dispatch://interaction/<uuid>`, `dispatch://lens/<uuid>`, `dispatch://risk/<uuid>` and `dispatch://constraint/<uuid>`, the uuid in lowercase as the store writes it, `dispatch://lens_kind/<slug>`, and a lens's finding, `dispatch://lens/<uuid>#b-<id>`, which takes no pin, since a lens records no revision of its findings (`text.ParseRef`, and the dashboard's reader, both held to `DISPATCH_TEXT_REFERENCES`).
+The dashboard has no page for any of them, so no renderer links one, and a read answers a node of such a kind only once the build registers that kind in `nodeRegistry`, as for every kind (above).
+
 ```bash
 DATABASE_URL=postgres://... envoy-dispatch rebuild-refs
 ```
@@ -3127,13 +3131,15 @@ a session id holding a `/`, `?`, `#` or whitespace names nothing.
 `graph_edges` has no structural edge for such a file (no `attached_to`, since it belongs to no issue):
 it appears in the graph through the mentions that cite it.
 
-Every node the graph reads carries six facts, whatever its kind:
-`made_by` and `made_at` (who made it and when), `changed_by` and `changed_at` (who last changed its own text or fields and when, its maker while nothing has changed it since), `parent` (`{kind, id, ref?}`, the node it belongs to, `id` that node's own id) and `parent_version` (the version of that parent it belongs to:
+Every node the graph reads carries eight facts, whatever its kind:
+`made_by` and `made_at` (who made it and when), `changed_by` and `changed_at` (who last changed its own text or fields and when, its maker while nothing has changed it since), `parent` (`{kind, id, ref?}`, the node it belongs to, `id` that node's own id), `parent_version` (the version of that parent it belongs to:
 for a document's block its changed version, for a comment's block its changed revision;
-for an ask or comment written on a document the version its anchor names, for a block ask the version that first held its block, for an approval request the version it named when it opened, else the version current when it was written).
+for an ask or comment written on a document the version its anchor names, for a block ask the version that first held its block, for an approval request the version it named when it opened, else the version current when it was written),
+and `state` and `visibility`, the node's state (`live`, `gone`, `proposed`, `settled` or `overtaken`) and who reads it (`project`, or `author` for a node reserved for its author, which its author alone reads), as the node and tuple store holds them, and `live` and `project` for a node the store holds no row of.
 A reply that names a block is part of that block.
-A fact Dispatch never recorded is `[]` for an actor list and `null` otherwise:
+A fact Dispatch never recorded is `[]` for an actor list and `null` for a time, a parent or a version, and `state` and `visibility` always hold a value:
 a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (`packages/envoy/AGENTS.md`, "References form one graph", gives each kind's sources and what counts as a change).
+A node's `kind` is one of the kinds the server's read registry holds (`nodeRegistry`), and the OpenAPI document closes `GraphNode.kind` over them, so a reader that meets a kind it does not know, a newer build's, skips that node.
 Migrations `0130`-`0134` (Database migrations above) add what the facts read:
 the version current when an unanchored comment or ask is written on a document, recorded at insert and filled for the rows already stored, and `component_facts`, which every import keeps.
 `dispatch read` prints the facts of the node it reads on a `Node:` line, before `Referenced by:`.
@@ -3929,6 +3935,16 @@ Each item below names a path with its method and identity, then its purpose.
 
   Everyone who has signed in, as `{users: [{login}]}` sorted by email — the assignee picker's options.
 
+- `/api/v1/people/{login}/nodes?limit=&offset=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
+
+  One person's page: what they wrote and what reached them, newest first, read from the node and tuple store — each node whose current `authored_by` tuple names the person, and each whose `delivered_to` tuple names a session the server proved theirs (`alias_of`), held to its own kind's visibility predicate and left out while it is `gone`.
+  The answer is `{person, rows, total, limit, offset}`, `person` the login as `model.CanonicalLogin` writes it, each row `{kind, id, relations, title, created_at, href, state, visibility}`:
+  `relations` the tuples that put the node there (`authored_by`, `delivered_to` or both), `title` the first line of its text, `href` the dashboard path it opens at, and `state` and `visibility` what the store holds for the node (`live` and `project` where it holds no row), so a node reserved for its author is listed to its author alone, who reads `author` there.
+  It takes `limit` (1–200, default 50) and `offset` and no kind, filter or edge to walk, and lists comments, skipping a node of a kind it cannot open.
+  It answers `200` only where the store holds the person and the person holds at least one node the reader may see, or where the reader is that person, answered with what they may see, and no rows where they hold nothing;
+  any other login is `404 NOT_FOUND`, byte for byte what a login nobody holds answers, so the read tells nobody whether that person exists, signed in or wrote anything, and a person whose only node is reserved for its author has no page another reader can open.
+  The deployment's shared token is `403 OAUTH_SCOPE_REQUIRED`.
+
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
   Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
@@ -4068,7 +4084,7 @@ Each item below names a path with its method and identity, then its purpose.
   `since=<events.id>` keeps mentions introduced after it (structural edges excluded).
   The answer is `{node, edges}`, the node read and its edges.
   Each edge carries the other `node`, an `excerpt` (the containing block for a document mention), `created_at`, and `source_seq`.
-  The node read, each edge's `node` and each edge's `block` carry the six facts of every node, `made_by`, `made_at`, `changed_by`, `changed_at`, `parent` and `parent_version` ([Reference graph](#reference-graph)).
+  The node read, each edge's `node` and each edge's `block` carry the eight facts of every node, `made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`, `state` and `visibility` ([Reference graph](#reference-graph)).
   What is listed, and from where:
 
   - A mention a block of a document holds is listed from that block (`node.kind` `block`, `node.document` its document);
@@ -4095,7 +4111,7 @@ Each item below names a path with its method and identity, then its purpose.
   The links from blocks of the document `from` names to blocks of the document `to` names (an issue's spec or document, or a project's document;
   one document may be both), each reference read whatever its length:
   `{from, to, links}`, each link with its `kind`, both block nodes, and the `created_at` and `created_version` at which the source block first held it, newest first;
-  `from`, `to` and every link's two blocks carry the six facts of every node ([Reference graph](#reference-graph)).
+  `from`, `to` and every link's two blocks carry the eight facts of every node ([Reference graph](#reference-graph)).
   A link is listed only while both blocks are current blocks of their documents, and a typed block's `block[]` pointer only while its target has a type the attribute allows.
   `400 INVALID_REFERENCE` when either is not a document reference; `404 NOT_FOUND` for a document that does not exist.
 
@@ -4224,6 +4240,9 @@ Each item below names a path with its method and identity, then its purpose.
   A reply may name the block of the comment `reply_to` names that it answers, `reply_to_block` (`b2`), checked against that comment before `reply_to` climbs to its thread's head, and against that comment even when the climb reaches an ask;
   with `ask_id` instead of `reply_to` it names a part of that ask.
   `400 INVALID_COMMENT` with neither `reply_to` nor `ask_id`, and for a block or part the named item does not hold now.
+  `visibility` is optional: `project`, or none, writes the comment as every comment is written, for every reader its issue or document has;
+  `author` is `400 VISIBILITY_NOT_ADMITTED`, naming the kind `comment`, because not every read of a comment binds the visibility predicate, and on the deployment's shared bearer `403 AUTHOR_NAMES_NOBODY`;
+  any other word is `400 INVALID_ATTRIBUTE_VALUE`, and each refusal stores nothing.
   The delivery callback `POST /api/v1/comments/{id}/reply` takes `reply_to_block` for a block of comment `{id}`, never for a part of the ask its thread hangs under.
   A comment's record in its document's margin - its body and replies, or a suggestion's and its replacement - holds at most 256 KiB of text, and a document's margin 1 MiB:
   a comment, reply or suggestion that would leave either past its bound and bigger is `413 CAP_EXCEEDED`, naming the bound and both sizes.
@@ -4546,6 +4565,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/comments` (GET, POST; cookie, trusted header, or bearer)
 
   List or create comments and suggestions on an unlinked document.
+  The create takes `visibility` as `POST /api/v1/issues/{key}/comments` does, with the same refusals.
 
 - `/api/v1/artifacts/{id}/events` (GET; cookie, trusted header, or bearer)
 
@@ -4787,6 +4807,32 @@ Each item below names a status and code, then its meaning.
   An id written short that names one item is resolved before the route's handler runs, so the handler, the project-scope check and the response all read the whole id;
   one that names none answers the 404 that route answers for a whole id that names none, and a value that is no short id at all — fewer than 8 characters, or not hex — gets the answer it has always had.
   The ids this covers are an ask's, a comment's, a message's, a document's and a document block's; an id in a request body (`reply_to`, `ask_id`, `in_reply_to`) and the `artifact=` filters are read whole, since the programs that write them hold the whole id.
+
+- `400 INVALID_ATTRIBUTE_VALUE`
+
+  A write states a node's `state` at a value none of `live`, `gone`, `proposed`, `settled` and `overtaken`, or its `visibility` at one neither `project` nor `author`, a comment's `visibility` among them.
+  The message names the attribute, the value and the values it takes (`the node visibility "public" is none of project, author`); nothing is written.
+
+- `403 AUTHOR_NAMES_NOBODY`
+
+  A write asks for `visibility` `author` on a credential that proves no author, the deployment's shared bearer, whose every holder presents one value, so the node would be nobody's to read; nothing is written.
+  The going POST refuses the same asker `403 GOING_ASKER_NAMES_NOBODY`, and both decide by `graphstore.ProvesAuthor`.
+
+- `400 VISIBILITY_NOT_ADMITTED`
+
+  A write asks for `visibility` `author` on a node of a kind that takes no node reserved for its author, because not every read of that kind binds the visibility predicate: every kind but those the read registry flags (`packages/envoy/AGENTS.md`, "References form one graph"), a comment among them.
+  The message names the kind (`the node kind comment takes no node reserved for its author, …`); nothing is written.
+
+- `400 INVALID_POINTER`
+
+  A pointer tuple a write states is at a node its type rule does not allow: a `has_kind` other than from a lens to a lens kind, a `triggered_by` other than from a lens to another lens, a `constrained_by` other than from a requirement block or a lens kind to a constraint, a `prevented_by` other than from a risk to a check block, or a risk's `part_of` to anything but a lens of kind `pre-mortem`;
+  or a lens's `has_kind` is retracted with none asserted in its place.
+  The message names the tuple kind, the near end, the far end's kind and what the rule allows; nothing is written.
+
+- `409 POINTER_ALREADY_ASSERTED`
+
+  A write asserts a second `has_kind` of a lens, which holds exactly one kind and is retargeted rather than given another, or retracts or moves the `pre-mortem` kind of a lens, which a pre-mortem keeps; a move to `pre-mortem` is taken.
+  The body is one for each case, whatever hangs under the lens, so it tells nothing of a risk the caller may not see; nothing is written.
 
 ## Document errors
 

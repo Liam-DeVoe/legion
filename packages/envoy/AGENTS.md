@@ -570,7 +570,7 @@ The bound decides only which blocks the graph keys, never whether a write is tak
 a seeded spec, an upload, an `insert`, a rebuild from markdown, an accepted suggestion or a browser's edit naming a longer id is written, and the document stores, renders and versions it as any other;
 its block is no graph node (`refs.IndexBlocks`, below).
 A reference is bounded as a whole too: its target id (`text.TargetID`:
-an issue's key, a document's `<KEY or PROJECT>/<slug>` or `agent/<session id>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<block id>`, a comment's or message's block's or an ask's part's `<item kind>/<item id>#<block id>` (`ask/<ask uuid>#<part id>`), an ask's, a comment's or a message's id, a component's `<project>/<id>`), which `refs.to_id`, `block_refs.to_id` and the item block mentions' `to_id` hold in B-tree keys, is at most `text.MaxTargetBytes`, 2048 bytes (`MAX_REFERENCE_TARGET_BYTES`, `referenceTargetFits` in `@legion/contracts`), since neither a slug nor an item id has a bound of its own.
+an issue's key, a document's `<KEY or PROJECT>/<slug>` or `agent/<session id>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<block id>`, a comment's or message's block's, an ask's part's or a lens's finding's `<item kind>/<item id>#<block id>` (`ask/<ask uuid>#<part id>`, `lens/<lens uuid>#<block id>`), an ask's, a comment's or a message's id, a component's `<project>/<id>`, and the uuid of an interaction, a lens, a risk or a constraint and the slug of a lens kind, each the id the store keys that node by), which `refs.to_id`, `block_refs.to_id` and the item block mentions' `to_id` hold in B-tree keys, is at most `text.MaxTargetBytes`, 2048 bytes (`MAX_REFERENCE_TARGET_BYTES`, `referenceTargetFits` in `@legion/contracts`), since neither a slug nor an item id has a bound of its own.
 Both bounds hold only what text cites: `text.Extract` drops a reference past either (`inBound`), so the text citing it is written with no edge.
 A request's reference is read whatever its length (`text.ParseRef`):
 `?to=`, `?from=` and `GET /api/v1/block-links` read a node of any name, a block whose id is past `text.MaxBlockIDBytes` is `404 NOT_FOUND`, no node, and no route answers `400` for a reference's length.
@@ -1754,6 +1754,39 @@ A message on no issue is between the parties of its thread's root (`graphstore.T
 A node's project never moves once stated: a write naming another fails with `graphstore.ErrProjectMoved`.
 A create route that stores an object of these kinds without its node fails `api`'s `TestEveryCreateStoresItsNode`, which calls every `POST` row of `writeClasses` and reads `graphcensus.ProjectComplete`; `envoy-dispatch census --store` prints the same classes per kind (`census: project kind=`), and `backfill-graph-store` writes the nodes and the projects of the rows written before.
 
+A node's `state` takes five values (`graphstore.NodeStates`): `live`, `gone`, `proposed`, `settled` and `overtaken`, and its `visibility` two, `project` and `author`.
+Every write of the store holds the state and the visibility of each node it writes, and each value tuple and claim of either that it states, to those values before its first statement (`graphstore.CheckAttributeValue`), so a write naming any other is refused with a `graphstore.InvalidAttributeValueError` naming the attribute, the value and the values it takes (`400 INVALID_ATTRIBUTE_VALUE` on a route) and stores nothing.
+A write asks for `author` through `graphstore.VisibilityFor`, which gives it only on a credential that proves an author and refuses it on the deployment's shared bearer, whose every holder presents one value, with `graphstore.ErrAuthorNamesNobody` (`403 AUTHOR_NAMES_NOBODY`).
+The store then takes a node at `author` only of a kind the read registry flags as one every read of which binds the visibility predicate (`nodeKind.authorOnly`), the kinds `refs`' `init` hands it once (`graphstore.AdmitAuthorOnly`);
+a node of any other kind at `author` is refused before the write's first statement with a `graphstore.VisibilityNotAdmittedError` naming the kind as the graph addresses it (`graphstore.AddressKind`, which reads a `block` whose id begins `lens/` as a `lens_block`), `400 VISIBILITY_NOT_ADMITTED`, and nothing of the write is stored.
+Only the two constructors of the kinds dispatch://INFRA-1950 adds that take `author` set the flag (`personAuthoredKind` and `credentialAuthoredKind`: an `interaction`, a `lens`, a `lens_block`, a `risk` and a `constraint`, while a `lens_kind` is always `project`), and a program that never loads `refs` admits no kind, so no kind registered before them takes a node at `author`.
+A comment is such a kind: `POST /api/v1/issues/{key}/comments` and `POST /api/v1/artifacts/{id}/comments` take an optional `visibility`, write `project` as before, and refuse `author` that way, a comment past the store's address bound included (`graphstore.CheckVisibilityAdmitted`, `api`'s `commentStored`).
+
+`api`'s `writeReasoningNodes` is the one write path of a lens, a finding, a risk and a constraint (dispatch://INFRA-1950).
+In the caller's transaction it takes the issue's row `for no key update`, then writes in one `graphstore.Write`, at `graphstore.NoEvent` and appending no event, each node `live` in the issue's project, its `part_of` to the node it stands under, the tuples the request states with it, and, where the proving credential proves an author, its `authored_by` with the author's own `person` or `session` node and alias tuples (`graphstore.AuthorFacts`).
+Each node's visibility is `graphstore.VisibilityFor` of what it asked for and the proving credential: a node at `author` is made by the proving credential, so its author's reads match it, and one at `project` by the recorded actor, the session a bearer's body names, as a comment's is;
+a node written on the shared bearer states no `authored_by` and makes no node of the session its body claims.
+`envoy-dispatch census --store` owes a `person` or `session` node to the author of each such node that holds an asserted `authored_by` (`graphcensus`'s `reasoningAuthored`).
+
+The pointer tuples of those kinds and a risk's place are held to one table of type rules (`graphstore`'s `pointerRules`, dispatch://INFRA-1950/spec#b-r-constraint-risk):
+
+| Tuple | From | To | Also |
+| --- | --- | --- | --- |
+| `has_kind` | a `lens` | a `lens_kind` | exactly one asserted at a time |
+| `triggered_by` | a `lens` | another `lens` | never the lens itself |
+| `constrained_by` | a `requirement` block, or a `lens_kind` | a `constraint` | |
+| `prevented_by` | a `risk` | a `check` block | |
+| `part_of` | a `risk` | a `lens` whose `has_kind` is `pre-mortem` | a `part_of` out of any other node is ruled by none |
+
+A block carries the supertag `block` alone, so a rule that names a block type reads the block's type off its `document_blocks` row, and a block no document holds, a finding or a removed block, is of no type.
+`graphstore.Write` and `graphstore.Caused` hold every relation they append that the table rules to its rule, in the write's own transaction, once the nodes are written and before the first tuple is appended (`checkPointers`), so a write that breaks one stores nothing, and `graphstore.WriteArms` refuses such a relation outright, since an arm reads none of the nodes a rule names.
+A breach is a `graphstore.InvalidPointerError` naming the tuple kind, its near end, its far end's kind and what the rule allows (`400 INVALID_POINTER`), and so is a lens's `has_kind` retracted with none asserted in its place.
+A second `has_kind` while the lens holds one (`graphstore.ErrLensKindAsserted`), and a retraction of a lens's `pre-mortem` kind, which a lens of that kind keeps (`graphstore.ErrLensKindKept`), are `409 POINTER_ALREADY_ASSERTED`, each with one body whatever hangs under the lens, so the refusal tells nothing of a risk a reader may not see;
+a move to `pre-mortem` is taken.
+`graphstore.Retarget` moves a pointer: it takes its near end's `graph_nodes` row `for no key update`, appends the old far end's retraction and the new one's assertion through `Write`, never moves a `part_of`, and answers a pointer the node does not hold with `graphstore.ErrPointerNotHeld` (`404 NOT_FOUND`).
+A write that states a lens's `has_kind` without writing that lens takes the lens's `graph_nodes` row `for no key update` before it reads the kind, so two such writes queue there (the lock order on `api`'s `markInboxReadThreads`).
+The table rules types alone: that a far end exists, is not `gone` and may be seen by the caller is the route's to check, through the read registry's loader for its kind, so a far end the caller may not see answers as one that does not exist.
+
 The document keeps its own `refs` rows, which the closure and the older `GET /api/v1/artifacts/{id}/references` read, but a document's mention of a target that one of its blocks holds a link of any kind to, listed or not, is listed and counted from that block alone (`heldByABlock`, in `refs.Edges` and `refs.BacklinkCounts`), so a node is counted once for each block link to it and each link shows once, where its block holds it.
 A document's own read (`?to=` or `?from=` a document reference) also lists the edges at its current blocks, each naming that block as the edge's `block`;
 its `part_of` edges are left out unless `?kind=` names them.
@@ -1895,13 +1928,15 @@ The message route reads under `GET /api/v1/messages/{id}`'s rule (`readableMessa
 A read never indexes: an item owed an index, indexed from another body than it stores, or whose stored body the parser now splits otherwise answers `indexed: false` and no blocks.
 The dashboard's comment editor (`MentionComposer`, `block-spans.ts`) reads the comment's route when an edit opens, follows each block's span through every edit of its text (a block a cut or a drag took out is held and comes back where the same text is pasted or dropped), and saves `{body, base_revision, blocks}`, or `{body}` alone when the route answered `indexed: false` or failed.
 
-Every node carries six facts, whatever its kind, always present on the wire (`model.GraphNode`):
+Every node carries eight facts, whatever its kind, always present on the wire (`model.GraphNode`):
 `made_by` and `made_at`, who made it and when;
 `changed_by` and `changed_at`, who last changed its own text or fields and when, its maker while nothing has changed it since;
 `parent` (`model.NodeParent`), the node it belongs to, by `kind`, `id` (the parent node's own id:
 an artifact's uuid, an issue's key, a component's `<project>/<id>`) and `ref`, absent for a parent with none (a session, a direct message, a document no project owns);
-and `parent_version`, the version of the parent it belongs to.
-A fact Dispatch never recorded is empty: `made_by` and `changed_by` are then `[]`, never null, and the others null.
+`parent_version`, the version of the parent it belongs to;
+and `state` and `visibility`, the node state and the visibility the node and tuple store holds for the node (`graphstore.NodeStates`; `project` or `author`), which are `live` and `project` for a node the store holds no row of (`refs.StoredStateAndVisibility`).
+A fact Dispatch never recorded is empty: `made_by` and `changed_by` are then `[]`, never null, and `made_at`, `changed_at`, `parent` and `parent_version` null;
+`state` and `visibility` always hold a value.
 `refs.storedActor` reads a single-actor column (a creator, an author, an event's actor, an edit's editor) and `refs.storedActors` a list column (a version's authors):
 SQL NULL (a left join that found no row, an edit that names no editor) and JSON null are nobody recorded, and any other value that does not decode as a `model.Actor` (a list of them) fails the read.
 `GET /api/v1/references` carries them on `node`, each `edges[].node` and each `edges[].block`, and `GET /api/v1/block-links` on `from`, `to` and both blocks of each link.
@@ -1951,6 +1986,14 @@ the SHA-256 of a canonical JSON of `title`, `prose`, `parent`, `external`, `path
 a component with no row is made and changed now, a row with a null digest gains the digest and keeps its unrecorded times, a row whose digest differs is changed now, and an equal digest leaves the row as it is.
 It then deletes each row of the project whose component no source projects any more (`architecture.DeleteOrphanComponentFacts`), which the source delete route also runs after its cascade, so a component retired and imported again later is made again.
 An earlier build's import during the roll leaves `component_facts` alone, so recorded times survive it, and a component that build imports first has no row until this build's next import records it.
+
+A node's `kind` is one of the kinds `nodeRegistry` holds, and the OpenAPI document closes `GraphNode.kind` over them (`api`'s `TestTheGraphNodeKindEnumIsTheRegistrysKinds`), so a kind a later build registers is a member that build adds;
+a reader that meets a kind it does not know skips that node rather than failing on it.
+A node at `project` is read by every reader the read's other rules let read it, and a node at `author` by its author alone, so only its author ever reads `visibility` `author`, and a reader whose credential proves no author (the deployment's shared bearer, `graphstore.ProvesAuthor`) reads no author-only node at all.
+A kind's predicate compares that author one of two ways (`nodeVisibility.compares`): the whole credential, the four fields `graphstore.AuthorIsSQL` compares (`kind`, `id`, `owner`, `service`), for every kind dispatch://INFRA-1149 registers and for an `interaction`;
+or, for a `lens`, a lens's finding (`lens_block`), a `risk` and a `constraint`, the person the credential proves where the node's `made_by` names a person — a user's login or a token's owner, by `model.CanonicalLogin` — and the whole credential where it names none (`graphstore.AuthorPersonIsSQL`).
+One argument binds both (`refs.VisibilityArg`, `graphstore.ActingCredential`): the credential's four fields and, beside them, `person`, which `AuthorIsSQL` takes off before it compares.
+So on those four kinds a person's personal token reads what that person's cookie wrote and another person's token reads none of it, and on every kind a node whose `made_by` names nobody is read by nobody.
 
 What no block-aware write indexed, the server indexes itself.
 Migration 0121 marks every document owed;
