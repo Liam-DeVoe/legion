@@ -1020,10 +1020,10 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # has of that package (dispatch://INFRA-1075). This call's slowest package is
 # internal/dispatch/pmdoc at 567.3 s (run 43797411630, job 133069317516), which is
 # 49.8 per cent of 19m and would be 52.5 per cent of 18m, the whole minute below
-# it; cmd/dispatch's largest, 525.9 s (run 43691345741, job 132742525106), asked
-# 18m. The limit leaves 572.7 s above the slowest package's own
-# time, far over the 60 s of pmdoc's perCallReportMargin, which is the floor a
-# package that reads the test binary's deadline sets for itself.
+# it; cmd/dispatch's largest, 525.9 s (run 43691345741, job 132742525106), asked 18m.
+# The limit leaves 572.7 s above the slowest package's own time, far over the 60 s of
+# pmdoc's perCallReportMargin, which is the floor a package that reads the test
+# binary's deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
 printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{SHUTDOWN_PATTERN}' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
@@ -1083,10 +1083,10 @@ impossible=$!
 # package takes at most half of it, and this package's largest reading and the run it
 # came from are in the table on this job: 13m, from the 386.1 s this package read
 # in run 42779139068, where it ran inside the package list rather than in a call of
-# its own. No floor stands
-# above that rule here: no test of internal/pgmigrate reads the test binary's
-# deadline, so it declares no margin of its own the way the documents package's
-# roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s) are theirs.
+# its own. No floor stands above that rule here: no test of internal/pgmigrate reads
+# the test binary's deadline, so it declares no margin of its own the way the
+# documents package's roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s)
+# are theirs.
 DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 13m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
 pgmigrate=$!
 # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names

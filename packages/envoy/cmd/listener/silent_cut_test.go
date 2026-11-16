@@ -50,12 +50,12 @@ func TestTheListenersNATSClientReportsASilentCutWithinSeconds(t *testing.T) {
 }
 
 // freezeUntilTheClientReportsTheCut freezes the hub under a healthy listener and returns once the
-// listener's stream client has logged the dropped connection, within within: silentCutBound for
-// the test whose subject is how soon the cut is reported, listenerWait for a test that only needs
-// the cut reported. It fails the test with what the listener logged. It returns the thaw, which
-// the caller runs itself when it needs the traffic back, and a reader of everything the listener
-// logged from the freeze on: a line from the listener's start, or from before the cut, could
-// otherwise stand in for one the cut caused.
+// listener's stream client has logged the dropped connection, inside the within it is given:
+// silentCutBound for the test whose subject is how soon the cut is reported, listenerWait for a
+// test that only needs the cut reported. It fails the test with what the listener logged. It
+// returns the thaw, which the caller runs itself when it needs the traffic back, and a reader of
+// everything the listener logged from the freeze on: a line from the listener's start, or from
+// before the cut, could otherwise stand in for one the cut caused.
 func freezeUntilTheClientReportsTheCut(t *testing.T, server *testnats.Server, listener *listenerProcess, within time.Duration) (thaw func(), output func() string) {
 	t.Helper()
 	logged := len(listener.Output.String())

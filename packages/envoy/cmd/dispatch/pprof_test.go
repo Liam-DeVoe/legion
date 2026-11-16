@@ -101,6 +101,9 @@ func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 	// the context, and this package names no guard of its own for a wait on an event.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
+		if time.Now().After(deadline) {
+			t.Fatal("the pprof listener did not refuse a connection after the shutdown context ended: a closed listener refuses at once")
+		}
 		conn, err := net.DialTimeout("tcp", bound.String(), 100*time.Millisecond)
 		var timeout net.Error
 		if errors.As(err, &timeout) && timeout.Timeout() {
@@ -112,9 +115,6 @@ func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 			break
 		}
 		conn.Close()
-		if time.Now().After(deadline) {
-			t.Fatal("the pprof listener still accepts connections after the shutdown context ended")
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }

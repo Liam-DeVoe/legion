@@ -122,11 +122,12 @@ func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*o
 	}
 }
 
-// awaitEchoOff waits until the prompt has turned the terminal's echo off, failing t after ten
-// seconds: a prompt in a process of its own may take a while to start on a loaded machine.
+// awaitEchoOff waits until the prompt has turned the terminal's echo off, failing t after
+// awaitTerminalWait: a prompt in a process of its own may take a while to start on a loaded
+// machine.
 func awaitEchoOff(t *testing.T, terminal int) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); lflag(t, terminal)&unix.ECHO != 0; time.Sleep(5 * time.Millisecond) {
+	for deadline := time.Now().Add(awaitTerminalWait); lflag(t, terminal)&unix.ECHO != 0; time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the reader never turned echo off")
 		}

@@ -6,10 +6,10 @@
 // ServerConnections plus that server's superuser reserve, through
 // internal/dispatch/store/cmd/connections. packages/daemon/docker/legion-testpg starts a pod's test
 // server at that size, as a literal that testlimits_test.go holds to ServerConnections. And every
-// start of a Dispatch process in cmd/dispatch's tests is checked against MaxProcessesAtOnce and
-// against the server it meets (cmd/dispatch/connection_ceiling_test.go), so a test binary that
-// runs one process too many fails there by name rather than as a 53300 refusal inside a room, a
-// lease or a socket.
+// start of a Dispatch process in cmd/dispatch's tests waits for one of MaxProcessesAtOnce slots
+// and is checked against the server it meets (cmd/dispatch/connection_ceiling_test.go), so a test
+// binary that meets a server smaller than its slots need fails there by name rather than as a
+// 53300 refusal inside a room, a lease or a socket.
 package testlimits
 
 import "github.com/sjawhar/envoy/internal/dispatch/store"

@@ -22,8 +22,8 @@ import (
 // roles with the SUPERUSER attribute` (SQLSTATE 53300) in its own log, and nothing in the failure
 // names the cause.
 //
-// So every start checks two things, against constants rather than numbers written here. It refuses
-// a start that would run more processes at once than testlimits.MaxProcessesAtOnce, which every CI
+// So every start meets two guards, against constants rather than numbers written here. It waits
+// for a free slot while testlimits.MaxProcessesAtOnce processes are running, which every CI
 // lane's server is sized from. And it refuses a start the server it meets cannot serve. The fix is
 // the server's size, never the pools: pools shrunk for tests would test a shape production does
 // not run.

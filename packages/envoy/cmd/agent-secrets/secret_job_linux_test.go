@@ -33,13 +33,14 @@ type promptShell struct {
 	env      string // variables start sets for the helper, each followed by a space
 }
 
-// rawFd answers f's file descriptor through its SyscallConn, which, unlike
-// (*os.File).Fd(), never switches f to blocking mode.
-// awaitTerminalWait is this package's give-up on a terminal change another process makes, the ten
-// seconds awaitEchoOff (secret_tty_linux_test.go) waits for the prompt's echo-off: these waits
-// cross a process boundary, so a loaded machine makes them long without making them wrong.
+// awaitTerminalWait is this package's give-up on a terminal change another process makes: the
+// prompt's echo-off (awaitEchoOff, secret_tty_linux_test.go), bash's line editor taking the
+// terminal, and the shell's exit giving it up. These waits cross a process boundary, so a loaded
+// machine makes them long without making them wrong.
 const awaitTerminalWait = 10 * time.Second
 
+// rawFd answers f's file descriptor through its SyscallConn, which, unlike
+// (*os.File).Fd(), never switches f to blocking mode.
 func rawFd(f *os.File) (int, error) {
 	raw, err := f.SyscallConn()
 	if err != nil {
@@ -245,7 +246,7 @@ func TestPromptJobHelper(t *testing.T) {
 		// Started with &: start the prompt only once bash's line editor holds the
 		// terminal (canonical mode off), which a prompt in the background must
 		// neither take as its baseline nor show its label over.
-		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		for deadline := time.Now().Add(awaitTerminalWait); ; time.Sleep(time.Millisecond) {
 			tio, err := unix.IoctlGetTermios(0, unix.TCGETS)
 			if err != nil {
 				t.Fatal(err)
