@@ -226,8 +226,9 @@ func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc)
 	}
 	s := &Service{conn: conn, slots: make(chan struct{}, concurrentDecisions), done: make(chan struct{}), stopHeld: func() {}, heldDone: make(chan struct{})}
 	s.beat.Store(time.Now().UnixNano())
-	// Dispatch's answers about the projects of the entries held to their exchange projects are
-	// asked for in the background from now on, so no decision waits on Dispatch (scopeGrant).
+	// Dispatch's answers about the projects of the entries held to their exchange projects, and its
+	// repository mapping, are read in the background from now on, so no decision waits on
+	// Dispatch (scopeGrant).
 	if deps.held = newHeldAccess(deps, settings.Services); deps.held != nil {
 		var asks context.Context
 		asks, s.stopHeld = context.WithCancel(context.WithoutCancel(ctx))
