@@ -595,6 +595,13 @@ func TestAHeldDaemonIsNotServedASharedLane(t *testing.T) {
 			answers: map[string][]string{"PUB1": {"acme/a"}, "PUB3": {"acme/a.b"}, "PUB2": {"acme/a_b"}},
 			served:  []string{"acme/a"}, withheld: []string{"acme/a.b"}, logged: "[PUB2 PUB3]", dropped: 2,
 		},
+		{
+			// GitHub names a repository without case, as Dispatch's own lane rule compares lanes.
+			name:    "one lane spelled in two cases in two entries' projects",
+			pub:     []string{"PUB1"},
+			answers: map[string][]string{"PUB1": {"acme/a", "Acme/Shared"}, "PUB2": {"acme/shared"}},
+			served:  []string{"acme/a"}, withheld: []string{"acme/shared", "Acme/Shared"}, logged: "[PUB1 PUB2]", dropped: 2,
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			now := time.Now()
@@ -637,6 +644,47 @@ func TestAHeldDaemonIsNotServedASharedLane(t *testing.T) {
 			require.Equal(t, row.dropped, sharedLanesDropped(t, registry), "the repositories withheld from the two grants")
 		})
 	}
+}
+
+// A whole mapping move (a repository Dispatch maps to PUB2 in a later pass, where it mapped it
+// to PUB1 before, with no rename) is no shared lane: one project maps the lane in each pass, so
+// the repository goes with its mapping, PUB1's daemon losing its lane and PUB2's gaining it at
+// the complete pass that reads the move, with nothing logged or counted as shared. Who may move a
+// mapping is Dispatch's write rule, not this guard's. The control keeps the earlier pass's lanes
+// beside the later's: the moved repository reads as shared, and PUB2's daemon is not served it.
+func TestAMappingMoveIsNoSharedLane(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	tokens := map[string]platformToken{
+		"pub1-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"pub2-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+	}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB1": {"acme/x"}, "PUB2": {"acme/y"}}}
+	var logged bytes.Buffer
+	registry := metrics.New()
+	deps := Deps{
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB1"}, slowDaemonAccount: {"PUB2"}}),
+		Access: dispatch.access, RepoProjects: dispatch.repoProjects,
+		Log: slog.New(slog.NewTextHandler(&logged, nil)), Metrics: NewMetrics(registry),
+	}
+	deps.held = newHeldAccess(deps, services)
+	require.NotNil(t, deps.held)
+	deps.held.refresh(t.Context())
+	pub1, err := Decide(t.Context(), deps, services, serviceRequest("pub1-token"))
+	require.NoError(t, err)
+	require.True(t, holdsLane(pub1.Grant, "acme/x"))
+
+	dispatch.set("PUB1")
+	dispatch.set("PUB2", "acme/x", "acme/y")
+	deps.held.refresh(t.Context())
+	pub1, err = Decide(t.Context(), deps, services, serviceRequest("pub1-token"))
+	require.NoError(t, err)
+	pub2, err := Decide(t.Context(), deps, services, serviceRequest("pub2-token"))
+	require.NoError(t, err)
+	require.False(t, holdsLane(pub1.Grant, "acme/x"), "PUB1's daemon is still served acme/x, which Dispatch moved to PUB2")
+	require.True(t, holdsLane(pub2.Grant, "acme/x"), "PUB2's daemon is not served acme/x, which Dispatch moved to it: the move read as a shared lane")
+	require.NotContains(t, logged.String(), "level=ERROR", "a mapping move was logged as a shared lane:\n%s", logged.String())
+	require.Zero(t, sharedLanesDropped(t, registry), "a mapping move was counted as a shared lane")
 }
 
 // A grant the drop leaves WithinProjects unable to hold is refused under shared_lane, naming the
