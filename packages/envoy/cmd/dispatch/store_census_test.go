@@ -54,14 +54,16 @@ import (
 // share refuses to start (processes.Register).
 const censusSigningKey = "store-census-signing-key"
 
-// censusKinds are the kinds this child moves, as the census names them, and the documents and
-// versions dispatch://INFRA-1253 makes nodes of (graphcensus' versionProjections), which the older
-// build's issues, specs and project documents populate and the backfill gives their nodes. Each
-// must carry a population in this run: a census that checked no row of a kind proves nothing about
-// it, so a kind that checks zero rows fails this test with that kind reported. The list is the
-// test's own, so a kind the census stops checking is read by a person before this test agrees with
-// it.
-var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page", "artifact", "version"}
+// censusKinds are the kinds this child moves, as the census names them, the rank and the text of
+// every block dispatch://INFRA-1253's block index states (graphcensus' block_rank and block_text,
+// which the backfill's drain and the reconciliation after it give every block the older build
+// indexed), and the documents and versions it makes nodes of (graphcensus' versionProjections),
+// which the older build's issues, specs and project documents populate and the backfill gives
+// their nodes. Each must carry a population in this run: a census that checked no row of a kind
+// proves nothing about it, so a kind that checks zero rows fails this test with that kind
+// reported. The list is the test's own, so a kind the census stops checking is read by a person
+// before this test agrees with it.
+var censusKinds = []string{"comment", "block", "block_ref", "block_rank", "block_text", "person", "session", "role", "page", "artifact", "version"}
 
 // censusRole is the role this run addresses, and censusSession the session that writes one of
 // its comments. The role is addressed through this build alone: the older build records the
@@ -1213,14 +1215,18 @@ func censusCommentTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []pr
 }
 
 // censusBlockTuples is what every block row states: the document it is a block of, and the block
-// or the document that holds it, which document_blocks spells as parent_block_id. A block's node
+// that holds it, which document_blocks spells as parent_block_id, or for a block no block holds
+// its document's top (dispatch://INFRA-1253's refs.DocumentTopSQL, the one statement the block
+// index and the census read it by): the issue for a block of an issue's spec, Verification or plan
+// document, and the document's own node for an upload or a project's document. A block's node
 // address is its document's ref_key, '#' and its block id, as the insert of document_blocks
 // builds it, so the parent's address is built here the same way.
 func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []projectedTuple {
 	t.Helper()
 	rows, err := conn.Query(ctx, `
 		select d.node_kind, d.node_address, a.ref_key,
-		       case when d.parent_block_id is null then '' else a.ref_key || '#' || d.parent_block_id end
+		       case when d.parent_block_id is null then '' else a.ref_key || '#' || d.parent_block_id end,
+		       `+refs.DocumentTopSQL("a")+`
 		from document_blocks d join artifacts a on a.id = d.artifact_id
 		where d.node_kind is not null and d.node_address is not null
 		order by d.node_address
@@ -1231,8 +1237,8 @@ func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []proj
 	defer rows.Close()
 	var wanted []projectedTuple
 	for rows.Next() {
-		var nodeKind, address, document, parent string
-		if err := rows.Scan(&nodeKind, &address, &document, &parent); err != nil {
+		var nodeKind, address, document, parent, top string
+		if err := rows.Scan(&nodeKind, &address, &document, &parent, &top); err != nil {
 			t.Fatalf("scan a block row: %v", err)
 		}
 		states := func(kind, toKind, toID string) {
@@ -1243,7 +1249,9 @@ func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []proj
 		}
 		states(refs.TupleInDocument, "artifact", document)
 		if parent == "" {
-			states(graphstore.TuplePartOf, "artifact", document)
+			// The top is written kind:id, and no node kind holds a ':'.
+			topKind, topID, _ := strings.Cut(top, ":")
+			states(graphstore.TuplePartOf, topKind, topID)
 			continue
 		}
 		states(graphstore.TuplePartOf, refs.BlockNodeKind, parent)

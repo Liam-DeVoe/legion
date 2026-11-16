@@ -229,15 +229,56 @@ func drainOwed(t *testing.T, database *store.Store, service *Service) {
 	t.Fatalf("after ten ticks %d documents still owe their block index", owedCount(t, database))
 }
 
-// owedCount is how many documents owe their block index.
+// owedCount is how many documents owe their block index, by either mark the reconciliation lists
+// a document by: a null version, or this release's own mark (store_owed_at), which the drain sets.
+// It counts refs.OwedBlockIndexDebts, the one text both readers of the backlog derive it from.
 func owedCount(t *testing.T, database *store.Store) int {
 	t.Helper()
 	var owed int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from document_block_versions where version is null`).Scan(&owed); err != nil {
+		`select count(*) from (`+refs.OwedBlockIndexDebts+`) owed`).Scan(&owed); err != nil {
 		t.Fatalf("count the documents owed a block index: %v", err)
 	}
 	return owed
+}
+
+// drainMark is whether the document holds the drain's mark, document_block_versions.store_owed_at,
+// which only this release reads or clears, and whether its version stands: the drain leaves the
+// version alone, since a release before this one reads a null version as its own debt and drains
+// it with no value stated.
+func drainMark(t *testing.T, database *store.Store, artifactID string) (marked, standing bool) {
+	t.Helper()
+	if err := database.Pool.QueryRow(context.Background(), `
+		select store_owed_at is not null, version is not null from document_block_versions where artifact_id = $1
+	`, artifactID).Scan(&marked, &standing); err != nil {
+		t.Fatalf("read the drain's mark on %s: %v", artifactID, err)
+	}
+	return marked, standing
+}
+
+// drainedAsTheReleaseBefore stands in for a pod of the release before this one draining the
+// document as that release drains a null version, the mark it reads as its own debt: the version
+// goes to null, as the drain of an earlier build of this child set it, and that release's index
+// pass sets it back to the document's latest version, as its fence writes it, and states nothing
+// in the store - no rank, no text, no placement. The rows already stand at that version, so its
+// pass rewrites none of them.
+func drainedAsTheReleaseBefore(t *testing.T, database *store.Store, artifactID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `update document_block_versions set version = null where artifact_id = $1`, artifactID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into document_block_versions (artifact_id, version, windows_owed_at)
+			select $1::uuid, max(number), now() from artifact_versions where artifact_id = $1::uuid and markdown is not null
+			on conflict (artifact_id) do update set version = excluded.version,
+				windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
+		`, artifactID)
+		return err
+	}); err != nil {
+		t.Fatalf("drain %s as a pod of the release before does: %v", artifactID, err)
+	}
 }
 
 // drained is the drain's kind in one run of the backfill.
@@ -437,8 +478,10 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 		t.Errorf("the backfill's drain marked %d documents owed (complete %t), want the %d stored", drain.Owed, drain.Complete, len(documents))
 	}
 	for _, document := range documents {
-		if stands := blockIndexAt(t, database, document); stands != nil {
-			t.Errorf("after the backfill document %s's blocks stand at %s, want it owed", document, standsText(stands))
+		if marked, standing := drainMark(t, database, document); !marked || !standing {
+			t.Errorf("after the backfill document %s holds the drain's mark %t and its version stands %t, want both: "+
+				"the drain owes it this release's index by its own mark and leaves the version a release before this one reads alone",
+				document, marked, standing)
 		}
 	}
 	drainOwed(t, database, service)
@@ -712,12 +755,18 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 // them (R1; graphcensus's block_rank and block_text).
 //
 // Three documents of an issue - its spec, its Verification document and an upload - are put back
-// as the release before left them. The first backfill marks all three owed and records the drain
-// done, a second before the reconciliation runs marks nothing, and after the reconciliation has
-// drained them a third marks nothing and leaves nothing owed. The census then reads rows and
-// nodes of the block, the rank and the text kinds and zero differences of any kind. It can fail:
-// a block whose text value is retracted, and one given a rank of another document's band, are each
-// one difference of their kind, named by the block.
+// as the release before left them. The first backfill marks all three with the drain's mark,
+// store_owed_at, leaves each one's version standing and records the drain done, and a second
+// before the reconciliation runs marks nothing. A pod of the release before then drains the
+// Verification document as it drains a null version, the mark it reads as its own debt, and states
+// none of its values: the document is still owed by the drain's mark, which that release never
+// reads, and while every document holds it the census reads no difference of the rank and the
+// text kinds, whose blocks are on neither side until the reconciliation states them. After the
+// reconciliation has drained them a third backfill marks nothing and leaves nothing owed, and every
+// block of the Verification document holds its parent, its rank, its text and its placement. The
+// census then reads rows and nodes of the block, the rank and the text kinds and zero differences
+// of any kind. It can fail: a block whose text value is retracted, and one given a rank of another
+// document's band, are each one difference of their kind, named by the block.
 func TestTheDrainMarksEveryDocumentOnceAndTheCensusReadsZeroAfterIt(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
@@ -739,6 +788,11 @@ func TestTheDrainMarksEveryDocumentOnceAndTheCensusReadsZeroAfterIt(t *testing.T
 	if owed := owedCount(t, database); owed != len(documents) {
 		t.Errorf("after the first backfill %d documents owe their block index, want %d", owed, len(documents))
 	}
+	for _, document := range documents {
+		if marked, standing := drainMark(t, database, document); !marked || !standing {
+			t.Errorf("after the first backfill document %s holds the drain's mark %t and its version stands %t, want both", document, marked, standing)
+		}
+	}
 	var done bool
 	if err := database.Pool.QueryRow(ctx, `select done from issue_tree_block_drain`).Scan(&done); err != nil || !done {
 		t.Errorf("after the first backfill the drain's record reads done %t (%v), want done", done, err)
@@ -750,7 +804,28 @@ func TestTheDrainMarksEveryDocumentOnceAndTheCensusReadsZeroAfterIt(t *testing.T
 	if drain := drained(t, second); drain.Owed != 0 {
 		t.Errorf("the second backfill's drain marked %d documents owed, want none: the drain runs once", drain.Owed)
 	}
+
+	// A pod of the release before drains the Verification document and states nothing.
+	drainedAsTheReleaseBefore(t, database, verification)
+	if marked, _ := drainMark(t, database, verification); !marked {
+		t.Errorf("after a pod of the release before drained the Verification document it holds no drain mark: " +
+			"nothing of this build owes its blocks the rank, the text and the placement that pod never stated")
+	}
+	if owed := owedCount(t, database); owed != len(documents) {
+		t.Errorf("after a pod of the release before drained one document %d documents owe their block index, want all %d", owed, len(documents))
+	}
+	if _, held := treeValue(t, database, blockAddress(t, database, verification, "first-check"), treeText); held {
+		t.Errorf("the Verification document's block first-check holds a text value before this build's reconciliation ran, so this case proves nothing")
+	}
+	owing := treeCensus(t, database)
+	for _, name := range []string{"block_rank", "block_text"} {
+		if kind := treeCensusKind(t, owing, name); kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+			t.Errorf("while every document holds the drain's mark the census reads %d row and %d node difference(s) of kind %s, %+v, "+
+				"want none: a block of a document owed its index is on neither side", kind.RowDifferences, kind.NodeDifferences, name, kind.ReportedRows)
+		}
+	}
 	drainOwed(t, database, service)
+	requireTheTreeOfTheVersion(t, database, service, verification, "CORE-1", '3', nil)
 	third, err := graphcensus.Backfill(ctx, database, io.Discard)
 	if err != nil {
 		t.Fatalf("run the backfill a third time: %v", err)

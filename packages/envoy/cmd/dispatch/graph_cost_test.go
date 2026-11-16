@@ -334,12 +334,18 @@ func costShapeName(shape string) string {
 
 // costBlockIndexDrained waits until the arm's block-index reconciliation has nothing owed, so
 // that no tick of its own runs inside a measured window. It is the same read
-// store_census_test.go's waitForTheBlockIndex takes, over the three queues a tick serves.
+// store_census_test.go's waitForTheBlockIndex takes: on this child's arm a document owed by a null
+// version or by this release's own mark, store_owed_at, which the backfill and its drain set, and
+// on the older build's arm, whose schema holds no such column, one owed by a null version.
 func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	t.Helper()
+	read := `select count(*) from document_block_versions where version is null`
+	if arm.head {
+		read += ` or store_owed_at is not null`
+	}
 	deadline := time.Now().Add(within)
 	for {
-		owed := arm.count(t, `select count(*) from document_block_versions where version is null`)
+		owed := arm.count(t, read)
 		if owed == 0 {
 			return
 		}

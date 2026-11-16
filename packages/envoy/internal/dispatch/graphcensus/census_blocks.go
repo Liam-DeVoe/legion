@@ -140,10 +140,14 @@ var blockProjections = []projection{{
 }}
 
 // documentOwed is true of the document whose id the SQL expression artifactID names while it owes
-// its block index (document_block_versions.version null): the reconciliation has yet to write the
-// ranks and the texts of its blocks.
+// its block index, by either mark the block-index reconciliation lists a document by
+// (refs.OwedBlockIndexDebts, docs' owedDocuments): its version null, or this release's own mark,
+// store_owed_at, which the backfill and its drain set (writeBlockBatch, drainBlockIndexes) and a
+// release before this one neither reads nor clears. The reconciliation has yet to write the ranks
+// and the texts of its blocks.
 func documentOwed(artifactID string) string {
-	return `exists (select 1 from document_block_versions owed where owed.artifact_id = ` + artifactID + ` and owed.version is null)`
+	return `exists (select 1 from document_block_versions owed where owed.artifact_id = ` + artifactID +
+		` and (owed.version is null or owed.store_owed_at is not null))`
 }
 
 // blockDocumentOwed is documentOwed of the document of the block node alias, named by the part
@@ -151,8 +155,7 @@ func documentOwed(artifactID string) string {
 func blockDocumentOwed(alias string) string {
 	return `exists (
 			select 1 from artifacts document
-			join document_block_versions owed on owed.artifact_id = document.id
-			where document.ref_key = split_part(` + alias + `.id, '#', 1) and owed.version is null)`
+			where document.ref_key = split_part(` + alias + `.id, '#', 1) and ` + documentOwed("document.id") + `)`
 }
 
 // blockBackfills are the backfill's passes over the document blocks (backfillPasses): the blocks,
@@ -164,14 +167,23 @@ var blockBackfills = []backfillPass{oneKind(backfillBlocks), oneKind(backfillBlo
 // blockDrainKind is the kind the backfill's report names the drain by.
 const blockDrainKind = "block_index_drain"
 
-// drainBlockIndexes marks every stored document owed its block index once
-// (document_block_versions.version set null, as refs.RebuildAll marks it), so the block-index
-// reconciliation (docs.Service.RunBlockIndexReconciliation) indexes each again, under the fence it
-// already takes, and gives every block an earlier build indexed what that build did not write: its
-// rank, its text and its placement, and, for a top-level block of an issue's spec, Verification or
-// plan document, its part_of to the issue (refs.IndexBlocks). That index writes no
-// document_blocks row for a block whose text is unchanged, so no block's changed_version and no
-// document_block_texts row moves for it.
+// drainBlockIndexes marks every stored document owed its block index once, with this release's
+// own mark, document_block_versions.store_owed_at (migration 20261116221539), as the block pass
+// marks each document whose rows it names (writeBlockBatch), so the block-index reconciliation
+// (docs.Service.RunBlockIndexReconciliation) indexes each again, under the fence it already takes,
+// and gives every block an earlier build indexed what that build did not write: its rank, its text
+// and its placement, and, for a top-level block of an issue's spec, Verification or plan document,
+// its part_of to the issue (refs.IndexBlocks). That index writes no document_blocks row for a
+// block whose text is unchanged, so no block's changed_version and no document_block_texts row
+// moves for it.
+//
+// The mark is not the null version refs.RebuildAll sets. A pod of the release before this one,
+// during a roll or after a rollback, reads a null version as its own debt: it indexes the
+// document, writes its rows and states none of these values, and the document would be owed
+// nothing again, while the drain, done, never marks it twice. That release neither reads nor
+// clears store_owed_at, so this release's reconciliation, which lists a document holding it (docs'
+// owedDocuments) and whose fence wins at the version the document already stands at while it
+// holds it (refs' standsAtVersion), still reaches the document, and its pass clears the mark.
 //
 // issue_tree_block_drain records how far the drain has got, and the backfill runs at every boot,
 // so it marks the documents once: a run that finds the drain done marks nothing, and a run stopped
@@ -203,7 +215,8 @@ func drainBlockIndexes(ctx context.Context, database *store.Store) (KindBackfill
 // then the batch's owner rows and their document_block_versions rows in the store's order
 // (lockBlockDocuments), the rows a version write holds while it writes, so a write in flight
 // finishes before its document is marked and the mark is never lost under it. A document already
-// owed is left as it is.
+// holding the mark is left as it is; one whose version is null is marked too, since a pod of the
+// release before may drain that version first.
 //
 // The cursor starts at the nil uuid, below every document's id, as the object pass's does
 // (zeroUUID), so the batch's read binds one bound of the keyset and no test of whether there is
@@ -245,11 +258,11 @@ func drainBlockIndexBatch(ctx context.Context, database *store.Store) (int64, bo
 			return 0, false, err
 		}
 		tag, err := tx.Exec(ctx, `
-			update document_block_versions set version = null
-			where artifact_id = any($1::uuid[]) and version is not null
+			update document_block_versions set store_owed_at = now()
+			where artifact_id = any($1::uuid[]) and store_owed_at is null
 		`, documents)
 		if err != nil {
-			return 0, false, fmt.Errorf("mark a batch of documents owed a block index: %w", err)
+			return 0, false, fmt.Errorf("mark a batch of documents owed this release's block index: %w", err)
 		}
 		marked = tag.RowsAffected()
 		after = documents[len(documents)-1]
