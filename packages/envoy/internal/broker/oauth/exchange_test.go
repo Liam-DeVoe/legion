@@ -1340,6 +1340,18 @@ func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
 	if answer, err := f.provider.Introspect(ctx, machine); err != nil || !answer.Active || answer.ProjectScope != "" || answer.Projects != nil {
 		t.Fatalf("Introspect of a machine login's own token = %+v, %v; want live with neither project claim", answer, err)
 	}
+
+	// A person token stored before the list wrote its scope and no project claim at all, which
+	// meant then what an empty list means now: it is read as the person token naming no project
+	// it always was, so a deployment with no private project keeps every such token live.
+	boxKey := newKey(t)
+	traded := f.exchanged(t, exchangeForm(f.devBoxToken(t, boxKey, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), boxKey)
+	tag, err = f.pool.Exec(ctx, `update oauth_access_tokens set request = request #- '{session,extra,projects}'
+		where request #>> '{session,extra,project_scope}' = 'person'`)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("rewrite the person token's row to the older shape: %v, %d rows; want exactly the one row rewritten", err, tag.RowsAffected())
+	}
+	f.introspectsProjects(t, traded, oauthwire.ProjectScopePerson, nil)
 }
 
 // TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject: the shared public-session

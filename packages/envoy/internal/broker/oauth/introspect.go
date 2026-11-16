@@ -59,12 +59,14 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
 	stored, present := session.Extra[ClaimProjects]
 	if !present {
-		if _, decided := session.Extra[ClaimProjectScope]; decided {
-			// A token an exchange decided before the list stored its one project under another
-			// claim and none under this one. Read as no projects, it would pass as a named token
-			// naming none, the public-session account's shape, which holds it to no project; it
-			// is answered not live instead, so its holder trades again for a token of this
-			// release. A machine login's own token, which no exchange decided, carries neither.
+		if answer.ProjectScope == oauthwire.ProjectScopeNamed {
+			// A named token an exchange decided before the list stored its one project under
+			// another claim and none under this one. Read as no projects, it would pass as a named
+			// token naming none, the public-session account's shape, which holds it to no project;
+			// it is answered not live instead, so its holder trades again for a token of this
+			// release. A person token of that release stored no project claim at all, which meant
+			// then what an empty list means now, so it reads as naming none; a machine login's own
+			// token, which no exchange decided, carries neither claim.
 			return oauthwire.Introspection{}, nil
 		}
 		return answer, nil
