@@ -56,6 +56,7 @@ const (
 // The reason codes of a check state, each the step of CheckStates that gives it.
 const (
 	reasonNotBuilt             = "not_built"
+	reasonRefused              = "refused"
 	reasonUncited              = "uncited"
 	reasonStatementChanged     = "statement_changed"
 	reasonCIFault              = "ci_fault"
@@ -84,7 +85,9 @@ const (
 //     (hasWord): unknown, no_failing_example, whatever C's results (R9: "No setting makes the
 //     failing example optional"; "a check whose current text has no failing example that failed
 //     when it should" reads unknown). Validate refuses such a text in the files, and the pilot
-//     builds the approved spec from the store, with no reader.
+//     builds the approved spec from the store, with no reader. A problem that Validate finds in
+//     the files and that refuses C (refusals): unknown, refused, Detail its rule, since the
+//     derivation gives no clean state for a tree that the rules refuse.
 //  2. CI refused C at S.Commit (R48): unknown, uncited, and no earlier result counts.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
@@ -122,10 +125,11 @@ func CheckStates(in Input) []CheckState {
 }
 
 // newCheckJudge is the judge of the checks of in: the current approved text of each node, which
-// approved text of each node the files hold, and the results of each check.
+// approved text of each node the files hold, the checks and statements of the files that the tree
+// rules refuse, and the results of each check.
 func newCheckJudge(in Input) *checkJudge {
 	current, _ := in.Approved.Current()
-	j := &checkJudge{in: in, current: current, holds: Compare(in.Files, in.Approved).Holds,
+	j := &checkJudge{in: in, current: current, holds: Compare(in.Files, in.Approved).Holds, refused: refusals(in.Files),
 		results: map[string][]Result{}, changed: map[string]changedPaths{}}
 	for _, r := range in.Results {
 		j.results[r.Check] = append(j.results[r.Check], r)
@@ -152,8 +156,53 @@ type checkJudge struct {
 	in      Input
 	current Tree                    // the current text of each node of the approved spec
 	holds   map[string]Holding      // which approved text of each node the files hold
+	refused map[string]string       // the rule that refuses each check and statement of the files
 	results map[string][]Result     // the results of each check, by its id
 	changed map[string]changedPaths // History.Changed(commit, Subject.Commit), by commit
+}
+
+// refusals is the first rule, in Validate's order, that refuses each check and statement of files
+// (the derivation gives no clean state for a tree that the rules refuse, since the pilot calls it
+// with no reader). A problem that names a check or a statement refuses that node. Any other
+// problem, of a component, an interface, a term or no node, refuses each check and statement of
+// its file, or of files when its file holds none. Validate runs with no Options, as the scenario
+// reader runs it: the files may still hold a node that the approved spec removed (Compare).
+func refusals(files Tree) map[string]string {
+	problems := Validate(files, Options{})
+	if len(problems) == 0 {
+		return nil
+	}
+	held := map[string]bool{}
+	byFile := map[string][]string{}
+	for _, s := range files.Statements {
+		held[s.ID] = true
+		byFile[s.Pos.File] = append(byFile[s.Pos.File], s.ID)
+	}
+	for _, c := range files.Checks {
+		held[c.ID] = true
+		byFile[c.Pos.File] = append(byFile[c.Pos.File], c.ID)
+	}
+	refused := map[string]string{}
+	refuse := func(rule string, ids ...string) {
+		for _, id := range ids {
+			if _, done := refused[id]; !done {
+				refused[id] = rule
+			}
+		}
+	}
+	for _, p := range problems {
+		switch {
+		case held[p.Node]:
+			refuse(p.Rule, p.Node)
+		case len(byFile[p.Pos.File]) > 0:
+			refuse(p.Rule, byFile[p.Pos.File]...)
+		default:
+			for _, ids := range byFile {
+				refuse(p.Rule, ids...)
+			}
+		}
+	}
+	return refused
 }
 
 // changedPaths is one answer of History.Changed.
@@ -169,6 +218,9 @@ func (j *checkJudge) state(c Check) CheckState {
 	}
 	if !hasWord(c.FailingExample) {
 		return unknownCheck(reasonNoFailingExample, "")
+	}
+	if rule, refused := j.refused[c.ID]; refused {
+		return unknownCheck(reasonRefused, rule)
 	}
 	if rule, refused := j.in.Uncited[c.ID]; refused {
 		return unknownCheck(reasonUncited, rule)

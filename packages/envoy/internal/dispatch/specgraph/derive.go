@@ -53,7 +53,7 @@ func Derive(in Input) State {
 	if s.Checks == nil {
 		s.Checks = []CheckState{}
 	}
-	j := newStatementJudge(checks.current, in.Approved, checks.holds, s.Checks)
+	j := newStatementJudge(checks.current, in.Approved, checks.holds, checks.refused, s.Checks)
 	order := j.inPreorder(checks.current)
 	s.Statements = make([]StatementState, 0, len(order))
 	for _, id := range order {
