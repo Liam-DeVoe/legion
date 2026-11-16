@@ -130,6 +130,15 @@ func heldDeps(t *testing.T, tokens map[string]platformToken, exchange map[string
 	return deps
 }
 
+// withAccessRefresh runs the rest of the test with the service asking Dispatch again every
+// refresh.
+func withAccessRefresh(t *testing.T, refresh time.Duration) {
+	t.Helper()
+	was := accessRefresh
+	accessRefresh = refresh
+	t.Cleanup(func() { accessRefresh = was })
+}
+
 // requireRefused requires err to be a refusal under label whose reason begins reason.
 func requireRefused(t *testing.T, err error, label, reason string) {
 	t.Helper()
@@ -326,6 +335,42 @@ func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 	deps.held.refresh(t.Context())
 	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	require.NoError(t, err, "Dispatch's answer after its refusal did not replace it")
+}
+
+// The service asks Dispatch again every accessRefresh on its own (heldAccess.run, which Start
+// runs), the one thing that bounds how old a held answer is, so an answer changed at Dispatch
+// reaches a decision with no ask the test makes. With the re-ask every 100 ms, PUB's daemon is
+// admitted through the hub on the answer Start's first ask holds; then PUB's person is taken off
+// its access list at Dispatch, and within seconds the daemon's connection is refused, naming PUB as
+// one its person cannot see. The control asks once at Start and never again: the daemon is
+// admitted on that first answer for the whole wait.
+func TestTheServiceAsksDispatchAgainOnItsOwn(t *testing.T) {
+	withAccessRefresh(t, 100*time.Millisecond)
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, private: map[string]bool{"PUB": true}}
+	log := &lockedLog{}
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	startServiceOf(t, url, keys, services, Deps{
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}), Access: dispatch.access,
+		Log: slog.New(slog.NewTextHandler(log, nil)),
+	})
+	connect := func() error {
+		nc, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, "pub-daemon-token"), nats.NoReconnect())
+		if err == nil {
+			nc.Close()
+		}
+		return err
+	}
+	testwait.Eventually(t, "the hub to admit PUB's daemon on the first answer", func() bool { return connect() == nil })
+
+	dispatch.hide("PUB", true)
+	testwait.WithinPolling(t, 5*time.Second, 50*time.Millisecond, "the service to ask Dispatch again and refuse PUB's daemon", func() bool {
+		return errors.Is(connect(), nats.ErrAuthorization)
+	})
+	require.Contains(t, log.String(), "project not visible to the account's person: PUB", "the refusal was not the changed answer's:\n%s", log.String())
 }
 
 // A service held to its exchange projects whose account no exchange entry lists is refused,
