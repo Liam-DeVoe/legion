@@ -2,6 +2,7 @@ import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
@@ -60,27 +61,38 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
+/** What a case gives the body beside its statements and its checks: the words the reader typed
+ *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, and
+ *  `whole` and `answered` where a case gives them. */
+interface DrawOptions {
+  readonly answered?: boolean;
+  readonly named?: readonly string[];
+  readonly query?: string;
+  readonly whole?: TreeNode;
+}
+
+/** A query client for one drawn body, which answers nothing on its own. */
+function testClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+}
+
 /** The body over the statements given, with `checks` as the issue's results read, drawn from
  *  the Verification filter's own view: the tree it leaves and the rows it marks as context. It
  *  is drawn inside `NoTooltips`, as the slot draws it, so an author is named as the page names
- *  one. `query` is the words the reader typed, which the view is filtered by (`presetView`);
- *  `whole` and `answered` are given to the body where a case gives them. */
-function drawBody(
+ *  one, and it says what the slot says where it has nothing to draw: the page's line for no
+ *  checks with no query typed, and its line for no match under one. A case that draws the body
+ *  again with other reads passes it to `rerender` with the same `client`. */
+function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
-  {
-    answered,
-    named = [],
-    query = "",
-    whole,
-  }: { answered?: boolean; named?: readonly string[]; query?: string; whole?: TreeNode } = {}
-): RenderResult {
+  { answered, named = [], query = "", whole }: DrawOptions = {},
+  client: QueryClient = testClient()
+): ReactElement {
   const issue = node({ children: statements, id: ISSUE_KEY, text: "An issue", type: "issue" });
   const view = presetView(issue, "verification", query, new Set(named));
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  return render(
+  return (
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <NoTooltips>
@@ -88,7 +100,7 @@ function drawBody(
             {...(answered === undefined ? {} : { answered })}
             checks={checks}
             context={view.context}
-            emptyLine={EMPTY_STATE_LINES.verification}
+            emptyLine={query === "" ? EMPTY_STATE_LINES.verification : EMPTY_STATE_LINES.no_match}
             view={view.root}
             {...(whole === undefined ? {} : { whole })}
           />
@@ -96,6 +108,15 @@ function drawBody(
       </MemoryRouter>
     </QueryClientProvider>
   );
+}
+
+/** The body `bodyOf` builds, drawn. */
+function drawBody(
+  statements: readonly TreeNode[],
+  checks: readonly CheckBlock[],
+  options: DrawOptions = {}
+): RenderResult {
+  return render(bodyOf(statements, checks, options));
 }
 
 /** The text of every element matching `selector`, in the order they are drawn. */
@@ -187,6 +208,61 @@ test("the summary counts the statements that carry a check as covered and names 
         (drawn.textContent ?? "").includes(shortCommit(COMMIT))
       )
     ).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Part V's R3 ("No result draws a commit on its own line") and the root's R17 ("The page names
+// one commit for the issue's results ... drawn once"), with a check's facts open: each result's
+// facts open with the check's, and they draw what the result recorded but its commit. No result
+// draws a commit anywhere but the summary's one line, neither the commit the page names nor
+// another a result ran at, whole or in the ten characters the summary draws.
+test("with a check's facts open, no result draws its commit anywhere but the summary", async () => {
+  const user = userEvent.setup();
+  const busy = check({
+    block_id: "c-one",
+    results: [
+      result({ commit_sha: OTHER_COMMIT, created_at: "2026-11-13T09:00:00Z", id: "older" }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "newest" }),
+    ],
+  });
+  const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(busy)])], [busy]);
+  try {
+    // The earlier result drawn too, and the check's facts opened by the focus on its words.
+    await user.click(view.container.querySelector("[data-verification-earlier]") as Element);
+    act(() =>
+      view.container.querySelector<HTMLElement>("[data-verification-check-words]")?.focus()
+    );
+    expect(
+      view.container.querySelector("[data-verification-check]")?.getAttribute("aria-expanded")
+    ).toBe("true");
+    // Each result's facts are drawn, its verdict among them.
+    expect(
+      [...view.container.querySelectorAll("[data-verification-result]")].map((drawn) => [
+        drawn.getAttribute("data-node-id"),
+        (drawn.querySelector("[data-node-body]")?.textContent ?? "").includes(
+          RESULT_VERDICT_WORDS.pass
+        ),
+      ])
+    ).toEqual([
+      ["newest", true],
+      ["older", true],
+    ]);
+    expect(textsOf(view, "[data-verification-commit]")).toEqual([
+      `${VERIFICATION_WORDS.commit} ${shortCommit(COMMIT)}`,
+    ]);
+    // Everything the body draws but the summary's commit line.
+    const body = view.container.querySelector("[data-verification-body]")?.cloneNode(true);
+    expect(body).toBeInstanceOf(Element);
+    for (const line of (body as Element).querySelectorAll("[data-verification-commit]")) {
+      line.remove();
+    }
+    const rest = body?.textContent ?? "";
+    for (const sha of [COMMIT, OTHER_COMMIT]) {
+      expect(rest, `a result draws the commit ${sha}`).not.toContain(shortCommit(sha));
+      expect(rest, `a result draws the commit ${sha}`).not.toContain(sha);
+    }
   } finally {
     view.unmount();
   }
@@ -710,6 +786,65 @@ test("a check draws its newest result, folds the rest behind their count, and ma
   }
 });
 
+// Part V's R8, and the reviewer's finding on pull request #4221 at the row's key: the results
+// read answers again on every result recorded or withdrawn while the reader is in the view
+// (`api/event-refresh.ts`), so a check's newest result changes under the reader. Its row under a
+// statement is the same row after it: the focus on its words stays on the same element, the
+// facts that focus opened stay open, and so do the earlier results the reader opened.
+test("a check under a statement keeps the reader's focus and its open earlier results when its newest result changes", async () => {
+  const user = userEvent.setup();
+  const earlier = result({ created_at: "2026-11-13T09:00:00Z", id: "earlier" });
+  const newest = result({ created_at: "2026-11-14T09:00:00Z", id: "newest" });
+  const landed = result({
+    created_at: "2026-11-15T09:00:00Z",
+    id: "landed",
+    observed: "42 passed",
+  });
+  const before = check({ block_id: "c-one", results: [earlier, newest] });
+  const after = check({ block_id: "c-one", results: [earlier, newest, landed] });
+  // One client for both reads, as the page keeps one while its reads answer again.
+  const client = testClient();
+  const drawn = (block: CheckBlock) =>
+    bodyOf([statementNode("r1", "The page draws it.", [checkNode(block)])], [block], {}, client);
+  const view = render(drawn(before));
+  try {
+    /** The check's row as the reader sees it: whether its facts and its earlier results are
+     *  open, and the results it draws, by their ids. */
+    const standing = () => {
+      const row = view.container.querySelector("[data-verification-check]");
+      return {
+        earlier: row?.querySelector("[data-verification-earlier]")?.getAttribute("aria-expanded"),
+        opened: row?.getAttribute("aria-expanded"),
+        results: [...(row?.querySelectorAll("[data-verification-result]") ?? [])].map((one) =>
+          one.getAttribute("data-node-id")
+        ),
+      };
+    };
+    await user.click(view.container.querySelector("[data-verification-earlier]") as Element);
+    const words = view.container.querySelector<HTMLElement>("[data-verification-check-words]");
+    act(() => words?.focus());
+    expect(document.activeElement).toBe(words);
+    expect(standing()).toEqual({
+      earlier: "true",
+      opened: "true",
+      results: ["newest", "earlier"],
+    });
+
+    view.rerender(drawn(after));
+    // The same element of the check's words, still in the page, still holds the focus.
+    expect(view.container.querySelector("[data-verification-check-words]")).toBe(words);
+    expect(words?.isConnected).toBe(true);
+    expect(document.activeElement).toBe(words);
+    expect(standing()).toEqual({
+      earlier: "true",
+      opened: "true",
+      results: ["landed", "newest", "earlier"],
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 // R17, R6: the seven states a check can be in are named once over the table, each by its word
 // and its shape with how many checks stand in it, so no shape of the table goes unnamed.
 test("the summary names all seven states a check can be in, with how many checks stand in each", () => {
@@ -876,6 +1011,93 @@ test("an issue with no checks and no statements draws the page's own empty line"
     expect(textsOf(view, "[data-verification-body]")).toEqual([EMPTY_STATE_LINES.verification]);
   } finally {
     view.unmount();
+  }
+});
+
+// The architect's decision 81 and part V's departure 10: a query that matches nothing keeps the
+// issue's row, which says how the whole issue stands as it does with no query - the covered
+// count, the bar, the legend of the seven states and the chips - and the table says under its
+// headings, in the slot's line for no match, that the query left nothing, as it says a chip's
+// state holds no statement. An issue with nothing at all draws that one line alone, in the tree,
+// with no row (part V's R1).
+test("a query that matches nothing keeps the summary of the whole issue and says so under it", () => {
+  const met = passing("c-one");
+  const failed = failing("c-two");
+  const loose = passing("c-loose");
+  const under = [
+    statementNode("r1", "Every check of this one passed.", [checkNode(met)]),
+    statementNode("r2", "One check of this one failed.", [checkNode(failed)]),
+    statementNode("r3", "Nothing serves this one.", []),
+    checkNode(loose),
+  ];
+  const checks = [met, failed, loose];
+  const unfiltered = drawBody(under, checks);
+  const filtered = drawBody(under, checks, {
+    query: "zebra quartz",
+    whole: verificationView(under),
+  });
+  try {
+    // Nothing of the issue holds the query's words, so no card and no row of a check is drawn.
+    expect(
+      filtered.container.querySelectorAll(
+        "[data-verification-card], [data-verification-check], [data-verification-other]"
+      )
+    ).toHaveLength(0);
+    // The issue's row is still the tree's first row and its one tab stop.
+    const issueRow = filtered.container.querySelector('[role="tree"] > [data-verification-issue]');
+    expect(issueRow?.getAttribute("tabindex")).toBe("0");
+    expect(issueRow?.querySelector("[data-verification-summary]")).not.toBeNull();
+    // Its summary, its legend of seven and its chips are the whole issue's, as with no query.
+    for (const selector of [
+      "[data-verification-covered]",
+      "[data-verification-legend]",
+      "[data-verification-check-legend]",
+      "[data-verification-commit]",
+      "[data-verification-chip]",
+    ]) {
+      expect(textsOf(filtered, selector), selector).toEqual(textsOf(unfiltered, selector));
+    }
+    const fills = (drawn: RenderResult) =>
+      [...drawn.container.querySelectorAll("[data-verification-bar] > i")].map((fill) =>
+        fill.getAttribute("style")
+      );
+    expect(fills(filtered)).toEqual(fills(unfiltered));
+    expect(textsOf(filtered, "[data-verification-covered]")).toEqual([
+      `2 ${VERIFICATION_WORDS.of} 3 ${VERIFICATION_WORDS.covered}`,
+    ]);
+    expect(filtered.container.querySelectorAll("[data-check-legend-state]")).toHaveLength(7);
+    expect(textsOf(filtered, "[data-verification-chip]")).toEqual([
+      `${VERIFICATION_WORDS.all} 3`,
+      `${VERIFICATION_WORDS.states.met} 1`,
+      `${VERIFICATION_WORDS.states.not_met} 1`,
+      `${VERIFICATION_WORDS.states.unknown} 1`,
+    ]);
+    // The line is drawn once, the innermost element holding it, in the table under its
+    // headings.
+    const line = EMPTY_STATE_LINES.no_match;
+    const lines = [...filtered.container.querySelectorAll("[data-verification-body] *")].filter(
+      (element) =>
+        element.textContent === line &&
+        ![...element.children].some((child) => child.textContent === line)
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.closest("[data-verification-table]")).not.toBeNull();
+    expect(lines[0]?.previousElementSibling?.hasAttribute("data-verification-head")).toBe(true);
+    expect(unfiltered.container.textContent).not.toContain(line);
+  } finally {
+    filtered.unmount();
+    unfiltered.unmount();
+  }
+
+  const empty = drawBody([], [], { query: "zebra quartz" });
+  try {
+    expect(empty.container.querySelectorAll("[data-node-row]")).toHaveLength(0);
+    expect(empty.container.querySelectorAll("[data-verification-table]")).toHaveLength(0);
+    expect(textsOf(empty, '[data-verification-body] > [role="tree"]')).toEqual([
+      EMPTY_STATE_LINES.no_match,
+    ]);
+  } finally {
+    empty.unmount();
   }
 });
 
@@ -1113,26 +1335,42 @@ test("a check's words draw their links from the results read's tree", async () =
   }
 });
 
-// Part V's departure 7 and R22, and the tester's F18: a check that serves two statements is drawn
-// under each and names the other by its first words, which are that statement's stored excerpt
-// read as plain words, as the outline's chip reads them: no mark the author typed and no
-// address, cut at a word within 32 characters. A statement that reads as no words, one whose
-// words are a picture alone, is named by nothing, with no comma for it, and a check whose only
-// other statement is such a one draws no "Also under" at all.
-test("a check under two statements names the other by its words with no mark of markdown", async () => {
+// Part V's departure 7 and R22, the tester's F18, and the architect's decisions 46, 66 and 83: a
+// check that serves two statements is drawn under each and names the other by its first words,
+// read from that statement's own node, which the view already holds: the words of the server's
+// reading of its text (`nodeWords`), cut at a word within 32 characters, with no mark the author
+// typed and no markdown pass over them, so words that open on "1." keep it. The chip's stored
+// excerpt (`name`) is never what it draws. A statement that reads as no words, one whose words
+// are a picture alone, is named by nothing, with no comma for it, as is one the view holds no
+// statement for; and a check whose only other statement is such a one draws no "Also under" at
+// all.
+test("a check under two statements names the other by its words with no mark of markdown", () => {
   const twice = passing("c-one");
   const thrice = passing("c-two");
   const pictured = passing("c-three");
-  const plain = statementNode("r1", "The page draws it.");
-  const marked = statementNode("r2", "**Do** `x` dispatch://CORE-2 now, then the rest of it.");
-  const picture = statementNode("r3", "![](https://example.com/shot.png)");
+  const counted = passing("c-four");
+  // Each statement with the coverage read's reading of its words (`text_tree`). The numbered
+  // one is stored as a store holds words that open on a number, so its reading keeps the "1."
+  // as words; a markdown pass over those words reads them as a list and drops it.
+  const read = (statement: TreeNode): TreeNode => ({
+    ...statement,
+    tree: displayTree(statement.text),
+  });
+  const plain = read(statementNode("r1", "The page draws it."));
+  const marked = read(statementNode("r2", "**Do** `x` now, then the rest of it, in order."));
+  const picture = read(statementNode("r3", "![](https://example.com/shot.png)"));
+  const numbered = read(statementNode("r4", "1\\. Stand the page up first."));
+  // A statement of no card of this view, which a check may still name.
+  const stranger = read(statementNode("r9", "A statement this view does not draw."));
+  // What the reference read names every target by, which is no name "Also under" draws.
+  const excerpt = "A stored excerpt that no line draws.";
   // A check's row under one statement, naming the others it serves as the tree names them.
   const under = (block: CheckBlock, others: readonly TreeNode[]): TreeNode => ({
     ...checkNode(block),
     alsoUnder: others.map((other) => ({
       answered: true,
       gone: false,
-      name: other.text,
+      name: excerpt,
       ref: other.reference ?? "",
     })),
   });
@@ -1142,14 +1380,16 @@ test("a check under two statements names the other by its words with no mark of 
         ...plain,
         children: [
           under(twice, [marked]),
-          under(thrice, [picture, marked]),
+          under(thrice, [picture, marked, stranger]),
           under(pictured, [picture]),
+          under(counted, [numbered]),
         ],
       },
       { ...marked, children: [under(twice, [plain]), under(thrice, [plain, picture])] },
       { ...picture, children: [under(thrice, [plain, marked]), under(pictured, [plain])] },
+      { ...numbered, children: [under(counted, [plain])] },
     ],
-    [twice, thrice, pictured]
+    [twice, thrice, pictured, counted]
   );
   try {
     // The trail of a check's row under a statement, and the words of each target it names.
@@ -1164,27 +1404,25 @@ test("a check under two statements names the other by its words with no mark of 
         text: trail.textContent,
       }));
     };
-    const named = await waitFor(() => {
-      const [trail] = trailOf(plain, twice);
-      expect(trail?.names).toHaveLength(1);
-      return trail?.names[0] ?? "";
-    });
+    const [first] = trailOf(plain, twice);
+    const named = first?.names[0] ?? "";
+    expect(first?.names).toHaveLength(1);
     expect(named, `"Also under" names r2 by no words: "${named}"`).not.toBe("");
     expect(named, `"Also under" draws a backtick: "${named}"`).not.toContain("`");
     expect(named, `"Also under" draws an asterisk: "${named}"`).not.toContain("*");
-    expect(named, `"Also under" draws an address: "${named}"`).not.toContain("dispatch://");
     expect(
       named.length,
       `"Also under" names r2 by more than 32 characters: "${named}"`
     ).toBeLessThanOrEqual(32);
-    expect(named).toBe("Do x CORE-2 now, then the rest…");
+    expect(named).toBe("Do x now, then the rest of it…");
     expect(trailOf(plain, twice)).toEqual([
       { names: [named], text: `${CONTROL_LABELS.also_under} ${named}` },
     ]);
     expect(trailOf(marked, twice)).toEqual([
       { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
     ]);
-    // The picture names nothing, and no comma stands for it.
+    // The picture and the statement the view does not draw name nothing, and no comma stands
+    // for either.
     expect(trailOf(plain, thrice)).toEqual([
       { names: [named], text: `${CONTROL_LABELS.also_under} ${named}` },
     ]);
@@ -1202,9 +1440,19 @@ test("a check under two statements names the other by its words with no mark of 
     expect(trailOf(picture, pictured)).toEqual([
       { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
     ]);
-    expect(view.container.querySelector("[data-verification-body]")?.textContent).not.toContain(
-      "dispatch://"
-    );
+    // Words that open on a number keep it (decision 66's "1. Stand").
+    expect(trailOf(plain, counted)).toEqual([
+      {
+        names: ["1. Stand the page up first."],
+        text: `${CONTROL_LABELS.also_under} 1. Stand the page up first.`,
+      },
+    ]);
+    expect(trailOf(numbered, counted)).toEqual([
+      { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
+    ]);
+    const drawn = view.container.querySelector("[data-verification-body]")?.textContent ?? "";
+    expect(drawn).not.toContain(excerpt);
+    expect(drawn).not.toContain("dispatch://");
   } finally {
     view.unmount();
   }
@@ -1231,13 +1479,13 @@ function layOut(height: number): () => void {
 }
 
 // Part V's R8: the keyboard reaches each control of the view by Tab: each chip, the "more"
-// control of a cut statement, each check's words, each link in a check's words, the line of
-// earlier results and, in the opened facts, the copy control of a command. This reads that each
-// of them holds tab index 0, so none is out of the tab order; the order Tab takes them in is
-// read in the browser, where row 4 of `e2e/issue-page-v.e2e.ts` walks it. The view passes
-// `tabStops` to G's `CutWords`, `NodeFacts` and `RowText`, so none of them takes its controls out
-// of the tab order. In document order the issue's row comes before the chip All, so the Tab after
-// `t k` reaches the first chip.
+// control of a cut statement, each check's words, each link in a check's words, each link in the
+// words of a node an address named, the line of earlier results and, in the opened facts, the
+// copy control of a command. This reads that each of them holds tab index 0, so none is out of
+// the tab order; the order Tab takes them in is read in the browser, where row 4 of
+// `e2e/issue-page-v.e2e.ts` walks it. The view passes `tabStops` to G's `CutWords`, `NodeFacts`
+// and `RowText`, so none of them takes its controls out of the tab order. In document order the
+// issue's row comes before the chip All, so the Tab after `t k` reaches the first chip.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();
   const linked = check({
@@ -1249,14 +1497,19 @@ test("each control of the view is a tab stop", async () => {
     text: LINKED_WORDS,
   });
   const plain = passing("c-two");
+  // A comment an address named, whose words hold a link: the view draws it as a row of its own
+  // (R20), and the tree's keys reach no link inside a row.
+  const noted = "See [the notes](https://example.com/notes) first.";
+  const named = node({ id: "comment-1", text: noted, tree: displayTree(noted), type: "comment" });
   // Sixty words over 400 lines of 24 px: six lines are drawn and 59 words are held back, more
   // than the twenty a cut must hide, so the statement is cut and draws its "more" control.
   const long = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
   const restore = layOut(9600);
   try {
     const view = drawBody(
-      [statementNode("r1", long, [linkedCheckNode(linked), checkNode(plain)])],
-      [linked, plain]
+      [statementNode("r1", long, [linkedCheckNode(linked), checkNode(plain)]), named],
+      [linked, plain],
+      { named: [named.id] }
     );
     try {
       // In document order the issue's row, the tree's one tab stop, comes before the chip All.
@@ -1300,6 +1553,12 @@ test("each control of the view is a tab stop", async () => {
         ];
       });
       expect(links).toHaveLength(2);
+      const otherLinks = [
+        ...view.container.querySelectorAll<HTMLElement>("[data-verification-other] a"),
+      ];
+      expect(otherLinks.map((link) => link.getAttribute("href"))).toEqual([
+        "https://example.com/notes",
+      ]);
       const copies = [
         ...view.container.querySelectorAll<HTMLElement>(
           `[aria-label="${CONTROL_LABELS.copy_command}"]`
@@ -1320,6 +1579,10 @@ test("each control of the view is a tab stop", async () => {
         ["more", more],
         ...words.map((one, at): [string, HTMLElement] => [`words of check ${at + 1}`, one]),
         ...links.map((link): [string, HTMLElement] => [`link ${link.getAttribute("href")}`, link]),
+        ...otherLinks.map((link): [string, HTMLElement] => [
+          `link of the named row ${link.getAttribute("href")}`,
+          link,
+        ]),
         ...copies.map((copy, at): [string, HTMLElement] => [`copy control ${at + 1}`, copy]),
         ...earlier.map((line): [string, HTMLElement] => ["earlier results", line]),
       ];

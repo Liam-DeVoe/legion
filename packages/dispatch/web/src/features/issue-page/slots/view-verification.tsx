@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -18,7 +18,7 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   // it, each statement with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { root } = useIssueTree(issue);
+  const { blocksRead, root } = useIssueTree(issue);
   // The coverage read, and the issue's checks with the results recorded against them, under the
   // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own
   // (R1). The results read holds a result's commit, its verdict and its withdrawal, which the
@@ -27,11 +27,25 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   // (part V's departure 6).
   const coverage = useQuery(issueCoverageQuery(issue.key));
   const results = useQuery(issueResultsQuery(issue.key));
+  // The view waits for the blocks read of the issue's documents too: a check learns the
+  // statements it serves from its block's `serves` pointer, which only that read carries
+  // (`tree-drafts.ts`). Drawn before it answers, every check would stand at the table's foot as
+  // one that serves no statement, every statement would read Unknown, and R9's line would call
+  // the issue's own checks "elsewhere" (part V's R1 and R9). The read is `useIssueTree`'s, which
+  // says only whether it holds now (`blocksRead`, its reads' `isSuccess`): a failed refetch
+  // turns that false and keeps the blocks it last answered, and a view drawn by it would empty
+  // itself. So the slot holds the first answer for the issue it was given, by its key, and
+  // counts the blocks as read from then on, which adds no request and leaves the choice of
+  // documents to `useIssueTree`. The latch is set during the render that first sees the answer,
+  // which React draws again at once before it commits, so the rows are drawn with that answer.
+  const [blocksReadFor, setBlocksReadFor] = useState<string>();
+  if (blocksRead && blocksReadFor !== issue.key) setBlocksReadFor(issue.key);
   // A read has answered where it holds data, and not by its status: a background refetch that
   // fails sets TanStack Query's status to error and keeps the data it last answered, and a view
   // drawn by `isSuccess` would empty itself on one failed refetch and take its tab stop and the
   // reader's presses with it.
-  const answered = coverage.data !== undefined && results.data !== undefined;
+  const answered =
+    coverage.data !== undefined && results.data !== undefined && blocksReadFor === issue.key;
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it (R1). The target is read

@@ -2,8 +2,6 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
-  useCallback,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -31,12 +29,11 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
-import { useMarkdownHeadline } from "../../refs/markdown-engine";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
-import type { NodeChip, TreeNode } from "../issue-tree";
+import { type NodeChip, nodeWords, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
 import { chipWords } from "../node-row-chip";
@@ -93,11 +90,12 @@ import {
  * state a chip narrows by - is read from the view with no words query, and what it draws, the
  * cards, the checks and their results, from the view the query left: a query narrows the rows
  * and never changes how a statement reads or what the summary counts (part V's departure 10).
- * Four rules of R17 are drawn here:
+ * A query that matches nothing keeps the issue's row, and the table says so under its headings
+ * (the architect's decision 81). Four rules of R17 are drawn here:
  *
  * - **One commit, drawn once.** The summary names the commit the issue's results are read
- *   against; no result draws a commit of its own on its line, and a result recorded against
- *   another commit says so in its check's word, "Out of date".
+ *   against; no result draws a commit of its own, on its line or in its opened facts, and a
+ *   result recorded against another commit says so in its check's word, "Out of date".
  * - **Seven states, each a word and a shape.** A check's state is the page's own
  *   (`NODE_STATE_WORDS.check`), drawn with the shape its token carries (`NodeGlyph`), so no
  *   state is told from another by colour alone (R6).
@@ -123,12 +121,13 @@ export function VerificationFilterBody({
   view,
   whole = view,
 }: {
-  /** Whether the coverage read and the results read have both answered. Until they have, the
-   *  body draws its tree with no row and no line in it, so it never says that an issue has no
-   *  checks before the reads that hold them are in (part V's R1); a read that fails before it
-   *  first answers leaves it so, since the page has no word for one here (part V's departure
-   *  6). A read that has answered once stays answered when a later refetch fails: the body
-   *  draws what it last answered (the slot's `answered`). */
+  /** Whether the coverage read, the results read and the blocks read of the issue's documents
+   *  have all answered (the slot's `answered`). Until they have, the body draws its tree with
+   *  no row and no line in it, so it never says that an issue has no checks, or that a check
+   *  serves no statement, before the reads that hold them are in (part V's R1); a read that
+   *  fails before it first answers leaves it so, since the page has no word for one here (part
+   *  V's departure 6). A read that has answered once stays answered when a later refetch fails:
+   *  the body draws what it last answered. */
   answered?: boolean;
   /** The issue's checks with the results recorded against them, as the results read answers
    *  them (`GET /api/v1/issues/{key}/results`), which the page has already read for its tree. */
@@ -136,7 +135,8 @@ export function VerificationFilterBody({
   /** The ids of the rows the filter draws as context, which under Verification is every
    *  statement (R2, `presets.ts`). */
   context: ReadonlySet<string>;
-  /** What the body says where the filter's query left nothing to draw. */
+  /** What the body says where it has nothing to draw: in the tree alone where the issue holds
+   *  no row, and in the table under its headings where the filter's query left nothing of it. */
   emptyLine: string;
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
@@ -161,10 +161,26 @@ export function VerificationFilterBody({
     only === undefined ? statements : statements.filter((statement) => statement.state === only);
   const loose = only === undefined ? read.loose : [];
   const others = only === undefined ? read.others : [];
-  // The issue's row is drawn where the view holds a row of any kind, so an issue with no
-  // statement and no check draws no row at all, only the page's line for it (part V's R1).
-  const holds = read.statements.length > 0 || read.loose.length > 0 || read.others.length > 0;
+  // The issue's row is drawn where the issue holds a row of any kind, so an issue with no
+  // statement and no check draws no row at all, only the page's line for it (part V's R1). It is
+  // read from the issue's reading and not the query's: a query that matches nothing keeps the
+  // summary, the legend and the chips of the whole issue, and the table says under its headings
+  // that the query left nothing (part V's departure 10, the architect's decision 81).
+  const holds = issue.statements.length > 0 || issue.loose.length > 0 || issue.others.length > 0;
+  const matched = read.statements.length > 0 || read.loose.length > 0 || read.others.length > 0;
   const rows = answered && holds ? treeRows(view.id, shown, loose, others) : [];
+  // Each statement of the issue by its address, named by its first words, which "Also under"
+  // names a check's other statements by (`AlsoUnder`). Every statement a check is drawn under is
+  // one of the issue's, whatever a query or a chip left of them.
+  const statementNames = useMemo<ReadonlyMap<string, string>>(
+    () =>
+      new Map(
+        issue.statements.flatMap(({ node }): [string, string][] =>
+          node.reference === undefined ? [] : [[node.reference, chipWords(nodeWords(node))]]
+        )
+      ),
+    [issue]
+  );
   // The row that holds the tree's one tab stop, by its id in `rows`: the issue's at first. A
   // row the reader's narrowing took out hands it back to the issue's row, in this render rather
   // than in an effect after it, so the tree is never drawn without its stop (part V's R8).
@@ -280,7 +296,7 @@ export function VerificationFilterBody({
     <div className={BODY} data-verification-body="">
       {/* The page holds one tree on every address (R2), and it holds everything the view
           draws: the issue's row and the table, or in their place the one line that says the
-          query left nothing. */}
+          issue holds nothing to draw. */}
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
@@ -322,20 +338,24 @@ export function VerificationFilterBody({
                   onPressChecks={pressChecks}
                   presses={presses}
                   statement={statement}
+                  statementNames={statementNames}
                   tabIndexFor={tabIndexFor}
                 />
               ))}
-              {/* What the table says where the state the reader narrowed to holds no statement,
-                  rather than headings over nothing: a chip whose count is 0 is a press too, as
-                  is a chip whose statements the query left out (part V's departure 4). */}
-              {only !== undefined && shown.length === 0 ? (
+              {/* What the table says where it draws no row under its headings, rather than
+                  headings over nothing: the body's line where the query matched nothing of the
+                  issue, whose row still says how the issue stands (the architect's decision 81),
+                  and the page's line for a state where the one the reader narrowed to holds no
+                  statement: a chip whose count is 0 is a press too, as is a chip whose
+                  statements the query left out (part V's departure 4). */}
+              {!matched || (only !== undefined && shown.length === 0) ? (
                 <p
                   className={`${CELL} text-sm leading-5 ${pageQuietText}`}
                   data-verification-none=""
                   role="none"
                   {...pageChrome}
                 >
-                  {EMPTY_STATE_LINES.verification_none}
+                  {matched ? EMPTY_STATE_LINES.verification_none : emptyLine}
                 </p>
               ) : null}
               {loose.map((check) => (
@@ -346,6 +366,7 @@ export function VerificationFilterBody({
                   onPress={press}
                   pressed={presses.get(check.node.id)}
                   row={check.node.id}
+                  statementNames={statementNames}
                   tabIndex={tabIndexFor(check.node.id)}
                 />
               ))}
@@ -766,6 +787,7 @@ function Statement({
   onPressChecks,
   presses,
   statement,
+  statementNames,
   tabIndexFor,
 }: {
   context: boolean;
@@ -777,6 +799,8 @@ function Statement({
   /** Each drawn check's press, by its row's id. */
   presses: ReadonlyMap<string, boolean>;
   statement: DrawnStatement;
+  /** Each statement of the issue by its address, named by its first words (`AlsoUnder`). */
+  statementNames: ReadonlyMap<string, string>;
   /** The tab index of the row with this id, which is 0 for the tree's one tab stop. */
   tabIndexFor: (id: string) => 0 | -1;
 }): ReactNode {
@@ -834,14 +858,20 @@ function Statement({
           <div className="flex min-w-0 flex-col" role="group">
             {statement.checks.map((check) => {
               const row = checkRowId(node.id, check.node.id);
+              // Keyed by the check alone, as a check that serves no statement is: a new result
+              // recorded or withdrawn while the reader is in the view draws the same row again,
+              // so the focus on its words, a link in them or its facts stays where it is, and
+              // so do the earlier results the reader opened. The row's id tells this placement
+              // of the check from its others for presses.
               return (
                 <Check
                   check={check}
-                  key={`${check.node.id}:${check.latest?.id ?? ""}`}
+                  key={check.node.id}
                   loose={false}
                   onPress={onPress}
                   pressed={presses.get(row)}
                   row={row}
+                  statementNames={statementNames}
                   tabIndex={tabIndexFor(row)}
                 />
               );
@@ -887,10 +917,12 @@ function Statement({
  *
  * It is a row of the tree, across its words and its latest result: a row of the group under
  * its statement, or, for a check that serves no statement, a row of the table of its own
- * (`loose`). The row says whether its facts are drawn (part V's R8), which is what the tree's
- * keys read: Enter on the row itself presses it as its words do, Enter on its statement's row
- * opens or shuts it with the statement's other checks, and `o` keeps it open or lets it go (the
- * body's `pressChecks` and `keepChecks`).
+ * (`loose`). From 761 px up such a row stands in the statement grid with its first cell empty,
+ * so its words stand under "Checks" and its result under "Latest result", as a statement's
+ * checks do; at 760 px and below it is a card of its own. The row says whether its facts are
+ * drawn (part V's R8), which is what the tree's keys read: Enter on the row itself presses it
+ * as its words do, Enter on its statement's row opens or shuts it with the statement's other
+ * checks, and `o` keeps it open or lets it go (the body's `pressChecks` and `keepChecks`).
  */
 function Check({
   check,
@@ -898,6 +930,7 @@ function Check({
   onPress,
   pressed,
   row,
+  statementNames,
   tabIndex,
 }: {
   check: CheckReading;
@@ -909,6 +942,8 @@ function Check({
   pressed: boolean | undefined;
   /** The row's id in the tree: a check drawn under two statements is two rows. */
   row: string;
+  /** Each statement of the issue by its address, named by its first words (`AlsoUnder`). */
+  statementNames: ReadonlyMap<string, string>;
   /** 0 where this row holds the tree's one tab stop, and -1 everywhere else. */
   tabIndex: 0 | -1;
 }): ReactNode {
@@ -929,28 +964,10 @@ function Check({
   const markPress = () => {
     drawnAtPress.current = opened;
   };
-  return (
-    <div
-      aria-expanded={opened}
-      aria-level={loose ? 1 : 2}
-      className={`${CHECK_COLUMNS} ${loose ? ROW : `border-t first:border-t-0 ${pageLineBorder}`}`}
-      data-node-id={node.id}
-      data-node-row=""
-      data-node-state={check.state}
-      data-node-type={node.type}
-      data-verification-check=""
-      data-verification-loose={loose ? "" : undefined}
-      onBlur={(event) => {
-        const to = event.relatedTarget;
-        if (to instanceof Node && event.currentTarget.contains(to)) return;
-        setFocusInside(false);
-        // A shut the reader pressed lasts while the focus stays; the next visit opens again.
-        if (pressed === false) onPress(row, undefined);
-      }}
-      onFocus={() => setFocusInside(true)}
-      role="treeitem"
-      tabIndex={tabIndex}
-    >
+  // Its words' cell and its result's cell, side by side from 761 px up and one over the other at
+  // 760 px and below.
+  const cells = (
+    <>
       <div className={CELL}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: the words hold links that are tab
             stops of their own, so no role may make them a control that holds controls; the row's
@@ -989,7 +1006,7 @@ function Check({
             {surface}
           </p>
         )}
-        <AlsoUnder chips={node.alsoUnder} />
+        <AlsoUnder chips={node.alsoUnder} names={statementNames} />
         <Gaps node={node} />
         {opened ? (
           <div className="mt-1 min-w-0" data-node-body="">
@@ -1052,6 +1069,41 @@ function Check({
             ))
           : null}
       </div>
+    </>
+  );
+  return (
+    <div
+      aria-expanded={opened}
+      aria-level={loose ? 1 : 2}
+      className={
+        loose
+          ? `grid ${STATEMENT_COLUMNS} ${ROW}`
+          : `${CHECK_COLUMNS} border-t first:border-t-0 ${pageLineBorder}`
+      }
+      data-node-id={node.id}
+      data-node-row=""
+      data-node-state={check.state}
+      data-node-type={node.type}
+      data-verification-check=""
+      data-verification-loose={loose ? "" : undefined}
+      onBlur={(event) => {
+        const to = event.relatedTarget;
+        if (to instanceof Node && event.currentTarget.contains(to)) return;
+        setFocusInside(false);
+        // A shut the reader pressed lasts while the focus stays; the next visit opens again.
+        if (pressed === false) onPress(row, undefined);
+      }}
+      onFocus={() => setFocusInside(true)}
+      role="treeitem"
+      tabIndex={tabIndex}
+    >
+      {loose ? (
+        // The statement column's cell is left empty, so the check's two cells stand in the
+        // columns the headings name.
+        <div className={`${CHECK_COLUMNS} min-[761px]:col-start-2`}>{cells}</div>
+      ) : (
+        cells
+      )}
     </div>
   );
 }
@@ -1059,8 +1111,11 @@ function Check({
 /** One result of a check: who recorded it and when, what it observed, whether the check's state
  *  stands on it, and what it holds that no line has room for, in the body the check's row opens
  *  (R6, R9, R15). What it observed is drawn as a node's own text is, through `RowText`, so no
- *  stored text of the view is drawn as raw characters (part V's departure 7). The commit it ran
- *  at is the one the summary names, drawn there and not here (R17). */
+ *  stored text of the view is drawn as raw characters (part V's departure 7). No commit is drawn
+ *  for it, on its line or in its facts: the page names one commit for the issue's results, once,
+ *  in the summary, and a result recorded against another says so in its check's word, "Out of
+ *  date" (part V's R3, the root's R17). So the facts it opens leave out the `commit` fact
+ *  `check-facts.ts`'s `resultFacts` gives every result. */
 function LatestResult({
   opened,
   result,
@@ -1107,7 +1162,7 @@ function LatestResult({
       )}
       {opened ? (
         <div className={RESULT_FACTS} data-node-body="">
-          <NodeFacts facts={result.facts} tabStops />
+          <NodeFacts facts={result.facts.filter((fact) => fact.name !== "commit")} tabStops />
         </div>
       ) : null}
     </div>
@@ -1139,61 +1194,41 @@ function Author({ actor }: { actor: Actor | undefined }): ReactNode {
 
 /** The other statements a check is drawn under, each named by its first words as every chip of
  *  the page names its target (R4, `node-row-chip.ts`): a check serves several statements and
- *  this body draws it under each. A target's name is its stored excerpt, which is markdown, so
- *  it is read as plain words, as the outline's chip reads it (`NodeRow.tsx`'s `Chip`, the
- *  tester's F18): no mark the author typed and no `dispatch://` address is drawn (part V's
- *  departure 7, R22). A target the reference read has not named, one whose reading has not
- *  answered, and one that reads as no words draw nothing, a comma stands only between targets
- *  that are drawn, and the line is drawn only where one is. */
-function AlsoUnder({ chips }: { chips: readonly NodeChip[] }): ReactNode {
-  // Each target's plain words, by its stored name, as its reading answers.
-  const [plain, setPlain] = useState<ReadonlyMap<string, string>>(() => new Map());
-  const take = useCallback((name: string, words: string) => {
-    setPlain((held) => (held.get(name) === words ? held : new Map(held).set(name, words)));
-  }, []);
+ *  this body draws it under each. A target is named from the statement the view already holds
+ *  for it (`names`, by its address): the words of the server's reading of its text
+ *  (`nodeWords`), cut by `chipWords`, and never its stored excerpt (`chip.name`) nor any
+ *  markdown pass over them (the architect's decisions 46, 66 and 83). So no mark the author
+ *  typed is drawn, a statement whose words open on "1." keeps it, and the line waits on no
+ *  names read (part V's departure 7, R22). A target the view holds no statement for and one
+ *  that reads as no words draw nothing, a comma stands only between targets that are drawn, and
+ *  the line is drawn only where one is. */
+function AlsoUnder({
+  chips,
+  names,
+}: {
+  chips: readonly NodeChip[];
+  /** Each statement of the issue by its address, named by its first words. */
+  names: ReadonlyMap<string, string>;
+}): ReactNode {
   const named = chips.flatMap((chip) => {
-    const words = chipWords(plain.get(chip.name) ?? "");
+    const words = names.get(chip.ref) ?? "";
     return words === "" ? [] : [{ ref: chip.ref, words }];
   });
+  if (named.length === 0) return null;
   return (
-    <>
-      {chips.map((chip) =>
-        chip.name === "" ? null : <PlainChipName key={chip.ref} name={chip.name} onRead={take} />
-      )}
-      {named.length === 0 ? null : (
-        <p
-          className={`mt-0.5 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
-          data-node-trail=""
-        >
-          <span {...pageChrome}>{CONTROL_LABELS.also_under} </span>
-          {named.map((chip, place) => (
-            <span data-node-chip="" key={chip.ref}>
-              {place === 0 ? null : <span {...pageChrome}>, </span>}
-              <span {...authorText}>{chip.words}</span>
-            </span>
-          ))}
-        </p>
-      )}
-    </>
+    <p
+      className={`mt-0.5 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
+      data-node-trail=""
+    >
+      <span {...pageChrome}>{CONTROL_LABELS.also_under} </span>
+      {named.map((chip, place) => (
+        <span data-node-chip="" key={chip.ref}>
+          {place === 0 ? null : <span {...pageChrome}>, </span>}
+          <span {...authorText}>{chip.words}</span>
+        </span>
+      ))}
+    </p>
   );
-}
-
-/** Reads one target's stored name as plain words, as the outline's chip reads it
- *  (`useMarkdownHeadline`, cut by `chipWords` after), and hands them to `onRead` once the
- *  reading answers, as `RowText.tsx`'s `PlainName` does. It draws nothing: the line that names
- *  the targets draws them, so it knows which of them it draws. */
-function PlainChipName({
-  name,
-  onRead,
-}: {
-  name: string;
-  onRead: (name: string, words: string) => void;
-}): null {
-  const plain = useMarkdownHeadline(undefined, Math.max(name.length, 1), name);
-  useLayoutEffect(() => {
-    if (plain !== undefined) onRead(name, plain.text);
-  }, [name, onRead, plain]);
-  return null;
 }
 
 /** Each gap the node carries, said in full where the picture draws "No check proves this"
@@ -1257,7 +1292,8 @@ function ParentLine({ node }: { node: TreeNode }): ReactNode {
 /** A row the filter kept that is neither a statement nor a check: a node an address named,
  *  which outranks the filter (R20). It is drawn by its kind and its words, so nothing the
  *  filter drew is lost (R19). It is a row of the tree and of the table, as a check that serves
- *  no statement is. */
+ *  no statement is. The links in its words are tab stops, as every control of the view is: the
+ *  tree's keys move between rows and reach no link inside one (part V's R8). */
 function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): ReactNode {
   return (
     <div
@@ -1274,7 +1310,7 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
         {NODE_TYPE_NAMES[node.type]}
       </p>
       <div className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`} data-node-words="">
-        <RowText markdown={node.text} source={node.source} tree={node.tree} />
+        <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
       </div>
       <ParentLine node={node} />
     </div>
