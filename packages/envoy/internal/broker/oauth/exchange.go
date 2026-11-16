@@ -702,12 +702,26 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 // under, and read it from to answer introspection's `project`.
 const claimLegacyProject = "project"
 
-// refusedByDispatch is the trade's refusal when Dispatch answers 401 or 403 to the broker's own
-// account token: Dispatch does not list the broker's account, or does not accept its token (one
-// minted for another audience, say). That is a misconfiguration and not an outage, so the trade is
-// refused naming it rather than minted.
+// refusedByDispatch is the trade's refusal when the broker's own account token does not work
+// (projectaccess.ErrBrokerRefused): Dispatch answered 401 or 403 to it, because Dispatch does not
+// list the broker's account or does not accept its token (one minted for another audience, say),
+// or the broker could not read it from its file at all. That is a misconfiguration and not an
+// outage, so the trade is refused naming it rather than minted.
 func refusedByDispatch(err error) error {
-	return oauth2.ErrServerError.WithHint("Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so this broker cannot check the token's projects: its operator lists the broker's account as one Dispatch answers.").WithWrap(err).WithDebugError(err)
+	return oauth2.ErrServerError.WithHint("Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), or the broker could not read that file, so this broker cannot check the token's projects: its operator mounts the file and lists the broker's account as one Dispatch answers.").WithWrap(err).WithDebugError(err)
+}
+
+// unknownMemberKind is the trade's refusal when Dispatch answers a member kind the broker does not
+// know (projectaccess.ErrUnknownMemberKind): the broker cannot tell whether the person is held to
+// the projects that name them, so it mints nothing on a guess.
+func unknownMemberKind(err error) error {
+	return oauth2.ErrServerError.WithHint("Dispatch answered a member kind this broker does not know for the token's person, so this broker cannot tell whether the token must name its projects: its operator runs a broker that knows that kind.").WithWrap(err).WithDebugError(err)
+}
+
+// dispatchUnreachable is the trade's refusal when Dispatch could not be asked about a token that
+// names a project, which a client asks again on.
+func dispatchUnreachable(err error) error {
+	return oauth2.ErrTemporarilyUnavailable.WithHint("Dispatch could not be asked whether the token's person sees the projects it names; try again.").WithWrap(err).WithDebugError(err)
 }
 
 // projectAccess holds the claims decide wrote onto session to what Dispatch says, before the
@@ -718,23 +732,25 @@ func refusedByDispatch(err error) error {
 // sees (projectaccess.Visible), and a restricted member's must name at least one
 // (projectaccess.ListAllowed). A person's sign-in is taken as a full member's and asks no member
 // kind at all, since the broker verified its account against BROKER_SIGNIN_DOMAIN itself; every
-// other trade acting as its person asks. A list that names no project mints as it always has
-// when Dispatch answers anything but restricted, and when the broker has no check configured;
-// while Dispatch cannot be reached it mints too, and logs one line naming the person and the
-// session. A list that names one is never minted unchecked: with no check configured it is
-// refused naming the setting, and while Dispatch cannot be reached it is refused
-// temporarily_unavailable, which a client asks again on.
+// other trade acting as its person asks.
 //
 // A token an operator's entry maps: its one project must be one Dispatch says the entry's person
 // sees, and a pairing Dispatch refuses is refused invalid_request naming both. An account entry
 // that names no project (the shared public-session account's) is refused when Dispatch calls its
 // person a restricted member, who sees only the projects that name them (projectaccess.ListAllowed).
-// With no check configured it mints as it always has, since the operator's own setting is what
-// chose the project, or chose none; while Dispatch cannot be reached it mints too, and logs one
-// line naming the entry's principal and the session.
+// With no check configured an entry's token mints as it always has, since the operator's own
+// setting is what chose the project, or chose none.
 //
-// Dispatch answering 401 or 403 to the broker's own account token refuses every trade that asks
-// it (refusedByDispatch): that is a misconfiguration, never an outage to mint through.
+// Either way, a list that names no project mints as it always has when Dispatch answers anything
+// but restricted, and when the broker has no check configured; while Dispatch cannot be asked
+// (projectaccess.ErrUnchecked) it mints too, and logs one line naming the principal, the session
+// and the person. A list that names a project is never minted unchecked: with no check configured
+// a person's is refused naming the setting, and while Dispatch cannot be asked either kind is
+// refused temporarily_unavailable, which a client asks again on.
+//
+// The broker's own account token not working (refusedByDispatch) and a member kind the broker does
+// not know (unknownMemberKind) refuse every trade that meets them server_error: each is a
+// misconfiguration, never an outage to mint through.
 //
 // A token that names no person names no project (exchange.ErrProjectsNoPerson) and asks nothing.
 func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) error {
@@ -768,10 +784,14 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 			return oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", person).WithWrap(err).WithDebugError(err)
 		case errors.Is(err, projectaccess.ErrBrokerRefused):
 			return refusedByDispatch(err)
-		default:
-			slog.WarnContext(ctx, "broker: the token exchange goes on to mint an entry's token unchecked, since Dispatch could not be asked about its person",
-				"principal", session.Principal, "session", name, "person", person, "projects", stored, "error", err)
+		case errors.Is(err, projectaccess.ErrUnknownMemberKind):
+			return unknownMemberKind(err)
+		case errors.Is(err, projectaccess.ErrUnchecked):
+			slog.WarnContext(ctx, "broker: the token exchange goes on to mint an entry's token naming no project unchecked, since Dispatch could not be asked what kind of member its person is",
+				"principal", session.Principal, "session", name, "person", person, "error", err)
 			return nil
+		default:
+			return dispatchUnreachable(err)
 		}
 	}
 	if access == nil {
@@ -795,12 +815,14 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		return oauth2.ErrInvalidRequest.WithHintf("%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", person).WithWrap(err).WithDebugError(err)
 	case errors.Is(err, projectaccess.ErrBrokerRefused):
 		return refusedByDispatch(err)
+	case errors.Is(err, projectaccess.ErrUnknownMemberKind):
+		return unknownMemberKind(err)
 	case errors.Is(err, projectaccess.ErrUnchecked):
 		slog.WarnContext(ctx, "broker: the token exchange goes on to mint a person's token naming no project unchecked, since Dispatch could not be asked what kind of member the person is",
 			"principal", session.Principal, "session", name, "person", person, "error", err)
 		return nil
 	default:
-		return oauth2.ErrTemporarilyUnavailable.WithHint("Dispatch could not be asked whether the token's person sees the projects it names; try again.").WithWrap(err).WithDebugError(err)
+		return dispatchUnreachable(err)
 	}
 }
 
