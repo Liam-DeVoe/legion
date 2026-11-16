@@ -1379,8 +1379,8 @@ func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
 // account's entry names a person and no project. Its pod's token introspects named, with the
 // entry's person and no project; when Dispatch calls that person a restricted member, who sees
 // only the projects that name them, the trade is refused; a broker with no check, and one whose
-// Dispatch cannot be reached, mint it as they would any entry's token. A workflow entry may not
-// leave its project empty.
+// Dispatch cannot be asked, mint it as they would any list naming no project. A workflow entry
+// may not leave its project empty.
 func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) {
 	trade := func(t *testing.T, access projectaccess.Access) (*exchangeFixture, int, map[string]any) {
 		t.Helper()
@@ -1414,7 +1414,7 @@ func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) 
 		_, status, body := trade(t, access)
 		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names no project, and its person "+person+" is a restricted member")
 	})
-	t.Run("with no check, and with Dispatch down, it mints as any entry's token", func(t *testing.T) {
+	t.Run("with no check, and with Dispatch down, it mints as a list naming no project does", func(t *testing.T) {
 		mints(t, nil)
 		down := newFakeAccess()
 		down.kinds[person] = projectaccess.MemberRestricted
@@ -1428,21 +1428,14 @@ func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) 
 	})
 }
 
-// TestANamedTradeMintsAsTodayWithNoProjectAccess: a broker with no project-access check, and one
-// whose Dispatch cannot be reached, mint an entry's token as they always have: the operator's own
-// setting is what chose its project.
+// TestANamedTradeMintsAsTodayWithNoProjectAccess: a broker with no project-access check mints an
+// entry's token as it always has: the operator's own setting is what chose its project. A broker
+// whose Dispatch cannot be asked is TestANamedTradeMintsUncheckedOnlyForAnEmptyList's.
 func TestANamedTradeMintsAsTodayWithNoProjectAccess(t *testing.T) {
 	unchecked := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	unchecked.registers(t, account, "pod-uid-1", "implementer-g1")
 	unchecked.introspectsProjects(t, unchecked.exchanged(t, exchangeForm(unchecked.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
-		oauthwire.ProjectScopeNamed, []string{project})
-
-	access := newFakeAccess()
-	access.down = true
-	outage := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
-	outage.registers(t, account, "pod-uid-1", "implementer-g1")
-	outage.introspectsProjects(t, outage.exchanged(t, exchangeForm(outage.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
 		oauthwire.ProjectScopeNamed, []string{project})
 
 	// A person's list, though, is never minted unchecked: with no check configured, a trade
@@ -1570,9 +1563,10 @@ func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
 	refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 }
 
-// TestAnUncheckedMintLogsItsEntry: while Dispatch cannot be reached, an operator entry's token and
-// a person's trade naming no project mint as they always have, and each such mint logs one line
-// naming what was minted unchecked: the entry's principal, or the person.
+// TestAnUncheckedMintLogsItsEntry: while Dispatch cannot be reached, an operator entry's token
+// naming no project and a person's trade naming no project mint as they always have, and each such
+// mint logs one line naming what was minted unchecked: the entry's principal, or the person. An
+// entry's token naming a project is refused temporarily_unavailable instead, and logs no such line.
 func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 	logs := capturedLog(t)
 	access := newFakeAccess()
@@ -1580,9 +1574,10 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
-	if got := logs.lines("unchecked", account, "implementer-g1"); len(got) != 1 {
-		t.Fatalf("the entry's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), account, strings.Join(logs.lines(), "\n"))
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
+	if got := logs.lines("unchecked", account, "implementer-g1"); len(got) != 0 {
+		t.Fatalf("the refused entry logged %d lines of an unchecked mint naming %s, want none:\n%s", len(got), account, strings.Join(got, "\n"))
 	}
 
 	public := newExchangeFixture(t, func(c *oauth.Config) {
