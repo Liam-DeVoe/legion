@@ -1,0 +1,86 @@
+import { afterEach, expect, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
+import { Suspense } from "react";
+import { MemoryRouter } from "react-router-dom";
+
+import { issueQuery, whoAmIQuery } from "../../api/queries";
+import { issue } from "../margin/margin-fixture";
+import {
+  contentDrawn,
+  HOLD_LIMIT_MS,
+  holdUntilContentDraws,
+  whenContentDrawn,
+} from "../shell/content-drawn";
+import { userPreferenceStorageKey } from "../shell/userPreference";
+import { IssuePage } from "./IssuePage";
+// The switch loads the new page as a lazy chunk. The first compile of that module is not what
+// this row measures, so the test file loads the module before the row starts.
+import "./IssueOutlinePage";
+
+const ALICE_KEY = userPreferenceStorageKey("alice", "issue.page");
+
+/**
+ * How long the row lets the hold stay on after the page draws: a tenth of the hold's limit. The
+ * switch ends the hold one frame after the page draws, which takes some milliseconds. If the
+ * switch does not end it, the hold stays on until its limit. A tenth of the limit tells the two
+ * apart on a busy machine, and a failing run stops after one second, not after ten.
+ */
+const AFTER_DRAW_MS = HOLD_LIMIT_MS / 10;
+
+afterEach(async () => {
+  // A hold one test left on would hold every test after it: end it, and wait for its frame.
+  contentDrawn();
+  await whenContentDrawn();
+});
+
+/** A client whose sign-in read holds alice and whose issue read holds CORE-1, and that never
+ *  asks either again: the new page needs nothing more to draw. */
+function aliceOnCore1(): QueryClient {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(issueQuery(issue.key).queryKey, issue);
+  return client;
+}
+
+/** "ended" if no hold is on within `ms` from now, else "still on". */
+async function holdWithin(ms: number): Promise<"ended" | "still on"> {
+  const late = Promise.withResolvers<"still on">();
+  const timer = setTimeout(() => late.resolve("still on"), ms);
+  try {
+    return await Promise.race([whenContentDrawn().then(() => "ended" as const), late.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test("a landing on the new issue page ends the shell's hold on its extras when the page draws, not at the hold's limit", async () => {
+  window.localStorage.setItem(ALICE_KEY, "outline");
+  // `preloadRouteChunk` in `app.tsx` starts this hold from the address of an issue's Spec,
+  // before React renders. The address does not tell which page the reader chose.
+  holdUntilContentDraws();
+  // The hold is on before the page renders, so the row cannot pass with no hold at all.
+  expect(await holdWithin(0)).toBe("still on");
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={aliceOnCore1()}>
+        <Suspense fallback={null}>
+          <IssuePage />
+        </Suspense>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const title = await screen.findByRole("heading", { name: issue.title });
+    // The new page drew the title: today's page draws it too, but not in this root.
+    expect(title.closest("[data-issue-page]")).toBeInTheDocument();
+    // No key or pointer press goes to the window, and the hold's limit is far away, so only the
+    // switch can end the hold here.
+    expect(await holdWithin(AFTER_DRAW_MS)).toBe("ended");
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(ALICE_KEY);
+  }
+});

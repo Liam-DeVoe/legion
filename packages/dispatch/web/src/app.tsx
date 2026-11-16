@@ -119,7 +119,7 @@ import {
  *  once in the same way, in the module that owns it (`features/inbox/InboxHost.tsx`,
  *  `loadInboxChunk`). */
 const loadIssuePage = () =>
-  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }));
+  import("./features/issue-page/IssuePage").then((module) => ({ default: module.IssuePage }));
 const loadProjectPage = () =>
   import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }));
 const loadDocumentPage = () =>
