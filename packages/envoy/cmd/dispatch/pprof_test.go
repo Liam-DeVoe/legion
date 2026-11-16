@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -101,6 +102,12 @@ func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		conn, err := net.DialTimeout("tcp", bound.String(), 100*time.Millisecond)
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			// A dial this machine did not answer in 100 ms says nothing about the listener, so
+			// the poll goes on; only a refusal is the listener gone.
+			continue
+		}
 		if err != nil {
 			break
 		}

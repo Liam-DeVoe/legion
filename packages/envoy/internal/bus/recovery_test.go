@@ -421,7 +421,9 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 // connection's own recovery finds the first still running, and before the first looked again the
 // client stayed on a closed connection for good.
 func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
-	t.Parallel()
+	// Serial: the second recovery must start while the first is still running, and what puts it
+	// there is the second below, a window a parallel batch's load would push the second start
+	// past, leaving the row green with nothing proven.
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {

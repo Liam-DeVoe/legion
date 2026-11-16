@@ -35,6 +35,11 @@ type promptShell struct {
 
 // rawFd answers f's file descriptor through its SyscallConn, which, unlike
 // (*os.File).Fd(), never switches f to blocking mode.
+// awaitTerminalWait is this package's give-up on a terminal change another process makes, the ten
+// seconds awaitEchoOff (secret_tty_linux_test.go) waits for the prompt's echo-off: these waits
+// cross a process boundary, so a loaded machine makes them long without making them wrong.
+const awaitTerminalWait = 10 * time.Second
+
 func rawFd(f *os.File) (int, error) {
 	raw, err := f.SyscallConn()
 	if err != nil {
@@ -256,7 +261,7 @@ func TestPromptJobHelper(t *testing.T) {
 		if os.Getenv("AGENT_SECRETS_JOB_AFTER_SHELL_EXIT") != "" {
 			// Reach the prompt only once the shell's exit has taken the terminal from the
 			// session, as a prompt descheduled that long on a loaded machine would.
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+			for deadline := time.Now().Add(awaitTerminalWait); ; time.Sleep(time.Millisecond) {
 				if _, err := unix.IoctlGetInt(0, unix.TIOCGPGRP); errors.Is(err, unix.ENOTTY) {
 					break
 				}

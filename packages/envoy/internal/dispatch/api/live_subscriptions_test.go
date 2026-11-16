@@ -599,7 +599,7 @@ func TestASubscriptionsContextEndsWhenItsSocketEnds(t *testing.T) {
 	for name, end := range map[string]func(t *testing.T, rig *liveSocketRig, client *socketClient){
 		"the page closes it": func(t *testing.T, _ *liveSocketRig, client *socketClient) {
 			closing := gws.FormatCloseMessage(gws.CloseGoingAway, "")
-			if err := client.conn.WriteControl(gws.CloseMessage, closing, time.Now().Add(time.Second)); err != nil {
+			if err := client.conn.WriteControl(gws.CloseMessage, closing, time.Now().Add(eventFeedWait)); err != nil {
 				t.Fatalf("the page's close: %v", err)
 			}
 		},
