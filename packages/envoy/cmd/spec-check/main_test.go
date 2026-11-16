@@ -303,6 +303,20 @@ func TestTheBuiltBinary(t *testing.T) {
 			stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: a-restart-keeps-the-claim: no-job: a program check names the job that runs its test\n",
 		})
 	})
+	// A job of only spaces names no job (R6), so a check that names one is refused, and checks lists
+	// nothing for it.
+	t.Run("checks lists no check for a job of only spaces", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "spec.md"), []byte(":::requirement{#a-claim-survives-a-restart kind=\"behavior\"}\nLegion keeps the claim of an issue after the daemon starts again.\n:::\n\n"+
+			":::check{#a-restart-keeps-the-claim serves=\"a-claim-survives-a-restart\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"example.com/acme/daemon TestARestartKeepsTheClaim\" job=\"   \"}\n"+
+			"Claim: The daemon reads the claim of an issue after it starts again.\nProcedure: The program starts the daemon again and reads the claims.\nFailing example: A daemon that keeps its claims in memory only.\n:::\n"))
+		expect(t, runBinary(t, binary, "", "checks", "--dir", dir, "--job", "   "), result{
+			code:   2,
+			stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: a-restart-keeps-the-claim: no-job: a program check names the job that runs its test\n",
+		})
+		expect(t, runBinary(t, binary, "", "checks", "--dir", valid, "--job", "   "), result{stdout: "[]\n"})
+	})
 	t.Run("checks writes no workflow command a selector holds", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
