@@ -95,6 +95,36 @@ func TestTheSessionsOwnOldAgentSubjectIsCountedAndNamedInNoWarning(t *testing.T)
 	}
 }
 
+// A topic a stored row holds in the old form is counted (kind="interest") each time the row is read
+// into the session's consumer filter, over every old form the shared cases read, so the counter
+// keeps moving while any record still holds one; a topic in the new form, or of a family the rename
+// leaves alone, is not. The session's own agent subject in the old form is never counted there:
+// the listener writes it into every row itself, and counting it would move the counter for ever.
+func TestAStoredOldFormTopicIsCountedEachTimeItIsReadIntoAFilter(t *testing.T) {
+	for _, row := range readLegacyFixture(t).CanonicalTopic {
+		counter := &kindCounter{}
+		r := &Registry{legacySubjects: counter}
+		r.CountStoredLegacyTopics("ses_stored", []string{row.Topic})
+		r.CountStoredLegacyTopics("ses_stored", []string{row.Topic})
+		var want []string
+		if row.Legacy {
+			want = []string{"interest", "interest"}
+		}
+		if !slices.Equal(counter.kinds, want) {
+			t.Errorf("two reads of a row holding %q counted %q, want %q", row.Topic, counter.kinds, want)
+		}
+	}
+	counter := &kindCounter{}
+	(&Registry{legacySubjects: counter}).CountStoredLegacyTopics("ses_stored", []string{
+		contracts.LegacyAgentSubject("ses_stored"),
+		contracts.AgentSubject(contracts.NoProject, "ses_stored"),
+	})
+	if len(counter.kinds) != 0 {
+		t.Fatalf("the session's own agent subject was counted %q, want nothing", counter.kinds)
+	}
+	(&Registry{}).CountStoredLegacyTopics("ses_stored", []string{"notifications.dispatch.issue.INFRA-12.>"})
+}
+
 // A role claimed in the old form, its name alone, is read as that name, counted once
 // (kind="role") and named with its new form, project first; a role claimed in the new form is
 // read as its name and neither counted nor named.

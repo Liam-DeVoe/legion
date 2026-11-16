@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // A session that registers an issue's topic in the old form, the key alone, is answered with the
@@ -116,5 +119,66 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	holder, err := rig.harness.registry.RoleHolder(role)
 	if err != nil || holder != other {
 		t.Fatalf("holder of %s = %q, %v; want %s, whose claim named the new form", role, holder, err, other)
+	}
+}
+
+// legacyKinds is a store.LegacySubjectCounter that records the kind label of each count.
+type legacyKinds struct {
+	mu    sync.Mutex
+	kinds []string
+}
+
+func (c *legacyKinds) Inc(labels ...[2]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, label := range labels {
+		if label[0] == "kind" {
+			c.kinds = append(c.kinds, label[1])
+		}
+	}
+}
+
+func (c *legacyKinds) counted() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.kinds)
+}
+
+// A session's stored row read into its consumer's filter counts each topic the filter carries in
+// the old form (kind="interest"), on every such read: a write of the stored row's filter and a
+// repair of the session's consumer each count the issue topic the session registered in the old
+// form. The session's own agent subject, which the subscribe route writes into the row itself, and
+// its role's lane, which the stream does not carry and so no filter holds, are not counted.
+func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testing.T) {
+	const sessionID = "ses_stored_old_form"
+	rig := newSessionConsumerRig(t)
+	rig.register(t, sessionID, map[string]any{"topics": []string{"notifications.dispatch.issue.INFRA-12.>"}})
+	rig.post(t, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"lead-reviewer"}`)
+	stored, err := rig.deps.registry.Get(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the stored row: %v", err)
+	}
+	for _, topic := range []string{contracts.LegacyAgentSubject(sessionID), contracts.RoleTopicPrefix + "lead-reviewer"} {
+		if !slices.Contains(stored.Topics, topic) {
+			t.Fatalf("stored topics = %q, want %s among them, which this test shows is not counted", stored.Topics, topic)
+		}
+	}
+
+	counter := &legacyKinds{}
+	counting, err := store.Open(rig.harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
+	if err != nil {
+		t.Fatalf("open a counting registry: %v", err)
+	}
+	rig.deps.consumers.storedFilterWrite(context.Background(), counting, sessionID, "the test's write")
+	if got := counter.counted(); !slices.Equal(got, []string{"interest"}) {
+		t.Fatalf("a write of the stored row's filter counted %q, want one interest", got)
+	}
+	deps := *rig.deps
+	deps.registry = counting
+	if _, finding := rig.deps.consumers.registeredTarget(context.Background(), &deps, sessionID, 0); finding != registeredTargetBuilt {
+		t.Fatalf("the repair's target = %v, want it built", finding)
+	}
+	if got := counter.counted(); !slices.Equal(got, []string{"interest", "interest"}) {
+		t.Fatalf("after a repair read the row too, counted %q, want two interests", got)
 	}
 }

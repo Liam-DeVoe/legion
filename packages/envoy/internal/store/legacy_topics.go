@@ -38,6 +38,21 @@ func (r *Registry) LegacyTopicWarnings(sessionID string, topics []string) []stri
 	return warnings
 }
 
+// CountStoredLegacyTopics counts each of topics, what sessionID's consumer filter carries of its
+// stored interest row, that is in the old form of its name (kind="interest"), each time the row is
+// read into the filter: the count moves while any record still holds an old form. The session's
+// own agent subject in the old form is not counted there: the listener writes it into every row
+// itself (the subscribe route), so counting it would move the counter for as long as the listener
+// does that, whatever the session's plugin registers.
+func (r *Registry) CountStoredLegacyTopics(sessionID string, topics []string) {
+	own := contracts.LegacyAgentSubject(sessionID)
+	for _, topic := range topics {
+		if _, legacy := contracts.CanonicalTopic(topic); legacy && topic != own {
+			r.countLegacy("interest")
+		}
+	}
+}
+
 // ClaimedRole reads a role a claim names in either form (contracts.CanonicalRole) and answers the
 // role's name, which is what its claim record is keyed by, with a warning for the old form,
 // "<old> is the old form of <project>.<name>; claim <project>.<name>", counted (kind="role"). A

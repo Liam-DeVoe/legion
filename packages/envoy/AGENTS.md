@@ -4856,6 +4856,8 @@ The two forms of a name never overlap as filters, since they differ in their tok
 An issue's topic over every issue of one project in the new form (`notifications.dispatch.issue.INFRA.>`) has no old form, since no subject pattern names the issues of one project in the old form.
 The interest record stores each topic as its caller wrote it, because the plugins read their record back and an unfamiliar form would be unsubscribed or misread;
 the registry's own readers take both forms instead (`store.Registry.Match` through its subject index, `store.Remove`, the role read of a record), and `POST /v1/interests/subscribe` names each topic the caller gave in the old form in its answer's `warnings` with its new form, counted on `envoy_listener_legacy_subjects_total{kind="interest"}` (`store.Registry.LegacyTopicWarnings`).
+Each read of a stored row into a session's consumer filter (a repair, a restart, a fenced filter write: `storedRowFilter`) counts there too each topic the filter carries in the old form, so the counter keeps moving while any record holds one (`store.Registry.CountStoredLegacyTopics`);
+the session's own agent subject, which the subscribe route writes into every row itself, is not counted on that read.
 Nothing is refused for the old form yet.
 
 Where the rule is still weaker than the grant behind it:
