@@ -177,7 +177,8 @@ test("an item in a thread no person wrote in is the history's, and every other t
       replies: [{ ...messageFixture, author: person, id: "answered-message" }],
     },
   ];
-  const landing = (id: string) => agentsOnlyItem({ id, kind: "item" }, comments, messages);
+  const landing = (id: string) =>
+    agentsOnlyItem({ id, kind: "item" }, comments, messages, undefined);
   for (const id of ["agents-root", "agents-reply", "agents-message", "agents-message-reply"]) {
     expect(landing(id), `${id} is drawn in the outline`).toBe(id);
   }
@@ -191,8 +192,12 @@ test("an item in a thread no person wrote in is the history's, and every other t
     expect(landing(id), `${id} lands in the history`).toBeUndefined();
   }
   // Nothing lands in the history until the reads that tell have answered, nor for a block.
-  expect(agentsOnlyItem({ id: "agents-root", kind: "item" }, undefined, undefined)).toBeUndefined();
-  expect(agentsOnlyItem({ id: "agents-root", kind: "block" }, comments, messages)).toBeUndefined();
+  expect(
+    agentsOnlyItem({ id: "agents-root", kind: "item" }, undefined, undefined, undefined)
+  ).toBeUndefined();
+  expect(
+    agentsOnlyItem({ id: "agents-root", kind: "block" }, comments, messages, undefined)
+  ).toBeUndefined();
 });
 
 test("an item is found by its own id, and an ask by the address of the ask it was indexed from", () => {

@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
 
 /**
  * The names a page has already read for the references it draws, shared with every surface the
@@ -25,12 +25,8 @@ const ReferenceNamesRegistry = createContext<
 
 export function ReferenceNamesProvider({ children }: { children: ReactNode }): ReactNode {
   const [names, setNames] = useState<ReadonlyMap<string, string> | undefined>(undefined);
-  const register = useCallback(
-    (next: ReadonlyMap<string, string> | undefined) => setNames(next),
-    []
-  );
   return (
-    <ReferenceNamesRegistry.Provider value={register}>
+    <ReferenceNamesRegistry.Provider value={setNames}>
       <ReferenceNamesContext.Provider value={names}>{children}</ReferenceNamesContext.Provider>
     </ReferenceNamesRegistry.Provider>
   );

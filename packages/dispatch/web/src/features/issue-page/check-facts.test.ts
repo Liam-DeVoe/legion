@@ -2,12 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { CheckBlock, CheckResult } from "../../api/types";
 import { checkFacts, resultFacts } from "./check-facts";
-import {
-  BLOCK_ATTRIBUTE_LABELS,
-  NODE_FACT_LABELS,
-  nodeFactLabel,
-  RESULT_STANDS_WORDS,
-} from "./page-words";
+import { nodeFactLabel, RESULT_STANDS_WORDS } from "./page-words";
 
 /** The commit the result ran at, which is also the one its check compares results with. */
 const RESULT_COMMIT = "c".repeat(40);
@@ -125,7 +120,7 @@ test("a check CI proves names the CI run that proves it", () => {
     check({ ci: ciRead(), ci_check: "contracts", results: [derived], run: "" })
   );
   expect(facts.ci_check).toBe("contracts");
-  expect(nodeFactLabel("ci_check")).toBe(BLOCK_ATTRIBUTE_LABELS.ci_check);
+  expect(nodeFactLabel("ci_check")).toBe("CI check");
   expect(facts.ci_unproved).toBeUndefined();
   expect(Object.keys(facts)).toEqual(["when", "surface", "run", "ci_check", "negative_control"]);
 });
@@ -143,7 +138,7 @@ test("a check CI proves with no result says why its run proved nothing", () => {
   );
   expect(facts.ci_check).toBe("contracts");
   expect(facts.ci_unproved).toBe(detail);
-  expect(nodeFactLabel("ci_unproved")).toBe(NODE_FACT_LABELS.ci_unproved);
+  expect(nodeFactLabel("ci_unproved")).toBe("why no result");
 });
 
 // A block that carries `ci_check` and holds a recorded result is no check CI proves, so the

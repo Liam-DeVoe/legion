@@ -3,7 +3,12 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { issueCoverageQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueCoverageQuery,
+  projectsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -31,6 +36,7 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -79,8 +85,10 @@ export function IssuePropertiesRow({
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
-  // decisions, the coverage's statements, the comments a Change is written as - so it costs no
-  // request of its own (`waiting.ts`).
+  // decisions, the coverage's statements, the comments a Change is written as, and the decisions
+  // document's blocks, whose sections say which decision a Change's anchor belongs to - so it
+  // costs no request of its own (`waiting.ts`). Until those blocks answer the count reads the
+  // Changes by their quotes, as `decision-review.ts` does with no blocks read.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const decisions = useQuery(issueDecisionsQuery(issue.key, true));
   const coverage = useQuery(issueCoverageQuery(issue.key));
@@ -88,6 +96,18 @@ export function IssuePropertiesRow({
     queryFn: () => api.listComments(issue.key),
     queryKey: ["comments", issue.key],
   });
+  const decisionsDocument = decisionsDocumentId(issue.artifacts, decisions.data);
+  const decisionsBlocks = useQuery({
+    ...artifactBlocksQuery(decisionsDocument ?? ""),
+    enabled: decisionsDocument !== undefined,
+  }).data;
+  const documents = useMemo(
+    () =>
+      decisionsDocument === undefined || decisionsBlocks === undefined
+        ? undefined
+        : [{ artifactId: decisionsDocument, blocks: decisionsBlocks }],
+    [decisionsDocument, decisionsBlocks]
+  );
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
@@ -98,7 +118,8 @@ export function IssuePropertiesRow({
     viewer,
     decisions.data,
     (reference) => statements.has(nodeIdOf(reference)),
-    comments.data
+    comments.data,
+    documents
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
