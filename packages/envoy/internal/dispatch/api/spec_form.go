@@ -18,18 +18,19 @@ import (
 
 // The form of The Spec (R49) as the server holds it. A setting names the roots of The Spec
 // (DISPATCH_SPEC_ROOTS); a document under one of them is covered, and this file is the one place
-// that judges its form. Two calls refuse: refuseSpecForm, at the two call sites, the opening or
+// that judges its form. Three calls refuse: refuseSpecForm, at the two call sites, the opening or
 // hand-back of an approval request (requestArtifactApproval) and a person's approval
-// (writeApprovalReviews). Two calls read findings and refuse nothing: the read route
+// (writeApprovalReviews); and carryBreaksForm, which the carry of an approval to a new version
+// asks before it writes that approval in the person's name (docs.FormGate), and which carries
+// nothing over a break. Two calls read findings and refuse nothing: the read route
 // (getArtifactSpecForm) and the restore of a reopen and of the repair pass (restoreIssueAsksTx),
 // which leaves a broken approval request resolved rather than open it again. Every route that
 // opens an approval request or answers one reaches one of these calls;
 // TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
 //
-// Two ways past the gate stay open, and both are known. The carry (docs/approval_carry.go) copies
-// an earlier approval to a new version in the person's name, and an approval given before the
-// setting named the root never passed the gate. A reparent out of a root takes an issue's
-// documents out of scope with one write; the read route's scope says so.
+// One way past the gate stays open, and it is known: an approval given before the setting named
+// the root, or while the issue stood outside it, never passed the gate, and a reparent out of a
+// root takes an issue's documents out of scope with one write; the read route's scope says so.
 
 // specFormCode is the code of the refusal.
 const specFormCode = "SPEC_FORM"
@@ -334,6 +335,28 @@ func (s *server) refuseSpecForm(ctx context.Context, tx pgx.Tx, documents []mode
 		return result, refusal
 	}
 	return result, nil
+}
+
+// carryBreaksForm is the form gate on the version that a carry of an approval would approve in
+// the person's name (docs.FormGate): whether a text of that version of artifactID breaks the form,
+// judged as a person's approval is (specFormOf). A document no root covers reads nothing more.
+func (s *server) carryBreaksForm(ctx context.Context, tx pgx.Tx, artifactID string, version int) (bool, error) {
+	result, err := s.specFormOf(ctx, tx, []model.AskApprovalDocument{{ArtifactID: artifactID, Version: version}}, specform.ActApproval)
+	if err != nil {
+		return false, err
+	}
+	return result.refusal(specform.ActApproval) != nil, nil
+}
+
+// FormGate is the gate of the carry (carryBreaksForm) for a document service that a process
+// builds before its API: the roots that specRoots names, as DISPATCH_SPEC_ROOTS writes them, and
+// the server's address. NewDeps sets the same gate on the service it is given.
+func FormGate(specRoots, serverURL string) (docs.FormGate, error) {
+	roots, err := parseSpecRoots(specRoots)
+	if err != nil {
+		return nil, err
+	}
+	return (&server{deps: Deps{SpecRoots: roots, ServerURL: strings.TrimSuffix(serverURL, "/")}}).carryBreaksForm, nil
 }
 
 // specFormJudge judges the documents of one specFormOf call, reading what every document shares
