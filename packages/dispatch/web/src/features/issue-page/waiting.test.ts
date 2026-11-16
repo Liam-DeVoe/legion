@@ -228,6 +228,14 @@ function waitingIn(root: TreeNode): string[] {
   ];
 }
 
+/** The id of each node of `root` that a placement of the node `id` sits under. */
+function parentsOf(root: TreeNode, id: string): string[] {
+  return root.children.flatMap((child) => [
+    ...(child.id === id ? [root.id] : []),
+    ...parentsOf(child, id),
+  ]);
+}
+
 // R7, R13, R35, and the tester's F4 and F6: what waits on the reader is each open question whose
 // turn is theirs, each decision of the review list - an agent's decision that waits, that a tie
 // names a statement for, and that the reader has not asked to change since it changed - and each
@@ -248,16 +256,19 @@ test("what waits on the reader is their open questions, the review list and thei
 
 // R3, R7 and R13: a Change belongs to the decision whose section of the decisions document holds
 // the block the person wrote it in (`Anchor.block_id`), though another decision holds its words
-// too. So the count leaves out the decision that was changed and counts the one that still
-// waits, as the tree marks them. Where the anchor stores no block, the quote alone decides: the
-// first decision whose words hold it.
+// too. Here the first decision holds the second's words and is tied to no statement, so it is on
+// no review list, and the Change is written in the second's paragraph: the second decision then
+// waits on its agent, and nothing waits on the reader, in the count as in the tree. A count that
+// read the quote alone would put the Change on the first decision and count the second as
+// waiting. Where the anchor stores no block, the quote alone decides: the first decision whose
+// words hold it.
 test("waitingOnReader counts a Change under the decision whose block holds its anchor", () => {
-  const tied = (blockId: string, text: string): Decision => ({
-    ...waitingDecision(blockId, ["r1"]),
+  const worded = (blockId: string, shaped: readonly string[], text: string): Decision => ({
+    ...waitingDecision(blockId, shaped),
     text,
   });
-  const first = tied("d1", "## Keep the model pure\n\nKeep the model pure. Draw it once.");
-  const second = tied("d2", "## Draw it once\n\nDraw it once.");
+  const first = worded("d1", [], "## Keep the model pure\n\nKeep the model pure. Draw it once.");
+  const second = worded("d2", ["r1"], "## Draw it once\n\nDraw it once.");
   const both: IssueDecisions = { ...decisions, decisions: [first, second] };
   const anchor = {
     artifact_id: made.id,
@@ -301,9 +312,13 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
   });
   const waitingDecisions = waitingIn(root).filter((id) => id.startsWith("decisions-md#"));
 
-  expect(waitingDecisions).toEqual(["decisions-md#b-d1"]);
-  expect(counted.decisions).toBe(1);
+  expect(counted.decisions).toBe(0);
+  expect(waitingDecisions).toEqual([]);
   expect(counted.decisions).toBe(waitingDecisions.length);
+  expect(parentsOf(root, moved.id)).toEqual(["decisions-md#b-d2"]);
+  expect(decisionChangeComments(both, [moved], issue.artifacts, documents)).toEqual(
+    new Map([["c-change", second.ref]])
+  );
 
   const unplaced: Comment = { ...moved, anchor: { ...anchor, block_id: null } };
   expect(decisionChangeComments(both, [unplaced], issue.artifacts, documents)).toEqual(
