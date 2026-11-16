@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
@@ -80,10 +81,10 @@ var (
 	// ErrListRequired is a restricted member's credential that names no project: such a person
 	// sees only the projects that name them, so their credential names which.
 	ErrListRequired = errors.New("projectaccess: a restricted member's credential names its projects")
-	// ErrBrokerRefused is Dispatch answering 401 or 403 to the broker's own account token: a
-	// deployment that has not listed the broker as one that may ask. It is a misconfiguration and
-	// not an outage, so no caller mints or enrolls through it as it would through a failure to
-	// reach Dispatch.
+	// ErrBrokerRefused is Dispatch answering 401 or 403 to the broker's own account token: it does
+	// not list the broker's account as one that may ask, or does not accept the token (one minted
+	// for another audience, say). It is a misconfiguration and not an outage, so no caller mints
+	// or enrolls through it as it would through a failure to reach Dispatch.
 	ErrBrokerRefused = errors.New("projectaccess: dispatch refused the broker's own account token")
 	// ErrUnchecked is ListAllowed's answer for an empty list whose person's member kind Dispatch
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
@@ -156,10 +157,9 @@ type Client struct {
 type accessKey struct{ project, person string }
 
 type cachedAnswer struct {
-	answer Answer
-	// missing is a remembered ErrProjectNotFound, which is an answer as much as Answer is.
-	missing bool
-	at      time.Time
+	answer          Answer
+	projectNotFound bool
+	at              time.Time
 }
 
 type cachedKind struct {
@@ -189,9 +189,9 @@ func New(baseURL string, account brokertoken.Account, httpClient *http.Client) *
 // project is public. An answer is aged from before its question was sent, so a slow answer is
 // kept no longer than CacheTTL from the moment Dispatch could last have changed it.
 func (c *Client) Access(ctx context.Context, project, person string) (Answer, error) {
-	key := accessKey{project: project, person: strings.ToLower(strings.TrimSpace(person))}
+	key := accessKey{project: project, person: record.CanonicalLogin(person)}
 	if cached, ok := c.cachedAnswer(key); ok {
-		if cached.missing {
+		if cached.projectNotFound {
 			return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
 		}
 		return cached.answer, nil
@@ -207,7 +207,7 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	case err != nil:
 		return Answer{}, err
 	case status == http.StatusNotFound:
-		c.keepAnswer(key, cachedAnswer{missing: true, at: asked})
+		c.keepAnswer(key, cachedAnswer{projectNotFound: true, at: asked})
 		return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
 	}
 	answer.AskedAt = asked
@@ -217,7 +217,7 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 
 // MemberKind is the person's member kind, from the cache while it is younger than CacheTTL.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
-	person = strings.ToLower(strings.TrimSpace(person))
+	person = record.CanonicalLogin(person)
 	if person == "" {
 		return "", errors.New("projectaccess: a member kind is asked of a person, and none was named")
 	}
