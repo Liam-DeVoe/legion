@@ -413,9 +413,10 @@ ancestor's architect.
 ### When the root is a view
 
 Before both lists below, read whether the root's work can be built and tested before the
-ancestor's own pull request merges. Where it cannot, the rule at the head of this section decides,
-and neither list does: the root registers no basis and requests no approval of its own. Send its
-work to the ancestor's architect, by the route of "A requirement the ancestor does not state".
+ancestor's own pull request merges. Where it cannot, the rule in the opening paragraph of "A root
+that is a view on an approved ancestor" decides, and neither list does: the root registers no
+basis and requests no approval of its own. Send its work to the ancestor's architect, by the
+route of "A requirement the ancestor does not state".
 
 The ancestor is the nearest issue on the root's Dispatch `child_of` chain whose document for the
 step has a review or an open approval request. Read the chain upward with
