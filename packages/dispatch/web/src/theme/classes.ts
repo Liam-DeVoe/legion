@@ -742,7 +742,7 @@ registerText(
 // registered against it, and `text-on-background.test.ts` reads a composite's token through it.
 // ---------------------------------------------------------------------------------------------
 
-export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
+export const PAGE_COLORS = {
   "icon-rail": railFixed(P.ICON_RAIL),
   "icon-rail-accent": railFixed(P.ICON_RAIL_ACCENT),
   "icon-rail-active": railFixed(P.ICON_RAIL_ACTIVE),
@@ -784,13 +784,11 @@ export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
   "page-waiting-text": pair(P.PAGE_WAITING_TEXT, P.ORANGE_300),
   "page-waiting-tint": pair(P.PAGE_WAITING_TINT, P.ORANGE_950),
   "page-words": pair(P.PAGE_WORDS, P.SLATE_200),
-};
+} as const satisfies Readonly<Record<string, ColorPair>>;
 
 /** The colour pair a page token renders, by its name in `PAGE_COLORS`. */
-function pageColor(name: string): ColorPair {
-  const found = PAGE_COLORS[name];
-  if (found === undefined) throw new Error(`classes.ts names no page colour "${name}"`);
-  return found;
+function pageColor(name: keyof typeof PAGE_COLORS): ColorPair {
+  return PAGE_COLORS[name];
 }
 
 /** The page itself: its white paper, its ink and the two greys under it, and its rules. */
@@ -980,13 +978,13 @@ export const pageRowOption =
 /** The one shape both menus of the filter row wear, the prototype's `#menu`: the presets' own at
  *  1024 px and below, and the node menu's at every width. The caller says which edge it hangs
  *  from (`left-0` or `right-0`). */
-export const pageMenu = `absolute top-full z-30 mt-1 flex w-56 flex-col gap-1 rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`;
+export const pageMenu = `absolute top-full z-30 mt-1 flex min-w-[260px] flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`;
 /** One item of those menus, the prototype's `.mi`: 14 px in the ink, the mark grey under the
  *  pointer. */
 export const pageMenuItem = `min-h-11 rounded-[7px] px-2 py-[7px] text-left text-sm font-medium md:min-h-0 ${pageInkText} ${pageRowHoverBg}`;
 
-for (const ground of ["page-paper", "page-pane"]) {
-  for (const ink of ["page-ink", "page-words", "page-muted", "page-quiet"]) {
+for (const ground of ["page-paper", "page-pane"] as const) {
+  for (const ink of ["page-ink", "page-words", "page-muted", "page-quiet"] as const) {
     registerText(`${ink} text on ${ground}`, pageColor(ink), pageColor(ground));
   }
 }
@@ -1009,7 +1007,7 @@ for (const kind of [
   "page-question",
   "page-statement",
   "page-step",
-]) {
+] as const) {
   registerText(`${kind} text on page-paper`, pageColor(kind), pageColor("page-paper"));
 }
 for (const [kind, tint] of [
@@ -1070,7 +1068,7 @@ for (const kind of [
   "page-statement",
   "page-step",
   "page-waiting-text",
-]) {
+] as const) {
   registerText(`${kind} text on page-pane`, pageColor(kind), pageColor("page-pane"));
 }
 registerText(
@@ -1078,7 +1076,7 @@ registerText(
   pageColor("page-child-text"),
   pageColor("page-paper")
 );
-for (const kind of ["page-statement", "page-decision", "page-child-text", "page-failed"]) {
+for (const kind of ["page-statement", "page-decision", "page-child-text", "page-failed"] as const) {
   registerText(`${kind} text on page-mark`, pageColor(kind), pageColor("page-mark"));
 }
 // A bullet and a waiting dot are shapes beside the words that name them (WCAG 1.4.11).
@@ -1091,8 +1089,8 @@ for (const kind of ["page-statement", "page-decision", "page-child-text", "page-
 // (R1). The same holds for a context row's `page-hair` bullet, whose row is marked by its quiet
 // words. A kind whose bullet were the only thing telling it apart would have to be registered
 // here and pass.
-for (const ground of ["page-paper", "page-pane"]) {
-  for (const bullet of ["page-question", "page-person", "page-issue", "page-waiting"]) {
+for (const ground of ["page-paper", "page-pane"] as const) {
+  for (const bullet of ["page-question", "page-person", "page-issue", "page-waiting"] as const) {
     registerText(`${bullet} bullet on ${ground}`, pageColor(bullet), pageColor(ground), 3);
   }
 }
