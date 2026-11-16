@@ -11,7 +11,9 @@
 # license file the nearest one whose license it can identify. It fails, writing nothing, when a
 # module has none, or when go-licenses classes its license as forbidden or of an unknown type. The
 # repository's own modules (every module `go list -m` names from here) are left out: they are this
-# repository's code.
+# repository's code. One package of that code is a port under another license, the hard rules of
+# ste-lint in internal/dispatch/specform/ste, so its MIT notice is written when the packages
+# compile it in.
 #
 # POSIX sh, so it runs in the golang:*-alpine build stages as well as on a runner.
 set -eu
