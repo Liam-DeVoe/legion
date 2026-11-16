@@ -24,6 +24,49 @@ var pubScope = natsgrant.Scope{
 	Identity:     "legion-daemon-PUB",
 }
 
+// A repository's GitHub consumer name, prefix and filter. The name escapes as InboxPrefix does,
+// after lower-casing the repository: the daemon keeps GitHub's spelling (Acme/Widgets) and
+// Dispatch, whose list the grant is built from, its lower case, and both must name one consumer.
+// The prefix and filter keep the case they are given (lower-casing the subject is t-c-21's, at
+// its one source) and write a dot "_", so a.b and a_b get two names but share one lane, which
+// plan A's t-a-32 refuses at the mapping write.
+func TestGitHubConsumerNamePrefixAndFilter(t *testing.T) {
+	for _, row := range []struct{ repository, name, prefix string }{
+		{"acme/widgets", "legion-go-PUB-github-acme_2fwidgets", "notifications.github.acme.widgets"},
+		{"acme/a.b", "legion-go-PUB-github-acme_2fa_2eb", "notifications.github.acme.a_b"},
+		{"acme/a_b", "legion-go-PUB-github-acme_2fa_5fb", "notifications.github.acme.a_b"},
+		{"Acme/Widgets", "legion-go-PUB-github-acme_2fwidgets", "notifications.github.Acme.Widgets"},
+		{"my-org/Repo.Name_x", "legion-go-PUB-github-my-org_2frepo_2ename_5fx", "notifications.github.my-org.Repo_Name_x"},
+	} {
+		require.Equal(t, row.name, natsgrant.GitHubConsumerName("PUB", row.repository), row.repository)
+		require.True(t, natsgrant.SessionToken(row.name), "%q is one subject token", row.name)
+		require.Equal(t, row.prefix, natsgrant.GitHubPrefix(row.repository), row.repository)
+		require.Equal(t, row.prefix+".>", natsgrant.GitHubFilter(row.repository), row.repository)
+		owner, name, _ := strings.Cut(row.repository, "/")
+		require.True(t, strings.HasPrefix(contracts.GithubSubject(owner, name, "pr.1"), row.prefix+"."),
+			"the listener publishes %s's events under its prefix", row.repository)
+	}
+	require.Equal(t, natsgrant.GitHubConsumerName("PUB", "Acme/Widgets"), natsgrant.GitHubConsumerName("PUB", "acme/widgets"),
+		"GitHub's spelling and Dispatch's name one consumer")
+	require.NotEqual(t, natsgrant.GitHubConsumerName("PUB", "acme/a.b"), natsgrant.GitHubConsumerName("PUB", "acme/a_b"))
+}
+
+// Each repository's consumer is granted with its own filter only: one repository's consumer with
+// another's filter is no entry of the grant, nor is a consumer of another project.
+func TestWithinProjectsPairsEachRepositorysConsumerWithItsOwnFilter(t *testing.T) {
+	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{
+		Projects: []string{"PUB"}, Repositories: []string{"acme/one", "acme/two"}, Identity: "id",
+	})
+	require.NoError(t, err)
+	const create = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."
+	one, two := natsgrant.GitHubConsumerName("PUB", "acme/one"), natsgrant.GitHubConsumerName("PUB", "acme/two")
+	require.Contains(t, got.Publish, create+one+"."+natsgrant.GitHubFilter("acme/one"))
+	require.Contains(t, got.Publish, create+two+"."+natsgrant.GitHubFilter("acme/two"))
+	require.NotContains(t, got.Publish, create+one+"."+natsgrant.GitHubFilter("acme/two"))
+	require.NotContains(t, got.Publish, create+two+"."+natsgrant.GitHubFilter("acme/one"))
+	require.NotContains(t, got.Publish, create+natsgrant.GitHubConsumerName("OTHER", "acme/one")+"."+natsgrant.GitHubFilter("acme/one"))
+}
+
 // A reply prefix is "_INBOX_" and the identity with every byte outside [A-Za-z0-9-] escaped
 // as _hh, including underscores, so it is one subject token and distinct identities stay distinct.
 func TestInboxPrefixIsOneTokenOfTheIdentity(t *testing.T) {

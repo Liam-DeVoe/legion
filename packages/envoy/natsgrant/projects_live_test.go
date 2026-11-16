@@ -50,7 +50,11 @@ const (
 func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	// acme/gadgets.js holds a dot, which its subjects spell "_": the daemon's create and the grant
 	// must name one filter for it (natsgrant.GitHubFilter), or the server refuses the create.
-	pubScope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets", "acme/gadgets.js"}, Identity: livePUBIdentity}
+	// acme/one and acme/two are two repositories whose filters differ, for the refusals of one's
+	// consumer on the other's filter. acme/mixedcase is how Dispatch spells a repository GitHub
+	// spells Acme/MixedCase: the daemon names its consumer from GitHub's spelling, and
+	// GitHubConsumerName lower-cases it, so the name is the one the grant holds.
+	pubScope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets", "acme/gadgets.js", "acme/one", "acme/two", "acme/mixedcase"}, Identity: livePUBIdentity}
 	privScope := natsgrant.Scope{Projects: []string{"PRIV"}, Repositories: []string{"acme/secret"}, Identity: livePRIVIdentity}
 	largest := natsgrant.Scope{Projects: []string{"INFRA"}, Identity: "legion-daemon-INFRA"}
 	for i := range largestRepositories {
@@ -93,6 +97,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	publish("notifications.dispatch.issue.PUB.PUB-1.comment.created", "PUB-1", "PUB-2", "PUB-3", "PUB-4", "PUB-5")
 	publish(contracts.GithubSubject("acme", "widgets", "pr.1"), "PUB-repository")
 	publish(contracts.GithubSubject("acme", "gadgets.js", "pr.1"), "PUB-dotted-repository")
+	publish(contracts.GithubSubject("acme", "mixedcase", "pr.1"), "PUB-mixed-case-repository")
 	publish("notifications.github.acme.secret.pr.1", "PRIV-repository")
 	publish(privIssue, "PRIV-secret-1", "PRIV-secret-2", "PRIV-secret-3", "PRIV-secret-4", "PRIV-secret-5")
 
@@ -191,6 +196,18 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		}
 		require.Equal(t, []string{want}, bodies, repository)
 	}
+	// The daemon names the mixed-case repository's consumer from GitHub's spelling and opens it
+	// on the lane the grant holds, Dispatch's lower case, which is the listener's spelling once
+	// t-c-21 lower-cases every GitHub subject at its source.
+	mixed := openConsumer(ctx, t, pubJS, natsgrant.GitHubConsumerName("PUB", "Acme/MixedCase"), natsgrant.GitHubFilter("acme/mixedcase"))
+	mixedBatch, err := mixed.Fetch(2, jetstream.FetchMaxWait(2*time.Second))
+	require.NoError(t, err, "Acme/MixedCase")
+	var mixedBodies []string
+	for msg := range mixedBatch.Messages() {
+		mixedBodies = append(mixedBodies, string(msg.Data()))
+		require.NoError(t, msg.DoubleAck(ctx))
+	}
+	require.Equal(t, []string{"PUB-mixed-case-repository"}, mixedBodies)
 
 	// What the server refuses the narrowed PUB daemon: each call fails at the client, and the
 	// server reports a publish violation naming the call's subject.
@@ -216,6 +233,16 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	widgets := natsgrant.GitHubConsumerName("PUB", "acme/widgets")
 	refusedCreate(create+widgets+".notifications.github.acme.secret.>",
 		jetstream.ConsumerConfig{Durable: widgets, FilterSubject: "notifications.github.acme.secret.>", AckPolicy: jetstream.AckExplicitPolicy})
+	// One repository's consumer on the other's filter, both repositories of the scope.
+	for _, pair := range [][2]string{{"acme/one", "acme/two"}, {"acme/two", "acme/one"}} {
+		name, filter := natsgrant.GitHubConsumerName("PUB", pair[0]), natsgrant.GitHubFilter(pair[1])
+		refusedCreate(create+name+"."+filter,
+			jetstream.ConsumerConfig{Durable: name, FilterSubject: filter, AckPolicy: jetstream.AckExplicitPolicy})
+	}
+	// The control for the lower case: a consumer named from GitHub's spelling without it is no
+	// consumer of the grant, and the server refuses its create.
+	refusedCreate(create+"legion-go-PUB-github-Acme_2fMixedCase."+natsgrant.GitHubFilter("acme/mixedcase"),
+		jetstream.ConsumerConfig{Durable: "legion-go-PUB-github-Acme_2fMixedCase", FilterSubject: natsgrant.GitHubFilter("acme/mixedcase"), AckPolicy: jetstream.AckExplicitPolicy})
 	refused("$JS.API.STREAM.INFO."+bus.Stream, func(ctx context.Context) error {
 		_, err := pubJS.Stream(ctx, bus.Stream)
 		return err
