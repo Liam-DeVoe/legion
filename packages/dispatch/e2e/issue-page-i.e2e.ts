@@ -1458,6 +1458,65 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
   });
 });
 
+// The tester's finding at #4205's e3136741, and decision 124 of the parts (INFRA-1196's
+// architect, 2026-11-16): while a row edits a block of a document the model holds whole, its
+// editor opens at that block with the caret there, and the row is no taller than the window,
+// with a scroll of its own, so the page around it stays where it was. At e3136741 Enter on R1 of
+// the real INFRA-1196 drew the whole spec in that row, 35,635 px high, and the rows under it
+// went down by as much.
+test("a row that edits a statement is no taller than the window, and the page around it stays put", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page) => {
+    const deep = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A spec whose one statement is under eighty paragraphs",
+        "",
+        ...Array.from({ length: 80 }, (_, n) => [
+          `Paragraph ${n + 1} of the words above the statement.`,
+          "",
+        ]).flat(),
+        ":::requirement{#r-deep}",
+        "The statement under eighty paragraphs.",
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose one statement is deep in its spec",
+    });
+    const statement = blockNodeId(await primarySlug(deep.key), "r-deep");
+    await gotoIssue(page, `/issues/${deep.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the page does not open on the statement" })
+      .toBe(statement);
+    const row = nodeRow(page, statement).first();
+    const before = await row.evaluate((element) => ({
+      scroll: window.scrollY,
+      top: element.getBoundingClientRect().top,
+    }));
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    await nextFrames(page);
+    const after = await row.evaluate((element) => ({
+      height: element.getBoundingClientRect().height,
+      scroll: window.scrollY,
+      top: element.getBoundingClientRect().top,
+    }));
+    expect(
+      after.height,
+      "the row that edits the statement is taller than the window at 1440x900"
+    ).toBeLessThanOrEqual(DESKTOP.height);
+    expect(
+      Math.abs(after.scroll - before.scroll) + Math.abs(after.top - before.top),
+      "the page around the row that edits the statement moved at 1440x900"
+    ).toBeLessThanOrEqual(1);
+  });
+});
+
 // c-children, as the architect's ruling 5 reads R12 (build-rulings-md): no view draws a
 // children's section above the outline; the children are one group of rows of the outline, where
 // the model places them, which for every child today is under the issue; each child's row holds
