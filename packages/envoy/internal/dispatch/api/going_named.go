@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"unicode"
 
@@ -480,6 +481,32 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 	return GoingArgumentError{Action: prepared.action, Reason: reason + " " + contracts.ArtifactNameExistsRule}
 }
 
+// goingUploadOverRefusal is the refusal of an upload with force the write is about to send,
+// however the write came to run - at once, picked by the person, or confirmed - where the read
+// before it (uploadedOver), made under the owner its route writes to as the store stands when the
+// write runs, found a document of its name that the person did not ask for (goingUploadAskedFor):
+// the upload would replace that document whole, which a proposal made now would withhold
+// (goingUploadWithheld). A document made between the proposal and the write, and one the proposal
+// could not read, are held to the rule the offer is held to, and the refusal is the one a pick of
+// a withheld upload meets, 409 GOING_NOT_PROPOSED, in the withheld offer's own words
+// (goingUploadWithheldReason). nil where the upload may be sent.
+func goingUploadOverRefusal(prepared goingPrepared, before goingObservation, words string) error {
+	argument, uploads := goingUploadNames[prepared.action]
+	held := before.held
+	if !uploads || prepared.arguments["force"] != true || held == nil {
+		return nil
+	}
+	name := strings.TrimSpace(goingText(prepared.arguments, argument))
+	if goingUploadAskedFor(words, name, held.Name) {
+		return nil
+	}
+	owner := "the owner this upload writes to"
+	if target, named := goingRouteUploadOwner(prepared.route, prepared.call.path); named {
+		owner = artifactOwnerText(target)
+	}
+	return errorf(http.StatusConflict, codeGoingNotProposed, "%s", goingUploadWithheldReason(prepared.action, name, owner, held.Name, held.Slug))
+}
+
 // goingUploadWithheld is why an upload the answer wrote is not offered, "" where it is: one under
 // the name of a document its owner already holds, as the proposal reads the store now (holds),
 // which would write that document's next version over the text it holds. Without force every
@@ -495,7 +522,8 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 // note.md, a word typed for every other reason. So it is offered only with force and the stored
 // name both written, and otherwise withheld, the person changing the document with an edit or
 // uploading with the dispatch command. An owner the proposal could not read is offered, and held
-// to the write's own checks when it runs (goingSendRefusal, goingUploadCondition).
+// to the write's own checks when it runs (goingSendRefusal, goingUploadOverRefusal,
+// goingUploadCondition).
 func goingUploadWithheld(action string, arguments map[string]any, session string, words string, document goingDocumentHeld) string {
 	argument, uploads := goingUploadNames[action]
 	if !uploads || document == nil {
@@ -513,12 +541,20 @@ func goingUploadWithheld(action string, arguments map[string]any, session string
 	if arguments["force"] == true && goingUploadAskedFor(words, name, held.Name) {
 		return ""
 	}
-	if name != held.Name {
+	return goingUploadWithheldReason(action, name, artifactOwnerText(owner), held.Name, held.Slug)
+}
+
+// goingUploadWithheldReason is why an upload of action under name, over the document owner holds
+// stored under stored with its slug, is not offered (goingUploadWithheld) nor sent when it runs
+// (goingUploadOverRefusal): one that went by the document's slug names the stored name the person
+// would have to write.
+func goingUploadWithheldReason(action, name, owner, stored, slug string) string {
+	if name != stored {
 		return fmt.Sprintf("%s under %q is not offered: %q is the slug of %s, which %s already holds, and an upload under it would write that document's next version over the text it holds, which the bar offers only with force under the name the document is stored under, where your own words write that name: write %s to ask for it. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force.",
-			action, name, name, held.Name, artifactOwnerText(owner), held.Name)
+			action, name, name, stored, owner, stored)
 	}
 	return fmt.Sprintf("%s under %q is not offered: %s already holds %s (slug %s), and an upload would write its next version over the text it holds, which the bar offers only with force where your own words name that document. Change the document with dispatch_doc_edit, or upload it with the dispatch command and --force.",
-		action, name, artifactOwnerText(owner), held.Name, held.Slug)
+		action, name, owner, stored, slug)
 }
 
 // goingUploadAskedFor reports whether the person asked, in their own typed words, for the
@@ -529,8 +565,9 @@ func goingUploadWithheld(action string, arguments map[string]any, session string
 // issue's spec is stored as spec.md under the slug spec, and "add a note to the spec" asks for no
 // upload that replaces it - and a wrong match costs the document's whole text, a missed one only
 // the person writing the stored name. The proposal's offer (goingUploadWithheld), its mark of an
-// upload that runs at once (goingNamed.uploads) and the write sent at once (goingUploadsOver) each
-// hold an upload over a held document to it.
+// upload that runs at once (goingNamed.uploads), the write sent at once (goingUploadsOver) and
+// every write of an upload with force, however it came to run (goingUploadOverRefusal), each hold
+// an upload over a held document to it.
 func goingUploadAskedFor(words, name, stored string) bool {
 	name = strings.TrimSpace(name)
 	return name == stored && goingWordsName(words, name)

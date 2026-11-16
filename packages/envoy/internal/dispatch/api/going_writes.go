@@ -1087,15 +1087,20 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input going
 }
 
 // goingSendRefusal is why a write whose read before is in may not be sent, nil where it may, for
-// the write as approved: an upload under the name of a document its owner holds and no force,
-// however the write came to run (goingUploadForceRefusal); and for one sent at once, an upload
-// that would write the next version of a document its owner holds and the person did not ask for,
-// its name not the name that document is stored under or the words not writing that name, or may
-// hold where it cannot name its owner and the words do not write the name (goingUploadsOver).
-// Each is read now, under the owner the upload's route writes to: a document of its name may have
-// been made since the proposal.
+// the write as approved. Each is read now, under the owner the upload's route writes to: a
+// document of the upload's name may have been made since the proposal, and the proposal's own
+// read may have failed. An upload under the name of a document its owner holds with no force is
+// refused however the write came to run (goingUploadForceRefusal); one with force whose read
+// before finds a document the person did not ask for - its name is not the name that document is
+// stored under, or the words do not write that name - is refused the same way, at once, picked or
+// confirmed, in the words a proposal made now would withhold it with (goingUploadOverRefusal);
+// and one sent at once whose route names no owner the write can read, the words not writing its
+// name, runs only when the person picks it (goingUploadsOver).
 func goingSendRefusal(approved string, prepared goingPrepared, before goingObservation, words string) error {
 	if refused := goingUploadForceRefusal(prepared, before); refused != nil {
+		return refused
+	}
+	if refused := goingUploadOverRefusal(prepared, before, words); refused != nil {
 		return refused
 	}
 	if approved == goingApprovedAuto && goingUploadsOver(prepared, before, words) {

@@ -17,7 +17,10 @@ body: |-
   `auto`). An upload under the name of a document its owner already holds is offered only with
   `force` where the answer wrote the name the document is stored under and the person's own
   words write that name; one that finds the document by its slug is always withheld, and so is
-  every other: the proposal's offer says why in `withheld`. A write of an upload without `force`
+  every other: the proposal's offer says why in `withheld`. A write of an upload with `force`
+  is held to that rule again when it runs, whoever approved it, so a document made between the
+  proposal and the pick is never written over: `409 GOING_NOT_PROPOSED` in the offer's own
+  words, with nothing written. A write of an upload without `force`
   under a name the store holds when it runs is refused, however it came to run:
   `400 GOING_ARGUMENTS` in the
   `dispatch artifact` command's words where its read before finds the document, and the route's

@@ -365,15 +365,22 @@ func goingUndoLandedLine(run string, write goingRunWrite, dead goingRunUndo, lan
 // neither says is unread, refused for the person to read, never put back, which makes the whole 409
 // GOING_UNDO_UNSETTLED, never undone again. done is the outcome where every field was put back. A
 // record that cannot say what the PATCH wrote - an answer that is missing or does not decode, or
-// one with no previous, which every such route records - or a write's own record of what it left
-// that does not decode, is no refusal but a failure of the record: the fields are answered as
-// above, and the failure is logged at Error naming the run, the write and its cause, as a write
-// taken over whose route recorded nothing it left is (goingWriteClaim.landedWhole).
+// one with no previous, which every such route records - is no refusal but a failure of the
+// record: the fields are answered as above, and the failure is logged at Error naming the run,
+// the write and its cause, as a write taken over whose route recorded nothing it left is
+// (goingWriteClaim.landedWhole). A write's own record of what it left that does not decode, or
+// that holds no field, names none of the fields the write changed, so the undo fails closed: each
+// field the write recorded changing is answered unsettled, never done with no field at all, and
+// the failure is logged the same way.
 func goingUndoWriteBackLanded(run string, write goingRunWrite, dead goingRunUndo, back goingWriteRequest, done goingWriteOutcome) (goingWriteOutcome, []goingUndoField) {
 	var after map[string]json.RawMessage
-	if err := json.Unmarshal(write.After, &after); err != nil {
-		slog.Error("dispatch: what a going write left cannot be read off its record, so its undo taken over after its process ended names none of its fields",
+	if err := json.Unmarshal(write.After, &after); err != nil || len(after) == 0 {
+		if err == nil {
+			err = errors.New("the record names no field the write left")
+		}
+		slog.Error("dispatch: what a going write left cannot be read off its record, so its undo taken over after its process ended leaves every field it changed unsettled",
 			"run", run, "write", write.ID, "error", err)
+		return goingUndoWriteBackUnread(write)
 	}
 	var answered struct {
 		Previous map[string]json.RawMessage `json:"previous"`
@@ -414,6 +421,32 @@ func goingUndoWriteBackLanded(run string, write goingRunWrite, dead goingRunUndo
 	if unread {
 		outcome.Code = codeGoingUndoUnsettled
 	}
+	return outcome, fields
+}
+
+// goingUndoWriteBackUnread is the outcome and the fields of a write back that landed and whose
+// write's record does not say what it left (goingUndoWriteBackLanded): every field the write
+// recorded changing is refused for the person to read, never put back, and the whole is 409
+// GOING_UNDO_UNSETTLED, as a field the record cannot speak for is. A write whose record names no
+// field either is answered under the one unnamed field, as every other line of an undo that
+// names none is.
+func goingUndoWriteBackUnread(write goingRunWrite) (goingWriteOutcome, []goingUndoField) {
+	names := write.Fields
+	if len(names) == 0 {
+		names = []string{""}
+	}
+	changes := make([]string, 0, len(names))
+	fields := make([]goingUndoField, 0, len(names))
+	for _, field := range names {
+		why := "this undo landed while the process making it was down, and the write's record does not say what it left, so it is not undone again; read the item to see what it holds"
+		if field != "" {
+			why = field + ": " + why
+		}
+		changes = append(changes, why)
+		fields = append(fields, goingUndoField{Field: field, Message: why})
+	}
+	outcome := goingChanged(changes, nil)
+	outcome.Code = codeGoingUndoUnsettled
 	return outcome, fields
 }
 

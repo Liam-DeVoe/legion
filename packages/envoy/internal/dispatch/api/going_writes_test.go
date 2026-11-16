@@ -1470,11 +1470,13 @@ func TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsWithheld(t *testi
 	rig.wrote(t, "alice", fresh, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedAuto})
 }
 
-// TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns (review round 3, finding 3):
-// an upload the proposal marked automatic, since the page's issue then held no document of its
-// name, is refused 409 GOING_NOT_AUTOMATIC when sent at once after a document of that name was
-// made on the issue, since it would now write that document's next version: the check is made at
-// the write, against the owner the upload's route writes to, and nothing is written.
+// TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns (review round 3, finding 3;
+// review round 8): an upload with force the proposal marked automatic, since the page's issue then
+// held no document of its name, is refused when sent at once after a document of that name was
+// made on the issue, since it would now write that document's next version, which the words do not
+// ask for: the check is made at the write, against the owner the upload's route writes to, and
+// answers 409 GOING_NOT_PROPOSED with the reason a proposal made now would withhold it, as a pick
+// of a withheld upload answers. Nothing is written.
 func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Notes made meanwhile", "The spec.\n").Key
@@ -1496,43 +1498,94 @@ func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *test
 	// Between the proposal and the write, a person makes notes on the issue.
 	rig.fixture(t, "bob", http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": "notes", "content": "# Notes\n\nBob's.\n"})
 
-	rig.goingWriteRefusedNotAutomatic(t, run, "dispatch_artifact", nil)
+	rig.goingUploadRefusedAsWithheld(t, run, goingApprovedAuto, `"notes"`)
 	if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 1 {
 		t.Fatalf("the notes hold %d versions after the upload sent at once, want bob's one alone", versions)
 	}
 }
 
-// TestGoingWriteOfAnUploadAtOnceIsRefusedWhereItsNameIsOnlyADocumentsSlug (review round 7,
-// finding 1): an upload with force the proposal marked automatic, its words writing its name
-// plan-md and the issue then holding no document of it, is refused 409 GOING_NOT_AUTOMATIC when
-// sent at once after plan.md - whose slug is plan-md - was made on the issue: the upload would now
-// replace plan.md whole, a document the answer and the words name only by its slug, never by the
-// name it is stored under. Nothing is written.
-func TestGoingWriteOfAnUploadAtOnceIsRefusedWhereItsNameIsOnlyADocumentsSlug(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "A plan made meanwhile", "The spec.\n").Key
-	start := goingBrowserStart(t)
-	start.words = "save this as plan-md"
-	start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
-	written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": "plan-md", "content": "# Plan\n\nWritten by the model.\n", "force": true}}})
-	if err != nil {
-		t.Fatal(err)
+// goingUploadRefusedAsWithheld sends one write of the run's first invocation of dispatch_artifact,
+// approved as approved, and holds it to 409 GOING_NOT_PROPOSED, the answer of a pick of an upload
+// the proposal withheld, its message naming stored - the name the document it would write over is
+// stored under - with nothing recorded.
+func (rig goingWritesRig) goingUploadRefusedAsWithheld(t *testing.T, run, approved, stored string) {
+	t.Helper()
+	response := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": approved})
+	refusal := decodeBody[errorBody](t, response)
+	if response.Code != http.StatusConflict || refusal.Code != codeGoingNotProposed || !strings.Contains(refusal.Error, stored) {
+		t.Fatalf("the upload approved %s answered %d %s, want 409 %s naming %s", approved, response.Code, response.Body.String(), codeGoingNotProposed, stored)
 	}
-	proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
-		&going.Final{Answer: "Saved.", Arguments: string(written)}, start, rig.served.goingHoldsBy(context.Background()))
-	if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 || !proposal.Offers[0].Invocations[0].Automatic {
-		t.Fatalf("the run proposed %+v, want the one upload, automatic, as the issue holds no plan yet", proposal)
+	if writes := rig.record(t, "alice", run).Writes; len(writes) != 0 {
+		t.Fatalf("the refused upload approved %s was recorded as %+v", approved, writes)
 	}
-	run := rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal)
-	// Between the proposal and the write, plan.md is made on the issue, its slug plan-md.
-	slug := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "plan.md", "# Plan\n\nMade meanwhile.\n").Artifact.Slug
-	if slug != "plan-md" {
-		t.Fatalf("plan.md was stored under the slug %q, want plan-md, the name the upload goes under", slug)
-	}
+}
 
-	rig.goingWriteRefusedNotAutomatic(t, run, "dispatch_artifact", nil)
-	if versions := rig.goingDocumentVersions(t, issue, slug); versions != 1 {
-		t.Fatalf("plan.md holds %d versions after the upload sent at once, want its one", versions)
+// TestGoingWriteOfAForcedUploadOverADocumentTheWordsDoNotAskForIsRefusedHoweverApproved (review
+// round 7, finding 1; review round 8): an upload with force is held, when it runs and whoever
+// approved it, to the rule its offer is held to (goingUploadAskedFor): where the read before it
+// finds a document its owner holds, the upload runs only if its name is the one that document is
+// stored under and the person's words write that name. Each issue held no plan when the proposal
+// offered the upload as a create; plan.md - slug plan-md - was made before the write. An upload
+// named plan-md under the words "save this as plan-md", and one named plan.md under "save this as
+// the plan", are each refused 409 GOING_NOT_PROPOSED naming plan.md, picked by the person,
+// confirmed or sent at once, and so is an upload the proposal offered because it could not read
+// the owner, which held plan.md all along; plan.md keeps its one version and the run records no
+// write. An upload named plan.md under words that write plan.md runs, picked or at once.
+func TestGoingWriteOfAForcedUploadOverADocumentTheWordsDoNotAskForIsRefusedHoweverApproved(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	unread := func(artifactTarget, string) (*goingHeldDocument, bool) { return nil, false }
+	for _, tc := range []struct {
+		name, upload, words, approved string
+		unread, written               bool
+	}{
+		{"its slug, picked", "plan-md", "save this as plan-md", goingApprovedPerson, false, false},
+		{"its stored name the words do not write, picked", "plan.md", "save this as the plan", goingApprovedPerson, false, false},
+		{"its slug, confirmed", "plan-md", "save this as plan-md", goingApprovedConfirmed, false, false},
+		{"its stored name the words do not write, confirmed", "plan.md", "save this as the plan", goingApprovedConfirmed, false, false},
+		{"its slug, at once", "plan-md", "save this as plan-md", goingApprovedAuto, false, false},
+		{"an owner the proposal could not read, picked", "plan.md", "save this as a doc", goingApprovedPerson, true, false},
+		{"its stored name the words write, picked", "plan.md", "replace plan.md with this", goingApprovedPerson, false, true},
+		{"its stored name the words write, at once", "plan.md", "replace plan.md with this", goingApprovedAuto, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := rig.issue(t, "A plan made meanwhile, "+tc.name)
+			holds := rig.served.goingHoldsBy(context.Background())
+			if tc.unread {
+				// The owner holds plan.md already, and the proposal's read of it fails.
+				uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "plan.md", "# Plan\n\nHeld all along.\n")
+				holds.document = unread
+			}
+			start := goingBrowserStart(t)
+			start.words = tc.words
+			start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+			written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": tc.upload, "content": "# Plan\n\nWritten by the model.\n", "force": true}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+				&going.Final{Answer: "Saved.", Arguments: string(written)}, start, holds)
+			if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 || len(proposal.Offers[0].Withheld) != 0 ||
+				tc.approved == goingApprovedAuto && !proposal.Offers[0].Invocations[0].Automatic {
+				t.Fatalf("the run proposed %+v, want the one upload offered, automatic where it is sent at once", proposal)
+			}
+			run := rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal)
+			if !tc.unread {
+				// Between the proposal and the write, plan.md is made on the issue.
+				uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "plan.md", "# Plan\n\nMade meanwhile.\n")
+			}
+			if !tc.written {
+				rig.goingUploadRefusedAsWithheld(t, run, tc.approved, "plan.md")
+				if versions := rig.goingDocumentVersions(t, issue, "plan-md"); versions != 1 {
+					t.Fatalf("plan.md holds %d versions after the refused upload, want its one", versions)
+				}
+				return
+			}
+			rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": tc.approved})
+			if versions := rig.goingDocumentVersions(t, issue, "plan-md"); versions != 2 {
+				t.Fatalf("plan.md holds %d versions after the upload the words asked for, want its next one written", versions)
+			}
+		})
 	}
 }
 

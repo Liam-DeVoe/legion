@@ -664,23 +664,28 @@ func TestGoingUndoLandedWholeAfterItsProcessEndedAnswersEachFieldAsItsWriteBack(
 }
 
 // TestGoingUndoTakenOverWhoseWriteBackRecordedNoPreviousIsLoggedAsAFailure (review round 7,
-// finding 2): a title change's undo writes the title back, and its process ends after that write
-// back committed, before its record. Past the claim's bound the next undo reads the title off the
-// answer the write back's route recorded beside its landing. Where that record holds no answer,
-// an answer that does not decode, or one with no previous, the title is answered unsettled - 409
-// GOING_UNDO_UNSETTLED, nothing sent again - as before, and the bad record is a failure of the
-// record, logged at Error naming the run and the write, never at Info.
+// finding 2; review round 8): a title change's undo writes the title back, and its process ends
+// after that write back committed, before its record. Past the claim's bound the next undo reads
+// the title off the answer the write back's route recorded beside its landing, against what the
+// write's own record says it left. Where the landing holds no answer, an answer that does not
+// decode, or one with no previous, or where the write's record of what it left does not decode or
+// holds nothing, the title is answered unsettled - 409 GOING_UNDO_UNSETTLED, never recorded done
+// with no field, and nothing sent again - and the bad record is a failure of the record, logged at
+// Error naming the run and the write, never at Info.
 func TestGoingUndoTakenOverWhoseWriteBackRecordedNoPreviousIsLoggedAsAFailure(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
 	inner := rig.served.inProcess
 	t.Cleanup(func() { rig.served.inProcess = inner })
 	for _, tc := range []struct {
-		name, answer string
+		name, garble string
+		value        any
 	}{
-		{"no answer", ""},
-		{"an answer that does not decode", `7`},
-		{"an answer with no previous", `{"key": "DEMO-1", "title": "Titled by the turn"}`},
+		{"no answer", `update going_runs set undos = jsonb_set(undos, '{0,requests,0}', (undos->0->'requests'->0) - 'answer') where id = $1::uuid`, nil},
+		{"an answer that does not decode", `update going_runs set undos = jsonb_set(undos, '{0,requests,0,answer}', $2::jsonb) where id = $1::uuid`, `7`},
+		{"an answer with no previous", `update going_runs set undos = jsonb_set(undos, '{0,requests,0,answer}', $2::jsonb) where id = $1::uuid`, `{"key": "DEMO-1", "title": "Titled by the turn"}`},
+		{"a write's record of what it left that does not decode", `update going_runs set writes = jsonb_set(writes, '{0,after}', $2::jsonb) where id = $1::uuid`, `7`},
+		{"a write's record of what it left that holds nothing", `update going_runs set writes = jsonb_set(writes, '{0,after}', $2::jsonb) where id = $1::uuid`, `null`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := rig.issue(t, "Titled before the turn, "+tc.name)
@@ -689,14 +694,12 @@ func TestGoingUndoTakenOverWhoseWriteBackRecordedNoPreviousIsLoggedAsAFailure(t 
 			rig.served.inProcess = goingDiesAfter(inner, patch)
 			rig.dieUndoing(t, run, nil)
 			rig.served.inProcess = inner
-			garble := `update going_runs set undos = jsonb_set(undos, '{0,requests,0,answer}', $2::jsonb) where id = $1::uuid`
-			arguments := []any{run, tc.answer}
-			if tc.answer == "" {
-				garble = `update going_runs set undos = jsonb_set(undos, '{0,requests,0}', (undos->0->'requests'->0) - 'answer') where id = $1::uuid`
-				arguments = arguments[:1]
+			arguments := []any{run}
+			if tc.value != nil {
+				arguments = append(arguments, tc.value)
 			}
-			if tag, err := rig.database.Pool.Exec(context.Background(), garble, arguments...); err != nil || tag.RowsAffected() != 1 {
-				t.Fatalf("garble the answer the write back recorded: %v (%d rows)", err, tag.RowsAffected())
+			if tag, err := rig.database.Pool.Exec(context.Background(), tc.garble, arguments...); err != nil || tag.RowsAffected() != 1 {
+				t.Fatalf("garble the record: %v (%d rows)", err, tag.RowsAffected())
 			}
 			rig.ageGoingUndos(t, run)
 			writeID := rig.record(t, "alice", run).Writes[0].ID
