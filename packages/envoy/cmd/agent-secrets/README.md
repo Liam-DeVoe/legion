@@ -105,8 +105,10 @@ create, is refused before anything is written, naming `project-channels-malforme
 
 Beside either tag, `create` and `retag` also write the entry `rollback-guard:project-tags` into the
 secret's `requesters` tag, after any list it holds, and remove it when neither tag remains. This
-broker ignores the entry; a broker from before the project tags refuses the secret
-(`requesters-malformed`) rather than serve it by owner and tier alone. `secret show` prints the
+broker ignores the entry; a broker from legion-envoy-v29.23.0, the first to read `requesters`, up to
+the release before the project tags refuses the secret (`requesters-malformed`) rather than serve it
+by owner and tier alone, and a broker older than legion-envoy-v29.23.0 reads no `requesters` tag
+and serves it. `secret show` prints the
 list without it and a `rollback_guard: yes|-` line, and `--json` a `rollback_guard` field. A tag
 written in the store's own console carries no guard: the rule for a rollback is in the broker's
 operate guide, "Rolling back past the project tags".

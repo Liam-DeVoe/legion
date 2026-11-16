@@ -134,15 +134,15 @@ type pageView struct {
 // id that is not a record id answers 400 whatever the session; with no live session, or with
 // ?switch=1 (a person signing in as someone else), it starts a sign-in that returns here, and a
 // signed-in person's unknown record id is a 404. The sign-in names the record's approver as
-// login_hint when the record exists and names one person, and names none otherwise, an id no
-// record has included, which is the one way the two redirects differ (loginHint). The page
-// prints the record and every other pending agent_secret record the person may decide, with
-// Approve and Deny for each the person may decide and one "Approve all N shown" when N is two or
-// more, and, after a decision, one outcome line per decided record, read from the broker's own
-// record now. Each secret request is printed with two sentences of its own: what Approve gives
-// and for how long, and what Deny and the expiry do. A machine login's record is printed with
-// the note that its typed code is decided on Dispatch's machine-login page, and offers no
-// button.
+// login_hint when the record exists, names one person and touches no private project, and names
+// none otherwise, an id no record has included, which is the one way the two redirects differ
+// (loginHint). The page prints the record and every other pending agent_secret record the person
+// may decide, with Approve and Deny for each the person may decide and one "Approve all N shown"
+// when N is two or more, and, after a decision, one outcome line per decided record, read from the
+// broker's own record now. Each secret request is printed with two sentences of its own: what
+// Approve gives and for how long, and what Deny and the expiry do. A machine login's record is
+// printed with the note that its typed code is decided on Dispatch's machine-login page, and
+// offers no button.
 //
 // A record Dispatch could not say whether the person may see (requests.ErrProjectAccessUnavailable)
 // is that one request unavailable, not the page: it answers 503 with the record's box saying so
@@ -240,14 +240,21 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 }
 
 // loginHint is the login_hint a sign-in started from id's page names: the record's approver, when
-// the broker has that record and it names one person. An id no record has, a shared secret's
-// "anyone", and a read the database could not answer all name none, so the hint is the one part
-// of the redirect that differs between an id a record has and an id none has, and a sign-in is
-// never held up by a database that cannot answer. Nothing follows from that difference: a record
-// id is a SHA-256 hash, so a caller that can name one already has it from the broker.
+// the broker has that record, it names one person and it touches no private project. An id no
+// record has, a shared secret's "anyone", and a read the database could not answer all name none,
+// so the hint is the one part of the redirect that differs between an id a record has and an id
+// none has, and a sign-in is never held up by a database that cannot answer. Nothing follows from
+// that difference: a record id is a SHA-256 hash, so a caller that can name one already has it
+// from the broker. A record the person rule would hide from someone outside a private project
+// (requests.Machine.MaySee, asked with no login, which Dispatch answers by visibility alone) names
+// none either, nor does one Dispatch cannot answer for: its approver is part of what the page
+// hides from such a person (hideUnseen), and a visitor who has not signed in is nobody yet.
 func (p *Page) loginHint(r *http.Request, id string) string {
 	detail, err := p.cfg.Machine.ReadRecord(r.Context(), id)
 	if err != nil {
+		return ""
+	}
+	if public, err := p.cfg.Machine.MaySee(r.Context(), "", detail); err != nil || !public {
 		return ""
 	}
 	return approverHint(detail.Approver)

@@ -332,13 +332,13 @@ func (m *Machine) SecretProjects(ctx context.Context, names []string) ([]SecretP
 }
 
 // JudgeProject answers whether the model judge must leave the request of enrollmentID for name,
-// signed with reason, to a person for a project's sake. It must when the secret's dispatch-project
-// tag names a private project or a key Dispatch holds no project for, and when a project the
-// credential that asked names (namedProjects), or the project of any issue key its reason names
-// (reasonProjects), is private. Those are the projects that make the request a private project's
-// for the person rule too (maySee), and the judge's own token names no person, so it may see no
-// private project: deciding such a request would grant in the name of an approver who cannot see
-// it.
+// signed with reason, to a person for a project's sake (judgeMayDecide): the secret's
+// dispatch-project tag names a private project or a key Dispatch holds no project for, or the
+// person rule (maySee) would hide the request from a reader who names no person, because the
+// credential that asked names a private project (namedProjects) or an issue key its reason names
+// is a private project's. The judge's own token names no person, so it may see no private
+// project, and deciding such a request would grant in the name of an approver a private project's
+// rule may hide it from. The decision checks the same rule again (applyDecisionAttempt).
 //
 // A broker with no project-access client answers false for an untagged secret, exactly as the
 // merge base decides (R9): such a broker loads no tagged secret (project-unchecked) and cannot know
@@ -347,12 +347,9 @@ func (m *Machine) SecretProjects(ctx context.Context, names []string) ([]SecretP
 // secret carries no tag, whose credential names no project and whose reason names no issue key
 // answers false and asks Dispatch nothing (judge.Requests).
 func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name, reason string) (bool, error) {
-	projects, err := m.SecretProjects(ctx, []string{name})
+	facts, err := m.projectFacts(ctx, enrollmentRow{}, []string{name}, m.Policy.Get())
 	if err != nil {
 		return false, err
-	}
-	if len(projects) > 0 && projects[0].Private {
-		return true, nil
 	}
 	if m.Projects == nil {
 		return false, nil
@@ -361,40 +358,8 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name, reason s
 	if err != nil {
 		return false, err
 	}
-	// The credential's projects and the project of every issue key the reason names, read by the
-	// one reader maySee reads them by (reasonProjects), so the judge and the person rule cannot
-	// disagree on whose request this is.
-	asking := slices.Concat(m.namedProjects(enr), reasonProjects(reason))
-	if len(asking) == 0 {
-		return false, nil
-	}
-	slices.Sort(asking)
-	asking = slices.Compact(asking)
-	answers, err := m.Projects.States(ctx, asking)
-	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
-	}
-	for _, project := range asking {
-		if answer, held := answers[project]; held && answer.Private() {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// reasonProjects is the project of every Dispatch issue key a request's signed reason names
-// (record.IssueKeysInReason), in order and each once: the one reader of a reason's projects, for
-// the person rule (maySee) and the model judge (JudgeProject) alike. A word of a key's form that
-// is no project ("SHA-256") is in it, and Dispatch answers it as no project, which hides nothing.
-func reasonProjects(reason string) []string {
-	var projects []string
-	for _, key := range record.IssueKeysInReason(reason) {
-		project, _, _ := strings.Cut(key, "-")
-		if !slices.Contains(projects, project) {
-			projects = append(projects, project)
-		}
-	}
-	return projects
+	may, err := m.judgeMayDecide(ctx, facts.states, enr, reason)
+	return !may, err
 }
 
 // MaySee reports whether login may see rec: every private project among its tagged secrets
@@ -416,15 +381,37 @@ func (m *Machine) MaySee(ctx context.Context, login string, rec RecordDetail) (b
 	return m.maySee(ctx, login, append(projects, rec.SessionProjects...), rec.Reason)
 }
 
+// maxReasonProjects is the most distinct projects the issue keys of one signed reason may name
+// before maySee reads none of them: as many as one credential may name (oauthwire.MaxProjects).
+// Each is one Dispatch read per row per reader, so past it a request is shown to nobody and left
+// to nobody's judge, with no read at all.
+const maxReasonProjects = 16
+
 // maySee is MaySee over the record's parts: candidate projects and the reason, the project of each
-// of whose issue keys joins them.
+// of whose issue keys (record.IssueKeysInReason) joins them. It is the one statement of whose
+// request this is, for a person (MaySee, mayDecide, maySeeRecord) and for the model judge, which
+// asks it with no person (judgeMayDecide). A word of a key's form that is no project ("SHA-256")
+// joins them too, and Dispatch answers it as no project, which hides nothing. A reason whose keys
+// name more than maxReasonProjects projects is shown to nobody, with no read of Dispatch. It sorts
+// a list of its own: the caller's may be an enrollment's or an operator entry's, which nothing
+// here owns.
 func (m *Machine) maySee(ctx context.Context, login string, projects []string, reason string) (bool, error) {
-	projects = append(projects, reasonProjects(reason)...)
-	if len(projects) == 0 || m.Projects == nil {
+	if m.Projects == nil {
 		return true, nil
 	}
-	slices.Sort(projects)
-	for _, project := range slices.Compact(projects) {
+	var reasonProjects []string
+	for _, key := range record.IssueKeysInReason(reason) {
+		project, _, _ := strings.Cut(key, "-")
+		if !slices.Contains(reasonProjects, project) {
+			if len(reasonProjects) == maxReasonProjects {
+				return false, nil
+			}
+			reasonProjects = append(reasonProjects, project)
+		}
+	}
+	asking := slices.Concat(projects, reasonProjects)
+	slices.Sort(asking)
+	for _, project := range slices.Compact(asking) {
 		answer, err := m.Projects.Access(ctx, project, record.CanonicalLogin(login))
 		switch {
 		case errors.Is(err, projectaccess.ErrProjectNotFound):
@@ -436,6 +423,22 @@ func (m *Machine) maySee(ctx context.Context, login string, projects []string, r
 		}
 	}
 	return true, nil
+}
+
+// judgeMayDecide is the model judge's project rule, the one its run checks before the model
+// (JudgeProject) and its decision checks again before the transaction (applyDecisionAttempt), so
+// a project that turned private during the run, or an enrollment that adopted the request and
+// names a private project, leaves the request to a person. states is what Dispatch holds of each
+// project the request's secrets are tagged with; the request is the judge's only when each is
+// public and the person rule shows it to a reader naming no person, which Dispatch answers by
+// visibility alone. The judge's own token names no person, so it may see no private project.
+func (m *Machine) judgeMayDecide(ctx context.Context, states map[string]policy.ProjectState, enr enrollmentRow, reason string) (bool, error) {
+	for _, state := range states {
+		if state != policy.ProjectPublic {
+			return false, nil
+		}
+	}
+	return m.maySee(ctx, "", m.namedProjects(enr), reason)
 }
 
 // namedProjects is the projects e's credential names: a person's session's enrollment list, the

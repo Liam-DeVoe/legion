@@ -281,11 +281,14 @@ type fakeRequests struct {
 	admin       bool
 	policyErr   error
 	policyAsked []string
-	// private and projectErr are what JudgeProject answers, and projectAsked the names it was
-	// asked about.
-	private      bool
-	projectErr   error
-	projectAsked []string
+	// private and projectErr are what JudgeProject answers, projectAsked the names it was
+	// asked about and projectReasons the signed reasons, and projectTakes how long it takes to
+	// answer: like the real read of Dispatch, it gives up when its context ends first.
+	private        bool
+	projectErr     error
+	projectAsked   []string
+	projectReasons []string
+	projectTakes   time.Duration
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
 	// times a run asked it.
 	state      string
@@ -314,18 +317,36 @@ func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.De
 	return f.decision, f.withheld, f.admin, f.policyErr
 }
 
-func (f *fakeRequests) JudgeProject(_ context.Context, _, name, _ string) (bool, error) {
+func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string) (bool, error) {
+	f.mu.Lock()
+	f.projectAsked = append(f.projectAsked, name)
+	f.projectReasons = append(f.projectReasons, reason)
+	takes := f.projectTakes
+	f.mu.Unlock()
+	if takes > 0 {
+		select {
+		case <-time.After(takes):
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.projectAsked = append(f.projectAsked, name)
 	return f.private, f.projectErr
 }
 
-// projectsAsked is every name JudgeProject was asked about, in order.
+// projectsAsked is every name JudgeProject was asked about, in order, and reasonsAsked every
+// reason it was given.
 func (f *fakeRequests) projectsAsked() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.projectAsked...)
+}
+
+func (f *fakeRequests) reasonsAsked() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.projectReasons...)
 }
 
 func (f *fakeRequests) JudgeRequestState(_ context.Context, _ string) (string, error) {

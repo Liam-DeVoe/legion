@@ -1272,8 +1272,11 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	set := m.Policy.Get()
 	// What Dispatch holds, read on the pool before the transaction takes its locks: the state
 	// of each project the request's names are tagged with and the projects its session may
-	// still name (projectFacts), and, for a person deciding, whether that person may see the
-	// record at all (mayDecide). The transaction checks that the request still hangs off the
+	// still name (projectFacts), and whether the one deciding may decide this record at all:
+	// a person who may see it (mayDecide), or, for the judge, a request still of no private
+	// project (judgeMayDecide, which its run checked before the model and which a project
+	// turning private during the run, or an adoption by an enrollment naming a private project,
+	// can have changed since). The transaction checks that the request still hangs off the
 	// enrollment read here, and makes another attempt when it moved.
 	pre, err := m.readDecision(ctx, recordID)
 	if err != nil {
@@ -1283,7 +1286,15 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if err != nil {
 		return Decision{}, false, err
 	}
-	if !who.isJudge() {
+	if who.isJudge() {
+		may, err := m.judgeMayDecide(ctx, facts.states, pre.enr, pre.reason)
+		if err != nil {
+			return Decision{}, false, err
+		}
+		if !may {
+			return Decision{}, false, fmt.Errorf("%w: the request now belongs to a private project, which the model judge leaves to a person", record.ErrNotApprover)
+		}
+	} else {
 		may, err := m.mayDecide(ctx, who.login, facts, m.namedProjects(pre.enr), pre.reason)
 		if err != nil {
 			return Decision{}, false, err

@@ -37,23 +37,25 @@ import (
 // left over for everything a run asks of the request machine.
 const runBudget = 30 * time.Second
 
-// dispatchBound is how long the whole Dispatch phase of one run has: both of Runner.issue's
-// GETs together. The three bounds sit together because they have to add up, and they add up
-// with time to spare: 5 seconds and 20 of the 30 runBudget gives, so the worst case — a
-// Dispatch phase that spends its whole bound and a model call that then times out — reaches
-// Runner.write with 5 seconds of the budget left. That is what the arithmetic is for. A run
-// that reaches runBudget writes nothing at all — Runner.write returns on ctx.Err() — so a
-// broker that paid for two HTTP reads and a model call would record no request.judged row,
-// which is the one outcome the audit trail exists to prevent. The 5 seconds left over are the
-// run's own reads of the request machine — JudgePolicy before the Dispatch phase and
+// dispatchBound is how long the whole Dispatch phase of one run has: the project check's read
+// (Requests.JudgeProject, which asks Dispatch whether a project the request names is private)
+// and both of Runner.issue's GETs together. The three bounds sit together because they have to
+// add up, and they add up with time to spare: 5 seconds and 20 of the 30 runBudget gives, so the
+// worst case — a Dispatch phase that spends its whole bound and a model call that then times
+// out — reaches Runner.write with 5 seconds of the budget left. That is what the arithmetic is
+// for. A run that reaches runBudget writes nothing at all — Runner.write returns on ctx.Err() —
+// so a broker that paid for its Dispatch reads and a model call would record no request.judged
+// row, which is the one outcome the audit trail exists to prevent. The 5 seconds left over are
+// the run's own reads of the request machine — JudgePolicy before the Dispatch phase and
 // JudgeRequestState after it — and the short transaction that writes the row, each of them a
 // local database call.
 //
-// cmd/broker's judgeDispatchTimeout is the per-call backstop under this and not the phase's
-// bound: http.Client.Timeout is per Do, and Issue makes two calls, so the client alone would
-// let the reads take twice as long as the arithmetic above allows. Five seconds for the whole
-// phase is inside that per-call bound, so this deadline is the one that ends a stalled read of
-// a run and the client's is the backstop behind it.
+// The per-call bounds of the two clients are backstops under this and not the phase's bound:
+// cmd/broker's judgeDispatchTimeout is http.Client.Timeout, which is per Do, and Issue makes two
+// calls; the project-access client bounds each of its calls at 10 s, and the project read can
+// make one per project. Either client alone would let the phase run far past the arithmetic
+// above, so this deadline is the one that ends a stalled read of a run and the clients' are the
+// backstops behind it.
 const dispatchBound = 5 * time.Second
 
 // maxJudgedLifetime is the longest grant lifetime the judge decides, whatever judge seconds a
@@ -123,11 +125,14 @@ type Requests interface {
 	// (policy.TagProject) names a private project or a key Dispatch holds no project for, or the
 	// credential that asked names a private project (a session's list, or the project a pod's
 	// operator entry maps it to), or any issue key the reason names is a private project's. Those
-	// are the projects the person rule reads too (requests.Machine.MaySee), so the judge never
-	// decides a request its approver may not see. A request whose secret carries no tag, whose
-	// credential names no project and whose reason names no issue key answers false with no call
-	// to Dispatch, and a broker with no project-access client answers false for an untagged secret.
-	// The judge's own token names no person, so it may see no private project.
+	// are the private projects the person rule reads too (requests.Machine.MaySee), so the judge
+	// decides no request that rule hides from a full member. The rule is about private projects
+	// alone: a restricted member, who sees only the projects that list them, may still be unable to
+	// see a public project's request the judge decided. A request whose secret carries no tag,
+	// whose credential names no project and whose reason names no issue key answers false with no
+	// call to Dispatch, and a broker with no project-access client answers false for an untagged
+	// secret. The judge's own token names no person, so it may see no private project. ctx is the
+	// run's Dispatch phase, which dispatchBound bounds.
 	JudgeProject(ctx context.Context, enrollmentID, name, reason string) (private bool, err error)
 
 	// JudgeRequestState answers the state a decision would meet now for the record a run
@@ -184,8 +189,8 @@ func New(ctx context.Context, o Options) *Runner {
 //
 // There is no bound on the runs in flight and no queue. A queue would leave a legitimate request
 // waiting for a person while another request's model call ran, which is the wait the judge
-// exists to take away, and no load the broker has met needs one: a run is one HTTP read, one
-// model call and one short transaction.
+// exists to take away, and no load the broker has met needs one: a run is its Dispatch reads
+// under one bound, one model call and one short transaction.
 func (r *Runner) Consider(p requests.PendingRequest) {
 	go func() {
 		ctx, cancel := context.WithTimeout(r.ctx, runBudget)
@@ -316,10 +321,15 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		return checks, data
 	}
 
-	private, err := r.opts.Requests.JudgeProject(ctx, p.EnrollmentID, name, p.Reason)
+	// The Dispatch phase: the project check's read and the issue check's two GETs share one
+	// dispatchBound, so however slowly Dispatch answers, the model call and the row's write
+	// keep the part of runBudget the arithmetic gives them.
+	phase, cancel := context.WithTimeout(ctx, dispatchBound)
+	defer cancel()
+	private, err := r.opts.Requests.JudgeProject(phase, p.EnrollmentID, name, p.Reason)
 	switch {
 	case err != nil:
-		if !add(checkProject, false, fmt.Sprintf("the project of %s could not be read: %v", name, err)) {
+		if !add(checkProject, false, fmt.Sprintf("whether the request for %s belongs to a private project (by the secret, the credential that asked, or an issue its reason names) could not be read: %v", name, err)) {
 			return checks, data
 		}
 	case private:
@@ -330,7 +340,7 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		add(checkProject, true, "")
 	}
 
-	ok, detail := r.issue(ctx, p, &data)
+	ok, detail := r.issue(phase, p, &data)
 	add(checkIssue, ok, detail)
 	return checks, data
 }
@@ -377,23 +387,22 @@ func decidedByAPerson(name string) string {
 	return fmt.Sprintf("%s is an administrator's secret, and a person approves every release of one", name)
 }
 
-// issue is the seventh check, and the only one that reads anything outside the broker: the signed
-// reason names a Dispatch issue key, and Dispatch shows that issue at a status that is not done.
-// What it read goes into data, so the model sees the issue the check passed on; a read that
-// failed still leaves the key there, which is what the negative control shows the model.
+// issue is the seventh check: the signed reason names a Dispatch issue key, and Dispatch shows
+// that issue at a status that is not done. What it read goes into data, so the model sees the
+// issue the check passed on; a read that failed still leaves the key there, which is what the
+// negative control shows the model.
 //
-// The two GETs share one dispatchBound between them, so the phase costs the run what runBudget
-// gave it however the reads go. They stay one after the other: a refused issue read means the
-// spec is never asked for.
+// ctx is the Dispatch phase's, which the project check's read has already spent part of: its two
+// GETs share what is left of one dispatchBound, so the phase costs the run what runBudget gave it
+// however the reads go. They stay one after the other: a refused issue read means the spec is
+// never asked for.
 func (r *Runner) issue(ctx context.Context, p requests.PendingRequest, data *Data) (bool, string) {
 	key := record.IssueKeyInReason(p.Reason)
 	if key == "" {
 		return false, "the request's signed reason names no Dispatch issue"
 	}
 	data.Issue.Key = key
-	readCtx, cancel := context.WithTimeout(ctx, dispatchBound)
-	defer cancel()
-	issue, err := r.opts.Dispatch.Issue(readCtx, key)
+	issue, err := r.opts.Dispatch.Issue(ctx, key)
 	switch {
 	case errors.Is(err, ErrNoIssue):
 		return false, fmt.Sprintf("dispatch shows no issue %s", key)

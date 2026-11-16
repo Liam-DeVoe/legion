@@ -141,6 +141,32 @@ func TestAnOutsiderSeesNoPrivateRequest(t *testing.T) {
 	}
 }
 
+// TestASignInToAHiddenRequestNamesNoApprover is round 3's third hardening item on
+// cybermonklabs/legion#4135: a signed-out visitor's sign-in to a request of a private project, by
+// its secret's tag or by an issue its reason names, carries no login_hint. The approver is part of
+// what the page hides from a person outside the project (hideUnseen), and a visitor who has not
+// signed in is nobody yet. A request touching no private project still names its approver, so the
+// person it waits on is asked nothing at a provider they are already signed in to.
+func TestASignInToAHiddenRequestNamesNoApprover(t *testing.T) {
+	r, _ := projectRig(t)
+	enrollmentID, key := r.benSession(t, "ben-hint-box")
+	r.nameProjects(t, enrollmentID, privProject)
+	tagged := r.request(t, enrollmentID, key, "deploy PRIV", nil, "", "PRIV_SECRET")
+	reasonSession, reasonKey := r.benSession(t, "ben-hint-reason-box")
+	reasoned := r.request(t, reasonSession, reasonKey, "PRIV-12: deploy the billing service", nil, "", "TEST_SECRET")
+	plainSession, plainKey := r.benSession(t, "ben-hint-plain-box")
+	plain := r.request(t, plainSession, plainKey, "deploy the billing service", nil, "", "TEST_SECRET")
+
+	for _, hidden := range []pending{tagged, reasoned} {
+		if auth := r.browser(t).StartSignIn(t, "/approve/"+hidden.recordID); auth.Query().Has("login_hint") {
+			t.Errorf("a signed-out sign-in to %s, a request of PRIV, hints %q; want no login_hint", hidden.recordID, auth.Query().Get("login_hint"))
+		}
+	}
+	if auth := r.browser(t).StartSignIn(t, "/approve/"+plain.recordID); auth.Query().Get("login_hint") != ada {
+		t.Errorf("a signed-out sign-in to %s, a request of no project, hints %q; want its approver %s, as before", plain.recordID, auth.Query().Get("login_hint"), ada)
+	}
+}
+
 // unansweredNote is what the page says of a request Dispatch cannot answer for: whether the
 // person may see it is unknown, so the page shows nothing of it and nothing decides it.
 const unansweredNote = "the secrets broker could not ask Dispatch whether you may see this request, so it shows nothing of it and cannot decide it until Dispatch answers. Try again shortly."

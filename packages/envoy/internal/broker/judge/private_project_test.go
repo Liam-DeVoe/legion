@@ -44,6 +44,9 @@ func TestTheJudgeLeavesAPrivateProjectsSecretToItsPerson(t *testing.T) {
 			if got := machine.projectsAsked(); !slices.Equal(got, []string{testSecret}) {
 				t.Errorf("the judge asked the project of %v; want %s alone", got, testSecret)
 			}
+			if got := machine.reasonsAsked(); !slices.Equal(got, []string{pending().Reason}) {
+				t.Errorf("the judge asked the project with reasons %q; want the request's own signed reason, whose issue keys can make it a private project's", got)
+			}
 		})
 	}
 }

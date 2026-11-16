@@ -349,9 +349,11 @@ marked with tags or annotations:
   writes into the `requesters` tag, after the list it holds, beside a `dispatch-project` or
   `project-channels` tag, and takes out with the last of the two. This broker takes the entry out
   before it reads the list, so it changes nothing here, and `secret show` prints the list without
-  it and a `rollback_guard: yes` line. A broker from before the project tags reads it as a service
-  no deployment registers and refuses the secret `requesters-malformed`, rather than serve it by
-  owner and tier to every session
+  it and a `rollback_guard: yes` line. A broker from legion-envoy-v29.23.0, the first to read
+  `requesters`, up to the release before the project tags reads it as a service no deployment
+  registers and refuses the secret `requesters-malformed`, rather than serve it by owner and tier
+  to every session. A broker older than legion-envoy-v29.23.0 reads no `requesters` tag and serves
+  the secret
   ([Rolling back past the project tags](/legion/broker/operate/#rolling-back-past-the-project-tags)).
 
 In Secret Manager these fields are annotations rather than labels because a label's value cannot
@@ -554,11 +556,17 @@ its page, and cannot decide it ([Approve a request](/legion/broker/guides/approv
 tell, a broker with `BROKER_PROJECT_ACCESS_URL` asks Dispatch, for the person reading, about each
 project a request touches, the project of each issue key its reason names included, even in a
 deployment that tags nothing: the reason `INFRA-12: rotate the deploy key` costs one read of
-`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. While
+`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. A reason
+whose issue keys name more than 16 projects is read for none of them: its request is in no
+person's list, its page is nobody's and the judge leaves it, so it waits until it expires. While
 Dispatch cannot answer, that request alone is left out of the pending and grant lists, with a line
 in the broker's log naming its record; its page answers 503 and shows only its record id, and an
 approval of it decides nothing. Every other request is listed and decided as before. The model
-judge leaves every private project's request to a person ([the model judge](#the-model-judge)).
+judge leaves every private project's request to a person ([the model judge](#the-model-judge)),
+and its approval checks this again before it is written, so a project that turned private while
+the judge was reading, or a session that took the request over and names a private project,
+leaves the request to a person. A sign-in started from a private project's request names no
+approver to the provider, since the approver is part of what the page hides.
 
 ## Requests and grants
 
@@ -1005,9 +1013,15 @@ asks afresh, as a new request, which the judge refuses while the tag stands. The
 one secret, a lifetime the rules still let the judge decide for it, and a reason naming an issue
 key, so a forged record, and one a rules change left behind, release nothing either.
 
-The issue check is the broker's one read of Dispatch: two GETs, the issue and the text of its
-spec document, with the broker's own projected ServiceAccount token, read again from its file once
-the copy it holds is 30 seconds old. The broker writes nothing there — no ask, no comment, no
+The judge reads Dispatch in two checks, and both share one 5-second bound inside the run's 30
+seconds, so a slow Dispatch leaves the model call and the row's write their time. On a broker with
+`BROKER_PROJECT_ACCESS_URL` set, the project check asks with the broker's account token whether a
+project the request names is private: the secret's `dispatch-project` tag, the projects of the
+credential that asked, and the project of each issue key in the signed reason. The issue check
+makes two GETs, the issue and the text of its spec
+document, with the broker's own projected ServiceAccount token, read again from its file once the
+copy it holds is 30 seconds old. A read the bound cuts short fails its check, and the request
+waits for its person. The broker writes nothing there — no ask, no comment, no
 status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
 settings name, presenting the broker machine's own Google identity token for the audience they
 name. Those settings are all-or-none, and the

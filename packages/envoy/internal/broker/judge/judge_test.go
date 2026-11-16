@@ -465,7 +465,7 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 // modelBound, and the transaction that records the verdict takes two seconds of its own. That
 // is the longest a run can be, and its row is still written, because the two bounds leave the
 // write its seconds. Were they to fill runBudget between them, this run would write nothing at
-// all — the broker would have paid for two HTTP reads and a model call with no audit row to
+// all — the broker would have paid for its Dispatch reads and a model call with no audit row to
 // show for them, which is the one outcome the trail exists to prevent.
 //
 // The request is left pending either way, so the row is the whole of what this proves. It takes
@@ -474,11 +474,12 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
-	// Each of the phase's two GETs takes half of its bound, less a twentieth of a second
-	// for the two round trips themselves: the phase has to spend its bound and still
-	// answer, since a read the bound cut short would fail the issue check and the model
-	// would never be asked at all.
-	dispatch.delay = dispatchBound/2 - 50*time.Millisecond
+	// The phase's three reads — the project check's and the issue check's two GETs — each
+	// take a third of its bound, less a twentieth of a second for the round trips
+	// themselves: the phase has to spend its bound and still answer, since a read the bound
+	// cut short would fail its check and the model would never be asked at all.
+	machine.projectTakes = dispatchBound/3 - 50*time.Millisecond
+	dispatch.delay = dispatchBound/3 - 50*time.Millisecond
 	// The model never answers, so the call ends on modelBound.
 	model.delay = runBudget
 	// The row's own transaction, which has to commit inside what is left of the budget.
@@ -502,6 +503,40 @@ func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	}
 	if failed := failedCheck(t, row); failed != "" {
 		t.Errorf("the row names %q as a failed check; want every check passed before the model", failed)
+	}
+}
+
+// TestASlowProjectReadStillWritesItsJudgedRow: the project check reads Dispatch too, so it is
+// part of the Dispatch phase and shares dispatchBound with the issue check's two GETs. A read that
+// would answer after 9 seconds, inside the project-access client's own 10 s per call, is cut at
+// the bound: the project check fails closed, the model is never asked and the row is written.
+// Were the read on the run's own context, its 9 seconds, the issue check's 5 and the model's 20
+// would pass runBudget, and the run would write nothing at all.
+func TestASlowProjectReadStillWritesItsJudgedRow(t *testing.T) {
+	t.Parallel()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	machine.projectTakes = 9 * time.Second
+	dispatch.delay = dispatchBound/2 - 50*time.Millisecond
+	model.delay = runBudget
+	started := time.Now()
+	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
+
+	waitFor(t, "the run whose project read was slow to write its row", runBudget+5*time.Second, func() bool {
+		_, logged := machine.rows()
+		return len(logged) == 1
+	})
+	if took := time.Since(started); took >= machine.projectTakes {
+		t.Errorf("the run wrote its row after %s; want the phase's bound, %s, to have cut the read short", took, dispatchBound)
+	}
+	row := theOneRow(t, machine)
+	if failed := failedCheck(t, row); failed != checkProject {
+		t.Fatalf("the row names %q as the check that failed; want %q, the read the bound cut short", failed, checkProject)
+	}
+	if detail := failedDetail(t, row); !strings.Contains(detail, context.DeadlineExceeded.Error()) {
+		t.Errorf("the project check reads %q; want it to say the read ran out of time", detail)
+	}
+	if row["asked"] != false || model.asked() != 0 || len(dispatch.got()) != 0 {
+		t.Errorf("the row reads asked %v, the model got %d requests and Dispatch %d; want a referral that asked nothing more", row["asked"], model.asked(), len(dispatch.got()))
 	}
 }
 

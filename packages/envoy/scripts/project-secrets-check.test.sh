@@ -28,6 +28,8 @@
 #
 # It prints one PASS or FAIL line per assertion and "project-secrets-check.test: <n> passed, <m>
 # failed" last, and exits 0 only when none failed. Its directory is kept and named on the last line.
+# No process of a run outlives it: each run's check fails when the driver's own cleanup left one
+# running, and the test then stops it itself, before the next run and again when it exits.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -487,19 +489,50 @@ passed=0
 failed=0
 RUN_RC=0
 RUN_OUT=""
-run_driver() { # <name> <scenario> [driver arguments...]
-  local name="$1"
-  printf '%s\n' "$2" >"$state/scenario"
-  shift 2
-  rm -f "$state"/approved-* "$state/queued" "$state/carol-off" "$state/priv-private" \
-    "$state/sleeps" "$state/register.log" "$state/bun.log" "$state/psql.log" "$state/curl.log" \
-    "$state/agent-secrets.log"
-  RUN_OUT="$temporary_dir/$name.out"
-  RUN_RC=0
-  # env -i: the variables of whoever runs this test (a real AGENT_SECRETS_HELPER_SOCK, a real
-  # LEGION_TEST_PG_DSN) must not reach the driver.
-  env -i PATH="$fakes:$PATH" HOME="$temporary_dir" TMPDIR="$temporary_dir" bash "$driver" "$@" >"$RUN_OUT" 2>&1 || RUN_RC=$?
+RUN_LEFT=0
+
+# Every process a run starts — the fake stack, the two helpers, the metadata stand-in and each
+# fake the driver calls — runs from a path under this test's directory, and nothing else does, so
+# the processes of the run are the ones whose command line names it.
+run_processes() { pgrep -f -- "$temporary_dir/"; }
+
+# gone_by waits until no process of the run is left or the clock reaches the second deadline (of
+# $SECONDS), and answers whether none is left. The deadline is the clock's, not a count of polls,
+# since one pgrep over a busy box's process table can take a second by itself.
+gone_by() { # <deadline>
+  while run_processes >/dev/null; do
+    [ "$SECONDS" -lt "$1" ] || return 1
+    "$real_sleep" 0.2
+  done
 }
+
+# reap stops every process of the run still up and prints how many there were: the test's own
+# cleanup, whatever the driver under test did, so a driver whose cleanup kills nothing (the
+# control that shows no_process_left can fail) leaves nothing running behind the test either.
+reap() {
+  local pids
+  pids="$(run_processes || true)"
+  if [ -z "$pids" ]; then
+    echo 0
+    return
+  fi
+  # shellcheck disable=SC2086 # one pid per word
+  kill -TERM $pids 2>/dev/null || true
+  gone_by $((SECONDS + 5)) || pkill -KILL -f -- "$temporary_dir/" 2>/dev/null || true
+  wc -w <<<"$pids"
+}
+trap 'reap >/dev/null' EXIT
+
+# outlived gives the processes of the run five seconds to end once the driver has returned, as
+# its own cleanup TERMs them and waits, then reaps the ones still up and prints how many.
+outlived() {
+  if gone_by $((SECONDS + 5)); then
+    echo 0
+  else
+    reap
+  fi
+}
+
 check() { # <description> <command...>
   if "${@:2}"; then
     printf 'PASS: %s\n' "$1"
@@ -513,16 +546,24 @@ exits() { [ "$RUN_RC" = "$1" ]; }
 says() { grep -qF -- "$1" "$RUN_OUT"; }
 says_not() { ! grep -qF -- "$1" "$RUN_OUT"; }
 fails() { [ "$(grep -c '^FAIL: ' "$RUN_OUT")" = "$1" ]; }
-# no_process_left: every process this run started is gone once the driver returns: the stack, the
-# two helpers and the metadata stand-in all run from a path under this test's state directory.
-no_process_left() {
-  local stack
-  stack="$(cat "$state/current-stack")"
-  for _ in $(seq 50); do
-    pgrep -f -- "$stack" >/dev/null || return 0
-    "$real_sleep" 0.1
-  done
-  return 1
+# no_process_left: every process the run started was gone once the driver returned, its own
+# cleanup's doing; what outlived it the test has already reaped (outlived).
+no_process_left() { [ "$RUN_LEFT" = 0 ]; }
+
+run_driver() { # <name> <scenario> [driver arguments...]
+  local name="$1"
+  printf '%s\n' "$2" >"$state/scenario"
+  shift 2
+  rm -f "$state"/approved-* "$state/queued" "$state/carol-off" "$state/priv-private" \
+    "$state/sleeps" "$state/register.log" "$state/bun.log" "$state/psql.log" "$state/curl.log" \
+    "$state/agent-secrets.log"
+  RUN_OUT="$temporary_dir/$name.out"
+  RUN_RC=0
+  # env -i: the variables of whoever runs this test (a real AGENT_SECRETS_HELPER_SOCK, a real
+  # LEGION_TEST_PG_DSN) must not reach the driver.
+  env -i PATH="$fakes:$PATH" HOME="$temporary_dir" TMPDIR="$temporary_dir" bash "$driver" "$@" >"$RUN_OUT" 2>&1 || RUN_RC=$?
+  RUN_LEFT="$(outlived)"
+  check "$name: no process of the run outlived the driver ($RUN_LEFT reaped)" no_process_left
 }
 
 readonly all_rows="project-secrets-check: 16 rows ran, 16 passed"
@@ -554,7 +595,6 @@ check "before F: PUB_KEY was written with no project" \
 check "before F: the driver waited out the broker's 30 s K3 cache before the refused request" grep -qx '35' "$state/sleeps"
 check "before F: alice's session named PRIV at enrollment" grep -qF 'register person=alice@example.com projects=PRIV' "$state/register.log"
 check "before F: carol's session naming nothing named no project" grep -qx 'register person=carol@example.com projects=' "$state/register.log"
-check "before F: no process of the run is left" no_process_left
 
 # F's machine check present: the dev-box row passes on F's refusal alone, and says so.
 run_driver f f --database-url "$admin_url"
@@ -659,6 +699,8 @@ run_live() { # <name> <account token file>
     AGENT_SECRETS_HELPER_SOCK="$live/helper.sock" \
     bash "$driver" --broker-url https://broker.example --secret PRIV_KEY \
     >"$RUN_OUT" 2>&1 || RUN_RC=$?
+  RUN_LEFT="$(outlived)"
+  check "$1: no process of the run outlived the driver ($RUN_LEFT reaped)" no_process_left
 }
 run_live live-f "$live/account-token"
 check "live, F: the run exits 0" exits 0
@@ -670,6 +712,8 @@ check "live, F: the operator's session listed the project the pod's introspectio
 run_live live-no-account ""
 check "live, no account token: the run exits 1" exits 1
 check "live, no account token: the trade line is UNKNOWN, not a pass" says "FAIL: the pod: its trade: UNKNOWN: cannot read the introspection"
+
+check "no process of any run is left when the test ends" test "$(outlived)" = 0
 
 printf 'project-secrets-check.test: %d passed, %d failed (fixtures kept in %s)\n' "$passed" "$failed" "$temporary_dir"
 [ "$failed" -eq 0 ]
