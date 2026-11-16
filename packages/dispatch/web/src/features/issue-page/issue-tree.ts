@@ -287,8 +287,9 @@ export const FIRST_LINE_LIMIT = 100;
  * part of the line and no sentence end, so a statement's line runs on to the first sentence end
  * after its label (decision 51). A line held to the limit that holds no space past its label -
  * one unbroken token, a URL or an identifier - is cut at the limit itself, because there is no
- * word boundary to cut at and the limit is the row's whole budget. `cut` says whether the text
- * carries on past the line, which is what the row draws its ellipsis for.
+ * word boundary to cut at and the limit is the row's whole budget, and one unit short of it
+ * where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says whether the
+ * text carries on past the line, which is what the row draws its ellipsis for.
  */
 export function firstLineOf(text: string): { readonly cut: boolean; readonly line: string } {
   const whole = text.replace(/\s+/gu, " ").trim();
@@ -303,9 +304,10 @@ export function firstLineOf(text: string): { readonly cut: boolean; readonly lin
   }
   const window = whole.slice(0, FIRST_LINE_LIMIT + 1);
   const lastSpace = window.lastIndexOf(" ");
-  const line =
-    lastSpace <= label.length ? window.slice(0, FIRST_LINE_LIMIT) : window.slice(0, lastSpace);
-  return { cut: true, line };
+  if (lastSpace > label.length) return { cut: true, line: window.slice(0, lastSpace) };
+  const last = whole.charCodeAt(FIRST_LINE_LIMIT - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? FIRST_LINE_LIMIT - 1 : FIRST_LINE_LIMIT;
+  return { cut: true, line: whole.slice(0, end) };
 }
 
 /**

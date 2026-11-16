@@ -70,9 +70,9 @@ function treeDocumentIds(issue: IssueDetails): string[] {
  * (`row-references.ts`). This is what the batched reference read is given, which is why the
  * page draws every chip and every link in one request rather than one per node (R21); a block
  * whose words come from that read's own answer cites what nothing else cites, which one more
- * read names (`useIssueTree`). It is here and not beside the model, because reading a text's
- * citations takes the page's markdown reading, which the model's own module stays clear of so
- * the browser suite can import it.
+ * read names (`useIssueTree`). It is here, beside the reads it is the key of, and not beside
+ * the model, which makes no read; what a text cites is read by `citedReferences`
+ * (`row-references.ts`), over the one reader of a text's citations (`text-references.ts`).
  */
 function treeReferences(root: TreeNode): string[] {
   const refs = new Set<string>();
@@ -224,7 +224,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   );
   // What the named tree's words cite that the first read was not given: a typed block's words
   // come from that read's answer, so what they cite is known only now (above). An empty set is
-  // no request, and the names already in hand stand while a new set loads, as above.
+  // no request, and the names already in hand stand while a new non-empty set loads, as above.
   const extra = useMemo(() => {
     if (first === undefined) return [];
     const asked = new Set(refs);
@@ -234,12 +234,14 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     ...referenceTargetsQuery(extra),
     placeholderData: keepPreviousData,
   });
-  // Both answers, the second's standing for an address both name.
+  // Both answers, the second's standing for an address both name. Where nothing is left for the
+  // second read to name, it has no answer: its query is disabled and would hold its last answer
+  // as placeholder for good, over the first read's newer names for the same addresses.
   const named = useMemo(() => {
-    const added = more.data?.targets ?? [];
+    const added = extra.length === 0 ? [] : (more.data?.targets ?? []);
     if (first === undefined || added.length === 0) return first;
     return [...new Map([...first, ...added].map((target) => [target.ref, target])).values()];
-  }, [first, more.data]);
+  }, [extra, first, more.data]);
   // The same answer every link of this page would otherwise read one pointer at a time: a
   // block's own words, which a link in a document, in a decision's card or in a comment's
   // preview shows (`reference-names.tsx`, R20). Every one of those draws the name it is given

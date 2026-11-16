@@ -102,16 +102,25 @@ const issue: IssueDetails = {
 
 const comment: Comment = {
   anchor: null,
+  answers: null,
+  artifact_id: null,
+  ask_id: null,
   author: { id: "alice", kind: "user" },
   body: "One more turn of the conversation.",
   created_at: "2026-11-05T01:00:00Z",
+  deliveries: [],
+  edited_at: null,
   id: "comment-1",
   issue_key: KEY,
-  parent_id: null,
+  mentions: [],
+  reply_block: null,
+  reply_to: null,
+  resolved: false,
   resolved_at: null,
   resolved_by: null,
-  updated_at: "2026-11-05T01:00:00Z",
-} as unknown as Comment;
+  suggestion: null,
+  turn: null,
+};
 
 /** A read the tree is built from, by what it reads: each is one the batched name read waits on. */
 type TreeRead =
@@ -382,8 +391,68 @@ test("what a plan task's words cite is named by one more read", async () => {
     await waitFor(() => expect(view.result.current).toBe("The cited issue"));
     expect(asked).toHaveLength(2);
     expect(asked[0]).toContain(TASK_REF);
-    expect(asked[0]).not.toContain(cited);
     expect(asked[1]).toEqual([cited]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// Once nothing is left for the second read to name - an address only a plan task's words cited
+// is cited by a comment too, so the first read names it - the second read's query is disabled,
+// and it would hold its last answer as placeholder for good. The name the page publishes for
+// that address is the first read's newer one, never that older answer.
+test("once the second read has nothing left to name, the first read's newer names stand", async () => {
+  const cited = "dispatch://CORE-7";
+  const words = `Draw the tree as ${cited} asks.`;
+  let title = "The cited issue";
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        return target.ref === cited ? { ...target, kind: "issue", name: title } : target;
+      }),
+    };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    // The first round: only the plan task's words cite the issue, so the second read names it.
+    await waitFor(() => expect(view.result.current).toBe("The cited issue"));
+    expect(asked[1]).toEqual([cited]);
+
+    // The issue is renamed, and a comment citing it arrives: the tree's own addresses hold it
+    // now, so the first read names it and nothing is left for the second.
+    title = "The cited issue, renamed";
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [{ ...comment, body: `Read ${cited} again.` }]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current).toBe("The cited issue, renamed"));
+    expect(asked).toHaveLength(3);
+    expect(asked[2]).toContain(cited);
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
@@ -505,8 +574,6 @@ test("A published name is a typed block's words, never its directive line", asyn
         { wrapper }
       );
       await waitFor(() => expect(view.result.current, `the read sent ${sent}`).toBe(TASK_WORDS));
-      expect(view.result.current).not.toContain(":::");
-      expect(view.result.current).not.toContain("{#");
       view.unmount();
     } finally {
       for (const stub of stubs) stub.mockRestore();

@@ -158,8 +158,8 @@ test("a check whose every result was withdrawn reads Retracted and names no comm
   expect(read.statements[0]?.checks[1]?.latest?.id).toBe("result-withdrawn");
 });
 
-// R17's "Unknown otherwise", and R10: the statement carries its gap, which the coverage read
-// writes onto the node; a statement whose check has no result is covered all the same.
+// R17's "Unknown otherwise": a check with no result leaves its statement Unknown, and the
+// statement is covered all the same, since a check serves it.
 test("a check with no result reads No result, and its statement is covered and Unknown", () => {
   const unrun = check({ block_id: "c-one", pass_stands: { answer: "no" }, results: [] });
   const read = reading([statementNode("r1", "The page draws it.", [checkNode(unrun)])], [unrun]);

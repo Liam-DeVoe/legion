@@ -140,6 +140,8 @@ export const ROOT_ORDER = {
   /** The first block of the issue's spec; every other document's blocks follow, one whole
    *  number per document (`documentRanks`), which keeps them under the decisions' `1000`. */
   block: 0,
+  /** The group of child issues, each a fraction of one past it in the issue read's order, so
+   *  however many children an issue has none reaches the conversation's orders. */
   child: 3000,
   /** A question of the issue's own and a turn: `orderConversation` counts up from here. */
   conversation: 4000,
@@ -514,8 +516,10 @@ function addDocumentBlocks(
  * child's own tree is its own page, so a child holds no node below it.
  */
 function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
-  (reads.issue.children ?? []).forEach((child, index) => {
-    const draft = add(drafts, blank(child.key, "child_issue", ROOT_ORDER.child + index));
+  const children = reads.issue.children ?? [];
+  children.forEach((child, index) => {
+    const order = ROOT_ORDER.child + index / children.length;
+    const draft = add(drafts, blank(child.key, "child_issue", order));
     draft.child = child;
     draft.text = child.title;
   });

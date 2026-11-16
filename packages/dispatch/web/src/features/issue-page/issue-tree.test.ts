@@ -13,6 +13,7 @@ import type {
   Decision,
   DisplayTree,
   IssueCheckResults,
+  IssueChild,
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
@@ -34,6 +35,7 @@ import {
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { blockNodeId } from "./tree-drafts";
+import { nodesInOrder } from "./tree-keys";
 
 /**
  * The tree model, read as the page reads it: one call with the page's reads in and the issue's
@@ -159,9 +161,9 @@ function coverage(requirements: readonly RequirementCoverage[]): IssueCoverage {
 const RESULT_COMMIT = "c".repeat(40);
 
 /** One result recorded against a check, with the negative control it recorded; `""` is a result
- *  that recorded none, which is what the page draws the gap for (R8). `extra` is whatever the
- *  case changes about it: the verdict it reached, the retraction that withdrew it, or the words
- *  of its check having moved under it. */
+ *  that recorded none, which the page draws no gap for, since dispatch://INFRA-1253 R3 refuses
+ *  such a result. `extra` is whatever the case changes about it: the verdict it reached, the
+ *  retraction that withdrew it, or the words of its check having moved under it. */
 function recorded(
   id: string,
   negativeControl: string,
@@ -386,6 +388,14 @@ test("a check that serves two requirements is drawn under both", () => {
       },
     ],
     issue: issueDetails([spec, checks]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ":::check{#c1}\nThe tree draws both requirements.\n:::",
+        ref: `dispatch://${KEY}/artifact/${VERIFICATION}#b-c1`,
+      },
+    ],
   });
 
   const drawn = placementsOf(root, blockNodeId(VERIFICATION, "c1"));
@@ -396,14 +406,17 @@ test("a check that serves two requirements is drawn under both", () => {
   expect(drawn.map((one) => one.node.transcluded)).toEqual([false, true]);
   expect(drawn[0]?.node.alsoUnder.map((chip) => chip.ref)).toEqual([`dispatch://${KEY}/spec#b-r2`]);
   expect(drawn[1]?.node.alsoUnder.map((chip) => chip.ref)).toEqual([`dispatch://${KEY}/spec#b-r1`]);
-  // One node, two placements: both open the same block, so both carry the same text.
-  expect(drawn[0]?.node.text).toBe(drawn[1]?.node.text ?? "");
+  // One node, two placements: both open the same block, so both carry its words.
+  expect(drawn.map((one) => one.node.text)).toEqual([
+    "The tree draws both requirements.",
+    "The tree draws both requirements.",
+  ]);
 });
 
 // R4, R8: a node whose spine parent is absent sits under the issue, as a node like any other and
 // never as an error. No requirement carries a `from` and no decision a question it settles under
 // today's model, so the absence tells no node apart from its siblings and no gap says it: the
-// requirement keeps the one gap that does, that no check serves it, and the decision keeps none.
+// requirement keeps the one gap that does, that no check serves it.
 test("a requirement no decision shaped sits under the issue as a node nothing explains", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -418,7 +431,6 @@ test("a requirement no decision shaped sits under the issue as a node nothing ex
   expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.gaps).toEqual(["no_check"]);
   const settled = blockNodeId("decisions-md", "d1");
   expect(placementsOf(root, settled).map((one) => one.parent)).toEqual([KEY]);
-  expect(nodeOf(root, settled)?.gaps).toEqual([]);
 });
 
 // R9: a decision the model marks unsure carries the mark its row says in one word, and one the
@@ -710,6 +722,21 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   // A space at the limit's own edge is a word boundary, and the line ends before it.
   const atTheEdge = `${"a".repeat(FIRST_LINE_LIMIT)} tail`;
   expect(firstLineOf(atTheEdge)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
+});
+
+// R1: a cut at the limit falls between two characters, never inside one. A character outside the
+// Basic Multilingual Plane is two UTF-16 units, and a line that ends on the first of them holds a
+// lone surrogate, which `encodeURIComponent` refuses and a row draws as a broken glyph.
+test("a first line cut at the limit never ends inside a surrogate pair", () => {
+  const face = "\u{1F600}";
+  // The run starts one unit in, so the limit falls between the two units of its 50th face.
+  const line = firstLineOf(`a${face.repeat(75)}`);
+  expect(line).toEqual({ cut: true, line: `a${face.repeat(49)}` });
+  const last = line.line.charCodeAt(line.line.length - 1);
+  expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+  expect(decodeURIComponent(encodeURIComponent(line.line))).toBe(line.line);
+  // A run whose pairs end at the limit keeps every one of them.
+  expect(firstLineOf(face.repeat(75))).toEqual({ cut: true, line: face.repeat(50) });
 });
 
 // R1 and decision 51: a statement opens on its label - `R1.`, `12.`, `1.2.` - and the label is
@@ -1065,7 +1092,8 @@ test("an ask's answer is part of the ask's node and no node of its own", () => {
     text: "The preset row keeps its labels.\n\nAbove that width.",
   });
   expect(node?.children).toEqual([]);
-  expect(nodeOf(root, "ask-2")).toBeUndefined();
+  // Nor is it a node under the issue: the ask is the issue's one child.
+  expect(root.children.map((child) => child.id)).toEqual(["ask-1"]);
 });
 
 // R9: the issue's own node carries the author the issue read names, so its row draws who
@@ -1126,6 +1154,36 @@ test("a question of the issue is drawn among the turns, by the time it was asked
     "z-first",
     "c1",
     "a-last",
+  ]);
+});
+
+// R1, R12: the group of children sits before the conversation however many children there are.
+// A child's place in the issue's order is a fraction of one past the group's, as a block's is in
+// its document, so a thousandth child never reaches the conversation's orders, which are ordered
+// by a time a child does not have.
+test("an issue with more than a thousand children draws them in order, the conversation after", () => {
+  const children = Array.from(
+    { length: 1001 },
+    (_, index): IssueChild => ({
+      active_at: "2026-11-05T00:00:00Z",
+      external_links: [],
+      key: `CORE-${index + 2}`,
+      status: "todo",
+      subtree_done: 0,
+      subtree_total: 0,
+      title: `Child ${index + 1}.`,
+    })
+  );
+  const root = buildIssueTree({
+    asks: [question("a-question", { created_at: "2026-11-04T09:30:00Z" })],
+    comments: [comment("c0", "2026-11-04T09:00:00Z")],
+    issue: { ...issueDetails([]), children },
+  });
+
+  expect(root.children.map((child) => child.id)).toEqual([
+    ...children.map((child) => child.key),
+    "c0",
+    "a-question",
   ]);
 });
 
@@ -1799,8 +1857,12 @@ test("a check whose latest result records no negative control draws no gap", () 
     results: checkedResults([{ blockId: "c1", results: [recorded("result-latest", "")] }]),
   });
 
-  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual([]);
-  expect(nodeOf(root, "result-latest")?.gaps).toEqual([]);
+  // The result is drawn under its check, and no node of the tree - the check, the result or any
+  // other - draws a gap for the control it lacks.
+  expect(placementsOf(root, "result-latest").map((one) => one.parent)).toEqual([
+    blockNodeId(VERIFICATION, "c1"),
+  ]);
+  expect(nodesInOrder(root).flatMap((node) => node.gaps)).toEqual([]);
 });
 
 /** The state the page reads for the one check of a Verification document: what `payload`
