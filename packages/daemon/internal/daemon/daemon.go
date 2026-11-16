@@ -1231,6 +1231,10 @@ type supervision struct {
 	supervisor *supervisor
 	tokens     *api.BootTokens
 	claims     []supervise.Claim
+	// releaseStopped is the claims the boot read that a project release stopped and whose
+	// sessions do not hold their roles yet (readReleaseStoppedClaims), which attach gives the
+	// workflow and the outbox. Nil, in a supervision a test builds by hand, holds no claim.
+	releaseStopped *releaseStoppedClaims
 	// refreshGate is the daemon's one stale-plugin refresh gate, the same object every machine of
 	// this supervision holds on its Deps (supervise.RefreshGate, built in run and handed to
 	// openSupervision beside the wake limiter). Supervision keeps the reference because the
@@ -1435,6 +1439,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		return nil, err
 	}
 	claims = ofProject(claims, p.project)
+	releaseStopped, err := readReleaseStoppedClaims(boot, st, p.project, claims, log)
+	if err != nil {
+		return nil, err
+	}
 	reports, err := st.CapabilityReports(boot)
 	if err != nil {
 		return nil, err
@@ -1522,7 +1530,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
-		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
+		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims, releaseStopped: releaseStopped,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,

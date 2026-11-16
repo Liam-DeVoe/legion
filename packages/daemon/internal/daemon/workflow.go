@@ -133,9 +133,9 @@ type workflowRuntime struct {
 	// unowned ticks decide no pod (idlePass) and the wakes fire nothing (wakePass). Nil, in a test
 	// that builds the runtime by hand, holds nothing.
 	release *projectRelease
-	// releaseStopped is the claims the boot found stopped by a project release that have not come
-	// back since, the set attach also gives the outbox: a claim's ready, turn or failure takes it
-	// out (claimDurableState). Nil, in a test that builds the runtime by hand, holds no claim.
+	// releaseStopped is the claims a boot found stopped by a project release whose sessions do not
+	// hold their roles yet, the set attach also gives the outbox: a claim's turn or failure takes
+	// it out (claimDurableState). Nil, in a test that builds the runtime by hand, holds no claim.
 	releaseStopped *releaseStoppedClaims
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
@@ -1076,8 +1076,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
 // GitHub through this runtime's own read of a pull request and waits this runtime's wait between
 // failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
-// outbox (outboxWake). The claims the boot found stopped by a project release are read from
-// supervision's own read of the store at the boot (releaseStoppedClaims), before any machine
+// outbox (outboxWake). The claims a boot found stopped by a project release are the set
+// supervision read from the store at the boot (readReleaseStoppedClaims), before any machine
 // exists and so before the boot's start of any of them runs.
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
@@ -1091,7 +1091,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	}
 	w.outbox.mergeStateWait = w.mergeStateWait
 	w.outbox.release, w.release = supervision.plan.release, supervision.plan.release
-	w.releaseStopped = newReleaseStoppedClaims(supervision.claims)
+	w.releaseStopped = supervision.releaseStopped
 	w.outbox.releaseStopped = w.releaseStopped
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
@@ -1275,12 +1275,16 @@ func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState
 // claimDurableState is the daemon's one durable-state callback, because a supervisor keeps one
 // (supervisor.OnDurableState): a claim's ready and its failure are workflow facts (terminal), and
 // the same transitions measure a released pod's resume — its replacement pod is up at the first
-// ready, and the woken role took its work at the first turn (podResume). Each of the three states
-// it reports also ends the wait a delivery makes for a claim the boot found stopped by a project
-// release (releaseStoppedClaims): ready and working are a session that holds its role again, and
-// a failed claim holds it no more.
+// ready, and the woken role took its work at the first turn (podResume). Two of the three states
+// it reports also end the wait a delivery makes for a claim a boot found stopped by a project
+// release (releaseStoppedClaims): working is a session that holds its role, and a failed claim
+// holds it no more. A ready ends no such wait: the plugin takes the role after the ready, at the
+// session's first turn or at the first-turn bound (supervise.SaidReady), and the set reads that
+// bound from the claim's own ready (releaseStoppedClaims.comingBack).
 func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.ClaimState) {
-	w.releaseStopped.settled(c.Token)
+	if state == supervise.StateWorking || state == supervise.StateFailed {
+		w.releaseStopped.settled(c.Token)
+	}
 	w.podResume(c, state)
 	if state == supervise.StateReady || state == supervise.StateFailed {
 		w.terminal(c, state)

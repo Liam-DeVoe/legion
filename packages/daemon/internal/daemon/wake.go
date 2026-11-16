@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -216,42 +217,43 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // for (deliverResuming); these four publish to a live session instead, so the row's own retry is
 // what waits for the pod, and this is what makes the pod come back for it to find.
 //
-// It answers whether the delivery waits for the claim to come back. For a claim an idle release
-// released that is a resume of it under way: the role's one open resume is what makes the wake
-// one wake however often the row retries, so a notice that backs off for ten minutes resumes the
-// claim once. A claim of an issue that has left the workflow, or whose tree lingers, is not
-// woken: that pod is a close's to stop. An outbox with no supervisor — a test's, which supervises
-// nothing — wakes nothing: there is no machine to read a claim's state from.
+// It answers the wait the delivery makes for the claim to come back, an error carrying its own
+// sentence, and nil when the delivery waits for nothing. For a claim an idle release released
+// that is a resume of it under way (releasedPodWait): the role's one open resume is what makes
+// the wake one wake however often the row retries, so a notice that backs off for ten minutes
+// resumes the claim once. A claim of an issue that has left the workflow, or whose tree lingers,
+// is not woken: that pod is a close's to stop. An outbox with no supervisor — a test's, which
+// supervises nothing — wakes nothing: there is no machine to read a claim's state from.
 //
-// A claim the daemon's boot starts after a project release answers true as well, and is woken by
-// nothing here (awaitsBootStart): the delivery waits on its own row's retry, as it waits for a
-// released pod coming back, until the claim's session holds its role again.
+// A claim the daemon's boot starts after a project release waits as well, and is woken by
+// nothing here (awaitsBootStart, bootStartWait): the delivery waits on its own row's retry, as it
+// waits for a released pod coming back, until the claim's session holds its role again.
 //
 // The claim is read from the machine's View, which never waits on the decision in flight: a
 // machine holds its lock through the runtime call its decision makes, so a read that waited
 // would hold the notice and the phase-ended message behind a Sandbox relaunch waiting on the
 // cluster, which is the defect LEGION-650 fixed in the routing beside this read.
-func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string) (bool, error) {
+func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string) error {
 	if r.supervisor == nil {
-		return false, nil
+		return nil
 	}
 	machine, found := r.supervisor.Machine(token)
 	if !found {
-		return false, nil
+		return nil
 	}
 	held := machine.View()
-	if waits, err := r.awaitsBootStart(ctx, held); waits || err != nil {
-		return waits, err
+	if err := r.awaitsBootStart(ctx, held, detail); err != nil {
+		return err
 	}
 	if !held.Released() {
-		return false, nil
+		return nil
 	}
 	if live, err := r.inLiveWorkflow(ctx, held.Issue); !live || err != nil {
-		return false, err
+		return err
 	}
 	taken, err := r.trees.TakePodWake(ctx, r.project, held.Issue, held.Role, pods.WakeDelivery, r.now().UTC())
 	if err != nil {
-		return false, err
+		return err
 	}
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
 	// of that claim ever ran. This take commits before the resume it leads to, and that resume is
@@ -267,7 +269,7 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	reason := "a wake for " + detail
 	if !taken {
 		if !machine.View().Released() {
-			return true, nil
+			return releasedPodWait(detail, held)
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
 		r.log.Warn("wake: a released pod's resume stands open with no process behind it; this wake resumes it",
@@ -277,14 +279,21 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 			"issue", held.Issue, "role", held.Role, "detail", detail)
 	}
 	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
-		return false, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
+		return fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
 	}
-	return true, nil
+	return releasedPodWait(detail, held)
 }
 
-// awaitsBootStart is whether a delivery for held's claim waits for the start the daemon's boot
+// releasedPodWait is the wait of a delivery, which detail names, for the pod an idle release took
+// from held's claim to come back (wakeForDelivery).
+func releasedPodWait(detail string, held supervise.ClaimView) error {
+	return wait.Errorf("%s waits for the released pod of %s's %s to come back", detail, held.Issue, held.Role)
+}
+
+// awaitsBootStart is the wait a delivery for held's claim makes for the start the daemon's boot
 // gives a claim the project release stopped (workflow's booted), which the wake pacing lets out
-// in its turn. Nothing here wakes such a claim: that start is its one start. The delivery waits
+// in its turn, and for that start's session to hold the claim's role; nil when the delivery waits
+// for neither. Nothing here wakes such a claim: that start is its one start. The delivery waits
 // for it on its own row's retry rather than publishing to a role nobody holds yet, which ends a
 // role message, a phase-ended message or a hook prompt undelivered (dispatch://INFRA-3583 R8).
 // Two claims wait:
@@ -293,22 +302,37 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 //     issue stands in the workflow under a tree that does not linger (inLiveWorkflow): a claim
 //     of an issue that has left the workflow, or of a tree that lingers, may never be started
 //     again, and no delivery waits on that;
-//   - one this process's boot found stopped by the release, from its start until its session
-//     holds its role again (releaseStoppedClaims.comingBack), which reads launching,
-//     shim_connected or registered meanwhile.
+//   - one a boot found stopped by the release, from its start until its session holds its role
+//     (releaseStoppedClaims.comingBack): while it comes up, and while it stands ready or idle
+//     inside the first-turn bound, when the row runs again at the bound's end (wait.Until).
 //
-// A claim whose session is back, ready, working or idle, waits for nothing and is published to.
-// A claim that failed or retired, or that anything but the release suspended, does not wait
-// either and is delivered as a claim no release stopped is, so no row waits for a start that
-// does not come.
-func (r *outbox) awaitsBootStart(ctx context.Context, held supervise.ClaimView) (bool, error) {
-	if r.releaseStopped.comingBack(held) {
-		return true, nil
+// A claim whose session holds its role again waits for nothing and is published to. A claim that
+// failed or retired, or that anything but the release suspended, does not wait either and is
+// delivered as a claim no release stopped is, so no row waits for a start that does not come.
+func (r *outbox) awaitsBootStart(ctx context.Context, held supervise.ClaimView, detail string) error {
+	if until, waits := r.releaseStopped.comingBack(held, r.now); waits {
+		return bootStartWait(detail, held, until)
 	}
 	if !held.ProjectReleased() {
-		return false, nil
+		return nil
 	}
-	return r.inLiveWorkflow(ctx, held.Issue)
+	if live, err := r.inLiveWorkflow(ctx, held.Issue); !live || err != nil {
+		return err
+	}
+	return bootStartWait(detail, held, time.Time{})
+}
+
+// bootStartWait is the wait of a delivery, which detail names, for held's claim to hold its role
+// again after the start the daemon's boot gives a claim the project release stopped
+// (awaitsBootStart). A claim that stands ready names until, the moment its session holds the role
+// by, and the row runs again then; a zero until leaves the row to its backoff.
+func bootStartWait(detail string, held supervise.ClaimView, until time.Time) error {
+	text := fmt.Sprintf("%s waits for %s's %s to hold its role again after the start the daemon's boot gives a claim the project release stopped",
+		detail, held.Issue, held.Role)
+	if until.IsZero() {
+		return wait.Errorf("%s", text)
+	}
+	return wait.Until(until, text+", which its session takes by "+until.UTC().Format(time.RFC3339))
 }
 
 // inLiveWorkflow is whether the issue key names stands in the workflow under a tree that does

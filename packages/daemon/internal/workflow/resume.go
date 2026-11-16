@@ -143,8 +143,11 @@ type releaseStopped struct {
 //
 // Each claim gets one start, and none when a queued start already covers it (StartFor): the
 // start of a phase owner behind the entry its phases row names that admission's first pass
-// wrote, the cutover's repair of a merger, a start the release held in the outbox. What a start
-// carries is the work the record owes the role, and nothing else:
+// wrote, the cutover's repair of a merger, a start the release held in the outbox. Whichever
+// start a claim has, it still starts the claim once the issue has left the phase or the entry
+// that start names: the outbox's phase and entry fences start a claim stored suspended by
+// `project_release` with no task rather than finish its start (the outbox's releaseStoppedStart).
+// What a start carries is the work the record owes the role, and nothing else:
 //
 //   - A phase owner behind that entry is sent the work of that entry at that entry
 //     (sendOwedEntry, with the ruleResume mark), as the resume by rule sends it.

@@ -763,8 +763,10 @@ type SuperviseRequest struct {
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
-	// finishes without acting. It is empty for the architect, which serves every phase, and for a
-	// suspend or a tree's close, which must still act after the issue moves on.
+	// finishes without acting, unless its claim is stored suspended by `project_release`, which
+	// the start then resumes by rule with no task (the daemon's outbox, releaseStoppedStart). It
+	// is empty for the architect, which serves every phase, and for a suspend or a tree's close,
+	// which must still act after the issue moves on.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -807,9 +809,11 @@ type SuperviseRequest struct {
 	ResumeTask bool `json:"resumeTask,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, the boot's one-time start of a merger the
 	// `awaiting_merge` cutover left released (workflow's cutoverMergerRepair), and the boot's start
-	// of each claim the project release stopped (workflow's startReleaseStopped). If its resumed
-	// claim spends its launch budget, the runner finishes this row rather than retrying it as
-	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
+	// of each claim the project release stopped (workflow's startReleaseStopped); the outbox sets
+	// it too on the start it makes of such a claim in place of a start its phase or entry fence
+	// would finish (the daemon's releaseStoppedStart). If its resumed claim spends its launch
+	// budget, the runner finishes this row rather than retrying it as RequestRetry with fresh
+	// budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
 	// NeedsSlot marks a start whose phase holds one of the cap's slots (PhaseKeepsSlot) as one
 	// that waits for its issue's admission slot. The cap counts the issues the daemon has

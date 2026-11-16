@@ -164,11 +164,11 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
-	// merger on every attempt and wait for a session nothing brings back.
-	if woken, err := r.wakeForDelivery(ctx, token, "the merge-queue removal of "+row.Issue); err != nil {
+	// merger on every attempt and wait for a session nothing brings back. The wait it answers
+	// says whether the merger's released pod is coming back or the merger waits for the start the
+	// daemon's boot gives it after a project release.
+	if err := r.wakeForDelivery(ctx, token, "the merge-queue removal of "+row.Issue); err != nil {
 		return err
-	} else if woken {
-		return wait.Errorf("the merge-queue removal of %s waits for its merger's released pod to come back", row.Issue)
 	}
 	message := payload.Message(row.Issue, pr.Repo)
 	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
