@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 
 import type { Actor, Artifact, Comment, DispatchEvent, MessageRead } from "../../api/types";
-import { buildHistory, type HistoryDay, type HistoryEntry } from "./history-model";
+import {
+  buildHistory,
+  type HistoryDay,
+  type HistoryEntry,
+  type HistoryInput,
+} from "./history-model";
 
 /**
  * The issue's history as the panel draws it (dispatch://INFRA-1196 R15): every event that is no
@@ -96,6 +101,7 @@ test("the history leaves out every event of a row the outline draws, and a docum
   const kept = flat(
     buildHistory({
       artifacts: [spec],
+      asks: [],
       comments: [comment("c1", "2026-11-15T09:05:00Z", PERSON)],
       events,
       lastReadSeq: 0,
@@ -120,6 +126,7 @@ test("the history keeps the events of an approval request, which the outline dra
   const kept = flat(
     buildHistory({
       artifacts: [],
+      asks: [],
       comments: [],
       events,
       lastReadSeq: 0,
@@ -146,6 +153,7 @@ test("one author's uploads within a minute are one entry that opens each file", 
   const entries = flat(
     buildHistory({
       artifacts: shots,
+      asks: [],
       comments: [],
       events: [...uploads, later],
       lastReadSeq: 0,
@@ -187,10 +195,11 @@ test("a thread agents wrote among themselves is one entry with its replies, unti
     },
     replies: [],
   };
-  const history = (comments: Comment[]) =>
+  const history = (comments: Comment[], asks: HistoryInput["asks"] = []) =>
     flat(
       buildHistory({
         artifacts: [],
+        asks,
         comments,
         events: [],
         lastReadSeq: 0,
@@ -213,6 +222,16 @@ test("a thread agents wrote among themselves is one entry with its replies, unti
     reply_to: "among",
   });
   expect(history([root, reply, person])).toEqual([{ replies: [], root: "daemon" }]);
+  // A comment under an approval request names the ask, where the server's climb to a thread's
+  // head stops, so every comment naming it is one thread, at its earliest, whatever `reply_to`
+  // says (`agents-only.ts`): agents' turns there are one entry, not one entry each.
+  const ask = { id: "approval-1", kind: "approval" as const };
+  const later = comment("approve-later", "2026-11-15T08:30:00Z", AGENT, { ask_id: ask.id });
+  const earlier = comment("approve-first", "2026-11-15T08:00:00Z", AGENT, { ask_id: ask.id });
+  expect(history([later, earlier], [ask])).toEqual([
+    { replies: [], root: "daemon" },
+    { replies: ["approve-later"], root: "approve-first" },
+  ]);
 });
 
 test("each day is headed, newest first, and the read mark falls between read and unread", () => {
@@ -224,6 +243,7 @@ test("each day is headed, newest first, and the read mark falls between read and
   ];
   const days = buildHistory({
     artifacts: [],
+    asks: [],
     comments: [],
     events,
     lastReadSeq: 2,
@@ -251,6 +271,7 @@ test("the read mark falls inside a day where that day holds read and unread entr
   ];
   const days = buildHistory({
     artifacts: [],
+    asks: [],
     comments: [],
     events,
     lastReadSeq: 1,
@@ -272,6 +293,7 @@ test("a thread that began before the oldest event read so far waits for its page
     flat(
       buildHistory({
         artifacts: [],
+        asks: [],
         comments: [old, recent],
         events,
         lastReadSeq: 0,
@@ -301,6 +323,7 @@ test("a delivery and a resolution of an agents' thread are lines of the history"
   const lines = flat(
     buildHistory({
       artifacts: [],
+      asks: [],
       comments: [among, mine],
       events,
       lastReadSeq: 0,

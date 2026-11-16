@@ -96,7 +96,8 @@ export function IssueHistory({
         mergeEventPages(current as EventPages | undefined, incoming as EventPages)
       ),
   });
-  // The outline's own reads, under its keys, so the threads cost no request of their own.
+  // The outline's own reads, under its keys, so the threads cost no request of their own. The
+  // asks tell a reply under a question, the outline's, from one under an approval request.
   const comments = useQuery({
     queryFn: () => api.listComments(issueKey),
     queryKey: ["comments", issueKey],
@@ -104,6 +105,10 @@ export function IssueHistory({
   const messages = useQuery({
     queryFn: () => api.listIssueMessages(issueKey),
     queryKey: ["issue-messages", issueKey],
+  });
+  const asks = useQuery({
+    queryFn: () => api.listIssueAsks(issueKey, "all"),
+    queryKey: ["asks", issueKey],
   });
   const issueState = stateForIssue(state, issueKey);
   // The reader's read mark for this visit: where it stood when the history first drew for this
@@ -138,6 +143,8 @@ export function IssueHistory({
     () =>
       buildHistory({
         artifacts: issue.artifacts ?? [],
+        // The outline's own ask input (`tree-drafts.ts`), so no turn is in both or neither.
+        asks: [...(issue.open_asks ?? []), ...(asks.data ?? [])],
         comments: comments.data,
         events,
         lastReadSeq,
@@ -145,7 +152,17 @@ export function IssueHistory({
         messages: messages.data,
         today,
       }),
-    [comments.data, events, issue.artifacts, lastReadSeq, loadedFrom, messages.data, today]
+    [
+      asks.data,
+      comments.data,
+      events,
+      issue.artifacts,
+      issue.open_asks,
+      lastReadSeq,
+      loadedFrom,
+      messages.data,
+      today,
+    ]
   );
   // The days before today the reader opened; the day the address's entry is in is opened as
   // the address names it, and the reader's own press closes it again like any other.

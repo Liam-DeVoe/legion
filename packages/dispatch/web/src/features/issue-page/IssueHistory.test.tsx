@@ -90,6 +90,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
   );
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
   const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const layout = installRowLayout();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -132,6 +133,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
     getIssueEvents.mockRestore();
     listComments.mockRestore();
     listIssueMessages.mockRestore();
+    listIssueAsks.mockRestore();
     if (scrollY === undefined) {
       Reflect.deleteProperty(window, "scrollY");
     } else {
@@ -173,6 +175,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
     agentMessage("m-older", 200),
     agentMessage("m-newer", 100),
   ]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const layout = installRowLayout();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -217,6 +220,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
     getIssueEvents.mockRestore();
     listComments.mockRestore();
     listIssueMessages.mockRestore();
+    listIssueAsks.mockRestore();
     if (scrollY === undefined) {
       Reflect.deleteProperty(window, "scrollY");
     } else {

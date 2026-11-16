@@ -1,6 +1,7 @@
 import type {
   Actor,
   Artifact,
+  Ask,
   Comment,
   CommentWithTrees,
   DispatchEvent,
@@ -87,6 +88,10 @@ export interface UploadedFile {
 
 export interface HistoryInput {
   readonly artifacts: readonly Artifact[];
+  /** The issue's asks, which tell a reply under a question, the outline's, from one under an
+   *  approval request (`agents-only.ts`): the outline's own input, the issue's open asks and the
+   *  asks read (`tree-drafts.ts`). */
+  readonly asks: readonly Pick<Ask, "id" | "kind">[];
   readonly comments: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[] | undefined;
   readonly events: readonly DispatchEvent[];
   /** `user_issue_state.last_read_seq`: the reader's read mark. */
@@ -147,7 +152,7 @@ type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
 /** The issue's history by day, newest first (`HistoryDay`). */
 export function buildHistory(input: HistoryInput): HistoryDay[] {
   const kinds = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
-  const agentsOnly = agentsOnlyIds(input.comments, input.messages);
+  const agentsOnly = agentsOnlyIds(input.comments, input.messages, input.asks);
   const entries: Dated[] = [];
   let previousStatus: string | undefined;
   let run: { author: Actor; at: string; entry: Extract<Dated, { kind: "uploads" }> } | undefined;
@@ -237,7 +242,10 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
 }
 
 /** Each thread agents wrote among themselves, as one entry at its first turn: every one that
- *  began inside what the log has read (`HistoryInput.loadedFrom`). */
+ *  began inside what the log has read (`HistoryInput.loadedFrom`). A comment under an ask names
+ *  the ask (`ask_id`), where the server's climb to a thread's head stops, so the thread of an
+ *  approval request is every comment naming it (`agents-only.ts`), whatever its `reply_to`
+ *  says: one entry per ask, at its earliest comment, the rest its replies. */
 function threadsOf(
   input: HistoryInput,
   ids: ReadonlySet<string>,
@@ -245,8 +253,23 @@ function threadsOf(
 ): Dated[] {
   const threads: Dated[] = [];
   const comments = (input.comments ?? []).filter((comment) => ids.has(comment.id));
-  for (const root of comments.filter((comment) => comment.reply_to === null)) {
-    const replies = comments
+  const byAsk = new Map<string, typeof comments>();
+  for (const comment of comments) {
+    if (comment.ask_id === null) continue;
+    const thread = byAsk.get(comment.ask_id);
+    if (thread === undefined) byAsk.set(comment.ask_id, [comment]);
+    else thread.push(comment);
+  }
+  for (const thread of byAsk.values()) {
+    const [root, ...replies] = thread.sort((one, other) =>
+      compareTimestamps(one.created_at, other.created_at)
+    );
+    if (root === undefined) continue;
+    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn), seqOf));
+  }
+  const unasked = comments.filter((comment) => comment.ask_id === null);
+  for (const root of unasked.filter((comment) => comment.reply_to === null)) {
+    const replies = unasked
       .filter((comment) => comment.reply_to === root.id)
       .sort((one, other) => compareTimestamps(one.created_at, other.created_at));
     threads.push(threadEntry(commentTurn(root), replies.map(commentTurn), seqOf));

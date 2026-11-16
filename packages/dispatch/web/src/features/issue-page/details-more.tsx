@@ -143,8 +143,8 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  * addresses and put the focus in what they open.
  *
  * The history's log is read only while Details is open or an address opens it, so a load that
- * leaves Details shut costs no request for it (R21). The comments and messages an item's address
- * is told by are the outline's own reads, under its keys.
+ * leaves Details shut costs no request for it (R21). The comments, messages and asks an item's
+ * address is told by are the outline's own reads, under its keys.
  */
 export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const { hash, pathname, search } = useLocation();
@@ -164,10 +164,21 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     queryFn: () => api.listIssueMessages(issue.key),
     queryKey: ["issue-messages", issue.key],
   });
+  // The asks tell a reply under a question, which the outline draws, from one under an approval
+  // request, which it does not (`agents-only.ts`).
+  const asks = useQuery({
+    enabled: namesItem,
+    queryFn: () => api.listIssueAsks(issue.key, "all"),
+    queryKey: ["asks", issue.key],
+  });
   // A comment or message an agent wrote outside every thread a person wrote in is no row of the
   // outline: it is an entry of the history, which Details opens at, with the entry marked.
+  // The outline's own ask input (`tree-drafts.ts`), so an address names the same turns it does.
   const item = namesItem
-    ? agentsOnlyItem(addressed?.target, comments.data, messages.data)
+    ? agentsOnlyItem(addressed?.target, comments.data, messages.data, [
+        ...(issue.open_asks ?? []),
+        ...(asks.data ?? []),
+      ])
     : undefined;
   const opensHistory = route?.kind === "activity" || item !== undefined;
   const drawer = useMarginDrawer();
