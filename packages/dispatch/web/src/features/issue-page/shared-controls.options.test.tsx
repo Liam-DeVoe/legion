@@ -24,6 +24,7 @@ import { approvalPillClassName, LabelPill, Pill, StatusPill } from "../../compon
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { pageHeaderControl, pageInkText } from "../../theme/classes";
+import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
@@ -727,6 +728,44 @@ test("ApprovalSteps at its default layout draws main's list", async () => {
     expect(
       view.container.querySelector('[data-approval-step-reason="criteria"]')?.parentElement
     ).toBe(parentOf(list));
+  } finally {
+    undraw(view);
+  }
+});
+
+// dispatch://INFRA-3935 R1 and R10: `keepActionsTogether` is off by default, so a caller that
+// draws the chip alone, as today's issue header, a document's header and the Inbox's reading
+// pane do, gets `main`'s markup: Approve and Request changes are each the chip's parent's own
+// item, with no box around them. Given as false, it draws the same markup, on both surfaces.
+test("ApprovalChip at its defaults draws its two actions with no box around them", async () => {
+  const awaiting = doc(SPEC_ID, "spec.md", {
+    latest_version: 1,
+    state: "awaiting",
+    waiting_on: "human",
+  });
+  const changed: string[] = [];
+  for (const surface of ["outside", "inside"] as const) {
+    const given = await markupOf(
+      <ApprovalChip artifact={awaiting} keepActionsTogether={false} variant="header" />,
+      surface
+    );
+    const plain = await markupOf(<ApprovalChip artifact={awaiting} variant="header" />, surface);
+    if (given !== plain) changed.push(surface);
+  }
+  expect(changed).toEqual([]);
+
+  const view = draw(
+    <div data-case="host">
+      <ApprovalChip artifact={awaiting} variant="header" />
+    </div>,
+    "outside"
+  );
+  try {
+    const host = caseOf(view, "host");
+    const chipBox = parentOf(within(host).getByRole("button", { name: /^Awaiting approval/ }));
+    expect(parentOf(within(host).getByRole("button", { name: "Approve" }))).toBe(chipBox);
+    expect(parentOf(within(host).getByRole("button", { name: "Request changes" }))).toBe(chipBox);
+    expect(host.querySelector("[class~='flex-nowrap']")).toBeNull();
   } finally {
     undraw(view);
   }
