@@ -1984,6 +1984,8 @@ jobs:
               - 'packages/contracts/src/**'
               # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
               - *listener_command
+              # natsd -callout-keys writes testnats.CalloutConfig, so its build compiles the rig.
+              - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
             # The session stall suites (envoy-session-stall): envoy-client's stall proxy and stack
             # (test/envoy-stack.ts) build natsd and the listener with go build in workspace mode and
