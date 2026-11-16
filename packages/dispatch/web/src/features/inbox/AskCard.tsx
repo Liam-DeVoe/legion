@@ -59,8 +59,8 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useKeymapScope } from "../shell/keymap";
 import {
-  placeCaret,
   quoteInto,
+  useQuotePlacement,
   useQuoteTarget,
   useQuoteTargetRef,
   withQuote,
@@ -476,32 +476,19 @@ export function AskCard({
   };
   // Quote reply (`threads/quote-reply.ts`): the selected words go into the answer box, which a
   // compact card opens from behind its disclosure, and the cursor waits on the empty line under
-  // them once the box holds them. The box grows to show them, and goes back to its own size once
-  // it is empty again.
-  const quoteCaret = useRef<number | null>(null);
-  const quoteGrew = useRef(false);
+  // them once the box holds them (`useQuotePlacement`). The button that sends the answer comes
+  // into view with the box, where the page has room.
+  const placeQuote = useQuotePlacement(answerFieldRef, answerText, () =>
+    actionsRef.current?.scrollIntoView({ block: "nearest" })
+  );
   const quoteIntoAnswer = (blocks: readonly string[]) => {
     const quoted = withQuote(answerText, blocks);
     if (quoted === null) return;
     if (isCompact) setOwnWordsOpen(true);
     setQuestionChoice(false);
     setAnswerText(quoted.text);
-    quoteCaret.current = quoted.caret;
+    placeQuote(quoted);
   };
-  useLayoutEffect(() => {
-    const field = answerFieldRef.current;
-    if (field === null) return;
-    if (answerText === "" && quoteGrew.current) {
-      field.style.height = "";
-      quoteGrew.current = false;
-    }
-    if (quoteCaret.current === null) return;
-    placeCaret(field, quoteCaret.current);
-    // The button that sends the answer comes into view with the box, where the page has room.
-    actionsRef.current?.scrollIntoView({ block: "nearest" });
-    quoteCaret.current = null;
-    quoteGrew.current = true;
-  });
   // The card that holds an answer box - an open question's, and an answered one's while the
   // reader changes the answer - quotes into that box, from the question, the options and the
   // replies in its thread, but not while its answer or question back is out; a decision block's

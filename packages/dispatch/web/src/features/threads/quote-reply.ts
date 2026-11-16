@@ -28,15 +28,18 @@ export function quoteBlocks(blocks: readonly string[]): string {
     .join("\n>\n");
 }
 
+/** A box's text with a quote at its end, and where the cursor goes: the empty line under it. */
+export interface Quoted {
+  readonly caret: number;
+  readonly text: string;
+}
+
 /**
  * What a reply box holds once `blocks` are quoted into it: `current`, then a blank line where it
  * holds any text, then the quote and a blank line, and where the cursor goes, the empty line
  * under that. Null where the selection quotes nothing.
  */
-export function withQuote(
-  current: string,
-  blocks: readonly string[]
-): { readonly caret: number; readonly text: string } | null {
+export function withQuote(current: string, blocks: readonly string[]): Quoted | null {
   const quote = quoteBlocks(blocks);
   if (quote === "") return null;
   const kept = current.trimEnd();
@@ -54,20 +57,50 @@ export function ownWords(text: string): string {
     .join("\n");
 }
 
-/** Grows a reply box to show what a quote put in it, as one the reader typed into grows. */
-export function fitToText(field: HTMLTextAreaElement): void {
-  const frame = field.offsetHeight - field.clientHeight;
-  field.style.height = "auto";
-  field.style.height = `${Math.min(field.scrollHeight + frame, Math.round(window.innerHeight / 2))}px`;
-}
-
-/** Puts the cursor at `caret` in `field`, with the focus, once the box holds its new text, and
- *  brings the box, grown to show it, into view. */
-export function placeCaret(field: HTMLTextAreaElement, caret: number): void {
-  fitToText(field);
-  field.focus({ preventScroll: true });
-  field.setSelectionRange(caret, caret);
-  field.scrollIntoView({ block: "nearest" });
+/**
+ * The box's part of a Quote reply, for the three boxes that take one (an ask's answer box, a
+ * thread's reply box, a composer). The box writes the quoted text into its own state and hands
+ * it to the function this answers; once a render has committed that text - `text` is the box's
+ * state as rendered - the box grows to show it, takes the focus with the cursor on the empty line
+ * under the quote, and comes into view with the form around it where that fits the window, so
+ * the button that sends it is on screen too. A box emptied afterwards goes back to its own size.
+ *
+ * It waits for the render that holds the quote rather than for the next commit: a box the press
+ * itself opened runs its effects before that render, and would measure and focus an empty box.
+ */
+export function useQuotePlacement(
+  field: RefObject<HTMLTextAreaElement | null>,
+  text: string,
+  placed?: () => void
+): (quoted: Quoted) => void {
+  const pending = useRef<Quoted | null>(null);
+  const grew = useRef(false);
+  useLayoutEffect(() => {
+    const element = field.current;
+    if (element === null) return;
+    if (text === "" && grew.current) {
+      element.style.height = "";
+      grew.current = false;
+    }
+    const quoted = pending.current;
+    if (quoted === null || quoted.text !== text) return;
+    pending.current = null;
+    grew.current = true;
+    const frame = element.offsetHeight - element.clientHeight;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight + frame, Math.round(window.innerHeight / 2))}px`;
+    element.focus({ preventScroll: true });
+    element.setSelectionRange(quoted.caret, quoted.caret);
+    const form = element.form;
+    const whole =
+      form !== null && form.getBoundingClientRect().height <= window.innerHeight ? form : element;
+    whole.scrollIntoView({ block: "nearest" });
+    element.scrollIntoView({ block: "nearest" });
+    placed?.();
+  });
+  return useCallback((quoted) => {
+    pending.current = quoted;
+  }, []);
 }
 
 // ---------------------------------------------------------------------------------------------

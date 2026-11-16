@@ -412,21 +412,17 @@ export const ASKS: DemoAsk[] = [
     }),
   },
   {
-    // A question the reader answered three hours ago, on PANE-2's Conversation tab; it is no row
-    // of the Inbox, which lists open questions.
+    // A question the reader answered three hours ago in their own words, on PANE-2's
+    // Conversation tab; it is no row of the Inbox, which lists open questions.
     row: ask(ANSWERED_ASK_ID, "PANE-2", TOOL, 60 * 4, {
-      question: "Should `--dry-run` also print the leases it would skip?",
-      options: [
-        { label: "Print them", description: "One line for each lease the tool leaves alone." },
-        { label: "Leave them out", description: "Only the leases it would hand back." },
-      ],
+      question: "What should `--dry-run` print for a lease the tool leaves alone?",
       urgency: "low",
       state: "answered",
       waiting_on: undefined,
       answer: {
         at: minutesAgo(60 * 3),
-        selected: ["Print them"],
-        text: null,
+        selected: [],
+        text: "One line for each: why the tool leaves it alone, and the lease's id.",
         user: READER,
       },
     }),
@@ -479,7 +475,7 @@ export const ASK_REPLIES: Record<string, Comment[]> = {
       artifact_id: null,
       ask_id: ANSWERED_ASK_ID,
       author: TOOL,
-      body: "Done in the next build. `--dry-run` now prints each lease it leaves alone, after the leases it would hand back:\n\n- `skip` and the lease's id, for a lease another holder has\n- `stale` and the id, for a lease past its renewal\n\n**One thing changed:** the summary line counts the skipped leases too.",
+      body: "Done in the next build. After the leases it would hand back, `--dry-run` now prints:\n\n- `skip` and the lease's id, for a lease another holder has\n- `stale` and the id, for a lease past its renewal\n\n**One thing changed:** the summary line counts the skipped leases too.",
       created_at: minutesAgo(60 * 2),
       deliveries: [],
       edited_at: null,

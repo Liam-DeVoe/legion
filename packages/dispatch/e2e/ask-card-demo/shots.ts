@@ -557,7 +557,7 @@ const shots: Shot[] = [
         page,
         `${card(CHECKED)} [data-ask-answer]`,
         ASK_QUOTE,
-        "q quotes an ask's words in its answer box, as the page shows them, the cursor under them"
+        "q quotes an ask's words in its answer box as the Markdown that draws them, bold kept, the cursor under them"
       );
       check((await page.locator(BAR).count()) === 0, "the bar goes once the words are quoted");
       await rest(page);
@@ -651,9 +651,10 @@ const shots: Shot[] = [
       const record = `main [data-testid="ask-${ANSWERED}"]`;
       const thread = `main [data-testid="thread-${ANSWERED}"]`;
       await open(page, "/issues/PANE-2/conversation", `${thread} .dispatch-markdown`);
-      // The answered question at the top of the window, the agent's reply under its answer.
+      // The answered question right under the tab's composer, the agent's reply under its answer
+      // and the card above it out of the window.
       await page.locator(record).evaluate((element) => element.scrollIntoView({ block: "start" }));
-      await page.evaluate(() => window.scrollBy(0, -16));
+      await page.evaluate(() => window.scrollBy(0, 24));
       await page.waitForTimeout(400);
       await drag(page, thread, "skip", "the skipped leases too.");
       const actions = await page
@@ -776,7 +777,7 @@ const fileShots: Shot[] = [
         page,
         `${card(CHECKED)} [data-ask-answer]`,
         ASK_QUOTE,
-        "Quote reply quotes an ask's words in its answer box from the file"
+        "Quote reply quotes an ask's words in its answer box as Markdown from the file"
       );
     },
   },

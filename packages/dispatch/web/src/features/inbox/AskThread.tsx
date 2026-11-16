@@ -1,14 +1,6 @@
 import type { MutationKey, UseQueryResult } from "@tanstack/react-query";
 import { hashKey, useQueryClient } from "@tanstack/react-query";
-import {
-  type FormEvent,
-  type ReactNode,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
@@ -37,9 +29,9 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import {
   onQuote,
   ownWords,
-  placeCaret,
   type QuoteRef,
   takeQuote,
+  useQuotePlacement,
   withQuote,
 } from "../threads/quote-reply";
 import { threadLayout } from "../threads/thread-layout";
@@ -126,10 +118,11 @@ export function AskReplyComposer({
   const upload = useDraftUpload((text) => setBody((current) => appendToDraft(current, text)));
   const uploading = upload.pending > 0;
   // A Quote reply's words go at the end of the draft, and the cursor waits on the empty line
-  // under them once the field holds them: one handed over while this box is mounted wakes it,
-  // and one that opened the box (`AskThreadDisclosure`) is taken as it mounts.
+  // under them once the field holds them (`useQuotePlacement`): one handed over while this box
+  // is mounted wakes it, and one that opened the box (`AskThreadDisclosure`) is taken as it
+  // mounts.
   const field = useRef<HTMLTextAreaElement>(null);
-  const quoteCaret = useRef<number | null>(null);
+  const placeQuote = useQuotePlacement(field, body);
   const quoteName = quoteKey === undefined ? undefined : hashKey(quoteKey);
   const [quoteWake, setQuoteWake] = useState(0);
   useEffect(
@@ -146,16 +139,10 @@ export function AskReplyComposer({
     setBody((current) => {
       const quoted = withQuote(current, blocks);
       if (quoted === null) return current;
-      quoteCaret.current = quoted.caret;
+      placeQuote(quoted);
       return quoted.text;
     });
-  }, [quoteName, quoteWake, setBody]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the draft a quote wrote is the trigger
-  useLayoutEffect(() => {
-    if (quoteCaret.current === null || field.current === null) return;
-    placeCaret(field.current, quoteCaret.current);
-    quoteCaret.current = null;
-  }, [body]);
+  }, [placeQuote, quoteName, quoteWake, setBody]);
   // The form shows a refused reply itself, with Retry, under the draft it kept.
   const submit = useKeyedWrite({
     write: (text: string, bounds) => {

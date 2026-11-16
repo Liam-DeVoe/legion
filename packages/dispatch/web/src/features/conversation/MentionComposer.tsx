@@ -78,9 +78,9 @@ import { composerReferences } from "../refs/routes";
 import {
   onQuote,
   ownWords,
-  placeCaret,
   quoteWaiting,
   takeQuote,
+  useQuotePlacement,
   withQuote,
 } from "../threads/quote-reply";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -628,31 +628,24 @@ export function MentionComposer({
     setReplacement(draft.replacement ?? "");
   }, []);
   /** A Quote reply's words (`threads/quote-reply.ts`), at the end of the draft, with the cursor on
-   *  the empty line under them once the field holds them (`quoteCaret`). */
-  const quoteCaret = useRef<number | null>(null);
-  const insertQuote = useCallback((blocks: readonly string[]) => {
-    const quoted = withQuote(previousBody.current, blocks);
-    if (quoted === null) return;
-    previousBody.current = quoted.text;
-    followedBlocks.current = followEdit(followedBlocks.current, quoted.text, undefined, undefined);
-    setBody(quoted.text);
-    quoteCaret.current = quoted.caret;
-  }, []);
-  // Whether a quote grew the field to show it (`placeCaret`): it goes back to its own size once
-  // the draft is cleared, by a send or a Discard.
-  const quoteGrew = useRef(false);
-  useLayoutEffect(() => {
-    const field = textarea.current;
-    if (field === null) return;
-    if (body === "" && quoteGrew.current) {
-      field.style.height = "";
-      quoteGrew.current = false;
-    }
-    if (quoteCaret.current === null) return;
-    placeCaret(field, quoteCaret.current);
-    quoteCaret.current = null;
-    quoteGrew.current = true;
-  }, [body]);
+   *  the empty line under them once the field holds them (`useQuotePlacement`). */
+  const placeQuote = useQuotePlacement(textarea, body);
+  const insertQuote = useCallback(
+    (blocks: readonly string[]) => {
+      const quoted = withQuote(previousBody.current, blocks);
+      if (quoted === null) return;
+      previousBody.current = quoted.text;
+      followedBlocks.current = followEdit(
+        followedBlocks.current,
+        quoted.text,
+        undefined,
+        undefined
+      );
+      setBody(quoted.text);
+      placeQuote(quoted);
+    },
+    [placeQuote]
+  );
   // A quote handed to this composer while it is mounted wakes it (`quoteInto`); the effect after
   // the reply prefill below takes it.
   const [quoteWake, setQuoteWake] = useState(0);
