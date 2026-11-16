@@ -16,6 +16,7 @@ import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import type { NodeChip, TreeNode } from "./issue-tree";
 import { NodeOptions, NodeRow } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
+import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import {
   type AuthorKind,
@@ -744,6 +745,52 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
     });
   } finally {
     view.unmount();
+  }
+});
+
+// Decision 102: the batched read's names are named as chips once for each answer of the read,
+// not once for each row. A block's name is its whole reading, so naming every name again for
+// every row cost the page seconds on an issue of 650 rows.
+test("the read's names are named as chips once per answer, not once per row", async () => {
+  const names = new Map(
+    Array.from({ length: 30 }, (_unused, at) => [
+      `dispatch://CORE-1/spec#b-r${at}`,
+      `The words of statement ${at}, which run on well past the room a chip has.`,
+    ])
+  );
+  const target = "dispatch://CORE-1/spec#b-r0";
+  const text = `It follows ${target}.`;
+  const named = spyOn(nodeRowChip, "chipWords");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <Named names={names}>
+            {Array.from({ length: 20 }, (_unused, at) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: twenty rows of one text.
+              <RowText key={at} markdown={text} tree={displayTree(text)} />
+            ))}
+          </Named>
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() => {
+      const chips = view.container.querySelectorAll(`a[data-row-reference="${target}"]`);
+      expect(chips).toHaveLength(20);
+      expect(chips[19]?.textContent).toBe("The words of statement 0, which…");
+    });
+    // A row names a reference the read has not answered by its address alone (`""`), which
+    // costs nothing; each of the read's names is named once.
+    const ofNames = named.mock.calls.filter(([name]) => name !== "");
+    expect(ofNames.length, "every row named the read's names again").toBeLessThanOrEqual(
+      names.size
+    );
+  } finally {
+    view.unmount();
+    named.mockRestore();
   }
 });
 

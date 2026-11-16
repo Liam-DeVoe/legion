@@ -109,21 +109,40 @@ export function chipName(route: DispatchReferenceRoute | undefined, name: string
 /** The names the batched read brought, with every reference but an issue's named as a tie's chip
  *  is (`chipName`). A document `markdown` cites is named by the page's word for it whether or not
  *  the read has answered yet, so its file name and its slug are never drawn while it is in
- *  flight. */
+ *  flight. The read's own names are named once for each answer of the read (`namedOnce`), never
+ *  once for each row: a block's name is its whole reading, and every row draws from the one map. */
 function chipNames(
   names: ReadonlyMap<string, string>,
   markdown: string
 ): ReadonlyMap<string, string> {
+  const shared = namedOnce(names);
+  let named: Map<string, string> | undefined;
+  for (const one of rowReferences(markdown, [])) {
+    if (one.route.kind === "issue" || shared.has(one.reference) || named?.has(one.reference)) {
+      continue;
+    }
+    const words = chipName(one.route, "");
+    if (words === "") continue;
+    named ??= new Map(shared);
+    named.set(one.reference, words);
+  }
+  return named ?? shared;
+}
+
+/** Each answer of the batched read, its names named as a tie's chip names them, by the answer:
+ *  the page publishes one map for each answer (`usePublishReferenceNames`), so every row of that
+ *  answer reads the same names, and the same map. */
+const CHIP_NAMES = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, string>>();
+
+function namedOnce(names: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
+  const held = CHIP_NAMES.get(names);
+  if (held !== undefined) return held;
   const named = new Map(names);
   for (const [reference, name] of names) {
     const route = parseNodeReference(reference);
     if (route !== undefined && route.kind !== "issue") named.set(reference, chipName(route, name));
   }
-  for (const one of rowReferences(markdown, [])) {
-    if (one.route.kind === "issue" || named.has(one.reference)) continue;
-    const words = chipName(one.route, "");
-    if (words !== "") named.set(one.reference, words);
-  }
+  CHIP_NAMES.set(names, named);
   return named;
 }
 
