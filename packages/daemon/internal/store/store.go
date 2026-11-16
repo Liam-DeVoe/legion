@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,36 @@ const (
 	idleBound      = 30 * time.Second
 )
 
+// poolConns is the most connections the store's pool holds (MaxConns) when the DSN names no
+// pool_max_conns of its own. pgxpool's default is max(4, runtime.NumCPU()), and NumCPU in a
+// container is the host's CPU count, not the pod's CPU limit, so an unsized pool held as many
+// connections as the node had CPUs: a different number on every node, and 288 on a large dev
+// machine, past a Postgres of 100 connections (dispatch://INFRA-3904). 32 is what every deployed
+// daemon already runs with: agent-infra's legion program writes pool_max_conns=32 into each
+// daemon's DSN (legion/main.go), chosen after LINUX's daemon failed six boots in a row on
+// 2026-10-26 with about 880 claims deciding at once, while its instance served 41-48
+// connections. A DSN that names pool_max_conns keeps that number (namesPoolMaxConns).
+const poolConns = 32
+
+// poolMaxConnsKey is the DSN key pgxpool.ParseConfig reads MaxConns from.
+const poolMaxConnsKey = "pool_max_conns"
+
+// keywordPoolMaxConns finds poolMaxConnsKey as a key of a keyword/value DSN
+// (`host=... pool_max_conns=8`), with or without spaces around its `=`.
+var keywordPoolMaxConns = regexp.MustCompile(`(^|\s)` + poolMaxConnsKey + `\s*=`)
+
+// namesPoolMaxConns reports whether dsn sets pool_max_conns itself, in either form pgx reads: a
+// postgres:// or postgresql:// URL's query, or a keyword/value string. pgxpool.ParseConfig takes
+// the key out of the config it returns, so the config alone cannot tell a size the DSN chose from
+// pgxpool's default.
+func namesPoolMaxConns(dsn string) bool {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		parsed, err := url.Parse(dsn)
+		return err == nil && parsed.Query().Has(poolMaxConnsKey)
+	}
+	return keywordPoolMaxConns.MatchString(dsn)
+}
+
 // Store is the daemon's handle on its database. The pool is the guarded one (Pool): the pgx pool
 // it wraps is this package's alone, so no caller can ask for a connection past the refusal a
 // caller holding one gets (ErrNestedAcquire).
@@ -63,8 +94,9 @@ type Store struct {
 
 // Open connects to dsn and waits for the server to answer, so a daemon that
 // gets a Store has a database and one that does not is told where it failed.
-// Every connection of the pool carries the idle bound (idleBound) unless dsn names a value of
-// its own, so a deployment can raise or lower it without a release.
+// Its pool holds at most poolConns connections, on every machine, unless dsn names a
+// pool_max_conns of its own. Every connection of the pool carries the idle bound (idleBound)
+// unless dsn names a value of its own, so a deployment can raise or lower it without a release.
 //
 // "Names a value of its own" is what pgx reads out of the DSN: pgconn.ParseConfig puts every key
 // it does not know itself — pool_max_conns and the rest of pgxpool's own keys aside, which
@@ -79,6 +111,9 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, ConnectError(dsn, err)
+	}
+	if !namesPoolMaxConns(dsn) {
+		config.MaxConns = poolConns
 	}
 	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {
 		// Milliseconds with no unit, which is the unit this setting counts in: the one spelling
