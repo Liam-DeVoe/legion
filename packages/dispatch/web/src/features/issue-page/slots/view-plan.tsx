@@ -21,7 +21,9 @@ import { useIssueTree } from "../useIssueTree";
  * instead (`plan-filter/PlanFilterBody.tsx`). The steps are the outline's own rows, so their
  * props are built as `slots/body.tsx` builds the outline's, from F's Plan view of the issue's
  * one tree (`presetView`), and a row of them is edited in its document's one editor as a row of
- * the outline is (`IssuePresetPanels`).
+ * the outline is (`IssuePresetPanels`). Two things differ from the outline's (departure 2 of
+ * dispatch://INFRA-3938's plan): the address's node is the view's only where it is a task, and
+ * the view is handed the whole plan beside what the words filter left of it, for the order.
  */
 export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const navigate = useNavigate();
@@ -39,7 +41,14 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
     if (targetKind === "block") return { document: targetDocument, id: targetId, kind: "block" };
     return { id: targetId, kind: targetKind } as AddressTarget;
   }, [targetDocument, targetId, targetKind]);
-  const reveal = useMemo(() => pathToTarget(root, target), [root, target]);
+  const found = useMemo(() => pathToTarget(root, target), [root, target]);
+  // Plan draws no node but a task (dispatch://INFRA-3938 R1, decision 1 of its plan; root
+  // dispatch://INFRA-1196 R26), so the address's node is kept in the view, and given the focus,
+  // only where it is a task. `presetView` keeps a named node of any kind (`presets.ts`'s
+  // `filterView`): handed every node, `/plan?comment=<id>` drew the comment as a bar and
+  // `/plan#b-<statement>` the statement as a bar with its tasks under it, out of the chart. Now
+  // both draw every task and no other node, as `/plan` does.
+  const reveal = useMemo(() => (found?.at(-1)?.type === "plan_task" ? found : undefined), [found]);
   const named = useMemo(() => {
     const node = reveal?.at(-1);
     return new Set(node === undefined ? [] : [node.id]);
@@ -47,6 +56,17 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const view = useMemo(
     () => presetView(root, "plan", address.filter, named),
     [address.filter, named, root]
+  );
+  // The whole plan's tasks, with no words filter on: the order and each bar's start are worked
+  // out from every task of the plan, and the words filter chooses which of its places the view
+  // draws (dispatch://INFRA-3938 R2 and R4, decision 3 of its plan). With no words filter on it
+  // is the view's own.
+  const plan = useMemo(
+    () =>
+      address.filter === ""
+        ? view.root.children
+        : presetView(root, "plan", "", named).root.children,
+    [address.filter, named, root, view.root.children]
   );
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
@@ -76,6 +96,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
           onEditing={setEditing}
+          plan={plan}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}
           root={view.root}

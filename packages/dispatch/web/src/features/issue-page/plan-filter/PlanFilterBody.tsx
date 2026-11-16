@@ -29,17 +29,21 @@ import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
 import { IssueTree } from "../IssueTree";
+import { bringOnScreen } from "../identity-block";
 import { documentOfNode } from "../issue-artifacts";
 import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
 import { DETAILS_ATTRIBUTE } from "../margin-slot";
+import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PLAN_WORDS, PRESET_NAMES } from "../page-words";
 import {
   needsChip,
   type PlanBar,
+  type PlanChartRow,
   type PlanCycle,
   type PlanEntry,
+  type PlanKnot,
   planChart,
   planOrder,
 } from "./plan-order";
@@ -61,6 +65,20 @@ import {
  * the steps draw that line over the tree and the cycle's tasks as rows at its place, so a step
  * that waits on one of them stands after it and an address naming one lands on a row (R26).
  *
+ * The order and the chart's places are the whole plan's (`plan`, the Plan view with no words
+ * filter on), and the view's own tasks (`root`) choose which places are drawn: a step where its
+ * task is in the view, a cycle where any of its tasks is, and under Steps the view's tasks as
+ * rows in that order. So under a words filter a drawn bar starts where it does on the whole
+ * plan and names, after "needs", every task it needs that the plan holds, drawn or not, and a
+ * curve joins two drawn bars alone (dispatch://INFRA-3938 R2 and R4, decision 3 of its plan).
+ * Ordered from the view's tasks alone, a task the filter left stood at 0 and needed nothing.
+ *
+ * The node the address names takes the focus once per address for the whole view, which is
+ * held here rather than in the chart or the tree, since each is drawn anew at every press of
+ * the switch: a press on "Chart" or "Steps" is the reader taking over, and leaves the focus on
+ * the button pressed (dispatch://INFRA-3938 R6 and R7; dispatch://INFRA-1196 R11). Held by the
+ * chart, the address took the focus back from "Chart" each time the chart was drawn again.
+ *
  * ## What today's reads give, and what waits
  *
  * - **The plan's own order** is the order the tasks are written in, read from the blocks of
@@ -80,22 +98,32 @@ import {
  * - **Who carries a step out**, and a parent's children's tasks in its own Plan filter, wait on
  *   dispatch://INFRA-3577 and dispatch://INFRA-1253.
  */
-export function PlanFilterBody({ root, ...tree }: ComponentProps<typeof IssueTree>): ReactNode {
+export function PlanFilterBody({
+  plan,
+  root,
+  ...tree
+}: ComponentProps<typeof IssueTree> & {
+  /** The whole plan's tasks, as the Plan view gives them with no words filter on
+   *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
+   *  `root`, the view, chooses which of those places are drawn (dispatch://INFRA-3938 R4). */
+  plan: readonly TreeNode[];
+}): ReactNode {
   // Which of the two the reader is looking at: the chart, which the filter opens on, or the
   // ordered steps.
   const [steps, setSteps] = useState(false);
   const { artifacts } = tree;
-  // The documents the tasks are blocks of, and each one's block ids in the order it is written.
+  // The documents the plan's tasks are blocks of, and each one's block ids in the order it is
+  // written: every task of the plan, so a words filter changes no task's place (R2).
   const documentIds = useMemo(
     () => [
       ...new Set(
-        root.children.flatMap((node) => {
+        plan.flatMap((node) => {
           const held = documentOfNode(node.id, artifacts);
           return held === undefined ? [] : [held.artifact.id];
         })
       ),
     ],
-    [artifacts, root]
+    [artifacts, plan]
   );
   const written = useQueries({
     combine: blockIdsOf,
@@ -115,27 +143,52 @@ export function PlanFilterBody({ root, ...tree }: ComponentProps<typeof IssueTre
       return place ?? Number.POSITIVE_INFINITY;
     };
     // A task the page holds no place for keeps the place the view gave it, after the rest.
-    const tasks = root.children
+    const tasks = plan
       .map((node, index) => ({ index, node, place: placeOf(node) }))
       .sort((one, other) =>
         one.place === other.place ? one.index - other.index : one.place - other.place
       )
       .map((held) => held.node);
     return planOrder(tasks);
-  }, [artifacts, documentIds, root, written]);
+  }, [artifacts, documentIds, plan, written]);
+  // The view's tasks by id, each as the view gives it and once, as the order holds it: the
+  // places drawn are those holding one of them (R4).
+  const inView = useMemo(() => {
+    const held = new Map<string, TreeNode>();
+    for (const node of root.children) if (!held.has(node.id)) held.set(node.id, node);
+    return held;
+  }, [root]);
   const cycles = useMemo(
-    () => entries.flatMap((entry) => (entry.kind === "cycle" ? [entry] : [])),
-    [entries]
+    () =>
+      entries.flatMap((entry) =>
+        entry.kind === "cycle" && entry.tasks.some((task) => inView.has(task.id)) ? [entry] : []
+      ),
+    [entries, inView]
   );
-  // The steps, in the plan's order, with the tasks of a cycle at the cycle's place. Each row is
-  // its task as part F's view gives it: its `needs` chips carry F's names - the needed task's
-  // first line, and the page's word for its kind where that task holds no words - which are the
-  // names the chart draws for the same needs (`needsChip`), so the switch changes the drawing
-  // alone (decision 66 of dispatch://INFRA-1196; dispatch://INFRA-3938 R3, R4 and R6).
+  // The steps, in the plan's order, with the tasks of a cycle at the cycle's place: the view's
+  // tasks alone (R4). Each row is its task as part F's view gives it: its `needs` chips carry
+  // F's names - the needed task's first line, and the page's word for its kind where that task
+  // holds no words - which are the names the chart draws for the same needs (`needsChip`), so
+  // the switch changes the drawing alone (decision 66 of dispatch://INFRA-1196;
+  // dispatch://INFRA-3938 R3, R4 and R6).
   const ordered = useMemo(() => {
-    const rows = entries.flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks));
+    const rows = entries
+      .flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks))
+      .flatMap((task) => {
+        const node = inView.get(task.id);
+        return node === undefined ? [] : [node];
+      });
     return { ...root, children: rows, held: rows.reduce((held, row) => held + row.held + 1, 0) };
-  }, [entries, root]);
+  }, [entries, inView, root]);
+  // The node the address names, and the one the view has put the focus on or the reader went
+  // past with a press of the switch: the address's node takes the focus while the two differ.
+  const revealed = tree.reveal?.at(-1)?.id;
+  const [taken, setTaken] = useState<string | undefined>(undefined);
+  const landing = revealed !== undefined && revealed !== taken;
+  const show = (next: boolean): void => {
+    setTaken(revealed);
+    setSteps(next);
+  };
   const view = (pressed: boolean): string =>
     `rounded-full border px-3 py-0.5 text-sm leading-5 font-semibold ${focusVisibleRing} ${
       pressed
@@ -166,7 +219,7 @@ export function PlanFilterBody({ root, ...tree }: ComponentProps<typeof IssueTre
             aria-pressed={!steps}
             className={view(!steps)}
             data-plan-view="chart"
-            onClick={() => setSteps(false)}
+            onClick={() => show(false)}
             type="button"
             {...pageChrome}
           >
@@ -176,7 +229,7 @@ export function PlanFilterBody({ root, ...tree }: ComponentProps<typeof IssueTre
             aria-pressed={steps}
             className={view(steps)}
             data-plan-view="steps"
-            onClick={() => setSteps(true)}
+            onClick={() => show(true)}
             type="button"
             {...pageChrome}
           >
@@ -189,10 +242,19 @@ export function PlanFilterBody({ root, ...tree }: ComponentProps<typeof IssueTre
           {cycles.map((cycle) => (
             <CycleLine cycle={cycle} key={cycle.tasks.map((one) => one.id).join(" ")} />
           ))}
-          <IssueTree {...tree} root={ordered} />
+          {/* The tree takes the address's node only while the view has not: drawn after a
+              press of the switch, it leaves the focus on the button pressed (R6). */}
+          <IssueTree {...tree} focusReveal={tree.focusReveal && landing} root={ordered} />
         </>
       ) : (
-        <PlanChart entries={entries} reveal={tree.reveal?.at(-1)?.id} />
+        <PlanChart
+          entries={entries}
+          holdsEscape={tree.holdsEscape}
+          inView={inView}
+          land={landing ? revealed : undefined}
+          onLanded={setTaken}
+          reveal={revealed}
+        />
       )}
     </div>
   );
@@ -208,8 +270,19 @@ function blockIdsOf(
 }
 
 /** One cycle, as one line that lists the tasks in it, each a link that lands on that task
- *  (R26). The line is the prototype's own line above the plan (`.psum`, proto-v3.html :490). */
-function CycleLine({ cycle }: { cycle: Pick<PlanCycle, "tasks"> }): ReactNode {
+ *  (R26). The line is the prototype's own line above the plan (`.psum`, proto-v3.html :490).
+ *
+ *  In the chart the line is a row of the tree, which is one stop of Tab, so its links take
+ *  none and `f` reaches them. Above the steps it is outside the tree, so its links take Tab as
+ *  any link does: a task of a cycle is reached by the keyboard in both drawings
+ *  (dispatch://INFRA-3938 R7, dispatch://INFRA-1196 R11). */
+function CycleLine({
+  cycle,
+  inChart = false,
+}: {
+  cycle: Pick<PlanCycle, "tasks">;
+  inChart?: boolean;
+}): ReactNode {
   return (
     <p
       className={`mb-2.5 flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm leading-5 ${pageMutedText}`}
@@ -217,7 +290,7 @@ function CycleLine({ cycle }: { cycle: Pick<PlanCycle, "tasks"> }): ReactNode {
     >
       <span {...pageChrome}>{PLAN_WORDS.cycle}</span>
       {cycle.tasks.map((task) => (
-        <TaskLink key={task.id} task={task} />
+        <TaskLink inChart={inChart} key={task.id} task={task} />
       ))}
     </p>
   );
@@ -238,8 +311,9 @@ function lineMarks(task: TreeNode): Readonly<Record<string, string>> {
   return firstLineOf(nodeWords(task)).line === "" ? pageChrome : authorText;
 }
 
-/** One task of a cycle, by its own first line, as the link a reader follows to it. */
-function TaskLink({ task }: { task: TreeNode }): ReactNode {
+/** One task of a cycle, by its own first line, as the link a reader follows to it: in no tab
+ *  order of its own where the line is a row of the chart (`CycleLine`). */
+function TaskLink({ inChart, task }: { inChart: boolean; task: TreeNode }): ReactNode {
   const route = task.reference === undefined ? undefined : parseNodeReference(task.reference);
   const words = lineOf(task);
   return route === undefined ? (
@@ -249,7 +323,7 @@ function TaskLink({ task }: { task: TreeNode }): ReactNode {
   ) : (
     <Link
       className={`dispatch-inline-link min-w-0 break-words underline decoration-page-hair underline-offset-[3px] ${pageMutedText}`}
-      tabIndex={-1}
+      {...(inChart ? { tabIndex: -1 } : {})}
       to={buildReferencePath(route)}
       {...lineMarks(task)}
     >
@@ -271,11 +345,28 @@ const CHART_COLUMNS =
 /** A column heading, in the prototype's `.cap`. */
 const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
 
-/** The row the reader is on, as the prototype's `.prow.focused` draws it, and at 760 px and
- *  below its card as `.pitem.focused` does: a ring of ink outside a gap of paper, on the card's
- *  own paper, so the mark is not the tint alone. */
+/** The row the reader is on, a step's or a cycle's, as the prototype's `.prow.focused` draws
+ *  it, and at 760 px and below its card as `.pitem.focused` does: a ring of ink outside a gap of
+ *  paper, on the card's own paper, so the mark is not the tint alone (dispatch://INFRA-3938 R7). */
 const FOCUSED =
   "bg-page-step-tint shadow-[inset_3px_0_0_var(--color-page-step)] max-[761px]:bg-page-paper max-[761px]:shadow-[0_0_0_2px_var(--color-page-paper),0_0_0_4px_var(--color-page-ink)]";
+
+/** Every row of the chart, a step's and a cycle's, in the order it is drawn. */
+const CHART_ROW = "[data-plan-bar-row], [data-plan-cycle-row]";
+
+/** What the reader does that ends the hold of the address's row on screen: a key, a press, a
+ *  wheel and a touch, as the outline's own list (`IssueTree.tsx`'s `READER_ACTS`, which that
+ *  file keeps to itself). */
+const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
+
+/** One place the chart draws: its row, the key its focus and its tab stop are held under, and
+ *  the task it stands for, which is the step's own, or for a cycle the task its row gives to
+ *  Details and to Enter. */
+interface DrawnPlace {
+  readonly key: string;
+  readonly row: PlanChartRow;
+  readonly task: TreeNode;
+}
 
 /**
  * The chart of time (R26, the prototype's `.chart`): one row per place in the plan's order. A
@@ -283,37 +374,85 @@ const FOCUSED =
  * serves; a cycle's row lists the tasks that need each other. The lines between a bar and the
  * bars it needs are drawn over the rows from where the bars stand.
  *
+ * The places and the axis are the whole plan's (`entries`), and the chart draws those that hold
+ * a task of the view (`inView`): a bar a words filter leaves starts where it does on the whole
+ * plan, and its curves are drawn to the bars drawn beside it (dispatch://INFRA-3938 R4).
+ *
  * It is the outline the page draws under this view, so it is one tree named as the outline is,
- * and its rows are its items: the focused one is its one tab stop, and the outline's own keys
- * work it, under the ids the outline registers them with (`useTreeKeymap.ts`), so `?` names
- * them here too: the arrows and `j`/`k` reach the bars in order, Home and End the first and the
- * last, `f` steps through the focused row's links, and Enter goes to the step in the
- * conversation, where it is edited. The focus on a row puts its facts in Details.
+ * and its rows are its items: the outline's own keys work it, under the ids and the labels the
+ * outline registers them with (`useTreeKeymap.ts`), so `?` names them here too. The arrows and
+ * `j`/`k` reach the bars in order and pass over a cycle's row, Home and End the first and the
+ * last bar, `f` steps through the focused row's links, Escape gives a row back from its link and
+ * leaves the chart from the row, and Enter goes to the row's task in the conversation, where it
+ * is edited (dispatch://INFRA-3938 R7). The focus on a row puts its task in Details.
+ *
+ * A cycle's row takes the focus too, as a bar's does: a press on it, an address naming one of
+ * its tasks, and the Tab stop where the chart draws no bar (decision 2 of dispatch://INFRA-3938's
+ * plan). It stands for the task the address names, else its first, and from it the arrows go
+ * to the step after it and the step before it. It took no focus before, so an address naming a
+ * task of a cycle focused nothing and a plan whose every task is in a cycle had no Tab stop.
+ *
+ * The one Tab stop is the row the reader last stood on, else the first bar's, else the first
+ * cycle's. Each row places itself on screen by the outline's one hook (`useRowOnScreen`), so the
+ * keys move the focus without the browser's own scroll, which knows nothing of the band that
+ * stays at the top of the page (R7).
  */
 function PlanChart({
   entries,
+  holdsEscape,
+  inView,
+  land,
+  onLanded,
   reveal,
 }: {
   entries: readonly PlanEntry[];
-  /** The node the address names, which takes the focus once per address (R19). */
+  /** Whether the page takes Escape from a row before the chart is left: the words filter's,
+   *  which comes first in the key table's order (`slots/view-plan.tsx`, part N). */
+  holdsEscape: boolean;
+  /** The view's tasks by id: a place is drawn where it holds one of them. */
+  inView: ReadonlyMap<string, unknown>;
+  /** The node the address names while it is the view's to put the focus on: once per address
+   *  for the whole view, and not past a press of the switch (`PlanFilterBody`), since the chart
+   *  is drawn anew at every press. */
+  land: string | undefined;
+  /** Says the address's node has taken the focus. */
+  onLanded: (id: string) => void;
+  /** The node the address names: the task a cycle's row stands for where it is one of its own. */
   reveal: string | undefined;
 }): ReactNode {
   const navigate = useNavigate();
   const setFocusedNode = useSetFocusedNode();
   const chart = useRef<HTMLDivElement | null>(null);
-  const { end, rows } = useMemo(() => planChart(entries), [entries]);
-  const bars = useMemo(() => rows.flatMap((row) => (row.kind === "bar" ? [row] : [])), [rows]);
+  const { end, rows: places } = useMemo(() => planChart(entries), [entries]);
+  const rows = useMemo(
+    () =>
+      places.flatMap((row): DrawnPlace[] => {
+        if (row.kind === "bar") {
+          return inView.has(row.task.id) ? [{ key: row.task.id, row, task: row.task }] : [];
+        }
+        const task = row.tasks.find((one) => one.id === reveal) ?? row.tasks[0];
+        return task === undefined || !row.tasks.some((one) => inView.has(one.id))
+          ? []
+          : [{ key: row.tasks.map((one) => one.id).join(" "), row, task }];
+      }),
+    [inView, places, reveal]
+  );
+  const bars = useMemo(
+    () => rows.flatMap((place) => (place.row.kind === "bar" ? [place.row] : [])),
+    [rows]
+  );
   const [focused, setFocused] = useState<string | undefined>(undefined);
   // Where the chart's one tab stop rests, which outlives the focus leaving it (R9).
   const [stop, setStop] = useState<string | undefined>(undefined);
-  const tabStop =
-    stop !== undefined && bars.some((bar) => bar.task.id === stop) ? stop : bars[0]?.task.id;
+  const tabStop = rows.some((place) => place.key === stop)
+    ? stop
+    : (rows.find((place) => place.row.kind === "bar") ?? rows[0])?.key;
   const unit = 100 / end;
 
   const takeFocus = useCallback(
-    (task: TreeNode) => {
-      setFocused(task.id);
-      setStop(task.id);
+    (key: string, task: TreeNode) => {
+      setFocused(key);
+      setStop(key);
       setFocusedNode({
         ...(task.author === undefined ? {} : { author: task.author }),
         id: task.id,
@@ -324,21 +463,42 @@ function PlanChart({
     },
     [setFocusedNode]
   );
-  // An address that names a step puts the focus on its row, once per address.
-  const taken = useRef<string | undefined>(undefined);
+  // An address that names a task puts the focus on its row, a cycle's included, and holds the
+  // row on screen until the reader acts, as the outline's address does (`IssueTree.tsx`): the
+  // rows around it are still arriving and push it down the page. A row already inside the
+  // viewport is focused where it stands; one outside it is brought in by the focus, then placed
+  // by the row's own rule (`useRowOnScreen`). A key, a press, a wheel or a touch ends the hold,
+  // and so does a focus that has moved off the row.
+  const landingHold = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => landingHold.current?.abort(), []);
   useEffect(() => {
-    if (reveal === undefined || taken.current === reveal) return;
+    if (land === undefined || !rows.some((place) => place.task.id === land)) return;
     const row = chart.current?.querySelector<HTMLElement>(
-      `[data-plan-bar-row][data-node-id="${CSS.escape(reveal)}"]`
+      `[data-node-row][data-node-id="${CSS.escape(land)}"]`
     );
     if (row == null) return;
-    taken.current = reveal;
-    row.focus();
-  }, [reveal]);
+    onLanded(land);
+    const box = row.getBoundingClientRect();
+    row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
+    landingHold.current?.abort();
+    const hold = new AbortController();
+    landingHold.current = hold;
+    for (const type of READER_ACTS) {
+      window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
+    }
+    if (typeof ResizeObserver === "undefined") return;
+    const grown = new ResizeObserver(() => {
+      if (document.activeElement === row) bringOnScreen(row);
+      else hold.abort();
+    });
+    grown.observe(document.body);
+    hold.signal.addEventListener("abort", () => grown.disconnect());
+  }, [land, onLanded, rows]);
 
   // The lines between a bar and the bars it needs, from where the browser laid the bars out:
   // from the end of the needed bar to the start of the one that needs it (the prototype's
-  // `drawPlanLinks`). They are read again whenever the chart's box changes.
+  // `drawPlanLinks`). They are read again whenever the chart's box changes. A need whose bar is
+  // not drawn - a cycle's task, or a step the words filter left - has no line.
   const [links, setLinks] = useState<{
     readonly height: number;
     readonly paths: readonly { readonly d: string; readonly of: readonly string[] }[];
@@ -382,23 +542,32 @@ function PlanChart({
     return () => resized.disconnect();
   }, [bars]);
 
-  /** The bars' rows as the browser holds them, in the order the keys move through them. */
+  /** The chart's rows as the browser holds them, bars and cycles, in the order of `rows`. */
   const items = (): HTMLElement[] => [
-    ...(chart.current?.querySelectorAll<HTMLElement>("[data-plan-bar-row]") ?? []),
+    ...(chart.current?.querySelectorAll<HTMLElement>(CHART_ROW) ?? []),
   ];
-  /** Which row the reader is on, a link inside it included, or -1 when the focus is on none. */
-  const at = (): number => {
+  /** Which of `held` the reader is on, a link inside it included, or -1 when on none. */
+  const at = (held: readonly HTMLElement[]): number => {
     const active = document.activeElement;
-    return active === null
-      ? -1
-      : items().findIndex((row) => row === active || row.contains(active));
+    return active === null ? -1 : held.findIndex((row) => row === active || row.contains(active));
   };
   /** Whether the reader is reading: on the page itself, or on a row of the chart. */
   const reading = (): boolean =>
-    document.activeElement === null || document.activeElement === document.body || at() !== -1;
-  const moveTo = (index: number): void => {
-    const held = items();
-    held[Math.min(Math.max(index, 0), held.length - 1)]?.focus();
+    document.activeElement === null ||
+    document.activeElement === document.body ||
+    at(items()) !== -1;
+  /** The first bar's row of `held` past `from`, going `by` rows at a time, or -1 where there is
+   *  none: the keys that move the reader pass over a cycle's row (R7). */
+  const barFrom = (held: readonly HTMLElement[], from: number, by: 1 | -1): number => {
+    for (let index = from + by; index >= 0 && index < held.length; index += by) {
+      if (held[index]?.hasAttribute("data-plan-bar-row") === true) return index;
+    }
+    return -1;
+  };
+  /** Moves the focus to the `index`th of `held`, where the row's own hook then places it on
+   *  screen, clear of the band that stays at the top (`useRowOnScreen`, R7). */
+  const moveTo = (held: readonly HTMLElement[], index: number): void => {
+    held[index]?.focus({ preventScroll: true });
   };
   useKeymap("issue", [
     {
@@ -406,15 +575,23 @@ function PlanChart({
       keys: ["j", "ArrowDown"],
       label: "Move to the next row",
       palette: false,
-      run: () => moveTo(at() + 1),
+      run: () => {
+        const held = items();
+        moveTo(held, barFrom(held, at(held), 1));
+      },
       when: () => reading() && items().length > 0,
     },
     {
+      // Up from the page itself goes to the first bar, as down does.
       id: "tree-previous",
       keys: ["k", "ArrowUp"],
       label: "Move to the previous row",
       palette: false,
-      run: () => moveTo(at() - 1),
+      run: () => {
+        const held = items();
+        const on = at(held);
+        moveTo(held, on === -1 ? barFrom(held, -1, 1) : barFrom(held, on, -1));
+      },
       when: () => reading() && items().length > 0,
     },
     {
@@ -422,44 +599,80 @@ function PlanChart({
       keys: "Home",
       label: "Move to the first row",
       palette: false,
-      run: () => moveTo(0),
-      when: () => at() !== -1,
+      run: () => {
+        const held = items();
+        moveTo(held, barFrom(held, -1, 1));
+      },
+      when: () => at(items()) !== -1,
     },
     {
       id: "tree-last",
       keys: "End",
       label: "Move to the last row",
       palette: false,
-      run: () => moveTo(Number.MAX_SAFE_INTEGER),
-      when: () => at() !== -1,
+      run: () => {
+        const held = items();
+        moveTo(held, barFrom(held, held.length, -1));
+      },
+      when: () => at(items()) !== -1,
     },
     {
-      // The statements a step serves are links, and the chart is one tab stop (R9), so a key
-      // reaches them; Enter on the link it left the focus on is the browser's own.
+      // The statements a step serves and the tasks a cycle lists are links, and the chart is
+      // one tab stop (R9), so a key reaches them; Enter on the link it left the focus on is the
+      // browser's own.
       id: "tree-link",
       keys: "f",
       label: "Move to the next link on the focused row",
       palette: false,
       run: () => {
-        const links = [...(items()[at()]?.querySelectorAll<HTMLElement>("a[href]") ?? [])];
+        const held = items();
+        const links = [...(held[at(held)]?.querySelectorAll<HTMLElement>("a[href]") ?? [])];
         const on = links.indexOf(document.activeElement as HTMLElement);
-        links[(on + 1) % links.length]?.focus();
+        links[(on + 1) % links.length]?.focus({ preventScroll: true });
       },
-      when: () => (items()[at()]?.querySelector("a[href]") ?? null) !== null,
+      when: () => {
+        const held = items();
+        return (held[at(held)]?.querySelector("a[href]") ?? null) !== null;
+      },
     },
     {
-      // Enter on a step goes to it in the conversation, where it is edited: the chart draws
-      // each step and edits none. On a link inside the row Enter is the link's own.
+      // Enter on a row goes to its task in the conversation, where it is edited: the chart
+      // draws each step and edits none. A cycle's row goes to the task it stands for. On a link
+      // inside the row Enter is the link's own.
       id: "tree-edit",
       keys: "Enter",
       label: "Go to the focused step in the conversation",
       palette: false,
       run: () => {
-        const task = bars[items().indexOf(document.activeElement as HTMLElement)]?.task;
+        const task = rows[items().indexOf(document.activeElement as HTMLElement)]?.task;
         const path = task === undefined ? undefined : conversationPath(task);
         if (path !== undefined) navigate(path);
       },
       when: () => items().includes(document.activeElement as HTMLElement),
+    },
+    {
+      // From a link the reader reached inside a row, Escape gives the row back, since the row
+      // is where the keys that move through the chart are; from the row itself it leaves the
+      // chart, once the page has cleared its words filter, which comes first in the key table's
+      // order. The outline's own Escape, under its id (`useTreeKeymap.ts`'s `tree-leave`).
+      id: "tree-leave",
+      keys: "Escape",
+      label: "Leave the control, then the tree",
+      palette: false,
+      run: () => {
+        const held = items();
+        const active = document.activeElement as HTMLElement | null;
+        if (active !== null && held.includes(active)) {
+          active.blur();
+          return;
+        }
+        held[at(held)]?.focus({ preventScroll: true });
+      },
+      when: () => {
+        const held = items();
+        const onRow = held.includes(document.activeElement as HTMLElement);
+        return at(held) !== -1 && !(holdsEscape && onRow);
+      },
     },
   ]);
 
@@ -500,25 +713,25 @@ function PlanChart({
         }}
         role="tree"
       >
-        {rows.map((row) =>
-          row.kind === "cycle" ? (
-            <div
-              aria-level={1}
-              className={`border-t px-3.5 pt-2 max-[761px]:border-0 max-[761px]:px-0 ${pageLineBorder}`}
-              key={row.tasks.map((task) => task.id).join(" ")}
-              role="treeitem"
-              tabIndex={-1}
-            >
-              <CycleLine cycle={row} />
-            </div>
+        {rows.map((place) =>
+          place.row.kind === "cycle" ? (
+            <CycleRow
+              cycle={place.row}
+              focused={focused === place.key}
+              ids={place.key}
+              key={place.key}
+              onFocus={() => takeFocus(place.key, place.task)}
+              tabStop={tabStop === place.key}
+              task={place.task}
+            />
           ) : (
             <BarRow
-              bar={row}
+              bar={place.row}
               end={end}
-              focused={focused === row.task.id}
-              key={row.task.id}
-              onFocus={() => takeFocus(row.task)}
-              tabStop={tabStop === row.task.id}
+              focused={focused === place.key}
+              key={place.key}
+              onFocus={() => takeFocus(place.key, place.task)}
+              tabStop={tabStop === place.key}
               unit={unit}
             />
           )
@@ -549,6 +762,56 @@ function PlanChart({
           );
         })}
       </svg>
+    </div>
+  );
+}
+
+/**
+ * One cycle's row of the chart: R3's line for the tasks that need each other, and a row the
+ * focus stands on as it does on a step's (decision 2 of dispatch://INFRA-3938's plan). It stands
+ * for `task` - the task the address names where it is one of the cycle's, else its first - which
+ * is its node id, so the page's `[data-node-row]` readers (D's `t p`, Details) reach it as any
+ * row, and which it gives to Details when it takes the focus. `data-plan-cycle-row` holds every
+ * task of it. It places itself on screen as every row does (`useRowOnScreen`, R7), and its
+ * focus is marked as a step's is, not by colour alone.
+ */
+function CycleRow({
+  cycle,
+  focused,
+  ids,
+  onFocus,
+  tabStop,
+  task,
+}: {
+  cycle: PlanKnot;
+  focused: boolean;
+  /** Its tasks' ids, one space between two. */
+  ids: string;
+  onFocus: () => void;
+  tabStop: boolean;
+  task: TreeNode;
+}): ReactNode {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const press = useRowOnScreen(ref, focused);
+  return (
+    <div
+      aria-level={1}
+      className={`border-t px-3.5 pt-2 outline-none max-[761px]:border-0 max-[761px]:px-0 ${pageLineBorder} ${
+        focused ? FOCUSED : ""
+      }`}
+      data-node-id={task.id}
+      data-node-row=""
+      data-node-type={task.type}
+      data-plan-cycle-row={ids}
+      onFocus={(event) => {
+        if (event.target === event.currentTarget) onFocus();
+      }}
+      onPointerDown={press}
+      ref={ref}
+      role="treeitem"
+      tabIndex={tabStop ? 0 : -1}
+    >
+      <CycleLine cycle={cycle} inChart />
     </div>
   );
 }
@@ -599,6 +862,10 @@ function Units({ end, unit }: { end: number; unit: number }): ReactNode {
  * drawn out of the document's order. The track stands 8 px under the first line and over the
  * line under it: 3 px of its own margin and the card's 5 px between two lines, which is also
  * what parts the chips' lines where they wrap.
+ *
+ * The focused row places itself on screen, clear of the band that stays at the top, by the
+ * outline's one hook, and a press on it is left where the reader pressed (`useRowOnScreen`,
+ * dispatch://INFRA-3938 R7).
  */
 function BarRow({
   bar,
@@ -618,6 +885,8 @@ function BarRow({
   unit: number;
 }): ReactNode {
   const task = bar.task;
+  const ref = useRef<HTMLDivElement | null>(null);
+  const press = useRowOnScreen(ref, focused);
   const serves = [
     ...(task.parentLine === undefined || task.parentLine.type !== "requirement"
       ? []
@@ -640,6 +909,8 @@ function BarRow({
       onFocus={(event) => {
         if (event.target === event.currentTarget) onFocus();
       }}
+      onPointerDown={press}
+      ref={ref}
       role="treeitem"
       tabIndex={tabStop ? 0 : -1}
     >

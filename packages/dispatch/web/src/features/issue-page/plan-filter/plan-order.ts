@@ -86,11 +86,14 @@ function readyFor(ready: number[], group: number): void {
 
 /**
  * `nodes` as the plan's order draws them: each a step of its own, or, for tasks that need each
- * other, one cycle holding them all. `nodes` are the rows the Plan filter drew, in the plan's
- * own order, and a node that is no plan task needs nothing and is needed by nothing, so it keeps
- * the place the plan gave it. A task the filter drew under two statements is one task here, at
- * its first place: a plan holds each task once, and its second statement is its "Also under"
- * chip (the tester's F19: task 1 was drawn twice).
+ * other, one cycle holding them all. `nodes` are the rows the Plan filter draws with no words
+ * filter on, in the plan's own order: the whole plan, since a words filter chooses which places
+ * the view draws and not where they stand (dispatch://INFRA-3938 R2 and R4). A node that is no
+ * plan task needs nothing and is needed by nothing, so it keeps the place the plan gave it; the
+ * Plan view hands over none, since it keeps the address's node only where it is a task
+ * (dispatch://INFRA-3938 R1, `slots/view-plan.tsx`). A task the filter drew under two
+ * statements is one task here, at its first place: a plan holds each task once, and its second
+ * statement is its "Also under" chip (the tester's F19: task 1 was drawn twice).
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   const seen = new Set<string>();

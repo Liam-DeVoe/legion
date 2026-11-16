@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import type { Artifact } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
@@ -68,6 +69,13 @@ function setViewport(width: number): void {
 const originalMatchMedia = window.matchMedia;
 afterEach(() => {
   window.matchMedia = originalMatchMedia;
+});
+
+// The steps are G's rows, whose chips draw nothing until the markdown engine has answered
+// (`NodeRow.tsx`'s `Chip`): loaded once before the tests, as the row's own tests load it, so a
+// reading of a chip under Steps reads the chip and not the engine's first load.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
 });
 
 function taskRef(blockId: string): string {
@@ -180,13 +188,24 @@ function Place(): ReactNode {
 /** The plan document, as the issue's read names it. */
 const PLAN_ARTIFACT = "artifact-plan";
 
-/** Draws the body over `root`. `written` is the block ids of the plan document in the order
- *  they are written, as the page's own blocks read holds them (`useIssueTree.ts`); where a case
- *  gives none the page holds no document, as on a tree drawn before that read answered. */
+/** Draws the body over `root`, the view's tasks. `plan` is the whole plan's tasks, which the
+ *  order and the chart's places are worked out from (`slots/view-plan.tsx`, dispatch://INFRA-3938
+ *  R4): the view's own tasks unless a case draws the view a words filter leaves. `reveal` is the
+ *  chain down to the node the address names. `written` is the block ids of the plan document in
+ *  the order they are written, as the page's own blocks read holds them (`useIssueTree.ts`);
+ *  where a case gives none the page holds no document, as on a tree drawn before that read
+ *  answered. */
 function renderBody(
   root: TreeNode,
-  reveal?: readonly TreeNode[],
-  written?: readonly string[]
+  {
+    plan = root.children,
+    reveal,
+    written,
+  }: {
+    plan?: readonly TreeNode[];
+    reveal?: readonly TreeNode[];
+    written?: readonly string[];
+  } = {}
 ): RenderResult {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -216,6 +235,7 @@ function renderBody(
                 holdsEscape={false}
                 isClosed={false}
                 onEditing={() => {}}
+                plan={plan}
                 reveal={reveal}
                 root={root}
                 rootRow={false}
@@ -230,7 +250,8 @@ function renderBody(
 
 const D = (blockId: string): string => blockNodeId(PLAN, blockId);
 
-/** The ids of the rows the body drew, in the order it drew them. */
+/** The ids of the rows the body drew, in the order it drew them: in the chart a cycle's row too,
+ *  by the task it stands for. */
 function rowIds(container: HTMLElement): (string | null)[] {
   return [...container.querySelectorAll("[data-node-row]")].map((row) =>
     row.getAttribute("data-node-id")
@@ -245,7 +266,7 @@ function rowOf(view: RenderResult, blockId: string): HTMLElement {
   return row;
 }
 
-/** Which row holds the focus, by its node's id. */
+/** Which row holds the focus, by its node's id: for a cycle's row, the task it stands for. */
 function focusedRow(): string | null {
   return document.activeElement?.getAttribute("data-node-id") ?? null;
 }
@@ -260,13 +281,13 @@ async function showSteps(view: RenderResult): Promise<void> {
 test("the plan opens on the chart: one bar per step, each after every step it needs", () => {
   setViewport(1440);
   // Written in the plan as t3, t1, t2: t3 needs t1 and t2 needs t3.
-  const view = renderBody(
-    issue([
-      task("t3", { needs: ["t1"], parentLine: serves("r2", "The outline draws one body") }),
-      task("t1", { parentLine: serves("r1", "The page draws the conversation") }),
-      task("t2", { needs: ["t3"], parentLine: serves("r1", "The page draws the conversation") }),
-    ])
-  );
+  const whole = issue([
+    task("t3", { needs: ["t1"], parentLine: serves("r2", "The outline draws one body") }),
+    task("t1", { parentLine: serves("r1", "The page draws the conversation") }),
+    task("t2", { needs: ["t3"], parentLine: serves("r1", "The page draws the conversation") }),
+  ]);
+  const view = renderBody(whole);
+  let start: string | null = null;
   try {
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(1);
     expect(view.getByRole("button", { name: PLAN_WORDS.chart }).getAttribute("aria-pressed")).toBe(
@@ -314,8 +335,34 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
         row.getAttribute("data-node-id")
       )
     ).toEqual([D("t1")]);
+    // A curve for each need between two bars.
+    expect(view.container.querySelectorAll("[data-plan-link]")).toHaveLength(2);
+    start = rowOf(view, "t2").getAttribute("data-plan-start");
   } finally {
     view.unmount();
+  }
+  // The words filter leaves the view the last step alone (dispatch://INFRA-3938 R4, decision 3
+  // of its plan): the chart draws that step alone, where it stands on the whole plan, and names
+  // after "needs" the step it needs, which it does not draw; no curve joins it to a bar that is
+  // not drawn.
+  const filtered = renderBody(
+    { ...whole, children: whole.children.filter((one) => one.id === D("t2")), held: 1 },
+    { plan: whole.children }
+  );
+  try {
+    expect(rowIds(filtered.container)).toEqual([D("t2")]);
+    const last = rowOf(filtered, "t2");
+    expect(last.getAttribute("data-plan-start")).toBe(start);
+    expect(last.querySelector("[data-plan-bar]")?.getAttribute("style")).toContain("left: 66.6");
+    expect(
+      [...last.querySelectorAll("[data-plan-need]")].map((one) => [
+        one.getAttribute("data-plan-need"),
+        one.textContent,
+      ])
+    ).toEqual([[D("t3"), "Task t3"]]);
+    expect(filtered.container.querySelectorAll("[data-plan-link]")).toHaveLength(0);
+  } finally {
+    filtered.unmount();
   }
 });
 
@@ -356,6 +403,12 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
     // `f` reaches the statement a step serves, which is in no tab order of its own.
     await user.keyboard("{Home}f");
     expect(document.activeElement?.getAttribute("href")).toBe(`/issues/${KEY}/spec#b-r1`);
+    // Escape gives the row back from its link, and leaves the chart from the row, as the
+    // outline's Escape does (dispatch://INFRA-3938 R7).
+    await user.keyboard("{Escape}");
+    expect(focusedRow()).toBe(D("t1"));
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(document.body);
     // Enter on a step goes to it in the conversation, where it is edited.
     act(() => rowOf(view, "t2").focus());
     await user.keyboard("{Enter}");
@@ -370,7 +423,7 @@ test("an address naming a step puts the focus on its bar's row", () => {
   setViewport(1440);
   const named = task("t2", { needs: ["t1"] });
   const root = issue([task("t1"), named]);
-  const view = renderBody(root, [root, named]);
+  const view = renderBody(root, { reveal: [root, named] });
   try {
     expect(focusedRow()).toBe(D("t2"));
   } finally {
@@ -380,15 +433,21 @@ test("an address naming a step puts the focus on its bar's row", () => {
 
 test("the control switches to the ordered steps, which are the outline's own rows", async () => {
   setViewport(1440);
-  const view = renderBody(
-    issue([
-      task("t3", { needs: ["t1"], parentLine: serves("r2", "The outline draws one body") }),
-      task("t1", { parentLine: serves("r1", "The page draws the conversation") }),
-      task("t2", { needs: ["t3"], parentLine: serves("r1", "The page draws the conversation") }),
-    ])
-  );
+  // The address names the step t1.
+  const named = task("t1", { parentLine: serves("r1", "The page draws the conversation") });
+  const root = issue([
+    task("t3", { needs: ["t1"], parentLine: serves("r2", "The outline draws one body") }),
+    named,
+    task("t2", { needs: ["t3"], parentLine: serves("r1", "The page draws the conversation") }),
+  ]);
+  const view = renderBody(root, { reveal: [root, named] });
   try {
+    // The address's step takes the focus once for the whole view: a press on the switch is the
+    // reader's, and leaves the focus on the button pressed, since neither drawing takes the
+    // address's step again (dispatch://INFRA-3938 R6 and R7).
+    expect(focusedRow()).toBe(D("t1"));
     await showSteps(view);
+    expect(document.activeElement).toBe(view.getByRole("button", { name: PLAN_WORDS.steps }));
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(0);
     expect(view.getByRole("button", { name: PLAN_WORDS.steps }).getAttribute("aria-pressed")).toBe(
       "true"
@@ -403,6 +462,7 @@ test("the control switches to the ordered steps, which are the outline's own row
     // And back to the chart.
     await userEvent.click(view.getByRole("button", { name: PLAN_WORDS.chart }));
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(1);
+    expect(document.activeElement).toBe(view.getByRole("button", { name: PLAN_WORDS.chart }));
   } finally {
     view.unmount();
   }
@@ -413,14 +473,16 @@ test("the control switches to the ordered steps, which are the outline's own row
 // that waits on one of them, and an address naming one of its tasks lands on a row.
 test("tasks that need each other are one line at their place, and rows at that place as steps", async () => {
   setViewport(1440);
-  const view = renderBody(
-    issue([
-      task("t6", { needs: ["t5"] }),
-      task("t4", { needs: ["t5", "t1"] }),
-      task("t5", { needs: ["t4"] }),
-      task("t1", { parentLine: serves("r1", "The page draws the conversation") }),
-    ])
-  );
+  const user = userEvent.setup();
+  const second = task("t5", { needs: ["t4"] });
+  const root = issue([
+    task("t6", { needs: ["t5"] }),
+    task("t4", { needs: ["t5", "t1"] }),
+    second,
+    task("t1", { parentLine: serves("r1", "The page draws the conversation") }),
+  ]);
+  // The address names the cycle's second task.
+  const view = renderBody(root, { reveal: [root, second] });
   try {
     // The chart: t1, then the cycle's one line, then the step that waits on it, two units in.
     const drawn = [
@@ -444,6 +506,21 @@ test("tasks that need each other are one line at their place, and rows at that p
       ["Task t4", `/issues/${KEY}/artifacts/${PLAN}#b-t4`],
       ["Task t5", `/issues/${KEY}/artifacts/${PLAN}#b-t5`],
     ]);
+    // The address puts the focus on the cycle's row, which stands for the task it names in
+    // Details, and the arrows go from it to the steps on either side of it, as they pass over it
+    // (decision 2 of dispatch://INFRA-3938's plan, R7).
+    const cycle = view.container.querySelector<HTMLElement>("[data-plan-cycle-row]");
+    expect(document.activeElement).toBe(cycle);
+    expect(cycle?.getAttribute("data-plan-cycle-row")).toBe(`${D("t4")} ${D("t5")}`);
+    expect(focusedRow()).toBe(D("t5"));
+    expect(view.container.querySelector("[data-place]")?.getAttribute("data-focused")).toBe(
+      D("t5")
+    );
+    await user.keyboard("j");
+    expect(focusedRow()).toBe(D("t6"));
+    act(() => cycle?.focus());
+    await user.keyboard("k");
+    expect(focusedRow()).toBe(D("t1"));
 
     // The steps: the same line, and the cycle's tasks as rows where the order puts the cycle.
     await showSteps(view);
@@ -461,6 +538,12 @@ test("a plan whose every task is in a cycle draws the line, and its tasks as ste
     expect(view.container.querySelectorAll("[data-plan-bar-row]")).toHaveLength(0);
     expect(view.container.querySelectorAll("[data-plan-cycle]")).toHaveLength(1);
     expect(view.container.querySelectorAll('[role="tree"]')).toHaveLength(1);
+    // The chart draws no bar, so the cycle's row is its one Tab stop (dispatch://INFRA-3938 R7).
+    expect(
+      [...view.container.querySelectorAll('[role="treeitem"][tabindex="0"]')].map((row) =>
+        row.getAttribute("data-plan-cycle-row")
+      )
+    ).toEqual([`${D("t1")} ${D("t2")}`]);
     expect(view.container.textContent).not.toContain(EMPTY_STATE_LINES.plan);
     await showSteps(view);
     expect(rowIds(view.container)).toEqual([D("t1"), D("t2")]);
@@ -513,8 +596,7 @@ test("tasks free to stand in either order keep the order the plan is written in"
   // t3, and t3 needs t1.
   const view = renderBody(
     issue([task("t3", { needs: ["t1"] }), task("t1"), task("t2"), task("t1")]),
-    undefined,
-    ["t1", "t2", "t3"]
+    { written: ["t1", "t2", "t3"] }
   );
   try {
     expect(rowIds(view.container)).toEqual([D("t1"), D("t2"), D("t3")]);
