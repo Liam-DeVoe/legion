@@ -184,6 +184,42 @@ check "names the test and both shards" \
   "$(contains "$err" "^go-test-shards.py: TestAlpha is in shards [123] and 4 of 4: each of those legs runs it$")"
 check "names no other test" "$(is "$(grep -c 'is in' <<<"$err")" 1)"
 
+echo "case: a name both the package and its external test package declare is one name of the split"
+# go test runs both TestSame functions here, one of package fixture and one of package
+# fixture_test. The binary lists the name twice; the split puts the name in one shard, whose leg
+# runs both, as go test does without -run, and the check counts that shard once.
+root_same=$(module same)
+tests "$root_same/internal_test.go" TestAlpha TestBeta TestSame
+printf 'package fixture_test\n\nimport "testing"\n\nfunc TestSame(t *testing.T) {}\n' >"$root_same/external_test.go"
+same_patterns=()
+for index in 0 1; do
+  run_shards "$root_same" pattern "$index" 2 .
+  check "shard $index exits 0" "$(is "$status" 0)"
+  same_patterns+=("$out")
+done
+check "the two shards hold the three names, TestSame once" \
+  "$(is "$(union_of "${same_patterns[@]}" | paste -sd ' ')" "TestAlpha TestBeta TestSame")"
+run_shards "$root_same" check . -- "${same_patterns[@]}"
+check "the check passes them" "$(is "$status" 0)"
+check "counting both TestSame tests" \
+  "$(contains "$err" '^go-test-shards.py: every one of the 4 tests of \. is in exactly one of the 2 shards$')"
+# The pattern of the leg that holds TestSame; ^$, which runs nothing, when no leg holds it.
+same_leg='^$'
+for p in "${same_patterns[@]}"; do
+  if grep -q -x TestSame <<<"$(names_of "$p")"; then same_leg=$p; fi
+done
+ran=$(cd "$root_same" && go test -count=1 -v -run "$same_leg" . 2>&1)
+check "the leg whose pattern holds TestSame runs both of them" \
+  "$(is "$(grep -c '^--- PASS: TestSame (' <<<"$ran")" 2)"
+
+echo "case: control - a name both packages declare, in two shards, fails the check by name"
+run_shards "$root_same" check . -- '^(TestAlpha|TestBeta|TestSame)$' '^(TestSame)$'
+check "exits 1" "$(is "$status" 1)"
+check "prints nothing on standard output" "$(is "$out" "")"
+check "names the test and both shards" \
+  "$(contains "$err" '^go-test-shards.py: TestSame is in shards 1 and 2 of 2: each of those legs runs it$')"
+check "names no other test" "$(is "$(grep -c 'is in' <<<"$err")" 1)"
+
 echo "case: control - a pattern -list and -run read differently fails the check, by pattern"
 # -test.list matches each top-level name against the whole pattern, while go test -run first splits
 # the pattern at every | and / outside brackets and parentheses and rewrites each part (a space

@@ -72,7 +72,10 @@ The legs' balance is measured, not assumed (the comment on the matrix in
 
 The names in the split are every name `-test.list .` prints but benchmarks: `Test…`, `Fuzz…` and
 `Example…`. `-test.list` prints an example only when it has an output comment, which is when
-`go test` runs it, and `-run` never starts a benchmark. TestMain is never printed.
+`go test` runs it, and `-run` never starts a benchmark. TestMain is never printed. A name the
+package's internal and external test packages both declare (`package api` and
+`package api_test`) is printed twice and is one name of the split: it is in one shard, and that
+leg's `go test -run` runs both tests, as `go test` does without `-run`.
 
 Refusals, each on standard error with nothing on standard output: a usage error, an index outside
 the leg count, a build or listing that fails, a package with no test, a shard with no test (more
@@ -139,8 +142,8 @@ def shard_of(name: str, total: int) -> int:
 
 
 def alternation(names) -> str:
-    """The -run pattern that selects exactly these names, sorted."""
-    return "^(" + "|".join(sorted(names)) + ")$"
+    """The -run pattern that selects exactly these names, sorted, each once."""
+    return "^(" + "|".join(sorted(set(names))) + ")$"
 
 
 def build(flags: list[str], package: str, directory: Path) -> Path:
@@ -211,17 +214,20 @@ def prove(binary: Path, everything: list[str], patterns: list[str]) -> None:
                              f"so a shard's pattern holds only names -test.list printed")
     if misshapen:
         raise Uncovered("\n".join(misshapen))
-    shards_of: dict[str, list[int]] = {name: [] for name in everything}
+    # The shards of a name are a set: a name the internal and the external test package both
+    # declare is listed twice, by every pattern that selects it, and is in two shards only when
+    # two patterns select it.
+    shards_of: dict[str, set[int]] = {name: set() for name in everything}
     for number, pattern in enumerate(patterns, start=1):
         for name in listed(binary, pattern):
-            shards_of.setdefault(name, []).append(number)
+            shards_of.setdefault(name, set()).add(number)
     problems = []
     for name in sorted(shards_of):
         shards = shards_of[name]
         if not shards:
             problems.append(f"{name} is in no shard: none of the {total} patterns selects it, so no leg runs it")
         elif len(shards) > 1:
-            numbers = " and ".join(str(n) for n in shards)
+            numbers = " and ".join(str(n) for n in sorted(shards))
             problems.append(f"{name} is in shards {numbers} of {total}: each of those legs runs it")
     if problems:
         raise Uncovered("\n".join(problems))
