@@ -83,6 +83,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', k.id::text, 'anchored_to', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid)
+  where k.node_kind is null
   union all
   select 'comment', c.id::text, 'anchored_to', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid
@@ -90,6 +91,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', k.id::text, 'owned_by', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = k.artifact_id
+  where k.node_kind is null
   union all
   select 'comment', c.id::text, 'owned_by', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = c.artifact_id
@@ -109,6 +111,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', ask_id::text, 'followed_by', 'session', session_id, since, null
   from ask_followers
+  where node_kind is null
   union all
   select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
   from components c join architecture_snapshots s on s.id = c.snapshot_id
@@ -182,6 +185,9 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
              when tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by') then 'comment'
              when tuple.from_kind = 'comment' and tuple.kind = 'replies_to' and tuple.to_kind in ('comment', 'ask') then 'comment_pointer'
              when tuple.from_kind = 'comment' and tuple.kind = 'answers' and tuple.to_kind = 'comment' then 'comment_pointer'
+             when tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by') then 'ask'
+             when tuple.from_kind = 'ask' and tuple.kind = 'followed_by' then 'ask_follower'
+             when tuple.from_kind = 'ask' and tuple.kind = 'shaped' then 'block_ref'
              when tuple.from_kind = 'message' and tuple.kind = 'replies_to' and tuple.to_kind = 'message' then 'message'
            end as projects
     from graph_tuples tuple
@@ -211,6 +217,15 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
             select 1 from comments projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
               and projected.tuples_stored
+            offset 0)
+          when 'ask' then exists (
+            select 1 from asks projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
+          when 'ask_follower' then exists (
+            select 1 from ask_followers projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+              and projected.session_id = edge.to_id
             offset 0)
           when 'message' then exists (
             select 1 from messages projected

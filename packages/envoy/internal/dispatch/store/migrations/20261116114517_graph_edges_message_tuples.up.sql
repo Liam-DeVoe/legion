@@ -52,16 +52,17 @@
 -- of the view before, and refs.TupleKinds, the list the store's arms render and the announcer
 -- writes, gains `replies_to` alone.
 --
--- Each new `exists` ends in `offset 0`, as the three before them do, for the reason
+-- Each new `exists` ends in `offset 0`, as the ones before them do, for the reason
 -- 20261109215947 gives: PostgreSQL would otherwise be free to plan the correlated probe as a read
 -- of the whole of messages. Each probes messages' (node_kind, node_address) index (migration
 -- 20261116114516) once for each edge its arm would answer.
 --
 -- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short
--- transaction, so a reference read waits behind it. The arm list re-stated is 20261109215947's,
--- with the two `node_kind is null` tests over messages, the messages case of the tuple arm and the
--- reply arm added, and it is the arm list a later migration re-states from. Nothing here refuses
--- or rewrites a row.
+-- transaction, so a reference read waits behind it. The arm list re-stated is 20261116094101's,
+-- which moved an ask's anchored_to, owned_by and followed_by into the store, with the two
+-- `node_kind is null` tests over messages, the messages case of the tuple arm and the reply arm
+-- added, and it is the arm list a later migration re-states from. Nothing here refuses or
+-- rewrites a row.
 
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
@@ -77,6 +78,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', k.id::text, 'anchored_to', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid)
+  where k.node_kind is null
   union all
   select 'comment', c.id::text, 'anchored_to', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid
@@ -84,6 +86,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', k.id::text, 'owned_by', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = k.artifact_id
+  where k.node_kind is null
   union all
   select 'comment', c.id::text, 'owned_by', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = c.artifact_id
@@ -103,6 +106,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', ask_id::text, 'followed_by', 'session', session_id, since, null
   from ask_followers
+  where node_kind is null
   union all
   select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
   from components c join architecture_snapshots s on s.id = c.snapshot_id
@@ -174,6 +178,9 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
              when tuple.from_kind = 'block' and tuple.kind = 'in_document' then 'block'
              when tuple.from_kind = 'block' and tuple.kind <> 'part_of' then 'block_ref'
              when tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by') then 'comment'
+             when tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by') then 'ask'
+             when tuple.from_kind = 'ask' and tuple.kind = 'followed_by' then 'ask_follower'
+             when tuple.from_kind = 'ask' and tuple.kind = 'shaped' then 'block_ref'
              when tuple.from_kind = 'message' and tuple.kind = 'replies_to' and tuple.to_kind = 'message' then 'message'
            end as projects
     from graph_tuples tuple
@@ -198,6 +205,15 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
           when 'comment' then exists (
             select 1 from comments projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
+          when 'ask' then exists (
+            select 1 from asks projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
+          when 'ask_follower' then exists (
+            select 1 from ask_followers projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+              and projected.session_id = edge.to_id
             offset 0)
           when 'message' then exists (
             select 1 from messages projected

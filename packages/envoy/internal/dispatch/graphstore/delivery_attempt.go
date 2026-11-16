@@ -21,12 +21,10 @@ const KindDeliveryAttempt = "delivery_attempt"
 
 // The relations an attempt states besides TupleDeliveredTo. TupleOwedTo points at the session or
 // role the attempt is for while its send is undecided, and ends with a retraction once the attempt
-// leaves pending; TupleAnsweredBy points at the reply the attempt drew. Neither is an arm of
-// graph_edges, so neither is one of refs.TupleKinds().
-const (
-	TupleOwedTo     = "owed_to"
-	TupleAnsweredBy = "answered_by"
-)
+// leaves pending; TupleAnsweredBy, the kind an ask's answer states too (ask.go), points at the
+// reply the attempt drew. Neither is an arm of graph_edges, so neither is one of
+// refs.TupleKinds().
+const TupleOwedTo = "owed_to"
 
 // The values of an attempt, as the kinds of the value tuples that state them: the store names of
 // the attribute nodes migration 20261116102759 ties to the delivery_attempt supertag. Each is the

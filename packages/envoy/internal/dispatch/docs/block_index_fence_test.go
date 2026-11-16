@@ -275,7 +275,7 @@ func currentPartOf(t *testing.T, database *store.Store, address string) graphsto
 func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
-	document := createOwedDocument(t, database, service, "", "race", raceVersion1, "")
+	document := createOwedDocument(t, database, service, "CORE-1", "", "race", raceVersion1, "")
 	settle(t, database, document)
 	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
 		t.Fatalf("the first tick indexed %d documents, want the fixture's one", tick.Documents)
@@ -323,7 +323,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	// The stale pass runs on to its commit, and the fence refuses it.
 	const staleVersion = 1
 	before := highestTuple(t, database)
-	_, won, write, err := refs.IndexBlocks(ctx, staleTx, document, staleVersion, time.Now(), staleMarkdown, staleBlocks, nil, nil)
+	_, won, write, err := refs.IndexBlocks(ctx, staleTx, document, staleVersion, time.Now(), staleMarkdown, staleBlocks, nil, nil, refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the stale pass: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 		t.Fatalf("begin the control pass: %v", err)
 	}
 	defer controlTx.Rollback(ctx)
-	_, won, write, err = refs.IndexBlocks(ctx, controlTx, document, third, time.Now(), staleMarkdown, staleBlocks, nil, nil)
+	_, won, write, err = refs.IndexBlocks(ctx, controlTx, document, third, time.Now(), staleMarkdown, staleBlocks, nil, nil, refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the control pass: %v", err)
 	}
@@ -565,7 +565,7 @@ func requireTheTickIsFenced(t *testing.T, database *store.Store, service *Servic
 	ctx := context.Background()
 	const writer = "the reconciliation tick (ReconcileBlockIndex)"
 	const own = 1
-	fenced := createOwedDocument(t, database, service, "", "fenced", "- alpha\n- beta\n", "")
+	fenced := createOwedDocument(t, database, service, "CORE-1", "", "fenced", "- alpha\n- beta\n", "")
 	settle(t, database, fenced)
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {

@@ -287,7 +287,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 	} {
 		// A document of its own each step, since the tick indexes the one before it as soon as
 		// that step lets it through, and an indexed document is owed nothing to wait for.
-		document := createOwedDocument(t, database, service, "", step.slug, "- one\n- two\n", "")
+		document := createOwedDocument(t, database, service, "CORE-1", "", step.slug, "- one\n- two\n", "")
 		settle(t, database, document)
 		holder, err := database.Pool.Begin(ctx)
 		if err != nil {
@@ -561,6 +561,28 @@ var indexPasses = map[string]string{
 	// the renewal appended none.
 	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
 	"docs/ask_blocks.go#causeFollows": "the follows a settlement made and the ask.opened events it appended after them",
+	// The shaped ties of an ask block whose ask a settlement opened, stated beside the ask's row
+	// and caused by its ask.opened (refs.IndexAskTies), when that settlement writes no version.
+	"docs/ask_blocks.go#causeOpenedAskTies": "the ties writeOpenedAskTies stated of the asks the settlement opened and the ask.opened events it appended",
+	// The one writer of an ask's answer state (asks.Settle, dispatch://INFRA-1150): the answer on
+	// the ask's node, then its row, from the transition its caller names; and each site that
+	// appends what a transition held under the event it appended after it (graphstore.Caused).
+	"asks/settle.go#Settle":                            "the transition its caller names",
+	"api/ask_transitions.go#closeAskTx":                "the transition the answer, resolve or decline request makes and the event it appended",
+	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx": "the asks an issue's close withdraws and the events it appended",
+	"api/issue_ask_lifecycle.go#restoreIssueAsksTx":    "the asks an issue's reopen restores and the events it appended",
+	"docs/approval_carry.go#answerApprovalAsk":         "the approval the carry answers and the event it appended",
+	"docs/ask_blocks.go#causeSettledAnswers":           "the transitions a settlement made and the events it appended after them",
+	// A settlement states each copy among a document's ask blocks as a claim on its source, once
+	// its version is indexed: the copies its own reconciliation read off the document, and the
+	// rows of the version it indexed, which name each copy's block node.
+	"docs/ask_blocks.go#claimCopies": "the copies the settlement's reconciliation read and the blocks its version indexed",
+	// The catch-up of a follow a process of the release before recorded: the follower rows that
+	// build wrote, stated on the ask's node where the node does not state them yet.
+	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
+	// The boot step's backfill of the asks and their followers written before this release.
+	"graphcensus/backfill.go#writeAskBatch":         "each pre-store asks row's own content",
+	"graphcensus/backfill.go#writeAskFollowerBatch": "each pre-store ask_followers row's own content",
 	// The node of every ask and message a request or a settlement creates, before its row, in the
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
@@ -653,10 +675,18 @@ var indexPasses = map[string]string{
 	"outbox/publisher.go#recordBatch": "the batch of events the publisher sent and the destinations each reached",
 	// The record of a fallback pass splices in the same arms for each copy the pass published:
 	// the copy's delivered_to and the session its topic names.
-	"outbox/mentions.go#recordFallbackCopies":   "the fallback copies the pass published and the topic each reached",
-	"refs/blocks.go#IndexBlocks":                "the version's render",
+	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
+	// The block index reads the version's render, and of each decision the author its node's
+	// decided_by tuple holds, which markdown never carries (refs.DecisionFacts): that tuple is
+	// the one record of who decided, read to restate the same tie, never to mend a row.
+	"refs/blocks.go#IndexBlocks":                "the version's render, and each decision's stored decided_by",
 	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
-	"refs/blocks.go#replaceBlockRefs":           "the version's render",
+	"refs/blocks.go#replaceBlockRefs":           "the version's render, and each decision's stored decided_by",
+	// The typed-node pass: the decision and reading nodes of the version, their values and their
+	// authors, from the version's render and the credential the version's write proved, and above
+	// the deferral bound their part_of and the rows of their own ties, through the two passes
+	// above. It reads a node's stored values and authors only to state what moved.
+	"refs/decision_nodes.go#IndexDecisionNodes": "the version's render and the credential its write proved",
 	"refs/refs.go#Stamp":                        "the event that recorded the write",
 	// The index of an item's body: its blocks' nodes, their part_of and links, and the item's
 	// citations, read off the item's text and compared with what the store holds of its blocks'
@@ -667,17 +697,15 @@ var indexPasses = map[string]string{
 	"refs/rebuild.go#reindexText":          "the source's stored text",
 	"refs/rebuild.go#replaceInTx":          "the source's stored text",
 	// Each site that appends what an item's index stated under the event of the write that
-	// indexed it (graphstore.Caused).
+	// indexed it (graphstore.Caused). The ask transition, the reopen's restore and the approval
+	// carry's answer, listed above as sites of asks.Settle, are such sites too.
 	"api/asks.go#editAsk":                              "the edit request and the ask.edited it appended",
-	"api/ask_transitions.go#closeAskTx":                "the transition the request applied and the event it appended",
-	"api/issue_ask_lifecycle.go#restoreIssueAsksTx":    "the asks the reopen restored and the ask.opened it appended for each",
-	"docs/approval_ask.go#RewriteApprovalAsk":          "the rewording the request wrote and the ask.edited it appended",
-	"docs/approval_carry.go#answerApprovalAsk":         "the answer the carry wrote and the ask.answered it appended",
+	"docs/approval_ask.go#rewriteApprovalAsk":          "the rewording a request or a version move wrote and the ask.edited it appended",
 	"docs/ask_blocks.go#causeIndexedAsks":              "the asks a settlement indexed and the events it appended for them",
 	"docs/decided_wording.go#restoreWordings":          "the decided wording the restore wrote back",
 	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "the seed's own plan",
-	// The erase of an erased comment's block nodes and their tuples: the node the operator named
-	// and what the store holds of the blocks its address names.
+	// The erase of an erased comment's or ask's block nodes and their tuples: the node the
+	// operator named and what the store holds of the blocks its address names.
 	"grapherase/erase.go#eraseItemBlocks": "the node the operator named",
 }
 

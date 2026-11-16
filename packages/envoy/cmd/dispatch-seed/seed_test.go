@@ -716,12 +716,12 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // store's current tuples 20261109215947 adds, the arm over a message's reply to a message's block
 // that 20261116114517 adds, the two arms over a comment's reply to a comment's block and to an
 // ask's part that 20261116124448 adds, and the one arm over every item's blocks, a comment's, a
-// message's and an ask's, that 20261116140008 adds. Each of the twelve arms over a kind the store
-// now writes answers only the rows of its table that name no node, each of the five over what a
-// comment answers only the rows whose pointers are no tuples, and the refs arm only the rows that
-// hold no tuples_stored; the seed names the node of every row it writes, states every comment's
-// pointers and every item's citations, so an arm of those may answer nothing here
-// (armGatedPerRow).
+// message's and an ask's, that 20261116140008 adds; 20261116094101 adds none. Each of the fifteen
+// arms over a kind the store now writes answers only the rows of its table that name no node,
+// each of the five over what a comment answers only the rows whose pointers are no tuples, and the
+// refs arm only the rows that hold no tuples_stored; the seed names the node of every row it
+// writes but an ask's and an ask follower's, states every comment's pointers and every item's
+// citations, so an arm of those may answer nothing here (armGatedPerRow).
 const graphArmCount = 32
 
 var (

@@ -12,9 +12,14 @@ import (
 // migrations/. A migration of this child joins the list in the commit that adds it: the
 // measurement driver (packages/dispatch/e2e/acceptance/answer-attribute-removal.sh) reads a
 // pg_total_relation_size of every table this test prints from the pull request body, so a
-// migration left off the list leaves its tables unmeasured. It is empty until the first one
-// lands.
-var thisChildsMigrations = []string{}
+// migration left off the list leaves its tables unmeasured.
+var thisChildsMigrations = []string{
+	"20261116082319_graph_supertags_decision_reading.up.sql",
+	"20261116094058_asks_node.up.sql",
+	"20261116094059_asks_node_index.up.sql",
+	"20261116094100_ask_followers_node_index.up.sql",
+	"20261116094101_graph_edges_asks.up.sql",
+}
 
 // TestTheTablesThisChildsMigrationsTouch prints, once each, the tables this child's migrations
 // lock above ACCESS SHARE as pgmigrate.TouchedTables reads them from each migration's text, one

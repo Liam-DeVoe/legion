@@ -79,6 +79,9 @@ type supertagAttributes struct {
 	// normalizeVersions), as blocks.json leaves them out.
 	Since          int `json:"since"`
 	CreatableSince int `json:"creatable_since"`
+	// Parents is the typed blocks the type stands in after their own content, and nowhere else
+	// (pmdoc.BlockTypeSchema.Parents); a node that carries none is a type in the block group.
+	Parents []string `json:"parents"`
 }
 
 // attributeAttributes is what an attribute node carries: the name its type declares it under,
@@ -168,6 +171,7 @@ func read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) 
 			Content:        carried.Content,
 			Render:         carried.Render,
 			Attributes:     declared,
+			Parents:        carried.Parents,
 			Since:          carried.Since,
 			CreatableSince: carried.CreatableSince,
 		}})

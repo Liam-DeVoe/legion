@@ -37,19 +37,28 @@ const eraseApplicationName = "envoy-dispatch erase"
 const eraseMarker = "[erased by envoy-dispatch erase %s:%s, recorded in graph_erasures]"
 
 // projectedTables are the tables that carry a node's address, and so are the rows a node is
-// projected onto (migration 20261109022248 gave all three `node_kind` and `node_address`). Issue
-// is the column naming the issue that owns a row itself, empty for a table whose rows are owned
-// through their document alone, by the artifact_id all three carry: a comment is an issue's or a
-// document's (comments_one_owner, migration 0009), and a block and a block reference are their
-// document's. Key is the table's primary key, the order the erase takes a node's rows of it in
-// (lockProjectionRows) and how the listing names each.
+// projected onto: comments, document_blocks and block_refs, which migration 20261109022248 gave
+// `node_kind` and `node_address`, and asks and ask_followers, which 20261116094058 gave them. A
+// follower row names its ask's node: it is a relation of that node (followed_by), not a node of its
+// own, so an ask's node is projected onto its asks row and onto each of its follower rows.
 //
-// The erase walks all three by (node_kind, node_address) rather than by the node's kind, so a
-// kind that gains a projection carries no second list here to keep in step.
-var projectedTables = []struct{ Table, Issue, Key string }{
+// Issue is the column naming the issue that owns a row, empty for a table whose rows are owned
+// through their document alone, by the artifact_id the owning row carries: a comment and an ask
+// are an issue's or a document's (comments_one_owner and asks_one_owner, migration 0009), and a
+// block and a block reference are their document's. Through is, for a table whose rows carry no
+// owner of their own, the join from a row (held) to the row that owns it (owner): a follower row
+// stands under its ask's owner. Key is the table's primary key, the order the erase takes a node's
+// rows of it in (lockProjectionRows) and how the listing names each.
+//
+// The erase walks every one by (node_kind, node_address) rather than by the node's kind, so a kind
+// that gains a projection carries no second list here to keep in step. The order is the order
+// every writer takes them in: an ask's row before its follower rows (20261116094058).
+var projectedTables = []struct{ Table, Issue, Through, Key string }{
 	{Table: "comments", Issue: "issue_key", Key: "id"},
 	{Table: "document_blocks", Key: "artifact_id, block_id"},
 	{Table: "block_refs", Key: "artifact_id, block_id, to_kind, to_id, kind"},
+	{Table: "asks", Issue: "issue_key", Key: "id"},
+	{Table: "ask_followers", Issue: "issue_key", Through: "asks owner on owner.id = held.ask_id", Key: "ask_id, session_id"},
 }
 
 // connect opens the erase's one connection, named in pg_stat_activity (eraseApplicationName). The
@@ -335,11 +344,11 @@ func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRea
 // the run rewrites.
 func (e *Erasure) marker() string { return fmt.Sprintf(eraseMarker, e.Kind, e.ID) }
 
-// eraseItemBlocks deletes an erased comment's block nodes and every tuple on both sides of each
-// (readItemBlocks), once the comment's own node and tuples are gone, so no part_of is left into
-// it: a block node of the comment is its text, and what the blocks' links state is read off that
-// text. The block and link rows that name those nodes went with the comment's row (on delete
-// cascade, migration 0142), so nothing names a node this deletes.
+// eraseItemBlocks deletes an erased comment's or ask's block nodes and every tuple on both sides of
+// each (readItemBlocks), once the item's own node and tuples are gone, so no part_of is left into
+// it: a block node of the item is its text, and what the blocks' links state is read off that
+// text. The block and link rows that name those nodes went with the item's row (on delete cascade,
+// migrations 0142 and 20261101143211), so nothing names a node this deletes.
 func (e *Erasure) eraseItemBlocks(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	for _, block := range read.itemBlocks {
 		if err := graphstore.EraseNode(ctx, tx, graphstore.KindBlock, block.id, block.seqs); err != nil {

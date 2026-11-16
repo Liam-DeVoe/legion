@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -15,13 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// withdrawnResolution is the resolution kind an issue's close records on each ask it withdraws.
-// Only the server writes it (the resolve route refuses it), so the reopen recognises the close's
-// withdrawals by this kind alone.
-const withdrawnResolution = "withdrawn"
-
-// withdrawnAsk is the SQL predicate, on asks a, that holds for an ask a close withdrew.
-const withdrawnAsk = `a.state = 'resolved' and a.resolution->>'kind' = '` + withdrawnResolution + `'`
+// withdrawnAsk is the SQL predicate, on asks a, that holds for an ask a close withdrew
+// (model.AskResolutionWithdrawn).
+const withdrawnAsk = `a.state = 'resolved' and a.resolution->>'kind' = '` + model.AskResolutionWithdrawn + `'`
 
 // withdrawnReason is the reason recorded on an ask the close of issueKey withdrew.
 func withdrawnReason(issueKey string) string {
@@ -30,15 +27,19 @@ func withdrawnReason(issueKey string) string {
 
 // settleIssueBeforeClose runs, before a close of issueKey opens its transaction, the settlement
 // each document of the issue owes, so every ask block written into them is an ask, credited to its
-// author, for the close to withdraw with a record: no settlement runs once the issue is closed. It
-// holds no transaction or lock, so it cannot meet the close's. A settlement that stops short is
-// run again a few times within a short budget (docs.SettleIssueDocuments): one that met updates
-// the room had not stored yet, one a write superseded (another process's append among them, which
-// the settlement catches its room up with first), and one whose room held a stored history that
-// was replaced under it, which is reloaded at the head, each settle on a later attempt. A
-// settlement still short after those is logged and the close proceeds; its blocks are not asks
-// yet, and the close's sweep marks them resolved (sweepClosedIssueAsks). An issue already closed,
-// or none, settles nothing: its close is refused.
+// author, for the close to withdraw with a record. The reason is the asks: a block credited after
+// the withdrawal would be an open ask on a closed issue that nothing withdraws, so a settlement
+// after the close credits none. It saves such a block resolved with no ask, and the block becomes
+// an ask once the issue reopens. It holds no transaction or lock, so it cannot meet the close's. A
+// settlement that stops short is run again a few times within a short budget
+// (docs.SettleIssueDocuments): one that met updates the room had not stored yet, one a write
+// superseded (another process's append among them, which the settlement catches its room up with
+// first), and one whose room held a stored history that was replaced under it, which is reloaded
+// at the head, each settle on a later attempt. A settlement still short after those is logged and
+// the close proceeds; its blocks are not asks yet, and the close's sweep marks them resolved
+// (sweepClosedIssueAsks). For an issue already closed, or none, this settles nothing first: its
+// close is refused, and the resumption settles what a closed issue's documents owe
+// (docs.Service.RunSettlementResumption).
 //
 // ctx must not end when the client goes away (outlivingTheClient): a settlement runs to its end
 // whether or not the client waits for the close, as the settlement it stands in for would. On a
@@ -109,7 +110,10 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	withdrawn := make([]model.Ask, 0, len(open))
 	appended := make([]model.Event, 0, len(open))
 	for _, ask := range open {
-		ask, err := docs.WriteAskResolution(ctx, tx, ask, withdrawnResolution, reason, actor)
+		// The withdrawal goes through the one writer of an ask's answer state; what it states on
+		// the ask's node waits for the ask.resolved appended below.
+		var held graphstore.Uncaused
+		ask, err := docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor, &held)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -120,6 +124,9 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 		}
 		event, err := s.appendEvent(ctx, tx, issueOwner(issueKey).event("ask.resolved", actor, payload))
 		if err != nil {
+			return nil, nil, err
+		}
+		if err := graphstore.Caused(ctx, tx, held, event.ID); err != nil {
 			return nil, nil, err
 		}
 		withdrawn = append(withdrawn, ask)
@@ -135,9 +142,33 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 // gets one ask.opened event whose actor is actor, the reopener, as settlement's own restoration
 // of an ask appends.
 //
+// It also marks owing a settlement each document of the issue whose ask blocks a settlement after
+// the reopen has to reconcile (docs.MarkReopenOwedAskDocuments), once the rows read open: one that
+// holds an ask block no settlement has indexed, which a settlement while the issue was closed
+// saved resolved with no ask, recording its author; the block document of each open block ask,
+// among them a restored ask whose block left that document while the issue was closed, which the
+// ask-state write found no block of and so did not write; and one holding the block of an ask a
+// settlement retracted, which came back while the issue was closed and stayed retracted. The
+// settlement this mark leaves owed opens the first kind's ask, credited to its recorded author,
+// retracts a restored ask whose block left, and restores the retracted ask. Its pending rows come
+// after the ask-state write and before the first event, and no copy lock comes after them
+// (docs.lockProjectCopies).
+//
+// Once those events are in, it does for each document of the issue what a settlement while the
+// issue was closed skipped (docs.Service.FollowClosedIssueVersions): it moves the open approval
+// request that names the document to the document's latest version, in the name of the editor a
+// settlement while the issue was closed credited, and carries an approval to that version, as the
+// version's own write does on an open issue. A document with stored updates its latest version
+// does not hold, this reopen's ask-state write among them, is left to the settlement that saves
+// them, whose version's own write does both. The move and the carry come after the ask.opened
+// events, so a restored request reopens before it moves or a carry answers it, and they take no
+// copy lock and write no pending row. It then forgets the editor a settlement while the issue was
+// closed kept for each document that owes no settlement (doc_closed_edit_sources); a document
+// that owes one keeps it until that settlement deletes it (docs.clearSettlementPending).
+//
 // ctx is joined to tx (Docs.Join); the caller holds the issue's row and has locked every event
 // owner it appends to before calling, and commits through the ledger and publishes the returned
-// events. It answers the restored asks, oldest id first.
+// events. It answers the restored asks, oldest id first, as the reopen restored them.
 func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) ([]model.Ask, []model.Event, error) {
 	withdrawn, err := s.readIssueAsks(ctx, tx, `
 		select `+askRowColumns+`
@@ -149,28 +180,30 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 	if err != nil {
 		return nil, nil, err
 	}
-	ids := make([]string, len(withdrawn))
+	// Each ask is opened again through the one writer of an ask's answer state, which takes its
+	// answer and its resolution off its node and its row; what it states on the node waits for
+	// that ask's ask.opened, appended below.
+	restoredAt := time.Now().UTC()
+	restored := make([]model.Ask, 0, len(withdrawn))
+	held := make([]graphstore.Uncaused, len(withdrawn))
 	for index, ask := range withdrawn {
-		ids[index] = ask.ID
-	}
-	if len(ids) > 0 {
-		if _, err := tx.Exec(ctx, `update asks set state = 'open', answer = null, resolution = null where id = any($1::uuid[])`, ids); err != nil {
+		change := asks.Reopened()
+		change.Who, change.At, change.Held = actor, restoredAt, &held[index]
+		settled, err := asks.Settle(ctx, tx, ask.ID, change)
+		if err != nil {
 			return nil, nil, fmt.Errorf("restore withdrawn ask: %w", err)
 		}
-	}
-	restored := make([]model.Ask, 0, len(withdrawn))
-	for _, ask := range withdrawn {
-		ask.State = "open"
-		ask.Answer = nil
-		ask.Resolution = nil
+		ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
 		restored = append(restored, ask)
 	}
 	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored, actor, false); err != nil {
 		return nil, nil, err
 	}
+	if err := s.deps.Docs.MarkReopenOwedAskDocuments(ctx, issueKey); err != nil {
+		return nil, nil, err
+	}
 	appended := make([]model.Event, 0, len(restored))
-	restoredAt := time.Now().UTC()
-	for _, ask := range restored {
+	for index, ask := range restored {
 		// The restore took each ask's answer off, which removes its answer part: index the
 		// parts in the transaction that wrote the row, and let the ask.opened name what that
 		// moved.
@@ -191,13 +224,20 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
 			return nil, nil, err
 		}
+		if err := graphstore.Caused(ctx, tx, held[index], event.ID); err != nil {
+			return nil, nil, err
+		}
 		// What the parts state in the store, under the ask.opened that records the restore.
 		if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
 			return nil, nil, err
 		}
 		appended = append(appended, event)
 	}
-	return restored, appended, nil
+	followed, err := s.deps.Docs.FollowClosedIssueVersions(ctx, issueKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return restored, append(appended, followed...), nil
 }
 
 // sweepClosedIssueAsks is the close's last pass over its issue's documents, run once the close
@@ -211,8 +251,9 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 // indexed: one a browser wrote into the room after the close forked it, or one whose settlement
 // failed before the close. Each such block is logged. An issue reopened in the meantime is left
 // alone. The sweep never fails the close: an error is logged. A block a room stores after the
-// sweep, before its process has heard of the close, leaves its document owing a settlement no
-// settlement runs while the issue is closed, which the repair's interval pass sweeps
+// sweep, before its process has heard of the close, leaves its document owing a settlement, which
+// runs on the closed issue: it saves the block resolved and opens no ask for it. The repair's
+// interval pass sweeps a closed issue's document that still owes a settlement when it runs
 // (RunIssueAskRepair).
 //
 // ctx must not end when the client goes away (outlivingTheClient), and no transaction is open.
@@ -260,11 +301,11 @@ func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	// between the close's commit and this lock leave them other than the close wrote them. Every
 	// other resolved or answered block ask's blocks are written from its row too: an ask resolved
 	// or answered after the close's settlement ran and before its transaction took the issue's row
-	// marked its copies owed a settlement, and no settlement runs while the issue is closed, so the
-	// sweep writes those copies its state in that settlement's place. An answered ask's own block
-	// is the answer route's to write, and WriteIssueAskStates leaves it as it is. A nil
-	// withdrawnIDs is a null array, which matches no id. withdrawing are open rows, which the
-	// query does not select.
+	// marked its copies owed a settlement, which runs only after the close has committed, so the
+	// sweep writes those copies its state now, in the one write it makes of each document. An
+	// answered ask's own block is the answer route's to write, and WriteIssueAskStates leaves it as
+	// it is. A nil withdrawnIDs is a null array, which matches no id. withdrawing are open rows,
+	// which the query does not select.
 	current, err := s.readIssueAsks(ctx, tx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
