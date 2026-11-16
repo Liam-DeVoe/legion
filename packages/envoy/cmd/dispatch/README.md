@@ -4514,10 +4514,19 @@ Each item below names a path with its method and identity, then its purpose.
     With a request open, they are the documents that the open request names.
     These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
     A hard finding of ASD-STE100 also breaks it.
-    A sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
-    A `.`, `!` or `?` that an upper-case letter follows directly also ends a sentence, so `comment.Dispatch` starts a second sentence.
-    A lower-case letter or a digit after the stop ends no sentence, so `1.5` and `terms.md` are one word each.
-    The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
+
+    - How the rules count sentences: a sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
+      A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
+      So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
+      A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
+      An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word, and none of its stops ends a sentence, also the last one before a space.
+      Nothing in code font ends a sentence.
+      A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
+      Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
+      A stop that white space follows ends a sentence also inside a quote or after a word such as `etc.`.
+      So a quoted text with a stop goes in code font.
+      The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
+
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
     A term line is `- **<term>**: <definition>` under a heading `Terms`.
     Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.

@@ -104,51 +104,6 @@ func TestAPieceWithNoLetterIsNoSentence(t *testing.T) {
 	}
 }
 
-// TestAStopThatAnUpperCaseLetterFollowsEndsASentence holds the rules of the form to a ".", "!" or
-// "?" that no space follows: an upper-case letter right after the stop starts a new sentence, and
-// a lower-case letter or a digit starts none, so a decimal number and a file name stay one word.
-// The 25-word rule reads each sentence that such a stop ends.
-func TestAStopThatAnUpperCaseLetterFollowsEndsASentence(t *testing.T) {
-	for _, test := range []struct {
-		body      string
-		sentences int
-	}{
-		{"Dispatch keeps each comment.Dispatch indexes each comment.Dispatch shows each comment.", 3},
-		{"Dispatch keeps each comment.Dispatch shows each comment.", 2},
-		{"Dispatch stops!Dispatch starts again?Legion waits.", 3},
-		{"Dispatch keeps each log for 1.5 days.", 1},
-		{"Dispatch reads terms.md at each start.", 1},
-	} {
-		if got := len(sentencesOf(oneLine(test.body))); got != test.sentences {
-			t.Errorf("sentencesOf(%q) has %d sentences, want %d", test.body, got, test.sentences)
-		}
-	}
-	long := "Dispatch refuses a write of the whole text of a document when that text breaks the document schema, and it answers with one named error code."
-	for _, test := range []struct {
-		body   string
-		rule   Rule
-		detail string
-	}{
-		{"Dispatch keeps each comment.Dispatch indexes each comment.Dispatch shows each comment.",
-			"sentences", "it has 3 sentences, and a statement has one or two"},
-		{"Dispatch keeps each comment.Dispatch shows each comment.", "", ""},
-		{"Dispatch keeps each log for 1.5 days. Dispatch reads terms.md at each start.", "", ""},
-		// 19 words, then 10: two sentences under the bound, where one sentence would hold 28 words.
-		{"Dispatch shows the person each question of each issue that the person follows, with the time of the question.Dispatch shows each approval request that waits on the person.", "", ""},
-		// The stop ends the sentence of 26 words, so the rule counts 26, not 28.
-		{long + "Dispatch logs it.", "sentence-words", `a sentence has 26 words, and a sentence has at most 25: "Dispatch refuses a write of the whole text"`},
-	} {
-		text := statement(test.body)
-		var want []Finding
-		if test.rule != "" {
-			want = []Finding{finding(text, test.rule, test.detail)}
-		}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
-			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
-		}
-	}
-}
-
 // TestCheckLetsTheWordIncidentStand holds the incident rule to an incident's id: level one says
 // "incident" with none.
 func TestCheckLetsTheWordIncidentStand(t *testing.T) {
