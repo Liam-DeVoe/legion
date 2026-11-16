@@ -226,39 +226,55 @@ export interface Overlap {
 }
 
 /**
- * Every pair of text boxes inside the view's cards that share a point on screen. Only a leaf
- * that carries text of its own is measured, so a box that holds another is not read as
- * overlapping it. Text kept for a screen reader alone (inside `.sr-only`, whose box clips it to
- * a pixel while its own spans keep their laid-out width) is no box the page draws, and is left
- * out. Fails where the view draws no card.
+ * Every pair of texts inside the view's cards whose drawn lines share a point on screen. Each
+ * text node that holds words is measured line by line (`Range.getClientRects`), so the words an
+ * element draws beside a child element of its own - the line of earlier results, a statement's
+ * "more", a paragraph that holds a link - are read as much as a leaf's, and no box that holds
+ * another is read as overlapping it. The lines of one text node are never read against each
+ * other: a wrapped line stands beside the next one's start, never over it. Text kept for a
+ * screen reader alone (inside `.sr-only`, whose box clips it to a pixel while its words keep
+ * their laid-out width) is no text the page draws, and is left out. Fails where the view draws
+ * no card.
  */
 export async function overlappingTexts(page: Page): Promise<Overlap[]> {
   const read = await readCards(page, ({ card, issuePage: issue }) => {
     const cards = [...document.querySelectorAll(`${issue} ${card}`)];
-    const boxes: { label: string; rect: DOMRect }[] = [];
+    const lines: { label: string; node: number; rect: DOMRect }[] = [];
+    const range = document.createRange();
+    let node = 0;
     for (const root of cards) {
-      for (const element of root.querySelectorAll("*")) {
-        if (element.children.length > 0 || element.tagName === "OPTION") continue;
-        if (element.closest(".sr-only") !== null) continue;
-        const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
-        if (text === "") continue;
-        const rect = element.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
-        boxes.push({ label: `${element.tagName.toLowerCase()} "${text.slice(0, 40)}"`, rect });
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+        const words = (text.textContent ?? "").replace(/\s+/g, " ").trim();
+        const holder = text.parentElement;
+        if (words === "" || holder === null || holder.closest(".sr-only, option") !== null) {
+          continue;
+        }
+        node += 1;
+        const label = `${holder.tagName.toLowerCase()} "${words.slice(0, 40)}"`;
+        range.selectNodeContents(text);
+        for (const rect of range.getClientRects()) {
+          if (rect.width > 0 && rect.height > 0) lines.push({ label, node, rect });
+        }
       }
     }
     const found: { first: string; second: string }[] = [];
-    for (let i = 0; i < boxes.length; i += 1) {
-      for (let j = i + 1; j < boxes.length; j += 1) {
-        const a = boxes[i];
-        const b = boxes[j];
-        if (a === undefined || b === undefined) continue;
+    // Each pair of text nodes is said once, however many of their lines overlap.
+    const said = new Set<string>();
+    for (let i = 0; i < lines.length; i += 1) {
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const a = lines[i];
+        const b = lines[j];
+        if (a === undefined || b === undefined || a.node === b.node) continue;
         const apart =
           a.rect.right <= b.rect.left + 0.5 ||
           b.rect.right <= a.rect.left + 0.5 ||
           a.rect.bottom <= b.rect.top + 0.5 ||
           b.rect.bottom <= a.rect.top + 0.5;
-        if (!apart) found.push({ first: a.label, second: b.label });
+        const pair = `${a.node}:${b.node}`;
+        if (apart || said.has(pair)) continue;
+        said.add(pair);
+        found.push({ first: a.label, second: b.label });
       }
     }
     return { cards: cards.length, found };
@@ -378,6 +394,70 @@ export async function glyphsWithNoBox(
   return { drawn: read.drawn, empty: read.empty };
 }
 
+/** What the page paints of the marks each state is told apart by in the view's cards. */
+export interface MarkPaint {
+  /** Whether the page reads `forced-colors: active`. */
+  readonly forced: boolean;
+  /** How many marks were read: each word of a check's state (`span[data-node-state]`) and of a
+   *  statement's (`span[data-statement-state]`), and each shape (`svg[data-glyph]`). */
+  readonly read: number;
+  /** Each mark a reader does not see, and why. */
+  readonly unseen: readonly string[];
+}
+
+/**
+ * Whether each word and shape that tells a state apart in the view's cards is painted where a
+ * reader sees it (part V's R2: with forced colours each state keeps its word and its shape).
+ * What a mark says and which shape it is are the page's markup, which forced colours never
+ * change, so this reads what is painted: the page renders the mark (`checkVisibility`, its
+ * `visibility` and `opacity` read too), it has a box of some size, and its colour is not the
+ * colour it stands on, the computed `background-color` of the nearest ancestor that paints one,
+ * which is its card. A shape paints with its stroke, which `NodeGlyph` sets to the current
+ * colour. Fails where the view draws no card.
+ */
+export async function paintedMarks(page: Page): Promise<MarkPaint> {
+  const read = await readCards(page, ({ card, issuePage: issue }) => {
+    const cards = [...document.querySelectorAll(`${issue} ${card}`)];
+    const marks = cards.flatMap((drawn) => [
+      ...drawn.querySelectorAll(
+        "span[data-node-state], span[data-statement-state], svg[data-glyph]"
+      ),
+    ]);
+    const unseen: string[] = [];
+    for (const mark of marks) {
+      const glyph = mark.getAttribute("data-glyph");
+      const id = mark.closest(card)?.getAttribute("data-node-id") ?? "";
+      const what =
+        glyph === null
+          ? `the word "${(mark.textContent ?? "").trim()}" in ${id}`
+          : `the shape ${glyph} in ${id}`;
+      const style = getComputedStyle(mark);
+      const paint =
+        glyph === null || /^currentcolor$/iu.test(style.stroke) ? style.color : style.stroke;
+      let ground = "";
+      for (let under = mark.parentElement; under !== null && ground === ""; ) {
+        const fill = getComputedStyle(under).backgroundColor;
+        // A background of alpha 0 paints nothing: the one under it shows through.
+        if (fill !== "transparent" && !/^rgba\(.*,\s*0\)$/u.test(fill)) ground = fill;
+        under = under.parentElement;
+      }
+      const box = mark.getBoundingClientRect();
+      if (!mark.checkVisibility({ opacityProperty: true, visibilityProperty: true })) {
+        unseen.push(`${what} is not rendered`);
+      }
+      if (box.width <= 0 || box.height <= 0) unseen.push(`${what} draws no box`);
+      if (paint === ground) unseen.push(`${what} is painted ${paint}, the colour it stands on`);
+    }
+    return {
+      cards: cards.length,
+      forced: matchMedia("(forced-colors: active)").matches,
+      read: marks.length,
+      unseen,
+    };
+  });
+  return { forced: read.forced, read: read.read, unseen: read.unseen };
+}
+
 /** How a link in a check's words is drawn: its colour and the colour of the words it stands
  *  in, and its underline's line and colour. */
 export interface LinkLook {
@@ -455,6 +535,8 @@ export interface LinkedChecksSeed {
     readonly c: string;
     readonly check: string;
   };
+  /** Statement B's `dispatch://` address, which the check's words cite. */
+  readonly referenceToB: string;
 }
 
 /**
@@ -545,5 +627,6 @@ export async function seedLinkedChecks(): Promise<LinkedChecksSeed> {
       c: blockNodeId(specSlug, LINKED_BLOCKS.c),
       check: blockNodeId(verification.artifact.slug, LINKED_BLOCKS.check),
     },
+    referenceToB: statement(LINKED_BLOCKS.b),
   };
 }

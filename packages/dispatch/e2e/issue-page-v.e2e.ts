@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
   CHECK_WHEN_WORDS,
   type CheckState,
@@ -22,6 +23,7 @@ import {
   recordCheckResult,
   retractCheckResult,
 } from "./api";
+import { nextFrames } from "./frames";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
 import { HEAD_SHA, PROJECT } from "./issue-layout-seed-support";
 import { requirementBlockId } from "./issue-layout-seed-text";
@@ -50,6 +52,7 @@ import {
   namedCommit,
   nodeCommands,
   overlappingTexts,
+  paintedMarks,
   RUNBOOK,
   STATEMENT_B_WORDS,
   seedLinkedChecks,
@@ -435,33 +438,52 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
           message: `the seeded screenshot draws no image at ${width} px`,
         })
         .toBeGreaterThan(0);
-      // The opened facts stay inside their card too.
+      // The opened facts stay inside their card too, and draw no text over another.
       expect(
         await boxesPastTheirCard(page),
         `an element of the opened check reaches past its card at ${width} px`
       ).toEqual([]);
+      expect(
+        await overlappingTexts(page),
+        `two pieces of text are drawn over each other with check 1's facts open at ${width} px`
+      ).toEqual([]);
+      // No result draws a commit of its own in the facts it opens either (R3).
+      expect(
+        (await page.locator("[data-verification-result]").allInnerTexts()).filter((drawn) =>
+          drawn.includes(HEAD_SHA.slice(0, 10))
+        ),
+        `a result draws a commit of its own with check 1's facts open at ${width} px`
+      ).toEqual([]);
 
       // Nothing opens on hover (R5): with the focus off the view, the pointer over check 2's
-      // words draws no facts under it.
+      // words draws no facts under it. React draws what a pointer's handler sets in a later
+      // task, so the row is read two frames after the hover, and then waited on.
       const failing = verificationCheck(page, blockNodeId(verificationSlug, seeded.checks.failed));
       await focusThePage(page);
       await failing.locator("[data-verification-check-words]").hover();
-      expect(
-        await rowBody(failing).count(),
+      await nextFrames(page);
+      await expect(
+        failing,
+        `the pointer over check 2's words says it opened its facts at ${width} px`
+      ).toHaveAttribute("aria-expanded", "false");
+      await expect(
+        rowBody(failing),
         `the pointer over check 2's words opened its facts at ${width} px`
-      ).toBe(0);
+      ).toHaveCount(0);
 
-      // Nothing the body draws is told apart by colour alone.
+      // Nothing the body draws is told apart by colour alone: with the colours forced, each
+      // state's word and shape in the cards is still painted where a reader sees it.
       await page.emulateMedia({ forcedColors: "active" });
-      const forced = await verificationCards(page);
+      const painted = await paintedMarks(page);
+      expect(painted.forced, `the page does not read forced colours at ${width} px`).toBe(true);
       expect(
-        forced.flatMap((card) => card.checks.map((check) => `${check.word} ${check.shape}`)),
-        `the states are told apart differently once the colours are forced at ${width} px`
-      ).toEqual(drawnChecks.map((check) => `${check.word} ${check.shape}`));
+        painted.read,
+        `the cards draw no state's word or shape once the colours are forced at ${width} px`
+      ).toBeGreaterThan(0);
       expect(
-        forced.map((card) => card.stateWord),
-        `the statements are told apart differently once the colours are forced at ${width} px`
-      ).toEqual(cards.map((card) => card.stateWord));
+        painted.unseen,
+        `a state's word or shape is not painted where a reader sees it once the colours are forced at ${width} px`
+      ).toEqual([]);
       // Each shape keeps a box of its own, and the pressed chip keeps a mark of its own, its
       // outline, where the system draws every chip's fill and border alike (departure 4).
       const glyphs = await glyphsWithNoBox(page);
@@ -560,7 +582,9 @@ test("the Verification filter says an issue holds no checks, in its own column",
 // agent recorded names it by its role's word. A check that serves two statements is drawn under
 // each, names the other by its first words, and is counted once. A statement that only a child's
 // check serves is covered, carries no gap, and says so in one line. A statement of 200 words is
-// cut at six lines, and its "more" is a tab stop between the chips and the check's link.
+// cut at six lines, and its "more" is a tab stop between the chips and the check's link. With A
+// opened, and again with the check's facts open, every element stays inside its card and no two
+// texts overlap, this issue's cards being the only ones that hold what V adds to a card.
 // SLOW(>=2s): an issue, its child and their two documents seeded and waited for in the coverage
 // read, then the view loaded and read at two widths, with a walk by Tab at the first.
 test("the Verification view draws a check's links, its agent's role and a child's checks @phone", async ({
@@ -607,10 +631,15 @@ test("the Verification view draws a check's links, its agent's role and a child'
         Number(/[\d,]+/u.exec(await more.innerText())?.[0]?.replace(/,/g, "")),
         `statement A's cut holds back 20 words or fewer at ${width} px`
       ).toBeGreaterThan(20);
-      expect(
-        (await words.boundingBox())?.height ?? Number.POSITIVE_INFINITY,
-        `statement A is not cut at six lines at ${width} px`
-      ).toBeLessThanOrEqual(6 * 24 + 12);
+      // A's words are set on 24 px lines, so six of them are more than five lines' height and
+      // no more than six.
+      const cutHeight = (await words.boundingBox())?.height ?? Number.NaN;
+      expect(cutHeight, `statement A is not cut at six lines at ${width} px`).toBeGreaterThan(
+        5 * 24
+      );
+      expect(cutHeight, `statement A is not cut at six lines at ${width} px`).toBeLessThanOrEqual(
+        6 * 24 + 1
+      );
       const link = statementA.locator(`[data-verification-check-words] a[href="${RUNBOOK}"]`);
       const tabTo = tabWalk(page, 20);
       if (width === 1440) {
@@ -630,6 +659,16 @@ test("the Verification view draws a check's links, its agent's role and a child'
         await words.evaluate((element) => element.scrollHeight - element.clientHeight),
         `statement A hides a word once "more" opened it at ${width} px`
       ).toBeLessThanOrEqual(1);
+      // Opened, A's words, the check's link and chip, its "Also under" line and C's line of
+      // checks elsewhere stay inside their cards and draw no text over another (R5).
+      expect(
+        await boxesPastTheirCard(page),
+        `an element reaches past its card with statement A opened at ${width} px`
+      ).toEqual([]);
+      expect(
+        await overlappingTexts(page),
+        `two pieces of text are drawn over each other with statement A opened at ${width} px`
+      ).toEqual([]);
       if (width === 1440) {
         await tabTo(
           link,
@@ -652,7 +691,19 @@ test("the Verification view draws a check's links, its agent's role and a child'
         `the link is underlined in another colour than #A8A29E at ${width} px`
       ).toBe("rgb(168, 162, 158)");
 
-      // No text reads an address: the check's reference to B is the chip that names B.
+      // No text reads an address: the check's reference to B is the chip that names B by its
+      // first words, as a chip names a block it cites (`RowText`'s `chipName`).
+      const referenceToB = statementA.locator(
+        `[data-verification-check-words] a[data-row-reference="${seeded.referenceToB}"]`
+      );
+      await expect(
+        referenceToB,
+        `the check's words under A draw no chip for B at ${width} px`
+      ).toHaveCount(1);
+      await expect(
+        referenceToB,
+        `the chip for B in the check's words does not name B by its first words at ${width} px`
+      ).toHaveText(chipWords(STATEMENT_B_WORDS));
       await expect
         .poll(() => verificationBody(page).innerText(), {
           message: `the view draws a dispatch:// address as words at ${width} px`,
@@ -701,6 +752,23 @@ test("the Verification view draws a check's links, its agent's role and a child'
         page.locator("[data-verification-covered]"),
         `statement C is not counted covered at ${width} px`
       ).toHaveText(`3 ${VERIFICATION_WORDS.of} 3 ${VERIFICATION_WORDS.covered}`);
+
+      // With the check's facts open under A, which the focus on its words opens, every element
+      // still stays inside its card and no two texts overlap.
+      const checkUnderA = statementA.locator("[data-verification-check]");
+      await checkUnderA.locator("[data-verification-check-words]").focus();
+      await expect(
+        rowBody(checkUnderA).first(),
+        `the focus on the check's words under A does not open its facts at ${width} px`
+      ).toBeVisible();
+      expect(
+        await boxesPastTheirCard(page),
+        `an element reaches past its card with the check's facts open under A at ${width} px`
+      ).toEqual([]);
+      expect(
+        await overlappingTexts(page),
+        `two pieces of text are drawn over each other with the check's facts open under A at ${width} px`
+      ).toEqual([]);
     }
   });
 });
