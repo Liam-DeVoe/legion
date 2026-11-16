@@ -382,6 +382,94 @@ function handoffBody() {
   };
 }
 
+/** The lens every reasoning write here names, its one finding, and who wrote them: the person a
+ *  personal token proves, as Dispatch's `authored_by` tuple names her. */
+const LENS = `dispatch://lens/${UUID}`;
+const reasoningAuthor = { kind: "person", id: "person@example.com" };
+
+/** One finding of the lens, as `POST /api/v1/issues/{key}/nodes/{id}/findings` answers it. */
+function findingBody(text: string) {
+  return {
+    address: `${LENS}#b-${OTHER_UUID}`,
+    id: `lens/${UUID}#${OTHER_UUID}`,
+    block_id: OTHER_UUID,
+    lens: LENS,
+    text,
+    author: reasoningAuthor,
+    created_at: AT,
+    state: "live",
+    visibility: "project",
+  };
+}
+
+/** `POST /api/v1/issues/{key}/lenses`: the lens with the finding its call wrote. */
+function lensBody() {
+  return {
+    address: LENS,
+    id: UUID,
+    kind: "trade-off",
+    on: `dispatch://${ISSUE}/spec`,
+    verdict: null,
+    triggered_by: null,
+    author: reasoningAuthor,
+    created_at: AT,
+    state: "live",
+    visibility: "project",
+    findings: [findingBody("A second region doubles the write path's cost.")],
+  };
+}
+
+/** `POST /api/v1/issues/{key}/risks`: a risk under the lens, prevented by no check yet. */
+function riskBody() {
+  return {
+    address: `dispatch://risk/${OTHER_UUID}`,
+    id: OTHER_UUID,
+    lens: LENS,
+    heading: "The migration locks the table for minutes.",
+    early_warning: "Writes queue behind the migration's lock.",
+    prevention: "Build the index concurrently.",
+    prevented_by: [],
+    author: reasoningAuthor,
+    created_at: AT,
+    state: "live",
+    visibility: "project",
+  };
+}
+
+/** One constraint, a standard with its reference, as both constraint routes answer it. */
+function constraintBody() {
+  return {
+    address: `dispatch://constraint/${OTHER_UUID}`,
+    id: OTHER_UUID,
+    standard: "RFC 9110",
+    reference: "section 9.2.2, idempotent methods",
+    measurement: null,
+    value: null,
+    taken_where: null,
+    author: reasoningAuthor,
+    created_at: AT,
+    state: "live",
+    visibility: "project",
+  };
+}
+
+/** `POST /api/v1/issues/{key}/nodes/{id}/pointers`: the lens's kind moved from trade-off to botec. */
+function pointerBody() {
+  const kind = (id: string) => ({
+    address: `dispatch://lens_kind/${id}`,
+    kind: "lens_kind",
+    state: "live",
+    visibility: "project",
+  });
+  return {
+    node: { address: LENS, kind: "lens", state: "live", visibility: "project" },
+    kind: "has_kind",
+    action: "retarget",
+    to: kind("botec"),
+    from: kind("trade-off"),
+  };
+}
+
 function architectureSource() {
   return {
     project: "CORE",
@@ -574,6 +662,14 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "handoffs") return response([]);
     if (segments[4] === "handoffs" && method === "POST") return response(handoffBody(), 201);
     if (segments[4] === "handoffs") return response(handoffBody());
+    if (rest === "lenses" && method === "POST") return response(lensBody(), 201);
+    if (rest === "risks" && method === "POST") return response(riskBody(), 201);
+    if (rest === "constraints" && method === "POST") return response(constraintBody(), 201);
+    if (rest === "constraints") return response({ issue: ISSUE, constraints: [constraintBody()] });
+    if (segments[4] === "nodes" && segments[6] === "findings") {
+      return response(findingBody("The cache doubles the write path's cost."), 201);
+    }
+    if (segments[4] === "nodes" && segments[6] === "pointers") return response(pointerBody());
   }
   if (segments[2] === "artifacts" && segments.length >= 4) {
     if (rest === "" && method === "GET") return response(artifactBody("spec.md"));

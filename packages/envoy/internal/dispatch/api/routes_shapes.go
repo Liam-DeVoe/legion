@@ -696,6 +696,25 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
+	// The reasoning nodes of dispatch://INFRA-1950 under an issue (reasoning_routes.go). Each
+	// write answers the node it wrote, carrying its state and visibility, so an author reads
+	// `author` on the node reserved for her in the answer to her own write.
+	"POST /api/v1/issues/{key}/lenses": {
+		Status: http.StatusCreated, Response: lensInvoked{}, Request: lensInvocationInput{},
+	},
+	"POST /api/v1/issues/{key}/nodes/{id}/findings": {
+		Status: http.StatusCreated, Response: lensFinding{}, Request: lensFindingInput{},
+	},
+	"POST /api/v1/issues/{key}/risks": {
+		Status: http.StatusCreated, Response: riskWritten{}, Request: riskInput{},
+	},
+	"POST /api/v1/issues/{key}/constraints": {
+		Status: http.StatusCreated, Response: constraintRead{}, Request: constraintInput{},
+	},
+	"GET /api/v1/issues/{key}/constraints": {Status: http.StatusOK, Response: issueConstraints{}},
+	"POST /api/v1/issues/{key}/nodes/{id}/pointers": {
+		Status: http.StatusOK, Response: pointerWritten{}, Request: pointerInput{},
+	},
 	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},

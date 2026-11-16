@@ -6,12 +6,16 @@ package api
 // The catalogue is the dispatch tools that write, all but one: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty-one of the thirty-five tools
-// write, and the catalogue holds twenty of them, which is under the count where a model's choice
-// measurably falls apart, so the list is read whole: nothing searches it, and no second schema
-// is authored per route. The one it leaves out is dispatch_review, on purpose: a review records
-// an approval or a changes request in a person's name, and the loop that proposes operations on
-// Dispatch's graph must never propose one, so goingToolRoutes names no row for it.
+// what a model chooses on, and its own argument schema. Twenty-six of the forty-one tools write,
+// and the catalogue holds twenty-five of them, so the list is read whole: nothing searches it,
+// and no second schema is authored per route. Twenty was the count this header called under the
+// one where a model's choice measurably falls apart; dispatch://INFRA-1950 added five writes of
+// the reasoning nodes (dispatch_lens, dispatch_finding, dispatch_risk, dispatch_constraint and
+// dispatch_pointer) and did not measure a model's choice against the twenty-five again, so
+// whether twenty-five is still under that count is unmeasured. The one the catalogue leaves out
+// is dispatch_review, on purpose: a review records an approval or a changes request in a
+// person's name, and the loop that proposes operations on Dispatch's graph must never propose
+// one, so goingToolRoutes names no row for it.
 //
 // Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the
 // server's own table each tool writes, and buildGoingCatalogue holds every one of them to the
@@ -73,12 +77,14 @@ type goingToolRoute struct {
 }
 
 // goingToolRoutes is the rows of the server's table each dispatch tool writes, by the tool's own
-// name, and so the tools the catalogue holds. A tool this map does not name is not in the
-// catalogue: the read tools; `dispatch_related`, whose POST row writes nothing (it runs the
-// related-item check and records none of it); and `dispatch_review`, which writes and is left
-// out on purpose. A review records an approval or a changes request in a person's name, and the
-// loop that proposes operations on Dispatch's graph must never propose one, so it gets no row
-// here.
+// name, and so the tools the catalogue holds: twenty-five of the twenty-six tools that write, of
+// the forty-one tool specs, five of them the writes of the reasoning nodes dispatch://INFRA-1950
+// added, whose effect on a model's choice among the catalogue that child did not measure. A tool
+// this map does not name is not in the catalogue: the read tools, `dispatch_constraints` among
+// them; `dispatch_related`, whose POST row writes nothing (it runs the related-item check and
+// records none of it); and `dispatch_review`, which writes and is left out on purpose. A review
+// records an approval or a changes request in a person's name, and the loop that proposes
+// operations on Dispatch's graph must never propose one, so it gets no row here.
 //
 // The rows of one tool are tried in order, so the row a call performs is the first whose guard
 // it satisfies and whose placeholders it fills: a document write names its issue, else its
@@ -249,6 +255,35 @@ var goingToolRoutes = map[string][]goingToolRoute{
 	"dispatch_handoff_write": {{
 		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/handoffs/{phase}",
 		Path: map[string]string{"key": "issue", "phase": "phase"},
+	}},
+	// The writes of the reasoning nodes under an issue (reasoning_routes.go). Each node stands
+	// under its parent by its part_of tuple and states who wrote it by authored_by where the
+	// credential proves an author. The pointer row's {id} is the node's store address, which the
+	// caller percent-encodes as one segment as every placeholder here is (chooseGoingRoute).
+	"dispatch_lens": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/lenses",
+		Path:      map[string]string{"key": "issue"},
+		Relations: []string{"part_of", "has_kind", "triggered_by", "authored_by"},
+	}},
+	"dispatch_finding": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/nodes/{id}/findings",
+		Path:      map[string]string{"key": "issue", "id": "lens"},
+		Relations: []string{"part_of", "authored_by"},
+	}},
+	"dispatch_risk": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/risks",
+		Path:      map[string]string{"key": "issue"},
+		Relations: []string{"part_of", "prevented_by", "authored_by"},
+	}},
+	"dispatch_constraint": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/constraints",
+		Path:      map[string]string{"key": "issue"},
+		Relations: []string{"part_of", "authored_by"},
+	}},
+	"dispatch_pointer": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/nodes/{id}/pointers",
+		Path:      map[string]string{"key": "issue", "id": "node"},
+		Relations: []string{"has_kind", "triggered_by", "constrained_by", "prevented_by"},
 	}},
 }
 
@@ -450,7 +485,7 @@ type goingCatalogueBody struct {
 	Actions []GoingAction `json:"actions"`
 }
 
-// getGoingCatalogue serves the catalogue whole. Twenty actions is a list a reader scans, so
+// getGoingCatalogue serves the catalogue whole. Twenty-five actions is a list a reader scans, so
 // there is nothing to search and nothing to page.
 func (s *server) getGoingCatalogue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {

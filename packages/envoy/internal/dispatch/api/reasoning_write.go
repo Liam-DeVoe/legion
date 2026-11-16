@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -162,4 +164,63 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 		return nil, err
 	}
 	return written, nil
+}
+
+// The three things a request may do to one pointer tuple out of a node (writeReasoningPointer).
+const (
+	pointerAppend   = "append"
+	pointerRetract  = "retract"
+	pointerRetarget = "retarget"
+)
+
+// reasoningPointer is one request's write of one pointer tuple out of a node that stands under
+// the issue issue names: a lens's has_kind or triggered_by, a requirement's constrained_by, a
+// risk's prevented_by. action is pointerAppend, pointerRetract or pointerRetarget. pointer is the
+// tuple the write names, dated and signed by the write and at graphstore.NoEvent: the one it
+// appends, the one it retracts, or, for a retarget, the one the node holds now, which moves to
+// toKind and toID.
+type reasoningPointer struct {
+	issue        string
+	action       string
+	pointer      graphstore.Tuple
+	toKind, toID string
+}
+
+// writeReasoningPointer is the one write path of a pointer tuple a request appends, retracts or
+// retargets out of a node of dispatch://INFRA-1950's reasoning kinds, or out of a requirement
+// block, in the caller's transaction. It takes the issue's row `for no key update` first, the
+// owner row the lock order on api/inbox_read.go's markInboxReadThreads puts before every other,
+// and then writes through the store, which holds the tuple to its type rule (graphstore's
+// pointerRules) and takes the node rows that rule names after the owner row: an append and a
+// retraction through graphstore.Write, a retarget through graphstore.Retarget. No event is
+// appended, as none is for the nodes these tuples tie (writeReasoningNodes).
+//
+// A retraction of a tuple the node does not hold now is a 404, as a retarget of one is
+// (graphstore.ErrPointerNotHeld): there is nothing to retract. That both ends exist, are not
+// gone and may be seen by the caller is the route's to check before it calls this.
+func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointer) error {
+	var held bool
+	if err := tx.QueryRow(ctx, `select true from issues where key = $1`+ownerRowLock, write.issue).Scan(&held); err != nil {
+		return err
+	}
+	switch write.action {
+	case pointerRetarget:
+		return graphstore.Retarget(ctx, tx, write.pointer, write.toKind, write.toID)
+	case pointerRetract:
+		current, err := graphstore.CurrentOut(ctx, tx, write.pointer.FromKind, write.pointer.FromID, []string{write.pointer.Kind})
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(current, func(tuple graphstore.Tuple) bool {
+			return tuple.ToKind == write.pointer.ToKind && tuple.ToID == write.pointer.ToID
+		}) {
+			return errorf(http.StatusNotFound, "NOT_FOUND", "the node holds no %s tuple at that node to retract", write.pointer.Kind)
+		}
+		retraction := write.pointer
+		retraction.Asserted = false
+		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{retraction})
+	case pointerAppend:
+		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{write.pointer})
+	}
+	return fmt.Errorf("no pointer write %q", write.action)
 }

@@ -480,6 +480,9 @@ var indexPasses = map[string]string{
 	// constraint - written with their tuples and their author in one store write (graphstore.Write)
 	// from the request alone: they have no projection row, so there is no side of one to read.
 	"api/reasoning_write.go#writeReasoningNodes": "the request's nodes and tuples, its credential and the project of the issue it names",
+	// One pointer tuple out of a node of an issue, appended, retracted or retargeted through the
+	// store's writer from the request alone: the tuple has no projection row either.
+	"api/reasoning_write.go#writeReasoningPointer": "the request's tuple, the node it goes out of and the far ends it names",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.

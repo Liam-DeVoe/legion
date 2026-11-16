@@ -35,6 +35,14 @@ import {
 import { prioritiesCommand } from "./priorities";
 import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
 import { readCommand } from "./read";
+import {
+  constraintCommand,
+  constraintsCommand,
+  findingCommand,
+  lensCommand,
+  pointerCommand,
+  riskCommand,
+} from "./reasoning";
 import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
 
@@ -104,4 +112,10 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_whoami: onSession(whoamiCommand),
   dispatch_limits: onSession(limitsCommand),
   dispatch_inbox: onSession(inboxCommand),
+  dispatch_lens: acting(lensCommand),
+  dispatch_finding: acting(findingCommand),
+  dispatch_risk: acting(riskCommand),
+  dispatch_constraint: acting(constraintCommand),
+  dispatch_constraints: acting(constraintsCommand),
+  dispatch_pointer: acting(pointerCommand),
 };

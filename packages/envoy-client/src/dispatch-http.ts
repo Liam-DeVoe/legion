@@ -21,6 +21,8 @@ import type {
   Comment,
   CommentRead,
   CommentWriteResponse,
+  ConstraintInput,
+  ConstraintRead,
   CreateAgentMessageInput,
   CreateArtifactInput,
   CreateAskInput,
@@ -45,6 +47,7 @@ import type {
   InboxRow,
   Issue,
   IssueCheckResults,
+  IssueConstraints,
   IssueCoverage,
   IssueDetails,
   IssuePriority,
@@ -54,6 +57,10 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  LensFinding,
+  LensFindingInput,
+  LensInvocationInput,
+  LensInvoked,
   MarkdownRoundTripResponse,
   Message,
   MessageRead,
@@ -61,11 +68,15 @@ import type {
   MessageReplyResult,
   MyRepliesResponse,
   OpenAsksResponse,
+  PointerInput,
+  PointerWritten,
   Priorities,
   Project,
   RecordCheckResultInput,
   RelatedCheckInput,
   ResolveAskInput,
+  RiskInput,
+  RiskWritten,
   SearchResponse,
   SessionAnswersResponse,
   Suggestions,
@@ -1803,6 +1814,65 @@ export class DispatchClient {
   /** `GET /api/v1/handoffs/{id}`: one handoff by id, with its body. */
   async handoff(id: string): Promise<Handoff> {
     return this.#json("GET", ["api", "v1", "handoffs", id]);
+  }
+
+  /** `POST /api/v1/issues/{key}/lenses`: one lens invoked on a node of the issue, with the
+   *  findings it was written with; the answer names the lens's address and each finding's. */
+  async invokeLens(issue: string, input: LensInvocationInput): Promise<LensInvoked> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "lenses"],
+      input
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/nodes/{id}/findings`: one finding added to the lens `lens`
+   *  addresses, sent whole as the one path segment `{id}` is. */
+  async addLensFinding(issue: string, lens: string, input: LensFindingInput): Promise<LensFinding> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", lens, "findings"],
+      input
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/risks`: one risk under a pre-mortem lens of the issue. */
+  async writeRisk(issue: string, input: RiskInput): Promise<RiskWritten> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "risks"],
+      input
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/constraints`: one constraint under the issue. */
+  async writeConstraint(issue: string, input: ConstraintInput): Promise<ConstraintRead> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "constraints"],
+      input
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/constraints`: the constraints under the issue the caller may see. */
+  async issueConstraints(issue: string): Promise<IssueConstraints> {
+    return this.#json("GET", [
+      "api",
+      "v1",
+      "issues",
+      await this.#resolveIssue(issue),
+      "constraints",
+    ]);
+  }
+
+  /** `POST /api/v1/issues/{key}/nodes/{id}/pointers`: one pointer tuple out of the node `node`
+   *  addresses, sent whole as the one path segment `{id}` is, appended, retracted or retargeted. */
+  async writePointer(issue: string, node: string, input: PointerInput): Promise<PointerWritten> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", node, "pointers"],
+      input
+    );
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {

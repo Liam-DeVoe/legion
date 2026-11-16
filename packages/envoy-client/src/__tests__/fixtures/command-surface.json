@@ -1,5 +1,5 @@
 {
-  "commands": 35,
+  "commands": 41,
   "refusals": 29,
   "runs": [
     {
@@ -391,6 +391,67 @@
       ]
     },
     {
+      "tool": "dispatch_constraint",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "reference": "section 9.2.2, idempotent methods",
+        "standard": "RFC 9110"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/constraints",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "reference": "section 9.2.2, idempotent methods",
+            "standard": "RFC 9110"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Wrote a constraint under DSP-1: dispatch://constraint/01234567-0000-4000-8000-000000000002 (standard \"RFC 9110\", reference \"section 9.2.2, idempotent methods\")"
+      ]
+    },
+    {
+      "tool": "dispatch_constraints",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/constraints",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "DSP-1 holds 1 constraint you may see:",
+        "- dispatch://constraint/01234567-0000-4000-8000-000000000002: standard \"RFC 9110\", reference \"section 9.2.2, idempotent methods\"; written by person person@example.com; live"
+      ]
+    },
+    {
       "tool": "dispatch_doc_edit",
       "call": "refusal: artifact beside a ref naming another document",
       "args": {
@@ -669,6 +730,43 @@
       "outcome": "result",
       "text": [
         "Ask edited: Which way should the release go?"
+      ]
+    },
+    {
+      "tool": "dispatch_finding",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "lens": "dispatch://lens/<id>",
+        "text": "The cache doubles the write path's cost."
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/nodes/dispatch%3A%2F%2Flens%2F01234567-0000-4000-8000-000000000001/findings",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "text": "The cache doubles the write path's cost."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Added a finding to dispatch://lens/01234567-0000-4000-8000-000000000001: dispatch://lens/01234567-0000-4000-8000-000000000001#b-01234567-0000-4000-8000-000000000002"
       ]
     },
     {
@@ -988,6 +1086,51 @@
       ]
     },
     {
+      "tool": "dispatch_lens",
+      "call": "valid",
+      "args": {
+        "findings": [
+          "A second region doubles the write path's cost."
+        ],
+        "issue": "DSP-1",
+        "kind": "trade-off",
+        "on": "dispatch://DSP-1/spec"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/lenses",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "findings": [
+              "A second region doubles the write path's cost."
+            ],
+            "kind": "trade-off",
+            "on": "dispatch://DSP-1/spec"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Invoked a trade-off lens on dispatch://DSP-1/spec: dispatch://lens/01234567-0000-4000-8000-000000000001, written by person person@example.com",
+        "- finding dispatch://lens/01234567-0000-4000-8000-000000000001#b-01234567-0000-4000-8000-000000000002: A second region doubles the write path's cost."
+      ]
+    },
+    {
       "tool": "dispatch_limits",
       "call": "valid",
       "args": {},
@@ -1158,6 +1301,49 @@
       "outcome": "result",
       "text": [
         "The plan review approved plan.md (document id 01234567-0000-4000-8000-00000000000b) at version 2; no human is asked to approve a plan. A later plan version makes this approval stale: run the review again and record it the same way."
+      ]
+    },
+    {
+      "tool": "dispatch_pointer",
+      "call": "valid",
+      "args": {
+        "action": "retarget",
+        "from": "trade-off",
+        "issue": "DSP-1",
+        "kind": "has_kind",
+        "node": "dispatch://lens/<id>",
+        "to": "botec"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/nodes/dispatch%3A%2F%2Flens%2F01234567-0000-4000-8000-000000000001/pointers",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "action": "retarget",
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "from": "trade-off",
+            "kind": "has_kind",
+            "to": "botec"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Retargeted the has_kind pointer of dispatch://lens/01234567-0000-4000-8000-000000000001 from dispatch://lens_kind/trade-off to dispatch://lens_kind/botec"
       ]
     },
     {
@@ -1731,6 +1917,49 @@
       "outcome": "result",
       "text": [
         "Recorded the review of spec.md (document id 01234567-0000-4000-8000-00000000000a): approved at version 2, by user person@example.com, acting through session session-1."
+      ]
+    },
+    {
+      "tool": "dispatch_risk",
+      "call": "valid",
+      "args": {
+        "early_warning": "Writes queue behind the migration's lock.",
+        "heading": "The migration locks the table for minutes.",
+        "issue": "DSP-1",
+        "lens": "dispatch://lens/<id>",
+        "prevention": "Build the index concurrently."
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/risks",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "early_warning": "Writes queue behind the migration's lock.",
+            "heading": "The migration locks the table for minutes.",
+            "lens": "dispatch://lens/<id>",
+            "prevention": "Build the index concurrently."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Wrote a risk under dispatch://lens/01234567-0000-4000-8000-000000000001: dispatch://risk/01234567-0000-4000-8000-000000000002",
+        "No check prevents it yet."
       ]
     },
     {

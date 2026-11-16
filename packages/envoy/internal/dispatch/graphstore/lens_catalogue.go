@@ -19,12 +19,15 @@ import (
 // person reads for that kind of lens; and a constraint's standard and reference, which for a
 // constraint of the catalogue are the kind's primary source and that source's reference. A
 // constraint written under an issue holds a standard with its reference, or a measurement with
-// its value and where it was taken.
+// its value and where it was taken (AttributeValue, the measured value itself, is an attribute of
+// the constraint type and no relation's far end, which KindValue names).
 const (
 	AttributeWords       = "words"
 	AttributeStandard    = "standard"
 	AttributeReference   = "reference"
 	AttributeMeasurement = "measurement"
+	AttributeValue       = "value"
+	AttributeTakenWhere  = "taken_where"
 )
 
 // LensKind is one kind of lens as the catalogue holds it (dispatch://INFRA-1950/spec#b-r-lens-catalogue):

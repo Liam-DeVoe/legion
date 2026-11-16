@@ -4044,10 +4044,11 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty-five of the twenty-six dispatch tools that write, of the forty-one tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
   The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
-  Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
+  The catalogue is read whole: it takes no query and serves no page.
+  Twenty actions was under the count where a model's choice falls apart; dispatch://INFRA-1950 added the five writes of the reasoning nodes, which make twenty-five, and did not measure a model's choice against them.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
   A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
 
@@ -4440,6 +4441,50 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/handoffs/{id}` (GET; cookie, trusted header, or bearer)
 
   One handoff by id with its body; `404 HANDOFF_NOT_FOUND` when there is none, `400 HANDOFF_ID_INPUT` for an id that is not a uuid.
+
+- `/api/v1/issues/{key}/lenses` (POST; cookie, trusted header, or bearer)
+
+  Invoke a lens on one node of the issue, `{on, kind, verdict?, findings?, triggered_by?, visibility?}`: one analysis of one kind of the lens catalogue, a `lens` node of the node and tuple store.
+  `on` is the `dispatch://` address, or the store address `/nodes/{id}` takes, of a node the caller may see under the issue: the issue itself, a document or a block of one, an ask, a comment or a message or a block of one, or a lens, a finding, a risk or a constraint of the issue.
+  The lens stands on that node by its `part_of` tuple and holds one `has_kind` tuple to the `lens_kind` node `kind` names; `GET /api/v1/schema/blocks` lists the kinds under `lens_kinds`.
+  `verdict` is stored as the lens's verdict, `triggered_by` is a `triggered_by` tuple to the lens of the issue it names, and each of `findings` is one finding: a `block` node under the lens at a random block id, addressed `dispatch://lens/<uuid>#b-<id>`, ranked in the order it was written.
+  `visibility: "author"` keeps the lens and its findings to their author, and is `403 AUTHOR_NAMES_NOBODY` on a credential that proves no author, the deployment's shared bearer.
+  A missing kind is `400 LENS_KIND_REQUIRED`, an id no `lens_kind` node holds `400 INVALID_POINTER`, and an `on` or a `triggered_by` the caller may not see under the issue `404 NOT_FOUND`; a refused write stores nothing.
+  The write appends no event and sends no delivery.
+  Answers `201` with the lens: its address `dispatch://lens/<uuid>`, `kind`, `on`, `verdict`, `triggered_by`, `author` (the person or session its `authored_by` tuple names, null on the shared bearer), `created_at`, `state`, `visibility`, and each finding with its address, text, author, state and visibility.
+
+- `/api/v1/issues/{key}/nodes/{id}/findings` (POST; cookie, trusted header, or bearer)
+
+  Add one finding to the lens `{id}` names, `{text, visibility?}`: a `block` node under the lens at a random block id, after every finding it holds.
+  `{id}` is the lens's store address under the issue (`lens/<uuid>`, or its `dispatch://` address), percent-encoded as one path segment.
+  The finding carries its lens's visibility unless `visibility` is `author`.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, a node that is no lens `400 INVALID_POINTER`, and an empty text `400 FINDING_INPUT`.
+  Answers `201` with the finding: its address, `id`, `block_id`, its lens's address, `text`, `author`, `created_at`, `state` and `visibility`.
+
+- `/api/v1/issues/{key}/risks` (POST; cookie, trusted header, or bearer)
+
+  Write one risk under a pre-mortem lens of the issue, `{lens, heading, early_warning, prevention, prevented_by?, visibility?}`: the failure it names, the sign it is seen coming by and what keeps it from happening, as attributes of the risk, under the lens by its `part_of` tuple.
+  `prevented_by` is the address of a check block of the issue's documents that covers the risk, a `prevented_by` tuple.
+  The store holds a risk to a lens of kind `pre-mortem`: a lens of any other kind, a node that is no lens and a `prevented_by` at a block that is no check are `400 INVALID_POINTER`, the first saying a risk belongs under a lens of kind pre-mortem.
+  A blank field is `400 RISK_INPUT`, and a lens or a check the caller may not see under the issue `404 NOT_FOUND`.
+  Answers `201` with the risk: its address `dispatch://risk/<uuid>`, `lens`, `heading`, `early_warning`, `prevention`, `prevented_by` (each check's address), `author`, `created_at`, `state` and `visibility`.
+
+- `/api/v1/issues/{key}/constraints` (GET, POST; cookie, trusted header, or bearer)
+
+  POST writes one constraint under the issue, `{standard, reference}` or `{measurement, value, taken_where}`, with `visibility?`: what forced a requirement from outside the conversation, as attributes of the constraint, under the issue by its `part_of` tuple.
+  A body that is neither shape, leaves a field of its shape blank or names fields of both is `400 CONSTRAINT_INPUT`.
+  A requirement points at a constraint through `POST /api/v1/issues/{key}/nodes/{id}/pointers` (`constrained_by`).
+  GET answers `{issue, constraints}`: the constraints under the issue the caller may see, in the order they were written there, each with its address `dispatch://constraint/<uuid>`, `id`, `standard`, `reference`, `measurement`, `value` and `taken_where` (null where it holds none), `author`, `created_at`, `state` and `visibility`.
+  A constraint reserved for its author is in its author's list alone, and an issue Dispatch does not hold is `404 NOT_FOUND`.
+
+- `/api/v1/issues/{key}/nodes/{id}/pointers` (POST; cookie, trusted header, or bearer)
+
+  Append, retract or retarget one pointer tuple out of the node `{id}` names, `{kind, action, to, from?}`; `{id}` is the node's store address under the issue, percent-encoded as one path segment.
+  `kind` is `has_kind` (a lens to its `lens_kind`, `to` and `from` being `lens_kind` ids), `triggered_by` (a lens to the lens of the issue that asked for it), `constrained_by` (a requirement block to a constraint of the issue or of the catalogue) or `prevented_by` (a risk to a check block).
+  `append` asserts a tuple at `to`, `retract` retracts the one at `to`, and `retarget` moves the one at `from` to `to`, retracting the old and asserting the new in one write and touching no `part_of` tuple.
+  The store holds each tuple to its type rule: a far end of the wrong type, a lens triggered by itself and a lens left with no kind are `400 INVALID_POINTER`, and a second `has_kind` or a retarget of a pre-mortem's kind away from `pre-mortem` is `409 POINTER_ALREADY_ASSERTED`, one body whatever hangs under the lens.
+  A node or a far end the caller may not see under the issue, and a tuple to retract or retarget that the node does not hold, are `404 NOT_FOUND`; `part_of`, which moves through the node's parent route, or any other kind or action, is `400 POINTER_INPUT`.
+  Answers `200 {node, kind, action, to, from}`, each end with its address, kind, state and visibility, and `from` null but for a retarget.
 
 - `/api/v1/issues/{key}/artifacts` (GET, POST; cookie, trusted header, or bearer)
 
