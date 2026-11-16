@@ -90,10 +90,10 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
-		g.request_id, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host
+		g.request_id, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host, e.projects
 		from grants g join enrollments e on e.id=g.enrollment_id join requests r on r.id=g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where g.id=$1`, grantID).
-		Scan(&enrollmentID, &expires, &live, &requestID, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host)
+		Scan(&enrollmentID, &expires, &live, &requestID, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host, &enr.Projects)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return grantRelease{}, ErrGrantNotLive
 	}
@@ -121,9 +121,21 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 		recorder.NoteSecrets(g.name)
 	}
 	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
+	// A grant of a project-tagged name is re-checked on every release as a service's is: whether
+	// its project is private, and whether the session's person may still see it, are Dispatch's
+	// and not in the policy version (anyProjectTagged), so they are read here, on the pool and
+	// outside any transaction (projectFacts), before the names are re-evaluated.
 	set := m.Policy.Get()
-	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) {
-		requester, err := m.requester(ctx, m.Store.Pool, enr)
+	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) {
+		names := make([]string, len(granted))
+		for i, g := range granted {
+			names[i] = g.name
+		}
+		facts, err := m.projectFacts(ctx, enr, names, set)
+		if err != nil {
+			return grantRelease{}, err
+		}
+		requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 		if err != nil {
 			return grantRelease{}, err
 		}
@@ -137,7 +149,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 				// secret the policy now tags as an administrator's: a person approves every
 				// release of one, so taking the tag off again must not revive a grant no person
 				// ever approved — the session asks again, as a new request.
-				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) {
+				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errProjectNotNamed) {
 					return grantRelease{}, m.endGrant(ctx, grantID, err)
 				}
 				return grantRelease{}, err
@@ -518,6 +530,8 @@ func stillAllowed(set *policy.Set, rules airlock.Rules, name, frozenSource, froz
 	switch {
 	case d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed:
 		return requesterNotListed(name)
+	case projectDeny(d):
+		return projectNotNamed(name)
 	case d.Outcome == policy.Deny:
 		return fmt.Errorf("%w: the current policy no longer allows %s", ErrGrantNotLive, name)
 	case d.Outcome != policy.Approval:
@@ -629,11 +643,15 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 		}
 		return policy.Decision{}, false, false, err
 	}
-	requester, err := m.requester(ctx, m.Store.Pool, enr)
+	set := m.Policy.Get()
+	facts, err := m.projectFacts(ctx, enr, []string{name}, set)
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
-	set := m.Policy.Get()
+	requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
+	if err != nil {
+		return policy.Decision{}, false, false, err
+	}
 	decision, err := set.Evaluate(name, requester)
 	if err != nil {
 		return policy.Decision{}, false, false, err
@@ -901,7 +919,7 @@ func writtenBeforeMigration13(alias string) string {
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names []string, lifetime *int, set *policy.Set) (Request, bool, error) {
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names []string, lifetime *int, set *policy.Set, facts projectFacts) (Request, bool, error) {
 	id, grantID, err := matchingRequest(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
@@ -920,15 +938,15 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names [
 	if err != nil {
 		return Request{}, false, err
 	}
-	if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) {
-		requester, err := m.requester(ctx, m.Store.Pool, enr)
+	if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) {
+		requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 		if err != nil {
 			return Request{}, false, err
 		}
 		for _, g := range granted {
 			err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 			switch {
-			case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
+			case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errProjectNotNamed):
 				// The list dropped this requester while the grant was live, or the secret became
 				// an administrator's, which a person approves every release of: end the grant
 				// here as Values does, rather than leave it live and unrevoked, and answer no
@@ -1023,7 +1041,7 @@ type PendingSummary struct {
 // on), so that id is the one the enrollment holding the request names too. Which records are
 // pending comes from the requests rows, which move, so a moved card is listed once and the box it
 // moved off lists it no more.
-const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, '')
+const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(enr.projects, '{}')
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
@@ -1057,10 +1075,18 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]Pe
 	}
 	defer rows.Close()
 	var out []PendingSummary
+	// seen is what MaySee reads of each agent-secret row, kept beside out and read only once the
+	// rows are closed, so no call to Dispatch holds the pooled connection the read does.
+	type seen struct {
+		sessionProjects []string
+		reason          string
+	}
+	var reads []seen
 	for rows.Next() {
 		var id, kind, canonical, requestSession, enrollmentSession string
 		var createdAt time.Time
-		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession); err != nil {
+		var sessionProjects []string
+		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession, &sessionProjects); err != nil {
 			return nil, err
 		}
 		body, err := record.ParseBody(canonical)
@@ -1079,8 +1105,28 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]Pe
 			RecordID: id, Kind: kind, Identifiers: identifiers, RequestedAt: createdAt,
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
 		})
+		reads = append(reads, seen{sessionProjects: sessionProjects, reason: obj.Reason})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// A private project's request is left off the list of everyone outside the project: its
+	// names and its reason are that project's (MaySee).
+	visible := out[:0]
+	for i, p := range out {
+		if p.Kind == record.KindAgentSecret {
+			ok, err := m.maySeeRecord(ctx, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+		}
+		visible = append(visible, p)
+	}
+	return visible, nil
 }
 
 // RecordDecision is a decided credential-request record's own terminal event, for the broker's
@@ -1127,6 +1173,12 @@ type RecordDetail struct {
 	RequestedAt     time.Time
 	Decided         *RecordDecision
 	Session         Session
+	// SessionProjects are the Dispatch projects the enrollment that asked named, and
+	// SecretProjects the project of each requested secret the live policy tags with one; both
+	// empty for a record touching no project. MaySee reads them, and the approval page shows
+	// them.
+	SessionProjects []string
+	SecretProjects  []SecretProject
 }
 
 // ReadRecord reads a credential-request record's full detail by id, for the broker's approval page
@@ -1135,13 +1187,14 @@ type RecordDetail struct {
 func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail, error) {
 	var canonical, approver, kind, requestSession, enrollmentSession string
 	var createdAt, expiresAt time.Time
+	var sessionProjects []string
 	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, cr.expires_at,
-			coalesce(req.session_id, ''), coalesce(enr.session_id, '')
+			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(enr.projects, '{}')
 		from credential_requests cr
 		left join requests req on req.record_id = cr.id
 		left join enrollments enr on enr.id = cr.enrollment_id
 		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession); err != nil {
+		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &sessionProjects); err != nil {
 		return RecordDetail{}, err
 	}
 	body, err := record.ParseBody(canonical)
@@ -1170,7 +1223,12 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		RecordID: recordID, Kind: kind, State: "pending", Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
 		RulesVersion: body.RulesVersion, ExpiresAt: expiresAt, RequestedAt: createdAt,
-		Session: Session{Request: requestSession, Enrollment: enrollmentSession},
+		Session: Session{Request: requestSession, Enrollment: enrollmentSession}, SessionProjects: sessionProjects,
+	}
+	if agentSecret {
+		if detail.SecretProjects, err = m.SecretProjects(ctx, identifiers); err != nil {
+			return RecordDetail{}, err
+		}
 	}
 	// Whether the record is still pending follows PendingForApprover's rule: an agent_secret record
 	// by its request's state, a machine login by its terminal event. A decided record's terminal
@@ -1267,7 +1325,8 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		return nil, nil
 	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
-		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}')
+		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
+		e.projects, r.reason
 		from grants g
 		join requests r on r.id=g.request_id
 		join enrollments e on e.id=g.enrollment_id
@@ -1281,9 +1340,15 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	}
 	defer rows.Close()
 	var out []ApproverGrant
+	type seen struct {
+		sessionProjects []string
+		reason          string
+	}
+	var reads []seen
 	for rows.Next() {
 		var g ApproverGrant
-		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names); err != nil {
+		var s seen
+		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names, &s.sessionProjects, &s.reason); err != nil {
 			return nil, err
 		}
 		g.Granted = policy.Approval
@@ -1291,6 +1356,23 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 			g.Granted = policy.Automatic
 		}
 		out = append(out, g)
+		reads = append(reads, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// A private project's grant is left off the list of everyone outside the project, read once
+	// the rows are closed so no call to Dispatch holds the pooled connection (MaySee).
+	visible := out[:0]
+	for i, g := range out {
+		ok, err := m.maySeeRecord(ctx, login, g.Names, reads[i].sessionProjects, reads[i].reason)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			visible = append(visible, g)
+		}
+	}
+	return visible, nil
 }

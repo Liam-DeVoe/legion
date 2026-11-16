@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
@@ -290,6 +291,16 @@ type Machine struct {
 	// judge does belongs on the requester's path, so the hook must return at once: Consider
 	// starts a goroutine of its own and does.
 	Judge func(PendingRequest)
+	// Projects asks Dispatch whether a project is private and whether a person may see it
+	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL). It is read only for a request, release,
+	// decision or airlock connection holding a project-tagged secret, and always before any
+	// transaction (projectFacts); nil on a broker with no such client, which serves no tagged
+	// secret (policy.Loader.ProjectChecks).
+	Projects projectaccess.Access
+	// Exchange is the broker's token exchange configuration, read for the project an operator's
+	// entry maps a pod's or a machine's account to (exchange.Set.MappedProjects), which is the
+	// project such a credential names. nil names none.
+	Exchange *exchange.Set
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -336,6 +347,9 @@ type enrollmentRow struct {
 	// the grant-log line a committed transaction writes names the session it decided for
 	// without a second query (grantLogEvent).
 	SessionID string
+	// Projects are the Dispatch projects a session's enrollment named (enrollments.projects),
+	// empty for none and for every pod.
+	Projects []string
 }
 
 // requester is enrollment e as the policy sees it, read through q: the person it acts for (none
@@ -354,7 +368,7 @@ type enrollmentRow struct {
 // The withheld names are read by the enrollment's own id, and an adoption carries a session's
 // withheld_secrets rows to the enrollment it moves to, so these are the names withheld from the
 // session rather than from a box it has left.
-func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (policy.Requester, error) {
+func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, facts projectFacts) (policy.Requester, error) {
 	rows, err := q.Query(ctx, `select name from withheld_secrets where enrollment_id=$1`, e.ID)
 	if err != nil {
 		return policy.Requester{}, err
@@ -378,7 +392,7 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 			}
 		}
 	}
-	return policy.Requester{Operator: deref(e.Operator), Service: service, Withheld: withheld}, nil
+	return facts.requester(policy.Requester{Operator: deref(e.Operator), Service: service, Withheld: withheld}), nil
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
@@ -448,7 +462,14 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, fmt.Errorf("%w: %s allows at most %s; ask with agent-secrets --ttl %s", ErrGrantRequiresLifetime, name, limit, limit)
 		}
 	}
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, names, lifetime, set); err != nil {
+	// What Dispatch holds of the requested names' projects, read here on the pool, before the
+	// transaction below takes its locks, so no call to Dispatch holds one; a request holding no
+	// tagged name asks it nothing.
+	facts, err := m.projectFacts(ctx, enr, names, set)
+	if err != nil {
+		return Request{}, err
+	}
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, names, lifetime, set, facts); err != nil {
 		return Request{}, err
 	} else if ok {
 		return existing, nil
@@ -465,7 +486,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err := lockLiveEnrollment(ctx, tx, enrollmentID); err != nil {
 		return Request{}, err
 	}
-	requester, err := m.requester(ctx, tx, enr)
+	requester, err := m.requester(ctx, tx, enr, facts)
 	if err != nil {
 		return Request{}, err
 	}
@@ -493,7 +514,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	r := newRequest{
 		id: uuid.NewString(), enrollmentID: enrollmentID, reason: obj.Reason, state: e.state,
 		approver: e.approver, rulesVersion: set.Version, sessionID: sessionID, lifetime: lifetime, decisions: e.decisions,
-		requester: requester, denials: e.denials, unexplained: e.unexplained,
+		requester: requester, denials: e.denials, unexplained: e.unexplained, projectMissing: e.projectMissing,
 	}
 	// Both branches end the same way — commit, then the one grant-log line for the request.created
 	// audit row insertRequest wrote — so only how req is produced differs between them.
@@ -650,6 +671,9 @@ type evaluation struct {
 	state       string // granted, denied or pending
 	approver    string
 	unexplained bool
+	// projectMissing are the names denied policy.ReasonProjectMissing, which the session is told
+	// as policy.ReasonProjectNotNamed and the request.created audit row records apart.
+	projectMissing []string
 }
 
 // denial is one denied name of a request and the rule behind the deny (policy.Decision.Reason,
@@ -674,8 +698,14 @@ func evaluate(set *policy.Set, names []string, requester policy.Requester, reaso
 		switch {
 		case d.Outcome == policy.Deny:
 			denied = true
+			if d.Reason == policy.ReasonProjectMissing {
+				e.projectMissing = append(e.projectMissing, name)
+			}
 			if d.Reason != "" {
-				e.denials = append(e.denials, denial{name: name, reason: d.Reason})
+				// The session is told the caller's reason (policy.CallerReason): a missing
+				// project reads as an unnamed private one, so the refusal never says whether a
+				// project exists; the request.created row keeps the difference.
+				e.denials = append(e.denials, denial{name: name, reason: policy.CallerReason(d.Reason)})
 			} else {
 				e.unexplained = true
 			}
@@ -711,6 +741,10 @@ type newRequest struct {
 	// other name was denied with no reason to name.
 	denials     []denial
 	unexplained bool
+	// projectMissing are the names denied because their project tag names a key Dispatch holds
+	// no project for: the session reads them as project-not-named, and the audit row and the
+	// grant-log line name them apart for the broker's operator (auditDetail).
+	projectMissing []string
 	// requester is the session as the policy saw it when this very request was decided
 	// (Machine.requester), so the request.created audit row names the person and the service the
 	// decision was made under rather than whoever a second read would answer later.
@@ -762,6 +796,9 @@ func (r newRequest) auditDetail() auditDetail {
 	}
 	if r.requester.Service != "" {
 		detail["service"] = r.requester.Service
+	}
+	if len(r.projectMissing) > 0 {
+		detail["project_missing"] = r.projectMissing
 	}
 	return detail
 }
@@ -1221,6 +1258,35 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		// close, against a person's name nowhere in it, a request no person ever saw.
 		return Decision{}, false, fmt.Errorf("decide record %s: the model judge never denies", recordID)
 	}
+	// One policy snapshot answers this decision: the default lifetime, the re-evaluation below,
+	// and each name's airlock fingerprint, which the request records as what it was decided
+	// under (decidedUnder). One snapshot rather than a read apiece, so a reload landing in the
+	// middle of the decision cannot leave the row recording a policy no part of that decision
+	// was made against. It is read before the transaction because what Dispatch holds of its
+	// tagged names is resolved against it there.
+	set := m.Policy.Get()
+	// What Dispatch holds, read on the pool before the transaction takes its locks: the state
+	// of each project the request's names are tagged with and the projects its session may
+	// still name (projectFacts), and, for a person deciding, whether that person may see the
+	// record at all (mayDecide). The transaction checks that the request still hangs off the
+	// enrollment read here, and makes another attempt when it moved.
+	pre, err := m.readDecision(ctx, recordID)
+	if err != nil {
+		return Decision{}, false, err
+	}
+	facts, err := m.projectFacts(ctx, pre.enr, pre.names, set)
+	if err != nil {
+		return Decision{}, false, err
+	}
+	if !who.isJudge() {
+		may, err := m.mayDecide(ctx, who.login, facts, pre.enr.Projects, pre.reason)
+		if err != nil {
+			return Decision{}, false, err
+		}
+		if !may {
+			return Decision{}, false, fmt.Errorf("%w: the request belongs to a private project %s may not see", record.ErrNotApprover, record.CanonicalLogin(who.login))
+		}
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Decision{}, false, err
@@ -1272,7 +1338,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		Scan(&requestID, &holder, &state, &expired); err != nil {
 		return Decision{}, false, err
 	}
-	if holder != enr.ID {
+	if holder != enr.ID || enr.ID != pre.enr.ID {
 		return Decision{}, true, nil
 	}
 	parsed, err := verifyRecordBody(recordID, body)
@@ -1321,12 +1387,6 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			return Decision{}, false, err
 		}
 	}
-	// One policy snapshot answers this decision: the default lifetime, the re-evaluation below,
-	// and each name's airlock fingerprint, which the request records as what it was decided
-	// under (decidedUnder). One snapshot rather than a read apiece, so a reload landing in the
-	// middle of the decision cannot leave the row recording a policy no part of that decision
-	// was made against.
-	set := m.Policy.Get()
 	// The request's names, read once rather than three times: the default lifetime below,
 	// currentPolicyAdmits and decidedUnder all want them, and the requests row is locked
 	// `for update` from the read above until this transaction ends, so three reads of them
@@ -1353,7 +1413,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// denial below rather than refused, since no login could approve such a name.
 	var denied *policyDenial
 	if approve {
-		requester, err := m.requester(ctx, tx, enr)
+		requester, err := m.requester(ctx, tx, enr, facts)
 		if err != nil {
 			return Decision{}, false, err
 		}
@@ -1485,14 +1545,16 @@ func decidedUnder(ctx context.Context, tx pgx.Tx, requestID string, granted []re
 }
 
 // policyDenial is currentPolicyAdmits' answer for a name the current policy denies because the
-// secret's requesters tag no longer lists this session's person or its pod's service. It is
-// deliberately not a record.ErrNotApprover: no login could approve such a name, so leaving the
-// card pending would wait on a person who can do nothing with it. applyDecisionAttempt records
-// the approval as the request's denial instead, and its message is that denial's detail.
-type policyDenial struct{ name string }
+// secret's requesters tag no longer lists this session's person or its pod's service, or because
+// the secret belongs to a private project the session does not name (or to one Dispatch does not
+// hold). It is deliberately not a record.ErrNotApprover: no login could approve such a name, so
+// leaving the card pending would wait on a person who can do nothing with it.
+// applyDecisionAttempt records the approval as the request's denial instead, and its message is
+// that denial's detail, in the words a session is told (policy.CallerReason).
+type policyDenial struct{ name, reason string }
 
 func (e *policyDenial) Error() string {
-	return e.name + ": " + policy.ReasonRequesterNotListed
+	return e.name + ": " + e.reason
 }
 
 // PolicyDeniedActor is what a request the policy denied under an approval records as having
@@ -1575,8 +1637,8 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		if err != nil {
 			return err
 		}
-		if d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed {
-			return &policyDenial{name: g.name}
+		if d.Outcome == policy.Deny && (d.Reason == policy.ReasonRequesterNotListed || projectDeny(d)) {
+			return &policyDenial{name: g.name, reason: policy.CallerReason(d.Reason)}
 		}
 	}
 	for _, g := range requested {
@@ -1829,10 +1891,10 @@ func mayRevoke(login string, approver, operator *string) (allowed, asOperator bo
 // enrollment reads a live enrollment (not revoked, lease not lapsed); pgx.ErrNoRows otherwise.
 func (m *Machine) enrollment(ctx context.Context, id string) (enrollmentRow, error) {
 	var e enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,'') from enrollments e
+	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,''), e.projects from enrollments e
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where e.id=$1 and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)`, id).
-		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID)
+		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID, &e.Projects)
 	return e, err
 }
 

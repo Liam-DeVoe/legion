@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  The broker releases a private Dispatch project's secret only to a credential that names the
+  project: a session whose enrollment lists it, or a pod whose `BROKER_EXCHANGE_ACCOUNTS` entry
+  maps its account to it, in each case for a person who may see the project. Every other request
+  is denied `project-not-named`. The broker reads what Dispatch holds of a requested secret's
+  project, and whether the credential's person still sees it, before any database transaction
+  begins, and only for a secret carrying a `dispatch-project` tag; a deployment that tags nothing
+  asks Dispatch nothing. A live grant of a tagged secret is checked again on every release, so a
+  project turning private, or its person leaving the access list, ends the grant for good. The
+  airlock does the same: a connection of such a grant is refused, and a pod holding its values
+  checks again within ten minutes. While Dispatch cannot be reached, a tagged secret is neither
+  granted nor released and its grant stays live; an untagged one is served as before. A request
+  of a private project, by its secrets, its session's projects or its reason's issue key, is left
+  off the pending and grant lists of everyone outside the project, who may neither read nor
+  decide it.

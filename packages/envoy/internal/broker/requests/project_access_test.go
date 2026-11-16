@@ -1,0 +1,435 @@
+package requests
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"errors"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+)
+
+// The projects and people of the project tests. PRIV is private, owned by otherPerson (alice),
+// and its access list names the fixture's operator and insider; TEAM starts public and is the
+// project a test turns private or drops a person from; GONE is a key Dispatch holds no project
+// for; outsider is on no list.
+const (
+	privProject = "PRIV"
+	teamProject = "TEAM"
+	goneProject = "GONE"
+	insider     = "carol@example.com"
+	outsider    = "mallory@example.com"
+)
+
+// taggedSecret is a namespace secret tagged with project.
+func taggedSecret(name, owner, tier, project, value string) secrets.LocalSecret {
+	s := policytest.Secret(name, owner, tier, value)
+	s.Tags[policy.TagProject] = project
+	return s
+}
+
+// projectSecrets are the tagged secrets every project test's broker serves beside
+// fixtureSecrets: PRIV_KEY, shared and agent tier, which owner and tier alone would give every
+// session at once; PRIV_HUMAN, shared and human tier, which anyone may approve; TEAM_TOKEN, the
+// operator's own agent-tier secret of TEAM; GONE_KEY, tagged with a project Dispatch does not
+// hold.
+func projectSecrets() []secrets.LocalSecret {
+	return []secrets.LocalSecret{
+		taggedSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject, "priv-v1"),
+		taggedSecret("PRIV_HUMAN", policy.OwnerShared, policy.TierHuman, privProject, "priv-human-v1"),
+		taggedSecret("TEAM_TOKEN", fixtureOperator, policy.TierAgent, teamProject, "team-v1"),
+		taggedSecret("GONE_KEY", policy.OwnerShared, policy.TierAgent, goneProject, "gone-v1"),
+	}
+}
+
+// dispatchRows is what the stand-in Dispatch holds: PRIV private with its list, and TEAM as the
+// test sets it.
+func dispatchRows(team projectaccesstest.Row) map[string]projectaccesstest.Row {
+	return map[string]projectaccesstest.Row{
+		privProject: {Visibility: "private", Owner: otherPerson, Listed: []string{fixtureOperator, insider}},
+		teamProject: team,
+	}
+}
+
+// publicTeam is TEAM while it is public; privateTeam is TEAM private, its list naming listed.
+var publicTeam = projectaccesstest.Row{Visibility: "public", Owner: otherPerson}
+
+func privateTeam(listed ...string) projectaccesstest.Row {
+	return projectaccesstest.Row{Visibility: "private", Owner: otherPerson, Listed: listed}
+}
+
+// newProjectFixture is newPlaceholderFixture on a broker that checks projects: its loader serves
+// projectSecrets (Loader.ProjectChecks), rules are in force, and Dispatch answers rows. The
+// enrollment is a session of the fixture's operator naming no project.
+func newProjectFixture(t *testing.T, rules airlock.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
+	t.Helper()
+	st := storetest.Open(t)
+	local := secrets.NewLocal(append(fixtureSecrets(), projectSecrets()...)...)
+	enrollmentID, key = newEnrollment(t, st, "session", "box-p-"+t.Name(), new(fixtureOperator), nil)
+	loader := policytest.Loader(local, fixtureService)
+	loader.ProjectChecks = true
+	loader.AirlockDigest = rules.Digest
+	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+	if err != nil {
+		t.Fatalf("policy.NewCurrent: %v", err)
+	}
+	m = &Machine{
+		Store:             st,
+		Policy:            current,
+		Secrets:           policytest.Store(local),
+		PendingTTL:        12 * time.Hour,
+		Audience:          testAudience,
+		Skew:              time.Minute,
+		Replay:            replayer(st),
+		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
+	}
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
+	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
+	return m, enrollmentID, key, answerFrom(t, m, dispatchRows(team))
+}
+
+// answerFrom points m at a fresh Dispatch stand-in serving rows, through a fresh client, so no
+// answer an earlier stand-in gave stands in for it: what a running broker reads once its
+// client's cache (projectaccess.CacheTTL) has let the earlier answer go.
+func answerFrom(t *testing.T, m *Machine, rows map[string]projectaccesstest.Row) *projectaccesstest.Server {
+	t.Helper()
+	dispatch := projectaccesstest.NewServer(t, rows, nil)
+	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
+	return dispatch
+}
+
+// nameProjects sets the projects enrollmentID's session names, as its enrollment recorded them.
+func nameProjects(t *testing.T, m *Machine, enrollmentID string, projects ...string) {
+	t.Helper()
+	if projects == nil {
+		projects = []string{}
+	}
+	if _, err := m.Store.Pool.Exec(t.Context(), `update enrollments set projects=$2 where id=$1`, enrollmentID, projects); err != nil {
+		t.Fatalf("name the session's projects: %v", err)
+	}
+}
+
+// deniedFor fails t unless request was denied with a detail naming reason for name.
+func deniedFor(t *testing.T, what string, request Request, err error, name, reason string) {
+	t.Helper()
+	if err != nil || request.State != "denied" || request.Detail == nil || !strings.Contains(*request.Detail, name+": "+reason) {
+		detail := "<none>"
+		if request.Detail != nil {
+			detail = *request.Detail
+		}
+		t.Fatalf("%s = state %q detail %q, %v; want denied naming %s: %s", what, request.State, detail, err, name, reason)
+	}
+}
+
+// TestARequestForAPrivateSecretFromASessionNamingNoProjectIsDenied: a session whose person is on
+// PRIV's list but whose enrollment names no project is denied PRIV's secret project-not-named,
+// though owner and tier would give it at once; a secret tagged with a project Dispatch does not
+// hold is denied with the same words, so the session cannot tell the two apart.
+func TestARequestForAPrivateSecretFromASessionNamingNoProjectIsDenied(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "")
+	deniedFor(t, "a request for PRIV_KEY from a session naming no project", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
+	request, err = m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "GONE_KEY"), "")
+	deniedFor(t, "a request for GONE_KEY, tagged with a project Dispatch does not hold", request, err, "GONE_KEY", policy.ReasonProjectNotNamed)
+	if strings.Contains(*request.Detail, policy.ReasonProjectMissing) {
+		t.Fatalf("the session was told %q; want project-not-named alone, so a refusal never says whether a project exists", *request.Detail)
+	}
+}
+
+// TestASessionNamingThePrivateProjectGetsItsSecret: the same session, its enrollment naming PRIV,
+// gets PRIV_KEY at once and its value on release.
+func TestASessionNamingThePrivateProjectGetsItsSecret(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	nameProjects(t, m, enr, privProject)
+	_, grantID := grantOf(t, m, enr, key, "read it", "PRIV_KEY")
+	release, err := m.Values(t.Context(), grantID, enr, nil)
+	if err != nil || release.Values["PRIV_KEY"] != "priv-v1" {
+		t.Fatalf("Values(PRIV_KEY) = %v, %v; want its value", release.Values, err)
+	}
+}
+
+// TestAPodOfThePrivateProjectGetsItsSecret: a pod whose account an operator's entry maps to PRIV,
+// for a person on PRIV's list, names PRIV and gets its secret; a pod whose entry maps another
+// project is denied it.
+func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	const otherSubject = "system:serviceaccount:example:other-sa"
+	set, err := exchange.NewSet([]exchange.AccountEntry{
+		{Account: fixtureSubject, Project: privProject, Person: insider},
+		{Account: otherSubject, Project: teamProject, Person: insider},
+	}, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-priv-"+t.Name())
+	if _, grantID := grantOf(t, m, pod, podKey, "deploy", "PRIV_KEY"); grantID == "" {
+		t.Fatal("the PRIV pod got no grant")
+	}
+	other, otherKey := newServiceEnrollment(t, m.Store, fixtureService, otherSubject, "pod-team-"+t.Name())
+	request, err := m.Create(t.Context(), other, signRequest(t, m, otherKey, "deploy", "PRIV_KEY"), "")
+	deniedFor(t, "a request for PRIV_KEY from a pod mapped to TEAM", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
+}
+
+// TestAGrantOfAPrivateSecretEndsWhenTheSessionNoLongerNamesIt: a grant of TEAM's secret, made
+// while TEAM was public, ends for good at its next release once TEAM turns private and the
+// session does not name it, and TEAM turning public again does not revive it; a grant made while
+// the session named private TEAM ends once its person leaves TEAM's list.
+func TestAGrantOfAPrivateSecretEndsWhenTheSessionNoLongerNamesIt(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
+	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+		t.Fatalf("Values while TEAM is public: %v", err)
+	}
+	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
+	if release, err := m.Values(t.Context(), grantID, enr, nil); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+		t.Fatalf("Values of grant %s after TEAM turned private = %v, %v; want ErrGrantNotLive", grantID, release.Values, err)
+	}
+	if by, _ := endedForGood(t, m, grantID); by != GrantEndedActor {
+		t.Fatalf("grant %s revoked by %q, want %q", grantID, by, GrantEndedActor)
+	}
+	answerFrom(t, m, dispatchRows(publicTeam))
+	if _, err := m.Values(t.Context(), grantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+		t.Fatalf("Values of grant %s after TEAM turned public again = %v; want it still ended", grantID, err)
+	}
+
+	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
+	nameProjects(t, m, enr, teamProject)
+	_, named := grantOf(t, m, enr, key, "read it again", "TEAM_TOKEN")
+	if _, err := m.Values(t.Context(), named, enr, nil); err != nil {
+		t.Fatalf("Values while the session names private TEAM: %v", err)
+	}
+	answerFrom(t, m, dispatchRows(privateTeam()))
+	if _, err := m.Values(t.Context(), named, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+		t.Fatalf("Values of grant %s after its person left TEAM's list = %v; want ErrGrantNotLive", named, err)
+	}
+}
+
+// TestAskingAgainAfterTheProjectIsLostSaysProjectNotNamed: a session asking again for a secret
+// whose live grant TEAM's turning private ended is told project-not-named, not that its grant
+// is gone, and the grant it held is ended (reuseLiveGrant).
+func TestAskingAgainAfterTheProjectIsLostSaysProjectNotNamed(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
+	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "TEAM_TOKEN"), "")
+	deniedFor(t, "asking again for TEAM_TOKEN after TEAM turned private", request, err, "TEAM_TOKEN", policy.ReasonProjectNotNamed)
+	if by, _ := endedForGood(t, m, grantID); by != GrantEndedActor {
+		t.Fatalf("grant %s revoked by %q, want %q: asking again ends the grant it would have reused", grantID, by, GrantEndedActor)
+	}
+}
+
+// TestK3OutageWithholdsOnlyTaggedSecrets: while Dispatch cannot be reached, a request for a
+// tagged secret fails ErrProjectAccessUnavailable and a release of a tagged grant releases
+// nothing and leaves the grant live, while an untagged secret is requested and released as
+// before.
+func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	_, tagged := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
+	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
+	dispatch.SetDown(true)
+	if request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), ""); !errors.Is(err, ErrProjectAccessUnavailable) {
+		t.Fatalf("a request for PRIV_KEY while Dispatch is down = %+v, %v; want ErrProjectAccessUnavailable", request, err)
+	}
+	if release, err := m.Values(t.Context(), tagged, enr, nil); !errors.Is(err, ErrProjectAccessUnavailable) || release.Values != nil {
+		t.Fatalf("Values of the TEAM grant while Dispatch is down = %v, %v; want ErrProjectAccessUnavailable", release.Values, err)
+	}
+	if by, _ := endedForGood(t, m, tagged); by != "" {
+		t.Fatalf("an outage ended grant %s (revoked by %q); want it live once Dispatch answers", tagged, by)
+	}
+	_, untagged := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
+	if release, err := m.Values(t.Context(), untagged, enr, nil); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
+		t.Fatalf("Values(AUTO_TOKEN) while Dispatch is down = %v, %v; want its value", release.Values, err)
+	}
+	dispatch.SetDown(false)
+	if _, err := m.Values(t.Context(), tagged, enr, nil); err != nil {
+		t.Fatalf("Values of the TEAM grant once Dispatch answers: %v", err)
+	}
+}
+
+// TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest: anyone may approve PRIV_HUMAN by owner and
+// tier, but a person outside PRIV is refused record.ErrNotApprover and the request stays pending;
+// a person on PRIV's list approves it.
+func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	nameProjects(t, m, enr, privProject)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
+	if err != nil || request.RecordID == nil {
+		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
+	}
+	if _, err := m.ApplyDecision(t.Context(), *request.RecordID, true, outsider); !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("an approval by %s, outside PRIV = %v; want record.ErrNotApprover", outsider, err)
+	}
+	if got, err := m.Get(t.Context(), request.ID); err != nil || got.State != "pending" {
+		t.Fatalf("after the outsider's approval the request is %+v, %v; want pending", got, err)
+	}
+	if decision, err := m.ApplyDecision(t.Context(), *request.RecordID, true, insider); err != nil || decision.GrantID == "" {
+		t.Fatalf("an approval by %s, on PRIV's list = %+v, %v; want a grant", insider, decision, err)
+	}
+}
+
+// TestPendingLeavesOutAPrivateRequestForAnOutsider: an outsider's pending list holds neither the
+// request for PRIV's secret nor a request for an untagged shared secret whose reason names a PRIV
+// issue, and may not read either record; a person on PRIV's list sees both.
+func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	nameProjects(t, m, enr, privProject)
+	tagged, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
+	if err != nil || tagged.RecordID == nil {
+		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v", tagged, err)
+	}
+	plain, plainKey := newEnrollment(t, m.Store, "session", "box-q-"+t.Name(), new(fixtureOperator), nil)
+	reasoned, err := m.Create(t.Context(), plain, signRequest(t, m, plainKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "")
+	if err != nil || reasoned.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY) = %+v, %v", reasoned, err)
+	}
+	listed := func(login string) []string {
+		pending, err := m.PendingForApprover(t.Context(), login)
+		if err != nil {
+			t.Fatalf("PendingForApprover(%s): %v", login, err)
+		}
+		var ids []string
+		for _, p := range pending {
+			ids = append(ids, p.RecordID)
+		}
+		return ids
+	}
+	if got := listed(outsider); slices.Contains(got, *tagged.RecordID) || slices.Contains(got, *reasoned.RecordID) {
+		t.Fatalf("%s's pending list %v holds a request of PRIV", outsider, got)
+	}
+	if got := listed(insider); !slices.Contains(got, *tagged.RecordID) || !slices.Contains(got, *reasoned.RecordID) {
+		t.Fatalf("%s's pending list %v lacks a request of PRIV it may see", insider, got)
+	}
+	for _, id := range []string{*tagged.RecordID, *reasoned.RecordID} {
+		detail, err := m.ReadRecord(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if may, err := m.MaySee(t.Context(), outsider, detail); err != nil || may {
+			t.Fatalf("MaySee(%s, record %s) = %v, %v; want false", outsider, id, may, err)
+		}
+		if may, err := m.MaySee(t.Context(), insider, detail); err != nil || !may {
+			t.Fatalf("MaySee(%s, record %s) = %v, %v; want true", insider, id, may, err)
+		}
+	}
+}
+
+// TestAnUntaggedDeploymentAsksDispatchNothing: with no secret tagged and no session naming a
+// project, a request, an approval, a release, an airlock connection and both approver lists make
+// no call to Dispatch at all, though the broker holds a client of it.
+func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
+	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
+	_, grantID := grantOf(t, m, enr, key, "no issue named", "AUTO_TOKEN")
+	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]); err != nil {
+		t.Fatalf("AirlockConnection: %v", err)
+	}
+	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
+		t.Fatalf("AirlockValues: %v", err)
+	}
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "no issue named", "SHARED_KEY"), "")
+	if err != nil || pending.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY) = %+v, %v", pending, err)
+	}
+	if _, err := m.PendingForApprover(t.Context(), insider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, insider); err != nil {
+		t.Fatalf("ApplyDecision: %v", err)
+	}
+	if _, err := m.GrantsForApprover(t.Context(), insider); err != nil {
+		t.Fatal(err)
+	}
+	if calls := dispatch.Calls(); calls != 0 {
+		t.Fatalf("an untagged deployment made %d calls to Dispatch; want none", calls)
+	}
+}
+
+// lockProbe is a projectaccess.Access that, before each question it passes on, tries to take
+// the enrollment row's lock itself with NOWAIT from a transaction of its own. A caller asking
+// Dispatch from inside a transaction that holds that row (Create's lockLiveEnrollment, the
+// approve path's for share) makes the probe fail at once, which is what the rule forbids: a call
+// to Dispatch made under a lock holds every writer of that row behind it.
+type lockProbe struct {
+	inner        projectaccess.Access
+	t            *testing.T
+	m            *Machine
+	enrollmentID string
+	probes       atomic.Int32
+}
+
+func (p *lockProbe) probe(ctx context.Context, question string) {
+	p.probes.Add(1)
+	tx, err := p.m.Store.Pool.Begin(ctx)
+	if err != nil {
+		p.t.Errorf("the probe could not begin: %v", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select 1 from enrollments where id=$1 for update nowait`, p.enrollmentID); err != nil {
+		p.t.Errorf("Dispatch was asked %s while a transaction held the enrollment's row: %v", question, err)
+	}
+}
+
+func (p *lockProbe) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	p.probe(ctx, "about "+project)
+	return p.inner.Access(ctx, project, person)
+}
+
+func (p *lockProbe) MemberKind(ctx context.Context, person string) (string, error) {
+	p.probe(ctx, "the member kind of "+person)
+	return p.inner.MemberKind(ctx, person)
+}
+
+func (p *lockProbe) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	p.probe(ctx, "the states of "+strings.Join(projects, " "))
+	return p.inner.States(ctx, projects)
+}
+
+// TestNoK3CallRunsInsideATransaction: every question a request, an approval, a release, an
+// airlock connection and an approver's list ask Dispatch is asked while no transaction holds the
+// requesting enrollment's row (lockProbe). The probe must have run, or the test proves nothing.
+func TestNoK3CallRunsInsideATransaction(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("PRIV_KEY", "")}}, publicTeam)
+	nameProjects(t, m, enr, privProject)
+	probe := &lockProbe{inner: m.Projects, t: t, m: m, enrollmentID: enr}
+	m.Projects = probe
+	_, grantID := grantOf(t, m, enr, key, "read it", "PRIV_KEY")
+	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["PRIV_KEY/"+SlotValue]); err != nil {
+		t.Fatalf("AirlockConnection: %v", err)
+	}
+	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
+		t.Fatalf("AirlockValues: %v", err)
+	}
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
+	if err != nil || pending.RecordID == nil {
+		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v", pending, err)
+	}
+	if _, err := m.PendingForApprover(t.Context(), insider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, insider); err != nil {
+		t.Fatalf("ApplyDecision: %v", err)
+	}
+	if n := probe.probes.Load(); n == 0 {
+		t.Fatal("Dispatch was asked nothing, so the probe saw no call: the test is blind")
+	}
+}

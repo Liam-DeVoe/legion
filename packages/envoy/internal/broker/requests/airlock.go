@@ -479,6 +479,13 @@ type AirlockGrantName struct {
 // enrollment's operator withheld, and refuses with ErrAirlockNoNames when that leaves none, which
 // the proxy answers 407.
 //
+// It applies the project rule as well (projectFacts, policy.Set.Evaluate's project block): when
+// a held name is tagged with a private project the session no longer names, or with one Dispatch
+// does not hold, the grant ends for good (endGrant, errProjectNotNamed) and the connection is
+// refused ErrGrantNotLive. That is read only for a grant holding a tagged name, from the K3
+// client's cache (at most one call to Dispatch per project per projectaccess.CacheTTL), so an
+// untagged grant's connection asks Dispatch nothing.
+//
 // This runs on every connection, so it is indexed reads alone and nothing else: the row by its
 // primary key with its grant and enrollment joined in, the grant's other placeholders by
 // grant_id, and the enrollment's withheld names by enrollment_id. Each name's kind comes from the
@@ -489,14 +496,17 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	var conn AirlockConnection
 	var reason string
 	var live bool
+	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason,
-		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
+		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
+		e.kind, e.operator, e.subject, e.projects, c.service
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
+		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
-		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &live)
+		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
@@ -527,10 +537,40 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		}
 		conn.Names[name] = AirlockGrantName{Slots: slots, Kind: set.Secrets[name].Kind()}
 	}
+	enr.ID = conn.EnrollmentID
+	if err := m.airlockProjectRule(ctx, conn.GrantID, enr, slices.Collect(maps.Keys(conn.Names)), set); err != nil {
+		return AirlockConnection{}, err
+	}
 	if len(conn.Names) == 0 {
 		return AirlockConnection{}, ErrAirlockNoNames
 	}
 	return conn, nil
+}
+
+// airlockProjectRule is AirlockConnection's project rule over names, the airlock names a
+// connection may carry: a name tagged with a private project the credential no longer names, or
+// with a project Dispatch does not hold, ends the grant for good (projectNotNamed). A grant
+// holding no tagged name asks Dispatch nothing.
+func (m *Machine) airlockProjectRule(ctx context.Context, grantID string, enr enrollmentRow, names []string, set *policy.Set) error {
+	facts, err := m.projectFacts(ctx, enr, names, set)
+	if err != nil || facts.states == nil {
+		return err
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		project := set.Secrets[name].Project
+		switch facts.states[project] {
+		case policy.ProjectMissing:
+		case policy.ProjectPrivate:
+			if slices.Contains(facts.projects, project) {
+				continue
+			}
+		default:
+			continue
+		}
+		return m.endGrant(ctx, grantID, projectNotNamed(name))
+	}
+	return nil
 }
 
 // AirlockSecret is one airlock name as the proxy holds it: the real value behind each of its
@@ -569,9 +609,21 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	if err != nil {
 		return nil, "", err
 	}
+	// A grant holding a project-tagged name is read again by the proxy within
+	// airlockProjectRecheck: whether the project is private, and whether the session's person may
+	// still see it, are Dispatch's and move no policy version, so nothing else would make a pod
+	// holding these values run the release checks again once access is lost.
+	var recheck time.Time
+	if anyProjectTagged(checked.set, checked.granted) {
+		recheck = time.Now().Add(airlockProjectRecheck)
+	}
 	values := map[string]AirlockSecret{}
 	for _, released := range read {
-		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Kind: released.kind}
+		expires := released.expires
+		if !recheck.IsZero() && (expires.IsZero() || expires.After(recheck)) {
+			expires = recheck
+		}
+		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: expires, Kind: released.kind}
 	}
 	// The same grant.used row a session's own release writes, marked as the proxy's: the values
 	// did leave the broker, and an operator reading the trail must see that they did.
