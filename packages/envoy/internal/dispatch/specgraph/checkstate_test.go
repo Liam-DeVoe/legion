@@ -232,6 +232,13 @@ func TestCheckState(t *testing.T) {
 			c.replace(bare)
 			c.Results[0].Outcome = OutcomeFail
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		// A failing example of no letter and no digit is a missing one, by the rule that Validate
+		// reads it with (TestTheTreeAndTheDerivationReadOneMissingFailingExample).
+		{name: "R9: the approved failing example of the check is a text of no letter and no digit", change: func(c *checkCase) {
+			bare := checkStateCheck
+			bare.FailingExample = "-"
+			c.replace(bare)
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "v-state 18: a merge changes a file that the test reads", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/testdata/a.json")
 			c.Subject.Commit = "c2"
@@ -413,6 +420,48 @@ func TestCheckStatesJudgesTheApprovedChecks(t *testing.T) {
 	}
 	if !slices.Equal(states, want) {
 		t.Errorf("CheckStates:\n got %+v\nwant %+v", states, want)
+	}
+}
+
+// R9: "No setting makes the failing example optional", and a check "whose current text has no
+// failing example that failed when it should" reads unknown. The rules of the tree and the
+// derivation read a missing failing example by one rule: Validate refuses the check with
+// no-failing-example exactly when CheckStates reads it unknown, no_failing_example, whatever its
+// results. Each row is the base of TestCheckState, a pass and a caught fault at c1, with the failing
+// example of C's text, in the files and in the approved spec, replaced by the row's text.
+func TestTheTreeAndTheDerivationReadOneMissingFailingExample(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, text string
+		missing    bool
+	}{
+		{"no text", "", true},
+		{"a dash", "-", true},
+		{"marks of punctuation", "… ?!", true},
+		{"a format character", "\u200b", true},
+		{"a digit", "0", false},
+		{"a sentence", checkStateCheck.FailingExample, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			c := checkStateCheck
+			c.FailingExample = row.text
+			s.replace(c)
+			refused := slices.ContainsFunc(Validate(s.parse(), Options{}), func(p Problem) bool {
+				return p.Node == c.ID && p.Rule == "no-failing-example"
+			})
+			if refused != row.missing {
+				t.Errorf("Validate refuses the failing example %q with no-failing-example: %t, want %t", row.text, refused, row.missing)
+			}
+			want := CheckState{ID: c.ID, State: "true", Reason: "passed", From: "c1"}
+			if row.missing {
+				want = CheckState{ID: c.ID, State: "unknown", Reason: "no_failing_example"}
+			}
+			if states := CheckStates(s.input()); !slices.Contains(states, want) {
+				t.Errorf("CheckStates with the failing example %q:\n got %+v\nwant %+v", row.text, states, want)
+			}
+		})
 	}
 }
 

@@ -80,10 +80,11 @@ const (
 // R9 ("Five cases read as unknown, and never as true"):
 //
 //  1. The files do not hold C's current approved text: unknown, not_built. That text names no
-//     failing example: unknown, no_failing_example, whatever C's results (R9: "No setting makes
-//     the failing example optional"; "a check whose current text has no failing example that
-//     failed when it should" reads unknown). Validate refuses such a text in the files, and the
-//     pilot builds the approved spec from the store, with no reader.
+//     failing example, a text with no letter and no digit by the rule that Validate reads it with
+//     (hasWord): unknown, no_failing_example, whatever C's results (R9: "No setting makes the
+//     failing example optional"; "a check whose current text has no failing example that failed
+//     when it should" reads unknown). Validate refuses such a text in the files, and the pilot
+//     builds the approved spec from the store, with no reader.
 //  2. CI refused C at S.Commit (R48): unknown, uncited, and no earlier result counts.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
@@ -166,7 +167,7 @@ func (j *checkJudge) state(c Check) CheckState {
 	if h := j.holds[c.ID]; !h.Present || !h.Current {
 		return unknownCheck(reasonNotBuilt, "")
 	}
-	if c.FailingExample == "" {
+	if !hasWord(c.FailingExample) {
 		return unknownCheck(reasonNoFailingExample, "")
 	}
 	if rule, refused := j.in.Uncited[c.ID]; refused {
