@@ -5127,7 +5127,7 @@ Do not edit the script while a run is going: bash reads it as it runs.
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  bash scripts/e2e/nats-callout-sessions.sh [--binaries <dir>]     # → "nats-callout-sessions: 7 of 7 checks passed", exit 0
+  bash scripts/e2e/nats-callout-sessions.sh [--binaries <dir>]     # → "nats-callout-sessions: 9 of 9 checks passed", exit 0
 ```
 
 The live proof of dispatch://INFRA-840's `r-kinds` and `r-refusal` with real sessions, its verification's check `c-callout-kinds`.
@@ -5147,6 +5147,7 @@ Each trades the stack's pod identity for a token naming its own session, which t
 | `receives (omp)`, `receives (claude)` | a direct message (`POST /v1/messages/send`) reaches the session, whose connection the hub lists as admitted as `session/<id>` (`/connz?auth=true`) |
 | `receives-after-listener-restart (…)` | the same, after the listener was restarted on its port |
 | `receives-after-hub-restart (…)` | the same, after natsd was restarted on its port and store |
+| `receives-after-switch (…)` | the same for the session ids each host switched to: Oh My Pi's `/new` (`omp-client.ts` `switch`) and Claude Code's `/clear` (`claude-client.ts` `clear`, the handoff file the channel server adopts), each plugin moving its connection to the new id's token before it subscribes that id's subjects |
 | `probe-refused-other-session` | `natsprobe` in the Oh My Pi session's environment is served its own channel and refused the Claude Code session's: `Permissions Violation for Subscription to "notifications.envoy.deliver.<id>"` |
 
 A receive that fails says whether the session was admitted: `not admitted` when the hub lists no connection admitted as that session.

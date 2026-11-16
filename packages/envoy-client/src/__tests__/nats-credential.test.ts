@@ -22,11 +22,12 @@ import {
   stopProcess,
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
-import { forgetBrokerClients } from "../broker-credential";
+import { brokerCredential, forgetBrokerClients } from "../broker-credential";
 import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
 import { natsConnectionOptions } from "../nats-connection";
 import {
+  type BrokerNatsCredential,
   brokerNatsCredential,
   followNatsCredential,
   keepNatsCredential,
@@ -199,17 +200,29 @@ describe("which credential a session connects to NATS with", () => {
     });
   });
 
-  test("a NATS_AUTH beside a seed resolves inbound off naming both", () => {
-    for (const value of ["broker", "none"]) {
-      const env = {
-        ...podEnvironment("http://broker.test"),
-        NATS_AUTH: value,
-        NATS_NKEY_SEED: "SUSEED",
-      };
-      expect(resolved(env)).toEqual({
-        off: `NATS_AUTH is ${value}, and NATS_NKEY_SEED names an nkey seed: set one of the two`,
-      });
-    }
+  test("NATS_AUTH=broker beside a seed resolves inbound off naming both", () => {
+    const env = {
+      ...podEnvironment("http://broker.test"),
+      NATS_AUTH: "broker",
+      NATS_NKEY_SEED: "SUSEED",
+    };
+    expect(resolved(env)).toEqual({
+      off: "NATS_AUTH is broker, and NATS_NKEY_SEED names an nkey seed: set one of the two",
+    });
+  });
+
+  test("NATS_AUTH=none beside a seed resolves to the seed", () => {
+    // A seed is the credential wherever one is set (the plan's table); only `broker` beside it
+    // names two credentials at once.
+    const env = {
+      ...podEnvironment("http://broker.test"),
+      NATS_AUTH: "none",
+      NATS_NKEY_SEED: "SUSEED",
+    };
+    expect(resolved(env)).toEqual({
+      kind: "seed",
+      seed: { value: "SUSEED", source: "NATS_NKEY_SEED" },
+    });
   });
 
   test("another value resolves inbound off naming the setting and its two values", () => {
@@ -292,6 +305,157 @@ describe("the broker token's authenticator", () => {
     // When the token in hand lapses: the answer's expires_in, read when it arrived.
     const lapses = credential.expiresAt().getTime();
     expect(Math.abs(lapses - (minted?.expiresAt ?? 0))).toBeLessThan(2_000);
+  });
+});
+
+describe("renew", () => {
+  test("a switch while a renewal is in flight takes the new session's token", async () => {
+    // A trade reads the session's name as it starts, so the keeper's renewal of the session
+    // before can be in flight when the host switches. The switch's renewal must not be handed
+    // that one: the connection would come back as the session before, and the new session's
+    // subscribes be refused. Two-second tokens, so each renewal is a real trade.
+    const broker = stubBroker(2);
+    let session = "ses_before";
+    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    const keeperRenewal = credential.renew();
+    session = "ses_after";
+    await credential.renew();
+    await keeperRenewal;
+    expect(credential.needsReconnect()).toBe(true);
+    const auth = credential.authenticator("nonce-2") as { auth_token: string };
+    const presented = broker.state.minted.find((one) => one.value === auth.auth_token);
+    expect(presented?.session).toBe("ses_after");
+  });
+
+  test("a CONNECT with no live token presents nothing, trades, and presents the token next", async () => {
+    // No ready(), renew() or keeper: the authenticator's own trade is what the next reconnect
+    // presents, so a connection whose token lapsed comes back on its own.
+    const broker = stubBroker(600);
+    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_self");
+    expect(credential.authenticator("nonce-1")).toBeUndefined();
+    const traded = () => broker.state.minted.length > 0;
+    const deadline = Date.now() + 5_000;
+    while (!traded() && Date.now() < deadline) await Bun.sleep(20);
+    // The trade has landed once the authenticator presents its token.
+    let auth: { auth_token?: string } | undefined;
+    while (auth === undefined && Date.now() < deadline) {
+      auth = credential.authenticator("nonce-2") as { auth_token?: string } | undefined;
+      if (auth === undefined) await Bun.sleep(20);
+    }
+    expect(auth?.auth_token).toBe(broker.state.minted[0]?.value ?? "no token minted");
+    expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_self"]);
+  });
+});
+
+describe("one token per session for HTTP and NATS", () => {
+  test("the NATS credential presents the token and key the listener calls present", async () => {
+    const broker = stubBroker(600);
+    const env = podEnvironment(broker.url);
+    const headers = await brokerCredential(env, "ses_shared").headers(
+      "POST",
+      "http://listener.test/v1/messages/send"
+    );
+    const credential = brokerNatsCredential(env, "ses_shared");
+    await credential.ready();
+    const auth = credential.authenticator("nonce-1") as { auth_token: string; sig: string };
+    expect(broker.state.minted).toHaveLength(1);
+    expect(headers.Authorization).toBe(`DPoP ${auth.auth_token}`);
+    const httpKey = JSON.parse(
+      Buffer.from((headers.DPoP ?? "").split(".")[0] ?? "", "base64url").toString("utf8")
+    ) as { readonly jwk: JsonWebKey };
+    expect(await thumbprintOf(verifiedProof(auth.sig).header.jwk)).toBe(
+      await thumbprintOf(httpKey.jwk)
+    );
+  });
+});
+
+describe("followNatsCredential", () => {
+  /** A connection whose reconnect asks the authenticator again and reports the statuses the
+   *  caller pushes, and which the caller closes. */
+  function controlledConnection(credential: BrokerNatsCredential) {
+    const pushed: { type: string }[] = [];
+    let wake = () => {};
+    let stopped = false;
+    const ended = Promise.withResolvers<void>();
+    const statuses = {
+      stop: () => {
+        stopped = true;
+        wake();
+      },
+      async *[Symbol.asyncIterator]() {
+        while (!stopped) {
+          const next = pushed.shift();
+          if (next !== undefined) {
+            yield next;
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+          });
+        }
+      },
+    };
+    return {
+      push: (type: string) => {
+        pushed.push({ type });
+        wake();
+      },
+      close: () => ended.resolve(),
+      stoppedReader: () => stopped,
+      connection: {
+        reconnect: async () => {
+          credential.authenticator("nonce-again");
+        },
+        status: () => statuses,
+        closed: () => ended.promise,
+      } as unknown as Parameters<typeof followNatsCredential>[0],
+    };
+  }
+
+  async function switched(): Promise<BrokerNatsCredential> {
+    const broker = stubBroker(600);
+    let session = "ses_from";
+    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    session = "ses_to";
+    return credential;
+  }
+
+  test("a connection that closes before it is back rejects at once, and stops its reader", async () => {
+    const credential = await switched();
+    const rig = controlledConnection(credential);
+    const following = followNatsCredential(rig.connection, credential);
+    // A status that is not the reconnect ends nothing.
+    rig.push("disconnect");
+    await Bun.sleep(50);
+    rig.close();
+    await expect(following).rejects.toThrow(
+      "the NATS connection closed before it came back as the new session"
+    );
+    expect(rig.stoppedReader()).toBe(true);
+  });
+
+  test("a connection that never comes back rejects after 15 s, and stops its reader", async () => {
+    const credential = await switched();
+    const rig = controlledConnection(credential);
+    await expect(followNatsCredential(rig.connection, credential)).rejects.toThrow(
+      "the NATS connection did not come back as the new session within 15 s"
+    );
+    expect(rig.stoppedReader()).toBe(true);
+  }, 30_000);
+
+  test("a reconnect returns once its CONNECT presented the new session's token", async () => {
+    const credential = await switched();
+    const rig = controlledConnection(credential);
+    const following = followNatsCredential(rig.connection, credential);
+    await Bun.sleep(50);
+    rig.push("reconnect");
+    await following;
+    expect(credential.needsReconnect()).toBe(false);
+    expect(rig.stoppedReader()).toBe(true);
   });
 });
 

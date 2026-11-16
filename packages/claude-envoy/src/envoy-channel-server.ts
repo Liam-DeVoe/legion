@@ -357,7 +357,7 @@ export interface ChannelSessionOptions {
    * connection is back, admitted with it (`followNatsCredential`), where the connection presents
    * the session's broker token; absent otherwise. A handoff runs it before the new id's relay
    * subject is subscribed: the auth service grants a session's token that session's subjects
-   * alone.
+   * alone. A failed move leaves the relay closed and the next registration retries it.
    */
   readonly followSession?: () => Promise<void>
   /** How long a deregistration waits for a registration already on the wire (default
@@ -736,6 +736,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /** The writer of the bound id's state file (`replayStateWriter`), set by `restoreDelivery`. */
   let stateWriter: ReplayStateWriter | undefined
 
+  /** A handoff's relay still needs its new credential and delivery state before registration. */
+  let handoffDeliveryPending = false
+
   /**
    * What this session was already shown, and the notice naming a frame it could not be shown
    * (`@legion/envoy-client/delivery-ledger`), with its state in the session id's file.
@@ -1078,6 +1081,25 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * (`takeDeliveryAnswer`).
    */
   const register = async (): Promise<void> => {
+    if (handoffDeliveryPending) {
+      await options.followSession?.()
+      if (shuttingDown) return
+      // A refused subscription is closed by nats.js, not restored by its next reconnect, so no
+      // new relay opens until the connection has been admitted as this session.
+      await restoreDelivery()
+      handoffDeliveryPending = false
+      // Confirm the new relay before asking the listener to deliver to it. A stalled flush is
+      // bounded; the listener retries a frame that reached no subscriber.
+      await withTimeout(
+        options.connection.flush(),
+        options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
+        "flushing NATS",
+      ).catch((error: unknown) => {
+        process.stderr.write(
+          `envoy-channel: could not confirm the relay subscription of ${identity.id} — ${messageFor(error)}\n`,
+        )
+      })
+    }
     const title = options.title?.(identity.id) ?? ""
     if (
       options.stampTitle !== undefined &&
@@ -1395,41 +1417,17 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     // process, which `/clear` would otherwise add one of per session.
     forgetBrokerSession(previous)
     directSubject = nextSubject
-    // The old id's relay closes before the connection moves to the new id's token, which the
-    // auth service grants nothing of the old id's; then the connection is back, admitted with
-    // that token, before the new relay subject is subscribed (`restoreDelivery`). A move that
-    // fails is said and does not stop the handoff: the connection keeps reconnecting with the
-    // credential it holds, and the relay is subscribed again at the next registration.
+    // The old relay closes before moving credentials. Registration retries a failed move,
+    // even though the identity already names the new session, and only then opens its relay.
     closeRelay()
-    await options.followSession?.().catch((error: unknown) => {
-      process.stderr.write(
-        `envoy-channel: could not move the NATS connection to ${next}'s broker token — ${messageFor(error)}\n`,
-      )
-    })
+    handoffDeliveryPending = true
     // `unfollow` only takes the subject out of the topic list a registration carries: nothing is
     // subscribed per topic, so there is nothing to drain and nothing to wait for.
     followedTopics.unfollow([previousSubject])
-    // The new id's delivery state: none after a `/clear`, which starts afresh as a new session
-    // does, so nothing published before it existed comes back. Until it is loaded, the ledger
-    // records nothing. Loading it closes the old id's relay (its unanswered frames `nak`) and
-    // subscribes the new id's relay subject.
-    await restoreDelivery()
     // The new id takes a record of its own: an attempt the old id handled is the old id's, and
     // the rows of a conversation a `/clear` ended name nothing in the new one.
     await restoreTurns()
     roleTransferFrom ??= previous
-    // The new relay subject reaches the server before the registration that asks for it. Not
-    // fatal: a relayed frame nobody answers pauses the relay, which sends again after its backoff
-    // and at the registration below.
-    await withTimeout(
-      options.connection.flush(),
-      options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
-      "flushing NATS",
-    ).catch((error: unknown) => {
-      process.stderr.write(
-        `envoy-channel: could not confirm the relay subscription of ${next} — ${messageFor(error)}\n`,
-      )
-    })
     await register()
     await transferRole()
     process.stderr.write(`envoy: session id changed ${previous} -> ${next}; re-registered\n`)

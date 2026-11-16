@@ -264,8 +264,8 @@ function natsSeed(
  * the machine's broker route says: that route reads only `AGENT_SECRETS_URL` and the machine's
  * identity, which the local stack, the compose stacks and the load test set while their hubs run
  * no auth service, and a broker token presented to such a hub loses the session its inbound
- * messages. Either value beside a seed is refused naming both, rather than one of the two
- * silently winning.
+ * messages. `broker` beside a seed is refused naming both, rather than one of the two silently
+ * winning; `none` beside one leaves the seed the credential, as a seed is wherever it is set.
  */
 function natsCredential(
   env: EnvoyEnvironment,
@@ -288,7 +288,7 @@ function natsCredential(
   }
   const seed = natsSeed(env, section, namedNatsUrls, filePath);
   if (seed !== undefined) {
-    if (auth !== undefined) {
+    if (auth?.value === "broker") {
       throw new Error(
         `${auth.source} is ${auth.value}, and ${seed.source} names an nkey seed: set one of the two`
       );

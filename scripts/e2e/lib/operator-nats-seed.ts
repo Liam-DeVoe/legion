@@ -43,5 +43,11 @@ export function operatorNatsSeed(
       throw new Error(
         `${refused}: NATS_AUTH (or envoy.natsAuth) names a session's broker token, which a hub grants only that session's own channels; set NATS_NKEY_SEED_FILE for ${label}`
       );
+    default: {
+      // No tsconfig covers scripts/e2e, so a credential kind added later fails here by name
+      // rather than connecting these scripts with no credential.
+      const unknown: never = credential;
+      throw new Error(`${refused}: an unknown NATS credential ${JSON.stringify(unknown)}`);
+    }
   }
 }

@@ -16,7 +16,7 @@
 import type { BrokerEnvironment } from "@legion/broker-client/environment";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
 // command's, each hook's — would otherwise carry nats.js whole.
-import type { Auth, Events, NatsConnection } from "nats";
+import type { Auth, Events, NatsConnection, Status } from "nats";
 import { type BrokerSessionName, brokerTokenFor, type TradedToken } from "./broker-credential";
 import type { NatsSeed } from "./envoy-settings";
 import { messageFor } from "./errors";
@@ -56,7 +56,7 @@ export interface BrokerNatsCredential {
   /** When the token in hand lapses; the epoch before any is taken. */
   expiresAt(): Date;
   /** Takes the session's token again: a renewed one inside the renewal window, and the token of
-   *  the session the name now reads, after a switch. */
+   *  the session the name now reads, after a switch, even one made while a renewal was in flight. */
   renew(): Promise<void>;
   /** Whether the last CONNECT presented a token other than the one in hand, so the connection
    *  should reconnect to present it. */
@@ -80,19 +80,32 @@ export function brokerNatsCredential(
   const take = brokerTokenFor(env, session);
   let held: TradedToken | undefined;
   let presented: string | undefined;
+  // The trade in flight, and the one every caller that came while it was in flight shares.
   let taking: Promise<void> | undefined;
+  let next: Promise<void> | undefined;
   const live = (): boolean => held !== undefined && held.token.expiresAt.getTime() > Date.now();
-  const renew = (): Promise<void> => {
-    if (taking === undefined) {
-      taking = take()
-        .then((taken) => {
-          held = taken;
-        })
-        .finally(() => {
-          taking = undefined;
-        });
-    }
+  const trade = (): Promise<void> => {
+    taking = take()
+      .then((taken) => {
+        held = taken;
+      })
+      .finally(() => {
+        taking = undefined;
+      });
     return taking;
+  };
+  // A trade reads the session's name as it starts (`brokerTokenFor`), so the one in flight can be
+  // for the session before a switch: a caller that comes meanwhile is not handed it, but waits for
+  // it to settle and then trades for the name it reads then.
+  const renew = (): Promise<void> => {
+    if (taking === undefined) return trade();
+    next ??= taking
+      .catch(() => {})
+      .then(() => {
+        next = undefined;
+        return taking ?? trade();
+      });
+    return next;
   };
   return {
     ready: () => (live() ? Promise.resolve() : renew()),
@@ -225,21 +238,28 @@ const RECONNECTED: `${Events.Reconnect}` = "reconnect";
  * still the user the old session's token was admitted as, the auth service granted that user none
  * of the new session's subjects, and the server refuses a subscribe to one, which nats.js answers
  * by closing the subscription. Nothing happens where the token in hand is the one the connection
- * presented. Throws where the connection does not come back within 15 s, or closes first.
+ * presented. A reconnect counts only once the CONNECT it made presented the token in hand, so one
+ * that began before the move does not end it. Throws where the connection does not come back
+ * within 15 s, or closes first. The status reader it opens is stopped on every way out: nats.js
+ * keeps a reader registered until it is stopped, whatever becomes of the connection.
  */
 export async function followNatsCredential(
-  connection: Pick<NatsConnection, "reconnect" | "status">,
+  connection: Pick<NatsConnection, "reconnect" | "status" | "closed">,
   credential: BrokerNatsCredential
 ): Promise<void> {
   await credential.renew();
   if (!credential.needsReconnect()) return;
-  const statuses = connection.status();
+  // nats.js's status() is a QueuedIterator, which has a stop() its declared type leaves out.
+  const statuses: AsyncIterable<Status> & { stop?: () => void } = connection.status();
   const back = (async () => {
     for await (const status of statuses) {
-      if (status.type === RECONNECTED) return;
+      if (status.type === RECONNECTED && !credential.needsReconnect()) return;
     }
-    throw new Error("the NATS connection closed before it came back as the new session");
+    throw new Error("the NATS connection's status ended before it came back as the new session");
   })();
+  const closed = connection.closed().then(() => {
+    throw new Error("the NATS connection closed before it came back as the new session");
+  });
   const late = Promise.withResolvers<never>();
   const timer = setTimeout(
     () =>
@@ -252,8 +272,11 @@ export async function followNatsCredential(
   );
   try {
     await connection.reconnect();
-    await Promise.race([back, late.promise]);
+    await Promise.race([back, closed, late.promise]);
   } finally {
     clearTimeout(timer);
+    statuses.stop?.();
+    back.catch(() => {});
+    closed.catch(() => {});
   }
 }

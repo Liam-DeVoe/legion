@@ -1087,6 +1087,9 @@ jobs:
               - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
+              # src/__tests__/dpop.test.ts reads both signers' committed connection proofs.
+              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-go.json'
+              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-ts.json'
             envoy_client:
               - '.github/workflows/ci.yaml'
               - *bun_install

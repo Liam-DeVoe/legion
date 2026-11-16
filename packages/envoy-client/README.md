@@ -497,7 +497,7 @@ to use it on, so that caller resolves none. A seed is the credential wherever on
 `NATS_AUTH`, else `envoy.natsAuth`, names it: `broker` is the session's broker token, and `none`, or
 nothing set, is no credential, whatever broker route the machine has, since that route says nothing
 about whether the hub runs an auth service. `broker` on a machine with no broker route
-(`NATS_AUTH is broker, but <gap>`), either value beside a seed (`NATS_AUTH is broker, and
+(`NATS_AUTH is broker, but <gap>`), `broker` beside a seed (`NATS_AUTH is broker, and
 NATS_NKEY_SEED names an nkey seed: set one of the two`) and any other value (`NATS_AUTH is "x", which
 is neither broker nor none`) turn off inbound messages alone. A set `_FILE` pointer that
 cannot be read is refused, never a fallback. The file's `envoy.token` goes with `ENVOY_URL` only

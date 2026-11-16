@@ -39,6 +39,9 @@
 #   receives                           a direct message to each session reaches it
 #   receives-after-listener-restart    the listener restarted on its port; again
 #   receives-after-hub-restart         natsd restarted on its port and store; again
+#   receives-after-switch              the Oh My Pi session switched (/new) and the Claude Code
+#                                      session cleared (/clear) to session ids of their own, each
+#                                      plugin moving its connection to the new id's token; again
 #   probe-refused-other-session        natsprobe in the Oh My Pi session's environment is served its
 #                                      own channel and refused the Claude Code session's, by name
 #
@@ -87,9 +90,16 @@ echo "nats-callout-sessions: evidence in $evidence${control:+ (control: $control
 stack_pid=""
 scenario_pids=()
 scenario_fds=()
+cleanup_running=false
 cleanup() {
   local status=$1 pid fd
-  trap - EXIT INT TERM
+  # Once: a repeated INT or TERM, or the EXIT after one, finds the stop already running. Both are
+  # ignored from here on rather than put back on their default, which a repeat would then end the
+  # run by, before the stack stopped and dropped its databases.
+  [ "$cleanup_running" = false ] || return 0
+  cleanup_running=true
+  trap - EXIT
+  trap '' INT TERM
   set +e
   # A client's stdin closing is its shutdown: each deregisters and exits.
   for fd in "${scenario_fds[@]}"; do
@@ -167,14 +177,17 @@ omp_session=ses_ncs_omp_$run
 claude_session=ses_ncs_claude_$run
 # A session trades only under a name its pod is registered for: the registrar stands in for the
 # daemon that writes that row as it starts a pod.
-for session in "$omp_session" "$claude_session"; do
+register_session() {
+  local session=$1 code
   code=$(curl -sS --max-time 20 -o "$evidence/answers/register-$session.json" -w '%{http_code}' \
     -X POST "$AGENT_SECRETS_URL/v1/oauth/exchange/pod-sessions" \
     -H "Authorization: Bearer $(cat "$DEV_STACK_REGISTRAR_TOKEN_FILE")" -H 'Content-Type: application/json' \
     -d "$(jq -cn --arg p "$(cat "$DEV_STACK_POD_TOKEN_FILE")" --arg s "$session" '{pod_token: $p, session: $s}')") || code=unreachable
   [ "$code" = 200 ] || [ "$code" = 201 ] || [ "$code" = 204 ] ||
     refuse "registering the pod for $session answered $code: $(head -c 300 "$evidence/answers/register-$session.json")"
-done
+}
+register_session "$omp_session"
+register_session "$claude_session"
 
 # What both sessions trade with: the stack's pod identity, at its broker.
 broker_env=(
@@ -303,6 +316,20 @@ message_each receives-after-listener-restart
 
 restart natsd USR1
 message_each receives-after-hub-restart
+
+# A session switch in each host: Oh My Pi's /new (the extension's session_switch) and Claude Code's
+# /clear (the handoff file its SessionStart hook writes, which the channel server adopts on its
+# own). Each plugin moves its connection to the new id's token before it subscribes that id's
+# subjects, so the new id is admitted as its own user and receives.
+omp_session=ses_ncs_omp_next_$run
+claude_session=ses_ncs_claude_next_$run
+register_session "$omp_session"
+register_session "$claude_session"
+send omp "$(jq -cn --arg s "$omp_session" '{op: "switch", session: $s, reason: "new"}')"
+send claude "$(jq -cn --arg s "$claude_session" '{op: "clear", session: $s}')"
+wait_for 60 admitted_as "$omp_session" || true
+wait_for 60 admitted_as "$claude_session" || true
+message_each receives-after-switch
 
 # natsprobe in the Oh My Pi session's own environment: its trade names that session, so the hub
 # serves its channel and refuses the other session's, in nats-server's own words.

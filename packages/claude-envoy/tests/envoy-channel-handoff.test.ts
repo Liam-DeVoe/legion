@@ -26,6 +26,7 @@ import {
   deliveryRaw,
   directSubject,
   FakeNats,
+  FakeNotifier,
   noInterest,
   observedClient,
   recordingClient,
@@ -150,6 +151,7 @@ test("natsCredential follows a /clear: the connection is moved to the new id's t
   const identity = new SessionIdentity("ses_old", "/tmp")
   const handoff = sessionHandoffFile(stateDirectory, 779)
   await writeSessionHandoff(handoff, "ses_old")
+  const following = Promise.withResolvers<void>()
   const session = await startChannelSession(
     sessionOptions(identity, stateDirectory, {
       connection: nats,
@@ -158,12 +160,18 @@ test("natsCredential follows a /clear: the connection is moved to the new id's t
       handoffPid: 779,
       followSession: async () => {
         calls.push(`follow ${identity.id}`)
+        await following.promise
       },
     }),
   )
   try {
     calls.length = 0
     await writeSessionHandoff(handoff, "ses_new")
+    await waitFor(async () => calls.includes("follow ses_new"), "the credential move to begin")
+    await settled()
+    expect(nats.subscriptions.has("notifications.envoy.deliver.ses_old")).toBe(false)
+    expect(nats.subscriptions.has("notifications.envoy.deliver.ses_new")).toBe(false)
+    following.resolve()
     await waitFor(
       async () => calls.includes("nats.subscribe notifications.envoy.deliver.ses_new"),
       "the new id's relay subscription",
@@ -175,6 +183,76 @@ test("natsCredential follows a /clear: the connection is moved to the new id's t
       "nats.subscribe notifications.envoy.deliver.ses_new",
     ])
   } finally {
+    following.resolve()
+    await session.shutdown()
+  }
+})
+
+test("a /clear retries a failed credential move before opening the new relay", async () => {
+  const stateDirectory = scratchState()
+  const calls: string[] = []
+  const nats = new FakeNats(calls)
+  const notifier = new FakeNotifier()
+  const identity = new SessionIdentity("ses_old", "/tmp")
+  const handoff = sessionHandoffFile(stateDirectory, 780)
+  await writeSessionHandoff(handoff, "ses_old")
+  const refused: string[] = []
+  let brokerAvailable = false
+  let admitted = "ses_old"
+  let attempts = 0
+  const subscribe = nats.subscribe.bind(nats)
+  // nats.js closes a subscription the server refuses; a later reconnect does not restore it.
+  const subscribing = spyOn(nats, "subscribe").mockImplementation((subject) => {
+    const subscription = subscribe(subject)
+    if (subject !== `notifications.envoy.deliver.${admitted}`) {
+      refused.push(subject)
+      subscription.unsubscribe()
+    }
+    return subscription
+  })
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      connection: nats,
+      notifier,
+      client: recordingClient(calls),
+      heartbeatMs: 25,
+      handoffPid: 780,
+      followSession: async () => {
+        attempts += 1
+        if (!brokerAvailable) throw new Error("broker unavailable")
+        admitted = identity.id
+      },
+    }),
+  )
+  try {
+    await writeSessionHandoff(handoff, "ses_new")
+    await waitFor(
+      async () => attempts >= 2 || refused.length > 0,
+      "a failed credential move to retry without subscribing as the old user",
+    )
+    expect(refused).toEqual([])
+    expect(nats.subscriptions.has("notifications.envoy.deliver.ses_new")).toBe(false)
+
+    brokerAvailable = true
+    await waitFor(
+      async () => nats.subscriptions.has("notifications.envoy.deliver.ses_new"),
+      "the new relay to open once its credential is admitted",
+    )
+    nats.emitRelay("ses_new", {
+      subject: "notifications.agent.ses_new",
+      seq: 1,
+      raw: deliveryRaw.replace(directSubject, "notifications.agent.ses_new"),
+      reply: "_INBOX.handoff-recovered",
+    })
+    await waitFor(
+      async () => nats.repliesOn("_INBOX.handoff-recovered").includes("done"),
+      "the handed-off session to receive and acknowledge its message",
+    )
+    expect(notifier.notifications).toHaveLength(1)
+    expect(calls.filter((call) => call === "unregister ses_old")).toHaveLength(1)
+    expect(refused).toEqual([])
+  } finally {
+    subscribing.mockRestore()
     await session.shutdown()
   }
 })
