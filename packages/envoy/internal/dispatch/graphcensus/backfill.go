@@ -1517,8 +1517,11 @@ func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, e
 }
 
 // AsksOwed reports whether BackfillAsks has anything to do: a row of an object kind that names no
-// node, or an asks or ask_followers row the passes would mark. Each read stops at its first row,
-// so a store with nothing owed costs one probe per kind.
+// node, or an asks or ask_followers row the passes would mark. Each read stops at its first owed
+// row, so a store that owes one costs little, but a store that owes nothing is read to the end: an
+// anti-join of issues, artifacts, asks and messages to graph_nodes, then asks and ask_followers,
+// which no index keys on a null marker. The decisions step reads it only where another build can
+// have written such a row (docs' decision step, probe).
 func AsksOwed(ctx context.Context, q graphstore.Queryer) (bool, error) {
 	for _, kind := range objectKinds {
 		var owed bool

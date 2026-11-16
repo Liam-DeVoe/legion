@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -73,15 +75,31 @@ func seedCatchUpAsk(t *testing.T, database *store.Store, project string) (string
 // the store, which that release's writers do not know. It answers the event's id.
 func asThePreviousBuild(t *testing.T, database *store.Store, issue string, write func(ctx context.Context, tx pgx.Tx) (model.Event, error)) int64 {
 	t.Helper()
+	return commitAsThePreviousBuild(t, beginAsThePreviousBuild(t, database, issue), issue, write)
+}
+
+// beginAsThePreviousBuild opens a write of the release before on issue and takes the issue's row,
+// as that release's writers of an ask take it first; commitAsThePreviousBuild writes in it and
+// commits.
+func beginAsThePreviousBuild(t *testing.T, database *store.Store, issue string) pgx.Tx {
+	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the previous build's write: %v", err)
 	}
-	defer tx.Rollback(ctx)
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 	if _, err := tx.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue); err != nil {
 		t.Fatalf("take issue %s's row: %v", issue, err)
 	}
+	return tx
+}
+
+// commitAsThePreviousBuild runs write in tx, a write beginAsThePreviousBuild opened on issue,
+// appends the event write answers through the broker and commits, and answers the event's id.
+func commitAsThePreviousBuild(t *testing.T, tx pgx.Tx, issue string, write func(ctx context.Context, tx pgx.Tx) (model.Event, error)) int64 {
+	t.Helper()
+	ctx := context.Background()
 	event, err := write(ctx, tx)
 	if err != nil {
 		t.Fatalf("write as the previous build: %v", err)
@@ -101,7 +119,13 @@ func asThePreviousBuild(t *testing.T, database *store.Store, issue string, write
 // the asks row and its ask.answered, and nothing on the node.
 func answerAsThePreviousBuild(t *testing.T, database *store.Store, issue, ask, selected string) int64 {
 	t.Helper()
-	return asThePreviousBuild(t, database, issue, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+	return asThePreviousBuild(t, database, issue, previousBuildAnswer(ask, selected))
+}
+
+// previousBuildAnswer is the write of the release before's answer route that answers ask with
+// selected, a first answer or a change to the one it holds.
+func previousBuildAnswer(ask, selected string) func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+	return func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
 		answer, err := json.Marshal(model.AskAnswer{User: catchUpAlice.ID, Selected: []string{selected}, At: time.Now().UTC()})
 		if err != nil {
 			return model.Event{}, err
@@ -116,7 +140,7 @@ func answerAsThePreviousBuild(t *testing.T, database *store.Store, issue, ask, s
 		return model.Event{Type: "ask.answered", Actor: catchUpAlice, Payload: model.AskAnsweredEventPayload{
 			AskEventPayload: model.NewAskEventPayload(answered, model.ReferenceChanges{}),
 		}}, nil
-	})
+	}
 }
 
 // followAsThePreviousBuild puts catchUpSession on ask as the follow route of the release before
@@ -259,6 +283,55 @@ func TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow(t *testing.T) {
 	}
 }
 
+// A catch-up pass reads an ask's events before it takes any lock, so the previous build can commit
+// a newer write on the ask in between: that write holds the ask's issue, which the pass waits for.
+// The pass then states the newer write too, read under its locks, so the row it writes and the
+// node it states are the newer write's, and never the older event's written over it.
+//
+// The previous build answers an ask this build marked, Ship. A transaction of the test's own then
+// opens the previous build's change of that answer and takes the ask's issue, and one pass of the
+// real catch-up runs on a connection of its own: it reads the window, Ship among it, and queues
+// behind the issue. The previous build changes the answer to Hold under its own ask.answered and
+// commits, and the pass goes on. The ask's row and its node then both hold Hold, the node's
+// answer_state under that newer ask.answered.
+func TestTheCatchUpStatesAWriteCommittedBetweenItsReadAndItsLock(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	ask, issue := seedCatchUpAsk(t, database, "GAP")
+	answerAsThePreviousBuild(t, database, issue, ask, "Ship")
+	runner := storetest.SingleConnection(t, database)
+	step := NewDecisionStep(runner, catchUpCommit, nil)
+	pid := backendOf(t, runner)
+
+	change := beginAsThePreviousBuild(t, database, issue)
+	done := startCatchUp(step)
+	if failed, answered := storetest.WaitForQueuedBehind(t, change, pid, done, lockstep.Wait); answered {
+		t.Fatalf("the pass answered (%v) without waiting on the issue the previous build's change holds", failed)
+	}
+	changed := commitAsThePreviousBuild(t, change, issue, previousBuildAnswer(ask, "Hold"))
+	if err := <-done; err != nil {
+		t.Fatalf("run the pass: %v", err)
+	}
+
+	if state, event := newestAnswerState(t, database, ask); state != asks.StateAnswered || event != changed {
+		t.Errorf("the ask's node holds answer_state %q under event %d, want answered under the previous build's newer ask.answered %d",
+			state, event, changed)
+	}
+	var row, node string
+	if err := database.Pool.QueryRow(ctx, `
+		select k.answer->>'selected',
+		       coalesce((select t.to_id from graph_tuples t
+		                 where t.from_kind = $2 and t.from_id = k.id::text and t.kind = $3 and t.to_kind = $4
+		                 order by t.seq desc limit 1), '')
+		from asks k where k.id = $1::uuid
+	`, ask, graphstore.KindAsk, graphstore.TupleSelected, graphstore.KindValue).Scan(&row, &node); err != nil {
+		t.Fatalf("read the ask's selection on its row and its node: %v", err)
+	}
+	if want := asks.SelectedValue([]string{"Hold"}); row != want || node != want {
+		t.Errorf("the ask's row selects %s and its node %s, want both the newer write's %s", row, node, want)
+	}
+}
+
 // failFirstAskWrite is a trigger of the test's own that fails the first write of an asks row once
 // it is installed and lets every later one through: a sequence moves whatever the transaction that
 // draws from it does, so the failure does not come back when that transaction rolls back.
@@ -392,31 +465,75 @@ func TestACatchUpPassNeverReadsAgainAnEventAPassBeforeItRead(t *testing.T) {
 	}
 }
 
-// The catch-up's one read of a pass (caughtUpRead) reaches every table through an index keyed on
-// what it binds: events through their primary key from the high-water mark on, and each event's
-// tuples through an index of graph_tuples keyed on the ask's node - its kind and its id - never a
-// read of either that no index condition narrows, nor one of every ask's tuples, which on a store
-// of millions of events and tuples is all of them on every tick.
+// The catch-up's reads reach every table through an index keyed on what they bind. The read of a
+// pass (caughtUpRead) reads events through their primary key from the high-water mark on, each
+// event's owner by its key, and each event's tuples through an index of graph_tuples keyed on the
+// ask's node - its kind and its id. The read an ask's catch-up makes under its locks
+// (caughtUpSince) reads its owner's events through the owner's unique (key, seq) index from the
+// sequence the pass's read saw, and each one's tuples the same way. None is a read that no index
+// condition narrows, nor one of every ask's tuples, which on a store of millions of events and
+// tuples is all of them on every tick.
 func TestTheCatchUpReadsItsWindowThroughIndexes(t *testing.T) {
 	database := storetest.Open(t)
-	plan := explainPlan(t, database, caughtUpRead, int64(1000), []int64{1001})
-	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
-		t.Errorf("the catch-up's read reads %v, which no index condition keys:\n%s", unkeyed, plan)
-	}
 	keys := explaintest.NewIndexKeys(database.Pool)
-	keys.RequireIndexKeyed(t, plan, "events_pkey", "the catch-up's read of the window", explaintest.CondRequired)
-	keys.RequireIndexKeyed(t, plan, explaintest.AnyIndex, "the catch-up's read of the window", explaintest.CondRequired)
-	probed := false
-	for _, scan := range explaintest.IndexScans(t, plan) {
-		if strings.HasPrefix(scan.Index, "graph_tuples") {
-			if !strings.Contains(scan.Cond, "from_id") {
-				t.Errorf("the catch-up's read reads %s on `%s`, which does not name the ask's node:\n%s", scan, scan.Cond, plan)
+	const ask = "00000000-0000-4000-8000-0000000000c1"
+	for _, read := range []struct {
+		name, index string
+		plan        func() json.RawMessage
+	}{
+		{"the catch-up's read of the window", "events_pkey", func() json.RawMessage {
+			return explainPlan(t, database, caughtUpRead, int64(1000), []int64{1001})
+		}},
+		{"the catch-up's read of an issue's ask under its locks", "events_issue_key_seq_key", func() json.RawMessage {
+			return explainPlan(t, database, caughtUpSinceOnIssue, "CORE-1", int64(3), ask)
+		}},
+		{"the catch-up's read of a document's ask under its locks", "events_artifact_id_seq_key", func() json.RawMessage {
+			return explainPlan(t, database, caughtUpSinceOnDocument, "00000000-0000-4000-8000-0000000000d1", int64(3), ask)
+		}},
+	} {
+		plan := read.plan()
+		if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
+			t.Errorf("%s reads %v, which no index condition keys:\n%s", read.name, unkeyed, plan)
+		}
+		keys.RequireIndexKeyed(t, plan, read.index, read.name, explaintest.CondRequired)
+		keys.RequireIndexKeyed(t, plan, explaintest.AnyIndex, read.name, explaintest.CondRequired)
+		probed := false
+		for _, scan := range explaintest.IndexScans(t, plan) {
+			if strings.HasPrefix(scan.Index, "graph_tuples") {
+				if !strings.Contains(scan.Cond, "from_id") {
+					t.Errorf("%s reads %s on `%s`, which does not name the ask's node:\n%s", read.name, scan, scan.Cond, plan)
+				}
+				probed = true
 			}
-			probed = true
+		}
+		if !probed {
+			t.Errorf("%s reads no graph_tuples index, want each event's tuples probed through one:\n%s", read.name, plan)
 		}
 	}
-	if !probed {
-		t.Errorf("the catch-up's read reads no graph_tuples index, want each event's tuples probed through one:\n%s", plan)
+}
+
+// storeGatedProject stores project key with a list of gated steps that holds `decisions`, as the
+// project route of a build that admits the step stores it: the row and its project.created event.
+func storeGatedProject(t *testing.T, database *store.Store, key string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the project's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		insert into projects (key, name, default_assignee, gated_steps) values ($1, $1, 'alice', '{decisions,spec}')
+	`, key); err != nil {
+		t.Fatalf("store a list of gated steps holding decisions: %v", err)
+	}
+	if _, err := events.NewBroker().Append(ctx, tx, model.Event{
+		ProjectKey: &key, Type: "project.created", Actor: catchUpAlice, Payload: map[string]string{"key": key},
+	}); err != nil {
+		t.Fatalf("append the project.created of %s: %v", key, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the project's write: %v", err)
 	}
 }
 
@@ -427,7 +544,7 @@ func TestTheCatchUpReadsItsWindowThroughIndexes(t *testing.T) {
 //
 // Run ticks on an empty database until its catch-up's final pass is behind it and its ticks find
 // nothing to do. It is still running after many such ticks, and once a project stores a list of
-// gated steps that holds `decisions`, a later tick counts it.
+// gated steps that holds `decisions`, with the event its write appends, a later tick counts it.
 func TestTheDecisionsStepKeepsTickingAfterATickWithNoWork(t *testing.T) {
 	database := storetest.Open(t)
 	step := NewDecisionStep(database, catchUpCommit, nil)
@@ -454,11 +571,7 @@ func TestTheDecisionsStepKeepsTickingAfterATickWithNoWork(t *testing.T) {
 		t.Fatal("Run returned once its ticks found nothing to do, want it to keep ticking")
 	case <-time.After(50 * step.interval):
 	}
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into projects (key, name, default_assignee, gated_steps) values ('GATE', 'Gated', 'alice', '{decisions,spec}')
-	`); err != nil {
-		t.Fatalf("store a list of gated steps holding decisions: %v", err)
-	}
+	storeGatedProject(t, database, "GATE")
 	for deadline = time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
 		if owed := step.Owed(); owed.GatedStepsLists == 1 && owed.Total == 1 {
 			return
@@ -467,5 +580,63 @@ func TestTheDecisionsStepKeepsTickingAfterATickWithNoWork(t *testing.T) {
 			t.Fatalf("the step's ticks count %+v 10s after a list of gated steps holding decisions was stored, want gated_steps_lists 1 and total 1",
 				*step.Owed())
 		}
+	}
+}
+
+// wholeTableRead matches a statement that reads one of the tables a probe of the step reads to the
+// end when nothing is owed: the object kinds and the asks graphcensus.AsksOwed reads, and the
+// documents, asks and projects the count of what the restore and the conversion owe reads.
+var wholeTableRead = regexp.MustCompile(`\b(from|join)\s+(issues|artifacts|asks|ask_followers|messages|comments|projects)\b`)
+
+// A tick with nothing owed and no other build live reads no table whole: it reads the live
+// processes, the newest event and whether a document's block index is owed, each one probe of an
+// index, and leaves the last count standing - every 30 s on every process, for as long as each
+// runs. graphcensus.AsksOwed and the count each read whole tables when nothing is owed, so neither
+// runs on such a tick.
+//
+// The step boots on an empty database, runs the tick that takes its catch-up's final pass and the
+// one that counts after it, and then three more ticks, every statement of which a tracer on the
+// step's pool records. None of those three reads a table of the probes', and the step's count still
+// stands at nothing owed. A project then stores a list of gated steps holding `decisions`, with
+// the event its write appends, and the next tick counts it.
+func TestATickWithNothingOwedReadsNoTableWhole(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	recorder := &storetest.StatementRecorder{}
+	traced := storetest.Reopened(t, database, func(config *pgxpool.Config) { config.ConnConfig.Tracer = recorder })
+	step := NewDecisionStep(traced, catchUpCommit, nil)
+	if err := step.Boot(ctx); err != nil {
+		t.Fatalf("boot the step: %v", err)
+	}
+	for range 2 {
+		if err := step.Tick(ctx); err != nil {
+			t.Fatalf("run a tick of the step: %v", err)
+		}
+	}
+	before := len(recorder.Statements())
+	for range 3 {
+		if err := step.Tick(ctx); err != nil {
+			t.Fatalf("run a tick with nothing owed: %v", err)
+		}
+	}
+	idle := recorder.Statements()[before:]
+	if len(idle) == 0 {
+		t.Fatal("three ticks with nothing owed ran no statement the tracer saw, want the probes of each")
+	}
+	for _, statement := range idle {
+		if read := wholeTableRead.FindString(strings.ToLower(statement)); read != "" {
+			t.Errorf("a tick with nothing owed runs a statement that reads %q to the end:\n%s", read, statement)
+		}
+	}
+	if owed := step.Owed(); owed == nil || owed.Total != 0 {
+		t.Errorf("the step's count reads %+v after the ticks with nothing owed, want it standing at 0", owed)
+	}
+
+	storeGatedProject(t, database, "IDLE")
+	if err := step.Tick(ctx); err != nil {
+		t.Fatalf("run the tick after a project's write: %v", err)
+	}
+	if owed := step.Owed(); owed == nil || owed.GatedStepsLists != 1 || owed.Total != 1 {
+		t.Errorf("the step's count reads %+v after a project stored a list of gated steps holding decisions, want gated_steps_lists 1 and total 1", owed)
 	}
 }
