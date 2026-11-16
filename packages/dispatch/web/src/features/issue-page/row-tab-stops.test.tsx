@@ -1,6 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -102,6 +102,19 @@ test("NodeFacts keeps its copy controls out of the tab order, and in it with tab
         const controls = [...view.container.querySelectorAll("button")];
         expect(controls).toHaveLength(2);
         expect(controls.map(outOfTabOrder)).toEqual([!tabStops, !tabStops]);
+      });
+      // A picture fact draws no control (`DispatchPicture` with no anchor draws words or an
+      // image), so no fact puts a control into the list after the first paint without a tab
+      // index from a prop. The test puts a link into the list itself: only the list's watch
+      // (`useOutOfTabOrder`) takes it out of the tab order.
+      const late = document.createElement("a");
+      late.href = "/issues/CORE-3";
+      act(() => {
+        view.container.querySelector("dl")?.append(late);
+      });
+      await waitFor(() => {
+        expect(outOfTabOrder(late)).toBe(!tabStops);
+        expect(late.hasAttribute("tabindex")).toBe(!tabStops);
       });
     } finally {
       view.unmount();

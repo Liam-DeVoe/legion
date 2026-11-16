@@ -41,6 +41,10 @@ import { type DecisionState, isReader } from "../page-words";
  *    decision no `shaped` tie names a statement for, and a replaced one, which no statement
  *    stands on any longer (R5: "A replaced decision draws no line").
  *
+ * Before the five parts stands the node the address names where it is neither an ask nor a
+ * decision - a comment, a statement, a check: the address outranks the filter (`presets.ts`),
+ * so the view holds it, and the filter draws it as a row of its own kind, which the page focuses.
+ *
  * What the filter draws none of is an agent's reading of a person's answer (R2, R9: "No
  * restatement of a person's answer appears anywhere in the view"). Today's nearest thing to a
  * `reading` node is a section of `decisions.md` the server marks a person's because its blocks
@@ -70,6 +74,7 @@ import { type DecisionState, isReader } from "../page-words";
 
 /** The parts, in the order the filter draws them (R2). */
 export const DECISIONS_PART_ORDER = [
+  "named",
   "open_questions",
   "review",
   "yours",
@@ -143,12 +148,20 @@ export interface DecisionEntry extends EntryBase {
   readonly standing?: DecisionState;
 }
 
+/** A node the address names that is neither an ask nor a decision, drawn as a row of its own
+ *  kind by its words. */
+export interface NamedEntry extends EntryBase {
+  readonly kind: "named";
+}
+
 /** One entry of the filter. */
 export type DecisionsEntry = AskEntry | DecisionEntry;
 
 /** The parts, each in the order it is drawn. */
 export interface DecisionsParts {
   readonly agents: readonly DecisionEntry[];
+  /** The node the address names, where it is neither an ask nor a decision. */
+  readonly named: readonly NamedEntry[];
   readonly open_questions: readonly AskEntry[];
   readonly others: readonly DecisionsEntry[];
   readonly review: readonly DecisionEntry[];
@@ -255,6 +268,7 @@ export function decisionsParts({
   const yours: DecisionsEntry[] = [];
   const others: DecisionsEntry[] = [];
   const agents: DecisionEntry[] = [];
+  const named: NamedEntry[] = [];
   // A decision of a person stands with the reader's own where that person is the reader, and
   // with what others decided otherwise, a decision nobody is recorded for included.
   const decidedBy = (by: Actor | undefined): DecisionsEntry[] =>
@@ -286,7 +300,14 @@ export function decisionsParts({
       });
       continue;
     }
-    if (node.type !== "decision") continue;
+    if (node.type !== "decision") {
+      // A node of another kind is in the view only where the address named it; with no view
+      // there is no address, and the issue itself is no row of a filter.
+      if (kept !== undefined && node !== root) {
+        named.push({ ...base, ...timeOf(node.at), kind: "named", shapes: [] });
+      }
+      continue;
+    }
     const row = rows.get(node.reference ?? "");
     if (row === undefined) {
       // A decision the decisions read holds no row for, which is a tree one read ahead of it.
@@ -344,6 +365,7 @@ export function decisionsParts({
   }
   return {
     agents: newestFirst(agents),
+    named,
     // The questions whose turn is the reader's stand first, and each group keeps the order the
     // outline draws it in.
     open_questions: [

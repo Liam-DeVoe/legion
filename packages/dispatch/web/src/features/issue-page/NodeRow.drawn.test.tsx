@@ -6,12 +6,16 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { api } from "../../api/client";
 import type { IssueChild } from "../../api/types";
+import type { ReplyTarget } from "../conversation/composer-model";
+import { heldSends } from "../conversation/held-sends";
+import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { TreeNode } from "./issue-tree";
 import { NodeOptions, NodeRow } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
-import { type OutlineWriter, OutlineWriterProvider } from "./outline-writer";
+import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import {
   type AuthorKind,
   authorKind,
@@ -802,9 +806,14 @@ test("a child issue's row draws its title, its facts and its key as the tag", ()
 });
 
 /** The writer's acts the focused row draws for `drawn` (`[data-row-act]`), with the page's writer
- *  above it or with none. The writer's reads are answered before it mounts, under the keys the
- *  tree reads them by, so it makes no request. */
-function focusedActs(drawn: TreeNode, withWriter: boolean): string[] {
+ *  above it or with none, and whether it draws Copy reference (`[data-row-copy]`); `ownAnswer`
+ *  says the answer an ask carries is the reader's own. The writer's reads are answered before it
+ *  mounts, under the keys the tree reads them by, so it makes no request. */
+function focusedControls(
+  drawn: TreeNode,
+  withWriter: boolean,
+  ownAnswer = false
+): { acts: string[]; copy: boolean } {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -828,7 +837,7 @@ function focusedActs(drawn: TreeNode, withWriter: boolean): string[] {
       onFocus={() => {}}
       onPin={() => {}}
       onToggle={() => {}}
-      ownAnswer={false}
+      ownAnswer={ownAnswer}
       pinned={false}
       rowKey="row"
       tabStop
@@ -848,12 +857,20 @@ function focusedActs(drawn: TreeNode, withWriter: boolean): string[] {
     </QueryClientProvider>
   );
   try {
-    return [...view.container.querySelectorAll("[data-row-act]")].map(
-      (act) => act.getAttribute("data-row-act") ?? ""
-    );
+    return {
+      acts: [...view.container.querySelectorAll("[data-row-act]")].map(
+        (act) => act.getAttribute("data-row-act") ?? ""
+      ),
+      copy: view.container.querySelector("[data-row-copy]") !== null,
+    };
   } finally {
     view.unmount();
   }
+}
+
+/** The writer's acts the focused row draws for `drawn` (`focusedControls`). */
+function focusedActs(drawn: TreeNode, withWriter: boolean, ownAnswer = false): string[] {
+  return focusedControls(drawn, withWriter, ownAnswer).acts;
 }
 
 // Part G's R7: the focused row draws Reply on a comment, a message and an ask in any state, and
@@ -881,4 +898,118 @@ test("Reply is drawn on each node that takes one, Answer on an open question, an
   expect(focusedActs(block("decision", "d1"), true)).toEqual([]);
   expect(focusedActs(turn("ask", "ask-4", "open"), false)).toEqual([]);
   expect(focusedActs(turn("comment", "comment-2"), false)).toEqual([]);
+});
+
+// Part G's R7: Change answer is drawn on an answered question whose answer is the reader's own,
+// beside its Reply, and on no other answered question.
+test("Change answer is drawn on an answered question the reader answered, and on no other", () => {
+  const answered = node({
+    author: { id: "bob", kind: "user" },
+    id: "ask-1",
+    reference: "dispatch://CORE-1/ask/ask-1",
+    state: "answered",
+    type: "ask",
+  });
+  expect(focusedActs(answered, true, true)).toEqual(["change-answer", "reply"]);
+  expect(focusedActs(answered, true, false)).toEqual(["reply"]);
+  expect(focusedActs(answered, false, true)).toEqual([]);
+});
+
+// Part G's R6: the focused row offers Copy reference on a node that has an address, with a
+// writer above it or with none, since it writes nothing; a node with no address draws none.
+test("Copy reference is drawn on a focused node with an address, and on none without", () => {
+  const comment = (reference?: string) =>
+    node({
+      author: { id: "bob", kind: "user" },
+      id: "comment-1",
+      ...(reference === undefined ? {} : { reference }),
+      type: "comment",
+    });
+  expect(focusedControls(comment("dispatch://CORE-1/comment/comment-1"), true).copy).toBe(true);
+  expect(focusedControls(comment("dispatch://CORE-1/comment/comment-1"), false).copy).toBe(true);
+  expect(focusedControls(comment(), true).copy).toBe(false);
+});
+
+// Part G's R16: while a send of the line's own is out, a press that would set the line to
+// something else is refused, as a Reply is, so the line keeps the reply that send answers.
+test("while the line's send is out, Answer, an option, Edit and the issue's Reply keep its reply", () => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  for (const key of [
+    ["asks", "CORE-1"],
+    ["comments", "CORE-1"],
+    ["issue-messages", "CORE-1"],
+    ["agents"],
+  ]) {
+    queryClient.setQueryData(key, []);
+  }
+  const reply: ReplyTarget = {
+    actor: { id: "bob", kind: "user" },
+    excerpt: "Earlier comment",
+    id: "comment-1",
+    parentKind: "comment",
+  };
+  const request: SentRequest = {
+    anchor: undefined,
+    ask: { multiple: false, options: [], urgency: "med" },
+    draft: { body: "A reply on its way", mentions: [], replacement: "" },
+    edit: undefined,
+    kind: "comment",
+    owner: { issueKey: "CORE-1", kind: "issue" },
+    plainDelivery: "steer",
+    replyTo: reply,
+    sendKey: "send-1",
+  };
+  const asked = node({
+    id: "ask-1",
+    options: [{ label: "1024 px" }],
+    reference: "dispatch://CORE-1/ask/ask-1",
+    state: "open",
+    type: "ask",
+  });
+  // The send stays out: Dispatch never answers it.
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const seen: { writer?: OutlineWriter } = {};
+  function Probe(): ReactNode {
+    seen.writer = useOutlineWriter();
+    return null;
+  }
+  try {
+    act(() => {
+      heldSends(queryClient).send(["issue-composer", "CORE-1"], request);
+    });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NoTooltips>
+            <OutlineWriterProvider issueKey="CORE-1">
+              <Probe />
+            </OutlineWriterProvider>
+          </NoTooltips>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    try {
+      expect(seen.writer?.sendKey).toEqual(["issue-composer", "CORE-1"]);
+      expect(seen.writer?.reply).toEqual(reply);
+      act(() => seen.writer?.pick(asked, "1024 px"));
+      act(() => seen.writer?.answerNode(asked));
+      act(() => seen.writer?.edit("comment-2", "My own words"));
+      act(() => seen.writer?.writeOnIssue());
+      act(() => seen.writer?.clear());
+      expect(seen.writer?.reply).toEqual(reply);
+      expect(seen.writer?.answer).toBeUndefined();
+      expect(seen.writer?.editing).toBeUndefined();
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    createComment.mockRestore();
+  }
 });

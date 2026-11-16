@@ -205,6 +205,9 @@ export function OutlineWriterProvider({
   }, []);
   const answerNode = useCallback(
     (node: TreeNode) => {
+      // As a Reply is, every press that sets the line to something else is refused while a send
+      // of the line's own is out: the reply it was sent with stays the one the line shows.
+      if (store.sendingNow(sendKey)) return;
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
       setReply(null);
@@ -212,10 +215,11 @@ export function OutlineWriterProvider({
       setAnswer((held) => (held?.askId === target.askId ? held : target));
       focus();
     },
-    [answering, focus, setReply]
+    [answering, focus, sendKey, setReply, store]
   );
   const changeAnswer = useCallback(
     (node: TreeNode) => {
+      if (store.sendingNow(sendKey)) return;
       const target = answering(node);
       const recorded = (asks.data ?? []).find((ask) => ask.id === target?.askId)?.answer;
       if (target === undefined || recorded === null || recorded === undefined) return;
@@ -229,10 +233,11 @@ export function OutlineWriterProvider({
       });
       focus();
     },
-    [answering, asks.data, focus, setReply]
+    [answering, asks.data, focus, sendKey, setReply, store]
   );
   const pick = useCallback(
     (node: TreeNode, label: string) => {
+      if (store.sendingNow(sendKey)) return;
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
       setReply(null);
@@ -240,28 +245,31 @@ export function OutlineWriterProvider({
       setAnswer((held) => picked(held?.askId === target.askId ? held : target, label));
       focus();
     },
-    [answering, focus, setReply]
+    [answering, focus, sendKey, setReply, store]
   );
   const toggle = useCallback((label: string) => {
     setAnswer((held) => (held === undefined ? held : picked(held, label)));
   }, []);
   const clear = useCallback(() => {
+    if (store.sendingNow(sendKey)) return;
     setReply(null);
     setAnswer(undefined);
     setEditing(undefined);
-  }, [setReply]);
+  }, [sendKey, setReply, store]);
   const writeOnIssue = useCallback(() => {
+    if (store.sendingNow(sendKey)) return;
     clear();
     focus();
-  }, [clear, focus]);
+  }, [clear, focus, sendKey, store]);
   const edit = useCallback(
     (id: string, body: string) => {
+      if (store.sendingNow(sendKey)) return;
       setReply(null);
       setAnswer(undefined);
       setEditing({ body, id });
       focus();
     },
-    [focus, setReply]
+    [focus, sendKey, setReply, store]
   );
   const writer = useMemo<OutlineWriter>(
     () => ({

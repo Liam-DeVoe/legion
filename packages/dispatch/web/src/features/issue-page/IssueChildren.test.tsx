@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { IssueChild } from "../../api/types";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { NoTooltips } from "./NoTooltips";
+import { CONTROL_LABELS } from "./page-words";
 
 /**
  * What a child issue's row of the outline draws beside its title (the architect's ruling 5 on
@@ -87,6 +88,24 @@ test("a child held by a session is named as the page names an author, with no li
   expect(facts?.textContent).not.toContain("0f8e2c4a");
   expect(facts?.querySelectorAll("a")).toHaveLength(0);
   expect(holder?.querySelector("[class*='text-blue'], [class*='text-sky']")).toBeNull();
+});
+
+// R5: a session that neither the registry nor its claim names a title for reads as the page's
+// word for an agent nothing names, never as its id.
+test("a child held by a session nothing names reads as the page's word for an unnamed agent", () => {
+  drawChild({
+    ...child,
+    claim: {
+      actor: { id: "0f8e2c4a-5b6d-4e7f-8a9b-0c1d2e3f4a5b", kind: "session" },
+      at: "2026-11-05T01:00:00Z",
+    },
+  });
+  const facts = screen.getByText("Claimed by").closest("[data-child-facts]");
+  expect(facts?.querySelector("[data-child-holder]")?.textContent).toBe(
+    CONTROL_LABELS.unnamed_author
+  );
+  expect(facts?.textContent).not.toContain("session:");
+  expect(facts?.textContent).not.toContain("0f8e2c4a");
 });
 
 // Two keys drawn with nothing between them read as one key: "Blocked by CORE-7CORE-8" names no

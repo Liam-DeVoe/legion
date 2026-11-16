@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import type { Decision, DecisionLink } from "../../../api/types";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
+import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
 import {
   AGENT,
@@ -69,6 +70,7 @@ function idsOf(parts: DecisionsParts): Record<keyof DecisionsParts, string[]> {
     entries.map((entry) => entry.node.id);
   return {
     agents: ids(parts.agents),
+    named: ids(parts.named),
     open_questions: ids(parts.open_questions),
     others: ids(parts.others),
     review: ids(parts.review),
@@ -122,6 +124,7 @@ test("each ask and each decision stands in one of the four parts", () => {
   expect(idsOf(parts)).toEqual({
     // A replaced decision is one no statement rests on any longer (R5).
     agents: [D("untied"), D("replaced")],
+    named: [],
     open_questions: ["q-open", "q-agent"],
     others: [],
     review: [D("review")],
@@ -579,6 +582,7 @@ test("the parts hold the nodes the filter's view left", () => {
 
   expect(idsOf(partsOf(children, made, [], view))).toEqual({
     agents: [],
+    named: [],
     open_questions: ["q2"],
     others: [],
     review: [D("two")],
@@ -622,6 +626,7 @@ test("the parts are read before every read has answered", () => {
 
   expect(idsOf(parts)).toEqual({
     agents: [D("early")],
+    named: [],
     open_questions: ["q1"],
     // Nobody is known to have closed it yet, so it is no decision of the reader's.
     others: ["closed"],
@@ -630,4 +635,37 @@ test("the parts are read before every read has answered", () => {
   });
   expect(parts.others[0]?.kind === "ask" ? parts.others[0].declined : "none").toBeUndefined();
   expect(parts.agents[0]?.standing).toBeUndefined();
+});
+
+// R20: the address outranks the filter (`presets.ts`), so a comment it names is in the
+// Decisions filter's view though the filter draws no comment. The parts hold it as an entry of
+// its own, with its address and its parent's line, so the filter draws it and the page focuses
+// it; the same tree with no address holds no such entry.
+test("a comment the address names is an entry of its own", () => {
+  const change = node({
+    id: "comment-1",
+    reference: `dispatch://${KEY}/comment/comment-1`,
+    text: "Make the rail narrower.",
+    type: "comment",
+  });
+  const children = [statement("s1"), openAsk("q1"), decisionNode("one", { children: [change] })];
+  const made = [decision("one", { links: [shaped(specRef("s1"))] })];
+  const view = presetView(issueTree(children), "decisions", "", new Set([change.id])).root;
+  const parts = partsOf(children, made, [], view);
+
+  expect(idsOf(parts)).toEqual({
+    agents: [],
+    named: ["comment-1"],
+    open_questions: ["q1"],
+    others: [],
+    review: [D("one")],
+    yours: [],
+  });
+  expect(parts.named[0]).toMatchObject({
+    kind: "named",
+    parent: { id: D("one"), type: "decision" },
+    path: `/issues/${KEY}/comments/comment-1`,
+    shapes: [],
+  });
+  expect(idsOf(partsOf(children, made)).named).toEqual([]);
 });
