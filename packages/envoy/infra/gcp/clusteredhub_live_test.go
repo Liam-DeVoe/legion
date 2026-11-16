@@ -68,8 +68,8 @@ func installTool(dir, module, binary string) (string, error) {
 	cmd := exec.Command("go", "install", module)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOBIN="+dir, "GOWORK=off")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go install %s: %v\n%s", module, err, out)
+	if _, err := cmdtest.GoOutput(cmd); err != nil {
+		return "", fmt.Errorf("go install %s: %w", module, err)
 	}
 	path := filepath.Join(dir, binary)
 	if _, err := os.Stat(path); err != nil {

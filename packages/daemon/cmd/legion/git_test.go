@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testgo"
 )
 
 // trailerLegion is a `legion` for a test's commands: a two-line script that runs this test binary
@@ -422,8 +423,8 @@ func goGitProgram(t *testing.T, source string) string {
 	out := filepath.Join(t.TempDir(), "git")
 	build := exec.Command(goTool, "build", "-o", out, ".")
 	build.Dir = src
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build a compiled git: %v: %s", err, output)
+	if _, err := testgo.Output(build); err != nil {
+		t.Fatalf("build a compiled git: %v", err)
 	}
 	return out
 }

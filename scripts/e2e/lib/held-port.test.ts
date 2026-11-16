@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
+import { goOutput } from "@legion/test-fixtures/go-command";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -43,14 +44,7 @@ const skip = !onLinux || withoutGo;
 
 beforeAll(async () => {
   if (skip) return;
-  const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {
-    cwd: envoy,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (build.exitCode !== 0) {
-    throw new Error(`build envoy-listener: ${build.stdout.toString()}${build.stderr.toString()}`);
-  }
+  await goOutput(["build", "-o", listener, "./cmd/listener"], { cwd: envoy });
   // A NATS address that accepts and never answers: the listener serves before it connects, so its
   // /healthz answers "starting" while its connect waits out its attempts (about a minute).
   const silent = createServer((client) => {

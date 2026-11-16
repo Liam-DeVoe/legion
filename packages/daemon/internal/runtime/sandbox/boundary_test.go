@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testgo"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -643,8 +644,8 @@ func (rig *initRig) plantHooks(dir string, hooks ...string) {
 // from the next pod is the fresh disk's.
 func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *testing.T) {
 	legion := filepath.Join(t.TempDir(), "legion")
-	if output, err := exec.Command("go", "build", "-o", legion, "github.com/sjawhar/legion/daemon/cmd/legion").CombinedOutput(); err != nil {
-		t.Fatalf("build the Go legion: %v\n%s", err, output)
+	if _, err := testgo.Output(exec.Command("go", "build", "-o", legion, "github.com/sjawhar/legion/daemon/cmd/legion")); err != nil {
+		t.Fatalf("build the Go legion: %v", err)
 	}
 	testbin.RequireJJFilters(t)
 

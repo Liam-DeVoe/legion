@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
 // TestBuildSignerSelectsMode covers the Signer abstraction's mode selection: file mode when
@@ -387,7 +388,7 @@ func TestRegisterExecWithoutHelperWarnsAndStillExecs(t *testing.T) {
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+filepath.Join(shortTempDir(t), "absent.sock"))
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := cmdtest.GoOutput(cmd)
 	if err != nil || strings.TrimSpace(string(out)) != "ran" {
 		t.Fatalf("the command must still run: %q %v", out, err)
 	}

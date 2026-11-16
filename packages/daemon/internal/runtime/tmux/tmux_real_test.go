@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testgo"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -86,8 +87,8 @@ func standins(t *testing.T) (legion, omp string) {
 			return
 		}
 		for name, source := range map[string]string{"legion": "github.com/sjawhar/legion/daemon/cmd/legion", "omp": "testdata/omp-standin.go"} {
-			if out, err := exec.Command("go", "build", "-o", filepath.Join(standinDir, name), source).CombinedOutput(); err != nil {
-				standinErr = fmt.Errorf("build %s: %v\n%s", source, err, out)
+			if _, err := testgo.Output(exec.Command("go", "build", "-o", filepath.Join(standinDir, name), source)); err != nil {
+				standinErr = fmt.Errorf("build %s: %w", source, err)
 				return
 			}
 		}

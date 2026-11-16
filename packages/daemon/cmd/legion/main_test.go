@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
+	"github.com/sjawhar/legion/daemon/internal/testgo"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -547,8 +548,8 @@ func TestVersionPrintsTheReleaseTheLinkerSets(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	binary := filepath.Join(t.TempDir(), "legion")
 	build := exec.Command("go", "build", "-ldflags", "-X main.revision="+commit+" -X main.release=v9.9.9", "-o", binary, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
+	if _, err := testgo.Output(build); err != nil {
+		t.Fatalf("go build: %v", err)
 	}
 	out, err := exec.Command(binary, "version").Output()
 	if err != nil {

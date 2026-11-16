@@ -153,10 +153,11 @@ func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 }
 
 // A build whose go stalls, as a module download that never ends does, is named in the test's
-// output when the test times out: runBuild hands go's standard error to the test binary's as go
-// writes it, where a buffer read once go returns is lost with the timeout's panic. The stand-in go
-// writes the line a module download starts with, then waits until the test binary that started it
-// has exited, so it outlives that binary by a tenth of a second at most.
+// output when the test times out: GoOutput, which runBuild and every go command a test of this
+// module starts go through, hands go's standard error to the test binary's as go writes it, where
+// a buffer read once go returns is lost with the timeout's panic. The stand-in go writes the line
+// a module download starts with, then waits until the test binary that started it has exited, so
+// it outlives that binary by a tenth of a second at most.
 func TestAStalledBuildShowsGoStandardErrorWhenTheTestTimesOut(t *testing.T) {
 	if os.Getenv(stalledGoEnv) != "" {
 		t.Skip("the child runs TestTheStalledGoBuild, not this test")
@@ -202,4 +203,31 @@ func TestTheStalledGoBuild(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	BuildCommand(t, Command{Name: "stalled"})
 	t.Fatal("the stand-in go returned; it waits until this binary has exited")
+}
+
+// GoOutput returns go's standard output alone, hands its standard error to a writer the caller set
+// as well, and fails with the exit status and both streams.
+func TestGoOutputReturnsStandardOutputAndFailsWithBothStreams(t *testing.T) {
+	dir := t.TempDir()
+	stand := "#!/bin/sh\necho to-stdout\necho to-stderr >&2\nexit 3\n"
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(stand), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(dir, "go"), "version")
+	var callers strings.Builder
+	cmd.Stderr = &callers
+	stdout, err := GoOutput(cmd)
+	if got := string(stdout); got != "to-stdout\n" {
+		t.Errorf("standard output = %q, want only what go wrote there", got)
+	}
+	if got := callers.String(); got != "to-stderr\n" {
+		t.Errorf("the caller's standard error got %q, want what go wrote there", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "exit status 3\n") ||
+		!strings.Contains(err.Error(), "to-stdout\n") || !strings.Contains(err.Error(), "to-stderr\n") {
+		t.Errorf("the error is %v, want the exit status and both streams", err)
+	}
+	if _, err := GoOutput(&exec.Cmd{Path: cmd.Path, Stdout: io.Discard}); err == nil {
+		t.Error("GoOutput ran a command whose Stdout was set; want it refused")
+	}
 }

@@ -1085,6 +1085,7 @@ jobs:
               - '!packages/daemon/internal/stream/**/*_test.go'
               - '!packages/daemon/internal/supervise/**/*_test.go'
               - '!packages/daemon/internal/testbin/**/*_test.go'
+              - '!packages/daemon/internal/testgo/**/*_test.go'
               - '!packages/daemon/internal/testnats/**/*_test.go'
               - '!packages/daemon/internal/testpg/**/*_test.go'
               - '!packages/daemon/internal/testtmp/**/*_test.go'
