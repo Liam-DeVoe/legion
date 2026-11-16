@@ -327,6 +327,9 @@ type ProjectAccess struct {
 	// releases the Legion Slack bot token to a private project's credentials for these channels
 	// alone.
 	SlackChannels []string `json:"slack_channels"`
+	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
+	// rule admits each of them once they sign in.
+	NotSignedIn []string `json:"not_signed_in"`
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the
@@ -335,6 +338,9 @@ type AccessGroup struct {
 	Name    string   `json:"name"`
 	Owner   string   `json:"owner"`
 	Members []string `json:"members"`
+	// NotSignedIn are the members nobody has signed in as yet, sorted and never null. A group
+	// admits only its full members, so each of them is admitted once they sign in as one.
+	NotSignedIn []string `json:"not_signed_in"`
 }
 
 // AccessAnswer is the membership answer the secrets broker reads (GET

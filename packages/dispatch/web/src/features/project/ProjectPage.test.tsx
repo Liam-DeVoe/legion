@@ -314,11 +314,12 @@ test("the Access tab, at /access, shows the project's owner and the people and g
     owner: "alice",
     people: ["carol@example.com"],
     project: "CORE",
+    not_signed_in: [],
     slack_channels: [],
     visibility: "public",
   });
   const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([
-    { members: [], name: "crew", owner: "alice" },
+    { members: [], name: "crew", not_signed_in: [], owner: "alice" },
   ]);
   const page = renderPage("/projects/CORE/issues");
   try {

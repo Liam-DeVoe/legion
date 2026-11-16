@@ -118,10 +118,14 @@ func ReadProject(ctx context.Context, q Querier, key string) (model.ProjectAcces
 		select p.key, coalesce(p.owner, ''), p.visibility,
 			array(select principal from project_access where project_key = p.key and principal_kind = 'person' order by principal collate "C"),
 			array(select principal from project_access where project_key = p.key and principal_kind = 'group' order by principal collate "C"),
-			p.slack_channels
+			p.slack_channels,
+			array(select listed.principal from project_access listed
+				where listed.project_key = p.key and listed.principal_kind = 'person'
+					and not exists (select 1 from people where email = listed.principal)
+				order by listed.principal collate "C")
 		from projects p
 		where p.key = $1
-	`, key).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups, &access.SlackChannels)
+	`, key).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups, &access.SlackChannels, &access.NotSignedIn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -323,14 +327,21 @@ func projectChangeEvent(access model.ProjectAccess, change, principal string, by
 	}
 }
 
+// groupMembersSQL selects group g's members and the members nobody has signed in as yet, each
+// sorted.
+const groupMembersSQL = `array(select person from access_group_members where group_name = g.name order by person collate "C"),
+			array(select member.person from access_group_members member
+				where member.group_name = g.name and not exists (select 1 from people where email = member.person)
+				order by member.person collate "C")`
+
 // ReadGroup answers one group, ErrGroupNotFound when no row holds its name.
 func ReadGroup(ctx context.Context, q Querier, name string) (model.AccessGroup, error) {
 	var group model.AccessGroup
 	err := q.QueryRow(ctx, `
-		select g.name, g.owner, array(select person from access_group_members where group_name = g.name order by person collate "C")
+		select g.name, g.owner, `+groupMembersSQL+`
 		from access_groups g
 		where g.name = $1
-	`, name).Scan(&group.Name, &group.Owner, &group.Members)
+	`, name).Scan(&group.Name, &group.Owner, &group.Members, &group.NotSignedIn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.AccessGroup{}, fmt.Errorf("%w: %s", ErrGroupNotFound, name)
 	}
@@ -343,7 +354,7 @@ func ReadGroup(ctx context.Context, q Querier, name string) (model.AccessGroup, 
 // ListGroups answers every group, by name, and the empty list for none.
 func ListGroups(ctx context.Context, q Querier) ([]model.AccessGroup, error) {
 	rows, err := q.Query(ctx, `
-		select g.name, g.owner, array(select person from access_group_members where group_name = g.name order by person collate "C")
+		select g.name, g.owner, `+groupMembersSQL+`
 		from access_groups g
 		order by g.name collate "C"
 	`)
@@ -352,7 +363,7 @@ func ListGroups(ctx context.Context, q Querier) ([]model.AccessGroup, error) {
 	}
 	groups, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.AccessGroup, error) {
 		var group model.AccessGroup
-		err := row.Scan(&group.Name, &group.Owner, &group.Members)
+		err := row.Scan(&group.Name, &group.Owner, &group.Members, &group.NotSignedIn)
 		return group, err
 	})
 	if err != nil {

@@ -16,6 +16,7 @@ function access(overrides: Partial<ProjectAccess> = {}): ProjectAccess {
   return {
     groups: ["crew"],
     owner: "alice",
+    not_signed_in: [],
     people: ["carol@example.com"],
     project: "CORE",
     slack_channels: [],
@@ -24,8 +25,18 @@ function access(overrides: Partial<ProjectAccess> = {}): ProjectAccess {
   };
 }
 
-const crew: AccessGroup = { members: ["carol@example.com"], name: "crew", owner: "alice" };
-const ops: AccessGroup = { members: ["dave@example.com"], name: "ops", owner: "bob" };
+const crew: AccessGroup = {
+  members: ["carol@example.com"],
+  name: "crew",
+  not_signed_in: [],
+  owner: "alice",
+};
+const ops: AccessGroup = {
+  members: ["dave@example.com"],
+  name: "ops",
+  not_signed_in: [],
+  owner: "bob",
+};
 
 const notOwner = "Only alice, the project's owner, changes who may see it.";
 
@@ -380,5 +391,24 @@ test("a refused Slack channel shows its reason beside the field, and the draft s
   } finally {
     panel.restore();
     patch.mockRestore();
+  }
+});
+
+// A person the list names whom nobody has signed in as yet is shown so: the rule admits them once
+// they sign in, and until then the owner should know the name has not been used.
+test("a person nobody has signed in as yet is shown as not signed in yet", async () => {
+  const panel = renderPanel({
+    answer: access({
+      not_signed_in: ["newcomer@example.com"],
+      people: ["carol@example.com", "newcomer@example.com"],
+    }),
+  });
+  try {
+    const people = await screen.findByRole("list", { name: "People" });
+    const rows = within(people).getAllByRole("listitem");
+    expect(rows[1]).toHaveTextContent("newcomer@example.comnot signed in yet");
+    expect(rows[0]).not.toHaveTextContent("not signed in yet");
+  } finally {
+    panel.restore();
   }
 });

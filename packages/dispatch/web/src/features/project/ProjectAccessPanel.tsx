@@ -255,6 +255,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
 
   const { owner } = access.data;
   const people = access.data.people ?? [];
+  const notSignedIn = new Set(access.data.not_signed_in ?? []);
   const listedGroups = access.data.groups ?? [];
   const channelsText = (access.data.slack_channels ?? []).join(" ");
   const refusal =
@@ -437,7 +438,12 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
           <ul aria-label="People" className={listClass}>
             {people.map((email) => (
               <li className={rowClass} key={email}>
-                <span className={`min-w-0 break-all text-sm ${textPrimaryOnSurface}`}>{email}</span>
+                <span className={`min-w-0 break-all text-sm ${textPrimaryOnSurface}`}>
+                  {email}
+                  {notSignedIn.has(email) ? (
+                    <span className={`ml-2 ${textSecondaryOnCanvas}`}>not signed in yet</span>
+                  ) : null}
+                </span>
                 <RefusableButton
                   busy={
                     pendingOf((change) => change.kind === "remove-person" && change.email === email)

@@ -3130,6 +3130,7 @@ export interface components {
     AccessGroup: {
       members: string[] | null;
       name: string;
+      not_signed_in: string[] | null;
       owner: string;
     };
     AccessGroupInput: {
@@ -5821,6 +5822,7 @@ export interface components {
     };
     ProjectAccess: {
       groups: string[] | null;
+      not_signed_in: string[] | null;
       owner: string;
       people: string[] | null;
       project: string;

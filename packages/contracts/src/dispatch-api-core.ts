@@ -382,6 +382,8 @@ export const ProjectAccessChangedEventPayloadSchema = z
     /** The Slack channel ids the project's credentials may post to, at most 16, sorted, and []
      *  for none. */
     slack_channels: z.array(z.string()),
+    /** The people of `people` nobody has signed in as yet, sorted, and [] for none. */
+    not_signed_in: z.array(z.string()),
     change: z.enum([
       "owner",
       "visibility",

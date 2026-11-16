@@ -12687,6 +12687,15 @@
           "name": {
             "type": "string"
           },
+          "not_signed_in": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "owner": {
             "type": "string"
           }
@@ -12694,7 +12703,8 @@
         "required": [
           "name",
           "owner",
-          "members"
+          "members",
+          "not_signed_in"
         ],
         "type": "object"
       },
@@ -24630,6 +24640,15 @@
               "null"
             ]
           },
+          "not_signed_in": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "owner": {
             "type": "string"
           },
@@ -24664,7 +24683,8 @@
           "visibility",
           "people",
           "groups",
-          "slack_channels"
+          "slack_channels",
+          "not_signed_in"
         ],
         "type": "object"
       },

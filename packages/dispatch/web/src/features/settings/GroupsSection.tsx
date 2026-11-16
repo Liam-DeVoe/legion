@@ -267,6 +267,7 @@ function GroupRow({
   const queryClient = useQueryClient();
   const groupsKey = accessGroupsQuery().queryKey;
   const members = group.members ?? [];
+  const notSignedIn = new Set(group.not_signed_in ?? []);
   const [draft, setDraft] = useState<string | null>(null);
   const refusal =
     viewer === undefined
@@ -327,7 +328,9 @@ function GroupRow({
           {members.length === 0 ? (
             <span className={textMutedOnSurface}>No members</span>
           ) : (
-            members.join(", ")
+            members
+              .map((member) => (notSignedIn.has(member) ? `${member} (not signed in yet)` : member))
+              .join(", ")
           )}
         </td>
         <td className="px-4 py-3">

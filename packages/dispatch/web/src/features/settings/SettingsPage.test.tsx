@@ -242,7 +242,7 @@ test("a grant with no expiry says it ends when its session ends", async () => {
 test("lists every group under Groups, right after Projects", async () => {
   const unrelated = stubUnrelatedQueries();
   unrelated.listAccessGroups.mockResolvedValue([
-    { members: ["carol@example.com"], name: "crew", owner: "alice" },
+    { members: ["carol@example.com"], name: "crew", not_signed_in: [], owner: "alice" },
   ]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
 

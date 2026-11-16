@@ -12,9 +12,15 @@ import { GroupsSection } from "./GroupsSection";
 const crew: AccessGroup = {
   members: ["carol@example.com", "dave@example.com"],
   name: "crew",
+  not_signed_in: [],
   owner: "alice",
 };
-const ops: AccessGroup = { members: ["erin@example.com"], name: "ops", owner: "bob" };
+const ops: AccessGroup = {
+  members: ["erin@example.com"],
+  name: "ops",
+  not_signed_in: [],
+  owner: "bob",
+};
 
 /** Settings → Groups signed in as `login`, through the identity the shell already read. The group
  *  list answers what the writes left, as Dispatch does: a make or a write puts its group in, a
@@ -46,6 +52,7 @@ function renderSection({
     putAccessGroup: spyOn(api, "putAccessGroup").mockImplementation(async (name, input) => {
       const written: AccessGroup = {
         members: [...(input.members ?? [])].sort(),
+        not_signed_in: [],
         name,
         owner: stored.find((group) => group.name === name)?.owner ?? login,
       };
