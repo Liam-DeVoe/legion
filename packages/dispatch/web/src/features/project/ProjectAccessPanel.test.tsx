@@ -49,16 +49,23 @@ function renderPanel({
   answer = access(),
   groups = [crew, ops],
   login = "alice",
+  memberKind,
 }: {
   answer?: ProjectAccess;
   groups?: AccessGroup[];
   login?: string;
+  memberKind?: "restricted";
 } = {}) {
   let stored = answer;
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
-  queryClient.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login,
+    ...(memberKind === undefined ? {} : { member_kind: memberKind }),
+  });
   const spies = {
     getProjectAccess: spyOn(api, "getProjectAccess").mockImplementation(async () => stored),
     listAccessGroups: spyOn(api, "listAccessGroups").mockResolvedValue(groups),
@@ -87,6 +94,30 @@ function renderPanel({
     },
   };
 }
+
+// The group list is the whole deployment's, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED): their Access tab never asks for it. The groups it would offer are the
+// owner's to add, and an owner is a full member, so a restricted member loses nothing. A full
+// member who is not the owner reads the list as always.
+test("a restricted member's Access tab never reads the deployment's groups", async () => {
+  const restricted = renderPanel({ login: "bob@outside.example", memberKind: "restricted" });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    await settle();
+    expect(restricted.listAccessGroups).not.toHaveBeenCalled();
+    expect(screen.queryByText("Couldn't load the groups.")).not.toBeInTheDocument();
+  } finally {
+    restricted.restore();
+  }
+
+  const full = renderPanel({ login: "carol@example.com" });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    await waitFor(() => expect(full.listAccessGroups).toHaveBeenCalled());
+  } finally {
+    full.restore();
+  }
+});
 
 /** What a list names, one entry per row: each row's first child is its name, and its Remove
  *  button repeats the name for a screen reader only. */
