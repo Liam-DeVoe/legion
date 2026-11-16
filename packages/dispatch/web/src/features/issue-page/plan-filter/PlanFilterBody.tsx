@@ -1,6 +1,7 @@
 import { useQueries } from "@tanstack/react-query";
 import {
   type ComponentProps,
+  memo,
   type ReactNode,
   useCallback,
   useEffect,
@@ -16,8 +17,8 @@ import { artifactBlocksQuery } from "../../../api/queries";
 import {
   focusVisibleRing,
   pageHairBorder,
-  pageInkBg,
   pageInkBorder,
+  pageInkFill,
   pageInkText,
   pageLineBorder,
   pageMutedText,
@@ -43,7 +44,6 @@ import {
   type PlanChartRow,
   type PlanCycle,
   type PlanEntry,
-  type PlanKnot,
   planChart,
   planOrder,
 } from "./plan-order";
@@ -71,13 +71,13 @@ import {
  * rows in that order. So under a words filter a drawn bar starts where it does on the whole
  * plan and names, after "needs", every task it needs that the plan holds, drawn or not, and a
  * curve joins two drawn bars alone (dispatch://INFRA-3938 R2 and R4, decision 3 of its plan).
- * Ordered from the view's tasks alone, a task the filter left stood at 0 and needed nothing.
+ * Ordered from the view's tasks alone, a task the filter left would stand at 0 and need nothing.
  *
  * The node the address names takes the focus once per address for the whole view, which is
  * held here rather than in the chart or the tree, since each is drawn anew at every press of
  * the switch: a press on "Chart" or "Steps" is the reader taking over, and leaves the focus on
  * the button pressed (dispatch://INFRA-3938 R6 and R7; dispatch://INFRA-1196 R11). Held by the
- * chart, the address took the focus back from "Chart" each time the chart was drawn again.
+ * chart, the address would take the focus back from "Chart" each time the chart is drawn again.
  *
  * ## What today's reads give, and what waits
  *
@@ -131,10 +131,12 @@ export function PlanFilterBody({
   });
   const entries = useMemo(() => {
     const places = new Map<string, number>();
+    let place = 0;
     documentIds.forEach((id, rank) => {
-      written[rank]?.forEach((block, index) => {
-        places.set(`${id} ${block}`, rank * 1_000_000 + index);
-      });
+      for (const block of written[rank] ?? []) {
+        places.set(`${id} ${block}`, place);
+        place += 1;
+      }
     });
     const placeOf = (node: TreeNode): number => {
       const held = documentOfNode(node.id, artifacts);
@@ -192,7 +194,7 @@ export function PlanFilterBody({
   const view = (pressed: boolean): string =>
     `rounded-full border px-3 py-0.5 text-sm leading-5 font-semibold ${focusVisibleRing} ${
       pressed
-        ? `${pageInkBg} ${pageInkBorder} text-page-paper`
+        ? `${pageInkFill} ${pageInkBorder}`
         : `${pageHairBorder} ${pagePaperBg} ${pageMutedText}`
     }`;
   const empty = root.children.length === 0;
@@ -240,7 +242,7 @@ export function PlanFilterBody({
       {steps || empty ? (
         <>
           {cycles.map((cycle) => (
-            <CycleLine cycle={cycle} key={cycle.tasks.map((one) => one.id).join(" ")} />
+            <CycleLine cycle={cycle} key={cycleIds(cycle.tasks)} />
           ))}
           {/* The tree takes the address's node only while the view has not: drawn after a
               press of the switch, it leaves the focus on the button pressed (R6). */}
@@ -269,6 +271,11 @@ function blockIdsOf(
   return answers.map((answer) => answer.data?.map((block) => block.id));
 }
 
+/** The key of a cycle's place: its tasks' ids, one space between two. */
+function cycleIds(tasks: readonly TreeNode[]): string {
+  return tasks.map((one) => one.id).join(" ");
+}
+
 /** One cycle, as one line that lists the tasks in it, each a link that lands on that task
  *  (R26). The line is the prototype's own line above the plan (`.psum`, proto-v3.html :490).
  *
@@ -276,13 +283,7 @@ function blockIdsOf(
  *  none and `f` reaches them. Above the steps it is outside the tree, so its links take Tab as
  *  any link does: a task of a cycle is reached by the keyboard in both drawings
  *  (dispatch://INFRA-3938 R7, dispatch://INFRA-1196 R11). */
-function CycleLine({
-  cycle,
-  inChart = false,
-}: {
-  cycle: Pick<PlanCycle, "tasks">;
-  inChart?: boolean;
-}): ReactNode {
+function CycleLine({ cycle, inChart = false }: { cycle: PlanCycle; inChart?: boolean }): ReactNode {
   return (
     <p
       className={`mb-2.5 flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm leading-5 ${pageMutedText}`}
@@ -299,35 +300,36 @@ function CycleLine({
 /** The task's own first line, which is the one line the page draws for it wherever it draws
  *  one (R1, R26: "each bar labelled with the task's first line"), from the server's reading of
  *  its text where the page holds one (`nodeWords`). A task that holds no words is named by the
- *  page's word for its kind, and never by its id (R22). */
-function lineOf(task: TreeNode): string {
+ *  page's word for its kind, and never by its id (R22). The marks say whose words the line is,
+ *  and F's name of a `needs` chip pointing at the task: the author's, or the page's own for a
+ *  task that holds none, since both are then its kind's word. */
+function taskLine(task: TreeNode): {
+  readonly marks: Readonly<Record<string, string>>;
+  readonly words: string;
+} {
   const own = firstLineOf(nodeWords(task)).line;
-  return own === "" ? NODE_TYPE_NAMES[task.type] : own;
-}
-
-/** Whose words `lineOf` draws for `task`, and F's name of a `needs` chip pointing at it: the
- *  author's, or the page's own for a task that holds none, since both are then its kind's word. */
-function lineMarks(task: TreeNode): Readonly<Record<string, string>> {
-  return firstLineOf(nodeWords(task)).line === "" ? pageChrome : authorText;
+  return own === ""
+    ? { marks: pageChrome, words: NODE_TYPE_NAMES[task.type] }
+    : { marks: authorText, words: own };
 }
 
 /** One task of a cycle, by its own first line, as the link a reader follows to it: in no tab
  *  order of its own where the line is a row of the chart (`CycleLine`). */
 function TaskLink({ inChart, task }: { inChart: boolean; task: TreeNode }): ReactNode {
   const route = task.reference === undefined ? undefined : parseNodeReference(task.reference);
-  const words = lineOf(task);
+  const line = taskLine(task);
   return route === undefined ? (
-    <span className="min-w-0 break-words" {...lineMarks(task)}>
-      {words}
+    <span className="min-w-0 break-words" {...line.marks}>
+      {line.words}
     </span>
   ) : (
     <Link
       className={`dispatch-inline-link min-w-0 break-words underline decoration-page-hair underline-offset-[3px] ${pageMutedText}`}
       {...(inChart ? { tabIndex: -1 } : {})}
       to={buildReferencePath(route)}
-      {...lineMarks(task)}
+      {...line.marks}
     >
-      {words}
+      {line.words}
     </Link>
   );
 }
@@ -389,8 +391,9 @@ interface DrawnPlace {
  * A cycle's row takes the focus too, as a bar's does: a press on it, an address naming one of
  * its tasks, and the Tab stop where the chart draws no bar (decision 2 of dispatch://INFRA-3938's
  * plan). It stands for the task the address names, else its first, and from it the arrows go
- * to the step after it and the step before it. It took no focus before, so an address naming a
- * task of a cycle focused nothing and a plan whose every task is in a cycle had no Tab stop.
+ * to the step after it and the step before it. Were it to take no focus, an address naming a
+ * task of a cycle would focus nothing and a plan whose every task is in a cycle would have no
+ * Tab stop.
  *
  * The one Tab stop is the row the reader last stood on, else the first bar's, else the first
  * cycle's. Each row places itself on screen by the outline's one hook (`useRowOnScreen`), so the
@@ -433,13 +436,13 @@ function PlanChart({
         const task = row.tasks.find((one) => one.id === reveal) ?? row.tasks[0];
         return task === undefined || !row.tasks.some((one) => inView.has(one.id))
           ? []
-          : [{ key: row.tasks.map((one) => one.id).join(" "), row, task }];
+          : [{ key: cycleIds(row.tasks), row, task }];
       }),
     [inView, places, reveal]
   );
   const bars = useMemo(
-    () => rows.flatMap((place) => (place.row.kind === "bar" ? [place.row] : [])),
-    [rows]
+    () => places.flatMap((row) => (row.kind === "bar" && inView.has(row.task.id) ? [row] : [])),
+    [inView, places]
   );
   const [focused, setFocused] = useState<string | undefined>(undefined);
   // Where the chart's one tab stop rests, which outlives the focus leaving it (R9).
@@ -447,7 +450,6 @@ function PlanChart({
   const tabStop = rows.some((place) => place.key === stop)
     ? stop
     : (rows.find((place) => place.row.kind === "bar") ?? rows[0])?.key;
-  const unit = 100 / end;
 
   const takeFocus = useCallback(
     (key: string, task: TreeNode) => {
@@ -457,7 +459,7 @@ function PlanChart({
         ...(task.author === undefined ? {} : { author: task.author }),
         id: task.id,
         ...(task.reference === undefined ? {} : { reference: task.reference }),
-        title: lineOf(task),
+        title: taskLine(task).words,
         type: task.type,
       });
     },
@@ -509,21 +511,22 @@ function PlanChart({
     if (element === null) return;
     const measure = () => {
       const frame = element.getBoundingClientRect();
-      const box = (id: string) => {
-        const bar = element.querySelector(`[data-plan-bar="${CSS.escape(id)}"]`);
-        if (bar === null) return undefined;
-        const rect = bar.getBoundingClientRect();
-        return {
+      // Where each drawn bar stands, read once in a pass for every line that meets it.
+      const boxes = new Map<string, { left: number; right: number; y: number }>();
+      for (const drawn of element.querySelectorAll("[data-plan-bar]")) {
+        const rect = drawn.getBoundingClientRect();
+        boxes.set(drawn.getAttribute("data-plan-bar") ?? "", {
           left: rect.left - frame.left,
           right: rect.right - frame.left,
           y: rect.top - frame.top + rect.height / 2,
-        };
-      };
-      const paths = bars.flatMap((bar) =>
-        bar.needs.flatMap((needed) => {
-          const from = box(needed.id);
-          const to = box(bar.task.id);
-          if (from === undefined || to === undefined) return [];
+        });
+      }
+      const paths = bars.flatMap((bar) => {
+        const to = boxes.get(bar.task.id);
+        if (to === undefined) return [];
+        return bar.needs.flatMap((needed) => {
+          const from = boxes.get(needed.id);
+          if (from === undefined) return [];
           const bend = Math.max(18, (to.left - from.right) / 2);
           return [
             {
@@ -531,9 +534,25 @@ function PlanChart({
               of: [needed.id, bar.task.id],
             },
           ];
+        });
+      });
+      // A pass that finds every line where it was keeps the lines held, and draws nothing anew.
+      setLinks((previous) =>
+        previous.height === frame.height &&
+        previous.width === frame.width &&
+        previous.paths.length === paths.length &&
+        paths.every((path, index) => {
+          const held = previous.paths[index];
+          return (
+            held !== undefined &&
+            held.d === path.d &&
+            held.of.length === path.of.length &&
+            held.of.every((id, at) => id === path.of[at])
+          );
         })
+          ? previous
+          : { height: frame.height, paths, width: frame.width }
       );
-      setLinks({ height: frame.height, paths, width: frame.width });
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;
@@ -685,8 +704,9 @@ function PlanChart({
       {/* The head row's three columns are "Steps", the axis and "Serves" (dispatch://INFRA-3938
           R4): the axis is drawn in a cell of its own, as tall as the row, which holds it as a
           bar's track holds its own, so "Serves" stands over the statements' column and every
-          line of the axis inside the time's column. Drawn straight into the grid, the axis was
-          no cell of it: "Serves" took the second column and the lines spanned the chart. */}
+          line of the axis inside the time's column. Drawn straight into the grid, the axis would
+          be no cell of it: "Serves" would take the second column and the lines would span the
+          chart. */}
       <div
         className={`${CHART_COLUMNS} min-h-10 items-center max-[761px]:hidden`}
         data-plan-head=""
@@ -695,7 +715,7 @@ function PlanChart({
           {PLAN_WORDS.steps}
         </span>
         <div className="relative min-w-0 self-stretch">
-          <Units end={end} unit={unit} />
+          <Units end={end} />
         </div>
         <span className={`px-3.5 ${CAP}`} {...pageChrome}>
           {PLAN_WORDS.serves}
@@ -718,7 +738,6 @@ function PlanChart({
             <CycleRow
               cycle={place.row}
               focused={focused === place.key}
-              ids={place.key}
               key={place.key}
               onFocus={() => takeFocus(place.key, place.task)}
               tabStop={tabStop === place.key}
@@ -732,7 +751,6 @@ function PlanChart({
               key={place.key}
               onFocus={() => takeFocus(place.key, place.task)}
               tabStop={tabStop === place.key}
-              unit={unit}
             />
           )
         )}
@@ -778,15 +796,12 @@ function PlanChart({
 function CycleRow({
   cycle,
   focused,
-  ids,
   onFocus,
   tabStop,
   task,
 }: {
-  cycle: PlanKnot;
+  cycle: PlanCycle;
   focused: boolean;
-  /** Its tasks' ids, one space between two. */
-  ids: string;
   onFocus: () => void;
   tabStop: boolean;
   task: TreeNode;
@@ -802,7 +817,7 @@ function CycleRow({
       data-node-id={task.id}
       data-node-row=""
       data-node-type={task.type}
-      data-plan-cycle-row={ids}
+      data-plan-cycle-row={cycleIds(cycle.tasks)}
       onFocus={(event) => {
         if (event.target === event.currentTarget) onFocus();
       }}
@@ -820,7 +835,8 @@ function CycleRow({
  *  number: a unit is a size, and today's plan holds none (R26). The last line is drawn against
  *  the column's right edge, so every line stands inside the column that holds the axis
  *  (dispatch://INFRA-3938 R4): at `left: 100%` it would be one pixel past it. */
-function Units({ end, unit }: { end: number; unit: number }): ReactNode {
+const Units = memo(function Units({ end }: { end: number }): ReactNode {
+  const unit = 100 / end;
   return (
     <span
       aria-hidden="true"
@@ -837,7 +853,7 @@ function Units({ end, unit }: { end: number; unit: number }): ReactNode {
       ))}
     </span>
   );
-}
+});
 
 /**
  * One step of the chart (the prototype's `.prow`, and its `.pitem` card at 760 px and below):
@@ -873,7 +889,6 @@ function BarRow({
   focused,
   onFocus,
   tabStop,
-  unit,
 }: {
   bar: PlanBar;
   /** How many units the chart's axis spans. */
@@ -881,10 +896,11 @@ function BarRow({
   focused: boolean;
   onFocus: () => void;
   tabStop: boolean;
-  /** How wide one unit of the chart is, as a percentage of its column. */
-  unit: number;
 }): ReactNode {
   const task = bar.task;
+  const line = taskLine(task);
+  // How wide one unit of the chart is, as a percentage of its column.
+  const unit = 100 / end;
   const ref = useRef<HTMLDivElement | null>(null);
   const press = useRowOnScreen(ref, focused);
   const serves = [
@@ -918,9 +934,9 @@ function BarRow({
         <p
           className={`text-[15px] leading-[22px] break-words ${pageInkText} max-[761px]:-order-2 max-[761px]:min-w-0 max-[761px]:basis-full`}
           data-node-words=""
-          {...lineMarks(task)}
+          {...line.marks}
         >
-          {lineOf(task)}
+          {line.words}
         </p>
         <p
           className={`mt-px flex min-w-0 flex-wrap gap-x-1.5 text-xs leading-[18px] ${pageQuietText} max-[761px]:contents`}
@@ -939,7 +955,7 @@ function BarRow({
                 return chip === undefined
                   ? []
                   : [
-                      <span data-plan-need={needed.id} key={needed.id} {...lineMarks(needed)}>
+                      <span data-plan-need={needed.id} key={needed.id} {...taskLine(needed).marks}>
                         {chipWords(chip.name)}
                       </span>,
                     ];
@@ -949,7 +965,7 @@ function BarRow({
         </p>
       </div>
       <div className="relative h-[54px] min-w-0 max-[761px]:-order-1 max-[761px]:my-[3px] max-[761px]:h-2.5 max-[761px]:basis-full max-[761px]:rounded-[5px] max-[761px]:bg-page-mark">
-        <Units end={end} unit={unit} />
+        <Units end={end} />
         <span
           aria-hidden="true"
           className="absolute top-4 block h-[22px] rounded-[5px] border-[1.5px] border-dashed border-page-step bg-page-step-tint max-[761px]:top-0 max-[761px]:h-full"

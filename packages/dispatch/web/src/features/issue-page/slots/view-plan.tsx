@@ -45,29 +45,25 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   // Plan draws no node but a task (dispatch://INFRA-3938 R1, decision 1 of its plan; root
   // dispatch://INFRA-1196 R26), so the address's node is kept in the view, and given the focus,
   // only where it is a task. `presetView` keeps a named node of any kind (`presets.ts`'s
-  // `filterView`): handed every node, `/plan?comment=<id>` drew the comment as a bar and
-  // `/plan#b-<statement>` the statement as a bar with its tasks under it, out of the chart. Now
-  // both draw every task and no other node, as `/plan` does.
+  // `filterView`): handed every node, `/plan?comment=<id>` would draw the comment as a bar and
+  // `/plan#b-<statement>` the statement as a bar with its tasks under it, out of the chart.
+  // Handed the node only where it is a task, both draw every task and no other node, as `/plan`
+  // does.
   const reveal = useMemo(() => (found?.at(-1)?.type === "plan_task" ? found : undefined), [found]);
   const named = useMemo(() => {
     const node = reveal?.at(-1);
     return new Set(node === undefined ? [] : [node.id]);
   }, [reveal]);
-  const view = useMemo(
-    () => presetView(root, "plan", address.filter, named),
-    [address.filter, named, root]
-  );
   // The whole plan's tasks, with no words filter on: the order and each bar's start are worked
   // out from every task of the plan, and the words filter chooses which of its places the view
   // draws (dispatch://INFRA-3938 R2 and R4, decision 3 of its plan). With no words filter on it
   // is the view's own.
-  const plan = useMemo(
-    () =>
-      address.filter === ""
-        ? view.root.children
-        : presetView(root, "plan", "", named).root.children,
-    [address.filter, named, root, view.root.children]
+  const whole = useMemo(() => presetView(root, "plan", "", named), [named, root]);
+  const view = useMemo(
+    () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
+    [address.filter, named, root, whole]
   );
+  const plan = whole.root.children;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
   const { toolbarSink } = useDocumentToolbars();

@@ -1,4 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
+import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   DECLARED_WORDS,
@@ -12,6 +13,7 @@ import { type PlanOrderSeed, seedPlanOrder, seedWholeIssue } from "./issue-layou
 import { PLAN_ORDER_TASKS, requirementBlockId } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import {
+  DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
   expectRowGroups,
@@ -59,9 +61,6 @@ import { assertPageFits } from "./unclipped";
  * for part P.
  */
 
-/** The width every row reads first, which `phase` opens the page at. */
-const WIDE = { height: 900, width: 1440 } as const;
-
 /** The phone every row reads: 390 px wide, and as tall as the iPhone 13's viewport. */
 const PHONE_K = { height: 664, width: 390 } as const;
 
@@ -79,7 +78,7 @@ const COLOURS = {
 
 /** The view's own address, and the address beside it. */
 function planPath(key: string, rest = ""): string {
-  return `/issues/${key}/plan${rest}`;
+  return `${presetPath(key, "plan")}${rest}`;
 }
 
 /** The slug of the issue's own spec, which is how its blocks are addressed. */
@@ -372,7 +371,7 @@ test.fixme("the Plan filter draws the tasks as ordered steps @phone", async ({ b
       .toEqual(bars.map(() => ["4px", COLOURS.step]));
     await page.setViewportSize({ height: 900, width: 761 });
     await expect(headRow, "the chart draws no head row at 761 px").toBeVisible();
-    await page.setViewportSize(WIDE);
+    await page.setViewportSize(DESKTOP);
 
     // The control switches to the ordered steps, which are the outline's own rows in the same
     // order, with the cycle's tasks as rows where the order puts the cycle.
@@ -442,7 +441,7 @@ test.fixme("the Plan filter draws the tasks as ordered steps @phone", async ({ b
 
     // The words filter chooses which places are drawn, and every place is the whole plan's: t1
     // alone, its bar where it stands on the whole plan, naming the task it needs (R2, R4).
-    await page.setViewportSize(WIDE);
+    await page.setViewportSize(DESKTOP);
     await gotoIssue(page, planPath(seeded.key, "?q=Task%20t1"));
     await expect
       .poll(
@@ -706,7 +705,7 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const addresses = new RegExp(`dispatch://|${seeded.key} \\S+( block)?$|-md\\b`, "u");
-    for (const size of [WIDE, PHONE_K]) {
+    for (const size of [DESKTOP, PHONE_K]) {
       const where = `Plan at ${size.width} px`;
       await page.setViewportSize(size);
       await gotoIssue(page, planPath(seeded.key));
@@ -851,7 +850,7 @@ test.fixme("the Plan view names a needed task by its words, with no mark of thei
       expect(words, "a need draws a mark of its source").toMatch(/^1\./);
       expect(words, "a need is not named by the words of the task it needs").toContain("Stand");
     };
-    for (const size of [WIDE, PHONE_K]) {
+    for (const size of [DESKTOP, PHONE_K]) {
       await page.setViewportSize(size);
       await gotoIssue(page, planPath(seeded.key));
       await expect(

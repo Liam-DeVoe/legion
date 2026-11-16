@@ -1,6 +1,7 @@
 import { parseNodeReference } from "../../refs/routes";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS } from "../page-words";
+import { blockNodeId } from "../tree-drafts";
 
 /**
  * The plan's tasks as ordered steps (dispatch://INFRA-1196 R26).
@@ -74,7 +75,7 @@ function neededId(task: TreeNode, chip: NodeChip): string | undefined {
   if (task.type !== "plan_task" || chip.label !== BLOCK_ATTRIBUTE_LABELS.needs) return undefined;
   const route = parseNodeReference(chip.ref);
   const block = route !== undefined && "block" in route ? route.block : undefined;
-  return block === undefined ? undefined : `${documentOf(task.id)}#b-${block.id}`;
+  return block === undefined ? undefined : blockNodeId(documentOf(task.id), block.id);
 }
 
 /** Puts `group` into `ready`, which is kept in the plan's own order: the next group taken is the
@@ -194,15 +195,8 @@ export interface PlanBar {
   readonly task: TreeNode;
 }
 
-/** One cycle on the chart: the tasks that need each other, as one line at the place the order
- *  gives them. */
-export interface PlanKnot {
-  readonly kind: "cycle";
-  readonly tasks: readonly TreeNode[];
-}
-
 /** One row of the chart, in the plan's order. */
-export type PlanChartRow = PlanBar | PlanKnot;
+export type PlanChartRow = PlanBar | PlanCycle;
 
 /** The chart of time, as `planChart` answers it. */
 export interface PlanChart {
@@ -235,7 +229,7 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
         ends.set(task.id, start + 1);
         tasks.set(task.id, task);
       }
-      return { kind: "cycle", tasks: entry.tasks };
+      return entry;
     }
     const needs = neededIds(entry.task).flatMap((id) => {
       const needed = tasks.get(id);
@@ -257,8 +251,8 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
  * dispatch://INFRA-1196, dispatch://INFRA-3938 R3 and R4): the needed task's first line, and the
  * page's word for its kind where that task holds no words. The steps' rows draw the same chip
  * through part G's `Chip`, so the switch changes the drawing alone (R6) and no edge is named
- * twice: the view gives the rows no chips renamed by the chart's line for the task, which was a
- * second naming of what F's view already names.
+ * twice: the view gives the rows no chips renamed by the chart's line for the task, which would
+ * be a second naming of what F's view already names.
  */
 export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
   return task.chips.find((chip) => neededId(task, chip) === needed.id);

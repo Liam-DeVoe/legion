@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 
 import { createIssue, createIssueArtifact, createProject } from "./api";
+import { specBlockRef } from "./issue-layout-seed-text";
 import { issuePage } from "./issue-page";
 
 /**
@@ -43,7 +44,6 @@ export interface ChartRow {
   /** The bar's left edge and its width, in px, or null for a cycle's line. */
   readonly bar: { readonly left: number; readonly width: number } | null;
   readonly start: number;
-  readonly text: string;
 }
 
 /** Every row of the Plan view's chart, in the order it is drawn. */
@@ -67,7 +67,6 @@ export function planChartRows(page: Page): Promise<ChartRow[]> {
         serves: [...row.querySelectorAll("[data-plan-serve]")].map(text),
         size: text(row.querySelector("[data-plan-no-size]")),
         start: Number(row.getAttribute("data-plan-start") ?? "-1"),
-        text: text(row),
       };
     });
   });
@@ -239,7 +238,7 @@ const MARKS_PROJECT = "MARKS";
 /** The words `seedPlanMarks` gives its two tasks and its two statements: each starts as the
  *  real plan's and spec's do, bold and numbered, the task's number escaped as markdown writes a
  *  number that starts a line (`1\.`). */
-export const PLAN_MARKS_WORDS = {
+const PLAN_MARKS_WORDS = {
   first: "**1\\. Stand the harness up.** The rows run on the real stack.",
   firstStatement: "**R1.** The page draws a need by its words.",
   second: "**2\\. Read the needs back.** Each need is drawn by the words of the task it names.",
@@ -267,7 +266,7 @@ export async function seedPlanMarks(): Promise<PlanMarksSeed> {
       `:::requirement{#r2}\n${PLAN_MARKS_WORDS.secondStatement}\n:::\n`,
     title: "The plan names a need by its words",
   });
-  const statement = (id: string) => `dispatch://${issue.key}/spec#b-${id}`;
+  const statement = (id: string) => specBlockRef(issue.key, id);
   const plan = await createIssueArtifact(issue.key, {
     content:
       "How the marks are read.\n\n" +
