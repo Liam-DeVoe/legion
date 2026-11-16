@@ -181,7 +181,11 @@ test("a stop ends the wait for the token and for the dial, and closes a connecti
   // The dial: pending until after the stop, then a connection the stop must close.
   const made = Promise.withResolvers<NatsConnection>()
   let closed = 0
-  const late = { close: async () => void (closed += 1) } as unknown as NatsConnection
+  const late = {
+    close: async () => {
+      closed += 1
+    },
+  } as unknown as NatsConnection
   const stopping = new AbortController()
   const dialing = dialChannelNats(
     { natsUrls: ["nats://nats.test:4222"], natsCredential: { kind: "none" } },
