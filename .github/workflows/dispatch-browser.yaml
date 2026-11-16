@@ -55,8 +55,8 @@ name: Dispatch browser suite
 # (run 42868987140).
 #
 # That cost is now held to a budget by the run itself, at the merge job's step "Reading five,
-# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,656 s and
-# those of a pull-request lane 856 s, which are the committed ceiling of 2,700 s and 900 s less
+# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 3,156 s and
+# those of a pull-request lane 856 s, which are the committed ceiling of 3,200 s and 900 s less
 # that job's own worst case of 44 s over pull request #3513's runs of 2026-11-15 up to 17:44Z
 # (job 132733634671). The three readings above, each taken as the budget takes
 # it, which is the lane less its own merge job, are 2,025 s (43045412941, whose merge job took
@@ -72,7 +72,12 @@ name: Dispatch browser suite
 # real-stack row medians of 2,746 and 3,126 ms, while the day's thirteen green merge-queue runs
 # of the default branch up to 15:03Z cost 2,975 to 3,347 s, with a median of 3,126 s. Those two
 # runs were 0.72 and 0.78 of that median, so the suite is as cheap as it was and the ceiling is
-# what moved.
+# what moved. It became 3,200 s on 2026-11-17, when this pull request's full lanes at 61e5c402
+# and 1ba866a9 read 2,062 to 2,484 s at that step, the worst 6.5 per cent under 2,656 s. Read as
+# that step reads a lane, its merge job apart, the full lane's 3,156 s is 27 per cent above that
+# tree's worst reading (2,484 s), under one and a half times its median (2,231 s), and under the
+# median of the 27 green default-branch full lanes of 2026-11-16 (3,189 s), though 10 of those 27
+# read under it.
 # .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
 # carries the arithmetic and the runs each figure came from. Nothing else in this tree refused
 # a run that cost more than the one before it, which is how this suite went from about 25
@@ -1193,7 +1198,7 @@ jobs:
     # dispatch://INFRA-1109 read what it cost: in run 43045412941, the first green full lane at
     # this shape, `Initialize containers` took 21 s of this job's 128 s and `Stop containers`
     # 0 s, and the same two steps took 22 s and 3 s of the embedder job's 68 s - 46 s of a lane
-    # measured at 2,061 s and held to a ceiling of 2,700 s. A service container is a pull, a
+    # measured at 2,061 s and now held to a ceiling of 3,200 s. A service container is a pull, a
     # network, a start and then a wait on `--health-interval 10s`, which no first probe can
     # finish sooner than that interval.
     #
@@ -2195,11 +2200,11 @@ jobs:
       # API already answers them - so this reading costs no request and no second route.
       #
       # It is a reading that fails, as reading one does and readings two to four do not: above
-      # the lane's budget the step exits 1 and the job is red. The budgets, 2,656 s on the full lane and 856 s on the
-      # pull-request lane, are the committed ceiling of 2,700 s and 900 s less this job's own
-      # worst case of 44 s over pull request #3513's runs of 2026-11-15 up to 17:44Z,
-      # which a job reading inside its own run cannot see of itself: its `completed_at` is null
-      # while it runs. The script's `machine-time` branch carries that subtraction, the runs the
+      # the lane's budget the step exits 1 and the job is red. The budgets, 3,156 s on the full
+      # lane and 856 s on the pull-request lane, are the committed ceiling of 3,200 s and 900 s
+      # less this job's own worst case of 44 s over pull request #3513's runs of 2026-11-15 up to
+      # 17:44Z, which a job reading inside its own run cannot see of itself: its `completed_at`
+      # is null while it runs. The script's `machine-time` branch carries that subtraction, the runs the
       # measured 44 s of it came from, and why a jobs file it cannot read refuses rather than
       # passes.
       #

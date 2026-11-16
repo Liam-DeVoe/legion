@@ -1076,14 +1076,19 @@ export function ProofDocument({
   //
   // So the page admits every socket again except one whose admission arrived read-write, which is
   // already what the page wants. A socket whose admission has not arrived yet - just after the
-  // mount, or in the reconnect draw after a close - is admitted again too: the server decided that
-  // admission before the reopen, and can have decided it read-only on another process. A blocked
-  // admission has no socket and reads the text again. The room's close and the PATCH's answer
-  // race: the provider reconnects after a draw of up to two seconds, and a draw shorter than the
-  // wait for the answer opens a socket the reopened server has already admitted read-write before
-  // the page knows the issue is open. Readmitting that socket closed it for nothing, and a fourth
-  // socket opened (`e2e/close-withdraws-asks.e2e.ts`'s Reopen row, which counts three sockets,
-  // failed that way at random).
+  // mount, or in the reconnect draw after a close - is admitted again too, because the page cannot
+  // tell which side of the reopen the server decided that admission on: decided before it, on
+  // another process, it is read-only, and keeping it would leave the editor read-only. Decided
+  // after it, it may be read-write already, and readmitting it costs one more reconnect. That is
+  // the trade: the page is never left read-only on an open issue, and pays at most one socket for
+  // it. A blocked admission has no socket and reads the text again. The room's close and the
+  // PATCH's answer race: the provider reconnects after a draw of up to two seconds, and a draw
+  // shorter than the wait for the answer opens a socket the reopened server has already admitted
+  // read-write before the page knows the issue is open. Readmitting that socket closed it for
+  // nothing, and a fourth socket opened (`e2e/close-withdraws-asks.e2e.ts`'s Reopen row, which
+  // counts three sockets, failed that way at random). The window the trade leaves is narrower -
+  // the PATCH's answer landing between a socket's connect and its admission - and that row counts
+  // sockets exactly, so it is the row that would show it.
   useEffect(() => {
     setQuoteRefusal(undefined);
     editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));

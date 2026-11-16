@@ -121,13 +121,13 @@ export default defineConfig({
       // top level builds anything, which is how the whole `DISPATCH_TEXT_REFERENCES` table and
       // zod's schema modules were in the entry chunk of a page that reads neither
       // (dispatch://INFRA-1109, R13). Each is published by that package's own `exports`, which
-      // is what Bun, tsc and every other consumer read. Two keys are read by no shipped module
-      // of this bundle today - `dispatch-api` by nothing in the repository, and
+      // is what Bun, tsc and every other consumer read. Three keys are read by no shipped module
+      // of this bundle today - `dispatch-api` by nothing in the repository,
       // `dispatch-text-references` by three Bun tests, which resolve through `exports` and never
-      // see this config; `dispatch-tools` is read by one value import, `SEARCH_QUERY_MAX` in
-      // `features/priorities/priority-table-controls.tsx` - and the unread two are kept so
-      // that a value import of one resolves to its module rather than being rewritten into
-      // `index.ts` by the bare key below it.
+      // see this config, and `dispatch-tools` by a type import alone (`theme/classes.ts`, which
+      // the build erases) and by browser rows, which Playwright resolves through `exports` too -
+      // and the three are kept so that a value import of one resolves to its module rather than
+      // being rewritten into `index.ts` by the bare key below it.
       "@legion/contracts/actor-label": fileURLToPath(
         new URL("../../contracts/src/actor-label.ts", import.meta.url)
       ),

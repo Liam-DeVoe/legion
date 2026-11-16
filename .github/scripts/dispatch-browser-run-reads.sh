@@ -362,23 +362,45 @@ case "$mode" in
     # this issue delivers. What this issue delivers is read after the run, against the day's
     # base: R5's four fifths and R4's machine-seconds a row.
     #
-    #   full lane:         2,700 - 44 = 2,656 s
+    #   full lane:         3,200 - 44 = 3,156 s
     #   pull-request lane:   900 - 44 =   856 s
     #
-    # So this number answers a suite grown by half and never a slow afternoon. The full lane's
-    # bound was 2,040 s when this mode was written, from four runs of 2026-11-11 and 2026-11-12,
-    # 43045412941, 43074443876, 43079610268 and 43150379433, which cost 2,061, 1,974, 1,997 and
-    # 2,041 s with their merge jobs (2,025, 1,946, 1,964 and 2,003 s without); it became 2,400 s
-    # when the machines moved, not when this suite did - between run 43150379433 (2,003 s) and
-    # run 43192333526 (2,285 s), both dispatched on 2026-11-12, the binaries job, which runs no
-    # row, rose from 157 to 205 s - and 2,700 s when one slow pair of runs proved that an
-    # absolute figure near the measurement is a figure the fleet decides. On 2026-11-15 two runs
-    # of one tree cost 2,252
-    # and 2,450 s (43664675139, 43667557013), whose real-stack row medians were 2,746 and
-    # 3,126 ms: the lane's cost tracked the runner and not the rows. The default branch moved
-    # with it, as it always does - the thirteen green merge-queue runs of that day up to 15:03Z
-    # cost 2,975 to 3,347 s, with a median of 3,126 s (dispatch-browser.yaml's head) - which is
-    # why the ratio is what R5 and R4 read and this ceiling is not.
+    # The full lane's 3,156 s sits between the two limits such a ceiling has: its margin over
+    # this tree is wider than the spread of the default branch's own green lanes, and it is below
+    # a suite grown by half. Every figure below is a lane as this step reads it, its merge job
+    # apart, from the jobs API.
+    #
+    # - It is 27 per cent above this tree's worst full-lane reading, 2,484 s (run 43885980414,
+    #   at 61e5c402): 3,156 / 2,484 = 1.27. That margin is wider than the 14 per cent between
+    #   the cheapest and the dearest of the 27 green default-branch full lanes of 2026-11-16
+    #   (3,032 and 3,444 s), and wider than the 12 per cent between that day's median, 3,189 s,
+    #   and the median of the 23 green ones of 2026-11-11, 2,845 s.
+    # - It is below one and a half times this tree's median full-lane reading, 2,231 s (runs
+    #   43877804247, 43885980414 and 43897620046 read 2,062, 2,484 and 2,231 s), which is
+    #   3,347 s, so it refuses a suite grown by more than 41 per cent (3,156 / 2,231 = 1.41).
+    # - It is below the median of the 2026-11-16 default-branch runs, 3,189 s, so it refuses
+    #   that day's median run of the suite this issue replaced, but not its cheaper ones: 10 of
+    #   those 27 read 3,032 to 3,146 s, and every one of the 23 of 2026-11-11 read under it. So
+    #   this guard does not hold the saving. R5's four fifths of the same day's median, read
+    #   after the merge (check 52463e11 of dispatch://INFRA-1109/artifact/verification-md), does.
+    #
+    # The full lane's bound was 2,040 s when this mode was written, from four runs of 2026-11-11
+    # and 2026-11-12, 43045412941, 43074443876, 43079610268 and 43150379433, which cost 2,061,
+    # 1,974, 1,997 and 2,041 s with their merge jobs (2,025, 1,946, 1,964 and 2,003 s without);
+    # it became 2,400 s when the machines moved, not when this suite did - between run
+    # 43150379433 (2,003 s) and run 43192333526 (2,285 s), both dispatched on 2026-11-12, the
+    # binaries job, which runs no row, rose from 157 to 205 s - and 2,700 s when one slow pair of
+    # runs proved that an absolute figure near the measurement is a figure the fleet decides. On
+    # 2026-11-15 two runs of one tree cost 2,252 and 2,450 s (43664675139, 43667557013), whose
+    # real-stack row medians were 2,746 and 3,126 ms: the lane's cost tracked the runner and not
+    # the rows. The default branch moved with it, as it always does - the thirteen green
+    # merge-queue runs of that day up to 15:03Z cost 2,975 to 3,347 s, with a median of 3,126 s
+    # (dispatch-browser.yaml's head) - which is why the ratio is what R5 and R4 read and this
+    # ceiling is not. It became 3,200 s on 2026-11-17, when pull request #3513's full lanes at
+    # 61e5c402 and 1ba866a9 read 2,062 to 2,484 s at this step, the worst of them 6.5 per cent
+    # under 2,656 s, so a slow fleet or the rows the default branch adds in a day could have
+    # stopped the merge queue with no regression in it (review 5929818647 of pull request
+    # #3513).
     # The pull-request lane keeps 900 s, since the default branch runs no such lane and there
     # is no same-day figure to take a ratio against.
     # The 44 s is measured, not allowed for: it is the most the `dispatch-browser / merge` job
@@ -393,8 +415,8 @@ case "$mode" in
     # not cancelled is one whose seconds this figure then understates, and this budget is the
     # looser for it by exactly the difference.
     # Subtracting the maximum rather than the median is what keeps this reading stricter than
-    # the ceiling itself and never looser: a lane that passes here at 2,656 s and then spends a
-    # worst-case 44 s in this job lands on 2,700 exactly.
+    # the ceiling itself and never looser: a lane that passes here at 3,156 s and then spends a
+    # worst-case 44 s in this job lands on 3,200 exactly.
     #
     # This reading is what refuses the growth before the run ends; what the run is held to
     # afterwards, against the day's own base, is R5's and R4's.
@@ -411,7 +433,7 @@ case "$mode" in
     #   .github/scripts/dispatch-browser-run-reads.sh machine-time jobs.json full
     case "$lane" in
       full)
-        bound=2700
+        bound=3200
         ;;
       pull-request)
         bound=900

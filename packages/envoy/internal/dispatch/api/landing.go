@@ -75,15 +75,19 @@ var landingPages = []string{landingPageIssue, landingPageBoard, landingPageInbox
 // route it stands in for once it has drawn, and that read waits on the service under the client's
 // own window (envoy.defaultTimeout and agentsecrets.defaultTimeout, five seconds each) while it
 // holds the one chip that part draws and nothing else, which is how every page read the part
-// before the landing existed. A route read unknown costs nothing new either: it is what the
-// route's own read answers while the listener is silent. So the bound trades a late page against
-// a late chip, and it is short. Read in line with the database parts, a listener and a broker that
-// accept a connection and never answer held the landing for the broker's window, then the roster
-// fetch's (routeRosterTimeout, two seconds), then the listener's window again for the
-// subscribers. One second is below routeRosterTimeout, so the landing's roster read never waits a
-// roster fetch out. It is no shorter because the bound must be one a healthy service does not
-// meet: a part a healthy service misses is null on every landing, which buys back the read the
-// landing exists to save and writes a warning about a service that was answering.
+// before the landing existed. A route read unknown is what the route's own read answers for a
+// listener silent past routeRosterTimeout, two seconds. A listener that answers between one and
+// two seconds is the case the bound trades away: the landing seeds the route chips as unknown
+// where the route's own read would have shown the route, and the page shows them unknown until
+// those keys go stale (the client's 30,000 ms staleTime) and a later read of them answers. So the
+// bound trades a late page against a late or an unknown chip, and it is short. Read in line with
+// the database parts, a listener and a broker that accept a connection and never answer held the
+// landing for the broker's window, then the roster fetch's (routeRosterTimeout, two seconds),
+// then the listener's window again for the subscribers. One second is below routeRosterTimeout,
+// so the landing's roster read never waits a roster fetch out. It is no shorter because the bound
+// must be one a healthy service does not meet: a part a healthy service misses is null on every
+// landing, which buys back the read the landing exists to save and writes a warning about a
+// service that was answering.
 const landingServiceBound = time.Second
 
 // landingResponse is the body GET /api/v1/landing answers: the viewer, the shell every page

@@ -56,12 +56,11 @@ import type {
  *  and a 30,000 ms `staleTime` (`main.tsx`), and it is the "am I still signed in?" probe that
  *  `api/live-socket.ts` invalidates on a refused or closed socket, that
  *  `features/writes/write-store.ts` invalidates twice - one of them awaited inline in a write's
- *  401 path - and that `app.tsx` invalidates on a cross-tab sign-in change. Each of those used
- *  to cost one `GET /auth/whoami`; while this key's `queryFn` was the landing, each cost a whole
- *  landing instead - about twenty server-side reads and a re-seed of some twenty cache keys - to
- *  answer a question the viewer's own route answers in one. The landing is the read a cold page
- *  makes, which is what the route's own head calls it, so it is made where the client holds no
- *  viewer yet and nowhere else.
+ *  401 path - and that `app.tsx` invalidates on a cross-tab sign-in change. Each of those costs
+ *  one `GET /auth/whoami`. A landing in their place would be about twenty server-side reads and a
+ *  re-seed of some twenty cache keys to answer a question the viewer's own route answers in one.
+ *  The landing is the read a cold page makes, which is what the route's own head calls it, so it
+ *  is made where the client holds no viewer yet and nowhere else.
  *
  *  What makes a read cold is this key holding no viewer, which is exactly the state a page load
  *  starts in and the state a sign-out leaves behind: the sign-out's `resetQueries` on this key

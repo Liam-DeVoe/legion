@@ -254,11 +254,13 @@ export function preloadRouteChunk(pathname: string): void {
 // same reason: a reader is waiting on this download the moment the router renders the route, so
 // its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
 // on may be passed over, which is what every `prefetchChunk` call is: the preload above, the
-// Inbox peek's chunk after a page's first paint and the boot warm of the Markdown engine
-// (`features/shell/DeploymentResilience.tsx`). Left bare, as these once were, a route chunk that
-// failed while the entry's prefetch of another chunk was still out was read as that prefetch's
-// and reloaded nothing, leaving the reader in front of a page that could not draw
-// (dispatch://INFRA-1109); `lazy` itself is now refused here by the repository's `biome.json`.
+// Inbox peek's chunk after a page's first paint (`features/inbox/InboxHost.tsx`), the search
+// bar's after the same paint (`features/search/SearchPaletteHost.tsx`) and the boot warm of the
+// Markdown engine (`features/shell/DeploymentResilience.tsx`). Left bare, as these once were, a
+// route chunk that failed while the entry's prefetch of another chunk was still out was read as
+// that prefetch's and reloaded nothing, leaving the reader in front of a page that could not
+// draw (dispatch://INFRA-1109); `lazy` itself is now refused here by the repository's
+// `biome.json`.
 
 const PrioritiesPage = lazyChunk(() =>
   import("./features/priorities/PrioritiesPage").then((module) => ({

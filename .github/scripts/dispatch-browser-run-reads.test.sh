@@ -606,8 +606,8 @@ check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
 check "and waits not at all" "$(at_most "$seconds" 1)"
 
-# THE MACHINE-TIME CASES. The budgets are 2,656 s on the full lane and 856 s on the
-# pull-request lane, which are the committed ceiling of 2,700 s and 900 s less the merge job's
+# THE MACHINE-TIME CASES. The budgets are 3,156 s on the full lane and 856 s on the
+# pull-request lane, which are the committed ceiling of 3,200 s and 900 s less the merge job's
 # own worst case of 44 s (the script's own branch says what that figure is made of, and why
 # that ceiling is no reading of what this issue delivers). Each case below
 # drives the arithmetic to one side of a budget or the other: a budget nothing is ever refused
@@ -626,9 +626,9 @@ drive machine-time "$work/out.json" full
 check "the full lane passes under its budget" "$(is "$status" 0)"
 check "naming the seconds it summed and the budget they are held to" \
   "$(contains "$(notice_line)" \
-    'the full lane cost 1750 s over 5 concluded jobs, this merge job apart, against a budget of 2656 s')"
+    'the full lane cost 1750 s over 5 concluded jobs, this merge job apart, against a budget of 3156 s')"
 check "which it says is the committed ceiling less this job's own worst case" \
-  "$(contains "$(notice_line)" '2700 s less this job.s own worst case of 44 s')"
+  "$(contains "$(notice_line)" '3200 s less this job.s own worst case of 44 s')"
 check "and prints no ::error:: line" "$(is "$(errors)" 0)"
 # 1,750 s is binaries, both shards, alone and visual: a red leg cost its machine time like any
 # other and is in the sum, while the skipped job (-1 s), the merge job (still running) and the
@@ -636,7 +636,7 @@ check "and prints no ::error:: line" "$(is "$(errors)" 0)"
 
 echo "case: the same run on the pull-request lane is refused by the lower budget"
 # The lane decides the budget and nothing else does: the same jobs, read as the lane whose
-# bound is 900 s rather than 2,700, are refused. This is what holds the script to reading the
+# bound is 900 s rather than 3,200, are refused. This is what holds the script to reading the
 # lane it is given rather than one budget for every run.
 drive machine-time "$work/out.json" pull-request
 check "fails the step" "$(is "$status" 1)"
@@ -653,14 +653,14 @@ echo "case: each budget bites at its own second"
 # The one case that would catch a budget written one second out, or a `-ge` where the rule is
 # `-gt`: the bound itself passes and one second more does not, on each lane.
 fixture 0
-lane_jobs "dispatch-browser / shard (1)|success|2656"
+lane_jobs "dispatch-browser / shard (1)|success|3156"
 drive machine-time "$work/jobs.json" full
-check "the full lane passes at 2,656 s exactly" "$(is "$status" 0)"
-lane_jobs "dispatch-browser / shard (1)|success|2657"
+check "the full lane passes at 3,156 s exactly" "$(is "$status" 0)"
+lane_jobs "dispatch-browser / shard (1)|success|3157"
 drive machine-time "$work/jobs.json" full
-check "and is refused at 2,657" "$(is "$status" 1)"
+check "and is refused at 3,157" "$(is "$status" 1)"
 check "naming the second it was over by" \
-  "$(contains "$(error_line)" 'cost 2657 s of machine time over its 1 concluded jobs')"
+  "$(contains "$(error_line)" 'cost 3157 s of machine time over its 1 concluded jobs')"
 lane_jobs "dispatch-browser / shard (1)|success|856"
 drive machine-time "$work/jobs.json" pull-request
 check "the pull-request lane passes at 856 s exactly" "$(is "$status" 0)"
@@ -669,9 +669,9 @@ drive machine-time "$work/jobs.json" pull-request
 check "and is refused at 857" "$(is "$status" 1)"
 
 echo "case: this merge job's own seconds are not in the sum"
-# The reason the budget is R5's bound less this job's maximum rather than R5's bound itself:
-# the job doing the reading cannot see its own duration, so it must not be in the sum even
-# where the API has one for it - a merge job of an earlier attempt, carried forward with a
+# The reason the budget is the committed ceiling less this job's maximum rather than the ceiling
+# itself: the job doing the reading cannot see its own duration, so it must not be in the sum
+# even where the API has one for it - a merge job of an earlier attempt, carried forward with a
 # `completed_at` of its own, would otherwise be counted in the lane it is reporting on.
 fixture 0
 lane_jobs "dispatch-browser / shard (1)|success|10" "dispatch-browser / merge|success|5000"
@@ -757,7 +757,7 @@ check "the next after it" \
   "$(contains "$(summary_text)" '^| dispatch-browser / binaries | 150 |$')"
 check "and the sum against the budget, with the subtraction that made it" \
   "$(contains "$(summary_text)" \
-    "cost 750 s against a budget of 2656 s, which is the committed ceiling of 2700 s less this job's own worst case of 44 s")"
+    "cost 750 s against a budget of 3156 s, which is the committed ceiling of 3200 s less this job's own worst case of 44 s")"
 
 echo "case: a machine-time call that names no lane, or too much, is a usage error"
 fixture 0

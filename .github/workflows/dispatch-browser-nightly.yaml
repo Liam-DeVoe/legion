@@ -14,33 +14,38 @@ name: Dispatch browser nightly
 # of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
-# blob and the failed legs' traces are artifacts of that run; GitHub mails the default branch's
-# last committer that a scheduled workflow failed. Nothing else is told: this call passes no
-# `ci-ok-changes`, so the merge job's report step does not run and the run posts no check, files
-# no issue and sends no message. dispatch://INFRA-1066's R22 owns a reader for nightly results,
-# and this workflow deliberately builds no second one: a reader written here is the thing R22
-# would then have to replace.
+# blob and the failed legs' traces are artifacts of that run. GitHub notifies one person that a
+# scheduled run failed, as that person's notification settings allow: the user who created the
+# workflow, or a different user who changed its `schedule` cron since, or the user who
+# re-enabled it after it was disabled (GitHub Docs, "Notifications for workflow runs"). Nothing
+# else is told: this call passes no `ci-ok-changes`, so the merge job's report step does not run
+# and the run posts no check, files no issue and sends no message. dispatch://INFRA-1066's R22
+# owns a reader for nightly results, and this workflow deliberately builds no second one: a
+# reader written here is the thing R22 would then have to replace.
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states
-# the same of its own nightly). A change to either is proven before main by ci.yaml's
-# dispatch-browser job: the pull-request lane on the pull request that makes it, and the full
-# lane in the merge group that lands it. It runs here only once it is on main.
+# the same of its own nightly). A change to the workflow it calls is proven before main by
+# ci.yaml's dispatch-browser job: the pull-request lane on the pull request that makes it, and
+# the full lane in the merge group that lands it. No ci.yaml job calls this file, so a change to
+# it is proven by `gh workflow run dispatch-browser-nightly.yaml --ref <branch>` (below). It runs
+# on its schedule only once it is on main.
 
 on:
   schedule:
-    # Nightly, hours from e2e.yaml's 04:41, the repository's other schedule: a full lane takes
+    # Nightly, hours from e2e.yaml's daily 04:41 and codeql.yaml's weekly 04:17: a full lane takes
     # two shard machines, an alone machine, a two-process machine, an embedder machine and the
     # visual review's at once, behind the machine that builds what they all run, and two
     # nightlies starting together would queue behind each other for the account's runners.
     - cron: "17 2 * * *"
     # The re-record job below, at an hour of its own and away from the full lane's: the two
-    # share this workflow's concurrency group, so a second cron at 02:17 would queue behind a
+    # share this workflow's concurrency group, so a re-record at 02:17 would queue behind a
     # full lane that can take half an hour, and the recordings would be read against a server
-    # the night had already moved on from. 13:41 is the far side of the day from both schedules
-    # of this repository (02:17 here and e2e.yaml's 04:41), and it needs one runner rather than
-    # the full lane's six at once, so it never competes with a nightly for the account's
-    # capacity.
+    # the night had already moved on from. 13:41 is the far side of the day from the other
+    # schedules of this repository (02:17 here, e2e.yaml's 04:41 and codeql.yaml's Tuesday
+    # 04:17). A schedule starts a workflow and not a job, so each job's `if:` below names the
+    # cron it runs on: 02:17 starts the full lane alone and 13:41 the re-record alone, and a
+    # `workflow_dispatch`, which carries no cron, starts both.
     - cron: "41 13 * * *"
   workflow_dispatch:
 
@@ -67,7 +72,12 @@ jobs:
   # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
   # same file). No `checks: write`, which the ci-ok report would need: this call passes no
   # `ci-ok-changes`, so that step does not run and this workflow posts no check.
+  #
+  # Every run but the 13:41 schedule's, which is the re-record's: `github.event.schedule` is the
+  # cron that started a scheduled run and is empty on a `workflow_dispatch`, so a dispatch runs
+  # this job too.
   full:
+    if: github.event.schedule != '41 13 * * *'
     permissions:
       contents: read
       actions: read
@@ -94,12 +104,12 @@ jobs:
   # This file already stands on main with both triggers, so `gh workflow run
   # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.
   #
-  # Both crons start both jobs, since a schedule starts a workflow and not a job, so the 13:41
-  # run also runs the full lane. That is a second full lane a day on a repository whose nightly
-  # is one, which is the price of keeping this job dispatchable before its own merge; it is
-  # the same eight machines for the same quarter of an hour or a little more, which pull
-  # request #3513's full-lane runs of 2026-11-15 read as 16 to 19 minutes of wall time, and
-  # `concurrency` keeps it from overlapping the 02:17 run.
+  # A schedule starts a workflow and not a job, so this job's `if:` keeps it off the 02:17 run,
+  # as the full lane's keeps that lane off the 13:41 run; a dispatch carries no cron and runs
+  # both. Until dispatch://INFRA-1109 neither job had one, and the 13:41 run carried a second
+  # full lane a day, eight machines for 16 to 19 minutes of wall time by pull request #3513's
+  # full-lane runs of 2026-11-15, to keep this job dispatchable, which the conditions keep at
+  # no such cost.
   #
   # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,
@@ -110,6 +120,7 @@ jobs:
   # install keeps the 4 minutes the multiprocess job's own gives it. 18 + 4 = 22, and 200 s of
   # unbudgeted steps round it to 26.
   re-record:
+    if: github.event.schedule != '17 2 * * *'
     runs-on: ubuntu-24.04
     timeout-minutes: 26
     # This job stays on the runner rather than in the browser image the shard and alone jobs
@@ -125,16 +136,20 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # Restored only: the harness builds the Dispatch server, which this job needs and no job
-      # of this family saves a cache for.
+      # go-envoy-test, restored only, as dispatch-browser.yaml's binaries job restores it: this
+      # job builds the Dispatch server, and the harness builds the real broker's commands, the
+      # dev OIDC issuer and the request seeder, and that family's entry is the one that holds
+      # them. go-envoy holds the listener's and natsd's builds alone (ci-caches.yaml), and the
+      # binaries job measured what restoring it costs such a build: 115 `go: downloading` lines
+      # on a key that hit, against 4 with go-envoy-test.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the
@@ -144,7 +159,7 @@ jobs:
         run: bun run build:dispatch
         working-directory: packages/contracts
       # Built here rather than left to run-server.sh, which would build it inside the harness's
-      # own boot wait, as the multiprocess job does for the same reason.
+      # own boot wait, as dispatch-browser.yaml's binaries job builds it for the whole run.
       - name: Build the Dispatch server
         run: go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
