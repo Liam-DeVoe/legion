@@ -260,8 +260,9 @@ func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing
 // TestRetroIsOnTheImplementersBar: one bar per role, "implementer (implementing and retro, because
 // the daemon gives retro to the implementer: `RoleFor` in packages/daemon/internal/phase/phase.go)
 // ... and merger (merging and awaiting merge)" (the spec's metric 2). Before observations the
-// `retro` status starts retro and the merger's first event starts merging, since the workflow
-// keeps the status `retro` through both; on the observed timeline the daemon names all three.
+// `retro` status starts retro, and the merger's first event starts merging for this issue, which
+// is never sent back: after a send-back a role's first event starts no phase at all (the spec's
+// "No re-entry by a first event"). On the observed timeline the daemon names all three.
 func TestRetroIsOnTheImplementersBar(t *testing.T) {
 	for _, one := range []struct {
 		name        string
@@ -456,8 +457,8 @@ func TestARolesMedianCountsAnIssueItNeverWorkedAsZero(t *testing.T) {
 }
 
 // TestAfterASendBackTheDispatchStatusSetsThePhase: "After a send-back, the Dispatch status sets
-// the phase: `in_progress` after `testing` or `needs_review` is implementing, `testing` is
-// testing, and `needs_review` is reviewing until the `review` handoff of that round, then
+// the phase: `in_progress` after `testing`, `needs_review` or `retro` is implementing, `testing`
+// is testing, and `needs_review` is reviewing until the `review` handoff of that round, then
 // accepting until the status changes" (the spec's "Phase boundaries before observations"). The
 // round below is the second one: no role writes a first event twice, so the statuses are the
 // only record of it.
@@ -532,6 +533,106 @@ func TestARolesFirstEventAfterItsPhaseHasPassedLeavesThePhaseUnchanged(t *testin
 	want := []string{"implementing 0-2", "testing 2-3", "reviewing 3-5", "accepting 5-6"}
 	if got := timelineOf(fixture(hour(-24), hour(24), issue), issue); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fallback timeline is %v, want %v: the tester's first event during the review is passed over", got, want)
+	}
+}
+
+// TestAfterASendBackARolesFirstEventStartsNoPhase: "After a send-back, the next phases come from
+// status writes and handoffs" (the spec's "No re-entry by a first event"), and "After a
+// send-back, the Dispatch status sets the phase" ("Phase boundaries before observations"). Before
+// the send-back a role's first event still starts its phase where that phase is later than any
+// the issue has reached, which the first case holds and the implementer's and tester's first
+// events of the second do too.
+//
+// The second case is the shape of INFRA-745 and INFRA-122 in dispatch://INFRA-979's corpus: sent
+// back to implementing, the issue goes through testing and review again into `retro`, and only
+// then does its merger first write on it. Merging is later than any phase the issue had reached,
+// but the event comes after the send-back, so it starts nothing: the retro the `retro` status set
+// runs on to the close, on the implementer's bar. The third is the same rule earlier in a round: a
+// reviewer's first event while the issue is implementing again after its tester sent it back
+// leaves the implementing the `in_progress` set running to the next status.
+func TestAfterASendBackARolesFirstEventStartsNoPhase(t *testing.T) {
+	for _, one := range []struct {
+		name     string
+		issue    *Issue
+		timeline []string
+		bars     map[string]float64
+	}{
+		{
+			name: "never sent back, the merger's first event starts merging",
+			issue: newIssue("INFRA-1").
+				worked("planner", hour(0)).
+				worked("implementer", hour(1)).
+				worked("tester", hour(2)).
+				statusAt(hour(3), "needs_review").
+				statusAt(hour(4), "retro").
+				worked("merger", hour(5)).
+				statusAt(hour(7), "done").
+				closedAt(hour(7)),
+			timeline: []string{
+				"planning 0-1", "implementing 1-2", "testing 2-3", "reviewing 3-4", "retro 4-5", "merging 5-7",
+			},
+			bars: map[string]float64{
+				"architect": 0, "planner": 1, "implementer": 2, "tester": 1, "reviewer": 1, "merger": 2, barNoRole: 0,
+			},
+		},
+		{
+			name: "sent back by its reviewer, the merger's first event after retro starts nothing",
+			issue: newIssue("INFRA-1").
+				worked("planner", hour(0)).
+				worked("implementer", hour(1)).
+				worked("tester", hour(2)).
+				statusAt(hour(3), "needs_review").
+				statusAt(hour(4), "in_progress").
+				statusAt(hour(5), "testing").
+				statusAt(hour(6), "needs_review").
+				statusAt(hour(7), "retro").
+				worked("merger", hour(8)).
+				statusAt(hour(10), "done").
+				closedAt(hour(10)),
+			timeline: []string{
+				"planning 0-1", "implementing 1-2", "testing 2-3", "reviewing 3-4", "implementing 4-5",
+				"testing 5-6", "reviewing 6-7", "retro 7-10",
+			},
+			bars: map[string]float64{
+				"architect": 0, "planner": 1, "implementer": 5, "tester": 2, "reviewer": 2, "merger": 0, barNoRole: 0,
+			},
+		},
+		{
+			name: "sent back by its tester, the reviewer's first event while implementing starts nothing",
+			issue: newIssue("INFRA-1").
+				worked("implementer", hour(0)).
+				statusAt(hour(1), "testing").
+				statusAt(hour(2), "in_progress").
+				worked("reviewer", hour(3)).
+				statusAt(hour(4), "testing").
+				statusAt(hour(5), "needs_review").
+				statusAt(hour(6), "done").
+				closedAt(hour(6)),
+			timeline: []string{"implementing 0-1", "testing 1-2", "implementing 2-4", "testing 4-5", "reviewing 5-6"},
+			bars: map[string]float64{
+				"architect": 0, "planner": 0, "implementer": 3, "tester": 2, "reviewer": 1, "merger": 0, barNoRole: 0,
+			},
+		},
+	} {
+		t.Run(one.name, func(t *testing.T) {
+			population := fixture(hour(-24), hour(24), one.issue)
+			if got := timelineOf(population, one.issue); !reflect.DeepEqual(got, one.timeline) {
+				t.Fatalf("the fallback timeline is %v, want %v", got, one.timeline)
+			}
+			report := Compute(population, ScopeAll, hour(24))
+			hoursPerBar := map[string]float64{}
+			var whole float64
+			for _, bar := range report.PhaseTime.Bars {
+				hoursPerBar[bar.Role] = bar.Hours
+				whole += bar.Hours
+			}
+			if !reflect.DeepEqual(hoursPerBar, one.bars) {
+				t.Fatalf("the bars are %v, want %v", hoursPerBar, one.bars)
+			}
+			if row := report.WorkTime.Issues[0]; whole != row.Hours {
+				t.Fatalf("the seven bars hold %g hours against a work time of %g", whole, row.Hours)
+			}
+		})
 	}
 }
 

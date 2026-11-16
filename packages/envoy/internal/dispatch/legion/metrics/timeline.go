@@ -73,12 +73,14 @@ var phaseOrder = []string{
 	legion.PhaseReviewing, legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging,
 }
 
-// rolePhase is the phase each role's first event on the issue starts. The implementer works two
-// phases, implementing and retro, "because the daemon gives retro to the implementer" (RoleFor
-// in packages/daemon/internal/phase), and its first event starts the first of them: retro starts
-// at the `retro` status the workflow writes for it (statusPhase). The merger's first event starts
-// merging, which the event log tells from retro by nothing else, since the workflow keeps the
-// status `retro` through both. No mark of the event log names awaiting merge.
+// rolePhase is the phase each role's first event on the issue starts, until the issue is first
+// sent back (phaseSteps). The implementer works two phases, implementing and retro, "because the
+// daemon gives retro to the implementer" (RoleFor in packages/daemon/internal/phase), and its
+// first event starts the first of them: retro starts at the `retro` status the workflow writes
+// for it (statusPhase). The merger's first event starts merging, which the event log tells from
+// retro by nothing else, since the workflow keeps the status `retro` through both: so before
+// observations an issue holds no merging after its first send-back, and a retro there runs on to
+// the next status or the close. No mark of the event log names awaiting merge.
 var rolePhase = map[string]string{
 	"architect":   phaseDesign,
 	"planner":     legion.PhasePlanning,
@@ -305,15 +307,26 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 func phaseSteps(marks []phaseMark) []phaseMark {
 	var steps []phaseMark
 	reached := -1
+	sentBack := false
 	for _, mark := range marks {
 		rank := phaseRank(mark.phase)
 		// A role's first event starts that role's phase only where the issue has not reached
 		// that phase already: the boundary the spec draws is "the next role's first event", so a
 		// role that speaks again after its phase has passed — an implementer answering during
-		// retro — does not send the issue back. A handoff and a status do send it back, which is
-		// how a send-back reads before observations.
-		if mark.source == sourceRole && rank <= reached {
+		// retro — does not send the issue back. Nor does any role's first event start a phase
+		// once the issue has been sent back, however late that phase: "After a send-back, the
+		// next phases come from status writes and handoffs" (the spec's "No re-entry by a first
+		// event"). A handoff and a status move the phase either way, before a send-back and
+		// after it.
+		if mark.source == sourceRole && (sentBack || rank <= reached) {
 			continue
+		}
+		// The send-back is the one status change statusPhase names implementing for: the
+		// `in_progress` written over `testing`, `needs_review` or `retro` (sentBackStatuses),
+		// the same move metric 3 counts as a send-back before observations (sentBackOnce). A
+		// handoff that names an earlier phase moves the phase back, but it is no send-back.
+		if mark.source == sourceStatus && mark.phase == legion.PhaseImplementing {
+			sentBack = true
 		}
 		reached = max(reached, rank)
 		last := len(steps) - 1
@@ -339,10 +352,10 @@ func phaseRank(phase string) int {
 }
 
 // statusPhase is the phase a status change sets before observations exist: the spec's "After a
-// send-back, the Dispatch status sets the phase: `in_progress` after `testing` or `needs_review`
-// is implementing, `testing` is testing, and `needs_review` is reviewing until the `review`
-// handoff of that round, then accepting until the status changes" — the handoff mark is what
-// turns that last stretch into accepting.
+// send-back, the Dispatch status sets the phase: `in_progress` after `testing`, `needs_review` or
+// `retro` is implementing, `testing` is testing, and `needs_review` is reviewing until the
+// `review` handoff of that round, then accepting until the status changes" — the handoff mark is
+// what turns that last stretch into accepting.
 //
 // The statuses that name no phase of their own — `todo`, `triage`, `backlog`, `icebox` and
 // `done` — leave the phase as it was. The hours they stand for are the queue's and the parked
