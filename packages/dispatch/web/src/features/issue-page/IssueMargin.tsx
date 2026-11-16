@@ -165,7 +165,8 @@ export function IssueMarginPanel({
       (target) => target.ref === buildDispatchReference({ key, kind: "issue" })
     )?.name;
   // What waits on this issue is the other direction of `blocked_by`: the references of that
-  // kind that point at it.
+  // kind that point at it, each issue's title the head of its text that the edge carries as its
+  // excerpt (the issue's node itself carries no text).
   const blocking = useQuery({
     enabled: reading,
     queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
@@ -173,7 +174,7 @@ export function IssueMarginPanel({
   });
   const blocks = (blocking.data?.edges ?? [])
     .filter((edge) => edge.kind === "blocked_by" && edge.node.issue_key !== undefined)
-    .map((edge) => ({ key: edge.node.issue_key ?? "", title: edge.node.text ?? "" }));
+    .map((edge) => ({ key: edge.node.issue_key ?? "", title: edge.excerpt?.text ?? "" }));
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does (R31): the approvals are all this reads of the count, so it
   // hands it no decisions.
