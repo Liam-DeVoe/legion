@@ -3096,7 +3096,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
   `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
   and `Parse` validates the set.
-  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check`.
+  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check` and `cmd/spec-check`.
   `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
@@ -3154,17 +3154,17 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `Validate` finds each fault a program can find (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
   a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name among them (`CodeNames`).
   A claim and a purpose are split into sentences as ste-lint splits a line: after `.`, `!` or `?` and any white space that Python's `\s` matches.
-  `CodeNames` finds a name of code only in a shape that no plain word or product name has, such as a Go test's name, `readSet` or `pmdoc.ReadSet`;
+  `CodeNames` reads a word as a name of code by its shape alone, such as a Go test's name, `readSet` or `pmdoc.ReadSet`, so it refuses a plain word or a product name of that shape too: a slash between letters (`I/O`, `and/or`, `client/server`, a URL), small letters and then a capital and a small letter in one word (`mmHg`, `ownCloud`), a small word, a dot and a capital (`works.Then`), a file ending (`Three.js`) and the form of a Go test's name (`TestFlight`), which the writer says in other words, such as "input and output";
   a word with a capital at the start of each part, such as `ReadSet`, and a bare package word, such as `pmdoc`, are left to the reviewer.
   `Changes` lists each statement that only one of two trees holds, or whose text, parent, relations or checks differ between them;
   a statement that only moved to another file is no change.
   `ReadGoTestJSON` reads a `go test -json` report and `MatchTests` matches a check's selector to its one test:
-  a test that go test killed, or that started and has no end, could not run and never reads as a failure.
+  a test that go test killed (an output event that starts with its kill line), or that started and has no end, could not run and never reads as a failure, and a report value that is no event, a `null` or an object with no `Action` included, is refused.
 
 - `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
   It reads each directory with `notes.ReadSet`, so the entries it reads and the 1 MiB bound are the architecture importer's.
   `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
-  a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one and an interface being a component with `kind="interface"`;
+  a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one, `components` counting the components other than interfaces and `interfaces` those with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
   a spec file above the 1 MiB bound gives one line instead, `spec-check: file too large: <dir>/<file> is <n> bytes (limit 1048576)`, and the counts are 0, since no file is parsed;
   with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.

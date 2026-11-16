@@ -12,14 +12,16 @@ import (
 // maxOutput is how much of a test's output an entry keeps: its last 64 KiB.
 const maxOutput = 64 << 10
 
-// timedOut is the line go test writes when it kills a test binary at its -timeout.
+// timedOut is the start of the line go test writes when it kills a test binary at its -timeout,
+// which starts an output event of its own.
 const timedOut = "panic: test timed out after"
 
 // TestOutcome is one run of one top-level Go test, as a go test -json report gives it: its
 // package, its name, its outcome and the last 64 KiB of its output, its subtests' output included.
-// Outcome is "pass", "fail", "skip" or "could_not_run": a test that started and has no end, or that
-// go test killed at its time limit, could not run, and it never reads "fail", since the
-// infrastructure and not the code ended it.
+// Outcome is "pass", "fail", "skip" or "could_not_run". A test that started and has no end event of
+// its own, as when its process ended inside it (os.Exit, or a fatal error of the runtime), could
+// not run, and so could a test whose output has an event that starts with go test's kill line:
+// the report holds no outcome of the test itself, so it never reads "fail".
 type TestOutcome struct {
 	Package, Test, Outcome, Output string
 }
@@ -41,8 +43,10 @@ type run struct {
 // top-level test, in the order the tests started. A name that runs twice in one package, as a test
 // defined in both package p and package p_test does, gives two entries; the events of that name
 // after its second start belong to the second. The outcome is the test's own last pass, fail or
-// skip event, never a subtest's. A report that holds anything but events is refused, so that an
-// unreadable report never reads as a run of no tests.
+// skip event, never a subtest's. A value that is no event is refused, so that a wrong file never
+// reads as a run of no tests: a value that is no JSON object, and a null or an object with no
+// Action. Events of a package and not of a test (no Test), events of a test that never started,
+// and the actions that end no test (start, pause, cont, attr and the rest) are passed over.
 func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 	var runs []*run
 	current := map[[2]string]*run{} // package and top-level name -> its latest run
@@ -53,6 +57,9 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 			break
 		} else if err != nil {
 			return nil, fmt.Errorf("specgraph: the go test report holds no event at byte %d: %w", decoder.InputOffset(), err)
+		}
+		if e.Action == "" {
+			return nil, fmt.Errorf("specgraph: the go test report holds no event at byte %d: a value with no Action", decoder.InputOffset())
 		}
 		if e.Test == "" {
 			continue
@@ -70,7 +77,7 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 		}
 		switch e.Action {
 		case "output":
-			this.timedOut = this.timedOut || strings.Contains(e.Output, timedOut)
+			this.timedOut = this.timedOut || strings.HasPrefix(e.Output, timedOut)
 			this.output = append(this.output, e.Output...)
 			if len(this.output) > 2*maxOutput {
 				this.output = append(this.output[:0], this.output[len(this.output)-maxOutput:]...)

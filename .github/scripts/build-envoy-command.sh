@@ -10,15 +10,25 @@
 #
 # It builds <package> of packages/envoy, such as ./cmd/spec-check, into <binary>, with its module
 # cache in <module cache> and its build cache in <build cache>, the two directories the action's
-# cache steps restore and save, and it makes the three directories first. It exits with go
-# build's status, or 2 with the usage for any other number of arguments.
+# cache steps restore and save, and it makes the three directories first. A relative <binary>,
+# <module cache> or <build cache> is read against the directory the script runs in, before it
+# changes to packages/envoy. It exits with go build's status, or 2 with the usage for any other
+# number of arguments.
 set -euo pipefail
 
 if [ "$#" -ne 4 ]; then
   echo 'usage: build-envoy-command.sh <package> <binary> <module cache> <build cache>' >&2
   exit 2
 fi
-package=$1 binary=$2 module_cache=$3 build_cache=$4
+# absolute is path read against the directory the script runs in.
+absolute() {
+  case $1 in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s\n' "$PWD/$1" ;;
+  esac
+}
+package=$1
+binary=$(absolute "$2") module_cache=$(absolute "$3") build_cache=$(absolute "$4")
 module="$(dirname "${BASH_SOURCE[0]}")/../../packages/envoy"
 
 mkdir -p "$module_cache" "$build_cache" "$(dirname "$binary")"

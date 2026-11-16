@@ -66,7 +66,7 @@ func TestReadGoTestJSONGivesTopLevelTests(t *testing.T) {
 }
 
 // A test that go test killed at its time limit could not run: it never reads fail, since the
-// infrastructure, not the code, ended it, nor pass from a subtest that passed before the kill.
+// report holds no outcome of the test itself, nor pass from a subtest that passed before the kill.
 // Should a fail event of the test follow the panic, it still could not run.
 func TestAKilledTestCouldNotRun(t *testing.T) {
 	t.Parallel()
@@ -82,6 +82,42 @@ func TestAKilledTestCouldNotRun(t *testing.T) {
 	got, err := ReadGoTestJSON(strings.NewReader(ended))
 	if err != nil || !reflect.DeepEqual(outcomes(got), want) {
 		t.Errorf("ReadGoTestJSON(timeout.jsonl and a fail event) = %q, %v, want %q", outcomes(got), err, want)
+	}
+}
+
+// Only the kill line as go test writes it, at the start of an output event, marks a test as killed.
+// A test that writes the same words inside a line of its own, as a t.Log of a child's output
+// does, keeps its own pass or fail; the kill line itself still makes the test one that could not
+// run, a fail event after it included.
+func TestOnlyTheKillLineMarksAKilledTest(t *testing.T) {
+	t.Parallel()
+	const (
+		run   = `{"Action":"run","Package":"p","Test":"TestA"}`
+		quote = `{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:9: the child said: panic: test timed out after 1s\n"}`
+		kill  = `{"Action":"output","Package":"p","Test":"TestA","Output":"panic: test timed out after 1s\n"}`
+		fail  = `{"Action":"fail","Package":"p","Test":"TestA","Elapsed":0}`
+	)
+	for _, row := range []struct {
+		name   string
+		events []string
+		want   string
+	}{
+		{"a line of the test that quotes the kill line, then fail", []string{run, quote, fail}, "p TestA fail"},
+		{"the same line, then pass", []string{run, quote, `{"Action":"pass","Package":"p","Test":"TestA","Elapsed":0}`}, "p TestA pass"},
+		{"a subtest's line that quotes the kill line, then fail", []string{run,
+			`{"Action":"run","Package":"p","Test":"TestA/sub"}`,
+			`{"Action":"output","Package":"p","Test":"TestA/sub","Output":"    a_test.go:12: panic: test timed out after 1s\n"}`,
+			`{"Action":"fail","Package":"p","Test":"TestA/sub","Elapsed":0}`, fail}, "p TestA fail"},
+		{"the kill line, and no end", []string{run, kill}, "p TestA could_not_run"},
+		{"the kill line, then fail", []string{run, kill, fail}, "p TestA could_not_run"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ReadGoTestJSON(strings.NewReader(strings.Join(row.events, "\n") + "\n"))
+			if err != nil || !reflect.DeepEqual(outcomes(got), []string{row.want}) {
+				t.Errorf("ReadGoTestJSON = %q, %v, want [%q]", outcomes(got), err, row.want)
+			}
+		})
 	}
 }
 
@@ -124,6 +160,32 @@ func TestReadGoTestJSONRefusesALineThatIsNoEvent(t *testing.T) {
 	}
 	if got, err := ReadGoTestJSON(strings.NewReader("")); err != nil || len(got) != 0 {
 		t.Errorf("ReadGoTestJSON(\"\") = %+v, %v, want no entry and no error", got, err)
+	}
+}
+
+// A JSON value that decodes and is no event, a null or an object with no Action, is refused too:
+// a report of another tool, or a wrong file, must not read as a run of no tests. The control, the
+// same report with each such value left out, reads with no error.
+func TestReadGoTestJSONRefusesAValueWithNoAction(t *testing.T) {
+	t.Parallel()
+	const event = `{"Action":"run","Package":"p","Test":"TestA"}`
+	for _, row := range []struct{ name, value string }{
+		{"a null", "null"},
+		{"an empty object", "{}"},
+		{"an object of a test with no Action", `{"Package":"p","Test":"TestA","Output":"ok\n"}`},
+		{"an object of another tool", `{"name":"TestA","status":"passed"}`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			for _, report := range []string{row.value + "\n", row.value + "\n" + event + "\n", event + "\n" + row.value + "\n"} {
+				if got, err := ReadGoTestJSON(strings.NewReader(report)); err == nil {
+					t.Errorf("ReadGoTestJSON(%q) = %q with no error, want an error", report, outcomes(got))
+				}
+			}
+		})
+	}
+	if got, err := ReadGoTestJSON(strings.NewReader(event + "\n")); err != nil || !reflect.DeepEqual(outcomes(got), []string{"p TestA could_not_run"}) {
+		t.Errorf("ReadGoTestJSON(the event alone) = %q, %v, want one entry and no error", outcomes(got), err)
 	}
 }
 

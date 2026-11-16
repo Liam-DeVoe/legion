@@ -35,7 +35,7 @@ func TestCodeNames(t *testing.T) {
 		{text: "runs TestARestartLosesNoMessage, then TestB.", want: []string{"TestARestartLosesNoMessage", "TestB"}},
 		{text: "the TestARestart_LosesNoClaim test", want: []string{"TestARestart_LosesNoClaim"}},
 		{text: "Test results. Tests of the daemon, a Testament and Test's end", want: nil},
-		// R4: a symbol or a package in the shapes that no plain word has.
+		// R4: a symbol with an underscore, in lower camel case, or as a package and its symbol.
 		{text: "the read_set value", want: []string{"read_set"}},
 		{text: "readSet gives each message an owner, as isValid says", want: []string{"readSet", "isValid"}},
 		{text: "pmdoc.ReadSet gives each message an owner, and so does notes.ReadSet's set.", want: []string{"pmdoc.ReadSet", "notes.ReadSet"}},
