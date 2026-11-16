@@ -451,6 +451,10 @@ var indexPasses = map[string]string{
 	// A delivery attempt's settle states the session it reached (graphstore.Reached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
+	// An answer that flips a stored attempt to sent records the session it reached and, where
+	// that flip is what makes the attempt a delivery, the delivered_to tuple, under the answer's
+	// own event. It reads the attempt row the answer flipped and no row of either side.
+	"api/comment_delivery.go#recordAnsweredDelivery": "the attempt the answer flipped and the answer's own event",
 	// A follow of an ask writes the follower row and the following session's node in one
 	// statement (graphstore.WriteArms), and each caller that appended an event after the follow
 	// moves the node that follow made onto it (graphstore.Caused). Neither reads a row of either
@@ -459,7 +463,11 @@ var indexPasses = map[string]string{
 	"asks/followers.go#Follow":               "the ask and the session its caller names",
 	"api/ask_followers.go#changeAskFollower": "the follow request and the event it appended after the follow",
 	"api/asks.go#createAskFor":               "the ask the create request opens and the event it appended after the follow",
-	"docs/ask_blocks.go#causeFollows":        "the follows a settlement made and the ask.opened events it appended after them",
+	// A renewed approval request follows its ask for the requester and moves the node that
+	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
+	// the renewal appended none.
+	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
+	"docs/ask_blocks.go#causeFollows": "the follows a settlement made and the ask.opened events it appended after them",
 	// The node of every ask and message a request or a settlement creates, before its row, in the
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
@@ -563,10 +571,13 @@ var indexPasses = map[string]string{
 // store.
 var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)\s+(document_blocks|block_refs|comments|graph_nodes|graph_tuples)\b`)
 
-// storeWriterCall matches one call of the store's writer from outside its package: a pass that
-// writes the store through graphstore holds no statement of its own, and a scan of SQL alone
-// would never see it.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\(`)
+// storeWriterCall matches one use of the store's writer from outside its package, called or
+// passed on as a value: a pass that writes the store through graphstore holds no statement of its
+// own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
+// graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
+// alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
+// the same use as one.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the
