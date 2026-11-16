@@ -576,7 +576,7 @@ On every pull request whose diff selects them, the `typecheck` job of `.github/w
 ## stage2-tmux-supervision.sh
 
 ```sh
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/stage2-tmux-supervision.sh     # → "stage 2 e2e: PASS", exit 0, in about four minutes
+LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> bash scripts/e2e/stage2-tmux-supervision.sh     # → "stage 2 e2e: PASS", exit 0, in about four minutes
 LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> bash scripts/e2e/stage2-tmux-supervision.sh           # the same, for a devbox with no Hawk gateway
 LEGION_E2E_MODEL_ROUTE=box-login bash scripts/e2e/stage2-tmux-supervision.sh                                                   # the same, on the operator's own Oh My Pi login
 ```
@@ -607,7 +607,7 @@ It runs a real Oh My Pi that calls a real model, so it needs:
 - `LEGION_E2E_MODEL_ROUTE` (required, `gateway`, `key-file` or `box-login`), which picks how the agents reach Anthropic, independently of which devbox this runs on:
 
   - `gateway`: the operator's model gateway access
-    — `LEGION_E2E_MODEL_GATEWAY_URL` naming the gateway's Anthropic endpoint (required in this mode;
+    — `LEGION_E2E_MODEL_GATEWAY_URL` naming the base URL the gateway serves `/v1/messages` under with its own credential (a LiteLLM gateway's root) (required in this mode;
     [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh)), `hawk-token` on `PATH`, their `hawk login`, and the GNOME keyring holding it unlocked (every reboot locks it; the `unlock-keyring` skill).
 
   - `key-file`: `LEGION_E2E_ANTHROPIC_KEY_FILE` (required in this mode), a 0600 file holding a plaintext Anthropic key, for a devbox with no Hawk gateway at all ([`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)).
@@ -716,7 +716,7 @@ Three things the run had to learn about its surface:
 ## stage3-devbox-workflow.sh
 
 ```sh
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
+LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage3-devbox-workflow.sh     # → "stage 3 e2e: PASS", exit 0
 LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
@@ -763,7 +763,7 @@ The run needs:
 - `LEGION_E2E_MODEL_ROUTE` (required, `gateway`, `key-file` or `box-login`), which picks how the agents reach Anthropic, independently of which devbox this runs on:
 
   - `gateway`: the operator's model gateway access
-    — `LEGION_E2E_MODEL_GATEWAY_URL` naming the gateway's Anthropic endpoint (required in this mode;
+    — `LEGION_E2E_MODEL_GATEWAY_URL` naming the base URL the gateway serves `/v1/messages` under with its own credential (a LiteLLM gateway's root) (required in this mode;
     [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh)), `hawk-token` on `PATH`, their `hawk login`, and the GNOME keyring holding it unlocked (every reboot locks it; the `unlock-keyring` skill).
 
   - `key-file`: `LEGION_E2E_ANTHROPIC_KEY_FILE` (required in this mode), a 0600 file holding a plaintext Anthropic key, for a devbox with no Hawk gateway at all ([`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)).
@@ -941,7 +941,7 @@ The trap still closes the run's pull requests in two further cases ([`lib/transc
 ## stage3-4b13b-acceptance.sh
 
 ```sh
-LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
+LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
 ACCEPT_PG_CONTAINER=<postgres container> ACCEPT_PG_PORT=<its host port> ACCEPT_NATS_BIN=<nats-server> \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage3-4b13b-acceptance.sh     # → "acceptance 4b.13b: PASS at <head>", exit 0
@@ -965,7 +965,7 @@ The default evidence directory is under the scratch work directory, whose proces
 ## claude-backend-tmux.sh
 
 ```sh
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic \
+LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-tmux.sh     # → "claude backend e2e: PASS", exit 0
 LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> \
@@ -1091,7 +1091,7 @@ LEGION_E2E_CLAUDE_MODEL=<model id> \
 [LEGION_E2E_MODEL_BASE_URL=<gateway base URL>] \
 LEGION_E2E_POD_REACHABILITY=aws-private-ip \
 LEGION_E2E_MODEL_ROUTE=gateway \
-LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic \
+LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> \
 LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
 LEGION_E2E_DAEMON_PORT=<port> LEGION_E2E_WORKER_STREAM_PORT=<port> \
 LEGION_E2E_DISPATCH_PORT=<port> LEGION_E2E_ENVOY_PORT=<port> LEGION_E2E_NATS_PORT=<port> \
@@ -1654,7 +1654,7 @@ LEGION_E2E_PLATFORM=eks \
 LEGION_E2E_IMAGE=ghcr.io/cybermonklabs/legion-worker@sha256:<digest> \
 LEGION_E2E_POD_REACHABILITY=aws-private-ip \
 LEGION_E2E_MODEL_ROUTE=gateway \
-LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic \
+LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> \
 LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
 LEGION_E2E_STORAGE_CLASS=gp2 \
 LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> \
@@ -1838,7 +1838,7 @@ Each item below names an input and its default, then what it means.
 
 - `LEGION_E2E_MODEL_GATEWAY_URL` — required under `LEGION_E2E_MODEL_ROUTE=gateway`, unused under `key-file`
 
-  the model gateway's Anthropic endpoint, the `baseUrl` the run's copy of the fixture's `models.yml` names;
+  the base URL the model gateway serves `/v1/messages` under with its own credential (a LiteLLM gateway's root), the `baseUrl` the run's copy of the fixture's `models.yml` names;
   checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh)
 
 - `LEGION_E2E_MODEL_GATEWAY_AUDIENCE` — required under `LEGION_E2E_MODEL_ROUTE=gateway`, unused under `key-file`
@@ -2399,7 +2399,7 @@ the first look and the bound's last are the only two, which is what the root's p
 ```sh
 LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=ghcr.io/cybermonklabs/legion-worker@sha256:<digest> \
   LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> \
-  LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
+  LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
   LEGION_E2E_DISPATCH_URL=https://<dispatch> LEGION_E2E_ENVOY_URL=http://<listener>:<port> LEGION_E2E_NATS_URL=nats://<nats>:4222 \
   LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE=<email of a person signed in to Dispatch> \
   LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> \
@@ -2415,7 +2415,7 @@ LEGION_E2E_PROJECT=S4B2 LEGION_E2E_DAEMON_PORT=13370 LEGION_E2E_WORKER_STREAM_PO
 ```
 
 The repository names no production service.
-`LEGION_E2E_MODEL_GATEWAY_URL` is the model gateway's Anthropic endpoint (checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh)), which the run writes into its copy of the operator fixture's `models.yml` and the controller's profile.
+`LEGION_E2E_MODEL_GATEWAY_URL` is the base URL the model gateway serves `/v1/messages` under with its own credential (a LiteLLM gateway's root) (checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh)), which the run writes into its copy of the operator fixture's `models.yml` and the controller's profile.
 `LEGION_E2E_DISPATCH_URL`, `LEGION_E2E_ENVOY_URL` and `LEGION_E2E_NATS_URL` are production Dispatch, the production Envoy listener and production NATS, by the operator's fully-qualified names for them.
 `prerequisites` refuses a value that is unset, names a bare alias, or carries a path, naming the variable and never its value.
 
@@ -3333,7 +3333,7 @@ The agents are real.
 Nothing in the run reads production, and no tree reaches a pull request.
 
 ```bash
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic \
+LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/parked-decision-devbox.sh
 ```
@@ -3518,7 +3518,7 @@ Each slash-command check waits until the session is idle before it sends, since 
 a stopped answer with no message or custom message after it and no background job the model started still owed its result.
 
 ```bash
-LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/dispatch-user-turns.sh     # → "dispatch user turns e2e: PASS", exit 0
+LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL> bash scripts/e2e/dispatch-user-turns.sh     # → "dispatch user turns e2e: PASS", exit 0
 LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> bash scripts/e2e/dispatch-user-turns.sh   # the same, for a devbox with no Hawk gateway
 LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> DISPATCH_USER_TURNS_ONLY=spec-edit bash scripts/e2e/dispatch-user-turns.sh   # the spec-edit checks alone
 ```
@@ -3526,7 +3526,7 @@ LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> DISPAT
 | input | default | meaning |
 | :--- | :--- | :--- |
 | `LEGION_E2E_MODEL_ROUTE` | `gateway` | `gateway` or `key-file`: how the session reaches Anthropic |
-| `LEGION_E2E_MODEL_GATEWAY_URL` | required under `gateway` | the model gateway's Anthropic endpoint; checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh) |
+| `LEGION_E2E_MODEL_GATEWAY_URL` | required under `gateway` | the base URL the model gateway serves `/v1/messages` under with its own credential (a LiteLLM gateway's root); checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh) |
 | `LEGION_E2E_ANTHROPIC_KEY_FILE` | required under `key-file` | a 0600 file holding a plaintext Anthropic key, read by the key command on every call; the key command is written under the run's scratch directory, which every exit removes |
 | `DISPATCH_USER_TURNS_ONLY` | unset, every check | `spec-edit`: `session-registers` and the two spec-edit checks alone, then PASS; `spec-edit-card`: `session-registers` and `a-persons-spec-edit-reaches-its-writer` alone, then PASS |
 | `DISPATCH_USER_TURNS_OMP` | the pinned build, `.omp-pin`'s mise tool spec (`github:sjawhar/oh-my-pi@<version>`) | another Oh My Pi, as a mise tool spec |
@@ -5751,7 +5751,7 @@ Measured on the devbox with OMP 18.2.2: build, pack, install and verify took 2 s
 
 ## lib/model-gateway-url.sh
 
-Prints `LEGION_E2E_MODEL_GATEWAY_URL`, the model gateway's Anthropic endpoint, once it is one a stage proof can use.
+Prints `LEGION_E2E_MODEL_GATEWAY_URL`, the base URL the model gateway serves `/v1/messages` under with its own credential (a LiteLLM gateway's root), once it is one a stage proof can use.
 [`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) (Stage 2 and Stage 3) and Stage 4a read the variable through it.
 The repository carries no default: the operator sets it to the `baseUrl` of the `anthropic` provider in their own gateway route (`~/.omp/agent/models.yml`).
 
@@ -5800,7 +5800,7 @@ nothing is kept, since such a token expires inside a run.
 Stage 2 and Stage 3 run it under the operator's own `HOME`, before they move any XDG directory of their own.
 
 ```sh
-export LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic
+export LEGION_E2E_MODEL_GATEWAY_URL=<gateway base URL>
 key_command=$(bash scripts/e2e/lib/install-model-gateway.sh --profile legion-e2e-$$ --home "$work/omp-home" --dest "$work/model-gateway" --cache-dir "$work/model-gateway-cache")
 # → $work/model-gateway/hawk-token
 key_command=$(bash scripts/e2e/lib/install-model-gateway.sh --profile legion-e2e-$$ --home "$work/omp-home" --dest "$work/model-gateway" --token-command "$work/model-gateway-token")
@@ -5808,7 +5808,7 @@ key_command=$(bash scripts/e2e/lib/install-model-gateway.sh --profile legion-e2e
 ```
 
 `LEGION_E2E_MODEL_GATEWAY_URL` is required:
-the gateway's Anthropic endpoint, the one `hawk-token`'s default `HAWK_API_URL` mints keys for, read through [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh).
+the base URL the gateway serves `/v1/messages` under with its own credential (a LiteLLM gateway's root), the one `hawk-token`'s default `HAWK_API_URL` mints keys for, read through [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh).
 
 Each item below names a flag, then what it means.
 

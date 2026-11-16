@@ -24,8 +24,10 @@
 #   LEGION_E2E_MODEL_BASE_URL, ANTHROPIC_BASE_URL
 #                                the endpoint that key is for (lib/model-endpoint.sh), Anthropic's
 #                                own when neither is set: the recording proxy's upstream.
-#   LEGION_E2E_MODEL_GATEWAY_URL under `gateway`, the model gateway's Anthropic endpoint
-#                                (lib/install-model-gateway.sh): the proxy's upstream. `hawk-token`
+#   LEGION_E2E_MODEL_GATEWAY_URL under `gateway`, the base URL under which the model gateway
+#                                serves /v1/messages with its own credential, a LiteLLM
+#                                gateway's root (lib/install-model-gateway.sh): the proxy's
+#                                upstream. `hawk-token`
 #                                keys every call — the agents' key command, the daemon's answers
 #                                block through api_key_command and Claude Code through its
 #                                apiKeyHelper — unless the next input names another command.

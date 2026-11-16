@@ -19,8 +19,9 @@
 # --home is the HOME Oh My Pi runs under for the profile, made by make_omp_home (lib/omp-home.sh): the
 # profile's files go under <home>/.omp/profiles/<name>, and the caller's own HOME is refused.
 #
-# LEGION_E2E_MODEL_GATEWAY_URL is required: the gateway's Anthropic endpoint, the one hawk-token's
-# default HAWK_API_URL mints for, checked by lib/model-gateway-url.sh.
+# LEGION_E2E_MODEL_GATEWAY_URL is required: the base URL under which the gateway serves
+# /v1/messages with its own credential (a LiteLLM gateway's root), the gateway hawk-token's default
+# HAWK_API_URL mints for, checked by lib/model-gateway-url.sh.
 #
 # Stdout is one line, the key command's path; every refusal goes to stderr. It writes, under
 # --cache-dir:
