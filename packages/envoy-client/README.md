@@ -227,10 +227,15 @@ Successful direct sends return both the envelope and listener-selected recipient
 `duplicate` when the listener already held a send under that target and idempotency key.
 A publish returns the envelope and an optional role holder. A role publish has three answers,
 told apart by status. 200 is a live holder that took the message, named by `holder`. 202 is a
-message the listener kept for the session that claims the role next, with `kept`, `keptReason`
-(`unclaimed` or `holder_lapsed`) and `holder` when a lapsed claim named one. 404 is nothing kept,
-thrown as an `EnvoyApiError`, and the sender's own fallback must run. A sender that keeps a queue
-of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
+message the listener kept for one hour because no live session holds the role, with `kept`,
+`keptReason` (`unclaimed`, or `holder_lapsed` with the `holder`, its `holderState` and its
+`lastSeen` when the claim's holder is not live) and `keptUntil`, the end of that hour in epoch
+milliseconds. The next session to hold the role live before `keptUntil` is handed the message. If
+none does, the listener drops it and sends the publishing session a dead letter, when the publish
+named that session as its source and the listener did not drop it more than an hour late. A
+listener of an earlier release sends no `keptUntil`. 404 is nothing kept, thrown as an
+`EnvoyApiError`, and the sender's own fallback must run. A sender that
+keeps a queue of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
 attempt, the answer's body included) and 5xx responses retry once after 250 ms, under the same
 idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of which
 got no answer, an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later
@@ -562,7 +567,8 @@ with no attempt started more than 55 s after the first (`inFlightWithinMs`), unt
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
 repeat sends its whole body again. No attempt of any write starts more than 55 s after the client
-was made, since its 60 s deadline counts from there. The numbers come from the 3,612 `dispatch`
+was made, since its 60 s deadline counts from there; a caller with a bound of its own sets
+`deadlineMs` and an `inFlightWithinMs` inside it, as `dispatch result --project` does. The numbers come from the 3,612 `dispatch`
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
@@ -630,7 +636,10 @@ and that the write may or may not have taken effect, so check before running it 
 command is a new key. A write that ends with no answer at all is one too, naming the request: its
 last attempt cut off for silence ("made no progress for 20 s, so it was cut off"), or the call's
 deadline ending it while an attempt was out or after one that may have reached Dispatch ("had no
-definitive answer when its deadline ended it"); `last` is the cut or the timeout.
+definitive answer when its deadline ended it"); `last` is the cut or the timeout. An attempt the
+deadline ends before it goes out sent nothing, so where no attempt before it may have reached
+Dispatch the timeout is thrown as it is; a pause the deadline ends after such an answer ends the
+write with that answer.
 `writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown: a
 `DispatchWriteUnsettledError`, a gateway's answer with `mayHaveReachedDispatch`, Dispatch's own
 5xx, or a transport failure after an attempt that may have reached Dispatch, which is thrown as it
@@ -732,6 +741,11 @@ trades that person, as the Go client does:
   `<thumbprint>` is the first 12 characters of the box key's thumbprint (Go's `SessionFor`). It
   is never `AGENT_SECRETS_SESSION`: the machine trades under that name, and the broker gives a
   name to one identity only.
+- The projects the token names are the ones `AGENT_SECRETS_PROJECTS` lists, project keys separated
+  by spaces (`tradeProjects`). The broker names them only when Dispatch says the person may see
+  each one, and refuses the trade naming the first they may not see. A person who signs in is of
+  the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
+  that is no list fails the call naming the variable. The machine's own trade names no project.
 
 Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
 writes as that person.
@@ -880,8 +894,14 @@ answer that is not Dispatch's JSON is such an answer (`DispatchForeignAnswerErro
 `HTTP_<status>`): whatever answered in Dispatch's place may have sent the write on first. A call
 that the broker's rate limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check
 of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
-turns away before anything is stored is asked again after the answer's `Retry-After`, or a second,
-for at most 60 s of waits in all, after which the command prints which turned it away and exits 1. The
+turns away before anything is stored is asked again after the answer's `Retry-After`, or a second.
+The whole call has one bound, 60 s from its start on one clock (`ResultBound`): the write client's
+deadline is that bound, its asks again under the key and the command's rounds start no later than
+5 s before its end, and a call turned away until then prints which turned it away with the last
+answer, its code named, and exits 1, with no `write_outcome_unknown`: only an attempt that may have
+reached a handler prints that line. An attempt the deadline ends before it is sent reached
+nothing. `dispatch results --project` prints its lines and `--json` by the same rule of a runner's
+log as the command's own output. The
 stored result names the run as its recorder and no person, so the job's log holds no person's
 address. It prints Dispatch's refusal as `<CODE>: <message>` and exits 1, such as
 `SPEC_FILES_REFUSED` with the first problem of spec files the graph logic refuses. A refusal of

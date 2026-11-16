@@ -1751,8 +1751,10 @@ export const dispatchToolSpecs = [
       "second run is safe, because Dispatch keeps each result. A call that the broker's rate " +
       "limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check of the job's " +
       "token (429 BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
-      "is stored is asked again after the answer's Retry-After, or a second, for at most 60 s of " +
-      "waits in all. " +
+      "is stored is asked again after the answer's Retry-After, or a second. The whole call has " +
+      "one bound, 60 s from its start: the write's own deadline is that bound, and no round " +
+      "starts in its last 5 s; a call turned away until then ends with the last answer, its " +
+      "code named, and exits 1. " +
       "It reads DISPATCH_URL, AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY " +
       "(github-actions in a GitHub Actions job), AGENT_SECRETS_MACHINE_AUDIENCE, and the runner's " +
       "ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN, or " +

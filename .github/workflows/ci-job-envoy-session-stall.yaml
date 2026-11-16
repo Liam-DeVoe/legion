@@ -114,6 +114,12 @@ jobs:
       - name: A CI job's result through the real broker and a real Dispatch
         run: bun test src/__tests__/ci-results.live.test.ts
         working-directory: packages/envoy-client
+      # The same stack, for a commit whose spec file's name holds a line break and a workflow
+      # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
+      # job's log that runs the command is a workflow command to its runner.
+      - name: A CI job's refused result prints no workflow command
+        run: bun test src/__tests__/ci-result-refusal-log.live.test.ts
+        working-directory: packages/envoy-client
       # The same path for a check of an issue's Verification document that its ci_check gives to
       # the job: the job records the check's result on a push of the issue's branch with its own
       # identity, and `dispatch results --issue` prints it at the head of that branch, with the

@@ -38,9 +38,10 @@ import (
 // named project scope, a pod's of a read entry, whose project scope is none, a run's of a
 // result entry, whose project scope is results and which carries its run, a machine access
 // token's, whose scope is the person's, and a machine's Google identity token, whose entry names a
-// service — and taking the union, since `project` is written under one scope and deleted under
-// the others. So a claim a new scope or a new decision adds is a claim this fails until the list
-// names it. The OAuth scope a decision grants is a claim too, though decide grants it on the
+// service — and taking the union, since `machine` is written for one kind of trade and `project`
+// under one scope, and each is deleted for the others. So a claim a new scope or a new decision
+// adds is a claim this fails until the list names it. The OAuth scope a decision grants is a
+// claim too, though decide grants it on the
 // request rather than writing it into the extras: `scope`, which an introspection answers from the
 // granted scopes and only a read entry's and a result entry's tokens carry (writeProjectScope),
 // joins the union when any decision granted one. The one claim no decision writes, the launcher

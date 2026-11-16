@@ -25,6 +25,8 @@ import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-confi
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
 import {
+  DISPATCH_TOOL_DEADLINE_MS,
+  DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
@@ -63,8 +65,9 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
-  /** How the command waits `ms` before it asks again, a timer by default. */
-  readonly pause?: (ms: number) => Promise<void>;
+  /** The one bound of a CI job's `dispatch result --project` (`RESULT_BOUND` by default), which a
+   *  test shortens to run it on the real clock. */
+  readonly resultBound?: ResultBound;
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -75,10 +78,26 @@ const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
 
-/** The most `ownIdentityResult` waits in all for the broker and for Dispatch's check of the job's
- *  token to let its call through (`notNow`): a job's step of many checks still ends, and the wait
- *  of one call stays far below a job's timeout. */
-const NOT_NOW_WAIT_MS = 60_000;
+/**
+ * The one bound of a CI job's `dispatch result --project` (`ownIdentityResult`). The whole call
+ * ends `totalMs` after it starts, on one clock: each trade, each write with the asks the write
+ * client makes again under its key, and each wait after an answer that says "not now" (`notNow`)
+ * share it, since the write client's deadline is this bound and not one of its own. No round
+ * starts, and the write client asks nothing again, in its last `reserveMs`, the time a last
+ * attempt has to be answered before the bound ends it. A job's step of many checks still ends,
+ * and the wait of one call stays far below a job's timeout.
+ */
+export interface ResultBound {
+  readonly totalMs: number;
+  readonly reserveMs: number;
+}
+
+/** 60 s in all, the last 5 of them for a last attempt's answer: the write client's own deadline
+ *  and reserve (DISPATCH_TOOL_DEADLINE_MS, DISPATCH_WRITE_RETRY.inFlightWithinMs). */
+const RESULT_BOUND: ResultBound = {
+  totalMs: DISPATCH_TOOL_DEADLINE_MS,
+  reserveMs: DISPATCH_TOOL_DEADLINE_MS - DISPATCH_WRITE_RETRY.inFlightWithinMs,
+};
 
 /** The wait `ownIdentityResult` takes where an answer that says "not now" names none. */
 const NOT_NOW_STEP_MS = 1_000;
@@ -111,7 +130,7 @@ function notNow(error: unknown): { readonly why: string; readonly waitMs: number
   return undefined;
 }
 
-/** Waits `ms` on a timer: how `ownIdentityResult` waits where its io names no pause. */
+/** Waits `ms` on a timer. */
 function timerPause(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -265,9 +284,11 @@ function isJobResult(argv: readonly string[], env: Readonly<Record<string, strin
  * and exits 0: the result is stored, and a results token reads nothing back. A write that may
  * have reached Dispatch while no answer says whether it stored the result (`writeOutcomeUnknown`)
  * prints `{"write_outcome_unknown": <code>}` and exits 1, as the write is not confirmed: the
- * result may be stored, and a second run is safe, since Dispatch keeps each result. No token
- * reaches what it prints: the broker's and Dispatch's words name none, and the runner's endpoint
- * is named by its variable.
+ * result may be stored, and a second run is safe, since Dispatch keeps each result. A call the
+ * broker or Dispatch's check of its token turns away before anything is stored (`notNow`) is
+ * asked again inside the call's one bound (`ResultBound`), and ends with the last such answer,
+ * its code named, and exit 1. No token reaches what it prints: the broker's and Dispatch's words
+ * name none, and the runner's endpoint is named by its variable.
  *
  * What it prints goes into a GitHub Actions runner's log, which reads workflow commands from it,
  * so each text it did not write (an argument, a variable, an answer of the broker or of Dispatch)
@@ -312,9 +333,19 @@ async function ownIdentityResult(
       parsed.tool
     );
   }
-  const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch);
-  const pause = io.pause ?? timerPause;
-  let waited = 0;
+  // One bound on one clock (`ResultBound`): the write client's deadline is the bound itself, its
+  // asks again under the key stop `reserveMs` before it, and the waits below are read on the same
+  // monotonic clock the client keeps its asks on.
+  const bound = io.resultBound ?? RESULT_BOUND;
+  const lastRound = performance.now() + bound.totalMs - bound.reserveMs;
+  const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch, {
+    deadlineMs: bound.totalMs,
+    writeRetry: {
+      ...DISPATCH_WRITE_RETRY,
+      withinMs: Math.min(DISPATCH_WRITE_RETRY.withinMs, bound.totalMs - bound.reserveMs),
+      inFlightWithinMs: bound.totalMs - bound.reserveMs,
+    },
+  });
   for (;;) {
     try {
       const written = projectForm
@@ -329,6 +360,8 @@ async function ownIdentityResult(
         print(JSON.stringify({ landed_without_answer: error.code }));
         return OK;
       }
+      // Only an attempt that may have reached a handler leaves the outcome unknown; an answer of
+      // Dispatch's token check came before any handler ran (`tokenNotChecked`), and is below.
       if (writeOutcomeUnknown(error)) {
         return refuse(
           printableJson(JSON.stringify({ write_outcome_unknown: outcomeCode(error) })),
@@ -338,18 +371,17 @@ async function ownIdentityResult(
       }
       // One job writes a result for each of its checks, so it meets the broker's and Dispatch's
       // limits of one address with no fault of its own: a call turned away before anything was
-      // stored is sent again after the answer's wait, while the waits stay within
-      // NOT_NOW_WAIT_MS.
+      // stored is sent again after the answer's wait, while the next round starts before the
+      // bound's last `reserveMs`. Past that, it ends with the last answer, which names its code.
       const turnedAway = notNow(error);
       if (turnedAway !== undefined) {
-        if (waited + turnedAway.waitMs <= NOT_NOW_WAIT_MS) {
-          waited += turnedAway.waitMs;
-          await pause(turnedAway.waitMs);
+        if (performance.now() + turnedAway.waitMs <= lastRound) {
+          await timerPause(turnedAway.waitMs);
           continue;
         }
         return refuse(
           printableLine(
-            `${turnedAway.why} after ${waited / 1_000} s of waits, and this command waits at most ${NOT_NOW_WAIT_MS / 1_000} s: ${messageFor(error)}`
+            `${turnedAway.why}, and the ${bound.totalMs / 1_000} s this command may take leave no time to ask again: ${messageFor(error)}`
           ),
           REFUSED,
           parsed.tool

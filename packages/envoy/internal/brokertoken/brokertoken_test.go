@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -145,7 +146,7 @@ func liveToken(jkt string, life time.Duration) brokertoken.Introspection {
 		Session:      "ses_a1b2c3",
 		Person:       "sjawhar",
 		ProjectScope: brokertoken.ProjectScopeNamed,
-		Project:      "INFRA",
+		Projects:     []string{"INFRA"},
 		Scope:        "dispatch.write",
 		ExpiresAt:    time.Now().Add(life).Unix(),
 		ClientID:     brokertoken.ExchangeClientID,
@@ -172,7 +173,7 @@ func machineLoginToken(jkt string, life time.Duration) brokertoken.Introspection
 func serviceToken(jkt string, life time.Duration) brokertoken.Introspection {
 	answer := liveToken(jkt, life)
 	answer.Person, answer.Service = "", "example-fleet"
-	answer.ProjectScope, answer.Project = brokertoken.ProjectScopePerson, ""
+	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
 	return answer
 }
 
@@ -199,13 +200,14 @@ func readOnlyToken(jkt string, life time.Duration) brokertoken.Introspection {
 // this check to fill in. Each leg of the rule is its own token: a machine login's own, one the
 // exchange issued that names neither a person nor a service, one that names a session and a
 // person but comes from
-// another client, and the three whose project scope this package cannot read — an answer
-// carrying no project scope at all, one carrying a word it does not know, and one naming a
-// project scope with no project beside it. Those three are refused rather than read as a token
-// that names no project, which would hand their caller every project the person may write; the
-// one naming a project under no scope would otherwise be the louder of the two, since the
-// project beside the scope is then read under nothing at all. The proof-checked Verify and the
-// answer-only Live refuse all six, so an open connection cannot keep one alive either.
+// another client, and the six whose project scope or list this package cannot read — an answer
+// carrying no project scope at all, one carrying a word it does not know, a named scope with no
+// project and no person, a named scope with two projects, and a list no exchange could have
+// minted. Those are refused rather than read as a token that names no project, which would hand
+// their caller every project the person may write; the one naming a project under no scope would
+// otherwise be the louder of the two, since the project beside the scope is then read under
+// nothing at all. The proof-checked Verify and the answer-only Live refuse every one, so an open
+// connection cannot keep one alive either.
 func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -217,15 +219,21 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	noScope.ProjectScope = ""
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "organisation"
-	namedNoProject := liveToken(caller.jkt, time.Hour)
-	namedNoProject.Project = ""
+	namedNoOne := liveToken(caller.jkt, time.Hour)
+	namedNoOne.Person, namedNoOne.Service, namedNoOne.Projects = "", "example-fleet", nil
+	namedTwo := liveToken(caller.jkt, time.Hour)
+	namedTwo.Projects = []string{"INFRA", "PRIV"}
+	unsorted := liveToken(caller.jkt, time.Hour)
+	unsorted.ProjectScope, unsorted.Projects = brokertoken.ProjectScopePerson, []string{"PUB", "PRIV"}
 	for name, answer := range map[string]brokertoken.Introspection{
-		"a machine login's own token":                 machineLoginToken(caller.jkt, time.Hour),
-		"a token naming neither a person nor service": noOwner,
-		"a token of another client":                   anotherClient,
-		"a token naming no project scope":             noScope,
-		"a token of an unknown project scope":         unknownScope,
-		"a named scope naming no project":             namedNoProject,
+		"a machine login's own token":                   machineLoginToken(caller.jkt, time.Hour),
+		"a token naming neither a person nor service":   noOwner,
+		"a token of another client":                     anotherClient,
+		"a token naming no project scope":               noScope,
+		"a token of an unknown project scope":           unknownScope,
+		"a named scope naming no project and no person": namedNoOne,
+		"a named scope naming two projects":             namedTwo,
+		"a list no exchange mints":                      unsorted,
 	} {
 		t.Run(name, func(t *testing.T) {
 			token := "a-token-that-is-" + strings.ReplaceAll(name, " ", "-")
@@ -235,14 +243,14 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 			if !errors.Is(err, brokertoken.ErrNotASession) {
 				t.Fatalf("Verify answered %v, want ErrNotASession", err)
 			}
-			if decided != (brokertoken.Caller{}) {
+			if !reflect.DeepEqual(decided, brokertoken.Caller{}) {
 				t.Fatalf("Verify = %+v, want no caller at all", decided)
 			}
 			live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
 			if !errors.Is(err, brokertoken.ErrNotASession) {
 				t.Fatalf("Live answered %v, want ErrNotASession", err)
 			}
-			if live != (brokertoken.Caller{}) {
+			if !reflect.DeepEqual(live, brokertoken.Caller{}) {
 				t.Fatalf("Live = %+v, want no caller at all", live)
 			}
 		})
@@ -254,6 +262,121 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig.broker.Says(sound, liveToken(caller.jkt, time.Hour))
 	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, sound)); err != nil {
 		t.Fatalf("a session's own token was refused: %v", err)
+	}
+}
+
+// TestLiveRefusesANamedAnswerItCannotRead: a named token is an operator's entry's, which names
+// one project, or none for an account entry naming none, and always a person. An answer of that
+// scope naming two or more projects, or none and no person, is no token the exchange minted and is
+// refused, so a Dispatch reader never takes it as a caller no project limits.
+func TestLiveRefusesANamedAnswerItCannotRead(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	tooMany := make([]string, 17)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("P%02d", i)
+	}
+	for name, projects := range map[string][]string{"two": {"INFRA", "PRIV"}, "sixteen": tooMany[:16], "seventeen": tooMany} {
+		answer := liveToken(caller.jkt, time.Hour)
+		answer.Projects = projects
+		token := "a-named-token-naming-" + name
+		rig.broker.Says(token, answer)
+		if _, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) {
+			t.Errorf("Live of a named answer naming %s projects = %v, want ErrNotASession", name, err)
+		}
+		if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) {
+			t.Errorf("Verify of a named answer naming %s projects = %v, want ErrNotASession", name, err)
+		}
+	}
+}
+
+// TestAnAnswerOfABrokerBeforeTheListIsRefused: a broker before the list answered a named token's
+// one project under `project` and named no `projects`. This reader no longer reads that field, so
+// such an answer would otherwise pass as a named token naming no project — the shared
+// public-session account's shape, which Dispatch holds to no project. It is refused instead, as a
+// token this reader cannot read, whatever else it says; the same answer without `project` is the
+// public-session caller it says it is.
+func TestAnAnswerOfABrokerBeforeTheListIsRefused(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	legacy := fmt.Sprintf(`{"active":true,"session":"ses_a1b2c3","person":"sjawhar","project_scope":"named","project":"INFRA","scope":"dispatch.write","exp":%d,"client_id":%q,"jkt":%q}`,
+		time.Now().Add(time.Hour).Unix(), brokertoken.ExchangeClientID, caller.jkt)
+	const token = "a-token-an-older-broker-minted"
+	rig.broker.SaysRaw(token, legacy)
+	if decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) || !reflect.DeepEqual(decided, brokertoken.Caller{}) {
+		t.Fatalf("Verify of an older broker's named answer = %+v, %v; want no caller and ErrNotASession", decided, err)
+	}
+	if decided, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) || !reflect.DeepEqual(decided, brokertoken.Caller{}) {
+		t.Fatalf("Live of an older broker's named answer = %+v, %v; want no caller and ErrNotASession", decided, err)
+	}
+	const control = "the-same-answer-without-project"
+	rig.broker.SaysRaw(control, strings.Replace(legacy, `"project":"INFRA",`, "", 1))
+	if decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, control)); err != nil || decided.ProjectScope != brokertoken.ProjectScopeNamed || decided.Person != "sjawhar" {
+		t.Fatalf("Verify of the same answer without project = %+v, %v; want the named public-session caller", decided, err)
+	}
+}
+
+// TestANamedAnswerNamingNoProjectIsAPublicSession: an account entry naming a person and no project
+// (the shared public-session account's) mints a named token naming no project; its answer is the
+// caller it says, with the named scope and no project.
+func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	answer := liveToken(caller.jkt, time.Hour)
+	answer.Projects = nil
+	const token = "a-public-session-token"
+	rig.broker.Says(token, answer)
+	want := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: brokertoken.ProjectScopeNamed}
+	for name, decide := range map[string]func() (brokertoken.Caller, error){
+		"Verify": func() (brokertoken.Caller, error) {
+			return rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+		},
+		"Live": func() (brokertoken.Caller, error) {
+			return rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+		},
+	} {
+		decided, err := decide()
+		if err != nil || !reflect.DeepEqual(decided, want) {
+			t.Errorf("%s = %+v, %v; want %+v", name, decided, err, want)
+		}
+	}
+}
+
+// TestLiveRefusesAServiceAnswerWithProjects: a token that names a service and no person names no
+// project (the exchange refuses a machine's trade naming one), so an answer that does is no token
+// the exchange minted.
+func TestLiveRefusesAServiceAnswerWithProjects(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	answer := serviceToken(caller.jkt, time.Hour)
+	answer.Projects = []string{"INFRA"}
+	const token = "a-service-token-naming-a-project"
+	rig.broker.Says(token, answer)
+	if _, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) {
+		t.Fatalf("Live of a service answer naming a project = %v, want ErrNotASession", err)
+	}
+}
+
+// TestCallerCarriesTheProjects: the token's list reaches the Caller whole, under either scope, as
+// the caller's own copy: a named token's one project and a person token's list alike.
+func TestCallerCarriesTheProjects(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	person := liveToken(caller.jkt, time.Hour)
+	person.ProjectScope, person.Projects = brokertoken.ProjectScopePerson, []string{"PRIV", "PUB"}
+	for name, c := range map[string]struct {
+		answer brokertoken.Introspection
+		want   brokertoken.Caller
+	}{
+		"named":  {liveToken(caller.jkt, time.Hour), brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: brokertoken.ProjectScopeNamed}},
+		"person": {person, brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"PRIV", "PUB"}, ProjectScope: brokertoken.ProjectScopePerson}},
+	} {
+		token := "a-" + name + "-token-with-projects"
+		rig.broker.Says(token, c.answer)
+		decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+		if err != nil || !reflect.DeepEqual(decided, c.want) {
+			t.Errorf("Verify(%s) = %+v, %v; want %+v", name, decided, err, c.want)
+		}
 	}
 }
 
@@ -276,29 +399,29 @@ func TestATokenNamingAServiceAndNoPersonIsASessionsCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify refused a token naming a service and no person: %v", err)
 	}
-	if decided != want {
+	if !reflect.DeepEqual(decided, want) {
 		t.Fatalf("Verify = %+v, want %+v: the session and the service, with no person and no project", decided, want)
 	}
 	live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
-	if err != nil || live != want {
+	if err != nil || !reflect.DeepEqual(live, want) {
 		t.Fatalf("Live = %+v, %v; want %+v", live, err, want)
 	}
 }
 
 // TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne: a read-only token — the project scope
-// none beside the one scope read, a service, and no person and no project — is a session's
+// none beside the one scope read, a service, and no person and no projects — is a session's
 // credential only to a verifier whose service asked for it (Options.ServesReadOnly), and is
 // ErrNotASession to every other, as a build before the switch refused it. The verifier that
 // serves one answers its Caller marked read-only, so that service's own gate reads the mark and
 // nothing else.
 //
 // The rule is exact, and the switch widens it by nothing: none in any other shape (no scope, a
-// second word beside read, a person, a project, no service) and the word read beside the
-// project scope named or person are refused by both verifiers. The negative control is a named
-// token carrying a scope that is not read, which both accept unmarked, so each refusal above is
-// the word read's or the shape's and never the scope member's being set at all. Each row goes
-// through Verify and through Live, so an open connection's heartbeat is held to the same rule as
-// the request that opened it.
+// second word beside read, a person, a project in its list, no service) and the word read beside
+// the project scope named or person are refused by both verifiers. The negative control is a
+// named token carrying a scope that is not read, which both accept unmarked, so each refusal
+// above is the word read's or the shape's and never the scope member's being set at all. Each row
+// goes through Verify and through Live, so an open connection's heartbeat is held to the same
+// rule as the request that opened it.
 func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	caller := newSigner(t)
 	readOnly := readOnlyToken(caller.jkt, time.Hour)
@@ -311,16 +434,16 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	withPerson := readOnlyToken(caller.jkt, time.Hour)
 	withPerson.Person = "sjawhar"
 	withProject := readOnlyToken(caller.jkt, time.Hour)
-	withProject.Project = "INFRA"
+	withProject.Projects = []string{"INFRA"}
 	noService := readOnlyToken(caller.jkt, time.Hour)
 	noService.Service = ""
 	namedRead := liveToken(caller.jkt, time.Hour)
 	namedRead.Scope = brokertoken.ScopeRead
 	personRead := liveToken(caller.jkt, time.Hour)
-	personRead.ProjectScope, personRead.Project = brokertoken.ProjectScopePerson, ""
+	personRead.ProjectScope, personRead.Projects = brokertoken.ProjectScopePerson, nil
 	personRead.Scope = "dispatch.write read"
 	named := liveToken(caller.jkt, time.Hour)
-	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Project: "INFRA", ProjectScope: brokertoken.ProjectScopeNamed}
+	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: brokertoken.ProjectScopeNamed}
 
 	rows := []struct {
 		name   string
@@ -355,16 +478,16 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 					want = row.with
 				}
 				var wantErr error
-				if want == (brokertoken.Caller{}) {
+				if reflect.DeepEqual(want, brokertoken.Caller{}) {
 					wantErr = brokertoken.ErrNotASession
 				}
 
 				decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
-				if !errors.Is(err, wantErr) || decided != want {
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(decided, want) {
 					t.Fatalf("Verify = %+v, %v; want %+v, %v", decided, err, want, wantErr)
 				}
 				live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
-				if !errors.Is(err, wantErr) || live != want {
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live, want) {
 					t.Fatalf("Live = %+v, %v; want %+v, %v", live, err, want, wantErr)
 				}
 			})
@@ -383,7 +506,7 @@ func resultsToken(jkt string, life time.Duration) brokertoken.Introspection {
 		Session:      resultsSession,
 		Person:       "ada@example.com",
 		ProjectScope: brokertoken.ProjectScopeResults,
-		Project:      "ACME",
+		Projects:     []string{"ACME"},
 		Scope:        brokertoken.ScopeResults,
 		CI:           resultsRun(),
 		ExpiresAt:    time.Now().Add(life).Unix(),
@@ -417,14 +540,10 @@ func decides(t *testing.T, rig *rig, caller *signer, token string) (brokertoken.
 	return decided, err
 }
 
-// sameCaller reports whether got is want, the run each carries compared by value: a Caller holds
-// the run by pointer, which == compares by address.
+// sameCaller reports whether got is want, the run and the projects each carries compared by what
+// they hold: a Caller holds the run by pointer and the projects as a slice.
 func sameCaller(got, want brokertoken.Caller) bool {
-	if (got.CI == nil) != (want.CI == nil) || (got.CI != nil && *got.CI != *want.CI) {
-		return false
-	}
-	got.CI, want.CI = nil, nil
-	return got == want
+	return reflect.DeepEqual(got, want)
 }
 
 // TestAResultsTokenIsRefusedWhereNotServed: a results token is no session's credential to a
@@ -438,7 +557,7 @@ func TestAResultsTokenIsRefusedWhereNotServed(t *testing.T) {
 		rig := newRig(t, func(options *brokertoken.Options) { options.ServesReadOnly = readOnly })
 		const token = "a-results-token-where-none-is-served"
 		rig.broker.Says(token, resultsToken(caller.jkt, time.Hour))
-		if decided, err := decides(t, rig, caller, token); !errors.Is(err, brokertoken.ErrNotASession) || decided != (brokertoken.Caller{}) {
+		if decided, err := decides(t, rig, caller, token); !errors.Is(err, brokertoken.ErrNotASession) || !reflect.DeepEqual(decided, brokertoken.Caller{}) {
 			t.Errorf("a verifier serving read-only tokens (%t) and no results token decided %+v, %v; want ErrNotASession and no caller", readOnly, decided, err)
 		}
 	}
@@ -454,7 +573,7 @@ func TestAResultsTokenIsServedAsResultsOnly(t *testing.T) {
 	const token = "a-results-token-where-one-is-served"
 	rig.broker.Says(token, resultsToken(caller.jkt, time.Hour))
 	decided, err := decides(t, rig, caller, token)
-	want := brokertoken.Caller{Session: resultsSession, Person: "ada@example.com", Project: "ACME", ProjectScope: brokertoken.ProjectScopeResults, ResultsOnly: true, CI: resultsRun()}
+	want := brokertoken.Caller{Session: resultsSession, Person: "ada@example.com", Projects: []string{"ACME"}, ProjectScope: brokertoken.ProjectScopeResults, ResultsOnly: true, CI: resultsRun()}
 	if err != nil || !sameCaller(decided, want) {
 		t.Fatalf("Verify = %+v (run %+v), %v; want %+v (run %+v)", decided, decided.CI, err, want, want.CI)
 	}
@@ -474,7 +593,7 @@ func TestAResultsScopeBesideANamedProjectScopeIsRefused(t *testing.T) {
 	namedResultsAndRun := namedResults
 	namedResultsAndRun.CI = resultsRun()
 	personResults := liveToken(caller.jkt, time.Hour)
-	personResults.ProjectScope, personResults.Project, personResults.Scope = brokertoken.ProjectScopePerson, "", "dispatch.write results"
+	personResults.ProjectScope, personResults.Projects, personResults.Scope = brokertoken.ProjectScopePerson, nil, "dispatch.write results"
 	noneResults := readOnlyToken(caller.jkt, time.Hour)
 	noneResults.Scope = brokertoken.ScopeResults
 	noScope := resultsToken(caller.jkt, time.Hour)
@@ -485,7 +604,7 @@ func TestAResultsScopeBesideANamedProjectScopeIsRefused(t *testing.T) {
 	twoWords.Scope = "results machine"
 	named := liveToken(caller.jkt, time.Hour)
 	named.Person = "ada@example.com"
-	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "ada@example.com", Project: "INFRA", ProjectScope: brokertoken.ProjectScopeNamed}
+	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "ada@example.com", Projects: []string{"INFRA"}, ProjectScope: brokertoken.ProjectScopeNamed}
 	rows := []struct {
 		name   string
 		answer brokertoken.Introspection
@@ -512,7 +631,7 @@ func TestAResultsScopeBesideANamedProjectScopeIsRefused(t *testing.T) {
 				token := "a-token-of-" + strings.ReplaceAll(switches.name+"-"+row.name, " ", "-")
 				rig.broker.Says(token, row.answer)
 				var wantErr error
-				if row.want == (brokertoken.Caller{}) {
+				if reflect.DeepEqual(row.want, brokertoken.Caller{}) {
 					wantErr = brokertoken.ErrNotASession
 				}
 				if decided, err := decides(t, rig, caller, token); !errors.Is(err, wantErr) || !sameCaller(decided, row.want) {
@@ -528,8 +647,9 @@ func TestAResultsScopeBesideANamedProjectScopeIsRefused(t *testing.T) {
 // commit and job; one that carries none, a run missing a field, a run whose workflow_ref is not
 // its repository, a path and its ref (oauthwire.WorkflowPath), or a run whose commit is not 40
 // lowercase hex or whose run, attempt or check run is not a positive decimal, is no session's
-// credential even to a verifier that serves results tokens. So is one naming no project, no
-// person, or a service, none of which a result entry mints, and a run beside a read-only token.
+// credential even to a verifier that serves results tokens. So is one naming no project, two
+// projects, no person, or a service, none of which a result entry mints, and a run beside a
+// read-only token.
 // The negative control is the whole results token on the same verifier, which it accepts.
 func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 	rig := newRig(t, func(options *brokertoken.Options) { options.ServesResults, options.ServesReadOnly = true, true })
@@ -558,7 +678,8 @@ func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 		"a run whose workflow_ref is not under its repository": spoiled(func(a *brokertoken.Introspection) {
 			a.CI.Repository = "example-org/other-repo"
 		}),
-		"no project":                  spoiled(func(a *brokertoken.Introspection) { a.Project = "" }),
+		"no project":                  spoiled(func(a *brokertoken.Introspection) { a.Projects = nil }),
+		"two projects":                spoiled(func(a *brokertoken.Introspection) { a.Projects = []string{"ACME", "INFRA"} }),
 		"no person":                   spoiled(func(a *brokertoken.Introspection) { a.Person, a.Service = "", "example-fleet" }),
 		"a service beside the person": spoiled(func(a *brokertoken.Introspection) { a.Service = "example-fleet" }),
 		"a run beside a read-only token": func() brokertoken.Introspection {
@@ -570,7 +691,7 @@ func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			token := "a-results-token-with-" + strings.ReplaceAll(name, " ", "-")
 			rig.broker.Says(token, answer)
-			if decided, err := decides(t, rig, caller, token); !errors.Is(err, brokertoken.ErrNotASession) || decided != (brokertoken.Caller{}) {
+			if decided, err := decides(t, rig, caller, token); !errors.Is(err, brokertoken.ErrNotASession) || !reflect.DeepEqual(decided, brokertoken.Caller{}) {
 				t.Fatalf("Verify = %+v, %v; want ErrNotASession and no caller", decided, err)
 			}
 		})
@@ -597,10 +718,10 @@ func TestALiveTokenWithASoundProofIsAccepted(t *testing.T) {
 	wantCaller := brokertoken.Caller{
 		Session:      "ses_a1b2c3",
 		Person:       "sjawhar",
-		Project:      "INFRA",
+		Projects:     []string{"INFRA"},
 		ProjectScope: brokertoken.ProjectScopeNamed,
 	}
-	if decided != wantCaller {
+	if !reflect.DeepEqual(decided, wantCaller) {
 		t.Fatalf("Verify = %+v, want the session, the person, the project and its scope and nothing else of the answer", decided)
 	}
 	if rig.broker.Count() != 1 {
@@ -611,16 +732,14 @@ func TestALiveTokenWithASoundProofIsAccepted(t *testing.T) {
 	}
 }
 
-// TestAPersonScopedTokenNamesNoProject: the broker's project scopes are read where the
-// Caller is built, so a reader takes Project as it stands. A token scoped to its person writes
-// wherever that person may, which is no one project, and carries none even where the answer
-// still names one.
+// TestAPersonScopedTokenNamesNoProject: a token scoped to its person whose trade asked for no
+// project names none, and says so with its scope.
 func TestAPersonScopedTokenNamesNoProject(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
 	const token = "a-dev-box-sessions-token"
 	answer := liveToken(caller.jkt, time.Hour)
-	answer.ProjectScope = brokertoken.ProjectScopePerson
+	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, answer)
 
 	decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
@@ -628,7 +747,7 @@ func TestAPersonScopedTokenNamesNoProject(t *testing.T) {
 		t.Fatalf("Verify refused a person-scoped token: %v", err)
 	}
 	want := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: brokertoken.ProjectScopePerson}
-	if decided != want {
+	if !reflect.DeepEqual(decided, want) {
 		t.Fatalf("Verify = %+v, want the session and the person with the person scope and no project", decided)
 	}
 }
