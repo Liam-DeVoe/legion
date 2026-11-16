@@ -390,8 +390,10 @@ func main() {
 	// this process serves, as document_search is filled above. A reading's check of its ask takes
 	// the answer from the node, which reads an ask the backfill has not stated as open, so a
 	// failure stops the boot, and the release before keeps serving in a roll until this process
-	// can. The process waits here for another booting process that holds the step. Its catch-up
-	// and its later passes run on its own tick once the server listens, below.
+	// can. The process waits here for another booting process that holds the step. Its catch-up,
+	// its count of what the restore and the conversion owe, and its later passes run on its own
+	// tick once the server listens, below: the boot reads only what the first phase reads, so a
+	// table it does not need, held by another transaction, keeps no process from serving.
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	if !boot.HoldDecisionsStep {
 		if err := decisionStep.Boot(ctx); err != nil {
@@ -1968,9 +1970,10 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // conversion still owe (docs.DecisionStepOwed): `{"decisions_documents": n, "answers_left_spec":
 // n, "gated_steps_lists": n, "total": n}`, the decisions documents still standing, the answered
 // asks whose block left their spec, the stored lists of gated steps that hold `decisions`, and
-// their sum. It is absent until a pass has run - and so for as long as
-// DISPATCH_TEST_HOLD_DECISIONS_STEP holds the step - and it is read from the step, so the probe
-// adds no statement to the database. It never decides `ok`.
+// their sum. It is absent until a pass of the step's tick has run - the boot's pass counts nothing
+// (docs.DecisionStep.Boot), and DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it
+// is set - and it is read from the step, so the probe adds no statement to the database. It never
+// decides `ok`.
 func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
