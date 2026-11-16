@@ -79,6 +79,15 @@ func (c interestCache) CompleteRead(kvwatch.Read) {
 	r.cache.CompleteRead()
 }
 
+// Unseen names the interests the read must read from the bucket before it completes
+// (kvwatch.Copy.Unseen).
+func (c interestCache) Unseen(kvwatch.Read) []string {
+	r := c.r
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cache.Unseen()
+}
+
 // WaitForCacheReady blocks until both views answer, or until ctx is done. The interest watcher is
 // waited for as ready (kvwatch.Watcher.WaitReady), having ended its first scan or failed to
 // start, and the role claim watcher as servable (kvwatch.Watcher.WaitComplete): the interest view

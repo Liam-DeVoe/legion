@@ -17,6 +17,9 @@ const (
 	timedOutCause    = "a timed-out scan"
 	recreatedCause   = "a recreated bucket"
 	unconfirmedCause = "a read whose stream could not be confirmed"
+	// unverifiedCause is a read that could not read from its bucket a key it would otherwise
+	// remove (readUnseen).
+	unverifiedCause = "a read whose unseen keys could not be read"
 	// scheduledCause is the read a completed read arms (WithScheduledRead, armScheduledRead).
 	scheduledCause = "a scheduled read"
 )

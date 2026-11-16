@@ -560,6 +560,16 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 	r.cache.CompleteRead()
 }
 
+// Unseen names the sessions the read must read from the bucket before it completes
+// (kvwatch.Copy.Unseen): a row the copy retained past its deadline while it did not follow is one,
+// since the bucket may have dropped its record without a marker.
+func (c sessionCache) Unseen(kvwatch.Read) []string {
+	r := c.r
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cache.Unseen()
+}
+
 // decodeLocked is the row a put record of the bucket, delivered or read, leaves in the cache, with
 // its local expiry measured from the record's Created (expiryFor).
 //

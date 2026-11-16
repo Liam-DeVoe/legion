@@ -59,6 +59,12 @@ func (s *seen) CompleteRead(read kvwatch.Read) {
 	s.completed = append(s.completed, read)
 }
 
+func (s *seen) Unseen(kvwatch.Read) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.keys.Unseen()
+}
+
 // hold puts key in the copy as if an earlier read had left it there, before any read begins.
 func (s *seen) hold(key string) {
 	s.mu.Lock()

@@ -1132,6 +1132,7 @@ type discardingCache struct{}
 func (discardingCache) Apply(kvwatch.Entry, kvwatch.Read) {}
 func (discardingCache) BeginRead(kvwatch.Read)            {}
 func (discardingCache) CompleteRead(kvwatch.Read)         {}
+func (discardingCache) Unseen(kvwatch.Read) []string      { return nil }
 
 // When the session bucket cannot be read, every path that could take a role from its holder takes
 // nothing, and answers inside its bound (roleHolderReadTimeout, well under the 10 s HTTP write

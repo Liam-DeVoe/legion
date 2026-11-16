@@ -532,6 +532,15 @@ func (c ciCache) CompleteRead(kvwatch.Read) {
 	s.cache.CompleteRead()
 }
 
+// Unseen names the records the read must read from the bucket before it completes
+// (kvwatch.Copy.Unseen).
+func (c ciCache) Unseen(kvwatch.Read) []string {
+	s := c.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cache.Unseen()
+}
+
 // newCICopy is the copy of the CI bucket s keeps: the one place its records are decoded, and the
 // one place a record the bucket no longer holds is reported to the summary loop. Every removal
 // the copy makes for the bucket's sake comes through Removed -- a delete or purge marker, a

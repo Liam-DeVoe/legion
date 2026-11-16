@@ -53,6 +53,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/bus"
 )
@@ -68,13 +69,18 @@ type Cache interface {
 	Apply(entry Entry, read Read)
 	// BeginRead says a new read of the whole bucket starts. The cache keeps every entry through it.
 	// A read whose Recreated is set reads a bucket that was deleted and created again, whose
-	// revisions number from 1 again, so the cache drops the deleted bucket's revision fence, takes
-	// the new bucket's in its place (Copy.BeginRead), and keeps its entries.
+	// revisions number from 1 again, so the cache drops its revision fence (and keeps its entries).
 	BeginRead(read Read)
 	// CompleteRead says the read delivered every record of its bucket: the cache removes the entries
 	// the read found no evidence of (Copy.CompleteRead). A read that times out or ends before its
 	// end marker never completes, and removes nothing.
 	CompleteRead(read Read)
+	// Unseen names the keys the read must read from the bucket itself before it completes
+	// (Copy.Unseen), asked once its scan has ended: those whose entry the scan did not deliver, and
+	// those a write site touched while a watch was in flight. The watcher reads each one from the
+	// stream's leader and applies each record found through Apply, so CompleteRead removes only
+	// what the bucket does not hold (readUnseen). A cache that keeps no copy names none.
+	Unseen(read Read) []string
 }
 
 // Read names one read of the bucket: the watcher generation that reads it, as the cache sees it.
@@ -82,20 +88,13 @@ type Read struct {
 	// Epoch counts the bucket's incarnations the watcher has read: it moves only when a watch
 	// installs onto a stream other than the one the watcher read before (the bucket was recreated),
 	// and a Rewatch onto the same stream keeps it. A write a store made through a handle of an
-	// earlier epoch (Handle) is not applied to the cache. A recreated read's epoch is given when its
-	// watch reads the new stream, and Handle names it from then on (Watcher.ahead).
+	// earlier epoch (Handle) is not applied to the cache.
 	Epoch uint64
 	// Recreated says this read is the first of a new epoch.
 	Recreated bool
 	// MaxAge is the stream's MaxAge, the bucket's TTL, as the watch read it before it installed
 	// this read: a bucket recreated with another TTL moves it. 0 keeps records for good.
 	MaxAge time.Duration
-	// LastSeq is the stream's last sequence as the watch read it, before it made the consumer
-	// this read's scan comes from. A record past it may have landed after that consumer was made,
-	// and then the scan does not deliver it: the watcher delivers it after the scan's end. The
-	// copy keeps what it took at a revision past LastSeq through this read's sweep
-	// (Copy.BeginRead). A read of an empty stream has 0.
-	LastSeq uint64
 }
 
 // Watcher is one cache's KV watcher, from New.
@@ -211,14 +210,6 @@ type Watcher struct {
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
 	bound time.Duration
-	// ahead is the epoch of aheadStream, a stream other than the current watcher's that a watch has
-	// read and whose read has not installed yet: the bucket deleted and created again. From that
-	// read on, a write through the handle lands in that stream, so Handle names ahead, and the
-	// read installs with it (installEpoch). aheadStream is zero when no such read is pending.
-	// epochs is the highest epoch given so far, to epoch or to ahead.
-	ahead       uint64
-	aheadStream time.Time
-	epochs      uint64
 
 	// completedOnce is set by the first read that completed, and following while the copy follows
 	// the bucket: from a read's completion until the next stop (stopFollowing, watch). staleSince is
@@ -377,18 +368,14 @@ func (w *Watcher) KV() bus.KeyValue {
 	return w.kv
 }
 
-// Handle is the bucket handle the store reads and writes through and the epoch of the bucket a call
-// through it reaches, read together: a store captures both before a KV call and applies the call's
-// result to its cache only while that epoch is still one the copy takes (Copy.Put, Apply, Evict),
-// so a result from a bucket since recreated never fences out the new bucket's revisions. The epoch
-// is the current read's, or, once a watch has read the bucket's stream as another one - the bucket
-// deleted and created again - the epoch that stream's read will install with (ahead): every call
-// made from then on reaches that stream, and the copy keeps what it took through that epoch for the
-// new bucket's read.
+// Handle is the bucket handle the store reads and writes through and the epoch of the bucket it is
+// a handle on, read together: a store captures both before a KV call and applies the call's result
+// to its cache only while Epoch is still that epoch, so a result from a bucket since recreated
+// never fences out the new bucket's revisions.
 func (w *Watcher) Handle() (bus.KeyValue, uint64) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.kv, w.handleEpoch()
+	return w.kv, w.epoch
 }
 
 // Epoch is the current read's Read.Epoch: it moves only when a watch installs onto a recreated
@@ -399,45 +386,15 @@ func (w *Watcher) Epoch() uint64 {
 	return w.epoch
 }
 
-// takes reports whether a result through a handle of epoch (Handle) may reach the copy: it is of the
-// current read's epoch, or of the one a watch has read ahead of its install. Callers hold no lock of
-// the watcher's.
-func (w *Watcher) takes(epoch uint64) bool {
+// epochInFlight is Epoch, and whether a watch is in flight (watching), read together: a write site
+// that takes a result while one is makes its key unsure (Copy.current). A watch counts as in
+// flight from before it reads the bucket's stream until it has installed its read and begun it, so
+// every result that lands between the consumer it makes and that read's start is taken while it
+// is.
+func (w *Watcher) epochInFlight() (uint64, bool) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return epoch == w.epoch || epoch == w.handleEpoch()
-}
-
-// handleEpoch is the epoch Handle names, under mu.
-func (w *Watcher) handleEpoch() uint64 {
-	if w.aheadStream.IsZero() {
-		return w.epoch
-	}
-	return w.ahead
-}
-
-// readAhead records, under mu, that a watch read the bucket's stream as stream. A stream other than
-// the current watcher's, and other than one already read ahead, is the bucket deleted and created
-// again: it is given the next epoch, which Handle names from here on (ahead).
-func (w *Watcher) readAhead(stream time.Time) {
-	if w.stream.IsZero() || stream.Equal(w.stream) || stream.Equal(w.aheadStream) {
-		return
-	}
-	w.epochs++
-	w.ahead, w.aheadStream = w.epochs, stream
-}
-
-// installEpoch is the epoch a watch that installs onto stream, a recreated bucket, gives its read,
-// under mu: the one stream was read ahead with, which Handle has named since, or the next one when
-// another stream was read ahead since (readAhead).
-func (w *Watcher) installEpoch(stream time.Time) uint64 {
-	if !w.aheadStream.IsZero() && stream.Equal(w.aheadStream) {
-		epoch := w.ahead
-		w.ahead, w.aheadStream = 0, time.Time{}
-		return epoch
-	}
-	w.epochs++
-	return w.epochs
+	return w.epoch, w.watching > 0
 }
 
 // Err is the current watcher's terminal error, or nil while it runs.
@@ -515,9 +472,6 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 		return err
 	}
 	stream := state.Created
-	w.mu.Lock()
-	w.readAhead(stream)
-	w.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	watcher, err := kv.WatchKeys(ctx, jetstream.AllKeys)
 	if err != nil {
@@ -568,7 +522,7 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	previous := w.watcher
 	recreated := !w.stream.IsZero() && !stream.Equal(w.stream)
 	if recreated {
-		w.epoch = w.installEpoch(stream)
+		w.epoch++
 	}
 	w.generation++
 	generation := w.generation
@@ -597,7 +551,7 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	idle := make(chan struct{}, 1)
 	idleSince := w.now()
 	w.armIdle(w.scanIdle, idle)
-	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge, LastSeq: state.LastSeq}
+	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge}
 	w.mu.Unlock()
 	w.cache.BeginRead(read)
 	w.applyMu.Unlock()
@@ -776,24 +730,101 @@ func (w *Watcher) clearIdleArm() {
 	w.idleTimer = nil
 }
 
+// unseenReads is how many keys readUnseen reads from the bucket at once.
+const unseenReads = 16
+
+// readUnseen reads from the bucket each key the cache names for generation's read, whose scan has
+// ended (Cache.Unseen), and applies each record the bucket holds to the cache as a delivered record
+// (Cache.Apply): the copy takes the bucket's value and revision through its fence, and the key is
+// marked, so CompleteRead keeps it. A key the bucket holds no record of (nats.ErrKeyNotFound, which
+// a newest message that is a delete or purge marker reads as), or one NATS refuses to name, so
+// that no record can be held under it (bus.ErrRefused), is left for CompleteRead to remove. Each
+// key is read from the stream's leader (bus.KeyValue.GetFromLeader): a direct get can be answered
+// by a copy of the stream that has not applied a write a moment old, and its not-found would remove
+// a row the bucket holds. At most unseenReads are in flight, each bounded by bus.RequestTimeout; any
+// other failure ends the rest, and is returned with nothing applied, for the caller to remove
+// nothing and read the bucket again. A generation replaced or stopped meanwhile sends no further
+// read and applies nothing.
+func (w *Watcher) readUnseen(generation uint64, read Read) error {
+	w.applyMu.Lock()
+	w.mu.RLock()
+	current := generation == w.generation && !w.stopped
+	kv := w.kv
+	w.mu.RUnlock()
+	var keys []string
+	if current {
+		keys = w.cache.Unseen(read)
+	}
+	w.applyMu.Unlock()
+	if len(keys) == 0 {
+		return nil
+	}
+	found := make([]nats.KeyValueEntry, len(keys))
+	reads, ctx := errgroup.WithContext(context.Background())
+	reads.SetLimit(unseenReads)
+	for i, key := range keys {
+		reads.Go(func() error {
+			if !w.current(generation) {
+				return nil
+			}
+			entry, err := kv.GetFromLeader(ctx, key)
+			switch {
+			case err == nil:
+				found[i] = entry
+			case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, bus.ErrRefused):
+			default:
+				return err
+			}
+			return nil
+		})
+	}
+	if err := reads.Wait(); err != nil {
+		return err
+	}
+	w.applyMu.Lock()
+	defer w.applyMu.Unlock()
+	if !w.current(generation) {
+		return nil
+	}
+	for _, entry := range found {
+		if entry != nil {
+			w.cache.Apply(LegacyEntry(entry), read)
+		}
+	}
+	return nil
+}
+
 // completeRead completes generation's read, whose scan delivered every record. While the read may
-// complete, it first reads the bucket's stream, outside the locks (confirmStream): nats.go's ordered
-// consumer can move onto a bucket recreated during the scan and end the scan with records of two
-// streams, so a read is complete only of the stream it was installed on. Another stream, or none,
-// stops the copy following and completes nothing, and the new bucket is read again; a stream read
-// that fails completes nothing and is read again after rereadDelay, as a timed-out scan is. Then,
-// under applyMu, so no other hook runs between the check and the state write, it checks the read
-// may still complete (completes), has the cache sweep what the read did not find (CompleteRead),
-// and only then records that the copy follows its bucket, so expiry that waits on following
-// resumes only after the sweep. A recreate found, or a disconnect, between the sweep and the state
-// write skips the write: the read did deliver every record of the stream it read, so its sweep
-// stands, and the copy stays not following until the next read. A read that completes arms the
-// generation's scheduled read (WithScheduledRead), so its wait counts from this completion.
+// complete, it first reads from the bucket itself each key the cache would otherwise remove on the
+// scan's word alone, or that a write site touched while a watch was in flight (readUnseen), and
+// applies what the bucket holds; a read of them that fails completes nothing and is read again
+// after rereadDelay, so no row is removed on an error. It then reads the bucket's stream, outside
+// the locks (confirmStream): nats.go's ordered consumer can move onto a bucket recreated during the
+// scan and end the scan with records of two streams, so a read is complete only of the stream it
+// was installed on, and that read comes after the keys' reads, so it vouches for them too. Another
+// stream, or none, stops the copy following and completes nothing, and the new bucket is read
+// again; a stream read that fails completes nothing and is read again after rereadDelay, as a
+// timed-out scan is. Then, under applyMu, so no other hook runs between the check and the state
+// write, it checks the read may still complete (completes), has the cache sweep what the read did
+// not find (CompleteRead), and only then records that the copy follows its bucket, so expiry that
+// waits on following resumes only after the sweep. A recreate found, or a disconnect, between the
+// sweep and the state write skips the write: the read did deliver every record of the stream it
+// read, so its sweep stands, and the copy stays not following until the next read. A read that
+// completes arms the generation's scheduled read (WithScheduledRead), so its wait counts from this
+// completion.
 func (w *Watcher) completeRead(generation uint64, read Read) {
 	w.mu.RLock()
 	completes := w.completes(generation)
 	w.mu.RUnlock()
 	if completes {
+		if err := w.readUnseen(generation, read); err != nil {
+			if w.current(generation) {
+				w.logger().Warn(w.name+" read could not read from its bucket a key its scan did not deliver; it removes nothing and is read again",
+					slog.String("bucket", w.bucket), slog.String("error", err.Error()))
+			}
+			w.readAgainLater(generation, unverifiedCause)
+			return
+		}
 		switch w.confirmStream(generation) {
 		case streamReplaced:
 			return

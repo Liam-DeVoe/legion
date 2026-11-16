@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"testing"
 	"time"
@@ -36,13 +35,10 @@ func (r *SessionRegistry) applyWatched(entry natsgo.KeyValueEntry) {
 
 // sweep runs a read of the bucket that delivers nothing, so the copy removes every row and fence
 // entry it found no evidence of (kvwatch.Copy.CompleteRead): the one place the merged design
-// drops a fence, in place of the lastSeen deadline that dropped it before. The read's stream is
-// past every revision the copy took (kvwatch.Read.LastSeq), so none of them is a write the read
-// could have missed.
+// drops a fence, in place of the lastSeen deadline that dropped it before.
 func (r *SessionRegistry) sweep() {
-	read := kvwatch.Read{LastSeq: math.MaxUint64}
-	sessionCache{r}.BeginRead(read)
-	sessionCache{r}.CompleteRead(read)
+	sessionCache{r}.BeginRead(kvwatch.Read{})
+	sessionCache{r}.CompleteRead(kvwatch.Read{})
 }
 
 // watchedEntry is a nats.KeyValueEntry the session bucket's watcher could have delivered.
