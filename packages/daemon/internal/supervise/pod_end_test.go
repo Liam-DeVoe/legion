@@ -555,8 +555,10 @@ func TestAnEndFromOutsideThePodEndsTheTurnItInterruptedSoLaterIdleEndsAreNotCoun
 	h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
 	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
 	h.relaunched()
-	if p := h.claim().Pending; p != nil {
-		t.Fatalf("the relaunched claim holds %+v, want nothing pending", p)
+	// The relaunch may carry the record of the turn the end cut off (a relaunch delivery, which is
+	// no task: HoldsTask), and nothing else.
+	if p := h.claim().Pending; HoldsTask(p) {
+		t.Fatalf("the relaunched claim holds %+v, want no task pending", p)
 	}
 
 	for end := 2; end <= limit+1; end++ {
@@ -593,7 +595,7 @@ func TestAMessageStartedTurnEndedFromOutsideAtEachRelaunchIsChargedADeathAtTheLi
 			turnEndedFromOutside := func() {
 				t.Helper()
 				h.wantState(StateReady)
-				if p := h.claim().Pending; p != nil {
+				if p := h.claim().Pending; HoldsTask(p) {
 					t.Fatalf("the claim holds %+v, want no task: the turn is a message's", p)
 				}
 				h.advance(time.Minute)
