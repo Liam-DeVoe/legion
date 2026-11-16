@@ -196,7 +196,7 @@ export function IssuePresets({
         {/* Named by what it draws - "Spec 21" - since the signal is inside this control and
             nothing holds it to a name of its own (WCAG 2.5.3). */}
         <div
-          className="relative flex min-w-0 max-[760px]:flex-1 min-[761px]:shrink"
+          className="relative flex min-w-0 max-[761px]:flex-1 min-[761px]:shrink"
           data-testid="issue-presets"
         >
           <button

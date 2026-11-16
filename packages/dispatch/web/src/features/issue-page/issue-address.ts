@@ -203,13 +203,14 @@ export function issueAddress(
  * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
  * for every other target, and while the reads that tell are not in (`agents-only.ts`). `asks`
  * is the asks read, which tells a reply under a question the outline draws from one under an
- * approval request, which it does not; without it a reply under any ask is the outline's.
+ * approval request, which it does not; a caller that has not read the asks passes `undefined`,
+ * and a reply under any ask is then the outline's.
  */
 export function agentsOnlyItem(
   target: AddressTarget | undefined,
   comments: readonly Pick<Comment, "ask_id" | "author" | "id" | "reply_to">[] | undefined,
   messages: readonly MessageRead[] | undefined,
-  asks?: readonly Pick<Ask, "id" | "kind">[]
+  asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): string | undefined {
   if (target?.kind !== "item") return undefined;
   return agentsOnlyIds(comments, messages, asks).has(target.id) ? target.id : undefined;

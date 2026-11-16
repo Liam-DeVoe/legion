@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
-import type { NodeType, Preset } from "./page-words";
+import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
@@ -314,6 +314,28 @@ test("a parent whose reading opens with a heading draws that heading alone as it
     "spec#b-r1": `ask: ${heading}`,
     "spec#b-r2": `ask: ${heading}`,
   });
+});
+
+// R22: an id is no name a reader reads. A parent a filter draws as no row and that holds no
+// words - no text at all, or a reading none of whose blocks holds a word - is drawn on its
+// child's row as the page's word for its kind, never as its id.
+test("a parent with no words is drawn on its child's row as its kind's word, never its id", () => {
+  const ruled: DisplayTree = { content: [{ type: "horizontal_rule" }], type: "doc" };
+  const root = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [node("plan#b-t1", "plan_task")], { text: "" }),
+    node("comment-1", "comment", [node("plan#b-t2", "plan_task")], { text: "---", tree: ruled }),
+    node("ask-1", "ask", [node("plan#b-t3", "plan_task")], { state: "answered", text: "" }),
+  ]);
+  const view = presetView(root, "plan", "");
+  expect(drawn(root, "plan")).toEqual(["plan#b-t1", "plan#b-t2", "plan#b-t3"]);
+  expect(parentLines(view.root)).toEqual({
+    "plan#b-t1": `requirement: ${NODE_TYPE_NAMES.requirement}`,
+    "plan#b-t2": `comment: ${NODE_TYPE_NAMES.comment}`,
+    "plan#b-t3": `ask: ${NODE_TYPE_NAMES.ask}`,
+  });
+  for (const row of view.root.children) {
+    expect(row.parentLine?.line).not.toBe(row.parentLine?.id);
+  }
 });
 
 // The words filter read a node's stored source, so a comment drawn as "bold text" and stored as

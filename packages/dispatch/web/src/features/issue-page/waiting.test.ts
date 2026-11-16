@@ -2,13 +2,15 @@ import { expect, test } from "bun:test";
 
 import type {
   Artifact,
+  ArtifactBlock,
   Comment,
   Decision,
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
 } from "../../api/types";
-import { buildIssueTree, type TreeNode } from "./issue-tree";
+import { decisionChangeComments } from "./decision-review";
+import { buildIssueTree, type DocumentBlocks, type TreeNode } from "./issue-tree";
 import { treeContext } from "./tree-drafts";
 import { waitingOnReader } from "./waiting";
 
@@ -232,13 +234,79 @@ function waitingIn(root: TreeNode): string[] {
 // open approval request whose turn is theirs. The tree marks the same question and the same
 // decision; an approval request is no node of it. While the login is not known, nothing waits.
 test("what waits on the reader is their open questions, the review list and their approval requests", () => {
-  const counted = waitingOnReader(issue, "alice", decisions, isStatement, [change]);
+  const counted = waitingOnReader(issue, "alice", decisions, isStatement, [change], undefined);
   expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
 
   const root = buildIssueTree({ comments: [change], coverage, decisions, issue, viewer: "alice" });
   // The decisions no question holds are drawn above the conversation (`ROOT_ORDER`).
   expect(waitingIn(root)).toEqual(["decisions-md#b-listed", "mine"]);
 
-  expect(waitingOnReader(issue, undefined, decisions, isStatement, [change]).total).toBe(0);
+  const unknown = waitingOnReader(issue, undefined, decisions, isStatement, [change], undefined);
+  expect(unknown.total).toBe(0);
   expect(waitingIn(buildIssueTree({ comments: [change], coverage, decisions, issue }))).toEqual([]);
+});
+
+// R3, R7 and R13: a Change belongs to the decision whose section of the decisions document holds
+// the block the person wrote it in (`Anchor.block_id`), though another decision holds its words
+// too. So the count leaves out the decision that was changed and counts the one that still
+// waits, as the tree marks them. Where the anchor stores no block, the quote alone decides: the
+// first decision whose words hold it.
+test("waitingOnReader counts a Change under the decision whose block holds its anchor", () => {
+  const tied = (blockId: string, text: string): Decision => ({
+    ...waitingDecision(blockId, ["r1"]),
+    text,
+  });
+  const first = tied("d1", "## Keep the model pure\n\nKeep the model pure. Draw it once.");
+  const second = tied("d2", "## Draw it once\n\nDraw it once.");
+  const both: IssueDecisions = { ...decisions, decisions: [first, second] };
+  const anchor = {
+    artifact_id: made.id,
+    block_id: "d2-words",
+    mark_id: "c-change",
+    orphaned: false,
+    quote: "Draw it once.",
+    version: 3,
+  };
+  const moved: Comment = { ...change, anchor, id: "c-change" };
+  // The decisions document's blocks in their order, as the blocks read answers them: each
+  // decision's heading, then its paragraph.
+  const placed = (id: string, type: string, from: number, to: number): ArtifactBlock => ({
+    attributes: [],
+    from,
+    id,
+    references: { asks: 0, comments: 0 },
+    to,
+    token: id,
+    type,
+  });
+  const documents: DocumentBlocks[] = [
+    {
+      artifactId: made.id,
+      blocks: [
+        placed("d1", "heading", 0, 24),
+        placed("d1-words", "paragraph", 26, 62),
+        placed("d2", "heading", 64, 80),
+        placed("d2-words", "paragraph", 82, 96),
+      ],
+    },
+  ];
+  const counted = waitingOnReader(issue, "alice", both, isStatement, [moved], documents);
+  const root = buildIssueTree({
+    comments: [moved],
+    coverage,
+    decisions: both,
+    documents,
+    issue,
+    viewer: "alice",
+  });
+  const waitingDecisions = waitingIn(root).filter((id) => id.startsWith("decisions-md#"));
+
+  expect(waitingDecisions).toEqual(["decisions-md#b-d1"]);
+  expect(counted.decisions).toBe(1);
+  expect(counted.decisions).toBe(waitingDecisions.length);
+
+  const unplaced: Comment = { ...moved, anchor: { ...anchor, block_id: null } };
+  expect(decisionChangeComments(both, [unplaced], issue.artifacts, documents)).toEqual(
+    new Map([["c-change", first.ref]])
+  );
 });

@@ -355,7 +355,7 @@ function DetailsDrawer({
         // The prototype's `#scrim`, at its `isNarrow` width alone.
         <div
           aria-hidden="true"
-          className="fixed inset-0 z-40 hidden bg-[rgba(28,25,23,0.25)] max-[760px]:block"
+          className="fixed inset-0 z-40 hidden bg-[rgba(28,25,23,0.25)] max-[761px]:block"
           data-testid="details-shade"
           onClick={() => setOpen(false)}
         />
