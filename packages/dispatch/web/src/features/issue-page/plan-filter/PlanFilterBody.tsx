@@ -32,7 +32,7 @@ import { useSetFocusedNode } from "../focused-node";
 import { IssueTree } from "../IssueTree";
 import { bringOnScreen } from "../identity-block";
 import { documentOfNode } from "../issue-artifacts";
-import { firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
+import { drawnLine, firstLineOf, nodeWords, type TreeNode } from "../issue-tree";
 import { DETAILS_ATTRIBUTE } from "../margin-slot";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
@@ -299,18 +299,27 @@ function CycleLine({ cycle, inChart = false }: { cycle: PlanCycle; inChart?: boo
 
 /** The task's own first line, which is the one line the page draws for it wherever it draws
  *  one (R1, R26: "each bar labelled with the task's first line"), from the server's reading of
- *  its text where the page holds one (`nodeWords`). A task that holds no words is named by the
- *  page's word for its kind, and never by its id (R22). The marks say whose words the line is,
- *  and F's name of a `needs` chip pointing at the task: the author's, or the page's own for a
- *  task that holds none, since both are then its kind's word. */
+ *  its text where the page holds one (`nodeWords`). `words` is the line as the chart and a
+ *  cycle's line draw it: with part F's ellipsis where the cut falls inside a sentence
+ *  (`drawnLine`, ruling 1 of dispatch://INFRA-1196), as G's row draws the same task under
+ *  "Steps" (`NodeRow.tsx`), so the switch changes the drawing alone (dispatch://INFRA-3938 R4
+ *  and R6). `title` is the line Details is given, which is the outline's title for a row: the
+ *  line itself, with no ellipsis (`IssueTree.tsx`'s `takeFocus`). A task that holds no words is
+ *  named by the page's word for its kind in both, and never by its id (R22,
+ *  dispatch://INFRA-3938 R3). The marks say whose words the line is, and F's name of a `needs`
+ *  chip pointing at the task: the author's, or the page's own for a task that holds none, since
+ *  both are then its kind's word. */
 function taskLine(task: TreeNode): {
   readonly marks: Readonly<Record<string, string>>;
+  readonly title: string;
   readonly words: string;
 } {
-  const own = firstLineOf(nodeWords(task)).line;
-  return own === ""
-    ? { marks: pageChrome, words: NODE_TYPE_NAMES[task.type] }
-    : { marks: authorText, words: own };
+  const first = firstLineOf(nodeWords(task));
+  if (first.line === "") {
+    const kind = NODE_TYPE_NAMES[task.type];
+    return { marks: pageChrome, title: kind, words: kind };
+  }
+  return { marks: authorText, title: first.line, words: drawnLine(first) };
 }
 
 /** One task of a cycle, by its own first line, as the link a reader follows to it: in no tab
@@ -386,7 +395,11 @@ interface DrawnPlace {
  * `j`/`k` reach the bars in order and pass over a cycle's row, Home and End the first and the
  * last bar, `f` steps through the focused row's links, Escape gives a row back from its link and
  * leaves the chart from the row, and Enter goes to the row's task in the conversation, where it
- * is edited (dispatch://INFRA-3938 R7). The focus on a row puts its task in Details.
+ * is edited (dispatch://INFRA-3938 R7). The focus on a row puts its task in Details. A focus
+ * anywhere inside a row - the row's own, or a link of it that a pointer went down on - is the
+ * focus on that row, as it is on the outline's (`NodeRow.tsx`): the mark, the heavier curves,
+ * Details and the Tab stop stand where the focus is, and the keys, which find the row that
+ * holds the focus (`at`), move from there.
  *
  * A cycle's row takes the focus too, as a bar's does: a press on it, an address naming one of
  * its tasks, and the Tab stop where the chart draws no bar (decision 2 of dispatch://INFRA-3938's
@@ -459,7 +472,7 @@ function PlanChart({
         ...(task.author === undefined ? {} : { author: task.author }),
         id: task.id,
         ...(task.reference === undefined ? {} : { reference: task.reference }),
-        title: taskLine(task).words,
+        title: taskLine(task).title,
         type: task.type,
       });
     },
@@ -789,9 +802,10 @@ function PlanChart({
  * focus stands on as it does on a step's (decision 2 of dispatch://INFRA-3938's plan). It stands
  * for `task` - the task the address names where it is one of the cycle's, else its first - which
  * is its node id, so the page's `[data-node-row]` readers (D's `t p`, Details) reach it as any
- * row, and which it gives to Details when it takes the focus. `data-plan-cycle-row` holds every
- * task of it. It places itself on screen as every row does (`useRowOnScreen`, R7), and its
- * focus is marked as a step's is, not by colour alone.
+ * row, and which it gives to Details when it takes the focus: a focus inside it, on one of its
+ * task links as well as on the row, takes the focus for it (`PlanChart`, dispatch://INFRA-3938
+ * R7). `data-plan-cycle-row` holds every task of it. It places itself on screen as every row
+ * does (`useRowOnScreen`, R7), and its focus is marked as a step's is, not by colour alone.
  */
 function CycleRow({
   cycle,
@@ -818,9 +832,7 @@ function CycleRow({
       data-node-row=""
       data-node-type={task.type}
       data-plan-cycle-row={cycleIds(cycle.tasks)}
-      onFocus={(event) => {
-        if (event.target === event.currentTarget) onFocus();
-      }}
+      onFocus={onFocus}
       onPointerDown={press}
       ref={ref}
       role="treeitem"
@@ -879,9 +891,10 @@ const Units = memo(function Units({ end }: { end: number }): ReactNode {
  * line under it: 3 px of its own margin and the card's 5 px between two lines, which is also
  * what parts the chips' lines where they wrap.
  *
- * The focused row places itself on screen, clear of the band that stays at the top, by the
- * outline's one hook, and a press on it is left where the reader pressed (`useRowOnScreen`,
- * dispatch://INFRA-3938 R7).
+ * A focus inside the row, on one of its statement links as well as on the row, takes the focus
+ * for it (`PlanChart`). The focused row places itself on screen, clear of the band that stays at
+ * the top, by the outline's one hook, and a press on it is left where the reader pressed
+ * (`useRowOnScreen`, dispatch://INFRA-3938 R7).
  */
 function BarRow({
   bar,
@@ -922,9 +935,7 @@ function BarRow({
       data-node-type={task.type}
       data-plan-bar-row=""
       data-plan-start={bar.start}
-      onFocus={(event) => {
-        if (event.target === event.currentTarget) onFocus();
-      }}
+      onFocus={onFocus}
       onPointerDown={press}
       ref={ref}
       role="treeitem"

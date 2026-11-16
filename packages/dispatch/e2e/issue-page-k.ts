@@ -183,8 +183,9 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
 }
 
 /** What R4 reads of the chart's head row: where "Serves" starts against the first statements'
- *  column, and the boxes of its middle cell and of each line of the axis. Null where the chart
- *  draws no head row. */
+ *  column, and the boxes of its middle cell and of each line of the axis. Null where no chart is
+ *  drawn. At 760 px and below the chart draws its head row hidden (`display: none`), so the row
+ *  is there and every box and edge read of it is 0. */
 export interface HeadLayout {
   readonly axis: readonly Box[];
   readonly middle: Box;

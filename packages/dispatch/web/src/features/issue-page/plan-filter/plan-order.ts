@@ -16,7 +16,7 @@ import { blockNodeId } from "../tree-drafts";
  * that lists them (R26). Everything that waits on a cycle keeps its place after it.
  *
  * Today's reads hold no position of their own. `needs` is a `block[]` attribute of the plan's
- * own blocks (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:85-89`), which the
+ * own blocks (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:123-127`), which the
  * tree draws as a chip on the task's row (`tree-drafts.ts`'s `placeBlocks`), and the position
  * the plan read gives each task (R26, dispatch://INFRA-1253 R11) waits on that read. So the
  * order is worked out here, from the edges the model does hold, and a task whose `needs` names a

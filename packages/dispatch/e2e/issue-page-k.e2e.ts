@@ -1,8 +1,9 @@
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   DECLARED_WORDS,
+  EMPTY_STATE_LINES,
   PLAN_WORDS,
   PRESET_NAMES,
   wordsIn,
@@ -144,6 +145,50 @@ async function expectPlainView(page: Page, where: string): Promise<void> {
   ).toEqual([]);
 }
 
+/** Every read of a document's blocks, which the tree's tasks and statements are built from
+ *  (`useIssueTree.ts`). */
+const BLOCKS_READ = "**/api/v1/artifacts/*/blocks";
+
+/** R1 before the reads it needs answer: opened with every document's blocks read held, `path`
+ *  draws no line saying the issue has no task and no switch, since a task is a block of the
+ *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`,
+ *  `IssueTreeView.blocksRead`); let go, it draws the chart. */
+async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<void> {
+  const held = Promise.withResolvers<void>();
+  let asked = 0;
+  const hold = async (route: Route) => {
+    asked += 1;
+    await held.promise;
+    await route.continue();
+  };
+  await page.route(BLOCKS_READ, hold);
+  try {
+    await gotoIssue(page, path);
+    await expect
+      .poll(() => asked, { message: `${path} reads no document's blocks` })
+      .toBeGreaterThan(0);
+    // An absence window: a blocks read is out, so the page that sent it has drawn, and a view
+    // that drew before its reads answer would draw its empty line within a frame; 250 ms is
+    // many frames.
+    await page.waitForTimeout(250);
+    await expect(
+      issuePage(page).getByText(EMPTY_STATE_LINES.plan),
+      "the view says the issue has no plan tasks before its blocks are read"
+    ).toHaveCount(0);
+    await expect(
+      issuePage(page).locator("[data-plan-switch]"),
+      "the view draws its switch before its blocks are read"
+    ).toHaveCount(0);
+  } finally {
+    held.resolve();
+  }
+  await expect(
+    planView(page, "chart"),
+    "the view does not draw the chart once its blocks are read"
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.unroute(BLOCKS_READ, hold);
+}
+
 // c-rows (1), as the architect's ruling 5 reads R26 (build-rulings-md): the Plan view opens on
 // the chart of time, and one control switches to the ordered steps. The order and each bar's
 // place are the page's own, worked out from the `needs` the plan document holds
@@ -196,10 +241,8 @@ test.fixme("the Plan filter draws the tasks as ordered steps @phone", async ({ b
     const bar = (id: string) => chart.find((row) => row.kind === "bar" && row.id === id);
 
     // One bar per step, each drawn once, starting where every task it needs has ended.
-    expect(
-      new Set(chart.filter((row) => row.kind === "bar").map((row) => row.id)).size,
-      "a step is drawn more than once"
-    ).toBe(bars.length);
+    const ids = chart.filter((row) => row.kind === "bar").map((row) => row.id);
+    expect(ids.length - new Set(ids).size, "a step is drawn more than once").toBe(0);
     expect(
       bars.map((id) => bar(id)?.start),
       "a bar does not start after the tasks it needs"
@@ -272,14 +315,22 @@ test.fixme("the Plan filter draws the tasks as ordered steps @phone", async ({ b
     expect(await facts(T.loose), `${T.loose} names a task after "needs"`).toEqual([
       PLAN_WORDS.no_size,
     ]);
-    expect(
-      bar(step(T.first))?.serves,
-      `${T.first} names other than the one statement it serves`
-    ).toHaveLength(1);
-    expect(
-      bar(step(T.third))?.serves,
-      `${T.third} does not name both statements it serves`
-    ).toHaveLength(2);
+    // A statement chip's name comes with the batched names read, as the words of the treeitem's
+    // name read above do, and the chart draws no chip that has no name yet: so the statements
+    // are read again until they hold.
+    const servesOf = async (task: string) =>
+      (await planChartRows(page)).find((row) => row.kind === "bar" && row.id === step(task))
+        ?.serves;
+    await expect
+      .poll(() => servesOf(T.first), {
+        message: `${T.first} names other than the one statement it serves`,
+      })
+      .toHaveLength(1);
+    await expect
+      .poll(() => servesOf(T.third), {
+        message: `${T.third} does not name both statements it serves`,
+      })
+      .toHaveLength(2);
     await expect(
       nodeRow(page, step(T.first)).locator(
         `a[data-plan-serve][href$="#b-${requirementBlockId(1)}"]`
@@ -497,10 +548,13 @@ test.fixme("the Plan view's chart is reached in order with the keyboard @phone",
     await expect
       .poll(() => focusedNodeId(page), { message: `t p does not put the focus on ${T.third}` })
       .toBe(step(T.third));
-    expect(
-      await onScreen(nodeRow(page, step(T.third)).first()),
-      `t p leaves ${T.third}'s row off screen`
-    ).toBe(true);
+    // The row places itself once it holds the focus (`useRowOnScreen`), so it is read until it
+    // stands on screen.
+    await expect
+      .poll(() => onScreen(nodeRow(page, step(T.third)).first()), {
+        message: `t p leaves ${T.third}'s row off screen`,
+      })
+      .toBe(true);
 
     // The arrows reach the bars in order, past the cycle's row, and so do the outline's keys.
     for (const next of [T.second, T.first, T.loose]) await reach("ArrowDown", step(next));
@@ -699,7 +753,9 @@ test.fixme("the Plan view's chart is reached in order with the keyboard @phone",
 
 // c-rows (3), ruling 8's `c-row` reading on Plan (the checkpoint's line 1149): the steps are the
 // outline's own rows, so G's readers of every row hold on them, and the chart names each tie by
-// words and never by an address or a slug.
+// words and never by an address or a slug. Beyond the check: at 1440 px, with the blocks reads
+// held, the view draws no line saying the issue has no task and no switch, and draws the chart
+// once they are let go (dispatch://INFRA-3938 R1; `expectNothingBeforeTheBlocks`).
 // SLOW(>=2s): the whole seeded issue, loaded and read under both drawings at two widths.
 test("the Plan view's steps are drawn as every row of the outline @phone", async ({ browser }) => {
   test.setTimeout(180_000);
@@ -713,19 +769,32 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
         "aria-pressed",
         "true"
       );
+      if (size === DESKTOP) await expectNothingBeforeTheBlocks(page, planPath(seeded.key));
       await expect(
         planChart(page).locator("[data-plan-bar-row]"),
         `${where} does not draw a bar for each task of the plan`
       ).toHaveCount(seeded.planTasks.length);
-      const texts = await planChart(page).evaluate((chart) =>
-        [chart, ...chart.querySelectorAll("*")]
-          .map((element) => (element.textContent ?? "").replace(/\s+/g, " ").trim())
-          .filter((text) => text !== "")
-      );
-      expect(
-        texts.filter((text) => addresses.test(text)),
-        `the chart on ${where} draws an address or a slug`
-      ).toEqual([]);
+      // The chart's words are the batched names read's, which is sent once every other read of
+      // the tree has answered (`useIssueTree.ts`): until it lands a bar reads its kind's word and
+      // a need holds no words. So the texts are read once a need holds words (the seed's later
+      // tasks need the earlier ones), and read again until they hold.
+      await expect(
+        planChart(page).locator("[data-plan-need]").first(),
+        `the chart on ${where} names no need by its words`
+      ).toHaveText(/\S/);
+      await expect
+        .poll(
+          async () =>
+            (
+              await planChart(page).evaluate((chart) =>
+                [chart, ...chart.querySelectorAll("*")]
+                  .map((element) => (element.textContent ?? "").replace(/\s+/g, " ").trim())
+                  .filter((text) => text !== "")
+              )
+            ).filter((text) => addresses.test(text)),
+          { message: `the chart on ${where} draws an address or a slug` }
+        )
+        .toEqual([]);
 
       await planView(page, "steps").click();
       await expect(planView(page, "steps")).toHaveAttribute("aria-pressed", "true");
@@ -826,13 +895,17 @@ test.fixme("on a phone the Plan chart is one card for each step @phone @phone-on
 
 // c-rows (5), the tester's finding F18: a need is named by the needed task's words, as a reader
 // reads them, with none of the marks its markdown is written in, in the chart and in the steps.
+// Beyond the check (the architect's reading): the chart's first reading is that each step's row
+// names its step by its words past the number they start with, and a statement chip draws no
+// `*` or `\` either.
 // Held (decision 8 of the plan): the row waits for part F's fix (commit a5714d8515, decisions 49
 // and 51 of dispatch://INFRA-1196: a block chip named by the words of its `text_tree`, and a
 // number label kept with its sentence) and part G's chip fix (decision 66: G's `Chip` draws
-// `chipWords(chip.name)` with no markdown pass) to be under K's base. Until both are, a task's
-// `needs` chip is named by the raw excerpt of the task's text, so the chart draws a need with its
-// marks, and the row fails on its own reading; t13 of the plan takes the `fixme` off once they
-// land.
+// `chipWords(chip.name)` with no markdown pass) to be under K's base. Until both are, F's
+// `firstLineOf` ends a task's first line at its number's dot, so each chart row reads `1.` or
+// `2.`, and a task's `needs` chip is named by the raw excerpt of the task's text, so the chart
+// draws a need with its marks: the row fails on its own readings; t13 of the plan takes the
+// `fixme` off once they land.
 // SLOW(>=2s): a seeded plan read under both drawings at two widths.
 test.fixme("the Plan view names a needed task by its words, with no mark of their source @phone", async ({
   browser,
@@ -847,7 +920,7 @@ test.fixme("the Plan view names a needed task by its words, with no mark of thei
         ["*", "\\", ":::", "dispatch://"].filter((mark) => words.includes(mark)),
         "a need draws a mark of its source"
       ).toEqual([]);
-      expect(words, "a need draws a mark of its source").toMatch(/^1\./);
+      expect(words, "a need drops the number its task's words start with").toMatch(/^1\./);
       expect(words, "a need is not named by the words of the task it needs").toContain("Stand");
     };
     for (const size of [DESKTOP, PHONE_K]) {
@@ -857,14 +930,32 @@ test.fixme("the Plan view names a needed task by its words, with no mark of thei
         planView(page, "chart"),
         `Plan does not open on the chart at ${size.width} px`
       ).toHaveAttribute("aria-pressed", "true");
+      // The chart's words of a task are the batched names read's, which lands after the blocks
+      // are read (`useIssueTree.ts`): until it does, a need holds no words and a row its kind's
+      // word. So the chart is read once t2's need holds words.
       const need = nodeRow(page, second).first().locator("[data-plan-need]");
+      await expect(need.first(), `t2's need draws no words at ${size.width} px`).toHaveText(/\S/);
+      // Each step's row names its step by its words, and not by the number they start with
+      // alone: t1's words start `**1\. Stand the harness up.**`, t2's `**2\. Read the needs
+      // back.**` (`seedPlanMarks`).
+      for (const [id, words] of [
+        [first, "Stand"],
+        [second, "Read"],
+      ] as const) {
+        await expect(
+          nodeRow(page, id).first().locator("[data-node-words]"),
+          "a chart row names its step by its number alone"
+        ).toContainText(words);
+      }
       await expect(need, `t2 does not name the task it needs at ${size.width} px`).toHaveCount(1);
       await expect(need).toHaveAttribute("data-plan-need", first);
       expectPlainNeed(await need.innerText());
       const serves = nodeRow(page, second).first().locator("[data-plan-serve]");
       await expect(serves, `t2 does not name both statements it serves`).toHaveCount(2);
       expect(
-        (await serves.allInnerTexts()).filter((words) => words.includes("*")),
+        (await serves.allInnerTexts()).filter((words) =>
+          ["*", "\\"].some((mark) => words.includes(mark))
+        ),
         "a statement chip draws a mark of its source"
       ).toEqual([]);
 
@@ -872,15 +963,21 @@ test.fixme("the Plan view names a needed task by its words, with no mark of thei
       await expect(planView(page, "steps")).toHaveAttribute("aria-pressed", "true");
       const chips = nodeRow(page, second).first().locator("[data-node-chip]");
       await expect(chips.first(), `t2's row draws no chip at ${size.width} px`).toBeVisible();
-      const named = await chips.evaluateAll((all) =>
-        all.map((chip) => ({
-          label: (chip.querySelector("[data-page-chrome]")?.textContent ?? "").trim(),
-          name: (chip.querySelector("[data-chip-name]")?.textContent ?? "").trim(),
-        }))
-      );
-      const needs = named.filter((chip) => chip.label === BLOCK_ATTRIBUTE_LABELS.needs);
-      expect(needs, `t2's row does not draw one needs chip at ${size.width} px`).toHaveLength(1);
-      expectPlainNeed(needs[0]?.name ?? "");
+      // G's chip draws its name once its own markdown reading answers (`NodeRow.tsx`'s `Chip`),
+      // so the needs chip is read until it is drawn with a name.
+      const needs = async () =>
+        (
+          await chips.evaluateAll((all) =>
+            all.map((chip) => ({
+              label: (chip.querySelector("[data-page-chrome]")?.textContent ?? "").trim(),
+              name: (chip.querySelector("[data-chip-name]")?.textContent ?? "").trim(),
+            }))
+          )
+        ).flatMap((chip) => (chip.label === BLOCK_ATTRIBUTE_LABELS.needs ? [chip.name] : []));
+      await expect
+        .poll(needs, { message: `t2's row does not draw one needs chip at ${size.width} px` })
+        .toEqual([expect.stringMatching(/\S/)]);
+      expectPlainNeed((await needs())[0] ?? "");
     }
   });
 });

@@ -409,6 +409,21 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
     expect(focusedRow()).toBe(D("t1"));
     await user.keyboard("{Escape}");
     expect(document.activeElement).toBe(document.body);
+    // A focus inside a row takes that row, as a pointer going down on a statement's link does
+    // while another row holds the focus: Details and the one tab stop go with it
+    // (dispatch://INFRA-3938 R7).
+    act(() => rowOf(view, "t2").focus());
+    expect(place?.getAttribute("data-focused")).toBe(D("t2"));
+    const link = rowOf(view, "t1").querySelector<HTMLElement>("a[href]");
+    expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/spec#b-r1`);
+    act(() => link?.focus());
+    expect(document.activeElement).toBe(link);
+    expect(place?.getAttribute("data-focused")).toBe(D("t1"));
+    expect(
+      [...view.container.querySelectorAll('[role="treeitem"][tabindex="0"]')].map((row) =>
+        row.getAttribute("data-node-id")
+      )
+    ).toEqual([D("t1")]);
     // Enter on a step goes to it in the conversation, where it is edited.
     act(() => rowOf(view, "t2").focus());
     await user.keyboard("{Enter}");

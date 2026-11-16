@@ -30,7 +30,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  const { root } = useIssueTree(issue);
+  const { blocksRead, root } = useIssueTree(issue);
   // The address's own node, resolved against the whole tree and read by what it says, as the
   // outline resolves it (`slots/body.tsx`): a step it names takes the focus (R7).
   const targetKind = address.target?.kind;
@@ -75,29 +75,46 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
       ? undefined
       : issue.artifacts?.find((artifact) => artifact.id === editing);
   const isClosed = issue.closed_at !== null;
+  // The issue whose tree documents' blocks have all been read once (`IssueTreeView.blocksRead`).
+  // Until they are, the view draws nothing: a task is a block of the plan document and a
+  // statement one of the spec, so before that read answers the plan holds no task, or tasks that
+  // serve no statement, and the view would say the issue has no task and draw no switch
+  // (dispatch://INFRA-3938 R1; root dispatch://INFRA-1196 R26). A first read that failed has not
+  // answered either, so the box stays empty rather than say that for good. Once the reads have
+  // answered for this issue, the view stays drawn where `blocksRead` goes false again - a
+  // background read that fails, which TanStack marks as no success while it keeps the blocks,
+  // or a new tree document whose blocks are still out - so no later read takes the view down,
+  // and with it the reader's press of "Steps" and the focus (R6, R7). It is held by the issue's
+  // key, so another issue's view waits for that issue's own reads.
+  const [answered, setAnswered] = useState<string | undefined>(undefined);
+  if (blocksRead && answered !== issue.key) setAnswered(issue.key);
+  const drawn = blocksRead || answered === issue.key;
   return (
     <NoTooltips>
       {/* The view's box, the prototype's `.plan`: at most 1300 px, in the middle of the column,
           and at 760 px and below the column less 10 px at each side (dispatch://INFRA-3938 R1
           and its Sizes). That is `max-[761px]:`, since Tailwind writes `max-[N]:` as
-          `(width < N)` and 760 px itself is a phone (decision 72 of dispatch://INFRA-1196). */}
+          `(width < N)` and 760 px itself is a phone (decision 72 of dispatch://INFRA-1196).
+          It draws nothing until the issue's reads have answered (`drawn`, above). */}
       <div className="mx-auto flex w-full max-w-[1300px] min-w-0 flex-col max-[761px]:max-w-[calc(100%-20px)]">
-        <PlanFilterBody
-          artifacts={artifacts}
-          context={view.context}
-          emptyLine={address.filter === "" ? EMPTY_STATE_LINES.plan : EMPTY_STATE_LINES.no_match}
-          filtering={view.filtering}
-          focusReveal
-          // The words filter's Escape comes before the view is left (part N).
-          holdsEscape={address.filter !== ""}
-          isClosed={isClosed}
-          onEditing={setEditing}
-          plan={plan}
-          {...(request === undefined ? {} : { request })}
-          reveal={reveal}
-          root={view.root}
-          rootRow={view.rootRow}
-        />
+        {drawn ? (
+          <PlanFilterBody
+            artifacts={artifacts}
+            context={view.context}
+            emptyLine={address.filter === "" ? EMPTY_STATE_LINES.plan : EMPTY_STATE_LINES.no_match}
+            filtering={view.filtering}
+            focusReveal
+            // The words filter's Escape comes before the view is left (part N).
+            holdsEscape={address.filter !== ""}
+            isClosed={isClosed}
+            onEditing={setEditing}
+            plan={plan}
+            {...(request === undefined ? {} : { request })}
+            reveal={reveal}
+            root={view.root}
+            rootRow={view.rootRow}
+          />
+        ) : null}
       </div>
       <IssuePresetPanels
         editedDocument={edited}
