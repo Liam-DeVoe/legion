@@ -46,7 +46,9 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# proxy is the stalled proxy a case below runs while it runs, which the trap stops if the run ends.
+proxy=""
+trap 'if [ -n "$proxy" ]; then kill "$proxy" 2>/dev/null; fi; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -1652,6 +1654,62 @@ set -e
 check "fails" "$(is "$status" 1)"
 check "says there is no go on PATH" \
   "$(contains "$out" '^::error file=.github/scripts/check-ci-filters.sh::no go on PATH, so this check cannot list the closure of any go command')"
+
+# The engine's toolchain() asks go for the root of the toolchain go.work selects, under
+# go_environment() and this machine's own module cache and GOPROXY, and then runs every go
+# command with that toolchain under GOTOOLCHAIN=local. go_environment() drops setup-go's
+# GOTOOLCHAIN=local with the caller's Go variables, so where go.work asks for a go newer than the
+# one installed, by its go line or by its toolchain line, that `go env GOROOT` downloads the
+# toolchain, in the ci-filters job too, and a download that stalls must be named in the step's log
+# while it waits. The proxy here accepts every connection and answers none, as a stalled download
+# does; go1.999.0 is a version no module cache holds.
+echo "case: a toolchain download the check's go env GOROOT makes is on standard error while go waits"
+# stalled_proxy <directory>: starts, in the background, a proxy that accepts every connection and
+# answers none, and sets proxy to its process and port to the port it listens on.
+stalled_proxy() {
+  python3 -c 'import socket, sys
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+with open(sys.argv[1], "w") as f:
+    f.write(str(s.getsockname()[1]))
+held = []
+while True:
+    held.append(s.accept()[0])' "$1/port" &
+  proxy=$!
+  for _ in $(seq 1 100); do
+    [ -s "$1/port" ] && break
+    sleep 0.1
+  done
+  port=$(<"$1/port")
+}
+for what in toolchain go; do
+  root=$(fixture "asks-by-$what")
+  if [ "$what" = toolchain ]; then asked=$'go 1.21\ntoolchain go1.999.0'; else asked='go 1.999.0'; fi
+  printf '%s\n\nuse ./mod\n' "$asked" > "$root/go.work"
+  # Outside the fixture, whose files the check lists.
+  io=$work/asks-by-$what-io
+  mkdir -p "$io/modcache"
+  stalled_proxy "$io"
+  (GOPROXY="http://127.0.0.1:$port" GOMODCACHE="$io/modcache" \
+    exec "$root/.github/scripts/check-ci-filters.sh" >"$io/out" 2>"$io/err") &
+  checking=$!
+  seen=false
+  for _ in $(seq 1 600); do
+    if grep -q '^go: downloading go1\.999\.0 (' "$io/err"; then
+      seen=true
+      break
+    fi
+    sleep 0.1
+  done
+  running=$(kill -0 "$checking" 2>/dev/null && echo true || echo false)
+  kill "$proxy"
+  wait "$proxy" || true
+  proxy=""
+  wait "$checking" || true
+  check "go.work's $what line asks for go1.999.0: go's downloading line is on the check's standard error while go waits" \
+    "$(is "$seen/$running" true/true)"
+done
 
 echo "case: a claimed command that cds into another module of the workspace before it runs"
 root=$(fixture cd-other-module)

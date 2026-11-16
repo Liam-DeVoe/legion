@@ -618,9 +618,18 @@ _PROBED: dict[tuple[str, str], bool] = {}
 
 def go_root(directory: Path) -> str:
     """The GOROOT of the toolchain go selects in `directory`, which is the toolchain a step's own
-    go test runs there (a module's go or toolchain line may select another than the one on PATH).
-    go() runs it under go_environment(), so a caller's GOROOT or GOTOOLCHAIN does not choose it."""
-    return go(["go", "env", "GOROOT"], directory, f"go env GOROOT in {directory}").strip()
+    go test runs there (go.work's go or toolchain line, or go.mod's outside a workspace, may select
+    another than the one on PATH).
+    It runs under go_environment(), so a caller's GOROOT or GOTOOLCHAIN does not choose it; that
+    drops setup-go's GOTOOLCHAIN=local too, so where go.work asks for a newer go than the one
+    installed, this command downloads it, in CI as well. go's standard error therefore goes to this
+    script's as go writes it, so a download that stalls is named while it waits; standard output,
+    the root, is kept."""
+    done = subprocess.run(["go", "env", "GOROOT"], cwd=directory, env=go_environment(),
+                          stdout=subprocess.PIPE, encoding="utf-8", check=False)
+    if done.returncode != 0:
+        raise Refused(f"go env GOROOT in {directory} exited {done.returncode}; its standard error is above")
+    return done.stdout.strip()
 
 
 def rewritten_runes(pattern: str, directory: Path) -> list[str]:

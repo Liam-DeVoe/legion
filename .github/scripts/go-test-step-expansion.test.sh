@@ -7,8 +7,9 @@
 # which is minutes of compile and why no CI job runs that script (its own header says so). This
 # harness compiles no package of this repository: every case is one line of text, but the cases on
 # characters go test -run rewrites, which run go to build the script's small rewrite probe with the
-# toolchain packages/envoy selects, as the script does, and the case that runs a stand-in go that
-# prints the environment the module's go commands and step lines get.
+# toolchain packages/envoy selects, as the script does, the case that runs a stand-in go that
+# prints the environment the module's go commands and step lines get, and the cases that ask go
+# for its GOROOT under a go.work of their own and a local proxy that never answers.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
 # it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
@@ -312,7 +313,9 @@ check "each leg's -run comes from a script the reader runs, and no expression is
 # cgo on whatever the caller says, since a race build needs it.
 echo "case: a go command and a step's line see none of the caller's Go variables"
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# proxy is the stalled proxy a case below runs while it runs, which the trap stops if the run ends.
+proxy=""
+trap 'if [ -n "$proxy" ]; then kill "$proxy" 2>/dev/null; fi; rm -rf "$work"' EXIT
 printf '#!/bin/sh\nenv\n' > "$work/go"
 chmod +x "$work/go"
 # go_seen <go|shell> <directory> <command> [argument ...]: the go command's variables, sorted, that
@@ -360,5 +363,103 @@ done
 out=$(polluted listed_run $'Test\xe2\x80\x8bAlpha')
 check "U+200B still refused, under the polluted caller" "$(contains "$out" 'and it holds U+200B, which go test -run rewrites')"
 check "  and the probe did not fail" "$(is "$(contains "$out" 'the rewrite probe exited')" false)"
+
+# go_root asks the go first on PATH for its GOROOT under go_environment(), which drops setup-go's
+# GOTOOLCHAIN=local with the caller's Go variables, so go picks its toolchain by GOTOOLCHAIN's own
+# rules: where go.work asks for a go newer than the installed one, by its go line or by its
+# toolchain line, `go env GOROOT` downloads that toolchain. (A module's own go or toolchain line
+# does not: measured with Go 1.27.3, only go.work's two lines switch the toolchain in a workspace.)
+# The test job runs these cases on a cold module cache, so such a download would happen in the
+# step, and if it stalls the step's log must name it while it waits. The proxy here accepts every
+# connection and answers none, as a stalled download does. go1.999.0 is a version no cache holds.
+echo "case: a toolchain download that go env GOROOT makes is on standard error while go waits"
+# stalled_proxy <directory>: starts, in the background, a proxy that accepts every connection and
+# answers none, and sets proxy to its process and port to the port it listens on.
+stalled_proxy() {
+  python3 -c 'import socket, sys
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+with open(sys.argv[1], "w") as f:
+    f.write(str(s.getsockname()[1]))
+held = []
+while True:
+    held.append(s.accept()[0])' "$1/port" &
+  proxy=$!
+  for _ in $(seq 1 100); do
+    [ -s "$1/port" ] && break
+    sleep 0.1
+  done
+  port=$(<"$1/port")
+}
+# stop_proxy: stops the stalled proxy, which fails a go waiting on it.
+stop_proxy() {
+  kill "$proxy"
+  wait "$proxy" || true
+  proxy=""
+}
+# root_answer <module directory> <output directory> [<module cache>]: go_root over the module
+# directory in the background, under the stalled proxy and the module cache given (the caller's
+# when none is). What it returns, or `refused: ...`, goes to <output directory>/answer, and go's
+# standard error to <output directory>/err. Sets asking to its process.
+root_answer() {
+  local module=$1 output=$2
+  (
+    export GOPROXY="http://127.0.0.1:$port"
+    if [ -n "${3:-}" ]; then export GOMODCACHE=$3; fi
+    py 'from pathlib import Path
+try:
+    print(ex.go_root(Path(sys.argv[1])))
+except ex.Refused as refusal:
+    print("refused:", refusal)' "$module" >"$output/answer" 2>"$output/err"
+  ) &
+  asking=$!
+}
+for what in toolchain go; do
+  fixture=$work/asks-by-$what
+  mkdir -p "$fixture/mod" "$fixture/modcache"
+  printf 'module example.com/mod\n\ngo 1.21\n' >"$fixture/mod/go.mod"
+  if [ "$what" = toolchain ]; then asked=$'go 1.21\ntoolchain go1.999.0'; else asked='go 1.999.0'; fi
+  printf '%s\n\nuse ./mod\n' "$asked" >"$fixture/go.work"
+  stalled_proxy "$fixture"
+  root_answer "$fixture/mod" "$fixture" "$fixture/modcache"
+  seen=false
+  for _ in $(seq 1 300); do
+    if grep -q '^go: downloading go1\.999\.0 (' "$fixture/err"; then
+      seen=true
+      break
+    fi
+    sleep 0.1
+  done
+  running=$(kill -0 "$asking" 2>/dev/null && echo true || echo false)
+  stop_proxy
+  wait "$asking" || true
+  check "go.work's $what line asks for go1.999.0: go's downloading line is on standard error while go waits" \
+    "$(is "$seen/$running" true/true)"
+  check "  then go_root refuses, saying go's standard error is above, and copies none of it" \
+    "$(is "$(contains "$(<"$fixture/answer")" '^refused: go env GOROOT in .* exited 1; its standard error is above$')/$(grep -c 'go: ' "$fixture/answer" || true)" true/0)"
+done
+
+# The pair this repository has: go.work's go 1.27.3 and no toolchain line, and in the test job the
+# go 1.27.3 its setup-go installs from packages/daemon/go.mod. go env GOROOT there switches to no
+# other toolchain, so it answers under a proxy that never answers, and writes nothing to standard
+# error. On a machine whose go is older, the rune cases above have fetched go1.27.3 into its module
+# cache already, and this case finds it there.
+echo "case: go.work's own lines make go env GOROOT download nothing"
+current=$work/current
+mkdir "$current"
+stalled_proxy "$current"
+root_answer "$script_dir/../../packages/envoy" "$current"
+for _ in $(seq 1 300); do
+  kill -0 "$asking" 2>/dev/null || break
+  sleep 0.1
+done
+answered=$(kill -0 "$asking" 2>/dev/null && echo false || echo true)
+stop_proxy
+wait "$asking" || true
+answer=$(<"$current/answer")
+check "it answers under the stalled proxy, with the root of a go" \
+  "$(is "$answered/$([ -x "$answer/bin/go" ] && echo go || echo "$answer")" true/go)"
+check "  and writes nothing to standard error" "$(is "$(<"$current/err")" "")"
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"
