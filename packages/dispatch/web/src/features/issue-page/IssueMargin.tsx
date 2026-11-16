@@ -1,5 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefCallback,
+  type RefObject,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 
@@ -166,6 +174,7 @@ export function IssueMarginPanel({
   const sections = useMarginSections();
   const [referencesOpen, setReferencesOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  const filesList = useRef<HTMLUListElement>(null);
   const referencesPanelId = useId();
   // The blocked-by editor's state is the panel's and not its row's, because a closed section
   // unmounts its rows and the panel stays drawn for the life of the page (`slots/details.tsx`):
@@ -427,17 +436,19 @@ export function IssueMarginPanel({
           {/* A route Dispatch refused, said in the row it was saved from with Dispatch's reason
               and Retry, as the Parent row says a refused parent, for as long as the draft still
               holds a route the issue does not: a reader who leaves the editor puts the saved
-              route back, and Retry would then send nothing. The save is Details' own write (the
-              details slot's `useIssueHeaderWrites`), and inline, so the write store leaves its
-              refusal to this row, and the header, which says the page's other refusals, never
-              sees it. */}
+              route back, and Retry would then send nothing. On a closed issue the line has no
+              Retry: Dispatch refuses every route of a closed issue (`ISSUE_CLOSED`, a save out as
+              the issue closed), and the drafts send none of it again (`useIssueDrafts`). The save
+              is Details' own write (the details slot's `useIssueHeaderWrites`), and inline, so
+              the write store leaves its refusal to this row, and the header, which says the
+              page's other refusals, never sees it. */}
           {writes.updateIssue.isError &&
           writes.updateIssue.variables?.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
             <DetailsErrorLine
               error={writes.updateIssue.error}
               message={apiErrorMessage(writes.updateIssue.error, "Could not update this issue.")}
-              onRetry={writes.drafts.retry}
+              onRetry={isClosed ? undefined : writes.drafts.retry}
               retrying={writes.updateIssue.isPending}
             />
           ) : null}
@@ -537,7 +548,7 @@ export function IssueMarginPanel({
           {artifacts.length === 0 ? (
             none
           ) : (
-            <ul className="flex w-full min-w-0 flex-col" data-testid="issue-files">
+            <ul className="flex w-full min-w-0 flex-col" data-testid="issue-files" ref={filesList}>
               {files.map((artifact) => (
                 <li key={artifact.id}>
                   <Link
@@ -569,6 +580,7 @@ export function IssueMarginPanel({
             <ShowAll
               className="pt-1.5"
               count={artifacts.length}
+              list={filesList}
               onShow={() => setFilesOpen(true)}
             />
           ) : null}
@@ -589,34 +601,47 @@ function IssueList({
   issues: readonly { readonly key: string; readonly title: string }[];
 }): ReactNode {
   const [open, setOpen] = useState(false);
+  const list = useRef<HTMLDivElement>(null);
   const shown = open ? issues : issues.slice(0, FOLD_AFTER);
   return (
-    <div className="flex w-full min-w-0 flex-col gap-1">
+    <div className="flex w-full min-w-0 flex-col gap-1" ref={list}>
       {shown.map((one) => (
         <IssueLine issueKey={one.key} key={one.key} title={one.title} />
       ))}
       {issues.length > FOLD_AFTER && !open ? (
-        <ShowAll className="self-start" count={issues.length} onShow={() => setOpen(true)} />
+        <ShowAll
+          className="self-start"
+          count={issues.length}
+          list={list}
+          onShow={() => setOpen(true)}
+        />
       ) : null}
     </div>
   );
 }
 
 /** The count a folded list is drawn behind, which opens the rest of it (R13). `className`
- *  places it in the list that draws it. */
+ *  places it in the list that draws it, and `list` is that list, each of its children one
+ *  entry. The count goes with its press, so the focus goes on to the link of the first entry
+ *  it opened, the list's entry `FOLD_AFTER`, rather than falling to the page. */
 function ShowAll({
   className,
   count,
+  list,
   onShow,
 }: {
   className: string;
   count: number;
+  list: RefObject<HTMLElement | null>;
   onShow: () => void;
 }): ReactNode {
   return (
     <button
       className={`${className} text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
-      onClick={onShow}
+      onClick={() => {
+        flushSync(onShow);
+        list.current?.children[FOLD_AFTER]?.querySelector<HTMLElement>("a[href]")?.focus();
+      }}
       type="button"
       {...pageChrome}
     >

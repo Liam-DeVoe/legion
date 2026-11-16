@@ -1,5 +1,5 @@
 import { type InfiniteData, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -87,10 +87,31 @@ export function IssuePins({
       .find((one) => one.id === id);
     return message === undefined ? undefined : recordWords(message.body, message.body_tree);
   };
+  const list = useRef<HTMLUListElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // An Unpin takes its pin's row away, and the focus with it: the focus goes on to the next
+  // pin's link, else the one before, else the section's heading, rather than falling to the
+  // page. Every row holds its pin's link as a child of its own; an event pin's actor is a link
+  // further in, inside its line.
+  const unpin = (id: string) => {
+    const rows = [...(list.current?.children ?? [])];
+    const at = rows.findIndex((row) => row instanceof HTMLElement && row.dataset.pin === id);
+    const neighbour = rows[at + 1] ?? (at > 0 ? rows[at - 1] : undefined);
+    const next = [...(neighbour?.children ?? [])].find(
+      (child) => child instanceof HTMLAnchorElement
+    );
+    (next ?? heading.current)?.focus();
+    writePin(queryClient, issueKey, { id, op: "unpin" });
+  };
   const link = `dispatch-inline-link ${ROW_LINK} ${pageInkText}`;
   return (
     <section aria-label={CONTROL_LABELS.pinned} data-testid="issue-pins">
-      <h2 className={`text-sm font-semibold ${pageInkText}`} {...pageChrome}>
+      <h2
+        className={`text-sm font-semibold outline-none ${pageInkText}`}
+        ref={heading}
+        tabIndex={-1}
+        {...pageChrome}
+      >
         {CONTROL_LABELS.pinned}
       </h2>
       {pins.length + eventPins.length === 0 ? (
@@ -98,7 +119,7 @@ export function IssuePins({
           {CONTROL_LABELS.none}
         </p>
       ) : (
-        <ul className="mt-1 flex min-w-0 flex-col gap-0.5">
+        <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
           {pins.map((pin) => {
             const id = conversationItemId(pin.kind, pin.id);
             const words = pinWords(pin.kind, pin.id);
@@ -119,12 +140,7 @@ export function IssuePins({
                     <span {...authorText}>{line}</span>
                   )}
                 </Link>
-                <PinButton
-                  label={CONTROL_LABELS.unpin}
-                  onClick={() => writePin(queryClient, issueKey, { id, op: "unpin" })}
-                  pinned
-                  quiet
-                />
+                <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
               </li>
             );
           })}
@@ -148,12 +164,7 @@ export function IssuePins({
                 >
                   {CONTROL_LABELS.history}
                 </Link>
-                <PinButton
-                  label={CONTROL_LABELS.unpin}
-                  onClick={() => writePin(queryClient, issueKey, { id, op: "unpin" })}
-                  pinned
-                  quiet
-                />
+                <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
               </li>
             );
           })}

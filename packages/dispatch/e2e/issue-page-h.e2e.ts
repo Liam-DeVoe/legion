@@ -442,8 +442,12 @@ test("every property with a value is visible in Details at every width @phone", 
           detailsRow(page, PROPERTY_LABELS.opened_by).getByText(opener ?? "", { exact: true }),
         ],
         [
-          "the approval step",
-          detailsRow(page, PROPERTY_LABELS.approval).locator('[data-approval-step="spec"]'),
+          // The chip of ONE's spec approval request, not the step alone: Details draws a Spec
+          // step on every issue, which says Not requested where no request exists.
+          "the spec's approval request",
+          detailsRow(page, PROPERTY_LABELS.approval).locator(
+            '[data-approval-step="spec"] [data-approval-artifact]'
+          ),
         ],
         [
           "Referenced by's count",

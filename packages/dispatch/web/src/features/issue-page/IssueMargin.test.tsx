@@ -27,7 +27,7 @@ import type {
 import { linkText, pageInkText } from "../../theme/classes";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
-import { issue as marginIssue } from "../margin/margin-fixture";
+import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { buildDispatchReference } from "../refs/routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
@@ -711,6 +711,73 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
   }
 });
 
+// A folded list's Show all goes with its press, so the focus goes on to the first entry it
+// opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
+test("Show all gives the focus to the first entry it opens", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const notes = Array.from({ length: 12 }, (_, index) => {
+    const slug = `notes-${String(index + 1).padStart(2, "0")}`;
+    return {
+      ...specArtifact,
+      id: slug,
+      name: `${slug}.md`,
+      primary: false,
+      ref_key: `CORE-1/${slug}`,
+      slug,
+    };
+  });
+  getIssue.mockResolvedValue({ ...issue, artifacts: [specArtifact, ...notes] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const waiting = Array.from({ length: 12 }, (_, index) => `CORE-${index + 2}`);
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: waiting.map((key) => ({
+      created_at: "2026-10-26T00:00:00Z",
+      direction: "in",
+      excerpt: { text: `Waits for ${key}` },
+      kind: "blocked_by",
+      node: graphNode({
+        id: key,
+        issue_key: key,
+        kind: "issue",
+        ref: buildDispatchReference({ key, kind: "issue" }),
+      }),
+      source_seq: 4,
+    })),
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+
+  try {
+    // Files and documents: the spec and twelve notes, so the eleventh entry is notes-10.md.
+    const showFiles = await screen.findByRole("button", {
+      name: `${CONTROL_LABELS.show_all} ${notes.length + 1}`,
+    });
+    act(() => showFiles.focus());
+    await user.keyboard("{Enter}");
+    expect(
+      document.activeElement,
+      "Show all of Files and documents left the focus off the first entry it opened"
+    ).toBe(within(screen.getByTestId("issue-files")).getByRole("link", { name: /notes-10\.md/ }));
+
+    const blocks = detailsRow(PROPERTY_LABELS.blocks);
+    const showBlocks = await within(blocks).findByRole("button", {
+      name: `${CONTROL_LABELS.show_all} ${waiting.length}`,
+    });
+    act(() => showBlocks.focus());
+    await user.keyboard("{Enter}");
+    expect(
+      document.activeElement,
+      "Show all of Blocks left the focus off the first entry it opened"
+    ).toBe(within(blocks).getByRole("link", { name: "CORE-12" }));
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // Details draws its own control of Referenced by: the application's `ReferencedByToggle` is in
 // its link blue, one sky-blue control among values in the page's ink.
 test("Referenced by's control is in the page's ink, opens the list and reads the count", async () => {
@@ -1378,6 +1445,64 @@ test("a refused route is said only while the draft still holds it", async () => 
   }
 });
 
+// A route still out as the issue closes is refused (`ISSUE_CLOSED`): Dispatch saves no route of
+// a closed issue, so the refusal is said with no Retry, which would send nothing, and the row's
+// control, disabled now, names the route the issue holds rather than the one refused.
+test("a route refused because the issue closed is said without Retry, and the row names the saved route", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const saved = "role:legion-controller-core";
+  const refused = "role:legion-reviewer";
+  const reason = "CORE-1 is closed; reopen it first";
+  getIssue.mockResolvedValue({ ...issue, route: saved });
+  const saving = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => saving.promise);
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: `Messages default to ${saved}` }));
+    await user.clear(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(refused);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { route: refused }, keyedAttempt)
+    );
+
+    // The issue closes while the save is out, and Dispatch refuses the save for it.
+    const closed: IssueDetails = {
+      ...issue,
+      closed_at: "2026-09-10T00:00:00Z",
+      route: saved,
+      status: "done",
+    };
+    getIssue.mockResolvedValue(closed);
+    act(() => {
+      queryClient.setQueryData(issueQuery("CORE-1").queryKey, closed);
+    });
+    saving.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: reason }));
+
+    await waitFor(() =>
+      expect(
+        within(rowAt("route")).queryByRole("alert")?.textContent,
+        "the Messages go to row does not say why Dispatch refused the route"
+      ).toBe(reason)
+    );
+    expect(
+      within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the refusal of a route on a closed issue offers a Retry that sends nothing"
+    ).not.toBeInTheDocument();
+    expect(
+      within(rowAt("route"))
+        .getByRole("button", { name: /^Messages default to / })
+        .getAttribute("aria-label"),
+      "the route's control does not name the route the closed issue holds"
+    ).toBe(`Messages default to ${saved}`);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // The box an editor of a row holds the focus in goes with the editor, so leaving it - by a save,
 // by Cancel or by Escape - gives the focus back to the row's own control, not to the page.
 test("leaving the parent's or the route's editor gives the focus back to its row's control", async () => {
@@ -1565,6 +1690,71 @@ test("a pinned comment written in markdown is drawn by its words, without the ma
     expect(within(pins).getByRole("link").textContent).not.toContain("*");
   } finally {
     unmount();
+    restore();
+  }
+});
+
+// An Unpin takes its pin's row away, so the focus goes on to the next pin's link, else the one
+// before it, else the Pinned heading, rather than falling to the page.
+test("Unpin gives the focus to the next pin, else the one before, else the Pinned heading", async () => {
+  const user = userEvent.setup();
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  const [first, second, third] = [
+    "1d4f0a6e-3b2c-4e8d-9a7f-5c6b1e2d3f40",
+    "2e5a1b7f-4c3d-4f9e-8b6a-6d7c2f3e4a51",
+    "3f6b2c8a-5d4e-4a0f-9c7b-7e8d3a4f5b62",
+  ] as const;
+  getMyState.mockResolvedValue({
+    "CORE-1": {
+      dismissed: [first, second, third].map((id) =>
+        pinnedItemMarker(conversationItemId("comment", id))
+      ),
+      last_read_seq: 0,
+      pinned: false,
+      seq: 0,
+    },
+  });
+  pinReads.comments.mockResolvedValue([
+    commentOf(first, "First pin."),
+    commentOf(second, "Second pin."),
+    commentOf(third, "Third pin."),
+  ]);
+  // Each unpin is held out, so the page shows its own state of the pins throughout.
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(new Promise(() => undefined));
+  const { unmount } = renderDetails();
+  const unpin = async (id: string) => {
+    const row = document.querySelector(`[data-pin="${conversationItemId("comment", id)}"]`);
+    if (!(row instanceof HTMLElement)) throw new Error(`Pinned draws no row for ${id}`);
+    act(() => within(row).getByRole("button", { name: CONTROL_LABELS.unpin }).focus());
+    await user.keyboard("{Enter}");
+  };
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await within(pins).findByRole("link", { name: "Third pin." });
+
+    await unpin(second);
+    await waitFor(() => expect(within(pins).getAllByRole("link")).toHaveLength(2));
+    expect(document.activeElement, "Unpin did not give the focus to the next pin").toBe(
+      within(pins).getByRole("link", { name: "Third pin." })
+    );
+
+    await unpin(third);
+    await waitFor(() => expect(within(pins).getAllByRole("link")).toHaveLength(1));
+    expect(
+      document.activeElement,
+      "Unpin of the last pin did not give the focus to the one before it"
+    ).toBe(within(pins).getByRole("link", { name: "First pin." }));
+
+    await unpin(first);
+    await waitFor(() => expect(pins).toHaveTextContent(CONTROL_LABELS.none));
+    expect(
+      document.activeElement,
+      "Unpin of the only pin did not give the focus to the Pinned heading"
+    ).toBe(within(pins).getByRole("heading", { name: CONTROL_LABELS.pinned }));
+  } finally {
+    unmount();
+    putIssueState.mockRestore();
     restore();
   }
 });

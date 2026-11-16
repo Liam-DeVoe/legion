@@ -39,19 +39,24 @@ export function IssueRouteControl({
   controlRef: Ref<HTMLButtonElement>;
   /** Whether the route's editor is open under it, which hides the control that opens it. */
   editing: boolean;
+  /** Whether the issue is closed: the control is disabled, and names the saved route rather
+   *  than the draft, since Dispatch saves no route of a closed issue (`ISSUE_CLOSED`) and a
+   *  draft it refused would otherwise be named until a reload. */
   isClosed: boolean;
   issue: IssueDetails;
   onEdit: () => void;
   writes: IssueHeaderWrites;
 }): ReactNode {
   const agentText = useAgentText();
-  const { drafts } = writes;
-  const routeSession = sessionOfAddress(drafts.route);
+  // The route the control names and judges: the draft, so a route being saved reads at once; on
+  // a closed issue, the saved route.
+  const route = isClosed ? (issue.route ?? "") : writes.drafts.route;
+  const routeSession = sessionOfAddress(route);
   const routeLabel = `Messages default to ${
-    drafts.route === ""
+    route === ""
       ? "no route"
       : routeSession === undefined
-        ? drafts.route
+        ? route
         : agentText.sessionText(routeSession, undefined)
   }`;
   const routeControl = (name: ReactNode) => (
@@ -69,12 +74,12 @@ export function IssueRouteControl({
   );
   // The route's name in its control: the page's `None` where the issue has no route.
   const routeName =
-    drafts.route === "" ? (
+    route === "" ? (
       <span className={pageQuietText} {...pageChrome}>
         {CONTROL_LABELS.none}
       </span>
     ) : (
-      drafts.route
+      route
     );
   // A route whose reach is unknown says so; a listener refilling its agent list has not failed,
   // and says so rather than reading as a listener that did not answer.
@@ -101,7 +106,7 @@ export function IssueRouteControl({
       )}
       {/* Whether the route reaches anyone speaks for the saved route only, so a route being
           saved hides it until the next read judges it. */}
-      {drafts.route === (issue.route ?? "") ? (
+      {route === (issue.route ?? "") ? (
         <>
           <UnreachableRouteMarker issue={issue} testId="issue-details-route-unreachable" />
           <UnresponsiveRouteMarker issue={issue} />
