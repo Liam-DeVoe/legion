@@ -7,11 +7,14 @@ body: |-
   be read, and it answers the tokens of that issuer `503 OIDC_ISSUER_UNAVAILABLE` until it can. It
   answers the same to a token whose key it cannot read: a key it does not hold from its last good
   read of the issuer's key set, while that key set cannot be read. It reads such a key set again at
-  most once in 5 seconds. It logs `broker: kubernetes issuer cannot be read` once when it starts to
-  answer an issuer's tokens so, and `broker: kubernetes issuer can be read again` once when a token
-  of that issuer verifies again. Before, it refused to start when it could not read its one issuer,
-  and it answered a token whose key it could not read `403 POD_IDENTITY_MISMATCH` or
-  `401 TOKEN_INVALID`.
+  most once in 5 seconds. At its start it logs `broker: kubernetes issuer` for each issuer, with
+  `read=true` or `read=false`. It logs `broker: kubernetes issuer cannot be read` once when it
+  starts to answer the tokens of an issuer it has read so. It logs
+  `broker: kubernetes issuer can be read again` once when an issuer it could not read, at its start
+  or since, can be read, written by whichever comes first: a token of that issuer that verifies,
+  or, for an issuer its start could not read, the background read of it. Before, it refused to
+  start when it could not read its one issuer, and it answered a token whose key it could not read
+  `403 POD_IDENTITY_MISMATCH` or `401 TOKEN_INVALID`.
   An entry of `BROKER_API_ACCOUNTS` or `BROKER_SERVICE_LOGINS` may end with
   `=<issuer name>[,<issuer name>…]`, the issuers its account's token is taken from. An entry that
   names none takes the first issuer of the list alone, so an existing entry keeps its meaning. A
@@ -27,6 +30,15 @@ body: |-
   An entry of `BROKER_EXCHANGE_ACCOUNTS` may name its issuers as
   `<service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…]`, and the
   exchange takes that account's token only from those issuers. An entry that names none takes the
-  first issuer of the list alone, so an existing entry keeps its meaning. An entry of five or more
-  `=`-separated fields names its issuers after its last `=`, so a fixed session that holds `=` now
-  needs the issuer field written after it.
+  first issuer of the list alone, so an existing entry keeps its meaning. An entry names its
+  issuers in a fifth `=`-separated field, after its session field (empty for none), and the broker
+  reads that field after the entry's last `=`. So from this release on, an entry written as four
+  fields whose session holds `=` is read as five: the session's text after its last `=` is read as
+  issuer names. Beside one bare issuer URL, as every deployment before this release has, every
+  issuer name and an empty issuer field are refused, so the broker refuses to start on such an
+  entry. To keep such a session, name the issuers in `BROKER_K8S_OIDC_ISSUER` as
+  `<name>=<issuer URL>` entries and write `=<name>` after the session, in one change. The broker
+  refuses to start, too, on an entry with no issuer field whose session is only issuer names, such
+  as `<service account>=<project>=<person>=first,second`, which would write under the session
+  `first,second`: write those names after an empty session,
+  `<service account>=<project>=<person>==first,second`.

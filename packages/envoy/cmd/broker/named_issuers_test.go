@@ -360,8 +360,9 @@ func TestTheBrokerTrustsEachNamedIssuer(t *testing.T) {
 // on enrollment, renewal, the token login, the pod-session registration, a route of the listed
 // caller and a service-login route, and twelve token logins of B from one address, past the
 // address's burst of ten, each get 503 and none 429. Once B answers, B's token login answers 200
-// within 60 seconds and a line names B read. The control boots with B up and sees B's first token
-// pass, so the 503 is the unread issuer's.
+// within 60 seconds, and once the background read has read B too, one line names B read again and
+// none says B cannot be read, the boot's line having said so. The control boots with B up and sees
+// B's first token pass, so the 503 is the unread issuer's.
 func TestTheBrokerBootsWithAnIssuerItCannotRead(t *testing.T) {
 	binary := buildBroker(t)
 	a, b := oidctest.New(t), oidctest.New(t)
@@ -445,7 +446,7 @@ func TestTheBrokerBootsWithAnIssuerItCannotRead(t *testing.T) {
 
 	b.FailDiscovery(0)
 	answered := time.Now()
-	t.Run("once B answers, its token login answers 200 within 60 seconds and a line names B read", func(t *testing.T) {
+	t.Run("once B answers, its token login answers 200 within 60 seconds and one line names B read", func(t *testing.T) {
 		var last string
 		if !testwait.Holds(time.Minute, time.Second, func() bool {
 			status, code, issued := client.tokenLogin(clusterToken(t, b, bKey, namedDaemonB, ""), proofKey(t))
@@ -455,11 +456,25 @@ func TestTheBrokerBootsWithAnIssuerItCannotRead(t *testing.T) {
 			t.Fatalf("B's token login was not answered 200 within a minute of B answering; it last answered %s", last)
 		}
 		t.Logf("B's token login answered 200 %s after B answered", time.Since(answered).Round(time.Millisecond))
+		// The background read of B writes this line of package oidc's once it has read B, just
+		// before it notes B read; the token login above has noted B read already.
+		read := map[string]any{"issuer": b.URL()}
+		if !testwait.Holds(time.Until(answered.Add(time.Minute)), 250*time.Millisecond, func() bool {
+			return len(recordsWith(broker.Log(), "oidc: discovered the issuer", read)) != 0
+		}) {
+			t.Fatalf("no line %q carrying %v within a minute of B answering:\n%s", "oidc: discovered the issuer", read, broker.Log())
+		}
 		want := map[string]any{"severity": "INFO", "name": "b", "url": b.URL()}
 		if !testwait.Holds(time.Until(answered.Add(time.Minute)), 250*time.Millisecond, func() bool {
-			return len(recordsWith(broker.Log(), "broker: kubernetes issuer read", want)) != 0
+			return len(recordsWith(broker.Log(), issuerReadableMessage, want)) != 0
 		}) {
-			t.Fatalf("no line %q carrying %v within a minute of B answering:\n%s", "broker: kubernetes issuer read", want, broker.Log())
+			t.Fatalf("no line %q carrying %v within a minute of B answering:\n%s", issuerReadableMessage, want, broker.Log())
+		}
+		if got := recordsWith(broker.Log(), issuerReadableMessage, map[string]any{"name": "b"}); len(got) != 1 {
+			t.Fatalf("B's recovery wrote %d lines %q, want one:\n%s", len(got), issuerReadableMessage, broker.Log())
+		}
+		if got := recordsWith(broker.Log(), issuerUnreadableMessage, map[string]any{"name": "b"}); len(got) != 0 {
+			t.Fatalf("the tokens of B answered 503 after the boot's line said B was not read wrote %d lines %q, want none:\n%s", len(got), issuerUnreadableMessage, broker.Log())
 		}
 	})
 }

@@ -1780,8 +1780,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   daemon's own cluster: add it and redeploy the broker), `TOKEN_EXPIRED` or `TOKEN_INVALID` (the
   token file is stale, or not a token of an issuer the broker's `BROKER_K8S_OIDC_ISSUER` names for
   its audience: check the daemon's projected-token volume), `OIDC_ISSUER_UNAVAILABLE` (a `503`: the
-  broker has not read the issuer of the daemon's cluster yet, or the token names a key the broker
-  does not hold while it cannot read that issuer's key set; the broker logs
+  broker has not read the issuer of the daemon's cluster yet, which its boot line
+  `broker: kubernetes issuer … read=false` says, or the token names a key the broker does not hold
+  while it cannot read that issuer's key set, which it logs as
   `broker: kubernetes issuer cannot be read`), `TOKEN_TOO_LONG_LIVED` (the
   token lives longer than an hour from its issue: set the projected token's `expirationSeconds`,
   or `kubectl create token`'s `--duration`, to at most an hour), `TOKEN_LOGIN_OFF` (the broker

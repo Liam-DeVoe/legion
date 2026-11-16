@@ -1,19 +1,34 @@
 // issuer_lines_test.go pins the lines the broker writes about a cluster issuer whose tokens it
 // cannot verify for want of a read (loggedIssuers): one when its tokens start to be answered 503,
-// however many arrive, and one when a token of it verifies again.
+// however many arrive, and one when it can be read again, written once by whichever path finds it
+// first, a token of it that verifies or the background read of an issuer the boot could not read.
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
+
+// logLines is the lines of logged, a buffer captureLog fills, that carry message, as captureLog's
+// text handler writes them.
+func logLines(logged *bytes.Buffer, message string) []string {
+	var found []string
+	for line := range strings.Lines(logged.String()) {
+		if strings.Contains(line, `msg="`+message+`"`) {
+			found = append(found, line)
+		}
+	}
+	return found
+}
 
 // TestAnIssuerTheBrokerCannotReadIsLoggedOnceAndOnceWhenReadAgain: while B's key set cannot be
 // read, a burst of twenty tokens of B, sent at once and each answered ErrIssuerUnavailable, writes
@@ -32,16 +47,8 @@ func TestAnIssuerTheBrokerCannotReadIsLoggedOnceAndOnceWhenReadAgain(t *testing.
 	token := func(issuer *oidctest.Issuer, key *oidctest.Key) string {
 		return issuer.Mint(t, key, issuer.Claims("system:serviceaccount:example-ns:example-worker", enrolmentAudience))
 	}
-	// lines is the log's lines carrying message, as captureLog's text handler writes them.
-	lines := func(message string) []string {
-		var found []string
-		for line := range strings.Lines(logged.String()) {
-			if strings.Contains(line, `msg="`+message+`"`) {
-				found = append(found, line)
-			}
-		}
-		return found
-	}
+	// lines is the log's lines carrying message.
+	lines := func(message string) []string { return logLines(logged, message) }
 	b.FailKeys(http.StatusServiceUnavailable)
 
 	t.Run("a burst of tokens of an issuer whose key set cannot be read writes one line", func(t *testing.T) {
@@ -112,4 +119,73 @@ func TestAnIssuerTheBrokerCannotReadIsLoggedOnceAndOnceWhenReadAgain(t *testing.
 			t.Fatalf("the token of C changed the %q lines to %v, want B's one: a caller that hung up says nothing of the issuer", issuerUnreadableMessage, found)
 		}
 	})
+}
+
+// TestAnIssuerTheBootCouldNotReadWritesOneLineWhenRead: B's discovery document fails at boot, so
+// the boot's line says B was not read, and a token of B, answered ErrIssuerUnavailable, writes no
+// line more. Once B answers, tokens of B are sent from four callers while the background read of
+// B succeeds too, and the two paths write one issuerReadableMessage line naming B between them.
+func TestAnIssuerTheBootCouldNotReadWritesOneLineWhenRead(t *testing.T) {
+	logged := captureLog(t)
+	a, b := oidctest.New(t), oidctest.New(t)
+	a.PublishKey(t, "a-key")
+	bKey := b.PublishKey(t, "b-key")
+	issuers := []oidc.NamedIssuer{{Name: "a", URL: a.URL()}, {Name: "b", URL: b.URL()}}
+	verifier := newLoggedIssuers(oidc.NewIssuerSet(issuers, enrolmentAudience, 0), issuers)
+	tokenOfB := b.Mint(t, bKey, b.Claims("system:serviceaccount:example-ns:example-worker", enrolmentAudience))
+	lines := func(message string) []string { return logLines(logged, message) }
+
+	b.FailDiscovery(http.StatusServiceUnavailable)
+	verifier.boot(context.Background())
+	booted := lines("broker: kubernetes issuer")
+	if len(booted) != 2 || !strings.Contains(booted[1], "name=b") || !strings.Contains(booted[1], "read=false") {
+		t.Fatalf("the boot wrote %v, want one line for each issuer, B's saying it was not read:\n%s", booted, logged)
+	}
+	if _, _, err := verifier.Verify(context.Background(), tokenOfB); !errors.Is(err, oidc.ErrIssuerUnavailable) {
+		t.Fatalf("a token of B while B's discovery document fails = %v, want oidc.ErrIssuerUnavailable", err)
+	}
+	if found := lines(issuerUnreadableMessage); len(found) != 0 {
+		t.Fatalf("a token of B after the boot's line said B was not read wrote %v, want no %q line", found, issuerUnreadableMessage)
+	}
+
+	b.FailDiscovery(0)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		verifier.run(t.Context())
+	}()
+	var callers sync.WaitGroup
+	for range 4 {
+		callers.Go(func() {
+			for {
+				_, _, _ = verifier.Verify(context.Background(), tokenOfB)
+				select {
+				case <-ran:
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+		})
+	}
+	select {
+	case <-ran:
+	case <-time.After(time.Minute):
+		t.Fatal("the background read of B did not succeed within a minute of B answering")
+	}
+	callers.Wait()
+	if _, _, err := verifier.Verify(context.Background(), tokenOfB); err != nil {
+		t.Fatalf("a token of B once B is read = %v, want it verified", err)
+	}
+	found := lines(issuerReadableMessage)
+	if len(found) != 1 {
+		t.Fatalf("the tokens of B and the background read of B wrote %d %q lines, want one:\n%s", len(found), issuerReadableMessage, logged)
+	}
+	for _, want := range []string{"level=INFO", "name=b", "url=" + b.URL()} {
+		if !strings.Contains(found[0], want) {
+			t.Fatalf("the line %q does not carry %q", found[0], want)
+		}
+	}
+	if found := lines(issuerUnreadableMessage); len(found) != 0 {
+		t.Fatalf("B's recovery wrote %v, want no %q line", found, issuerUnreadableMessage)
+	}
 }

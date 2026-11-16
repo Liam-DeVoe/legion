@@ -1848,14 +1848,17 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 // TestAnAccountEntryNamesItsIssuers pins the issuer names a BROKER_API_ACCOUNTS,
 // BROKER_SERVICE_LOGINS or BROKER_EXCHANGE_ACCOUNTS entry may end with: an entry that names none
 // takes the first issuer of BROKER_K8S_OIDC_ISSUER alone, one that names some takes those in its
-// order, and a Google entry takes none. An exchange entry gives its names after its last "=",
-// after a session slot that may be empty, and its session is everything between its third and its
-// last "=". Each setting refuses, naming itself and the entry, a name the list does not hold, one
-// name twice, an entry ending in "=" with no name, a name on a google: entry, and any name while
-// the list is one bare URL. BROKER_EXCHANGE_ACCOUNTS refuses as well, naming
-// BROKER_EXCHANGE_K8S_ISSUER, a name that setting does not name, an entry naming none while that
-// setting leaves out the list's first issuer, and, saying where the issuer field goes, a fixed
-// session holding "=" written with no issuer field. BROKER_SERVICES takes no names.
+// order, and a Google entry takes none. An exchange entry gives its names in a fifth
+// "="-separated field, after its session field (empty for none), which the broker reads after the
+// entry's last "=", so its session is everything between its third and its last "=". Each setting
+// refuses, naming itself and the entry, a name the list does not hold, one name twice, an entry
+// ending in "=" with no name, a name on a google: entry, and any name while the list is one bare
+// URL. BROKER_EXCHANGE_ACCOUNTS refuses as well, naming BROKER_EXCHANGE_K8S_ISSUER, a name that
+// setting does not name, an entry naming none while that setting leaves out the list's first
+// issuer, and, saying where the issuer field goes, a fixed session holding "=" written with no
+// issuer field; and, naming the session it would read, an entry with no issuer field whose
+// session is only issuer names of the list, which beside one bare URL stays a session.
+// BROKER_SERVICES takes no names.
 func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 	const (
 		dispatchSubject = "system:serviceaccount:example-ns:example-dispatch"
@@ -1940,6 +1943,36 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		}
 	})
 
+	t.Run("an exchange entry's issuers after an empty session load, and a session of other text stays a session", func(t *testing.T) {
+		e := exchangeTaking("first,second")()
+		e["BROKER_EXCHANGE_ACCOUNTS"] = workerSubject + "=ACME=ada@example.com==first,second " +
+			daemonSubject + "=ACME=ada@example.com=first,example-session"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.AccountEntry{
+			{Account: workerSubject, Project: "ACME", Person: "ada@example.com", Issuers: []string{"first", "second"}},
+			{Account: daemonSubject, Project: "ACME", Person: "ada@example.com", Session: "first,example-session", Issuers: []string{"first"}},
+		}
+		if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
+			t.Errorf("ExchangeAccounts = %+v, want %+v", cfg.ExchangeAccounts, want)
+		}
+	})
+
+	t.Run("beside one bare URL an exchange session of issuer-like names stays a session", func(t *testing.T) {
+		e := withExchange()
+		e["BROKER_EXCHANGE_ACCOUNTS"] = workerSubject + "=ACME=ada@example.com=first,second"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.AccountEntry{{Account: workerSubject, Project: "ACME", Person: "ada@example.com", Session: "first,second", Issuers: []string{""}}}
+		if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
+			t.Errorf("ExchangeAccounts = %+v, want %+v", cfg.ExchangeAccounts, want)
+		}
+	})
+
 	for _, c := range []struct {
 		name    string
 		base    func() map[string]string
@@ -1964,6 +1997,8 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		{"BROKER_EXCHANGE_ACCOUNTS: an entry naming none while the exchange leaves out the first issuer", exchangeTaking("second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com", []string{`"first"`, exchangeSetting}},
 		{"BROKER_EXCHANGE_ACCOUNTS: an issuer name beside one bare URL", withExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com==first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
 		{"BROKER_EXCHANGE_ACCOUNTS: a fixed session holding = with no issuer field", withExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=legion-daemon:EXAMPLE=1", []string{"<session>=<issuer name>"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: issuer names as the session of an entry with no issuer field", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=first,second", []string{`reads "first,second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: one issuer name as the session of an entry with no issuer field", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=second", []string{`reads "second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := c.base()

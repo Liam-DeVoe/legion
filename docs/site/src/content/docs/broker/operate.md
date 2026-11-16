@@ -84,9 +84,10 @@ one of them cannot be read. Until it reads an issuer, it answers the tokens of t
 read: the token names a key that the broker does not hold from its last good read of the issuer's
 key set, and the key set cannot be read now. A token whose key the broker holds still verifies.
 It reads a key set that failed again at most once in 5 seconds, however many tokens arrive. A 503
-decides nothing about the token, so the Legion daemon and a pod's renewer try again. The broker
-logs one line when it first answers a token of an issuer this way, and one more when a token of
-that issuer verifies again ([Health and logs](#health-and-logs)).
+decides nothing about the token, so the Legion daemon and a pod's renewer try again. At its start
+the broker logs one line for each issuer, saying whether it read it. After that it logs one line
+when it first answers a token of an issuer it has read this way, and one line when an issuer it
+could not read, at its start or since, can be read again ([Health and logs](#health-and-logs)).
 
 The token exchange takes the tokens of the issuers that `BROKER_EXCHANGE_K8S_ISSUER` names, by
 their names in `BROKER_K8S_OIDC_ISSUER` and separated by commas (`first,second`), for
@@ -98,16 +99,23 @@ issuer the setting may be left out. With two or more, a broker that sets
 to start as well when the setting names an issuer the list does not hold, names one twice, or is
 set without `BROKER_EXCHANGE_K8S_AUDIENCE`.
 
-An entry of `BROKER_EXCHANGE_ACCOUNTS` may name its issuers after its session slot, as
+An entry of `BROKER_EXCHANGE_ACCOUNTS` may name its issuers in a fifth `=`-separated field, after
+its session field (empty for none), as
 `<service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…]`, and the
 exchange takes that account's token only from those issuers. An entry that names none takes the
 first issuer of `BROKER_K8S_OIDC_ISSUER` alone, so an entry written for one cluster keeps its
-meaning. An entry of five or more `=`-separated fields names its issuers after its last `=`, so a
-fixed session that holds `=` needs the issuer field after it. The broker refuses to start, naming
-`BROKER_EXCHANGE_K8S_ISSUER`, for an entry that names an issuer that setting does not name, names
-one issuer twice, or names none while that setting leaves out the first issuer of
+meaning. A session may hold `=`, so the broker reads the issuer field after the entry's last `=`.
+An entry written as four fields whose session holds `=` is therefore read as five, and a fixed
+session that holds `=` is kept only by naming the issuers in `BROKER_K8S_OIDC_ISSUER` as
+`<name>=<issuer URL>` entries and writing `=<name>` after the session. The broker refuses to
+start, naming `BROKER_EXCHANGE_K8S_ISSUER`, for an entry that names an issuer that setting does
+not name, names one issuer twice, or names none while that setting leaves out the first issuer of
 `BROKER_K8S_OIDC_ISSUER`. It refuses to start as well, naming `BROKER_K8S_OIDC_ISSUER`, for an
-entry that names any issuer while that list is one bare URL.
+entry that names any issuer while that list is one bare URL. It refuses to start, too, for an
+entry with no issuer field whose session is only issuer names of `BROKER_K8S_OIDC_ISSUER`, such as
+`<service account>=<project>=<person>=first,second`, which would write under the session
+`first,second`: write the names after an empty session,
+`<service account>=<project>=<person>==first,second`.
 
 `BROKER_API_ACCOUNTS` lists the callers of the broker's named-caller routes, here Dispatch's
 server as the caller `dispatch`, each by its own account. An account is written in one of two
@@ -907,11 +915,10 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `approval sign-in refused …` | At WARN: a sign-in made no session, the line saying why: the provider refused it, its state or return path was not the sign-in's, the code exchange or ID token failed, or the person is outside `BROKER_SIGNIN_DOMAIN` or unverified. |
 | `approval page decision login=<email> record=<record id> decision=<approve or deny> outcome=<outcome>` | A person decided a secret request on the page; `outcome` is what became of it (`granted`, for one). |
 | `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR: the provider's discovery document could not be read at a sign-in, and the page answered `503` naming the issuer. |
-| `broker: kubernetes issuer name=<name> url=<issuer URL> read=<true or false>` | At startup, one line for each issuer of `BROKER_K8S_OIDC_ISSUER` (with no `name` for one bare URL), after one try to read each, all at once: `read=true` when its discovery document was read, `read=false` when it was not, and the broker then reads it in the background and answers its tokens `503 OIDC_ISSUER_UNAVAILABLE` until it can. No issuer refuses the start. |
-| `broker: kubernetes issuer read name=<name> url=<issuer URL>` | At INFO, once, when the background read of an issuer the startup could not read succeeds. From then the broker checks that issuer's tokens. |
+| `broker: kubernetes issuer name=<name> url=<issuer URL> read=<true or false>` | At startup, one line for each issuer of `BROKER_K8S_OIDC_ISSUER` (with no `name` for one bare URL), after one try to read each, all at once: `read=true` when its discovery document was read, `read=false` when it was not, and the broker then reads it in the background and answers its tokens `503 OIDC_ISSUER_UNAVAILABLE` until it can. No issuer refuses the start. Those 503 answers write no line of their own: this line said the issuer could not be read. |
 | `oidc: discover the issuer; retrying in the background, and what needs it answers 503 meanwhile issuer=<issuer URL> error=…` | At ERROR, at most once a minute for each issuer: the background read of a cluster's issuer failed. The broker tries again with a wait that doubles from 1 second to 30 seconds, and reads the issuer at most once in 5 seconds. Check the broker's route to that issuer. |
-| `broker: kubernetes issuer cannot be read name=<name> url=<issuer URL> error=…` | At WARN: the broker answered a token of this issuer `503 OIDC_ISSUER_UNAVAILABLE`, because it has not read the issuer's discovery document yet, or because the token names a key that the broker does not hold and the issuer's key set cannot be read. `error` names the document or the key set it could not read. The broker writes this line once, not once for each token, until a token of the issuer verifies again. Check the broker's route to that issuer. |
-| `broker: kubernetes issuer can be read again name=<name> url=<issuer URL>` | At INFO, once: a token of an issuer the line above named verifies again. |
+| `broker: kubernetes issuer cannot be read name=<name> url=<issuer URL> error=…` | At WARN: the broker answered a token of an issuer it had read `503 OIDC_ISSUER_UNAVAILABLE`, because the token names a key that the broker does not hold and the issuer's key set cannot be read. `error` names the key set it could not read. The broker writes this line once, not once for each token, until the issuer can be read again. Check the broker's route to that issuer. |
+| `broker: kubernetes issuer can be read again name=<name> url=<issuer URL>` | At INFO, once for each issuer that could not be read, as the startup's `read=false` line or the line above said, when it can be read again: a token of it verifies, the token exchange reads a key of it, or the background read of an issuer the startup could not read succeeds, whichever comes first. From then the broker checks that issuer's tokens. |
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); and the metrics port (the line below). |
 | `broker metrics listening addr=<host:port>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
