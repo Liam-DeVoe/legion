@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/poolsetting"
 )
 
 // poolSizeChildEnv makes this test binary, started again by
@@ -175,33 +177,13 @@ func poolServiceFile(t *testing.T) {
 	t.Setenv("PGSERVICEFILE", path)
 }
 
-// Settings that name pool_max_conns keep their own number, as pgx reads them: in a URL, in a
-// keyword/value string, and in the service file a `service=` entry names. Text inside a quoted
-// value names nothing, and settings that name no size get poolConns. The deployed brokers name 10
-// in BROKER_DATABASE_URL; a deployment that needs another number writes it there.
+// Settings that name pool_max_conns keep their own number, as pgx reads them (poolsetting.Named,
+// whose own test reads each form): in a URL, in a keyword/value string, and in the service file a
+// `service=` entry names. Text inside a quoted value names nothing, and settings that name no size
+// get poolConns. The deployed brokers name 10 in BROKER_DATABASE_URL; a deployment that needs
+// another number writes it there.
 func TestASettingsPoolMaxConnsOutranksTheStoresSize(t *testing.T) {
 	poolServiceFile(t)
-	for _, tc := range []struct {
-		name, dsn string
-		names     bool
-	}{
-		{"a postgres URL that names it", "postgres://u@h/db?sslmode=disable&pool_max_conns=7", true},
-		{"a postgresql URL that names it", "postgresql://u@h/db?pool_max_conns=7", true},
-		{"a URL that does not", "postgres://u@h/db?sslmode=disable", false},
-		{"a URL that names another pool key", "postgres://u@h/db?pool_min_conns=2", false},
-		{"a keyword/value string that names it", "host=h dbname=db pool_max_conns=7", true},
-		{"a keyword/value string with spaces around the =", "host=h pool_max_conns = 7", true},
-		{"a keyword/value string that does not", "host=h dbname=db", false},
-		{"the key inside a quoted value", "host=localhost application_name='worker pool_max_conns=7'", false},
-		{"a service whose file names it", "host=h service=poolsize", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := namesPoolMaxConns(tc.dsn); got != tc.names {
-				t.Errorf("namesPoolMaxConns(%q) = %t, want %t", tc.dsn, got, tc.names)
-			}
-		})
-	}
-
 	database := testDatabaseURL(t)
 	keywords := asKeywords(t, database)
 	for _, tc := range []struct {
@@ -209,8 +191,8 @@ func TestASettingsPoolMaxConnsOutranksTheStoresSize(t *testing.T) {
 		want      int32
 	}{
 		{"the test database as given, naming no size", database, poolConns},
-		{"the test database as given, naming 7", withSetting(t, database, poolMaxConnsKey, "7"), 7},
-		{"a keyword/value string naming 7", withSetting(t, keywords, poolMaxConnsKey, "7"), 7},
+		{"the test database as given, naming 7", withSetting(t, database, poolsetting.Key, "7"), 7},
+		{"a keyword/value string naming 7", withSetting(t, keywords, poolsetting.Key, "7"), 7},
 		{"the key inside a quoted value", withSetting(t, keywords, "application_name", "worker pool_max_conns=7"), poolConns},
 		{"a service whose file names 7", withSetting(t, keywords, "service", "poolsize"), 7},
 	} {

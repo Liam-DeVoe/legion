@@ -20,6 +20,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/poolsetting"
+
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
@@ -62,26 +64,8 @@ const (
 // daemon already runs with: agent-infra's legion program writes pool_max_conns=32 into each
 // daemon's DSN (legion/main.go), chosen after LINUX's daemon failed six boots in a row on
 // 2026-10-26 with about 880 claims deciding at once, while its instance served 41-48
-// connections. Settings that name pool_max_conns keep that number (namesPoolMaxConns).
+// connections. A DSN whose settings name pool_max_conns keeps that number (poolsetting.Named).
 const poolConns = 32
-
-// poolMaxConnsKey is the connection setting pgxpool.ParseConfig reads MaxConns from.
-const poolMaxConnsKey = "pool_max_conns"
-
-// namesPoolMaxConns reports whether dsn's effective connection settings name pool_max_conns, as
-// pgx itself reads them: pgconn.ParseConfig resolves a URL query, a keyword/value string with its
-// quoting, and the keys of a `service=` entry's service file, and keeps every key it does not know
-// itself among RuntimeParams, as target reads them below. pgxpool.ParseConfig takes the key out
-// of the config it returns, so that config cannot tell a size the settings chose from pgxpool's
-// default.
-func namesPoolMaxConns(dsn string) bool {
-	settings, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		return false
-	}
-	_, named := settings.RuntimeParams[poolMaxConnsKey]
-	return named
-}
 
 // Store is the daemon's handle on its database. The pool is the guarded one (Pool): the pgx pool
 // it wraps is this package's alone, so no caller can ask for a connection past the refusal a
@@ -110,7 +94,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if err != nil {
 		return nil, ConnectError(dsn, err)
 	}
-	if !namesPoolMaxConns(dsn) {
+	if !poolsetting.Named(dsn) {
 		config.MaxConns = poolConns
 	}
 	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {

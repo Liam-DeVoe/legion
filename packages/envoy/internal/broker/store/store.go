@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/poolsetting"
 )
 
 // Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
@@ -74,26 +75,8 @@ func WithTokenMinter(mint TokenMinter) Option {
 // deployed broker already runs with: agent-infra's broker program writes pool_max_conns=10 into
 // BROKER_DATABASE_URL (broker/deployment.go, from brokerPoolMaxConns in broker/main.go), the most
 // Cloud SQL connections one replica's pool opens on an instance it shares with Dispatch. Settings
-// that name pool_max_conns keep their number (namesPoolMaxConns), and an Option may set another.
+// that name pool_max_conns keep their number (poolsetting.Named), and an Option may set another.
 const poolConns = 10
-
-// poolMaxConnsKey is the connection setting pgxpool.ParseConfig reads MaxConns from.
-const poolMaxConnsKey = "pool_max_conns"
-
-// namesPoolMaxConns reports whether databaseURL's effective connection settings name
-// pool_max_conns, as pgx itself reads them: pgconn.ParseConfig resolves a URL query, a
-// keyword/value string with its quoting, and the keys of a `service=` entry's service file, and
-// keeps every key it does not know itself among RuntimeParams. pgxpool.ParseConfig takes the key
-// out of the config it returns, so that config cannot tell a size the settings chose from
-// pgxpool's default.
-func namesPoolMaxConns(databaseURL string) bool {
-	settings, err := pgconn.ParseConfig(databaseURL)
-	if err != nil {
-		return false
-	}
-	_, named := settings.RuntimeParams[poolMaxConnsKey]
-	return named
-}
 
 // Open opens the pool databaseURL names, configured by opts, and pings it. The pool holds at
 // most poolConns connections, on every machine, unless databaseURL's settings name
@@ -103,7 +86,7 @@ func Open(ctx context.Context, databaseURL string, opts ...Option) (*Store, erro
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
 	}
-	if !namesPoolMaxConns(databaseURL) {
+	if !poolsetting.Named(databaseURL) {
 		config.MaxConns = poolConns
 	}
 	for _, opt := range opts {
