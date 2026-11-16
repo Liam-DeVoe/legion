@@ -44,8 +44,10 @@
 # reads, and outlives its second broker being killed, while a run without --callout does none of
 # it; (k) on that run SIGUSR1 restarts natsd on the ports it reported, with the same store and
 # callout keys, and SIGUSR2 restarts the listener on its keeper's socket, each old process gone,
-# its log kept, and the stack up; and (l) a natsd that comes back on another port stops the whole
-# stack, naming both ports, the control that (k)'s same-port check can fail.
+# its log kept, and the stack up; and the controls that (k)'s same-port checks can fail, each
+# stopping the whole stack and naming both ports: (l) a natsd that comes back on another client
+# port, (m) one that comes back on its client port and another monitor port, and (n) a listener
+# that comes back on another port than its keeper's.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -318,6 +320,12 @@ NATSD
 client=$$
 MOVES
       fi
+      if [[ -n "${DEV_STACK_TEST_NATSD_MONITOR_MOVES:-}" ]]; then
+        # A restart, given the monitor port it served (not -1), comes back on one of its own.
+        cat >>"$target" <<'MOVES'
+[[ -z "$monitor" || "$monitor" == "$$" ]] || monitor=$$
+MOVES
+      fi
       cat >>"$target" <<'NATSD'
 echo "[INF] Listening for client connections on 127.0.0.1:$client" >&2
 [[ -z "$monitor" ]] || echo "[INF] Starting http monitor on 127.0.0.1:$monitor" >&2
@@ -334,6 +342,18 @@ echo "fake listener: pid=$$ public=${ENVOY_PUBLIC_URL:-} listen-fd=${ENVOY_LISTE
 # stands for a port only where it was handed none.
 port="${ENVOY_PUBLIC_URL##*:}"
 [[ "$port" =~ ^[0-9]+$ ]] || port=$$
+LISTENER
+      if [[ -n "${DEV_STACK_TEST_LISTENER_MOVES:-}" ]]; then
+        # Every start after the first, which a restart is, reports a port of its own instead of its
+        # keeper's. The count lives beside the stub, in this run's own bin directory.
+        cat >>"$target" <<'MOVES'
+starts_file="${0%/*}/.listener-starts"
+starts=$(($(cat "$starts_file" 2>/dev/null || echo 0) + 1))
+echo "$starts" >"$starts_file"
+((starts == 1)) || port=$$
+MOVES
+      fi
+      cat >>"$target" <<'LISTENER'
 printf '{"level":"INFO","msg":"envoy-listener listening","addr":"127.0.0.1:%s"}\n' "$port" >&2
 LISTENER
       ;;
@@ -393,6 +413,8 @@ run_instance() {
     DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file" \
     DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}" \
     DEV_STACK_TEST_NATSD_MOVES="${DEV_STACK_TEST_NATSD_MOVES:-}" \
+    DEV_STACK_TEST_NATSD_MONITOR_MOVES="${DEV_STACK_TEST_NATSD_MONITOR_MOVES:-}" \
+    DEV_STACK_TEST_LISTENER_MOVES="${DEV_STACK_TEST_LISTENER_MOVES:-}" \
     DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
     bash "$driver" --database-url "$admin_url" "$@" >"$log_file" 2>&1 &
   instance_pid[which]=$!
@@ -1029,5 +1051,41 @@ restarted_pids+=("$(sed -n 's/^fake natsd: pid=\([0-9]*\)$/\1/p' "${work_dir}/lo
 assert_everything_stopped 'the run whose natsd moves'
 assert_databases_dropped 'the run whose natsd moves' "$psql_calls1" "$run_suffix"
 printf 'PASS: a natsd that came back on another port than %s stopped the stack, naming both ports\n' "$nats_port"
+
+# (m) The same for the monitor port alone, under --callout: natsd comes back on its client port and
+# another monitor port, which callout-check.sh's connection list is read at.
+DEV_STACK_TEST_NATSD_MONITOR_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --callout
+assert_instance_ready 'the run whose natsd monitor moves' "$log1" "$psql_calls1" "$curl_calls1"
+nats_port="${process_port[natsd]}"
+kill -USR1 "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -ne 0 ]] || fail "a run whose natsd monitor came back on another port reported success"
+grep -Eq "^dev-stack: natsd came back on port ${nats_port} \(monitor [0-9]+\), not port ${nats_port} \(monitor ${nats_port}\) it served before the restart; stopping$" "$log1" || {
+  cat "$log1" >&2
+  fail "a run whose natsd monitor came back on another port did not name both monitor ports"
+}
+grep -q 'dev-stack: natsd restarted' "$log1" && fail "a run whose natsd monitor moved reported the restart done"
+restarted_pids+=("$(sed -n 's/^fake natsd: pid=\([0-9]*\)$/\1/p' "${work_dir}/logs/natsd.log" | head -n1 || true)")
+assert_everything_stopped 'the run whose natsd monitor moves'
+assert_databases_dropped 'the run whose natsd monitor moves' "$psql_calls1" "$run_suffix"
+printf 'PASS: a natsd whose monitor came back on another port than %s stopped the stack, naming both\n' "$nats_port"
+
+# (n) A listener that comes back on another port than its keeper's is refused, naming both, and
+# the stack stops: every session was told the kept one.
+DEV_STACK_TEST_LISTENER_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready 'the run whose listener moves' "$log1" "$psql_calls1" "$curl_calls1"
+listener_url="$(exported "$log1" ENVOY_URL)"
+kill -USR2 "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -ne 0 ]] || fail "a run whose listener came back on another port reported success"
+grep -Eq "^dev-stack: the listener came back at http://127\.0\.0\.1:[0-9]+, not ${listener_url} it served before the restart; stopping$" "$log1" || {
+  cat "$log1" >&2
+  fail "a run whose listener came back on another port did not name both addresses"
+}
+grep -q 'dev-stack: listener restarted' "$log1" && fail "a run whose listener moved reported the restart done"
+restarted_pids+=("$(sed -n 's/^fake listener: pid=\([0-9]*\) .*/\1/p' "${work_dir}/logs/listener.log" | head -n1 || true)")
+assert_everything_stopped 'the run whose listener moves'
+assert_databases_dropped 'the run whose listener moves' "$psql_calls1" "$run_suffix"
+printf 'PASS: a listener that came back at another address than %s stopped the stack, naming both\n' "$listener_url"
 
 printf 'ALL PASS: dev-stack.test.sh\n'

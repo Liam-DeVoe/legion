@@ -19090,6 +19090,50 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_switch_to"));
   });
 
+  test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {
+    // Two-second tokens, so the keeper renews within the test: each renewal lands a new token,
+    // and the connection reconnects to present it before the old one lapses. Shutdown stops it.
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, "projected.service.account.token\n");
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    let minted = 0;
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).host !== "broker.test")
+        return responseWithRegistration(input, init, []);
+      minted += 1;
+      return Response.json({
+        access_token: `nats-access-${minted}`,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 2,
+      });
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-keeper");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"));
+    expect(natsState.presented[0]).toBe("nats-access-1");
+    // What the start did is done; from here a reconnect is the keeper's.
+    natsState.timeline.length = 0;
+    const before = natsState.presented.length;
+    const deadline = Date.now() + 5_000;
+    while (!natsState.timeline.includes("reconnect") && Date.now() < deadline) await Bun.sleep(50);
+    expect(natsState.timeline).toContain("reconnect");
+    expect(natsState.presented.length).toBeGreaterThan(before);
+    expect(natsState.presented.at(-1)).not.toBe(natsState.presented[before - 1]);
+    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_kept"));
+    // Stopped, it trades and reconnects no more.
+    const reconnects = natsState.timeline.filter((entry) => entry === "reconnect").length;
+    const traded = minted;
+    await Bun.sleep(2_500);
+    expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
+    expect(minted).toBe(traded);
+  }, 15_000);
+
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     const { default: envoyExtension } = await import("./envoy.ts?session-switch");

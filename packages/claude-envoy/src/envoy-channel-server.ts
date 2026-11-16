@@ -46,7 +46,11 @@ import {
 import { messageFor } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
-import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential"
+import {
+  followNatsCredential,
+  keepNatsCredential,
+  type NatsCredential,
+} from "@legion/envoy-client/nats-credential"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -87,7 +91,7 @@ import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/hando
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { connect } from "nats"
+import { type ConnectionOptions, connect, type NatsConnection } from "nats"
 import { z } from "zod"
 import type { ModContentBlock, ModEvent } from "../hooks/mod-protocol"
 import { name as packageName, version as packageVersion } from "../package.json" with {
@@ -621,6 +625,42 @@ export function createChannelDelivery(input: {
     inbox() {
       return [...inbox]
     },
+  }
+}
+
+/** The channel server's NATS connection, as `dialChannelNats` opened it. */
+export interface ChannelNats {
+  readonly connection: NatsConnection
+  /** Stops the keeper of the connection's broker token; nothing where it presents none. */
+  readonly stop: () => void
+  /** The move a `/clear` runs before the new id's relay subject opens (`followNatsCredential`),
+   *  where the connection presents the session's broker token. */
+  readonly followSession?: () => Promise<void>
+}
+
+/**
+ * Opens the session's NATS connection with the credential `inbound` resolved. A broker token is
+ * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
+ * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`),
+ * until `stop` or the connection closing. `dial` is nats.js's `connect`, or a test's.
+ */
+export async function dialChannelNats(
+  inbound: { readonly natsUrls: readonly string[]; readonly natsCredential: NatsCredential },
+  name: string,
+  warn: (text: string) => void,
+  dial: (options: ConnectionOptions) => Promise<NatsConnection> = connect,
+): Promise<ChannelNats> {
+  const { natsCredential } = inbound
+  const broker = natsCredential.kind === "broker" ? natsCredential.broker : undefined
+  await broker?.ready()
+  const connection = await dial(
+    natsConnectionOptions({ servers: inbound.natsUrls, name, credential: natsCredential }),
+  )
+  if (broker === undefined) return { connection, stop: () => {} }
+  return {
+    connection,
+    stop: keepNatsCredential(connection, broker, warn),
+    followSession: () => followNatsCredential(connection, broker),
   }
 }
 
@@ -2318,23 +2358,13 @@ export async function runEnvoyChannelServer(): Promise<void> {
       stampOnce(() => identity.id)
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
-      const { natsCredential } = inbound
-      const broker = natsCredential.kind === "broker" ? natsCredential.broker : undefined
-      // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
-      await broker?.ready()
-      const dialled = await connect(
-        natsConnectionOptions({
-          servers: inbound.natsUrls,
-          name: `claude-envoy-channel-${identity.id}`,
-          credential: natsCredential,
-        }),
+      const dialled = await dialChannelNats(
+        inbound,
+        `claude-envoy-channel-${identity.id}`,
+        (text) => process.stderr.write(`envoy-channel: ${text}\n`),
       )
-      connection = dialled
-      if (broker !== undefined) {
-        stopNatsKeeper = keepNatsCredential(dialled, broker, (text) =>
-          process.stderr.write(`envoy-channel: ${text}\n`),
-        )
-      }
+      connection = dialled.connection
+      stopNatsKeeper = dialled.stop
       session = await startChannelSession({
         identity,
         connection,
@@ -2351,9 +2381,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
-        ...(broker === undefined
-          ? {}
-          : { followSession: () => followNatsCredential(dialled, broker) }),
+        ...(dialled.followSession === undefined ? {} : { followSession: dialled.followSession }),
       })
       // INFRA-1026: the Agents page's live view, once this session's mod has a link to bind to.
       // It needs the bus as well as the link, so it starts here rather than beside the bind; a
