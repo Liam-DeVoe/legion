@@ -943,7 +943,8 @@ test("inRow draws no label and the words of Details", async () => {
 
 // dispatch://INFRA-3935 R4: `chipClassName` is the chip's whole shape - only what holds a chip on
 // its line is kept - and the labels wrap. It acts on every surface; without it the labels keep
-// `main`'s strings.
+// `main`'s strings. Inside `NoTooltips` what holds the chip on its line also breaks a long label
+// rather than keeping it whole (decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md).
 test("chipClassName replaces the chip's class and lets labels wrap", async () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
   const mainChip =
@@ -970,7 +971,9 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
       for (const label of ["api", "frontend"]) {
         const chip = within(rail).getByText(label);
         expect(chip.getAttribute("class")).toBe(
-          `inline-flex shrink-0 items-center whitespace-nowrap ${given}`
+          surface === "outside"
+            ? `inline-flex shrink-0 items-center whitespace-nowrap ${given}`
+            : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${given}`
         );
       }
     } finally {
@@ -987,6 +990,104 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
     }
   } finally {
     undraw(plain);
+  }
+});
+
+// dispatch://INFRA-3935 R4/R6, decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// inside `NoTooltips` a label chip stays within its line and breaks a long label anywhere, with
+// `chipClassName` and without it, because a chip that kept a 40-character label with no space
+// whole (the longest label `IssueLabels` takes) ran past Details. Outside, each chip keeps
+// `main`'s string, and the prefix it keeps before a given `chipClassName`.
+test("inside NoTooltips a label chip wraps a long label and is never cut", () => {
+  const given = "rounded-[5px] border px-1.5 leading-5";
+  const long = "dispatchissuepagedetailslabelwithnospace";
+  expect(long).toHaveLength(40);
+  expect(long).not.toMatch(/\s/u);
+  const mainChip =
+    "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+  const wraps = ["[overflow-wrap:anywhere]", "max-w-full"];
+  const cuts = ["shrink-0", "whitespace-nowrap"];
+
+  for (const chipClassName of [undefined, given]) {
+    for (const variant of ["default", "rail"] as const) {
+      for (const surface of ["inside", "outside"] as const) {
+        const view = draw(
+          <IssueLabels
+            chipClassName={chipClassName}
+            disabled={false}
+            labels={[long]}
+            onSave={async () => undefined}
+            project="CORE"
+            saving={false}
+            variant={variant}
+          />,
+          surface
+        );
+        try {
+          const chip = within(view.container).getByText(long);
+          const drawn = classOf(chip);
+          // Each read names its case, so a failure says which chip was cut.
+          const which = { chipClassName, surface, variant };
+          if (surface === "inside") {
+            expect({
+              ...which,
+              cuts: drawn.filter((token) => cuts.includes(token)),
+              wraps: drawn.filter((token) => wraps.includes(token)).sort(),
+            }).toEqual({ ...which, cuts: [], wraps });
+          } else {
+            expect({ ...which, class: chip.getAttribute("class") }).toEqual({
+              ...which,
+              class:
+                chipClassName === undefined
+                  ? mainChip
+                  : `inline-flex shrink-0 items-center whitespace-nowrap ${given}`,
+            });
+          }
+        } finally {
+          undraw(view);
+        }
+      }
+    }
+  }
+});
+
+// dispatch://INFRA-3935 R4/R6, decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// inside `NoTooltips` the control of an issue with no label says what it does, as the priority's
+// says "Add a priority", because its row of Details already names the property and the
+// property's name in the control drew "Labels None Labels". Its accessible name stays `main`'s,
+// "Edit labels", on both sides, and outside it says `main`'s word.
+test("inside NoTooltips the empty labels control says Add a label", () => {
+  for (const variant of ["default", "rail"] as const) {
+    for (const surface of ["inside", "outside"] as const) {
+      const view = draw(
+        <IssueLabels
+          disabled={false}
+          labels={[]}
+          onSave={async () => undefined}
+          project="CORE"
+          saving={false}
+          variant={variant}
+        />,
+        surface
+      );
+      try {
+        const control = within(view.container).getByRole("button", { name: "Edit labels" });
+        expect({ surface, variant, word: control.textContent }).toEqual({
+          surface,
+          variant,
+          word: surface === "inside" ? CONTROL_LABELS.add_label : "Labels",
+        });
+        if (surface === "inside") {
+          // Neither its words nor any attribute of it says the property's name.
+          expect({ variant, control: control.outerHTML.includes("Labels") }).toEqual({
+            variant,
+            control: false,
+          });
+        }
+      } finally {
+        undraw(view);
+      }
+    }
   }
 });
 

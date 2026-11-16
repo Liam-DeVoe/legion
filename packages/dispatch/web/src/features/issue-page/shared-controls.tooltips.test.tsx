@@ -2119,7 +2119,7 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
   });
   await readDrawn(labelsEmptyAndSaving, "inside", (view) => {
     expectMarks(view.container, [
-      [PROPERTY_LABELS.labels, "page-chrome"],
+      [CONTROL_LABELS.add_label, "page-chrome"],
       [ANSWER_LINES.saving_labels, "page-chrome"],
       ["api", "author-text"],
     ]);
