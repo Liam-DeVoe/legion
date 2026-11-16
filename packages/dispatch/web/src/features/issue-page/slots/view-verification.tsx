@@ -4,7 +4,8 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import { type AddressTarget, issueAddress, pathToTarget } from "../issue-address";
+import { useAddressTarget } from "../address-target";
+import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
@@ -51,23 +52,9 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   });
   const answered = coverage.data !== undefined && results.data !== undefined && blocksHeld;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
-  // address that names a node the view holds no row for still draws it (R1). The target is read
-  // by what it says rather than by the value `issueAddress` built, which is a new one on every
-  // render: the tree is walked again only when the address or the tree changes.
-  const targetKind = address.target?.kind;
-  const targetId = address.target?.id;
-  // Which document a block target belongs to, where its address names one: a block id alone
-  // names a block of any document of the issue (`pathToTarget`).
-  const targetDocument = address.target?.kind === "block" ? address.target.document : undefined;
-  const target = useMemo<AddressTarget | undefined>(() => {
-    if (targetKind === undefined || targetId === undefined) return undefined;
-    if (targetKind === "block") return { document: targetDocument, id: targetId, kind: "block" };
-    return { id: targetId, kind: targetKind } as AddressTarget;
-  }, [targetDocument, targetId, targetKind]);
-  const named = useMemo(() => {
-    const node = pathToTarget(root, target)?.at(-1);
-    return new Set(node === undefined ? [] : [node.id]);
-  }, [root, target]);
+  // address that names a node the view holds no row for still draws it (R1), as the outline
+  // resolves it (part I's `useAddressTarget`, decision 94).
+  const { named } = useAddressTarget(root, address);
   const view = useMemo(
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
