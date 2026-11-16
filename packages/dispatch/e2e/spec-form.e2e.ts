@@ -214,6 +214,11 @@ test("the person's Approve on the header of a broken statement under the root sh
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     const reason = dialog.getByLabel("Reason");
     await expect(reason).toHaveValue(changesReason);
+    // The field shows the whole reason it opens with, so the person reads what Request changes
+    // sends to the author without scrolling inside a two-line box.
+    await expect
+      .poll(() => reason.evaluate((field) => field.scrollHeight <= field.clientHeight))
+      .toBe(true);
     await expect(dialog.getByRole("alert")).toHaveCount(0);
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).click();
     await expect(page.getByRole("button", { name: "Changes requested" })).toBeVisible();

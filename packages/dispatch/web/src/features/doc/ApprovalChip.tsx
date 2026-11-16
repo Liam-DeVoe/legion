@@ -182,8 +182,11 @@ function RequestChangesDialog({
             htmlFor={reasonId}
           >
             Reason
+            {/* Sized to its text (`field-sizing`) up to half the screen, so the reason Dispatch
+                wrote after a form refusal shows whole rather than in two lines. `min-h-14!`
+                keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
             <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
+              className={`mt-1 block max-h-[50vh] min-h-14! w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none field-sizing-content ${inputClasses(false)}`}
               disabled={saving}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
