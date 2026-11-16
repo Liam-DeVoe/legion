@@ -3197,7 +3197,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - No CI job compares the spec files with the approved spec: Dispatch makes that comparison at each push (R2).
   Two parts keep that true.
   `spec-check compare` refuses to run in a CI job (`cmd/spec-check/compare.go`): when `GITHUB_ACTIONS` or `CI` is `true`, it exits 2 before it reads an argument, with one line on stderr, `spec-check: compare does not run in a CI job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)`.
-  GitHub sets both variables in every step of every job, so the refusal holds whatever route a job takes to the command: a step, a package script, a make target, a script in any directory, or a link to one.
+  GitHub sets both variables in every step of every job, and the refusal reads the environment of its own process, so it covers each route that passes the runner's environment on to the command: a step, a package script, a make target, a script in any directory, or a link to one.
+  It does not cover a route that drops that environment, such as `sudo` with its default `env_reset` or a container that `docker run` starts without `-e` for the two variables: there the command compares (the built-binary row "compare compares behind a boundary that drops the environment" holds that with `env -i`).
+  The guard names such a line in the files it reads; a `sudo` or `docker run` call in a file it does not read, such as a make target, reaches the comparison past both parts.
   The refusal is the command's, not `specgraph`'s: the Dispatch server calls `specgraph.Compare`, and the library's tests run in CI.
   The built-binary tests start each child without the two variables (`childEnv` in `cmd/spec-check/main_test.go`), and one row sets each of them.
   `spec-check guard --root <dir>` reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`): every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
@@ -3209,7 +3211,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line runs the comparison of the files with the approved spec, which no CI job does (R2)` on stderr for each, and `spec-check: <dir>: <n> lines of CI files run the comparison` on stdout.
   No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
   a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files runs the comparison`.
-  The guard does not read a file outside the four directories, such as the `package.json` script a `bun run` step runs, nor a command held in a variable; the refusal of `compare` covers those.
+  The guard does not read a file outside the four directories, such as the `package.json` script a `bun run` step runs, nor a command held in a variable; the refusal of `compare` covers those when the step passes the runner's environment on.
   A Go program that calls `specgraph.Compare` is outside both parts.
   `envoy-go-checks` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-envoy-go-checks.yaml`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
 

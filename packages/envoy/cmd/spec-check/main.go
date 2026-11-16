@@ -46,8 +46,10 @@
 // file. The comparison does not judge the tree, which is tree's work. No CI job runs compare (R2):
 // Dispatch makes the comparison at each push. So compare exits 2, before it reads an argument,
 // when GITHUB_ACTIONS or CI is "true", with the one line "spec-check: compare does not run in a CI
-// job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)",
-// whatever route the job took to the command.
+// job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)".
+// That covers each route that passes the runner's environment on to the command. A route that
+// drops it, such as sudo or a container that docker run starts, gets neither variable, and the
+// command compares there: only guard names such a line, in the files that it reads.
 //
 // print writes the current approved block of each node it is named, in the order named, and after
 // a statement the block of each current check that serves it, each block once and the blocks
@@ -63,7 +65,8 @@
 // "spec-check: <dir>: read no workflow" when <dir>/.github/workflows holds no file, since an
 // instrument that read nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line
 // of <k> CI files runs the comparison". A step can run the comparison from a file it does not
-// read, such as a package script or a make target: compare's refusal covers that route.
+// read, such as a package script or a make target: compare's refusal covers that route when the
+// step passes the runner's environment on, and nothing covers it when the step does not.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage. Each entry of a directory that is
