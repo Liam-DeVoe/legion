@@ -35,7 +35,7 @@ import {
   targetNames,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
-import { blockNodeId, plainWords } from "./tree-drafts";
+import { addressesAsShortForms, blockNodeId, plainWords } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
 
 /**
@@ -277,6 +277,27 @@ function decisions(made: readonly Decision[]): IssueDecisions {
     decisions: [...made],
     document: `dispatch://${KEY}/artifact/decisions-md`,
     open_questions: [],
+  };
+}
+
+/** A link of decision `d1`'s to `ref`, which is a chip of the decision's and places nothing. */
+function linkTo(ref: string, kind: string): NonNullable<Decision["links"]>[number] {
+  return {
+    created_at: "2026-11-05T00:00:00Z",
+    created_version: 1,
+    from_block: "d1",
+    stale: false,
+    to: {
+      changed_at: null,
+      changed_by: null,
+      id: ref,
+      kind,
+      made_at: null,
+      made_by: null,
+      parent: null,
+      parent_version: null,
+      ref,
+    },
   };
 }
 
@@ -759,24 +780,6 @@ test("a chip naming an ask, a comment or a message draws its plain words, an iss
   const marked = "**Hold** the `deploy` until [the plan](https://example.com/plan) lands";
   const issueRef = "dispatch://CORE-7";
   const title = "Load __init__.py first";
-  // A decision's link to `ref`, which is a chip of the decision's and places nothing.
-  const linkTo = (ref: string, kind: string): NonNullable<Decision["links"]>[number] => ({
-    created_at: "2026-11-05T00:00:00Z",
-    created_version: 1,
-    from_block: "d1",
-    stale: false,
-    to: {
-      changed_at: null,
-      changed_by: null,
-      id: ref,
-      kind,
-      made_at: null,
-      made_by: null,
-      parent: null,
-      parent_version: null,
-      ref,
-    },
-  });
   for (const kind of ["ask", "comment", "message"] as const) {
     const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
     const reads = {
@@ -949,6 +952,13 @@ test("a stored text read to plain words keeps what markdown reads literally and 
     ["![diagram](shot.png)", ""],
     ["[the plan](https://example.com/plan)", "the plan"],
     ["<https://example.com/a_b*c*>", "https://example.com/a_b*c*"],
+    // A bare address reads as its target's short form, and so does an autolink's, as a link's
+    // words do; an escaped mark after an address is put back before it is read, so it trails the
+    // short form as a sentence's end. An address in a code span stays as its author wrote it.
+    ["see dispatch://CORE-2 and <dispatch://CORE-3>", "see CORE-2 and CORE-3"],
+    ["see dispatch://CORE-2\\.", "see CORE-2."],
+    ["Run `dispatch read dispatch://CORE-2` now", "Run dispatch read dispatch://CORE-2 now"],
+    ["`dispatch://CORE-2` is dispatch://CORE-2", "dispatch://CORE-2 is CORE-2"],
     // An underscore inside a word is no mark; marks nest.
     ["snake_case_name", "snake_case_name"],
     ["_emphasis_ and __strong__", "emphasis and strong"],
@@ -959,6 +969,31 @@ test("a stored text read to plain words keeps what markdown reads literally and 
     ["## Keep it\nKeep the model pure.", "Keep it Keep the model pure."],
     ["   ### Indented", "Indented"],
     ["  one\n\ntwo   three  ", "one two three"],
+  ] as const) {
+    expect(plainWords(stored), stored).toBe(words);
+  }
+});
+
+// R21: a blockquote's and a list item's markers are markup, which the server's reading holds as
+// the blocks they open and no word of them, so a stored text read to plain words drops them at
+// the start of each line, nested ones and a task box included, and a heading's marker after
+// them. What markdown reads literally keeps them: an escaped `1\.` or `\-` opens no list, and
+// `**bold**` at a line's start is no bullet, so a plan task's label still reads `1.` (decision 51).
+test("a stored text read to plain words drops the markers of a quote and of a list", () => {
+  for (const [stored, words] of [
+    ["- Hold the deploy.\n- Then ship.", "Hold the deploy. Then ship."],
+    ["> quoted words\n\nmy reply", "quoted words my reply"],
+    ["> > deeper\n>> deepest\n   > indented", "deeper deepest indented"],
+    ["1. one\n2. two\n10) ten", "one two ten"],
+    ["- [x] done\n* [ ] to do\n+ [X] also done", "done to do also done"],
+    ["- one\n  - nested\n    1. deeper\n\t+ tabbed", "one nested deeper tabbed"],
+    ["> ## Title\n> - item", "Title item"],
+    ["1\\. not a list\n\\- nor this", "1. not a list - nor this"],
+    [
+      "**1\\. Stand the harness up.** Run it.\n**2\\. Then ship.**",
+      "1. Stand the harness up. Run it. 2. Then ship.",
+    ],
+    ["*emphasis* stays a word", "emphasis stays a word"],
   ] as const) {
     expect(plainWords(stored), stored).toBe(words);
   }
@@ -1036,6 +1071,89 @@ test("a node's one line is cut from its first block, so a heading is never run i
   expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(({ name }) => name)).toEqual([
     "Keep it",
   ]);
+});
+
+// A stored heading's text is everything after its one marker, so a heading whose text opens on
+// `#` keeps it: `## # 1 rule` is the heading `# 1 rule`. Cutting the marker off before reading the
+// line to plain words, which cuts a marker off again, read it `1 rule`.
+test("a node's line from a stored heading leaves out its marker once", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const root = buildIssueTree({
+    decisions: decisions([decision("d1", "## # 1 rule\n\nbody", [])]),
+    issue: issueDetails([spec, made]),
+  });
+  const stored = nodeOf(root, blockNodeId("decisions-md", "d1"));
+  expect(stored === undefined ? "" : lineWords(stored)).toBe("# 1 rule");
+});
+
+// A rendered body draws an address in code as its author wrote it (`MarkdownBody.tsx`), so a
+// node's line keeps it there too: in a reading, a text run marked as inline code and a code
+// block's text keep their address while a plain run of the same block reads its address as the
+// target's short form, run by run; in a stored text, a code span keeps its address. The reading
+// the read sent is left as it was, and the node's words keep every address.
+test("an address in code stays as written in a node's line, from a reading and from stored text", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const stored = "Run `dispatch read dispatch://CORE-2` before dispatch://CORE-3 lands.";
+  const inline: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "Run ", type: "text" },
+          {
+            marks: [{ type: "inlineCode" }],
+            text: "dispatch read dispatch://CORE-2",
+            type: "text",
+          },
+          { text: " before dispatch://CORE-3 lands.", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const fenced: DisplayTree = {
+    content: [
+      {
+        attrs: { language: "sh" },
+        content: [{ text: "dispatch read dispatch://CORE-2", type: "text" }],
+        type: "code_block",
+      },
+      readingOf("Then dispatch://CORE-3."),
+    ],
+    type: "doc",
+  };
+  const sent = structuredClone([inline, fenced]);
+  const root = buildIssueTree({
+    decisions: decisions([
+      { ...decision("d1", stored, []), text_tree: inline },
+      {
+        ...decision(
+          "d2",
+          "```sh\ndispatch read dispatch://CORE-2\n```\n\nThen dispatch://CORE-3.",
+          []
+        ),
+        text_tree: fenced,
+      },
+      decision("d3", stored, []),
+    ]),
+    issue: issueDetails([spec, made]),
+  });
+  const node = (id: string): TreeNode | undefined => nodeOf(root, blockNodeId("decisions-md", id));
+  const line = (id: string): string => {
+    const found = node(id);
+    return found === undefined ? "" : lineWords(found);
+  };
+
+  expect(line("d1")).toBe("Run dispatch read dispatch://CORE-2 before CORE-3 lands.");
+  expect(line("d2")).toBe("dispatch read dispatch://CORE-2");
+  expect(line("d3")).toBe("Run dispatch read dispatch://CORE-2 before CORE-3 lands.");
+  expect([inline, fenced]).toEqual(sent);
+  const read = node("d1");
+  expect(read === undefined ? "" : nodeWords(read)).toBe(
+    "Run dispatch read dispatch://CORE-2 before dispatch://CORE-3 lands."
+  );
 });
 
 // The reviewer's Minor at a5714d85: a reading may open with a block that holds no words - a
@@ -2493,5 +2611,128 @@ test("the words of a statement, a check and a block keep the references of their
     const node = nodeOf(root, id);
     expect(node?.text, id).toBe("Read first.");
     expect(node === undefined ? "" : nodeWords(node), id).toBe(`Read ${cited} first.`);
+  }
+});
+
+/** The tree of an issue whose plan holds a task `t1`, `t2`, … for each of `words`, in order,
+ *  which the batched reference read names by its stored excerpt and, where `read` holds, sends
+ *  the server's reading of beside it: one paragraph whose one text run holds a bare address as
+ *  plain text, which is the shape the server writes (`readingOf`). Task `t0` needs `t1`, so a
+ *  chip names `t1`. */
+function planTasks(words: readonly string[], read: boolean): TreeNode {
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const refOf = (id: string): string => `dispatch://${KEY}/artifact/plan-md#b-${id}`;
+  return buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [
+          block("t0", "plan_task", { needs: refOf("t1") }),
+          ...words.map((_, at) => block(`t${at + 1}`, "plan_task")),
+        ],
+      },
+    ],
+    issue: issueDetails([plan]),
+    targets: words.map(
+      (text, at): ReferenceTarget => ({
+        gone: false,
+        kind: "block",
+        name: `:::plan_task{#t${at + 1}}\n${text}\n:::`,
+        ref: refOf(`t${at + 1}`),
+        ...(read ? { text_tree: readingOf(text) } : {}),
+      })
+    ),
+  });
+}
+
+// R22, decision 95: the server's reading keeps a bare `dispatch://` address in a node's words as
+// a plain text run, which is no link, so a line cut from those words drew the raw address. A
+// node's one line reads each bare address as its target's short form, as a link to it draws it,
+// from the reading and, where the read sent none, from the stored text; the punctuation that
+// trails an address in prose stays where it stood. A chip naming the block is cut from its
+// reading the same way, and where the read sent no reading it draws the kind's word, as before.
+test("a bare address in a node's line reads as its target's short form, from a reading and from stored text", () => {
+  const lines = [
+    ["Do it as dispatch://CORE-2 says. Then more.", "Do it as CORE-2 says."],
+    [
+      "As dispatch://INFRA-1196/spec#b-r1, read it first. Then more.",
+      "As INFRA-1196 spec block, read it first.",
+    ],
+    ["It is in dispatch://CORE-2/comment/c9. Then more.", "It is in CORE-2 comment."],
+  ] as const;
+  for (const [sent, read] of [
+    ["a reading", true],
+    ["no reading", false],
+  ] as const) {
+    const root = planTasks(
+      lines.map(([words]) => words),
+      read
+    );
+    for (const [at, [words, line]] of lines.entries()) {
+      const task = nodeOf(root, blockNodeId("plan-md", `t${at + 1}`));
+      expect(task?.text, sent).toBe(words);
+      expect(task === undefined ? "" : drawnLine(firstLineOf(lineWords(task))), sent).toBe(line);
+    }
+    expect(
+      nodeOf(root, blockNodeId("plan-md", "t0"))?.chips.map(({ name }) => name),
+      sent
+    ).toEqual([read ? "Do it as CORE-2 says." : NODE_TYPE_NAMES.plan_task]);
+  }
+});
+
+// R22, decision 95: a comment's body is stored markdown, which a chip naming the comment draws
+// read to plain words (`plainWords`), so a bare address in the body reads as its target's short
+// form in the chip's name and in the name the page publishes for it (`targetNames`). A link
+// whose target is an address reads as its words, as it did.
+test("a chip naming a comment whose body holds a bare address names it by the short form", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const ref = `dispatch://${KEY}/comment/comment-9`;
+  const body =
+    "**Hold** until dispatch://CORE-2 lands, as [the spec](dispatch://CORE-2/spec) says.";
+  const name = "Hold until CORE-2 lands, as the spec says.";
+  const reads = {
+    decisions: decisions([{ ...decision("d1", "Keep it.", []), links: [linkTo(ref, "comment")] }]),
+    issue: issueDetails([spec, made]),
+    targets: [{ gone: false, kind: "comment", name: body, ref }],
+  };
+
+  const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+  expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([{ name, ref }]);
+  expect([...targetNames(reads)]).toEqual([[ref, name]]);
+});
+
+// The body draws a node's whole words, the words filter matches them and the batched reference
+// read is asked to name each address they cite (`useIssueTree.ts`), so only a line reads an
+// address short: the node's words (`nodeWords`) keep it as written, from a reading and from
+// stored text alike, while its line beside them reads the short form.
+test("a node's words keep the bare address its line reads as a short form", () => {
+  const words = "Do it as dispatch://CORE-2 says. Then more.";
+  for (const [sent, read] of [
+    ["a reading", true],
+    ["no reading", false],
+  ] as const) {
+    const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
+    expect(task === undefined ? "" : nodeWords(task), sent).toBe(words);
+    expect(task === undefined ? "" : lineWords(task), sent).toBe(
+      "Do it as CORE-2 says. Then more."
+    );
+  }
+});
+
+// Decision 95: only an address that names a target (`parseDispatchReference`) has a short form,
+// so a span that only looks like one - a path no route reads, a key in lower case, or the scheme
+// alone - stays in a line as its author wrote it, beside an address written short.
+test("a string that only looks like an address stays as written in a node's line", () => {
+  const words =
+    "Not dispatch://CORE-2/nowhere, dispatch://core-2 or dispatch:// but dispatch://CORE-2.";
+  const line = "Not dispatch://CORE-2/nowhere, dispatch://core-2 or dispatch:// but CORE-2.";
+  expect(addressesAsShortForms(words)).toBe(line);
+  for (const [sent, read] of [
+    ["a reading", true],
+    ["no reading", false],
+  ] as const) {
+    const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
+    expect(task === undefined ? "" : lineWords(task), sent).toBe(line);
   }
 });

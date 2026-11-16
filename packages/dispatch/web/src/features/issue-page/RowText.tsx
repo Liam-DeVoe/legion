@@ -8,7 +8,7 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import type { DisplayTree } from "../../api/types";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -242,11 +242,15 @@ function StoredText({
  * Follows an address of this application in a node's words in place, on a plain click, as a link
  * the router draws does: the words are drawn as HTML (`MarkdownBody`, `linkRowReferences`), and
  * their links would load the whole page again. A click with a key held or with another button, a
- * link to a download, to another window or to another origin, and a click a picture already
- * answered (`DispatchPicture`) are the browser's.
+ * link to a download, to another window, to another origin or to a path the server answers
+ * itself (`SERVER_ROOT`), and a click a picture already answered (`DispatchPicture`) are the
+ * browser's. A link to the address the reader is at replaces it, as the router's `Link` does, so
+ * Back leaves the page as it does from a tie's chip to that address.
  */
 function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
   const navigate = useNavigate();
+  const here = useLocation();
+  const current = `${here.pathname}${here.search}${here.hash}`;
   return useCallback(
     (event: MouseEvent<HTMLElement>) => {
       if (event.defaultPrevented || !isPlainClick(event.nativeEvent)) return;
@@ -254,13 +258,19 @@ function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
       if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return;
       if (anchor.hasAttribute("download") || anchor.getAttribute("target") !== null) return;
       const url = new URL(anchor.href, window.location.href);
-      if (url.origin !== window.location.origin) return;
+      if (url.origin !== window.location.origin || SERVER_ROOT.test(url.pathname)) return;
       event.preventDefault();
-      navigate(`${url.pathname}${url.search}${url.hash}`);
+      const path = `${url.pathname}${url.search}${url.hash}`;
+      navigate(path, { replace: path === current });
     },
-    [navigate]
+    [current, navigate]
   );
 }
+
+/** The path roots the server answers itself and the page has no route for: its API, sign-in,
+ *  sockets, health and built assets (`serverRoots` and `assetRoots` of
+ *  `packages/envoy/internal/dispatch/routes/router.go`). */
+const SERVER_ROOT = /^\/(?:api|v1|auth|ws|healthz|assets)(?:\/|$)/u;
 
 /** What takes the focus in a drawn text: every control a reading can hold. */
 export const FOCUSABLE = "a[href], area[href], button, input, select, textarea, iframe, [tabindex]";

@@ -237,6 +237,43 @@ test("a refused send shows the plain words and keeps the draft", async () => {
   }
 });
 
+// Decision 92: two decisions can open with the same sentence, and Dispatch refuses a quote that
+// matches more than one place unless the write names which. A Change names its own decision's
+// place: here the quote also stands, earlier, in the decision above it, so it is the second.
+test("a Change names which place of the quote is its decision's own", async () => {
+  const above: Decision = {
+    ...decision,
+    block_id: "d0",
+    heading: "Keep the model pure",
+    ref: `dispatch://${KEY}/artifact/decisions-md#b-d0`,
+    text: "## Keep the model pure\n\nKeep the model pure. Draw it once.",
+  };
+  const own: Decision = {
+    ...decision,
+    heading: "Draw it once",
+    text: "## Draw it once\n\nDraw it once.",
+  };
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const user = userEvent.setup();
+  const { unmount } = renderActions({ ...read, decisions: [above, own] });
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls[0]?.[1]?.anchor).toEqual({
+      artifact: document_.id,
+      occurrence: 1,
+      quote: "Draw it once.",
+    });
+  } finally {
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
