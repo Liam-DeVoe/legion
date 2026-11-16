@@ -2107,7 +2107,7 @@ Read it with:
 select count(*) from public.issues where phase = 'awaiting_children';
 ```
 
-Once it reads 0, nothing below the outbox statements and the clear of `phases.entry_from` is needed.
+Once it reads 0, everything below but the move out of `awaiting_children` is still needed: the outbox statements, the clear of `phases.entry_from`, and the read, ask and clear of the forward merges still owed.
 
 **Delete the rows an earlier release refuses, with every daemon of the database stopped, before the earlier image is pinned.**
 
@@ -2142,25 +2142,37 @@ What it costs: once this release is rolled forward, a parent whose phase's role 
 **Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
 The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to `implementing`, since a test or a review of a head without the children's merges proves nothing.
 An issue whose pull request merged during the wait goes back to the very start it held, which the statement reads from `public.pull_requests` (`state = 'merged'`, one row per issue).
-It clears the held start, which the shape check requires of every other phase, and the two columns that outlive the phase, so that a roll forward asks again for no merge the operator has already asked for below.
-Its `returning` list is the record of what it moved: keep it, since the earlier release queues no start for any of these issues.
+It clears the held start, which the shape check requires of every other phase.
+It clears `children_waited_at` as well: the earlier release's retry below hands a worker the phase entry its row already names, raised before the wait, and this release, rolled forward with the column standing, would refuse a completion of such an entry that arrives after the issue left its phase (workflow's `leftItsPhase`).
+It leaves `forward_merge_owed` as it stands, for the read of the forward merges still owed below.
+Its `returning` list is the record of what it moved: the key and the phase it stands in now, and the held start, the held task and the held reason as they stood before the update, which the statement reads from the rows it moves (`moved`), since an update's `returning` gives the row it wrote.
+Keep it: the earlier release queues no start for any of these issues, and the statement clears the held task and reason, which say what each start was to hand its role.
 
 ```sql
-update public.issues as i
-  set phase = case
-        when i.children_wait_start in ('planning', 'implementing') then i.children_wait_start
-        when exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged') then i.children_wait_start
-        else 'implementing'
-      end,
-    children_wait_start = null, children_wait_task = null, children_wait_reason = null, children_wait_since = null,
-    forward_merge_owed = false, children_waited_at = null
+with moved as (
+  select i.key, i.children_wait_start as held_start, i.children_wait_task as held_task, i.children_wait_reason as held_reason,
+    case
+      when i.children_wait_start in ('planning', 'implementing') then i.children_wait_start
+      when exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged') then i.children_wait_start
+      else 'implementing'
+    end as back_to
+  from public.issues as i
   where i.phase = 'awaiting_children'
-  returning i.key, i.phase;
+)
+update public.issues as i
+  set phase = moved.back_to,
+    children_wait_start = null, children_wait_task = null, children_wait_reason = null, children_wait_since = null,
+    children_waited_at = null
+  from moved
+  where i.key = moved.key
+  returning i.key, i.phase, moved.held_start, moved.held_task, moved.held_reason;
 ```
 
 The earlier release's boot writes each moved issue's Dispatch status to its phase's (`correctStatuses` in that release's `workflow/resume.go`).
 Nothing of it starts the phase's worker: the move into the wait finished every start the issue owed, and the statement writes none.
 So, once the earlier daemon is up, start each one by hand, for the role of the phase the statement returned (`planning` the planner, `implementing` the implementer, `testing` the tester, `reviewing` the reviewer).
+The earlier release's retry below starts the phase with a task of its own, whose reason is the operator's retry (`restartPhase` and `retryPhase` in that release's `workflow/engine.go`), so it carries neither the held task nor the held reason.
+Give each worker that work in a comment on the issue before the retry: the held task where the issue went back to the start it held, since that task carries the reason (a tester's failures, a review's words), and the held start and the held reason where it went to `implementing` in place of a held `testing`, `reviewing` or `accepting`, as this release's return names them in the implementer's task.
 Read the claim's token on the issue's row for that role in `legion claims list --operator-token-file <file>`.
 The earlier release's `legion claims retry` starts a phase again only for a claim that failed or that an operator stopped (`retryStart` and `restartWorkedPhase` in its `api/operator.go`), so stop a claim in any other state first, which retires it, and then retry it:
 
@@ -2171,10 +2183,38 @@ legion claims retry --operator-token-file <file> --claim <token>
 
 The retry starts the phase again on the claim's own session.
 An issue back in `accepting` has no worker to start: its architect signs it off as any issue in `accepting`.
+Nothing tells that architect: this release's return would have sent it an `awaiting-children` notice that the issue waits on its sign-off, and the outbox statements above delete such notices.
+So tell it on its role topic, or in a comment on the issue, that the issue is back in `accepting`.
 Where the list shows no claim of that role, the role has never run on the issue, and its architect decides how its work goes on.
 
-An issue the statement put in `implementing` whose pull request has not merged owes the merge of its children's work: this release's return would have asked its implementer to merge the default branch into the branch, push, and complete with a new handoff record, and the earlier release's task asks for none of that.
-Ask the implementer for it in a comment on the issue, or wait for the wait to drain before the rollback, which is the path above.
+Each moved issue whose pull request has not merged, back in `planning` or `implementing`, still owes the forward merge of its children's work, which this release asks of the implementer of its next implementing round: for one in `implementing` the round the retry above starts, and for one in `planning` the round after its planner's.
+The statement leaves `forward_merge_owed` set on each one, so the read below names it.
+
+**Ask for each forward merge still owed, and clear `forward_merge_owed` with the same daemons stopped, whichever path the rollback takes.**
+This release sets `forward_merge_owed` when a parent moves into the wait and keeps it set after the return until the implementer completes the implementing round whose task asks for the merge (workflow's `settleForwardMerge`); a merged pull request clears it too.
+So the drain the simplest rollback waits for can leave an issue in `planning` or `implementing` that still owes the merge, as the move out of the wait above does.
+The earlier release names the column in no statement and asks for none of these merges.
+Read them, after the move above where the rollback made it, and keep what the read returns:
+
+```sql
+select i.key, i.phase from public.issues as i
+  where i.forward_merge_owed
+    and not exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged')
+  order by i.key;
+```
+
+Then clear the column:
+
+```sql
+update public.issues set forward_merge_owed = false where forward_merge_owed;
+```
+
+Once the earlier daemon is up, ask the implementer of each returned issue's next implementing round (the round under way for an issue in `implementing`), in a comment on the issue, to merge the default branch into the branch before anything else, push, and complete with a new handoff record, however the children left, as this release's implementing task would have asked (workflow's `forwardMergeText`).
+For an issue the move above put in `implementing`, put the ask in the comment that gives its implementer the held work, before the retry.
+Ask the tester of the testing round after it for a full test round as well: this release has the implementer end its forward-merge comment with the line `children merged: full test round`, which this release's tester prompt reads as that request and the earlier release's does not.
+
+What the clear costs: once this release is rolled forward, none of its implementing tasks asks for these merges, so an implementer that has not merged by then is asked by the comment alone.
+Left set, the column has the first implementing task of each such issue after the roll forward ask again for a merge the operator has already asked for.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issues` and `outbox` are one table each for all of them, so the statements above act on every project's rows.

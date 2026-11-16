@@ -42,8 +42,9 @@
 -- and leave children_waited_at null, and its upserts leave both as they are. docs/kubernetes.md's
 -- section "Rolling back the release that holds a parent's start while a child of it is open" says
 -- how a rollback waits for no parent to stand in the phase, or moves each one out of it to the
--- start this release's return would have given it, clearing the held start and both of those
--- columns, and what an operator then starts by hand.
+-- start this release's return would have given it, clearing the held start and
+-- children_waited_at, and how it then reads, asks for and clears each forward merge still owed
+-- (forward_merge_owed), and what an operator then starts by hand.
 --
 -- There is no down file: migrations here are forward-only.
 alter table issues drop constraint issues_phase_check;
