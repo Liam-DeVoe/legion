@@ -221,7 +221,7 @@ func goingGuardWrite(action string, route GoingRoute, args map[string]any, value
 		}
 	}
 	prepared := goingPrepared{action: action, route: route, arguments: args, call: call}
-	if refused := goingSendRefusal(approved, prepared, goingGuardHeld(action, args), ""); refused != nil {
+	if refused := goingSendRefusal(approved, prepared, goingGuardHeld(action, args), goingPerson{}); refused != nil {
 		built.WriteString("refused: " + refused.Error() + "\n")
 	}
 	return built.String(), nil

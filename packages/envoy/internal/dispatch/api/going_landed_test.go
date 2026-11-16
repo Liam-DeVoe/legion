@@ -636,10 +636,12 @@ func (rig goingWritesRig) holdGoingRun(t *testing.T, run string, change func(pgx
 	<-done
 }
 
-// TestGoingWriteUploadWhoseOwnerCannotBeNamedIsNeverAutomatic (review round 4, finding 5): an
-// upload sent at once whose route names no owner the write can read is held to the documents an
-// owner it cannot name may hold, so it is refused, as the proposal treats an owner it could not
-// read; one whose words write its name still runs at once.
+// TestGoingWriteUploadWhoseOwnerCannotBeNamedIsNeverAutomatic (review round 4, finding 5; review
+// round 8, finding 2): an upload sent at once whose route names no owner the write can read is
+// held to the documents an owner it cannot name may hold, so it is refused, as the proposal
+// treats an owner it could not read; one whose words write its name still runs at once. An owner
+// the read before did read is none of this check's: the document it found, or found none of, is
+// what the refusals before it decide on (goingUploadForceRefusal, goingUploadOverRefusal).
 func TestGoingWriteUploadWhoseOwnerCannotBeNamedIsNeverAutomatic(t *testing.T) {
 	prepared := goingPrepared{
 		action: "dispatch_artifact", route: GoingRoute{Method: http.MethodPost, Pattern: "/api/v1/somewhere/{key}/artifacts"},
@@ -654,6 +656,10 @@ func TestGoingWriteUploadWhoseOwnerCannotBeNamedIsNeverAutomatic(t *testing.T) {
 	}
 	if goingUploadsOver(prepared, before, "save this as notes") {
 		t.Error("an upload whose words write its name is refused, want it run at once")
+	}
+	held := goingObservation{value: goingUploadBefore{ID: "a1", Name: "notes", Version: 1}}
+	if goingUploadsOver(prepared, held, "save this as a doc") {
+		t.Error("an upload over the document its read before found is refused as one whose owner cannot be named, want that document's own refusals to decide it")
 	}
 }
 

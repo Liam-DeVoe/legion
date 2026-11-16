@@ -7,12 +7,14 @@ import (
 )
 
 // TestAnUploadMadeACreateAloneMakesADocumentAndNeverWritesOverOne (review round 6, finding 3): the
-// condition the command bar's in-process caller carries on an upload without force
+// condition the command bar's in-process caller carries on every upload it sends
 // (goingCondition.ExpectNew) makes it a create alone, decided under the owner's lock: under a name
 // the owner already holds it is refused, 409 DOCUMENT_EXISTS, and nothing is written - the
-// document keeps its one version - and under a free name it makes the document. It holds for an
-// issue's JSON upload, a project's, and a multipart upload, and it cannot be carried with an
-// expected content (ExpectSHA256), which asks for the opposite.
+// document keeps its one version - and under a free name it makes the document. An upload with
+// force sheds the condition only at the write where its read before found the document it names
+// (goingUploadWritesOver); this one carries it, as every upload the bar sends does by default. It
+// holds for an issue's JSON upload, a project's, and a multipart upload, and it cannot be carried
+// with an expected content (ExpectSHA256), which asks for the opposite.
 func TestAnUploadMadeACreateAloneMakesADocumentAndNeverWritesOverOne(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "DEMO", "Uploads that only make", "The spec.\n").Key

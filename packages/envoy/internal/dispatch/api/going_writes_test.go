@@ -1589,6 +1589,121 @@ func TestGoingWriteOfAForcedUploadOverADocumentTheWordsDoNotAskForIsRefusedHowev
 	}
 }
 
+// TestGoingWriteOfAnUploadWhoseHeldNameThePersonFilledInSaysWhatIsSo (review round 8, finding 1):
+// where the answer left an upload's name out, the proposal offers the upload and asks the person
+// for the name (Missing: name), the force being the answer's own. A name they fill in asks for a
+// document of that name to be made, never for the document that name finds to be written over, so
+// a fill naming a document the issue holds - by its stored name or by its slug - is refused with
+// nothing written. The reason is what is so: it does not say the upload was not offered, nor that
+// their own words do not name the document they just typed, and it names the stored name to write
+// in the question and the command's --force, the two ways to ask for that document's next version.
+// The first of those is true: the same fill, under words that write plan.md, writes its next
+// version.
+func TestGoingWriteOfAnUploadWhoseHeldNameThePersonFilledInSaysWhatIsSo(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	for _, tc := range []struct {
+		name, fill, words string
+		written           bool
+	}{
+		{"the stored name, words that do not write it", "plan.md", "save this to the issue", false},
+		{"its slug, words that do not write it", "plan-md", "save this to the issue", false},
+		{"the stored name, words that write it", "plan.md", "replace plan.md with this", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := rig.issue(t, "A held plan, "+tc.name)
+			uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "plan.md", "# Plan\n\nHeld.\n")
+			start := goingBrowserStart(t)
+			start.words = tc.words
+			start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+			// The answer wrote the force and left the name out, so the proposal asks for it.
+			written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {
+				{"issue": issue, "content": "# Plan\n\nWritten by the model.\n", "force": true},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+				&going.Final{Answer: "Saved.", Arguments: string(written)}, start, rig.served.goingHoldsBy(context.Background()))
+			offers := proposal.Offers
+			if len(offers) != 1 || len(offers[0].Invocations) != 1 || offers[0].Invocations[0].Missing == nil ||
+				offers[0].Invocations[0].Missing.Field != "name" {
+				t.Fatalf("the run proposed %+v, want the one upload offered, missing its name", proposal)
+			}
+			run := rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal)
+			press := map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson, "fill": tc.fill}
+			if tc.written {
+				rig.wrote(t, "alice", run, press)
+				if versions := rig.goingDocumentVersions(t, issue, "plan-md"); versions != 2 {
+					t.Fatalf("plan.md holds %d versions after the fill under words that write plan.md, want its next one written", versions)
+				}
+				return
+			}
+			refused := rig.write(t, "alice", run, press)
+			refusal := decodeBody[errorBody](t, refused)
+			if refused.Code != http.StatusConflict || refusal.Code != codeGoingNotProposed {
+				t.Fatalf("the fill of %q answered %d %s, want 409 %s", tc.fill, refused.Code, refused.Body.String(), codeGoingNotProposed)
+			}
+			for _, untrue := range []string{"not offered", "your own words"} {
+				if strings.Contains(refusal.Error, untrue) {
+					t.Errorf("the fill of %q is refused %q, which says %q of an upload the bar offered and a name the person typed", tc.fill, refusal.Error, untrue)
+				}
+			}
+			for _, says := range []string{"plan.md", "--force"} {
+				if !strings.Contains(refusal.Error, says) {
+					t.Errorf("the fill of %q is refused %q, want it to name %q, one of the two ways to ask for that document's next version", tc.fill, refusal.Error, says)
+				}
+			}
+			if versions := rig.goingDocumentVersions(t, issue, "plan-md"); versions != 1 {
+				t.Fatalf("plan.md holds %d versions after the refused fill, want its one", versions)
+			}
+			if writes := rig.record(t, "alice", run).Writes; len(writes) != 0 {
+				t.Fatalf("the refused fill was recorded as %+v", writes)
+			}
+		})
+	}
+}
+
+// TestGoingWriteOfABlankUploadOverADocumentMadeMeanwhileIsTheRoutesOwnRefusal (review round 8,
+// finding 2): an upload that stores nothing, its content blank, is none of the bar's to refuse
+// before it is sent - force says nothing about it, as the dispatch command leaves it to the route
+// - so where a document of its name is made between the proposal and the write, the create alone
+// every upload carries is the route's to refuse, 409 DOCUMENT_EXISTS, sent at once or picked by
+// the person, and bob's document keeps its one version.
+func TestGoingWriteOfABlankUploadOverADocumentMadeMeanwhileIsTheRoutesOwnRefusal(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	for _, approved := range []string{goingApprovedAuto, goingApprovedPerson} {
+		t.Run(approved, func(t *testing.T) {
+			issue := rig.issue(t, "Notes made meanwhile, "+approved)
+			start := goingBrowserStart(t)
+			start.words = "save this as a doc"
+			start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+			written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {
+				{"issue": issue, "name": "notes.md", "content": ""},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+				&going.Final{Answer: "Saved.", Arguments: string(written)}, start, rig.served.goingHoldsBy(context.Background()))
+			if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 || !proposal.Offers[0].Invocations[0].Automatic {
+				t.Fatalf("the run proposed %+v, want the one empty document offered, automatic, as the issue holds no notes yet", proposal)
+			}
+			run := rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal)
+			// Between the proposal and the write, bob makes notes.md on the issue.
+			rig.fixture(t, "bob", http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": "notes.md", "content": "# Notes\n\nBob's.\n"})
+			refused := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": approved})
+			if refused.Code != http.StatusConflict || decodeBody[errorBody](t, refused).Code != "DOCUMENT_EXISTS" {
+				t.Fatalf("the blank upload approved %s answered %d %s, want the route's 409 DOCUMENT_EXISTS", approved, refused.Code, refused.Body.String())
+			}
+			if versions := rig.goingDocumentVersions(t, issue, "notes-md"); versions != 1 {
+				t.Fatalf("notes.md holds %d versions after the blank upload approved %s, want bob's one", versions, approved)
+			}
+		})
+	}
+}
+
 // TestGoingWriteOfAnUploadWithoutForceNeverWritesOverADocumentMadeAsItRuns (review round 6,
 // finding 3): an upload without force is sent as a create alone (goingCondition.ExpectNew, on the
 // request's context), decided by its route

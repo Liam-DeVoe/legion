@@ -419,7 +419,11 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		claim.refuse(before, err)
 		return
 	}
-	if refused := goingSendRefusal(input.Approved, prepared, before, run.Words); refused != nil {
+	// What of the write is the person's own: their typed words, and the argument the proposal
+	// asked them for, which an upload over a document they did not ask to replace is refused in
+	// the words of.
+	person := goingPerson{words: run.Words, filled: goingFilledArgument(invocation, input)}
+	if refused := goingSendRefusal(input.Approved, prepared, before, person); refused != nil {
 		claim.refuse(before, refused)
 		return
 	}
@@ -1097,6 +1101,15 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input going
 	return nil
 }
 
+// goingPerson is what of a write came from the person at the bar rather than from the answer,
+// which an upload's refusal is worded from: the words they typed (goingRun.Words), and the
+// argument whose value they gave where the invocation was missing one, "" for none
+// (goingFilledArgument).
+type goingPerson struct {
+	words  string
+	filled string
+}
+
 // goingSendRefusal is why a write whose read before is in may not be sent, nil where it may, for
 // the write as approved. Each is read now, under the owner the upload's route writes to: a
 // document of the upload's name may have been made since the proposal, and the proposal's own
@@ -1104,19 +1117,20 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input going
 // refused however the write came to run (goingUploadForceRefusal); one with force whose read
 // before finds a document the person did not ask for - its name is not the name that document is
 // stored under, or the words do not write that name - is refused the same way, at once, picked or
-// confirmed, in the words a proposal made now would withhold it with (goingUploadOverRefusal);
-// and one sent at once whose route names no owner the write can read, the words not writing its
-// name, runs only when the person picks it (goingUploadsOver).
-func goingSendRefusal(approved string, prepared goingPrepared, before goingObservation, words string) error {
+// confirmed, in the words a proposal made now would withhold it with, or, where that name is the
+// one the person filled in, in the words of a filled-in name (goingUploadOverRefusal); and one
+// sent at once whose route names no owner the write can read, the words not writing its name,
+// runs only when the person picks it (goingUploadsOver).
+func goingSendRefusal(approved string, prepared goingPrepared, before goingObservation, person goingPerson) error {
 	if refused := goingUploadForceRefusal(prepared, before); refused != nil {
 		return refused
 	}
-	if refused := goingUploadOverRefusal(prepared, before, words); refused != nil {
+	if refused := goingUploadOverRefusal(prepared, before, person); refused != nil {
 		return refused
 	}
-	if approved == goingApprovedAuto && goingUploadsOver(prepared, before, words) {
+	if approved == goingApprovedAuto && goingUploadsOver(prepared, before, person.words) {
 		return errorf(http.StatusConflict, codeGoingNotAutomatic,
-			"%s under %q would write the next version of a document its owner holds now, which the words do not ask for by the name it is stored under, or may hold where the write cannot name its owner, so it runs only when the person picks it: send it as approved person or confirmed",
+			"%s under %q writes to an owner the write cannot name, so nothing read says whether that owner already holds a document of that name, and the words do not write the name. It runs only when the person picks it, as the proposal offers an upload whose owner it could not read: send it as approved person or confirmed",
 			prepared.action, goingText(prepared.arguments, goingUploadNames[prepared.action]))
 	}
 	return nil
@@ -1156,4 +1170,23 @@ func goingArgumentsOf(invocation goingInvocation, input goingWriteInput) (map[st
 	}
 	arguments[invocation.Missing.Field] = value
 	return arguments, "", nil
+}
+
+// goingFilledArgument is the argument of the invocation whose value came from the person making
+// this write rather than from the answer, "" for none: the one argument the invocation was
+// missing, which the bar asked them for (goingInvocation.Missing), where this request fills it or
+// names it among the arguments it puts over the invocation's own (goingArgumentsOf). A fill of
+// `@session` is none of them: it names the session the write acts for and fills no argument of
+// the action.
+func goingFilledArgument(invocation goingInvocation, input goingWriteInput) string {
+	if invocation.Missing == nil || invocation.Missing.Field == goingCallerSession {
+		return ""
+	}
+	if len(input.Fill) > 0 && string(input.Fill) != "null" {
+		return invocation.Missing.Field
+	}
+	if _, given := input.Arguments[invocation.Missing.Field]; given {
+		return invocation.Missing.Field
+	}
+	return ""
 }

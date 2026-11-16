@@ -19,7 +19,8 @@ body: |-
   words write that name; one that finds the document by its slug is always withheld, and so is
   every other: the proposal's offer says why in `withheld`. A write of an upload with `force`
   is held to that rule again when it runs, whoever approved it, so a document made between the
-  proposal and the pick is never written over: `409 GOING_NOT_PROPOSED` in the offer's own
+  proposal and the pick is no more written over by a pick than by a write sent at once:
+  `409 GOING_NOT_PROPOSED` in the offer's own
   words, with nothing written. A write of an upload without `force`
   under a name the store holds when it runs is refused, however it came to run:
   `400 GOING_ARGUMENTS` in the
