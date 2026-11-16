@@ -3,8 +3,8 @@ package api
 // going_conditions.go is how a request the command bar sends in-process is made conditional. An
 // undo's write back (going_undo.go) - an issue's fields, an ask's parts, a document's content, a
 // claim taken back or released, a thread reopened, a created issue closed - puts its value back
-// only where the item still holds what the undone write left, and every upload the bar sends
-// makes a document only where its owner holds none of the name, an upload with force shedding
+// only where the item still holds what the undone write left, and every other upload the bar
+// sends makes a document only where its owner holds none of the name, an upload with force shedding
 // that condition at the write where its read before found the document it names
 // (goingUploadWritesOver, going_translate.go). Each is a compare-and-set its route decides under
 // the lock it takes for the write, never a read and then a write.

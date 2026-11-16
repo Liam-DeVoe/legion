@@ -268,9 +268,8 @@ type goingWriteLine struct {
 // GOING_APPROVAL_REQUIRED, for the two writes that always ask and for any but the action the
 // decision chose at or above the action threshold, 409 GOING_NOT_AUTOMATIC for an invocation the
 // proposal did not mark automatic (goingAutomatic), one sent with arguments replacing its own, and
-// an upload that would now write the next version of a document of its name its route's owner
-// holds, unless its name is the name that document is stored under and the words write it, or
-// whose owner it cannot name, where the words do not write its name (goingUploadsOver), and 409
+// an upload whose route names no owner the write can read, where the words do not write its name
+// (goingUploadsOver), and 409
 // GOING_CONFIRMATION_REQUIRED where the caller turned confirm_writes on. The value before is read,
 // the write performed and the value after read, each in-process as the caller; the write, refused
 // or not, is recorded in the place of its claim, with how each request it sent went and the undo

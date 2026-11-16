@@ -125,8 +125,9 @@ type goingHeldDocument struct {
 // against: what each issue holds of its hand-overs (issue), and whether an upload's owner holds
 // a document of its name (document). A nil read reads nothing, so what it would have answered has
 // to be named in the words. What the document read answers is the proposal's hint alone: the
-// write reads the document again, under the owner its route writes to, when it runs at once
-// (goingUploadsOver).
+// write reads the document again, under the owner its route writes to, on every run however it
+// was approved (uploadedOver), and the refusals before its send act on what that read finds
+// (goingUploadForceRefusal, goingUploadOverRefusal).
 type goingHolds struct {
 	issue    goingHeld
 	document goingDocumentHeld
@@ -429,9 +430,9 @@ func goingRouteUploadOwner(route GoingRoute, values map[string]string) (artifact
 // the person to pick. An owner the read before did read is none of it: the document that read
 // found, or found none of, is what the refusals before it decide on - an upload with content and
 // no force over a document found is refused (goingUploadForceRefusal), one with force the person
-// did not ask for is refused (goingUploadOverRefusal), and one that stores nothing, its content
-// blank, is the upload route's to refuse under a held name, 409 DOCUMENT_EXISTS, as the dispatch
-// command leaves it to.
+// did not ask for is refused (goingUploadOverRefusal), and one without force that stores nothing,
+// its content blank, is the upload route's to refuse under a held name, 409 DOCUMENT_EXISTS, as
+// the dispatch command leaves it to.
 func goingUploadsOver(prepared goingPrepared, before goingObservation, words string) bool {
 	argument, uploads := goingUploadNames[prepared.action]
 	if !uploads || !before.ownerUnnamed {

@@ -20,8 +20,9 @@ body: |-
   every other: the proposal's offer says why in `withheld`. A write of an upload with `force`
   is held to that rule again when it runs, whoever approved it, so a document made between the
   proposal and the pick is no more written over by a pick than by a write sent at once:
-  `409 GOING_NOT_PROPOSED` in the offer's own
-  words, with nothing written. A write of an upload without `force`
+  `409 GOING_NOT_PROPOSED` in the offer's own words, or, for a name the person filled in, in
+  words saying that a filled-in name does not ask for that document to be replaced, with
+  nothing written. A write of an upload without `force`
   under a name the store holds when it runs is refused, however it came to run:
   `400 GOING_ARGUMENTS` in the
   `dispatch artifact` command's words where its read before finds the document. Every upload is
