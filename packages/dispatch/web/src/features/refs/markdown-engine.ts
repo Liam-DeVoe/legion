@@ -32,6 +32,7 @@ import {
   nodeRouteFromHref,
   referenceHref,
   referenceRouteFromHref,
+  shortForm,
 } from "./routes";
 import { readTextReferences, type TextReference } from "./text-references";
 import { rememberUpTo, type WorkerJob, WorkerQueue } from "./worker-queue";
@@ -561,6 +562,14 @@ export interface ReferenceNaming {
   readonly questions?: Readonly<Record<string, string>>;
   readonly cited?: ReadonlySet<string>;
   readonly projects?: ReadonlySet<string>;
+  /** Whether the caller reads none of the references the projection answers: a title drawn over
+   *  one record's text, where a name inside a name resolves nothing (`useReferenceTarget`). No
+   *  name ever takes a reference's place there, so a `dispatch://` address reads as its short
+   *  form (`dispatch://CORE-1/ask/a1` reads `CORE-1 ask`) and the title never shows the scheme.
+   *  For any other caller, a reference `names` does not hold is one not read yet, and it reads
+   *  as the words its author wrote until it resolves, as a rendered body's link does
+   *  (`RefLink`). */
+  readonly readsNone?: boolean;
 }
 
 /** Nothing known yet, shared so a projection that needs nothing keeps one identity across renders
@@ -627,10 +636,11 @@ export function citedReferences(
  * a `dispatch://` reference, a dashboard address, a short id, an issue key and - where `naming`
  * holds its document's question map - a `#id`, each as the name its target resolved to, and as
  * the words its author wrote until it resolves and where Dispatch answered that it has none, as
- * a rendered body draws the words of a link whose title has not resolved (`RefLink`). A
- * reference the text's source does not cite (`ReferenceNaming.cited`) is the words it is. Each
- * reference read is added to `read` by its `dispatch://` reference, an issue key's being its
- * issue's.
+ * a rendered body draws the words of a link whose title has not resolved (`RefLink`). For a
+ * caller that reads none of them (`ReferenceNaming.readsNone`), a `dispatch://` address reads as
+ * its short form instead, and every other form as written. A reference the text's source does
+ * not cite (`ReferenceNaming.cited`) is the words it is. Each reference read is added to `read`
+ * by its `dispatch://` reference, an issue key's being its issue's.
  */
 function nameReferences(
   text: string,
@@ -649,7 +659,12 @@ function nameReferences(
       continue;
     }
     read.push(target.reference);
-    const drawn = naming.names.get(target.reference)?.name ?? found.text;
+    const drawn =
+      naming.readsNone === true
+        ? found.form === "address" && found.text.startsWith("dispatch://")
+          ? shortForm(target.route)
+          : found.text
+        : (naming.names.get(target.reference)?.name ?? found.text);
     named += `${text.slice(cursor, found.start)}${drawn}`;
     cursor = found.end;
   }
@@ -660,11 +675,12 @@ function nameReferences(
  * What a link reads as, where that is not the words its author wrote, as a rendered body draws it
  * (`RefLink.tsx`'s `collectReferenceAnchors`, by `@legion/contracts`'s `referenceReading`): a link
  * whose words are its own address as its target's name, and a party's mention as the mention
- * sign and the party's name (`ReferenceName.mention`), each once its target has resolved.
- * Undefined where the link reads as its words - an author's own words, words formatted in part
- * or holding code or a hard break, an address that names nothing, a target not yet read or that
- * Dispatch answered has no name - and the link's reference is added to `read` where it has one to
- * read.
+ * sign and the party's name (`ReferenceName.mention`), each once its target has resolved. For a
+ * caller that reads none of them (`ReferenceNaming.readsNone`), a link whose words are its own
+ * `dispatch://` address reads as its short form, as the bare address does. Undefined where the
+ * link reads as its words - an author's own words, words formatted in part or holding code or a
+ * hard break, an address that names nothing, a target not yet read or that Dispatch answered has
+ * no name - and the link's reference is added to `read` where it has one to read.
  */
 function linkDrawn(
   href: string,
@@ -691,6 +707,9 @@ function linkDrawn(
   }
   const reference = buildDispatchReference(route);
   read.push(reference);
+  if (naming.readsNone === true && reads !== "mention") {
+    return href.startsWith("dispatch://") ? shortForm(route) : undefined;
+  }
   const answer = naming.names.get(reference);
   return reads === "mention" ? answer?.mention : answer?.name;
 }
@@ -888,8 +907,10 @@ export interface MarkdownHeadline {
  * absent, and it is parsed, as everything about such a text is.
  *
  * `naming` is what a caller has resolved for the references the last projection answered; a
- * caller that leaves it out reads every reference as written, which is what a title drawn over
- * one record's text does (`useReferenceTarget`), since a name inside a name resolves nothing.
+ * caller that leaves it out reads every reference as written. A title drawn over one record's
+ * text reads none of them, since a name inside a name resolves nothing, and says so
+ * (`ReferenceNaming.readsNone`, `useReferenceTarget`): a `dispatch://` reference reads there as
+ * its short form, and every other one as written.
  *
  * `firstLine` projects the text's first line alone (`firstLineOf`): the first line of the
  * projection that holds any words - of a paragraph, a heading, a list item, a code block, a

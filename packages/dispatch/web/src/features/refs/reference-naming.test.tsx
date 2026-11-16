@@ -536,7 +536,9 @@ function Line({
   );
 }
 
-/** A text's projection by a reader that resolves nothing: a title drawn over a record's text. */
+/** A text's projection by a reader that holds no names for its references. A title drawn over a
+ *  record's text is not this reader: it says it reads none (`ReferenceNaming.readsNone`), and
+ *  its `dispatch://` references read as their short forms (`markdown-surfaces.test.tsx`). */
 function Headline({ markdown }: { markdown: string }): ReactNode {
   return <span data-testid="headline">{useMarkdownHeadline(undefined, 200, markdown)?.text}</span>;
 }
@@ -781,9 +783,9 @@ test("a bare key, a dashboard address and a short id project as the painted line
 });
 
 // A reader that holds no facts for a form writes it as its author did, as a rendered body draws
-// the words of a link whose title has not resolved: a title drawn over a record's text resolves
-// nothing, so even a `dispatch://` address stays as written there, and a line that names no
-// record reads a `#id` as written, since only a record's document declares one.
+// the words of a link whose title has not resolved: even a `dispatch://` address stays as
+// written while nothing has named it, and a line that names no record reads a `#id` as written,
+// since only a record's document declares one.
 test("a reader with no facts for a form projects it as written", async () => {
   const written = `See CORE-1, ${window.location.origin}/issues/CORE-1 and #q2, not dispatch://CORE-1.`;
   const view = draw(

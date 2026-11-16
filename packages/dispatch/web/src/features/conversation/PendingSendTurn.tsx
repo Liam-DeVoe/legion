@@ -6,6 +6,7 @@ import {
   dangerText,
   surfaceMutedBg,
   textMutedOnCanvas,
+  textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -46,7 +47,7 @@ export function PendingSendTurn({
       <div
         className={`max-w-[80%] rounded-xl px-3 py-2 text-sm opacity-80 ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
       >
-        <p className={`text-xs font-medium ${textMutedOnCanvas}`}>Your message</p>
+        <p className={`text-xs font-medium ${textMutedOnSurfaceMuted}`}>Your message</p>
         <MarkdownBody markdown={held.draft.draft.body} surface="agent-held-send" />
       </div>
       <div className="flex max-w-[80%] flex-wrap items-center justify-end gap-x-3 gap-y-1">

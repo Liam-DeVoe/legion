@@ -47,6 +47,13 @@ import * as ts from "typescript";
  * two sides, which `margin/ThreadCard.tsx` - main's own mounts - draws inside a diff, where the
  * renderer writes characters and parses nothing.
  *
+ * The stored texts are the contract's: a field with a tree beside it (`<field>_tree`) is one.
+ * A stored text with no such tree in the generated contract is named by hand (`HAND_NAMED_TEXTS`),
+ * with where its tree is or that the server sends none: one whose tree rides elsewhere - an
+ * event's under its payload path, a hand-written shape's, the dashboard's own `excerptTree` - is
+ * held to a call or an element of the dashboard that hands it beside that tree, and every one to
+ * staying a text the contract's trees do not name.
+ *
  * What it cannot see, since it reads each file's syntax and not its types:
  *
  * - A stored text handed to a component of another file as a prop, and drawn raw there under
@@ -218,32 +225,80 @@ const READER_MODULES: readonly string[] = [
   "packages/dispatch/web/src/features/refs/markdown-engine.ts",
   "packages/dispatch/web/src/features/refs/plain-text.tsx",
   "packages/dispatch/web/src/features/refs/tree-fragment.ts",
+  // The cut of a head (a row's label, an excerpt's line): the twin of the server's HeadRefs.
+  "packages/dispatch/web/src/features/refs/head-refs.ts",
 ];
 
 /** The API's generated contract, whose trees name the stored texts (`TREED_FIELDS`). */
 const API_CONTRACT = "packages/contracts/src/dispatch-api.generated.ts";
 
-/** The stored texts the server sends with no tree beside them, so the contract's trees cannot
- *  name them. Each is a writer's own words, where a mention reads as `[@name](address)` until
- *  something reads it. */
-const UNTREED_PROSE_FIELDS: readonly string[] = [
-  // The question a reply answers, as the reply's own event carries it.
-  "ask_question",
-  // A backlink's excerpt: the citing text around the reference, cut by the server.
-  "excerpt",
-  // A candidate's first line, on the page that tells two items with one short id apart: the
-  // head of the stored text the candidate is, cut by the server.
-  "first_line",
-  // A decision's heading: the words its writer put above the passage.
-  "heading",
-  // A check's negative control, and a check result's: what its writer says would fail.
-  "negative_control",
-  // What a check result's writer saw.
-  "observed",
-  // An anchor's quote: the document's own text where a comment or an ask was left.
-  "quote",
-  // A document version's summary: the line its writer gave the version.
-  "summary",
+/** A stored text the contract's scan cannot name (`TREED_FIELDS`), since no `<field>_tree` stands
+ *  beside it in the generated contract: a writer's own words, where a mention reads as
+ *  `[@name](address)` until something reads it. The raw-draw walk reads each as the stored text
+ *  it is (`STORED_PROSE_FIELDS`). */
+interface HandNamedText {
+  /** The field the text stands in. */
+  readonly field: string;
+  /** What the text is, and where its tree is, or that the server sends none. */
+  readonly what: string;
+  /** Where the dashboard draws the text with the tree the server sends of it: the file, and the
+   *  tree as that file writes it beside the text, in one call or element (`handsWithTree`).
+   *  Absent for a text no read the dashboard draws carries a tree of. */
+  readonly tree?: { readonly file: string; readonly written: string };
+}
+
+/** The stored texts the contract's scan cannot name, each held below to what it says of its
+ *  tree: one with a tree to the place the dashboard draws it with that tree, and every one to
+ *  staying out of the scan's reach, so the list names no text the contract already trees. */
+const HAND_NAMED_TEXTS: readonly HandNamedText[] = [
+  {
+    field: "ask_question",
+    what: "The question a reply answers, as the reply's own event carries it. Its tree rides in the event's `trees` under its payload path, on every event list the page reads and on every live frame (`event_trees.go`), and the event line reads it from there (`eventProse`).",
+    tree: {
+      file: "packages/dispatch/web/src/features/activity/activity-model.ts",
+      written: "payload.ask_question",
+    },
+  },
+  {
+    field: "excerpt",
+    what: "A quoted parent's body, under the dashboard's own name for it (`ReplyQuote`), which carries its tree beside it as `excerptTree`. A backlink's excerpt is an object whose `text` the contract trees (`GraphExcerptWithTrees`); the `excerpt` string of an artifact's references read (`ReferencedBy`) has no tree, and no page of the dashboard reads it.",
+    tree: {
+      file: "packages/dispatch/web/src/features/conversation/ReplyTurn.tsx",
+      written: "excerptTree",
+    },
+  },
+  {
+    field: "first_line",
+    what: "A candidate's first line, on the page that tells two items with one short id apart: the head of the stored text the candidate is, cut by the server, whose tree is `first_line_tree` in the refusal's hand-written shape (`IDCandidate`), for every candidate but a document's, whose first line is its file's name. The my-replies read sends a reply's `first_line` with no tree, and no page of the dashboard draws it.",
+    tree: {
+      file: "packages/dispatch/web/src/features/issue/ItemMatchList.tsx",
+      written: "first_line_tree",
+    },
+  },
+  {
+    field: "heading",
+    what: "A decision's heading: the words its writer put above the passage. The server sends no tree beside it; its tree is the first heading of the decision's `text_tree` (`decisionHeadingTree`).",
+    tree: {
+      file: "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
+      written: "headingTree",
+    },
+  },
+  {
+    field: "negative_control",
+    what: "A check's negative control, and a check result's: what its writer says would fail. The server sends no tree of it.",
+  },
+  {
+    field: "observed",
+    what: "What a check result's writer saw. The server sends no tree of it.",
+  },
+  {
+    field: "quote",
+    what: "An anchor's quote: the document's own text where a comment or an ask was left. The server sends no tree of it.",
+  },
+  {
+    field: "summary",
+    what: "A document version's summary: the line its writer gave the version. The server sends no tree of it.",
+  },
 ];
 
 /** A reader this change folded into the shared one. Nothing may import it back: a second reader
@@ -903,7 +958,10 @@ const CONTRACT_TEXTS = readContract();
 const TREED_FIELDS = CONTRACT_TEXTS.fields;
 
 /** The fields whose value is a writer's stored text. */
-const STORED_PROSE_FIELDS = new Set([...TREED_FIELDS, ...UNTREED_PROSE_FIELDS]);
+const STORED_PROSE_FIELDS = new Set([
+  ...TREED_FIELDS,
+  ...HAND_NAMED_TEXTS.map((text) => text.field),
+]);
 
 /** The stored fields the dashboard's own controls also call their words by - a tab's, a menu
  *  item's or a filter's `label`, a picker row's `description` - so a member of one of these
@@ -2103,6 +2161,43 @@ function untreedRowComplaint(surface: DispatchReadingSurface): string {
     : `${surface} has no mount left that hands its construct no tree`;
 }
 
+/**
+ * Whether `tree` hands the stored text in `field` to one call or element beside its tree as
+ * `written` writes it: one argument or attribute that reads the field, and another that reads
+ * the tree - `eventProse(event, "payload.ask_question", event.payload.ask_question)`,
+ * `<PlainText markdown={candidate.first_line} tree={candidate.first_line_tree}>`. A value reads
+ * a name where a member of that name, a name bound as it, or a string written as it is among
+ * what the value hands on (`drawnLeaves`). A text handed with no tree, or with its tree in
+ * another call, is not.
+ */
+function handsWithTree(tree: ts.SourceFile, field: string, written: string): boolean {
+  const reads = (value: ts.Expression, name: string): boolean =>
+    drawnLeaves(value).some(
+      (leaf) =>
+        (ts.isPropertyAccessExpression(leaf) && leaf.name.text === name) ||
+        (ts.isIdentifier(leaf) && leaf.text === name) ||
+        (ts.isStringLiteral(leaf) && leaf.text === name)
+    );
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    const handed = ts.isCallExpression(node)
+      ? [...node.arguments]
+      : ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)
+        ? [...attributesOf(node, tree).values.values()].flatMap((value) =>
+            value === undefined ? [] : [value]
+          )
+        : [];
+    const texts = handed.filter((value) => reads(value, field));
+    const trees = handed.filter((value) => reads(value, written));
+    found ||= texts.some((text) => trees.some((reading) => reading !== text));
+    if (!found) {
+      ts.forEachChild(node, visit);
+    }
+  };
+  visit(tree);
+  return found;
+}
+
 /** The workflow whose `changes` job decides which jobs a pull request runs. */
 const CI_WORKFLOW = ".github/workflows/ci.yaml";
 
@@ -2762,6 +2857,52 @@ describe("every mount of the renderer or the projection on a stored text hands i
     UNTREED_ROWS.map((row) => [row.surface] as const)
   )("%s still has a mount its text reaches with no tree", (surface) => {
     expect(untreedRowComplaint(surface)).toBe(surface);
+  });
+});
+
+describe("every stored text the contract's scan cannot name keeps what its entry says of its tree", () => {
+  test("a text handed to one call or element beside its tree is drawn with it, and no other", () => {
+    const hands = (source: string, field: string, written: string): boolean =>
+      handsWithTree(parseSource("fixture.tsx", source), field, written);
+    expect([
+      hands(
+        'const line = eventProse(event, "payload.ask_question", event.payload.ask_question);',
+        "ask_question",
+        "payload.ask_question"
+      ),
+      hands(
+        'const line = eventProse(event, "payload.question", event.payload.ask_question);',
+        "ask_question",
+        "payload.ask_question"
+      ),
+      hands(
+        "const row = <PlainText markdown={x.first_line} tree={x.first_line_tree} />;",
+        "first_line",
+        "first_line_tree"
+      ),
+      hands(
+        "const row = <><PlainText markdown={x.first_line} /><i title={x.first_line_tree} /></>;",
+        "first_line",
+        "first_line_tree"
+      ),
+    ]).toEqual([true, false, true, false]);
+  });
+  test.each(
+    HAND_NAMED_TEXTS.flatMap((text) =>
+      text.tree === undefined ? [] : [[text.field, text.tree.file, text.tree] as const]
+    )
+  )("%s is drawn with its tree in %s", (field, file, tree) => {
+    const source = TREE_BY_FILE.get(file);
+    expect(
+      source !== undefined && handsWithTree(source, field, tree.written)
+        ? field
+        : `${file} hands ${field} to no call or element beside ${tree.written}`
+    ).toBe(field);
+  });
+  test.each(
+    HAND_NAMED_TEXTS.map((text) => [text.field] as const)
+  )("%s is a text no tree of the contract's names", (field) => {
+    expect(TREED_FIELDS).not.toContain(field);
   });
 });
 

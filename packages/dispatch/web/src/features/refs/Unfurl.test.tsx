@@ -302,6 +302,57 @@ test("Unfurl unfurls a dispatch comment reference with its own words, reading no
   }
 });
 
+// A title reads none of the references in the text it is cut from, since a name inside a name
+// resolves nothing, so a `dispatch://` one reads as its short form for good, written bare or as
+// its own link's words: no name will ever take its place, and a title never shows the scheme.
+// It reads so from the tree the server sends under `Dispatch-Trees: 1` and from the body alone,
+// which is what a server older than the trees sends and the page parses.
+test("a comment card's title reads each dispatch:// reference in it as its short form, bare or as its own link's words", async () => {
+  await warmMarkdownRenderer();
+  const body = "Blocked on dispatch://CORE-2/ask/a1 and [dispatch://CORE-3](dispatch://CORE-3).";
+  const comment: CommentRead["comment"] = {
+    id: "comment-1",
+    issue_key: "CORE-1",
+    author: { id: "alice", kind: "user" },
+    body,
+    anchor: null,
+    reply_to: null,
+    ask_id: null,
+    turn: null,
+    resolved: false,
+    resolved_by: null,
+    resolved_at: null,
+    edited_at: null,
+    suggestion: null,
+    created_at: "2026-09-09T00:00:00Z",
+    ...commentDeliveryFields(),
+  };
+  const getComment = spyOn(api, "getComment");
+  try {
+    for (const { answer, read } of [
+      { answer: "the server's tree", read: { ...comment, body_tree: displayTree(body) } },
+      { answer: "the body alone", read: comment },
+    ]) {
+      getComment.mockResolvedValue({ comment: read, replies: [] });
+      const view = renderUnfurl("dispatch://CORE-1/comment/comment-1");
+      try {
+        const card = await within(view.container).findByRole("link");
+        // Each check names the answer it read, so a failure says which of the two it was.
+        await waitFor(() =>
+          expect({ answer, title: card.textContent }).toEqual({
+            answer,
+            title: "Blocked on CORE-2 ask and CORE-3.",
+          })
+        );
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    getComment.mockRestore();
+  }
+});
+
 /** The question map the route answers for the body's source: `#q1` is the question block of
  *  CORE-1's spec, settled into `ask-1`. */
 const specQuestions: ReferenceQuestions = {

@@ -39,7 +39,7 @@ import {
 } from "./agent-registry";
 import { itemOfBlock } from "./block-reference";
 import { knownSessionQuery } from "./known-sessions";
-import { useMarkdownHeadline } from "./markdown-engine";
+import { type ReferenceNaming, useMarkdownHeadline } from "./markdown-engine";
 import { RecordIssue, recordedRoles, roleHolders } from "./role-holders";
 import {
   buildDispatchReference,
@@ -105,6 +105,12 @@ type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
 /** How much of a target's own text becomes a reference link's title: an ask's question, a
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
 const TITLE_HEADLINE_MAX = 60;
+
+/** How a title reads the references in the text it is cut from: it reads none of them, since a
+ *  name inside a name resolves nothing, so a `dispatch://` one reads as its short form for good
+ *  (`ReferenceNaming.readsNone`). One shared value, so the projection keeps one identity across
+ *  renders. */
+const TITLE_NAMING: ReferenceNaming = { names: new Map(), readsNone: true };
 
 /** Whether a read stands on anything but Dispatch's answer that its target does not exist: what
  *  a mount asks again (`REFERENCE_READ`). */
@@ -849,8 +855,9 @@ export function useReferenceTarget(
   // or any caller that did not ask for trees, answers the markdown alone, and a deploy serving
   // two builds has a dashboard reading both at once. `useMarkdownHeadline` reads the fallback
   // only where `tree` is undefined, so a stored text that came with its tree is still parsed
-  // nowhere (`e2e/parse-count.e2e.ts`).
-  const headline = useMarkdownHeadline(authoredTree, TITLE_HEADLINE_MAX, authored);
+  // nowhere (`e2e/parse-count.e2e.ts`). The title reads none of the references in it, so each
+  // `dispatch://` one reads as its short form with either reading (`TITLE_NAMING`).
+  const headline = useMarkdownHeadline(authoredTree, TITLE_HEADLINE_MAX, authored, TITLE_NAMING);
 
   let shown: ShownTarget;
   if (kind === "message") {
