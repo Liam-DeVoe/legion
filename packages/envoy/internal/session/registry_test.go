@@ -237,29 +237,68 @@ func TestSessionRegistry_TTLExpiry(t *testing.T) {
 	})
 }
 
+// A refresh renews an entry's life: the registry measures a row's deadline from its record's
+// Created, nats-server's stamp of the write (expiryFor), so a second write of the same id carries a
+// later revision with a later Created, and the row outlives one written beside the first write and
+// never refreshed. The bucket's age is far past the run, so nats-server drops neither record while
+// the row runs and the registry's own clock, which the row moves, is the one that judges both
+// deadlines.
 func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
+	const ttl = time.Hour
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	clk := clocktest.New(time.Now())
+	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(ttl), WithSessionClock(clk))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
+	kv, err := client.JS().KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	record := func(sessionID string) natsgo.KeyValueEntry {
+		t.Helper()
+		got, err := kv.Get(sessionID)
+		if err != nil {
+			t.Fatalf("read %s's record from the bucket: %v", sessionID, err)
+		}
+		return got
+	}
 
 	entry := SessionEntry{Port: 13381, MachineID: "test-machine", Dir: "/test"}
-	// ses_control is written beside the first write and never refreshed, so its expiry marks the
-	// first write's deadline on the clocks that judge both: nats-server's Created stamp and the
-	// registry's local expiry over it.
+	// ses_control is written beside the first write and never refreshed, so its deadline is the
+	// one the first write would have kept.
 	for _, sessionID := range []string{"ses_refresh", "ses_control"} {
 		if err := reg.Put(sessionID, entry); err != nil {
 			t.Fatalf("put %s failed: %v", sessionID, err)
 		}
 	}
-
-	// A refresh resets the row's deadline only because the second write's Created is later.
-	testwait.Span(t, 1500*time.Millisecond, "nats-server stamps Created on its own clock, which no clock of the "+
-		"test moves; the refresh must carry a stamp halfway through the TTL, and only real time passing gives it one")
+	first, control := record("ses_refresh"), record("ses_control")
+	// nats-server stamps Created by the wall clock of this process, which it runs in, so the
+	// refresh is written once that clock has passed the control's stamp: a later write then carries
+	// a later one.
+	testwait.Eventually(t, "the wall clock nats-server stamps a write by to pass the control record's stamp", func() bool {
+		return time.Now().After(control.Created())
+	})
 	if err := reg.Put("ses_refresh", entry); err != nil {
 		t.Fatalf("refresh put failed: %v", err)
 	}
+	refreshed := record("ses_refresh")
+	if refreshed.Revision() <= first.Revision() || !refreshed.Created().After(control.Created()) {
+		t.Fatalf("the refresh left ses_refresh at revision %d written %s (its first write was revision %d at %s, the control's %s); want a later revision written after both",
+			refreshed.Revision(), refreshed.Created().Format(time.RFC3339Nano), first.Revision(), first.Created().Format(time.RFC3339Nano), control.Created().Format(time.RFC3339Nano))
+	}
+	// The registry takes each record's Created for its row's deadline once it has the record from
+	// the bucket, which Refresh reads and applies as the watch would, so neither row waits on the
+	// watch.
+	for _, sessionID := range []string{"ses_refresh", "ses_control"} {
+		if _, err := reg.Refresh(context.Background(), sessionID); err != nil {
+			t.Fatalf("read %s back into the registry: %v", sessionID, err)
+		}
+	}
+
+	// Past the control's deadline on the registry's clock and short of the refresh's: halfway
+	// between the two records' stamps, a TTL on.
+	clk.Set(control.Created().Add(ttl + refreshed.Created().Sub(control.Created())/2))
 	testwait.Eventually(t, "the control record, written beside the first write, to expire", func() bool {
 		_, err := reg.Get("ses_control")
 		return err != nil
