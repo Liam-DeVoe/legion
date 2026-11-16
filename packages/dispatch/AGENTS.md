@@ -1743,9 +1743,9 @@ on every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api
 `/api/v1/priorities` as an empty list, and `/api/v1/landing` as the 404 a Dispatch older than that
 route answers, which is what leaves
 every page under test reading each resource from the route its own test answers or spies.
-The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
+The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:158`,
 with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
-are gated (`features/issue/IssueHeader.tsx:292`); removing its answer fails 36 rows, every one a
+are gated (`features/issue/IssueHeader.tsx:298`); removing its answer fails 36 rows, every one a
 page carrying that header, none of them about projects.
 The sidebar's other reads, the Inbox and the pinned issues, are not answered here: a test that
 draws the sidebar answers them itself.
@@ -2028,7 +2028,7 @@ A stack's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
 and a run of more than one stack that names neither is refused naming both.
 `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names.
 It is a developer's path on a machine with Docker and no Postgres binaries.
-It is also the path of every job of the browser workflows that runs on the runner itself, whose
+It is also the path of every job of the browser workflows that starts a stack on the runner itself, whose
 own PostgreSQL carries no `vector`: the multiprocess job (both of its browser steps),
 the embedder job and the visual job of `.github/workflows/dispatch-browser.yaml`,
 the visual job with only its Playwright command in a container, and the
@@ -2189,7 +2189,7 @@ comment covers, and on a comment whose every row came in well under that. Run it
 over a one-worker report of the files you changed, since four workers inflate a
 row by the contention of its neighbours rather than by its own work. A marker is
 earned by a row that reached three quarters of the threshold, not only by one
-that crossed it: rows of `coverage.e2e.ts`, `plan-tab.e2e.ts` and
+that crossed it: rows of `coverage.e2e.ts` and
 `verification.e2e.ts` sit between 1.5 and 2.7 seconds, where the machine
 decides which side of the bar they land, and without that band such a row fails
 the check bare on a slow run and marked on a fast one. A row's own cost is what
@@ -2203,7 +2203,7 @@ page now sends 2 in two (`e2e/landing-reads.e2e.ts`, which prints every landing'
 and holds each page to its bound).
 The parse was measured before this release split the shell, and it is a parse of the entry
 chunk, which the split halved: 485,658 bytes at `61e5c402` (measured 2026-11-16) against
-1,055,583 on the default branch the same day (the
+1,055,583 on the default branch the same day, at `d5e2a5fe` (the
 Layout section above).
 No reading at this head splits those two parts. The reading that stands in for them is the
 timing fixture's `first-page-load` (`e2e/measure-reporter.ts`): the duration of a row's first
@@ -2217,7 +2217,7 @@ median at 676 ms, against the 1.20 s the two old figures sum to
 The same run read `reset-sql` at 95 ms, `reset-fakes` at 20 ms and `sign-in` at 7 ms, and a
 row's four parts summed to a median of 828 ms.
 That run's report is gone with the pod it ran in, so these figures are what was recorded of it,
-and that command run again at this head reads them again.
+and that command run again at another head takes them afresh there.
 The fresh context's 0.25 s is untouched by either change, and the fixture does not measure it.
 
 A row that drives no browser does not belong in this suite: it takes no page

@@ -368,8 +368,9 @@ export async function seedAgents(): Promise<string> {
   return issue.key;
 }
 
-/** The keymap binds only once sign-in resolves (`AuthGate` renders a skeleton until
- *  `/auth/whoami` answers), so a key pressed before the page renders reaches no handler. */
+/** The keymap binds only once sign-in resolves (`AuthGate` renders a skeleton until the
+ *  `["whoami"]` query answers, whose cold read is `GET /api/v1/landing`), so a key pressed before
+ *  the page renders reaches no handler. */
 export async function openAgents(page: Page): Promise<void> {
   await page.goto("/agents");
   await expect(page.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();

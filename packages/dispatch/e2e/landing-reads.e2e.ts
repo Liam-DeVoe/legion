@@ -1,12 +1,13 @@
 /**
  * The dashboard's landing waterfall, measured on four cold pages (INFRA-1109, R3).
  *
- * Why this row exists. Opening a page of Dispatch today costs a chain of dependent round trips
- * before anything the reader asked for is drawn: `AuthGate` (`web/src/app.tsx`) holds every read
- * until `/auth/whoami` answers; the shell's reads and the lazy chunk of the page then start
- * together; the page's own first reads wait for that chunk; the reads that name what those
- * answered wait for them; and a last set waits again. A person pays that chain on every page
- * they open, and so does every browser row of this suite, which is why it costs twice - once as
+ * Why this row exists. Opening a page of Dispatch before dispatch://INFRA-1109 cost a chain of
+ * dependent round trips before anything the reader asked for was drawn: `AuthGate`
+ * (`web/src/app.tsx`) held every read until `/auth/whoami` answered; the shell's reads and the
+ * lazy chunk of the page then started together; the page's own first reads waited for that chunk;
+ * the reads that named what those answered waited for them; and a last set waited again. A person
+ * paid that chain on every page they opened, and so did every browser row of this suite, which is
+ * why it cost twice - once as
  * a slow page and once as runner minutes. Nothing in the suite measured it, so nothing stopped
  * it growing. This row is that measurement. How long the chain is on the day you read this is in
  * the run's own output and not in this comment: the row prints every landing's whole waterfall,
