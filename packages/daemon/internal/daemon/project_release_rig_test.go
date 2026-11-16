@@ -622,34 +622,121 @@ func (r *idleWakeRig) refuseAsks() {
 		`new.kind = '`+string(record.OutboxKindUpdateAsk)+`'`, "the store refused the ask", "")
 }
 
-// dispatch://INFRA-3583 R6: an ask the release could not write reached no role, so the release
-// reports no role asked and waits for no answer. The pod's line says the ask could not be written
-// and why, names no asked role and no bound passed, and the pod goes straight to its last read and
-// its delete, well before the bound.
-func TestProjectReleaseReportsAnAskItCouldNotWrite(t *testing.T) {
+// dispatch://INFRA-3583 R6, R8: an ask the release could not write reached no role, so nobody was
+// asked to push the pod's work, and the release does not give that work up. It writes the ask
+// again until the bound, then leaves the pod with its disk: the pod's line says the ask could not
+// be written and why, names no asked role and keeps the read's count, and the pod's claim is held
+// for an operator, which the next boot does not start.
+func TestProjectReleaseLeavesAPodWhoseAskItCouldNotWrite(t *testing.T) {
 	rig := newIdleWakeRig(t, "unasked")
 	unasked := rig.issue("unasked")
 	rig.agents.setPlan(unasked.key, string(unasked.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}})
 	rig.launchAll()
 	rig.refuseAsks()
 
-	rig.startRelease("90s")
+	rig.startRelease("15s")
 	release, _ := rig.awaitReleaseFinished()
 	line := releaseLine(t, release, unasked.pod)
-	if !strings.HasPrefix(line.Reason, releaseAskUnwritten+": ") || !strings.Contains(line.Reason, "the store refused the ask") {
-		t.Errorf("the pod's line gives the reason %q, want that its ask could not be written, with the store's refusal", line.Reason)
+	if line.Outcome != api.ReleaseLeft || !strings.HasPrefix(line.Reason, releaseAskUnwritten+": ") || !strings.Contains(line.Reason, "the store refused the ask") {
+		t.Fatalf("the pod's line is %s, want it left because its ask could not be written, with the store's refusal", lineJSON(line))
 	}
-	if len(line.Asked) != 0 {
-		t.Errorf("the pod's line names the asked roles %+v, want none: no ask was written", line.Asked)
+	if len(line.Asked) != 0 || line.Commits == nil || *line.Commits != 1 {
+		t.Errorf("the pod's line is %s, want no asked role, since no ask was written, and its 1 commit", lineJSON(line))
 	}
-	if line.Outcome != api.ReleaseDeletedLost || line.Commits == nil || *line.Commits != 1 {
-		t.Errorf("the pod's line is %s, want deleted_lost with its 1 commit", lineJSON(line))
+	if rig.kube.sandbox(unasked.pod) == nil {
+		t.Error("the pod whose roles nobody asked to push was deleted")
 	}
-	if release.FinishedAt.After(release.BoundAt) {
-		t.Errorf("the release finished at %s, after the bound %s: the pod waited for answers nobody was asked for", release.FinishedAt, release.BoundAt)
+	token := rig.token(unasked)
+	if stored := rig.api.claim(token); stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByOperator) {
+		t.Errorf("the claim is stored %s by %q, want suspended by an operator", stored.State, stored.SuspendedBy)
+	}
+	if ended := releaseClaimLine(t, release, token); ended.Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || ended.BootStarts {
+		t.Errorf("the claim line is %+v, want it ended operator, which the next boot does not start", ended)
+	}
+	if release.FinishedAt.Before(release.BoundAt) {
+		t.Errorf("the release finished at %s, before the bound %s: it gave the ask up before the bound", release.FinishedAt, release.BoundAt)
 	}
 	if asks := rig.releaseAsks(unasked.key, unasked.role); len(asks) != 0 {
 		t.Errorf("the pod's role was given %d asks, want none", len(asks))
+	}
+}
+
+// idleRigRefuseFirstAsk is the trigger, and the name of the count, of refuseFirstAsk.
+const idleRigRefuseFirstAsk = "idle_rig_refuse_first_ask"
+
+// refuseFirstAsk has the store refuse the first project release's ask written to the outbox
+// (record.UpdateAsk under a round `release:<id>`), and take every later one.
+func (r *idleWakeRig) refuseFirstAsk() {
+	r.t.Helper()
+	r.refuseFirstWrite(idleRigRefuseFirstAsk, "before insert on outbox",
+		`new.kind = '`+string(record.OutboxKindUpdateAsk)+`' and new.payload::jsonb->>'round' like 'release:%'`, "the store refused the ask")
+}
+
+// refuseFirstWrite has the store refuse the first write the trigger name catches, with message,
+// and take every later one, for the rest of the test: on and when are refuseWrites'. The trigger
+// counts the writes it caught with a sequence of the same name, which the refused write's
+// rollback does not take back (writesCaught).
+func (r *idleWakeRig) refuseFirstWrite(name, on, when, message string) {
+	r.t.Helper()
+	for _, statement := range []string{
+		`create sequence ` + name,
+		`create function ` + name + `() returns trigger language plpgsql as $$
+			begin
+				if nextval('` + name + `') = 1 then raise exception '` + message + `'; end if;
+				return new;
+			end $$`,
+		`create trigger ` + name + ` ` + on + ` for each row
+			when (` + when + `) execute function ` + name + `()`,
+	} {
+		if _, err := r.pool.Exec(context.Background(), statement); err != nil {
+			r.t.Fatalf("make the store refuse the first write with the trigger %s: %v", name, err)
+		}
+	}
+}
+
+// writesCaught is how many writes the trigger refuseFirstWrite made under name caught.
+func (r *idleWakeRig) writesCaught(name string) int64 {
+	r.t.Helper()
+	var caught int64
+	var called bool
+	if err := r.pool.QueryRow(context.Background(), `select last_value, is_called from `+name).Scan(&caught, &called); err != nil {
+		r.t.Fatalf("read the count of the trigger %s: %v", name, err)
+	}
+	if !called {
+		return 0
+	}
+	return caught
+}
+
+// dispatch://INFRA-3583 R6: an ask the store refused once is written again, and once it lands the
+// pod is asked and waits as any asked pod does: its role is given the ask once and answers it,
+// and the pod is deleted after that answer, before the bound, its line naming its role asked and
+// answered and giving no reason.
+func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
+	rig := newIdleWakeRig(t, "asked")
+	asked := rig.issue("asked")
+	rig.agents.setPlan(asked.key, string(asked.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true})
+	rig.launchAll()
+	rig.refuseFirstAsk()
+
+	rig.startRelease("60s")
+	release, _ := rig.awaitReleaseFinished()
+	if caught := rig.writesCaught(idleRigRefuseFirstAsk); caught != 2 {
+		t.Fatalf("the store caught %d writes of the release's ask, want two: the one it refused and the one written again", caught)
+	}
+	line := releaseLine(t, release, asked.pod)
+	if len(line.Asked) != 1 || line.Asked[0].Role != asked.role || line.Asked[0].AnsweredAt == nil || line.Asked[0].Bound {
+		t.Fatalf("the pod's asked roles are %+v, want its implementer answered before the bound; the role processes said:\n%s",
+			line.Asked, idleRigProcessLines(rig.pods.log()))
+	}
+	if line.Outcome != api.ReleaseDeletedLost || line.Reason != "" || line.Commits == nil || *line.Commits != 1 {
+		t.Errorf("the pod's line is %s, want deleted_lost with its 1 commit and no reason", lineJSON(line))
+	}
+	if asks := rig.releaseAsks(asked.key, asked.role); len(asks) != 1 {
+		t.Errorf("the pod's role was given %d asks, want one", len(asks))
+	}
+	if release.FinishedAt.After(release.BoundAt) {
+		t.Errorf("the release finished at %s, after the bound %s: the pod waited out the bound rather than for its answer", release.FinishedAt, release.BoundAt)
 	}
 }
 

@@ -26,6 +26,24 @@ import (
 // nobody gave rows to fails this test instead of passing it.
 func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerKind) {
 	t.Helper()
+	set := packageSets(t)
+	for _, value := range set.states {
+		states = append(states, ClaimState(value))
+	}
+	for _, value := range set.timers {
+		timers = append(timers, TimerKind(value))
+	}
+	events = set.events
+	if len(events) == 0 || len(states) == 0 || len(timers) == 0 {
+		t.Fatalf("read no sealed set from the source: events %v, states %v, timers %v", events, states, timers)
+	}
+	return events, states, timers
+}
+
+// packageSets parses the package's own source, its tests left out, and reads its sets from it
+// (sealedSet).
+func packageSets(t *testing.T) sealedSets {
+	t.Helper()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -43,30 +61,20 @@ func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerK
 		}
 		parsed = append(parsed, file)
 	}
-	set := sealedSet(t, files, parsed)
-	for _, value := range set.states {
-		states = append(states, ClaimState(value))
-	}
-	for _, value := range set.timers {
-		timers = append(timers, TimerKind(value))
-	}
-	events = set.events
-	if len(events) == 0 || len(states) == 0 || len(timers) == 0 {
-		t.Fatalf("read no sealed set from the source: events %v, states %v, timers %v", events, states, timers)
-	}
-	return events, states, timers
+	return sealedSet(t, files, parsed)
 }
 
 // sealedSet is what the compiler sees of this package: every type that implements Event, and the
-// value of every ClaimState and TimerKind constant. It is read as the compiler sees it rather
-// than as the source spells it — a type that inherits isEvent by embedding, or declares it on a
-// pointer receiver, is an event a scan of isEvent declarations would not see, and a state or
-// timer whose value is not a plain literal is one a scan of literals would not read. Either could
-// be mapped onto an existing kind and inherit every row that kind has.
+// value of every ClaimState, TimerKind and SuspendSource constant. It is read as the compiler sees
+// it rather than as the source spells it — a type that inherits isEvent by embedding, or declares
+// it on a pointer receiver, is an event a scan of isEvent declarations would not see, and a state
+// or timer whose value is not a plain literal is one a scan of literals would not read. Either
+// could be mapped onto an existing kind and inherit every row that kind has.
 type sealedSets struct {
-	events []string
-	states []string
-	timers []string
+	events  []string
+	states  []string
+	timers  []string
+	sources []string
 }
 
 func sealedSet(t *testing.T, files *token.FileSet, parsed []*ast.File) sealedSets {
@@ -129,6 +137,8 @@ func readSealedSet(files *token.FileSet, parsed []*ast.File) (sealedSets, error)
 				set.states = append(set.states, value)
 			case "TimerKind":
 				set.timers = append(set.timers, value)
+			case "SuspendSource":
+				set.sources = append(set.sources, value)
 			}
 		}
 	}

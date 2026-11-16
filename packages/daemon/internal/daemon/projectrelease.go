@@ -31,12 +31,30 @@ const projectReleaseReread = 5 * time.Second
 // soon the release notices it landed.
 const projectReleasePoll = 250 * time.Millisecond
 
+// projectReleaseRetry is how long the release waits before it tries again a write that failed —
+// its ask to a pod's roles (ask) and its finish (writeFinish) — and projectReleaseRetryMax the
+// longest such wait: the wait doubles after each failed try, up to that.
+const (
+	projectReleaseRetry    = time.Second
+	projectReleaseRetryMax = 10 * time.Second
+)
+
+// projectReleaseListTries is how many times the release lists the project's Sandboxes again from
+// the API server, projectReleaseListPause apart, before it stops short at the list's error
+// (listAgain): that list comes once every issue pod is gone, and a release that stops there leaves
+// the controller's claim and pod and the repository caches standing, so one timeout or one 5xx of
+// the API server is not enough to stop it.
+const (
+	projectReleaseListTries = 4
+	projectReleaseListPause = 10 * time.Second
+)
+
 // releaseUnknownKind is why a Sandbox whose labels name none of the kinds a release takes is
 // left, by the release and by its dry run alike.
 const releaseUnknownKind = "its labels name no kind of Sandbox the release deletes"
 
-// releaseAskUnwritten is the reason a pod's line gives when the release could not write its ask
-// to the pod's running roles, followed by the error (ask).
+// releaseAskUnwritten is why a pod is left when the release could not write its ask to the pod's
+// running roles by the bound, followed by the last error (ask, takePod).
 const releaseAskUnwritten = "the ask to its running roles could not be written"
 
 // releaseNoRoleAtLastRead is the reason a pod's line gives when an earlier read reached a role
@@ -48,7 +66,7 @@ const releaseNoRoleAtLastRead = "no role process ran at the last read"
 const releaseNoMachine = "the daemon supervises no machine for it"
 
 // reasonSeparator joins the reasons of a Sandbox's line, which is what the route promises of
-// them (api.ReleasedSandbox): addReason adds one, and leave and takeOthers join what they build.
+// them (api.ReleasedSandbox): leave and takeOthers join what they build.
 const reasonSeparator = "; "
 
 // projectReleaseStore is what the project release reads and writes of the daemon's store: its
@@ -78,17 +96,19 @@ type projectReleaseStore interface {
 // by an operator; no read, when no role process runs there; read otherwise. Each pod is then taken
 // on a goroutine of its own: a read pod's workspace is read through one running role's shim, and
 // each running role of a pod whose workspace holds unpushed work, whose shim refused the read, or
-// that has a role in a turn is asked. Each asked pod waits until each asked role answered and no
-// role of it is in a turn, or the bound; a pod whose ask could not be written waits for none. Then
-// its last read, its stop and its delete (stopAndDelete). Once every issue pod ended, the project's
-// Sandboxes are listed again from the API server, and each one the first list did not hold is
-// taken as the first list's are (takeUnlisted). Then the controller's claim and pod, the
-// repository caches and any probe go. Each stop is waited for until the stop timeout after the
-// later of the stop and the bound, since a claim in a turn is stopped at the turn's end or at the
-// bound (stopDeadline), and a claim counts as stopped only once the store holds it so
-// (awaitSettled). A pod it leaves, the controller's among them, has its claims held for an
-// operator (hold). The result grows on the record as each Sandbox ends, and the release finishes
-// once each claim it held for an operator is stored suspended or its wait ran out. Every goroutine
+// that has a role in a turn is asked; an ask that cannot be written is written again until the
+// bound, and a pod whose ask could still not be written then is left. Each asked pod waits until
+// each asked role answered and no role of it is in a turn, or the bound. Then its last read, its
+// stop and its delete (stopAndDelete). Once every issue pod ended, the project's Sandboxes are
+// listed again from the API server, a few times over some tens of seconds while that list fails,
+// and each one the first list did not hold is taken as the first list's are (takeUnlisted). Then
+// the controller's claim and pod, the repository caches and any probe go. Each stop is waited for
+// until the stop timeout after the later of the stop and the bound, since a claim in a turn is
+// stopped at the turn's end or at the bound (stopDeadline), and a claim counts as stopped only
+// once the store holds it so (awaitSettled). A pod it leaves, the controller's among them, has its
+// claims held for an operator (hold). The result grows on the record as each Sandbox ends, and the
+// release finishes once each claim it held for an operator is stored suspended or its wait ran
+// out; a finish whose write fails is written again until it lands (writeFinish). Every goroutine
 // it starts takes a store mark of its own (store.ForConcurrentWorker), since its reads, stops and
 // holds run side by side and the pool refuses a second connection under one mark.
 type projectReleaser struct {
@@ -399,7 +419,7 @@ func (r *projectReleaser) release(run *releaseRun) {
 	}
 	unlisted, err := r.takeUnlisted(ctx, run, sandboxes)
 	if err != nil {
-		r.fail(ctx, run, fmt.Sprintf("list the project's Sandboxes again: %v", err))
+		r.fail(ctx, run, fmt.Sprintf("list the project's Sandboxes again, %d times %s apart: %v", projectReleaseListTries, projectReleaseListPause, err))
 		return
 	}
 	if ctx.Err() != nil {
@@ -422,17 +442,17 @@ func (r *projectReleaser) takePods(ctx context.Context, run *releaseRun, pods []
 }
 
 // takeUnlisted lists the project's Sandboxes again, from the API server rather than the runtime's
-// store (ProjectSandboxesFromAPI), once every issue pod of the first list ended and each claim with
-// no pod was stopped. A create whose check of the mark passed just before the mark was set can
-// land after the first list, or reach the runtime's store after it, and a release that missed
-// that Sandbox would answer that it left none while the Sandbox stands (R6). The list comes after
-// the stops of the claims with no pod, since such a claim's stop waits for a launch under way on
-// it to let the claim go. Each Sandbox the first list did not hold gets a line after the first
-// list's: an issue's pod is classified from its claims as they stand now, which the stop of the
-// claims with no pod has stopped, and taken as the first list's pods are; the line of every other
-// Sandbox is answered, for takeOthers to take with the first list's.
+// store (listAgain), once every issue pod of the first list ended and each claim with no pod was
+// stopped. A create whose check of the mark passed just before the mark was set can land after the
+// first list, or reach the runtime's store after it, and a release that missed that Sandbox would
+// answer that it left none while the Sandbox stands (R6). The list comes after the stops of the
+// claims with no pod, since such a claim's stop waits for a launch under way on it to let the
+// claim go. Each Sandbox the first list did not hold gets a line after the first list's: an
+// issue's pod is classified from its claims as they stand now, which the stop of the claims with
+// no pod has stopped, and taken as the first list's pods are; the line of every other Sandbox is
+// answered, for takeOthers to take with the first list's.
 func (r *projectReleaser) takeUnlisted(ctx context.Context, run *releaseRun, listed []runtime.ProjectSandbox) ([]int, error) {
-	again, err := r.pods.ProjectSandboxesFromAPI(ctx)
+	again, err := r.listAgain(ctx, run)
 	if err != nil {
 		return nil, err
 	}
@@ -459,6 +479,26 @@ func (r *projectReleaser) takeUnlisted(ctx context.Context, run *releaseRun, lis
 	r.takePods(ctx, run, pods, &wg)
 	wg.Wait()
 	return others, nil
+}
+
+// listAgain is the project's Sandboxes as the API server lists them (ProjectSandboxesFromAPI). A
+// list that fails is tried again projectReleaseListPause later, up to projectReleaseListTries
+// tries in all, and the last try's error is answered; a release whose context ends meanwhile
+// answers that context's error.
+func (r *projectReleaser) listAgain(ctx context.Context, run *releaseRun) ([]runtime.ProjectSandbox, error) {
+	for try := 1; ; try++ {
+		sandboxes, err := r.pods.ProjectSandboxesFromAPI(ctx)
+		if err == nil || try == projectReleaseListTries || ctx.Err() != nil {
+			return sandboxes, err
+		}
+		r.log.Warn("project release: list the project's Sandboxes again from the API server; trying the list once more",
+			"release", run.id, "try", try, "tries", projectReleaseListTries, "retryIn", projectReleaseListPause.String(), "error", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(projectReleaseListPause):
+		}
+	}
 }
 
 // inventory writes the result's first lines — one per Sandbox, each waiting (listSandboxes), and
@@ -653,11 +693,12 @@ func asks(read releaseRead, claims []supervise.ClaimView) bool {
 
 // takePod takes one issue pod to its end. A pod left from the start has its claims held for an
 // operator and stays. A pod with no read is deleted unread. A read pod is read first. A pod that
-// read asks for is asked and waits, unless its ask could not be written, when it goes straight to
-// its last read. One that the first read does not ask for is read again just before its stop, and
-// a turn, a commit or a refusal found then makes it asked, since a turn can start after the first
-// read without the daemon (an Envoy message, a background job's result). Then its last read, its
-// stop and its delete.
+// read asks for is asked and waits. One that the first read does not ask for is read again just
+// before its stop, and a turn, a commit or a refusal found then makes it asked, since a turn can
+// start after the first read without the daemon (an Envoy message, a background job's result).
+// Then its last read, its stop and its delete. A pod whose ask, the first or the one after the
+// last read, could not be written by the bound is left instead, its claims held for an operator:
+// nobody asked its roles to push, so the work on its disk is not given up (R6, R8).
 func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *releasePod) {
 	switch pod.class {
 	case releaseLeaves:
@@ -670,14 +711,30 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 	first := r.read(ctx, pod.sandbox.Issue)
 	r.noteRead(run, pod, first)
 	firstAsks := asks(first, r.issueViews(pod.sandbox.Issue))
-	if firstAsks && r.ask(ctx, run, pod) {
-		r.wait(ctx, run, pod)
+	if firstAsks {
+		asked, err := r.ask(ctx, run, pod)
+		if err != nil {
+			r.leave(ctx, run, pod, releaseAskUnwritten+": "+err.Error())
+			return
+		}
+		if asked {
+			r.wait(ctx, run, pod)
+		}
 	}
 	last := r.read(ctx, pod.sandbox.Issue)
-	if !firstAsks && asks(last, r.issueViews(pod.sandbox.Issue)) && r.ask(ctx, run, pod) {
-		r.noteRead(run, pod, last)
-		r.wait(ctx, run, pod)
-		last = r.read(ctx, pod.sandbox.Issue)
+	if !firstAsks && asks(last, r.issueViews(pod.sandbox.Issue)) {
+		asked, err := r.ask(ctx, run, pod)
+		if asked || err != nil {
+			r.noteRead(run, pod, last)
+		}
+		if err != nil {
+			r.leave(ctx, run, pod, releaseAskUnwritten+": "+err.Error())
+			return
+		}
+		if asked {
+			r.wait(ctx, run, pod)
+			last = r.read(ctx, pod.sandbox.Issue)
+		}
 	}
 	if ctx.Err() != nil {
 		return
@@ -685,22 +742,57 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 	r.stopAndDelete(ctx, run, pod, last)
 }
 
-// ask sends one ask to each running role of pod, on the role's own Envoy topic (record.UpdateAsk
-// under the release's round, which the outbox publishes without the claim-round read while the
-// release runs), and records each asked role on the pod's line before the rows are written, so an
-// answer that comes at once finds it. It answers whether any role was asked, which is whether the
-// pod waits for answers. A deployment with no outbox asks none. Nor does an ask whose rows could
-// not be written: its roles are taken off the line and out of run.asked again, and the line gives
-// the failure as a reason (releaseAskUnwritten), so no role it never reached reads as asked.
-func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *releasePod) bool {
+// ask asks each running role of pod (askOnce) and answers whether any role was asked, which is
+// whether the pod waits for answers. A deployment with no outbox asks none, and neither does a pod
+// where no role runs. An ask whose rows could not be written is written again,
+// projectReleaseRetry after the first try and up to projectReleaseRetryMax apart, each try to the
+// roles running then, until the bound: one that could not be written at the try at the bound
+// reached no role, and its last error is answered, for which the pod is left (takePod). A release
+// whose context ends meanwhile asks none.
+func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
+	wait := projectReleaseRetry
+	for {
+		asked, err := r.askOnce(ctx, run, pod)
+		if err == nil {
+			return asked, nil
+		}
+		if ctx.Err() != nil {
+			return false, nil
+		}
+		left := time.Until(run.bound)
+		if left <= 0 {
+			r.log.Error("project release: enqueue the ask to the pod's roles; it could not be written by the bound, so no role of the pod is asked and the release leaves the pod",
+				"release", run.id, "sandbox", pod.sandbox.Name, "error", err)
+			return false, err
+		}
+		pause := min(wait, left)
+		r.log.Warn("project release: enqueue the ask to the pod's roles; writing it again",
+			"release", run.id, "sandbox", pod.sandbox.Name, "retryIn", pause.String(), "error", err)
+		select {
+		case <-ctx.Done():
+			return false, nil
+		case <-time.After(pause):
+		}
+		wait = min(2*wait, projectReleaseRetryMax)
+	}
+}
+
+// askOnce sends one ask to each role of pod running now, on the role's own Envoy topic
+// (record.UpdateAsk under the release's round, which the outbox publishes without the claim-round
+// read while the release runs), and records each asked role on the pod's line before the rows are
+// written, so an answer that comes at once finds it. It answers whether any role was asked: none
+// where no role runs or the deployment has no outbox. Rows that could not be written are answered
+// by their error, and their roles are taken off the line and out of run.asked again, so no role
+// they never reached reads as asked.
+func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
 	running := runningClaims(r.issueViews(pod.sandbox.Issue))
 	if len(running) == 0 {
-		return false
+		return false, nil
 	}
 	if r.enqueue == nil {
 		r.log.Info("project release: this deployment has no outbox, so no role of the pod is asked",
 			"release", run.id, "sandbox", pod.sandbox.Name)
-		return false
+		return false, nil
 	}
 	round := projectReleaseRound(run.id)
 	text := supervise.ReleaseTask(round, pod.sandbox.Issue, run.bound)
@@ -721,25 +813,13 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 		for _, c := range running {
 			delete(run.asked, c.Token)
 		}
-		addReason(line, releaseAskUnwritten+": "+err.Error())
 		run.mu.Unlock()
-		r.log.Error("project release: enqueue the ask to the pod's roles; no role of the pod is asked, and the pod waits for no answer",
-			"release", run.id, "sandbox", pod.sandbox.Name, "error", err)
-		r.record(ctx, run)
-		return false
+		return false, err
 	}
 	r.log.Info("project release: asked each running role of the pod to push and end its turn",
 		"release", run.id, "sandbox", pod.sandbox.Name, "roles", len(rows), "bound", run.bound.Format(time.RFC3339))
 	r.record(ctx, run)
-	return true
-}
-
-// addReason adds why to line's reason, after any reason it gives already.
-func addReason(line *api.ReleasedSandbox, why string) {
-	if line.Reason != "" {
-		why = line.Reason + reasonSeparator + why
-	}
-	line.Reason = why
+	return true, nil
 }
 
 // wait holds an asked pod until each asked role answered and no role of the pod is in a turn, or
@@ -860,11 +940,10 @@ func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, po
 // (deletedOutcome). A last read that found no role process clears nothing: the count, the flag
 // and the refusal an earlier read wrote are the last the release knows of the workspace, which
 // went with the pod unread at the end, so the outcome is deleted_read_refused with
-// releaseNoRoleAtLastRead among its reasons. A pod no read ever reached is deleted_unread.
+// releaseNoRoleAtLastRead as its reason. A pod no read ever reached is deleted_unread.
 func writeDeleted(line *api.ReleasedSandbox, last releaseRead) {
 	if !last.read && (line.Commits != nil || line.Refusal != "") {
-		line.Outcome = api.ReleaseDeletedReadRefused
-		addReason(line, releaseNoRoleAtLastRead)
+		line.Outcome, line.Reason = api.ReleaseDeletedReadRefused, releaseNoRoleAtLastRead
 		return
 	}
 	writeRead(line, last)
@@ -889,9 +968,8 @@ func deletedOutcome(read releaseRead) api.ReleaseOutcome {
 // leave is a pod left with its disk, for why: each claim of the stop set in it is held for an
 // operator, so no boot starts any of them (R6, R8), and every claim of the pod is taken out of its
 // update round (hold). The release waits for each hold to be stored before it finishes, and a
-// refusal of one is written on that claim's line. The line gives why as its first reason, before
-// any it gave already, such as an ask that could not be written, and after it each round the
-// release could not end.
+// refusal of one is written on that claim's line. The line gives why as its first reason, and after
+// it each round the release could not end.
 func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *releasePod, why string) {
 	held := stopTokens(pod.stop)
 	var others []claim.Token
@@ -903,11 +981,7 @@ func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *relea
 	unended := r.hold(ctx, run, held, others, "the project release leaves its pod: "+why)
 	run.mu.Lock()
 	line := &run.result.Sandboxes[pod.line]
-	reasons := []string{why}
-	if line.Reason != "" {
-		reasons = append(reasons, line.Reason)
-	}
-	reason := strings.Join(append(reasons, unended...), reasonSeparator)
+	reason := strings.Join(append([]string{why}, unended...), reasonSeparator)
 	line.Outcome, line.Reason = api.ReleaseLeft, reason
 	run.mu.Unlock()
 	r.log.Warn("project release: left an issue pod and its disk", "release", run.id, "sandbox", pod.sandbox.Name, "reason", reason)
@@ -1250,16 +1324,46 @@ func (r *projectReleaser) finish(ctx context.Context, run *releaseRun) {
 			"release", run.id, "claims", pendingWords(pending))
 	}
 	r.writeClaims(ctx, run, pending)
-	// The finish's result is read under the lock every record takes, so an answer recorded just
-	// before it is in it and none after it is written over it.
+	// The finish's result is read under the lock every record takes, and the mark is finished under
+	// it, so an answer recorded just before it is in it and no record is written after it.
 	run.recording.Lock()
-	defer run.recording.Unlock()
 	r.mark.finish()
-	if err := r.store.FinishProjectRelease(ctx, run.id, run.snapshot(), r.now().UTC()); err != nil {
-		r.log.Error("project release: record the release finished", "release", run.id, "error", err)
-		return
+	result := run.snapshot()
+	run.recording.Unlock()
+	r.writeFinish(ctx, run, result, r.now().UTC())
+}
+
+// writeFinish records the release finished at at with result, its last. Once the mark is
+// finished nothing else writes the record (record), and a record left unfinished reads as a
+// release that goes on until the next boot, which then says that a boot ended it before it
+// finished. So a write that fails is made again, projectReleaseRetry after the first and up to
+// projectReleaseRetryMax apart, until one lands or ctx ends: ctx is the release goroutine's, which
+// lives as long as the releaser's own (r.ctx). The write is fenced on a record not yet finished
+// (store.FinishProjectRelease), and a refusal of that fence ends the tries too, since no try
+// changes it: a try made after one that landed with its answer lost meets it.
+func (r *projectReleaser) writeFinish(ctx context.Context, run *releaseRun, result json.RawMessage, at time.Time) {
+	wait := projectReleaseRetry
+	for {
+		err := r.store.FinishProjectRelease(ctx, run.id, result, at)
+		switch {
+		case err == nil:
+			r.log.Info("project release: finished; the daemon's next boot starts each claim it stopped", "release", run.id)
+			return
+		case ctx.Err() != nil:
+			return
+		case errors.Is(err, store.ErrNoUnfinishedProjectRelease):
+			r.log.Error("project release: record the release finished; the store holds no unfinished release of its id, so the finish is not written again",
+				"release", run.id, "error", err)
+			return
+		}
+		r.log.Error("project release: record the release finished; writing it again", "release", run.id, "retryIn", wait.String(), "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, projectReleaseRetryMax)
 	}
-	r.log.Info("project release: finished; the daemon's next boot starts each claim it stopped", "release", run.id)
 }
 
 // writeClaims writes each stop-set claim's line from the claim's own record as the store holds it

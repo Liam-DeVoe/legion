@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -290,8 +291,8 @@ func TestAProjectReleasesRecordGrowsFinishesAndEndsAtTheBoot(t *testing.T) {
 	if err := st.RecordProjectRelease(ctx, release.ID, growing); err == nil {
 		t.Fatal("a result recorded after the finish was taken")
 	}
-	if err := st.FinishProjectRelease(ctx, release.ID, last, finishedAt); err == nil {
-		t.Fatal("a second finish was taken")
+	if err := st.FinishProjectRelease(ctx, release.ID, last, finishedAt); !errors.Is(err, ErrNoUnfinishedProjectRelease) {
+		t.Fatalf("a second finish = %v, want it refused as no unfinished release", err)
 	}
 	if err := st.RecordProjectRelease(ctx, release.ID+100, growing); err == nil {
 		t.Fatal("a result of a release no row holds was taken")

@@ -129,11 +129,11 @@ var releaseDeletedOutcomes = []ReleaseOutcome{ReleaseDeletedClean, ReleaseDelete
 // count of unpushed commits and whether the working copy held a change at the last read; one of a
 // workspace unread, the shim's refusal. A deleted_read_refused line whose last read found no role
 // process keeps the count, the flag or the refusal of the latest read that reached one instead. A
-// left line gives its reason, and an issue pod's line can give more reasons whatever its outcome:
-// that its ask could not be written, so no role of it was asked, and that no role process ran at
-// its last read; several reasons are joined by "; ". OtherImage marks an issue pod whose pod runs
-// an image other than the daemon's own. Asked is each role the release asked, or on a dry run
-// would ask, with when it answered or whether the bound passed first.
+// left line gives its reason — such as an ask to its roles that could not be written by the bound,
+// so no role of it was asked — and a deleted_read_refused line whose last read found no role
+// process says that as its reason; several reasons are joined by "; ". OtherImage marks an issue
+// pod whose pod runs an image other than the daemon's own. Asked is each role the release asked,
+// or on a dry run would ask, with when it answered or whether the bound passed first.
 type ReleasedSandbox struct {
 	Name               string                     `json:"name"`
 	Kind               runtime.ProjectSandboxKind `json:"kind"`
@@ -179,23 +179,28 @@ func ReleasedClaimEndOf(c supervise.Claim) ReleasedClaimEnd {
 	return ReleasedClaimEnd(c.State)
 }
 
-// ReleasedClaimEnds is every ReleasedClaimEnd, in order: each claim state but suspended, as
-// supervise declares them, each suspension source, as supervise declares them, and
+// ReleasedClaimEnds is every ReleasedClaimEnd, in order: each claim state but suspended
+// (supervise.ClaimStates), each suspension source (supervise.SuspendSources), and
 // ReleasedClaimUnrecorded. TestProjectReleaseWordsGolden writes it to
 // `packages/contracts/fixtures/daemon-api/project-release-words.json`, and
 // `packages/contracts/src/legion-api.test.ts` holds that file equal to
-// `LEGION_RELEASED_CLAIM_ENDS`, the strict enum a plugin reads `ended` through. A state or a
-// source added to supervise and left out of this list fails no test, so add it here as well.
-var ReleasedClaimEnds = []ReleasedClaimEnd{
-	ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
-	ReleasedClaimEnd(supervise.StateLaunching), ReleasedClaimEnd(supervise.StateShimConnected),
-	ReleasedClaimEnd(supervise.StateRegistered), ReleasedClaimEnd(supervise.StateReady),
-	ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
-	ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
-	ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
-	ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
-	ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
-	ReleasedClaimUnrecorded,
+// `LEGION_RELEASED_CLAIM_ENDS`, the strict enum a plugin reads `ended` through. supervise holds
+// each of its two lists to the constants of its type, so a state or a source added there reaches
+// this list, and fails that golden test and then the contracts suite until the enum names it.
+var ReleasedClaimEnds = releasedClaimEnds()
+
+// releasedClaimEnds builds ReleasedClaimEnds.
+func releasedClaimEnds() []ReleasedClaimEnd {
+	ends := make([]ReleasedClaimEnd, 0, len(supervise.ClaimStates)+len(supervise.SuspendSources))
+	for _, state := range supervise.ClaimStates {
+		if state != supervise.StateSuspended {
+			ends = append(ends, ReleasedClaimEnd(state))
+		}
+	}
+	for _, source := range supervise.SuspendSources {
+		ends = append(ends, ReleasedClaimEnd(source))
+	}
+	return append(ends, ReleasedClaimUnrecorded)
 }
 
 // ReleasedClaim is one claim of the release's stop set: its token, issue, role and session, and how

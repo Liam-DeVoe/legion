@@ -27,6 +27,11 @@ const ProjectReleaseEndedByBoot ProjectReleaseEnder = "boot"
 // it would stop roles and save work the project release has already taken over.
 var errProjectReleaseRunning = errors.New("a project release no boot has ended holds every pod of the project")
 
+// ErrNoUnfinishedProjectRelease is a write of a release's record refused because no release of its
+// id is unfinished (RecordProjectRelease, FinishProjectRelease): it finished already, or no
+// release holds that id. No later try of the same write changes that.
+var ErrNoUnfinishedProjectRelease = errors.New("no unfinished release has that id")
+
 // projectReleaseRunning is whether project has a release no boot has ended (ended_at null),
 // finished or not, read in the caller's transaction. Its callers hold the shared serializer, as
 // StartProjectRelease does, so the answer stands until they commit.
@@ -226,7 +231,7 @@ func (s *Store) RecordProjectRelease(ctx context.Context, id int64, result json.
 		return fmt.Errorf("record the result of project release %d: %w", id, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("record the result of project release %d: no unfinished release has that id", id)
+		return fmt.Errorf("record the result of project release %d: %w", id, ErrNoUnfinishedProjectRelease)
 	}
 	return nil
 }
@@ -244,7 +249,7 @@ func (s *Store) FinishProjectRelease(ctx context.Context, id int64, result json.
 		return fmt.Errorf("finish project release %d: %w", id, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("finish project release %d: no unfinished release has that id", id)
+		return fmt.Errorf("finish project release %d: %w", id, ErrNoUnfinishedProjectRelease)
 	}
 	return nil
 }
