@@ -27,15 +27,16 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same seven docs' register of the tree's passes scans for
+// package goes through, the same eight docs' register of the tree's passes scans for
 // (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
 // caller's transaction, WriteArms spliced into a caller's statement, Authored, Reached and
 // SessionRecorded, which run WriteArms for the writers that record an author, a reached session
-// and a session an ask names, and EraseNode, the erase's delete of a node and its tuples. Each is
-// a function of the package, never a method, so a call of one is named by the package and found
-// here wherever it is made. A write that holds a statement of its own instead is found by
-// rawStoreWrite, and none outside this package may hold one.
-var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "Caused", "Authored", "Reached", "SessionRecorded", "EraseNode"}
+// and a session an ask names, EraseNode, the erase's delete of a node and its tuples, and
+// FillScopes, the backfill's fill of the project of a node stored with none. Each is a function of
+// the package, never a method, so a call of one is named by the package and found here wherever it
+// is made. A write that holds a statement of its own instead is found by rawStoreWrite, and none
+// outside this package may hold one.
+var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "Caused", "Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -110,6 +111,14 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeCommentBatch",
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
+	// The backfill's passes over the project of every node (dispatch://INFRA-3862): the nodes of
+	// the issues, documents, asks and messages written before their writers wrote one, in one
+	// graphstore.Write per batch that takes no other row, and the project of the comment and
+	// block nodes written before a node named one (graphstore.FillScopes), the block batch under
+	// the revision fence (lockBlockDocuments). graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject
+	// runs both.
+	"graphcensus/projects.go#writeObjectBatch",
+	"graphcensus/projects.go#writeScopeBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).

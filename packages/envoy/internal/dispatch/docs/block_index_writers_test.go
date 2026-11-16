@@ -507,6 +507,11 @@ var indexPasses = map[string]string{
 	// names now or an ask.follower_added event ever named (recordedSessions). It writes the nodes
 	// the store lacks of them, and a node another write made it leaves alone.
 	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
+	// The backfill of the project of every node: the rows of the issues, documents, asks and
+	// messages that no node marks, and the comment and block nodes that name no project, each
+	// with the row its project is read from.
+	"graphcensus/projects.go#writeObjectBatch": "the issue, document, ask and message rows no node marks",
+	"graphcensus/projects.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through
@@ -534,6 +539,12 @@ var indexPasses = map[string]string{
 	// caller has just written take the id of the event that recorded them, which is known only
 	// once that event is appended (graphstore.Caused). It reads no projection and mends nothing.
 	"graphstore/write.go#causeNodes": "the nodes its caller stated and the event that recorded the write",
+	// FillScopes states the project of a node an earlier build stored with none: it locks and
+	// updates the rows of the nodes its caller names, reading of each only whether it carries a
+	// project already and its own made_at, made_by and cause, which the fact it states takes. The
+	// project itself is its caller's, read off the node's own row of its kind (graphcensus'
+	// backfillScopes), so it reads no projection to mend the store.
+	"graphstore/scope.go#FillScopes": "the nodes its caller names and the rows of them it fills",
 	// The publisher's record of a batch splices the store's arms into its own statement
 	// (graphstore.WriteArms): the roles and sessions the batch reached, and its deliveries.
 	"outbox/publisher.go#recordBatch": "the batch of events the publisher sent and the destinations each reached",
@@ -553,7 +564,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // storeWriterCall matches one call of the store's writer from outside its package: a pass that
 // writes the store through graphstore holds no statement of its own, and a scan of SQL alone
 // would never see it.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|EraseNode)\(`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|EraseNode|FillScopes)\(`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the
