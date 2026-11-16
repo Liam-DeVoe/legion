@@ -1322,6 +1322,68 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
   });
 });
 
+// The tester's finding at #4205's e3136741: R8 read as a reader reaches an issue, by a link of
+// the dashboard itself and with no document load - from the Inbox, and from the parent's
+// outline. The dashboard moves the keyboard focus to its `<main>` at every page change but the
+// first (`app.tsx`), and the outline read that focus as one the reader had placed: with a
+// question waiting the page still went to it, and with none it opened with the focus on `<main>`
+// and on no row, at 1440 by 900. The row above loads the page by its address, where the
+// dashboard moves no focus, so it never met this.
+test("an issue opened by a link opens with the focus on its question, or on its first row where none waits", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await page.goto("/");
+      const link = page
+        .locator(`[data-inbox-row] [data-dispatch-ref="dispatch://${seeded.key}"]`)
+        .first();
+      await expect(link, `the Inbox draws no link to ${seeded.key} at ${at}`).toBeVisible();
+      await link.click();
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the issue opened from the Inbox does not open with the focus on its open question at ${at}`,
+        })
+        .toBe(question);
+    }
+
+    // With the question answered none waits on the reader, so the focus is the first row's.
+    // The Inbox lists the issue no more, and the parent's outline links it as its child.
+    await answerAsk(seeded.openQuestion.askId, {
+      expected_edited_at: null,
+      selected: [],
+      text: "1280 px.",
+    });
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.parentKey}`);
+      await expectIssuePageDrawn(page);
+      const link = childRow(page, seeded.key).locator(`a[href$="/issues/${seeded.key}"]`).first();
+      await expect(
+        link,
+        `the parent's outline draws no link to ${seeded.key} at ${at}`
+      ).toBeVisible();
+      await link.click();
+      await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(async () => (await focusedNodeId(page)) !== null, {
+          message: `the issue opened from its parent's outline opens with the focus on no row at ${at}`,
+        })
+        .toBe(true);
+      expect(
+        await focusedNodeId(page),
+        `the issue opened from its parent's outline does not open with the focus on the outline's first row at ${at}`
+      ).toBe((await drawnRows(page))[0]?.id ?? "");
+    }
+  });
+});
+
 // c-children, as the architect's ruling 5 reads R12 (build-rulings-md): no view draws a
 // children's section above the outline; the children are one group of rows of the outline, where
 // the model places them, which for every child today is under the issue; each child's row holds
