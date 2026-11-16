@@ -222,11 +222,13 @@ func (s *Service) lockExistingState(room string) *roomState {
 }
 
 // roomGone reports whether room's state is no longer this service's to write into: the service is
-// stopping, or the room has been closed or has failed. Whoever closed or failed it - or the
-// shutdown - answers for the work left on it, so a settlement that meets it writes nothing more
-// and ends. The caller holds state.mu.
+// stopping, or the room has failed. Whoever failed it - or the shutdown - answers for the work left
+// on it, so a settlement that meets it writes nothing more and ends. A room whose record reads its
+// issue closed (closed) is not gone: a closed issue's document settles as an open one's does, by
+// the issue row the settlement's transaction locks (settlementPass.issueClosed), never by that
+// record, which a close this process has not heard of yet leaves open. The caller holds state.mu.
 func (s *Service) roomGone(state *roomState) bool {
-	return s.stopping.Load() || state.closed || state.failed != nil
+	return s.stopping.Load() || state.failed != nil
 }
 
 // newRoomState is a document's record with nothing of a room on it yet.

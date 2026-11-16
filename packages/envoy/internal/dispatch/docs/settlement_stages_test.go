@@ -56,11 +56,11 @@ func stageSettlement(t *testing.T, service *Service, artifactID string) *settlem
 
 // openStageTransaction opens what settlePass opens between take and readLocked (begin): the pass's
 // ledger and a transaction of the settlements pool, its idle time bounded, holding the document's
-// owner row, and the context the stages after take read and write through. The transaction is
-// rolled back when the test ends, and what the pass wrote into the room is discarded with it, as
-// abandon discards it, so a pass left half-run holds neither the document's advisory lock nor the
-// room's persistence worker. A pass whose own stage committed or rolled back the transaction
-// finished its writes itself.
+// owner row, the issue's state as that row reads (issueClosed), and the context the stages after
+// take read and write through. The transaction is rolled back when the test ends, and what the
+// pass wrote into the room is discarded with it, as abandon discards it, so a pass left half-run
+// holds neither the document's advisory lock nor the room's persistence worker. A pass whose own
+// stage committed or rolled back the transaction finished its writes itself.
 func openStageTransaction(t *testing.T, pass *settlementPass, parent context.Context) context.Context {
 	t.Helper()
 	service, artifactID := pass.service, pass.room
@@ -79,10 +79,7 @@ func openStageTransaction(t *testing.T, pass *settlementPass, parent context.Con
 	if err != nil {
 		t.Fatalf("lock the document's owner row: %v", err)
 	}
-	if !open {
-		t.Fatal("the document's owner is closed")
-	}
-	pass.owner = owner
+	pass.owner, pass.issueClosed = owner, !open
 	return withOwnerVerified(ctx)
 }
 
@@ -114,7 +111,7 @@ func reconciledStagePass(t *testing.T, settle *settlement, parent context.Contex
 	if err := recordStampedAskAuthors(ctx, pass.tx, pass.room, pass.renamed, pass.carried); err != nil {
 		t.Fatalf("record the stamped ask blocks' authors: %v", err)
 	}
-	reconciliation, err := settle.service.reconcileAskBlocks(ctx, pass.tx, pass.room, pass.owner, pass.read, pass.credit)
+	reconciliation, err := settle.service.reconcileAskBlocks(ctx, pass.tx, pass.room, pass.owner, pass.read, pass.credit, pass.issueClosed)
 	if err != nil {
 		t.Fatalf("reconcile the document's ask blocks: %v", err)
 	}
