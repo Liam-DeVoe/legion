@@ -156,6 +156,10 @@ declare -A missing=(
   [email]=nobody@example.com
   [group]=no-such-group
   [agent-token]=00000000-0000-4000-8000-000000000009
+  # A name no mapping holds on the GitHub subject lane of PRIV's acme/priv.lane.walk: a mapping
+  # write answers a hidden project's mapping as it answers a neighbour on its lane. Both names
+  # hold a `.`, which the lane spells `_`, so the lane both answers name masks neither fill.
+  [mapped-repository]=priv_lane.walk
 )
 # The kinds no project owns: a row that names one reads or writes the same object for every
 # caller, so it has no object of PRIV to hide, and the walk names it rather than compares it.
@@ -165,11 +169,6 @@ readonly projectless_kinds=" priority delivery-run live-pause session-group cred
 # row of its person's, which both servers hold under one label; only its list can name PRIV. A
 # broadcast goes to sessions, which are no-project nodes, and both servers hold the same one.
 readonly no_project_kinds=" session person agent-token broadcast "
-# The write rows that name an object and wait on a Probe from another task, each with its task.
-declare -A awaiting_probe=(
-  ["PUT /api/v1/settings/repo-projects/{owner}/{repo}"]="t-a-32 (a hidden mapping answers as missing)"
-  ["DELETE /api/v1/settings/repo-projects/{owner}/{repo}"]="t-a-32 (a hidden mapping answers as missing)"
-)
 
 # priv_object KIND PATTERN prints PRIV's object of KIND in main's seed for a row of PATTERN, or
 # nothing when the seed holds none. A document is PRIV-1's spec, whose blocks the seed knows; a
@@ -208,6 +207,7 @@ priv_object() {
     person) printf '%s' "$bob" ;;
     repository-owner) printf acme ;;
     repository-name) printf priv-repo ;;
+    mapped-repository) printf priv.lane.walk ;;
   esac
 }
 
@@ -340,6 +340,7 @@ for person in "$bob" "$carol"; do
 done
 seed_objects main PRIV bob
 map_repository main acme/priv-repo PRIV
+map_repository main acme/priv.lane.walk PRIV
 send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
 expect_status 200 "main: carol names the group priv-group on PRIV's list"
 # The objects of PRIV the walk's Probes name beyond seed_objects': a handoff, a check result and a
@@ -557,7 +558,7 @@ walk_rows() {
       continue
     fi
     if [ -z "$entry" ] || [ "$(jq -c '.probe' <<<"$entry")" = null ]; then
-      unrun "$method $pattern names an object and has no Probe${awaiting_probe["$method $pattern"]:+: it waits on ${awaiting_probe["$method $pattern"]}}"
+      unrun "$method $pattern names an object and has no Probe"
       continue
     fi
     hidden=$pattern

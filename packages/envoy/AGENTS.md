@@ -2779,6 +2779,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Every writer of a mapping, the `PUT`, the `DELETE` and the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), takes `lockRepoProjectWrite`'s locks in one order:
   an advisory lock on the repository, the event owners of every project it touches, then the row.
   So two writes to one repository serialize, even while it has no row yet, and the seed's own additions are announced like any other.
+  No private project's repository shares a GitHub subject lane with another project's, since a subject spells `.`, whitespace, `*` and `>` as `_` (`contracts.GithubRepositoryPrefix`) and a grant for one name carries the other's events (`api/repo_lanes.go`).
+  Each writer that adds a lane, the `PUT`, the seed and the switch of a project to `private`, runs `refuseSharedLane` after its own writes:
+  one advisory lock over every lane, the writer's last lock, then a read of every mapping as the write leaves it, so of two racing writes the second reads the first's commit.
+  It refuses `409 REPOSITORY_LANE_SHARED` when a lane of the written mappings, for a name or a `renamed_to` compared without case, is a lane of another project's mapping and either project is private;
+  two public projects may share one.
+  A mapping of a project the caller cannot see is neither moved, removed nor named (`refuseHiddenMapping`), so `REPO_PROJECT_IN_USE` names only a project the caller sees.
+  A write whose target project is private then calls `Deps.BusProjects.EnsurePrivate` through its own transaction as its last statement, which puts the project's key in the hub's `envoy_private_projects` bucket.
+  It adds names and never removes one, and no route calls it after a commit, so a name a move, a `DELETE` or a `renamed_to` change left on the key stays until the bus writer's own pass rewrites the key from the committed rows.
 
 - A closed issue (`closed_at` set) still takes its conversation: a new comment - issue-level, a thread reply, a reply on an ask, one anchored to a quote of one of its documents, and that thread's replies - and a new message, from a person or an agent, with their deliveries, retries and the mentioned or targeted agent's reply.
   A reply still reopens a resolved root there, as it does on an open issue.

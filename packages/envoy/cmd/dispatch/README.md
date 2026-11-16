@@ -4102,6 +4102,16 @@ Each item below names a path with its method and identity, then its purpose.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is neither deleted nor moved: `409 REPO_PROJECT_IN_USE`.
+  A GitHub subject spells `.`, whitespace, `*` and `>` in a repository's owner or name as `_`, so `acme/a.b` and `acme/a_b` publish on one lane, `notifications.github.acme.a_b`.
+  A PUT whose lane, for the repository or its `renamed_to` and compared without case, is also a lane of another project's mapping, where either project is private, is `409 REPOSITORY_LANE_SHARED`;
+  the answer names the other project and its repository only to a caller who sees that project.
+  A target project the caller cannot see is answered as an unknown project (`404 NOT_FOUND`).
+  A mapping of a project the caller cannot see is neither moved nor named:
+  a PUT over it answers the lane refusal's hidden form, which names the lane alone, and a DELETE answers `204` and removes nothing.
+  A PUT into a private project writes that project's key in the hub's `envoy_private_projects` bucket through its own transaction, as its last step before the commit, and is `409 PRIVATE_PROJECTS_UNAVAILABLE`, with nothing changed, while the hub does not take it.
+  The route adds names to the key and never removes one:
+  a move out of the project, a DELETE and a `renamed_to` change leave the old name there until the bucket's writer rewrites the key from the committed rows, the closed direction.
+  The boot seed of `DISPATCH_REPO_PROJECTS` leaves out an entry either refusal would refuse, logs it at ERROR naming the lane or the bucket, and goes on to the next entry and the boot.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
