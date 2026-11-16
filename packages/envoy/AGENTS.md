@@ -3219,21 +3219,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The built-binary tests start each child without `GITHUB_ACTIONS` and with `CI` as the test process has it (`childEnv` in `cmd/spec-check/main_test.go`), and the row "compare does not run in a CI job" sets each variable.
 
 - `spec-check guard --root <dir>` is the other part of the refusal above: it reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`), every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
-  `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) names each line whose words run `spec-check`, under any path, with `compare` as its first argument, as Bash reads the words: after quote removal and line continuation.
-  So a quote is removed, a backslash keeps the next character in its word, a space too, Bash's `$'…'` reads as the text its ANSI-C escapes decode to and `$"…"` as the quoted text, and a backslash and the line break after it go first, outside `'…'` and `$'…'`, as Bash removes them.
-  So `spec-check "compare"`, `spec-check $'compare'`, `spec-check $'com\x70are'` and a `$` with its quote on the next line after a backslash are named, and `spec-check \ compare` is not.
-  A comment, from a `#` that starts a word to the end of its line, holds no words and continues no line, also after a backslash.
-  A here-document body, up to its delimiter line, holds no words, so a quote or a backslash in it changes nothing after it.
-  The guard also reads each quoted word, each here-document body and each comment as a script of its own, since a nested shell can run it, so it names `sh -c 'spec-check compare …'`, and also a comparison there that no shell runs.
-  It expands nothing: for a form that needs a brace, a glob, a variable or a command substitution, the refusal of `compare` itself stops the comparison in a step that keeps `GITHUB_ACTIONS`.
-  Of the lines that the guard reads, only a line that both writes the word in such a form and drops that variable passes both, and no program finds it.
-  It also reads each `run:` value of a `.yml` or `.yaml` file as YAML reads it, so a plain, quoted or folded value over two lines is one line, named at the line where the value starts, and a literal block names its own line.
-  It reads the documents of a file up to the first one that YAML cannot read, and keeps the lines of the documents before it.
-  From that document on, it reads the file as text alone, since GitHub runs no step of a file it cannot read.
-  In a folded or plain YAML value, the guard can name a line that Bash does not run, and it never misses one for that reason.
-  A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line runs the comparison of the files with the approved spec, which no CI job does (R2)` on stderr for each, and `spec-check: <dir>: <n> lines of CI files run the comparison` on stdout.
+  `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) reads each file as text, and knows nothing of shell or of YAML.
+  The guard names each place of a CI file where the command's name and then the word `compare` stand as two words that follow each other, with quote characters, a `$` before a quote, backslashes and line breaks between them ignored, and the indentation after a backslash and a line break ignored too.
+  So it also names a comment or a quoted text that no shell runs, and the author rewords that line.
+  It does not find a command that an expansion or an escape builds, or one with another word between the two, and it is no defence against an author who hides the command: `compare` itself refuses to run in a CI job.
+  A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line holds the command that compares the files with the approved spec, and no CI job runs that command (R2). If no shell runs this line, reword it.` on stderr for each, at the line where the command's name stands, and `spec-check: <dir>: <n> lines of CI files hold the command that compares the files` on stdout.
   No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
-  a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files runs the comparison`.
+  a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files holds the command that compares the files`.
   The guard does not read a file outside the four directories, such as the `package.json` script a `bun run` step runs, nor a command held in a variable; the refusal of `compare` covers those when the step passes the runner's environment on.
   A Go program that calls `specgraph.Compare` is outside both the guard and the refusal of `compare`.
   `envoy-go-checks` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-envoy-go-checks.yaml`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.

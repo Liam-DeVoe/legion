@@ -20,9 +20,9 @@ const workflowsDir = ".github/workflows"
 var ciDirs = []string{workflowsDir, ".github/actions", ".github/scripts", "scripts"}
 
 // runGuard is "spec-check guard --root <dir>": it reads every regular file under the CI
-// directories of the repository at dir, and answers 0 when no line of them runs the comparison of
-// the files with the approved spec, 1 when one does or when it read no workflow, and 2 for a
-// directory or a file it cannot read or arguments it does not take.
+// directories of the repository at dir, and answers 0 when no line of them holds the command that
+// compares the files with the approved spec (ciFilesThatCompare), 1 when one does or when it read
+// no workflow, and 2 for a directory or a file it cannot read or arguments it does not take.
 func runGuard(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("guard", flag.ContinueOnError)
 	rootFlag := flags.String("root", "", "the root directory of the repository")
@@ -80,7 +80,7 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 
 	hits := ciFilesThatCompare(files)
 	for _, hit := range hits {
-		say(stderr, "%s: this line runs the comparison of the files with the approved spec, which no CI job does (R2)", filepath.Join(root, hit))
+		say(stderr, "%s: this line holds the command that compares the files with the approved spec, and no CI job runs that command (R2). If no shell runs this line, reword it.", filepath.Join(root, hit))
 	}
 	switch {
 	case workflows == 0:
@@ -89,13 +89,13 @@ func runGuard(args []string, stdout, stderr io.Writer) int {
 		say(stderr, "%s: read no workflow", root)
 		return 1
 	case len(hits) > 0:
-		verb := "run"
+		verb := "hold"
 		if len(hits) == 1 {
-			verb = "runs"
+			verb = "holds"
 		}
-		say(stdout, "%s: %s of CI files %s the comparison", root, count(len(hits), "line"), verb)
+		say(stdout, "%s: %s of CI files %s the command that compares the files", root, count(len(hits), "line"), verb)
 		return 1
 	}
-	say(stdout, "%s: no line of %s runs the comparison", root, count(len(files), "CI file"))
+	say(stdout, "%s: no line of %s holds the command that compares the files", root, count(len(files), "CI file"))
 	return 0
 }
