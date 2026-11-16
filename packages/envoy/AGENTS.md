@@ -417,6 +417,9 @@ Each item below names a task and where its code is, then notes on it.
   and the check's job is the check run's name without its matrix values, cut at its last ` (` (`409 CHECK_NOT_THIS_JOBS`).
   A check run or files GitHub does not answer is `503 CHECK_RUN_UNREADABLE` or `503 FILES_UNREADABLE`, and nothing is stored.
   A check run's name and commit, and what a commit's files hold, are kept for the life of the process in byte-bounded caches, since neither changes.
+
+- **The stored result of a spec check**: `internal/dispatch/api/spec_results.go`, `store/migrations/20261116094741_spec_check_results.up.sql`
+
   The result is stored as a new row of `spec_check_results` (`insertSpecCheckResult`, its one writer), with Dispatch's record number `seq` and an in-toto Statement v1 of the run: its subject the repository at the commit, and its predicate the check, its procedure digest (`specgraph.Check.Digest`), its test part, the verdict, `observed`, the job and the leg, the run, the recorder, and `recorded_at`.
   The recorder is the run's session and principal, and no person: the person of the result entry is the broker's configuration, who ran no test, so no result, no answer and no access-log line names that person (the line names the run's session as the caller), and the run's keys are its own (`requestKeyLogin`).
   The principal is read by the broker's own rule from the run it authenticated: the workflow_ref without the repository and without `@` and the run's ref (`oauthwire.WorkflowPath`, `oauthwire.ResultPrincipal`), so a workflow file or a branch whose name holds an `@` is recorded as the broker authenticated it.
@@ -3115,14 +3118,6 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The architecture importer (`internal/dispatch/architecture`, migrations `0037` and `0117`) imports each architecture source of a project on its own:
   a project has any number of sources, one per repository (`architecture_sources` keyed `(project_key, id)`, unique on `(project_key, repo)`;
   a source that predates `0117` is `id` 0), and its component model is every source's components together, each `components` row carrying `source_id`, a foreign key to its source with `on delete cascade`.
-  What a note is, how large one may be and whether a set is valid are the rules of one note set, which live in a package of their own, `internal/dispatch/architecture/notes`:
-  pure, with no database and no network, it imports nothing outside the standard library but `gopkg.in/yaml.v3` and `internal/dispatch/text`.
-  `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
-  `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
-  `CheckSet` refuses a set of more than `MaxFiles` notes, 1,000, or of more than `MaxSetSize` bytes in sum, 16 MiB, with one `ErrSetTooLarge`, whose text is `set too large`: the server lists a directory in one GitHub response of at most 1 MiB, which holds 1,000 entries of the longest names, and it keeps the checks of a commit's spec files in a cache of 16 MiB;
-  and `Parse` validates the set.
-  `ReadSet` reads one directory of a checkout by that rule and those bounds, checking the set and each note from the listing before it reads any note, for `cmd/architecture-check` and `cmd/spec-check`.
-  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks the listing with `CheckSet`, each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bounds through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
   slug file names, text PostgreSQL can store (`text.Storable`:
@@ -3137,6 +3132,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the first problems and a count of the rest, the same text the `sync_failed` payload carries);
   the source's previous projection, and every other source's, stays up.
   `graph_edges` gains the `part_of`/`depends_on` arms over node kind `component` (`<project>/<id>`), never rows in `refs`.
+
+- What a note is, how large one may be and whether a set is valid are the rules of one note set, which live in a package of their own, `internal/dispatch/architecture/notes`:
+  pure, with no database and no network, it imports nothing outside the standard library but `gopkg.in/yaml.v3` and `internal/dispatch/text`.
+  `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
+  `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
+  `CheckSet` refuses a set of more than `MaxFiles` notes, 1,000, or of more than `MaxSetSize` bytes in sum, 16 MiB, with one `ErrSetTooLarge`, whose text is `set too large`: the server lists a directory in one GitHub response of at most 1 MiB, which holds 1,000 entries of the longest names, and it keeps the checks of a commit's spec files in a cache of 16 MiB;
+  and `Parse` validates the set.
+  `ReadSet` reads one directory of a checkout by that rule and those bounds, checking the set and each note from the listing before it reads any note, for `cmd/architecture-check` and `cmd/spec-check`.
+  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks the listing with `CheckSet`, each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bounds through those two, and it calls `notes.Parse` itself.
 
 - `cmd/architecture-check` reads one directory of architecture notes from disk, a checkout's `.dispatch/architecture`, and judges it by the rules the importer applies to that directory on GitHub (`cmd/architecture-check/main.go`).
   `architecture-check [--allow-empty] <directory>` makes the directory absolute before it reads anything, and every line it prints about the directory or an entry of it names that absolute path.
