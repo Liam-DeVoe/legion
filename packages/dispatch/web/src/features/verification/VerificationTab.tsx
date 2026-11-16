@@ -320,10 +320,11 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
   );
 }
 
-/** A check's results, newest first. A check CI proves holds no recorded result, only the one the
- *  server derives from the CI run it names, drawn as a recorded one is; where that run proved
- *  nothing, the server's sentence saying why stands in its place. The tab reads that run as of
- *  its own load and asks GitHub nothing more. */
+/** A check's results, newest first. A check CI proves holds no result a role recorded: it holds
+ *  the one the server derives from the CI run it names, and each one its CI job recorded, each
+ *  drawn as a recorded one is; where that run proved nothing, the server's sentence saying why
+ *  stands in place of the derived one. The tab reads that run as of its own load and asks GitHub
+ *  nothing more. */
 function CheckResults({
   check,
   results,
