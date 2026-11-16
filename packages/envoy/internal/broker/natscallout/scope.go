@@ -8,7 +8,6 @@ import (
 	"maps"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
@@ -277,18 +276,14 @@ func (h *heldAccess) run(ctx context.Context) {
 
 // refresh makes one pass: it asks Dispatch every held question and reads its repository mapping,
 // all at once, each bounded by accessFetchTimeout, and holds the pass once every one has come back
-// answered, or once any came back refused, whatever the others did (hold).
+// answered, or once any came back refused, whatever the others did (hold). It logs what it did
+// with the pass: a refusal at error, naming the question Dispatch refused, since every held daemon
+// is then refused; else each failed question at warn, since the last complete pass is kept.
 func (h *heldAccess) refresh(ctx context.Context) {
 	pass := &heldPass{began: h.now()}
 	answers := make([]heldAnswer, len(h.asks))
-	var failed, refused atomic.Bool
-	var logRefusal sync.Once
-	refusedBy := func(err error) {
-		refused.Store(true)
-		logRefusal.Do(func() {
-			h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every connection held to its exchange projects is refused until it answers", "error", err.Error())
-		})
-	}
+	// errs is each question's failure, the mapping's read last, nil for one answered.
+	errs := make([]error, len(h.asks)+1)
 	var wait sync.WaitGroup
 	for i, ask := range h.asks {
 		wait.Go(func() {
@@ -298,13 +293,8 @@ func (h *heldAccess) refresh(ctx context.Context) {
 			switch {
 			case errors.Is(err, projectaccess.ErrProjectNotFound):
 				answers[i] = heldAnswer{notFound: true}
-			case errors.Is(err, projectaccess.ErrBrokerRefused):
-				refusedBy(err)
 			case err != nil:
-				failed.Store(true)
-				if ctx.Err() == nil {
-					h.log.Warn("natscallout: Dispatch's answer about a project could not be read, so the last complete pass is kept", "project", ask.project, "error", err.Error())
-				}
+				errs[i] = err
 			default:
 				answers[i] = heldAnswer{answer: answer}
 			}
@@ -314,30 +304,39 @@ func (h *heldAccess) refresh(ctx context.Context) {
 		fetch, cancel := context.WithTimeout(ctx, accessFetchTimeout)
 		defer cancel()
 		rows, err := h.repoProjects(fetch)
-		switch {
-		case errors.Is(err, projectaccess.ErrBrokerRefused):
-			refusedBy(err)
-		case err != nil:
-			failed.Store(true)
-			if ctx.Err() == nil {
-				h.log.Warn("natscallout: Dispatch's repository mapping could not be read, so the last complete pass is kept", "error", err.Error())
-			}
-		default:
-			pass.lanes = lanesOf(rows)
+		if err != nil {
+			errs[len(h.asks)] = err
+			return
 		}
+		pass.lanes = lanesOf(rows)
 	})
 	wait.Wait()
-	switch {
-	case refused.Load():
-		h.hold(&heldPass{began: pass.began, refused: true})
-	case failed.Load():
-	default:
-		pass.answers = make(map[heldKey]heldAnswer, len(h.asks))
-		for i, ask := range h.asks {
-			pass.answers[ask] = answers[i]
+	question := func(i int) string {
+		if i == len(h.asks) {
+			return "the repository mapping"
 		}
-		h.hold(pass)
+		return "project " + h.asks[i].project
 	}
+	if i := slices.IndexFunc(errs, func(err error) bool { return errors.Is(err, projectaccess.ErrBrokerRefused) }); i >= 0 {
+		h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every daemon held to its exchange projects is refused until a later pass is answered", "question", question(i), "error", errs[i].Error())
+		h.hold(&heldPass{began: pass.began, refused: true})
+		return
+	}
+	if slices.ContainsFunc(errs, func(err error) bool { return err != nil }) {
+		if ctx.Err() == nil {
+			for i, err := range errs {
+				if err != nil {
+					h.log.Warn("natscallout: Dispatch could not be asked a question of this pass, so the last complete pass is kept", "question", question(i), "error", err.Error())
+				}
+			}
+		}
+		return
+	}
+	pass.answers = make(map[heldKey]heldAnswer, len(h.asks))
+	for i, ask := range h.asks {
+		pass.answers[ask] = answers[i]
+	}
+	h.hold(pass)
 }
 
 // hold holds pass in place of the one held, unless that one began later, which a slower pass must
