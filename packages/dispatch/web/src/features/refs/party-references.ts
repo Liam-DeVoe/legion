@@ -92,6 +92,11 @@ export interface InlineLink {
  *  bracket open in it. */
 const BLANK_LINE_AFTER = /[ \t]*\n/y;
 
+/** The characters a backslash escapes: ASCII punctuation, as CommonMark and goldmark read an
+ *  escape. Before any other character - a space, a letter, a line break - a backslash is a
+ *  backslash, and the character after it is read as itself. */
+const ESCAPABLE = /^[!-/:-@[-`{-~]$/u;
+
 /**
  * Where each step of reading a link's tail - its address and title, after the `(` - stops, from
  * every offset of one text: built once, the first time the text is read for a link's tail
@@ -100,36 +105,43 @@ const BLANK_LINE_AFTER = /[ \t]*\n/y;
  * title that never closes - is read across the rest of its paragraph, in time that grows with the
  * square of the draft's length; and a bound on each tail read a real link whose address runs
  * past it - a dashboard URL with a long query - as no link, where both CommonMark parsers read
- * it as one. A backslash escapes the character after it, as the tail's reader takes it, so an
- * escaped character stops nothing. A stop past every character is the text's length.
+ * it as one. A backslash escapes the character after it where that is punctuation (`ESCAPABLE`),
+ * as the tail's reader takes it, so an escaped character stops nothing, while a space or a line
+ * break after a backslash stops what it would stop anywhere. A stop past every character is the
+ * text's length.
  */
 interface TailStops {
   /** The first offset at or after each that holds neither a space nor a tab (`pastSpace`). */
   readonly filled: Int32Array;
   /** Where an address not in angle brackets that starts at each offset ends, or -1 where it
-   *  reads none: at the first space, tab, line break or control character while its
-   *  parentheses balance, or at the first `)` that closes more of them than open after the
-   *  offset, which is the link's own. */
+   *  reads none: at the first space, tab, line break or control character, or at the first `)`
+   *  that closes more parentheses than open after the offset, which is the link's own, whichever
+   *  comes first. A `(` the address leaves open before a space ends nothing, as goldmark's link
+   *  parser reads it, and so the display tree the page draws (`pmdoc`): `[x](a(b "T")` is a link
+   *  to `a(b`, where CommonMark's own rule would read no link there. */
   readonly bare: Int32Array;
   /** The first `<`, `>` or line break at or after each: an address in angle brackets ends at a
    *  `>` and reads as none at the other two. */
   readonly angled: Int32Array;
   /** The first `"`, `'` and `)` at or after each, by that character: where a title ends. */
   readonly closers: Readonly<Record<string, Int32Array>>;
+  /** The first `(` at or after each: a title in parentheses holds none, so one standing before
+   *  its `)` makes it no title, and the tail no link, as CommonMark and goldmark read it. */
+  readonly opens: Int32Array;
   /** The line break that ends the first blank line starting at or after each: a title that has
    *  not closed before it ends with its paragraph, and so does the link. */
   readonly blank: Int32Array;
 }
 
 /** Every stop of `body` (`TailStops`), in one walk of it from its end. The parentheses an address
- *  balances are counted from the end too - only the count between two offsets matters - and an
+ *  closes are counted from the end too - only the count between two offsets matters - and an
  *  address that starts at an offset ends at the nearest later one where fewer stand open than at
  *  its start, which a stack of the offsets standing lower than all those before them answers. */
 function tailStops(body: string): TailStops {
   const length = body.length;
   const escaped = new Uint8Array(length + 1);
   for (let at = 0; at < length; at += 1) {
-    if (body.charAt(at) === "\\") {
+    if (body.charAt(at) === "\\" && ESCAPABLE.test(body.charAt(at + 1))) {
       escaped[at + 1] = 1;
       at += 1;
     }
@@ -144,6 +156,7 @@ function tailStops(body: string): TailStops {
     blank: table(),
     closers: { '"': quote, "'": apostrophe, ")": parenthesis },
     filled: table(),
+    opens: table(),
   };
   stops.bare[length] = -1;
   const lower = new Int32Array(length + 1);
@@ -152,7 +165,6 @@ function tailStops(body: string): TailStops {
   lower[0] = length;
   let open = 0;
   let space = length;
-  let spaceOpen = 0;
   let lineBreak = length;
   let blankAfter = false;
   for (let at = length - 1; at >= 0; at -= 1) {
@@ -166,6 +178,7 @@ function tailStops(body: string): TailStops {
     quote[at] = plain && character === '"' ? at : quote[after];
     apostrophe[at] = plain && character === "'" ? at : apostrophe[after];
     parenthesis[at] = plain && character === ")" ? at : parenthesis[after];
+    stops.opens[at] = plain && character === "(" ? at : stops.opens[after];
     if (plain && character === "\n") {
       stops.blank[at] = blankAfter ? lineBreak : stops.blank[after];
       lineBreak = at;
@@ -174,13 +187,10 @@ function tailStops(body: string): TailStops {
       stops.blank[at] = stops.blank[after];
       if (character !== " " && character !== "\t") blankAfter = false;
     }
-    if (plain && character <= " ") {
-      space = at;
-      spaceOpen = open;
-    }
+    if (plain && character <= " ") space = at;
     while (lowers > 0 && lowerOpen[lowers - 1] >= open) lowers -= 1;
     const closes = lowers > 0 ? lower[lowers - 1] - 1 : length;
-    stops.bare[at] = closes < space ? closes : space < length && spaceOpen === open ? space : -1;
+    stops.bare[at] = closes < space ? closes : space < length ? space : -1;
     lower[lowers] = at;
     lowerOpen[lowers] = open;
     lowers += 1;
@@ -201,9 +211,10 @@ function pastSpace(body: string, stops: TailStops, at: number): number | undefin
 /** What closes a link's title, by what opens it. */
 const TITLE_CLOSERS: Readonly<Record<string, string>> = { '"': '"', "'": "'", "(": ")" };
 
-/** The address and the end of an inline link whose `(` stands just before `from`, read as
- *  CommonMark reads a link's destination and title, however long: an address in angle brackets,
- *  or one with no space whose parentheses balance, then, after a space, a title in double quotes,
+/** The address and the end of an inline link whose `(` stands just before `from`, read as the
+ *  display tree the page draws reads a link's destination and title (goldmark's link parser, under
+ *  `pmdoc`), however long: an address in angle brackets, or one with no space whose parentheses
+ *  close none it did not open (`TailStops.bare`), then, after a space, a title in double quotes,
  *  single quotes or parentheses, then the `)`, all within the paragraph. Undefined where no link
  *  ends there. */
 function linkTail(
@@ -224,8 +235,10 @@ function linkTail(
   let at = spaced;
   if (closer !== undefined) {
     const closed = stops.closers[closer][spaced + 1];
-    // A title may run over a line break, never over a blank line.
+    // A title may run over a line break, never over a blank line, and one in parentheses holds
+    // no `(` of its own.
     if (closed >= body.length || stops.blank[spaced + 1] < closed) return undefined;
+    if (closer === ")" && stops.opens[spaced + 1] < closed) return undefined;
     const after = pastSpace(body, stops, closed + 1);
     if (after === undefined) return undefined;
     at = after;
@@ -234,8 +247,10 @@ function linkTail(
 }
 
 /**
- * Every inline link `body` writes, in the order their words close, read as CommonMark and so
- * the renderer read them: a backslash takes the character after it as a literal one, brackets
+ * Every inline link `body` writes, in the order their words close, read as CommonMark and the
+ * display tree the page draws read them, a link's address read as that tree reads it
+ * (`linkTail`): a backslash takes the punctuation character after it as a literal one
+ * (`ESCAPABLE`), and before anything else - a line break among them - is a backslash, brackets
  * that balance stand inside a link's words (`[@Planner [2]](…)`), a link holds no link - once one
  * closes, no `[` before it opens one, a picture's caption aside - and a blank line ends every
  * bracket open before it. Code holds no link syntax, so what the text's code contexts hold
@@ -251,6 +266,9 @@ function readInlineLinks(body: string): readonly InlineLink[] {
   let closedBelow = 0;
   let nextCode = 0;
   let stops: TailStops | undefined;
+  // The character the last backslash escaped: a `!` there opens no picture, where `\\![` is an
+  // escaped backslash and a picture.
+  let escaped = -1;
   for (let at = 0; at < body.length; at += 1) {
     while (nextCode < code.length && (code[nextCode]?.end ?? 0) <= at) nextCode += 1;
     const range = code[nextCode];
@@ -259,8 +277,9 @@ function readInlineLinks(body: string): readonly InlineLink[] {
       continue;
     }
     const character = body.charAt(at);
-    if (character === "\\") {
+    if (character === "\\" && ESCAPABLE.test(body.charAt(at + 1))) {
       at += 1;
+      escaped = at;
     } else if (character === "\n") {
       BLANK_LINE_AFTER.lastIndex = at + 1;
       if (BLANK_LINE_AFTER.test(body)) {
@@ -268,7 +287,7 @@ function readInlineLinks(body: string): readonly InlineLink[] {
         closedBelow = 0;
       }
     } else if (character === "[") {
-      const picture = body.charAt(at - 1) === "!" && body.charAt(at - 2) !== "\\";
+      const picture = body.charAt(at - 1) === "!" && escaped !== at - 1;
       closedBelow = Math.min(closedBelow, openers.length);
       openers.push({ at, picture });
     } else if (character === "]") {

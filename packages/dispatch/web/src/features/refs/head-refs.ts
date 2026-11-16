@@ -1,16 +1,19 @@
 import { codeRanges } from "./code-ranges";
 import { type InlineLink, inlineLinks } from "./party-references";
 import { referenceSpans } from "./reference-spans";
-import { referenceRouteFromHref } from "./routes";
+import { buildDispatchReference, referenceRouteFromHref } from "./routes";
 import { readTextReferences } from "./text-references";
 
 /** One reference a text writes, as a cut reads it (the server's `cutReference`): where a reader
  *  sees it, `[start, end)` in UTF-16 offsets - the whole inline link around it, where one is -
- *  and the characters it was read from, which tell two references read at one place apart. */
+ *  and what it names, as the server's `text.Ref` does: an address's reference, a bare key's issue
+ *  (which an address of the same issue names too) and a `#id` as written, which no address names.
+ *  Two references at one place are the same where they name the same thing, whichever way each
+ *  is written. */
 interface Extent {
   readonly start: number;
   readonly end: number;
-  readonly written: string;
+  readonly names: string;
 }
 
 /** The whitespace a cut that moved back drops from the end of its head, line breaks included. */
@@ -128,13 +131,11 @@ function headEnd(
   return at === 0 ? cut : at;
 }
 
-/** Whether `extents` holds `reference`: the same characters read at the same place. */
+/** Whether `extents` holds `reference`: a reference at the same place naming the same thing. */
 function holds(extents: readonly Extent[], reference: Extent): boolean {
   return extents.some(
     (one) =>
-      one.start === reference.start &&
-      one.end === reference.end &&
-      one.written === reference.written
+      one.start === reference.start && one.end === reference.end && one.names === reference.names
   );
 }
 
@@ -143,21 +144,22 @@ function linkStart(link: InlineLink): number {
   return link.picture ? link.open - 1 : link.open;
 }
 
-/** Every reference of `text` as a cut reads it (`headRefs`), none of them resolved, since a cut
- *  that splits a reference changes what the text says whatever the reference names: each span
- *  the shared span reader finds that is an address of Dispatch or of the dashboard at `origin`,
- *  read as the link's address where it starts inside a link that writes it there, and each bare
- *  key and `#id` the shared reader finds, each widened over the inline link that holds it. The
- *  link that holds one is the first to open, as the server's link reader lists them. */
+/** Every reference of `text` as a cut reads it (`headRefs`), none of them resolved against what
+ *  Dispatch holds, since a cut that splits a reference changes what the text says whether or not
+ *  its target exists: each span the shared span reader finds that is an address of Dispatch or of
+ *  the dashboard at `origin`, read as the link's address where it starts inside a link that
+ *  writes it there, and each bare key and `#id` the shared reader finds, each widened over the
+ *  inline link that holds it and named as `Extent` says. The link that holds one is the first to
+ *  open, as the server's link reader lists them. */
 function referenceExtents(text: string, origin: string): Extent[] {
   const links = [...inlineLinks(text)].sort((one, other) => linkStart(one) - linkStart(other));
   const extents: Extent[] = [];
-  const add = (start: number, end: number, written: string) => {
+  const add = (start: number, end: number, names: string) => {
     const link = links.find((one) => linkStart(one) <= start && start < one.close);
     extents.push(
       link === undefined
-        ? { end, start, written }
-        : { end: link.close, start: linkStart(link), written }
+        ? { end, names, start }
+        : { end: link.close, names, start: linkStart(link) }
     );
   };
   for (const span of referenceSpans(text)) {
@@ -170,12 +172,16 @@ function referenceExtents(text: string, origin: string): Extent[] {
     );
     const address =
       link === undefined ? span.value : text.slice(link.addressStart, link.addressEnd);
-    if (address !== "" && referenceRouteFromHref(address, origin) !== undefined) {
-      add(span.start, span.start + address.length, address);
+    const route = address === "" ? undefined : referenceRouteFromHref(address, origin);
+    if (route !== undefined) {
+      add(span.start, span.start + address.length, buildDispatchReference(route));
     }
   }
   for (const reference of readTextReferences(text, { origin }).references) {
-    if (reference.form !== "address") add(reference.start, reference.end, reference.text);
+    if (reference.form === "key") {
+      add(reference.start, reference.end, `dispatch://${reference.text}`);
+    }
+    if (reference.form === "question") add(reference.start, reference.end, reference.text);
   }
   return extents;
 }

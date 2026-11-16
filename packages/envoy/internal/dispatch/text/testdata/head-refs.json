@@ -393,5 +393,85 @@
     "ellipsis": "…",
     "head": "see [the spec](disp…",
     "note": "The link's ) stands past the window both copies read, the bound and 1,024 characters past it, so neither reads a link there and the address running to the window's edge is no reference the cut keeps whole: the cut by length stands. A copy that read the whole text would move the cut back to the link's [."
+  },
+  {
+    "name": "a link whose address opens a parenthesis it does not close before its title crossing the cut",
+    "text": "see [x](https://example.com/a,[y](dispatch://CORE-1/plan \"T\") then",
+    "limit": 20,
+    "ellipsis": "…",
+    "head": "see…",
+    "note": "The display tree the page draws (pmdoc, goldmark's link parser) reads [x] as one link whose address runs to the space before the title, its ( unclosed, and [y](... as text of that address, so the reference in it is in [x]'s link. A copy that held the address to CommonMark's balanced parentheses would read no link at [x] and cut the line by length."
+  },
+  {
+    "name": "a cut in the words of a bracket an unbalanced address holds",
+    "text": "see [x](https://example.com/a,[y](dispatch://CORE-1/plan \"T\") then",
+    "limit": 33,
+    "ellipsis": "…",
+    "head": "see…",
+    "note": "The cut falls in [y]'s words, which are text of [x]'s address as the display tree reads it, so it moves back to [x]'s [. A copy that read [y](... as a link of its own would move it back to [y]'s [ instead."
+  },
+  {
+    "name": "a link the ellipsis follows still holding a reference that names what its address named",
+    "text": "see [a b](https://example.com/a,[CORE-1](dispatch://CORE-1))[the spec](dispatch://CORE-1/spec) now",
+    "limit": 70,
+    "ellipsis": "…",
+    "head": "see [a b](https://example.com/a,[CORE-1](dispatch://CORE-1))…",
+    "note": "The cut in [the spec] moves back to its [. With the ellipsis after it, the address inside the first link's address no longer reads (dispatch://CORE-1))… names nothing), but the key CORE-1 at the same place names the same issue, so the head reads at that place what the text does, and the cut stays: a reference is told apart by what it names, not by how it is written."
+  },
+  {
+    "name": "a title in parentheses that opens another is no title, so the link inside it is one of its own",
+    "text": "see [x](a (T [y](dispatch://CORE-1)) now",
+    "limit": 20,
+    "ellipsis": "…",
+    "head": "see [x](a (T…",
+    "note": "A title in parentheses holds no unescaped ( (CommonMark, and goldmark under the display tree), so [x] is no link and [y](dispatch://CORE-1) is: the cut in it moves back to [y]'s [. A copy that closed the title at its first ) would read [x] as one link and move the cut back to its [."
+  },
+  {
+    "name": "a backslash before a space in a link's address escapes nothing, so the address ends there and no link is read",
+    "text": "see [CORE-1](a\\ b) now",
+    "limit": 16,
+    "ellipsis": "…",
+    "head": "see [CORE-1](a\\…",
+    "note": "A backslash escapes ASCII punctuation only (CommonMark, goldmark): before a space it is a backslash, the space ends the address a\\, and b is no title, so [CORE-1] is no link and the key is bare, ending before the cut. A copy that let the backslash take the space would read one link and move the cut back to its [."
+  },
+  {
+    "name": "a backslash before a space in a link's words leaves the link as it is",
+    "text": "see [the\\ CORE-1 spec](dispatch://CORE-2) now",
+    "limit": 20,
+    "ellipsis": "…",
+    "head": "see…",
+    "note": "The backslash is a backslash and the space a space, which close no bracket either way, so the link is read whole by both readings of a backslash: the cut in it moves back to its [."
+  },
+  {
+    "name": "a backslash before a line break in a link's words does not hold the paragraph open across a blank line",
+    "text": "see [CORE-1\\\n\nx](dispatch://CORE-2) now",
+    "limit": 20,
+    "ellipsis": "…",
+    "head": "see [CORE-1\\\n\nx](…",
+    "note": "A backslash before a line break escapes nothing, so the blank line after it ends the paragraph and the bracket open in it: no link, and the cut in the address moves back to the address alone. A copy that let the backslash take the line break would read one link across the blank line and move the cut back to its [."
+  },
+  {
+    "name": "a backslash before a line break in an address in angle brackets does not carry the address onto the next line",
+    "text": "see [CORE-1](<a\\\nb>) now",
+    "limit": 19,
+    "ellipsis": "…",
+    "head": "see [CORE-1](<a\\\nb…",
+    "note": "An address in angle brackets ends at a line break, and a backslash before it escapes nothing, so [CORE-1] is no link and the key is bare, ending before the cut."
+  },
+  {
+    "name": "a backslash before a line break in a title does not carry the title across a blank line",
+    "text": "see [CORE-1](a \"T\\\n\nU\") now",
+    "limit": 20,
+    "ellipsis": "…",
+    "head": "see [CORE-1](a \"T\\\n…",
+    "note": "A backslash before a line break escapes nothing, so the blank line after it ends the paragraph, and the title with it: [CORE-1] is no link and the key is bare."
+  },
+  {
+    "name": "a picture after an escaped backslash is a picture, its ! taken with it",
+    "text": "see \\\\![chart](dispatch://CORE-1/artifact/chart) now",
+    "limit": 12,
+    "ellipsis": "…",
+    "head": "see \\\\…",
+    "note": "\\\\ is an escaped backslash, so the ! after it escapes nothing and opens a picture: the cut moves back to the !. A copy that read any backslash before the ! as escaping it would read a link from the [ and keep the ! in the head."
   }
 ]

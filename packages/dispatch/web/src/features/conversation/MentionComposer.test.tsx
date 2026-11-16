@@ -1352,6 +1352,38 @@ test("stopped role options leave out held roles and name each role once", () => 
   ]);
 });
 
+// A token the answer records only by replaced sessions - its newest one gone from the registry's
+// record - is offered where the answer names it, between the tokens around it, not after all of
+// them: the "Not running" rows keep the server's order.
+test("a role every session of which was replaced keeps its place among the stopped roles", () => {
+  const entry = (session: string, token: string, replacedBy: string | null) => ({
+    kind: "session" as const,
+    last_at: null,
+    legion: {
+      replaced_at: replacedBy === null ? null : "2026-10-26T02:00:00Z",
+      replaced_by: replacedBy,
+      role: token,
+      role_token: token,
+      started_at: "2026-10-26T00:00:00Z",
+    },
+    reasons: [],
+    session_id: session,
+    title: session,
+  });
+  const agents = [
+    entry("planner-session", "legion-planner", null),
+    entry("old-tester", "legion-tester", "gone-tester"),
+    entry("reviewer-session", "legion-reviewer", null),
+  ];
+  expect(
+    stoppedRoleOptions([], agents, storedNames).map((option) => [option.target, option.sessionId])
+  ).toEqual([
+    ["role:legion-planner", "planner-session"],
+    ["role:legion-tester", "old-tester"],
+    ["role:legion-reviewer", "reviewer-session"],
+  ]);
+});
+
 // The roles the picker offers, live and not running, are the roles the renderer links
 // (`role-holders.ts`), whichever sessions run: the two can never differ, so a role offered is
 // one its mention links and a role its mention reads plain is never offered.

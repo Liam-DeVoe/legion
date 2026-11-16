@@ -367,6 +367,29 @@ test("a link holds no link, a picture's caption may, and one text is read for it
   expect(inlineLinks(body)).toBe(inlineLinks(body));
 });
 
+// A backslash escapes ASCII punctuation only, as CommonMark and goldmark - under the display tree
+// the page draws - read it: before a space or a line break it is a backslash, and the space or
+// the line break does what it does anywhere, while before a bracket or a parenthesis it takes it.
+test("a backslash escapes punctuation only, so a space or a line break after one still ends what it ends", () => {
+  const addresses = (body: string) =>
+    inlineLinks(body).map((link) => body.slice(link.addressStart, link.addressEnd));
+  // The space ends the address `a\`, and `b` is no title.
+  expect(addresses("[x](a\\ b)")).toEqual([]);
+  // The line break ends an address in angle brackets.
+  expect(addresses("[x](<a\\\nb>)")).toEqual([]);
+  // The blank line ends the paragraph, the bracket open in it and the title open in it.
+  expect(addresses("[x\\\n\ny](dispatch://CORE-1)")).toEqual([]);
+  expect(addresses('[x](a "T\\\n\nU")')).toEqual([]);
+  // A space after a backslash in the words closes no bracket, and punctuation is taken.
+  expect(addresses("[x\\ y](dispatch://CORE-1)")).toEqual(["dispatch://CORE-1"]);
+  expect(addresses("[x\\]y](dispatch://CORE-1)")).toEqual(["dispatch://CORE-1"]);
+  expect(addresses("[x](a\\(b)")).toEqual(["a\\(b"]);
+  expect(addresses("[x](a\\b)")).toEqual(["a\\b"]);
+  // An escaped `!` opens no picture; one after an escaped backslash does.
+  expect(inlineLinks("\\![x](a)").map((link) => link.picture)).toEqual([false]);
+  expect(inlineLinks("\\\\![x](a)").map((link) => link.picture)).toEqual([true]);
+});
+
 // A `](` that opens no link - parentheses that never balance, a title that never closes - is read
 // through stops found once for the whole text, never across the rest of its paragraph, so a draft
 // of thousands of them is read in time that grows with its length, not with its square (8,000 of

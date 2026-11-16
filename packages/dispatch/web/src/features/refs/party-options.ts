@@ -91,8 +91,9 @@ export function mentionOptions(
  * names but which no longer claims the role is one of them: nobody holds it, and its mention is
  * linked and not told, as every other role nobody holds.
  *
- * The options keep the server's order, which the collaborators contract states: the registry's
- * agents by role in workflow order, then newest first.
+ * The options keep the server's order, which the collaborators contract states - the registry's
+ * agents by role in workflow order, then newest first - each token where the answer first names
+ * it (`recordedRoles`), a token every session of which was replaced among them.
  */
 export function stoppedRoleOptions(
   live: readonly Agent[],

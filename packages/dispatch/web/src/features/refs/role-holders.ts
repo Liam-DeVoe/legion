@@ -48,11 +48,17 @@ const recordedOf = new WeakMap<
 /** No role recorded, for collaborators not read yet or an answer that lists no agent. */
 const NO_ROLES: ReadonlyMap<string, IssueCollaboratorLegionAgent> = new Map();
 
+/** Whether a collaborator is a Legion session, which records a role token. */
+function isLegionAgent(agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent {
+  return agent.legion !== null;
+}
+
 /** Every Legion role token an issue's collaborators `agents` record, running or not, with the
  *  entry a reader is shown it by: the role's newest session, the entry no later one replaced,
- *  else - for a token every entry of which the answer says was replaced - its first entry. The
- *  tokens keep the answer's order, its newest entries first. Built once per response and shared
- *  by every reader of it. */
+ *  else - for a token every entry of which the answer says was replaced - its first entry. Each
+ *  token stands where the answer first names it, so the tokens keep the answer's order, a token
+ *  whose every entry was replaced among them. Built in one pass, once per response, and shared by
+ *  every reader of it. */
 export function recordedRoles(
   agents: readonly IssueCollaboratorAgent[] | null | undefined
 ): ReadonlyMap<string, IssueCollaboratorLegionAgent> {
@@ -60,16 +66,17 @@ export function recordedRoles(
   const known = recordedOf.get(agents);
   if (known !== undefined) return known;
   const roles = new Map<string, IssueCollaboratorLegionAgent>();
-  const legion = agents.filter(
-    (agent): agent is IssueCollaboratorLegionAgent => agent.legion !== null
-  );
-  for (const agent of legion) {
-    if (agent.legion.replaced_by === null && !roles.has(agent.legion.role_token)) {
+  for (const agent of agents) {
+    if (!isLegionAgent(agent)) continue;
+    const shown = roles.get(agent.legion.role_token);
+    // A key set again keeps its place in the map, so a later unreplaced entry takes over from a
+    // replaced one without moving the token.
+    if (
+      shown === undefined ||
+      (shown.legion.replaced_by !== null && agent.legion.replaced_by === null)
+    ) {
       roles.set(agent.legion.role_token, agent);
     }
-  }
-  for (const agent of legion) {
-    if (!roles.has(agent.legion.role_token)) roles.set(agent.legion.role_token, agent);
   }
   recordedOf.set(agents, roles);
   return roles;
