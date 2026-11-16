@@ -38,10 +38,13 @@
 // (specgraph.ReadApproved). It exits 1 when the files hold a node in a text that the approved spec
 // never held, with one line for each such node on standard error, "spec-check:
 // <dir>/<file>:<line>: <node>: <detail>", and "spec-check: <dir>: the comparison fails on <n>
-// nodes" on standard output. It exits 0 otherwise, with "spec-check: <dir>: every text the files
-// hold is approved; 5 of 7 approved statements are in the files at their current text" and one
-// line for each other approved statement, "spec-check: statement <id>: not in the files" or
-// "spec-check: statement <id>: the files hold approved version 1, and version 2 is current". It
+// nodes" on standard output. It exits 0 otherwise, with "spec-check: <dir>: the approved spec held
+// every text that the files hold; 5 of 7 approved statements are in the files at their current
+// text", then one line for each other approved statement, "spec-check: statement <id>: not in
+// the files" or "spec-check: statement <id>: the files hold approved version 1, and version 2 is
+// current", then one line for each node that the files hold and the approved spec removed,
+// "spec-check: <kind> <id>: the files hold it, and the approved spec removed it", the kind being
+// statement, check, component, interface or term (R28). It
 // exits 2, and makes no comparison, for files that do not parse or a directory that holds no spec
 // file. The comparison does not judge the tree, which is tree's work. No CI job runs compare (R2):
 // Dispatch makes the comparison at each push. So compare exits 2, before it reads an argument,

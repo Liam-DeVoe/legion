@@ -207,6 +207,11 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 					t.Errorf("Holds[%s] = %+v, want no entry for a removed node", id, h)
 				}
 			}
+			// R28: "the files hold one that is no longer approved" is a difference, so the
+			// comparison names each removed node that the files still hold.
+			if want := []string{"a-second-payment-is-refused", "an-order-is-paid-once"}; !reflect.DeepEqual(got.Removed, want) {
+				t.Errorf("Removed = %q, want %q", got.Removed, want)
+			}
 			if h := got.Holds["an-order-survives-a-restart"]; h != (Holding{Present: true, Version: 2, Current: true}) {
 				t.Errorf("Holds[an-order-survives-a-restart] = %+v, want version 2, current", h)
 			}
