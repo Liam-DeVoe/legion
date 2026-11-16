@@ -172,6 +172,15 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   the word `none` are refused before anything is written. Only a broker that can ask Dispatch
   whether a project is private serves a secret carrying the tag: any other refuses it
   `project-unchecked`, which the create prints with its reason and exits 1 for.
+- **`--project-channels slack`** is optional, and `slack` is its one value. It marks a Slack bot
+  token, such as `LEGION_SLACK_BOT_TOKEN`, whose use a private project's owner limits. A session or
+  pod whose credential names a private Dispatch project spends such a secret only through the
+  airlock ([The airlock](/legion/broker/concepts/#the-airlock)), and only to post with
+  `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
+  owner of every private project it names allows; the proxy refuses every other call
+  `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
+  `project-channels-need-airlock`. A credential that names no private project gets the secret as
+  before. Any other value, and on `create` the word `none`, is refused before anything is written.
 - **`--max-grant`** is optional, except with `--admin true` and with
   `--kind google-service-account`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
@@ -376,7 +385,7 @@ retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-eas
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--shape`, `--project`, `--max-grant`, `--default-grant` or a combination. A retag that
+Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--shape`, `--project`, `--project-channels`, `--max-grant`, `--default-grant` or a combination. A retag that
 sets tags reads the owner and tier tags the secret holds and sends both in one request. On AWS,
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
@@ -386,8 +395,8 @@ secret missing an owner or tier tag, name that tag too.
 ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
 `--admin none` removes the administrator's mark, `--shape none` removes the shape, so the broker
 reads the value for itself again, `--project none` removes the project, so the secret belongs to
-no project again, `--max-grant none` removes the max grant, and
-`--default-grant none` removes the opt-out. A
+no project again, `--project-channels none` removes the channel limit, `--max-grant none` removes
+the max grant, and `--default-grant none` removes the opt-out. A
 removal is a retag of its own: it changes no other tag, so the cloud refusing it leaves the secret
 as it was. A retag that names `none` beside another change is refused before it writes anything.
 So is a retag that would leave a `github-app` secret without `--github-owners`, as the broker would

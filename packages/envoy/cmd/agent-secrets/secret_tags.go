@@ -39,8 +39,8 @@ func checkOwnerTier(owner, tier string) (string, error) {
 }
 
 // tagNone is the value of --kind, --github-owners, --requesters, --scopes, --admin, --shape,
-// --project, --max-grant and --default-grant that removes the tag, the one the broker refuses as
-// a github-owners login (policy.TagRemoved).
+// --project, --project-channels, --max-grant and --default-grant that removes the tag, the one the
+// broker refuses as a github-owners login (policy.TagRemoved).
 const tagNone = policy.TagRemoved
 
 // checkKind is --kind's rule: a kind the broker mints (policy.ValidKind), or none.
@@ -235,6 +235,22 @@ func checkProject(project string, orNone bool) error {
 	return usageErr{fmt.Errorf("--project is one Dispatch project key (%s), not %q, or the broker refuses the secret as %s; leave --project off for a secret of no project", contracts.ProjectKeyRule, project, policy.ReasonProjectMalformed)}
 }
 
+// checkProjectChannels is --project-channels' rule: slack, the one value the broker reads
+// (policy.ProjectChannelsSlack), or none where orNone allows it (retag) to remove the tag. Any
+// other value — slack in another case, white space around it, a channel id, and on create the word
+// none — is refused here, before anything is read or written, as the broker refuses it on the
+// reread, policy.ReasonProjectChannelsMalformed, named as the broker names it: a value the broker
+// cannot read names no limit it could apply, and a secret carrying one is served to nobody.
+func checkProjectChannels(channels string, orNone bool) error {
+	if channels == "" || channels == policy.ProjectChannelsSlack || (orNone && channels == tagNone) {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--project-channels is %s or %s, not %q, or the broker refuses the secret as %s", policy.ProjectChannelsSlack, tagNone, channels, policy.ReasonProjectChannelsMalformed)}
+	}
+	return usageErr{fmt.Errorf("--project-channels is %s, not %q, or the broker refuses the secret as %s; leave --project-channels off for a secret no project's owner limits", policy.ProjectChannelsSlack, channels, policy.ReasonProjectChannelsMalformed)}
+}
+
 // checkTagsFor applies the broker's cross-tag rules (policy.TagRules) to the tags a secret will
 // hold once a write lands — its kind, owner, tier, requesters, scopes, shape, admin mark and
 // max grant — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write,
@@ -363,25 +379,26 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 }
 
 // tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
-// struct rather than nine string parameters for the reason policy.TagSet is one: a caller
+// struct rather than ten string parameters for the reason policy.TagSet is one: a caller
 // passing that many values in order would transpose two of them, and every transposition
 // compiles and writes each value as another tag.
 type tagFlags struct {
-	Kind         string
-	GitHubOwners string
-	Requesters   string
-	Scopes       string
-	Admin        string
-	Shape        string
-	Project      string
-	MaxGrant     string
-	DefaultGrant string
+	Kind            string
+	GitHubOwners    string
+	Requesters      string
+	Scopes          string
+	Admin           string
+	Shape           string
+	Project         string
+	ProjectChannels string
+	MaxGrant        string
+	DefaultGrant    string
 }
 
 // optionalTags is the kind, github-owners, requesters, scopes, admin, shape, dispatch-project,
-// max-grant and default-grant tags the flags set: each flag's value when it names one, and
-// nothing for one left unset or set to none. A kind brings the rollback guard with it
-// (policy.TagRollbackGuard), so a broker from before kinds refuses the secret rather than serve
+// project-channels, max-grant and default-grant tags the flags set: each flag's value when it
+// names one, and nothing for one left unset or set to none. A kind brings the rollback guard with
+// it (policy.TagRollbackGuard), so a broker from before kinds refuses the secret rather than serve
 // its stored key or refresh token.
 func optionalTags(f tagFlags) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
@@ -407,6 +424,9 @@ func optionalTags(f tagFlags) map[string]string {
 	}
 	if named(f.Project) {
 		tags[policy.TagProject] = f.Project
+	}
+	if named(f.ProjectChannels) {
+		tags[policy.TagProjectChannels] = f.ProjectChannels
 	}
 	if named(f.MaxGrant) {
 		tags[policy.TagMaxGrant] = f.MaxGrant

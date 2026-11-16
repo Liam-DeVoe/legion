@@ -330,6 +330,15 @@ marked with tags or annotations:
   accounts commonly use for cost allocation. Whoever may write the store's prefix may set it, and
   can already read every value there; which secrets belong to a project is its owner's call. Set
   it with `agent-secrets secret create|retag --project PRIV`, and remove it with `--project none`.
+- **`project-channels`** is optional, and its one value is `slack`. It marks a Slack bot token,
+  such as `LEGION_SLACK_BOT_TOKEN`, whose use a private project's owner limits to the channels
+  they name: a credential that names a private project spends such a secret only behind the
+  airlock, on a post to one of those channels
+  ([A private project's secrets](#a-private-projects-secrets)), and every other credential is
+  decided by owner and tier as before. Any other value, an empty tag and the word `none` included,
+  is refused `project-channels-malformed`, so the secret goes to nobody rather than out with no
+  limit. Set it with `agent-secrets secret create|retag --project-channels slack`, and remove it
+  with `--project-channels none`.
 - **`mint-service-account`** is written by `agent-secrets secret` beside every kind, with the value
   `kind-secret`, and this broker never reads it. It makes the brokers before kinds, from
   legion-envoy-v13.19.0 on, refuse a kind secret rather than serve its stored key.
@@ -463,7 +472,8 @@ whose `requesters` are not its one person owner, or that lists a service where i
 (`requesters-not-owner`), a `scopes` list the broker cannot read (`scopes-malformed`), a `scopes`
 tag on any other kind (`scopes-kind`), a `dispatch-project` tag that is no project key
 (`project-malformed`), any `dispatch-project` tag on a broker that cannot ask Dispatch about
-projects (`project-unchecked`), a malformed
+projects (`project-unchecked`), a `project-channels` tag set to anything but `slack`
+(`project-channels-malformed`), a malformed
 `max-grant`, a name that is not in the form above, a secret encrypted with any key but the
 agent-secrets key, the AWS-managed key included, a secret with no current value (created without
 one, so none of its versions carries the `AWSCURRENT` label), or a kind secret whose stored value
@@ -511,6 +521,17 @@ a pod holding its values asks the broker again within ten minutes. While Dispatc
 reached, a tagged secret is neither granted nor released (`503 PROJECT_ACCESS_UNAVAILABLE`) and
 its grants stay live; a secret with no tag is served as before, and a deployment that tags nothing
 asks Dispatch nothing at all.
+
+A secret tagged `project-channels` is limited by the projects the credential names, whatever
+project the secret itself belongs to. A credential that names a private project, whether or not
+its person can still see it, gets the secret only behind the airlock, and is denied it
+`project-channels-need-airlock` where the secret has no airlock entry. The proxy then carries only
+`POST /api/chat.postMessage` with `channel`, `thread_ts` and `text`, to a channel id that the owner
+of every private project the credential names has listed in Dispatch, and refuses every other call
+`CHANNEL_NOT_ALLOWED` without calling Slack. The credential has no channel at all when an owner
+listed none, when its projects share none, when its person can no longer see one of them, or when
+Dispatch's answer carries no list. A pod holding the secret reads the owners' lists again within
+ten minutes.
 
 A request of a private project, by its secrets, its session's projects or the issue its reason
 names, is the project's own: a person who may not see the project does not find it in any list,

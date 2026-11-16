@@ -94,6 +94,15 @@ in lower case, two keys and `none` on create are refused before anything is writ
 that cannot ask Dispatch whether a project is private refuses a tagged secret
 `project-unchecked`, which the write's reread prints, exiting 1.
 
+A Slack bot token can carry the `project-channels` tag, whose one value is `slack`. A session whose
+credential names a private project then gets the token only behind the airlock, and the airlock's
+proxy carries only a post to a Slack channel that project's owner named in Dispatch; it refuses any
+other call `CHANNEL_NOT_ALLOWED`. `agent-secrets secret create --project-channels slack` writes the
+tag, `secret retag --project-channels slack|none` writes it or removes it, `secret show` prints it
+as a `project_channels:` line, `secret list` prints it as a `PROJECT_CHANNELS` column, and `--json`
+carries it as `project_channels`, null for a secret without it. Any other value, and `none` on
+create, is refused before anything is written, naming `project-channels-malformed`.
+
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
 `AGENT_SECRETS_KEY_DIR`.

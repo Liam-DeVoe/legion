@@ -48,15 +48,15 @@ func init() {
 	// Register after variable initialization: the handlers use commands for help.
 	secretForms = []secretForm{
 		{command{"secret list", "agent-secrets secret list [--json] [--profile P]",
-			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nshape, project, max grant, default grant, whether it has a value, and its deletion once it is\ndeleted, with the earliest purge beside it on Secrets Manager; --json also prints each one's\nstore, secret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
+			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nshape, project, project channels, max grant, default grant, whether it has a value, and its\ndeletion once it is deleted, with the earliest purge beside it on Secrets Manager; --json also\nprints each one's store, secret name, github-owners, requesters, scopes and admin mark, and its\ncreated and last-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json] [--profile P]",
-			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, project, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--project KEY] [--max-grant DURATION] [--default-grant session] [--profile P]",
-			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\nRead its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
+			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, project, project channels, max grant, default grant,\nits created and last-changed times, its deletion once it is deleted, with the earliest purge\nbeside it on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--project KEY] [--project-channels slack] [--max-grant DURATION] [--default-grant session] [--profile P]",
+			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\n--project-channels slack marks a Slack bot token: a session whose credential names a private\nproject posts with it only to the Slack channels that project's owner named.\nRead its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME [--profile P]",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--project KEY|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
-			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, project, max grant or default grant under the environment's cloud credential. Then ask\nthe broker to reread it. none removes a kind, GitHub owners, requesters, scopes, the admin mark,\na shape, a project, a max grant or a default grant, in a retag of its own. An administrator\nchanges a shared secret's owner and tier. This CLI cannot tell whether a requesters entry naming\na service is one the deployment registers: it holds no list of them, so the broker's answer to\nthe reread is what catches an unregistered name, printing its refusal and its reason, and the\nretag exits 1 with the tag written."}, cmdSecretRetag},
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--project KEY|none] [--project-channels slack|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
+			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, project, project channels, max grant or default grant under the environment's cloud\ncredential. Then ask the broker to reread it. none removes a kind, GitHub owners, requesters,\nscopes, the admin mark, a shape, a project, project channels, a max grant or a default grant, in\na retag of its own. An administrator changes a shared secret's owner and tier. This CLI cannot\ntell whether a requesters entry naming a service is one the deployment registers: it holds no\nlist of them, so the broker's answer to the reread is what catches an unregistered name,\nprinting its refusal and its reason, and the retag exits 1 with the tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME [--profile P]",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
 		{command{"secret restore", "agent-secrets secret restore NAME [--profile P]",
@@ -161,7 +161,7 @@ func secretFail(stderr io.Writer, form string, err error) int {
 }
 
 // secretFlagValues are the secret forms' flags that take a value.
-var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "project": true, "max-grant": true, "default-grant": true, "profile": true}
+var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "project": true, "project-channels": true, "max-grant": true, "default-grant": true, "profile": true}
 
 // secretFlags is form's flag set with --profile, which every secret form takes but only the AWS
 // backend uses (GCP uses your Google sign-in instead, gcpBackend; a non-empty --profile there is a
@@ -674,9 +674,17 @@ type secretView struct {
 	// (policy.TagProject). It is a pointer so a census of the store's tagged secrets counts the
 	// rows whose project is not null, a tag written by hand as the empty string among them,
 	// which the broker refuses the secret for (policy.ReasonProjectMalformed).
-	Project      *string `json:"project"`
-	MaxGrant     string  `json:"max_grant"`
-	DefaultGrant string  `json:"default_grant"`
+	Project *string `json:"project"`
+	// ProjectChannels is the project-channels tag as the store holds it, slack for the Legion
+	// Slack bot token, which a credential naming a private project spends only on a post to a
+	// channel that project's owner named, and nil for a secret carrying none, which --json writes
+	// as null (policy.TagProjectChannels). It is a pointer for the reason Project is: a census of
+	// the store's tagged secrets counts the rows whose project_channels is not null, a tag written
+	// by hand as the empty string among them, which the broker refuses the secret for
+	// (policy.ReasonProjectChannelsMalformed).
+	ProjectChannels *string `json:"project_channels"`
+	MaxGrant        string  `json:"max_grant"`
+	DefaultGrant    string  `json:"default_grant"`
 	// HasValue is whether it holds a current, servable version (AWS: a version carries AWSCURRENT;
 	// GCP: versions/latest is ENABLED), so the broker can release a value.
 	HasValue bool `json:"has_value"`
@@ -702,6 +710,9 @@ func (v secretView) withTags(tags map[string]string) secretView {
 	v.Requesters, v.Scopes, v.Admin, v.Shape = tags[policy.TagRequesters], tags[policy.TagScopes], tags[policy.TagAdmin], tags[policy.TagShape]
 	if project, tagged := tags[policy.TagProject]; tagged {
 		v.Project = &project
+	}
+	if channels, tagged := tags[policy.TagProjectChannels]; tagged {
+		v.ProjectChannels = &channels
 	}
 	return v
 }
@@ -750,13 +761,13 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tOWNER\tTIER\tKIND\tSHAPE\tPROJECT\tMAX_GRANT\tDEFAULT_GRANT\tVALUE\tDELETED\tEARLIEST_PURGE")
+	fmt.Fprintln(tw, "NAME\tOWNER\tTIER\tKIND\tSHAPE\tPROJECT\tPROJECT_CHANNELS\tMAX_GRANT\tDEFAULT_GRANT\tVALUE\tDELETED\tEARLIEST_PURGE")
 	for _, v := range views {
 		value := "no"
 		if v.HasValue {
 			value = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, orDash(v.Owner), orDash(v.Tier), orDash(v.Kind), orDash(v.Shape), orDashPtr(v.Project), orDash(v.MaxGrant), orDash(v.DefaultGrant), value, formatTime(v.Deleted), formatTime(v.EarliestPurge))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, orDash(v.Owner), orDash(v.Tier), orDash(v.Kind), orDash(v.Shape), orDashPtr(v.Project), orDashPtr(v.ProjectChannels), orDash(v.MaxGrant), orDash(v.DefaultGrant), value, formatTime(v.Deleted), formatTime(v.EarliestPurge))
 	}
 	if err := tw.Flush(); err != nil {
 		return secretFailIn(stderr, form, s, err)
@@ -807,8 +818,8 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\nkind: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nshape: %s\nproject: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
-		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Kind), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.Shape), orDashPtr(view.Project), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
+	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\nkind: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nshape: %s\nproject: %s\nproject_channels: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
+		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Kind), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.Shape), orDashPtr(view.Project), orDashPtr(view.ProjectChannels), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",
@@ -847,6 +858,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	admin := flags.String("admin", "", "true marks a secret whose grant is an administrator's: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
 	shape := flags.String("shape", "", "token: the value is one line, so the broker removes its trailing line endings before it spends it; document: every byte of the value is part of it, so the broker releases it unchanged. Unset, the broker removes a trailing line ending only from a value that holds none inside it")
 	project := flags.String("project", "", "the key of the Dispatch project the secret belongs to (PRIV): a private project's secret goes only to a session that names the project in AGENT_SECRETS_PROJECTS, and only a broker that can ask Dispatch serves it. Unset, the secret belongs to no project")
+	projectChannels := flags.String("project-channels", "", "slack: the secret is a Slack bot token, which a session or pod whose credential names a private Dispatch project spends only through the airlock, on a Slack post to a channel that project's owner named. Unset, no project's owner limits it")
 	maxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows")
 	defaultGrant := flags.String("default-grant", "", "session: a request with no --ttl lasts until its session ends, not 12 hours")
 	if err := flags.Parse(flagArgs); err != nil {
@@ -884,6 +896,9 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		err = checkProject(*project, false)
 	}
 	if err == nil {
+		err = checkProjectChannels(*projectChannels, false)
+	}
+	if err == nil {
 		err = checkMaxGrant(*maxGrant, false)
 	}
 	if err == nil {
@@ -902,15 +917,16 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	tags := optionalTags(tagFlags{
-		Kind:         *kind,
-		GitHubOwners: *githubOwners,
-		Requesters:   *requesters,
-		Scopes:       *scopes,
-		Admin:        *admin,
-		Shape:        *shape,
-		Project:      *project,
-		MaxGrant:     *maxGrant,
-		DefaultGrant: *defaultGrant,
+		Kind:            *kind,
+		GitHubOwners:    *githubOwners,
+		Requesters:      *requesters,
+		Scopes:          *scopes,
+		Admin:           *admin,
+		Shape:           *shape,
+		Project:         *project,
+		ProjectChannels: *projectChannels,
+		MaxGrant:        *maxGrant,
+		DefaultGrant:    *defaultGrant,
 	})
 	tags[policy.TagOwner], tags[policy.TagTier] = ownerValue, *tier
 	// The cross-tag rules weigh the owner tag, which me resolves to only once the sign-in is
@@ -941,6 +957,9 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *project != "" {
 		command = append(command, "--project", *project)
+	}
+	if *projectChannels != "" {
+		command = append(command, "--project-channels", *projectChannels)
 	}
 	if *maxGrant != "" {
 		command = append(command, "--max-grant", *maxGrant)
