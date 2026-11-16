@@ -95,32 +95,43 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the key and the title as the page's one `h1`, no
- *  tab, the view row that part D fills, and nothing else. */
+ *  tab, the view row that part D fills, the Contents pane and the Spec view that part J fills,
+ *  and nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: part D fills the view row
-  // (`[data-filter-row]`), and each other slot drawn so far adds no text or control.
+  // The parts that fill a slot change these readings: part D fills the view row
+  // (`[data-filter-row]`) and part J the Contents pane and the Spec view, whose own rows read
+  // them, and each other slot drawn so far adds no text or control.
+  const filled = '[data-filter-row], [data-testid="issue-contents"], [data-spec-body]';
   const row = newPage.locator("[data-filter-row]");
   await expect(row).toHaveCount(1);
   await expect
     .poll(
       () =>
-        newPage.evaluate((root) => {
-          const rowText = root.querySelector<HTMLElement>("[data-filter-row]")?.innerText ?? "";
-          return (root as HTMLElement).innerText.replace(rowText, " ").replace(/\s+/g, " ").trim();
-        }),
+        newPage.evaluate((root, parts) => {
+          let text = (root as HTMLElement).innerText;
+          for (const part of root.querySelectorAll<HTMLElement>(parts)) {
+            text = text.replace(part.innerText, " ");
+          }
+          return text.replace(/\s+/g, " ").trim();
+        }, filled),
       { message: "the new page draws text outside its header and its view row" }
     )
     .toBe(`${issue.key} ${issue.title}`);
   const controls = "button, a, input, select, textarea";
   expect(
-    await newPage.locator(controls).count(),
+    await newPage
+      .locator(controls)
+      .evaluateAll(
+        (found, parts) => found.filter((control) => control.closest(parts) === null).length,
+        filled
+      ),
     "the new page draws a control outside its view row"
-  ).toBe(await row.locator(controls).count());
+  ).toBe(0);
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on
