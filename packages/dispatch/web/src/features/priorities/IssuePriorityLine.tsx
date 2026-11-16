@@ -1,6 +1,6 @@
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
@@ -10,9 +10,18 @@ import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
   dismissButtonText,
+  focusBorder,
   inputClasses,
   linkHoverText,
   linkText,
+  pageFailedText,
+  pageHairBorder,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaneBg,
+  pagePaperBg,
+  pageQuietText,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonText,
@@ -22,6 +31,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { focusOnDocument } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
@@ -115,6 +125,40 @@ export function IssuePriorityLine({
   const writeOwn = (ids: string[]) =>
     write.mutate({ advances: ids, advances_revision: issue.advances_revision });
   const busy = disabled || write.isPending;
+  const addControl = useRef<HTMLButtonElement>(null);
+  const picker = useRef<HTMLSelectElement>(null);
+  // Opening the form puts the focus in its first field: the add control the form replaces leaves
+  // the page, and without this the focus would drop to the body with it and a keyboard user
+  // would have to find the form again.
+  useEffect(() => {
+    if (adding) picker.current?.focus();
+  }, [adding]);
+  // Closing it - Add, Cancel or Escape - owes the add control, drawn again in its place, the
+  // focus the form held, for the same reason. The control takes it once it can hold it: Add's
+  // write disables the control until the write settles, and a disabled control holds no focus,
+  // so after an add the focus waits on the body until then. Only a focus still on the document
+  // is taken back (`focusOnDocument`): anywhere else, the reader put it there in between.
+  const focusAddControl = useRef(false);
+  useEffect(() => {
+    if (adding || write.isPending || !focusAddControl.current) return;
+    focusAddControl.current = false;
+    if (focusOnDocument()) addControl.current?.focus();
+  }, [adding, write.isPending]);
+  const closeForm = () => {
+    setPicked("");
+    setAdding(false);
+    focusAddControl.current = true;
+  };
+  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
+  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the line is the ink in a row
+  // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
+  // priority is a link in the ink; what qualifies it is quiet words, a refusal the failed red;
+  // the controls are muted words that turn ink under the pointer, the add control on the page's
+  // pane, Add with the header control's rule, and the picker the page's field, which keeps
+  // `main`'s focus rule, the application's one focus indicator (decision 58 of the same
+  // artifact).
+  const quiet = page === null ? textMutedOnSurface : pageQuietText;
+  const failed = page === null ? dangerText : pageFailedText;
   // A priority the issue already advances is no choice: the line names it, whether the relation
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
@@ -124,13 +168,12 @@ export function IssuePriorityLine({
     event.preventDefault();
     if (picked === "") return;
     writeOwn([...own, picked]);
-    setPicked("");
-    setAdding(false);
+    closeForm();
   };
 
   return (
     <div
-      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${textSecondaryOnSurface}`}
+      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
       data-testid={inDetails ? undefined : "issue-advances"}
     >
       {advances.length === 0 || inDetails ? null : (
@@ -148,7 +191,7 @@ export function IssuePriorityLine({
             {/* In a row of Details the priority's title wraps inside the panel rather than
                 widening it (dispatch://INFRA-1196 R17); its words are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link ${inDetails ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${linkText} ${linkHoverText}`}
+              className={`dispatch-inline-link ${inDetails ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
               title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
               {...page?.authorText}
@@ -156,13 +199,13 @@ export function IssuePriorityLine({
               {label}
             </Link>
             {entry.inherited ? (
-              <span className={`shrink-0 text-xs ${textMutedOnSurface}`} {...page?.pageChrome}>
+              <span className={`shrink-0 text-xs ${quiet}`} {...page?.pageChrome}>
                 {page?.CONTROL_LABELS.advances_inherited ?? "inherited"}
               </span>
             ) : (
               <button
                 aria-label={`Remove ${label} from ${issue.key}`}
-                className={`shrink-0 ${dismissButtonText}`}
+                className={`shrink-0 ${page === null ? dismissButtonText : `${pageMutedText} hover:text-page-ink`}`}
                 disabled={busy}
                 onClick={() => writeOwn(own.filter((id) => id !== entry.id))}
                 type="button"
@@ -175,10 +218,7 @@ export function IssuePriorityLine({
         );
       })}
       {atCap ? (
-        <span
-          className={`${inDetails ? "" : "shrink-0 "}text-xs ${textMutedOnSurface}`}
-          {...page?.pageChrome}
-        >
+        <span className={`${inDetails ? "" : "shrink-0 "}text-xs ${quiet}`} {...page?.pageChrome}>
           {page === null ? (
             <>An issue advances at most {MAX_ISSUE_ADVANCES} priorities.</>
           ) : (
@@ -188,15 +228,29 @@ export function IssuePriorityLine({
       ) : adding ? (
         <form
           className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            // Escape closes this form and goes no further. The panel the line sits in closes on
+            // Escape too - Details on the new issue page, which on a phone is a sheet whose
+            // Escape is the key registry's dialog binding (`useDialog`) - and one press reaching
+            // it would close the form and the panel together and leave the focus on nothing. The
+            // registry passes over a press already `defaultPrevented` (`keymap.ts`), and a press
+            // stopped here reaches no listener above the form either. A second Escape, pressed on
+            // the add control the focus returns to, is the panel's.
+            event.preventDefault();
+            event.stopPropagation();
+            closeForm();
+          }}
           onSubmit={add}
         >
           <label className="sr-only" htmlFor={selectId} {...page?.pageChrome}>
             {page?.CONTROL_LABELS.priority_to_advance ?? "Priority to advance"}
           </label>
           <select
-            className={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 ${inputClasses(true)}`}
+            className={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 ${page === null ? inputClasses(true) : `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`}`}
             id={selectId}
             onChange={(event) => setPicked(event.target.value)}
+            ref={picker}
             value={picked}
           >
             <option value="">
@@ -211,7 +265,7 @@ export function IssuePriorityLine({
             ))}
           </select>
           <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}` : `${pageLineBorder} ${pageMutedText} refused:text-page-quiet`}`}
             disabled={busy || picked === ""}
             type="submit"
             {...page?.pageChrome}
@@ -219,11 +273,8 @@ export function IssuePriorityLine({
             {page?.CONTROL_LABELS.add ?? "Add"}
           </button>
           <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium md:min-h-8 ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              setPicked("");
-              setAdding(false);
-            }}
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium md:min-h-8 ${page === null ? textMutedHoverToSecondary : `${pageQuietText} hover:text-page-muted`}`}
+            onClick={closeForm}
             type="button"
             {...page?.pageChrome}
           >
@@ -244,9 +295,10 @@ export function IssuePriorityLine({
           // words its name begins with, because that panel raises no tooltip that could say it
           // instead (dispatch://INFRA-1196 R19).
           aria-label={addPriorityControlName(issue.key)}
-          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
+          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink`}`}
           disabled={busy}
           onClick={() => setAdding(true)}
+          ref={addControl}
           title={tooltips ? addPriorityControlName(issue.key) : undefined}
           type="button"
           {...page?.pageChrome}
@@ -256,7 +308,7 @@ export function IssuePriorityLine({
       )}
       {priorities.isError ? (
         <span
-          className={`${inDetails ? "" : "shrink-0 "}text-xs ${dangerText}`}
+          className={`${inDetails ? "" : "shrink-0 "}text-xs ${failed}`}
           role="alert"
           {...page?.pageChrome}
         >
@@ -265,7 +317,7 @@ export function IssuePriorityLine({
       ) : null}
       {write.error === null ? null : (
         <span
-          className={`${inDetails ? "" : "shrink-0 "}text-xs ${dangerText}`}
+          className={`${inDetails ? "" : "shrink-0 "}text-xs ${failed}`}
           role="alert"
           {...page?.authorText}
         >

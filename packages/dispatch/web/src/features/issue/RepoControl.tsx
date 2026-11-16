@@ -7,7 +7,11 @@ import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   badgeLow,
   badgePrimary,
-  textMutedOnSurface,
+  pageInkText,
+  pageLabelChip,
+  pageMutedText,
+  pagePaneBg,
+  pageQuietText,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
@@ -88,7 +92,9 @@ export function RepoControl({
   ) : null;
   if (resolvedRepo === null && !mappings.isError && (mappings.isPending || mapped.length === 0)) {
     return page !== null && inRow ? (
-      <span className={textMutedOnSurface} {...page.pageChrome}>
+      // The prototype's `.none` is the bullet grey, which no page pair registers for words
+      // (2.5:1 on the paper); the page's quiet words take it (dispatch://INFRA-3935 R6).
+      <span className={pageQuietText} {...page.pageChrome}>
         {page.CONTROL_LABELS.none}
       </span>
     ) : null;
@@ -97,6 +103,18 @@ export function RepoControl({
   // shows a value its options lack.
   const options = repo === null || mapped.includes(repo) ? mapped : [repo, ...mapped];
   const tone = repo === null ? badgeLow : badgePrimary;
+  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
+  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the issue's own repository
+  // is the page's label chip, one it inherits or none is the quiet words on the same ground; the
+  // line is the ink in a row of Details (the prototype's `.frow .fv`) and the muted grey
+  // elsewhere (its `#hdr-props`).
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : repo === null
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
+  const lineText = page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText;
   const description =
     page === null ? (
       resolvedRepo === null ? (
@@ -128,7 +146,7 @@ export function RepoControl({
       >
         <span
           aria-hidden="true"
-          className={`${badgeSelectBadge} font-mono ${tone.bg} ${tone.text}`}
+          className={`${badgeSelectBadge} font-mono ${badgeTone}`}
           {...(resolvedRepo === null ? page?.pageChrome : page?.authorText)}
         >
           {resolvedRepo ?? page?.CONTROL_LABELS.no_repository ?? "No repository"}
@@ -166,7 +184,7 @@ export function RepoControl({
     );
   return (
     <div
-      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${textSecondaryOnSurface}`}
+      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${lineText}`}
     >
       {inDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>

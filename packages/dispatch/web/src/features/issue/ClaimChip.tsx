@@ -209,7 +209,10 @@ export function ClaimChip({
           ? // Below 1280 px an inline link takes 6 px of padding above and below for a finger
             // (`styles.css`'s `.dispatch-inline-link`), so wrapped lines stand that far apart.
             `inline-flex min-w-0 max-w-full flex-wrap items-baseline gap-x-1 gap-y-3 text-sm xl:gap-y-0 ${pageInkText}`
-          : `${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`
+          : // Inside `NoTooltips` the pill's tone is the new issue page's (`pillClassName`'s
+            // `onPage`, dispatch://INFRA-3935 R6, decision 56 of
+            // dispatch://INFRA-1196/artifact/part-decisions-md).
+            `${pillClassName(takeable ? "label" : "selected-label", page !== null)} min-w-0 max-w-full gap-1`
       }
       data-testid="issue-claim"
       style={{ flexShrink: 1 }}
