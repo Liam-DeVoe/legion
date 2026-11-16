@@ -44,7 +44,7 @@ const (
 // reported or recorded once, from either pod of the machine.
 //
 // mode is the delivery mode the envelope targets, "" when it targets none, and modeErr the failure
-// of reading it (envelopeDeliveryMode): both are read once per message rather than once per
+// of reading it (payloadDeliveryMode): both are read once per message rather than once per
 // recipient.
 //
 // It returns the session's live entry whenever one was read, for every verdict and not only the
