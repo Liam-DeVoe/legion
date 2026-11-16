@@ -14,7 +14,7 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { agentRoleWord } from "../agent-role";
-import { DecisionActions } from "../DecisionActions";
+import { DecisionActions, rowActionSelector } from "../DecisionActions";
 import { NodeGlyph } from "../NodeGlyph";
 import {
   AskAnswer,
@@ -310,10 +310,28 @@ export function DecisionsRow({
             </p>
           )}
           {/* Keep and Change on one line with the entry's link (the prototype's `.dbtns`); the
-              form Change opens, and what a refused write says, take a line of their own. */}
+              form Change opens, and what a refused write says, take a line of their own.
+              A press of Keep or Change moves no focus, as `NodeRow.tsx` guards its option
+              presses (`data-pick-option`): a focus moved on mousedown closes the open body of
+              the row that held it, the rows under it move up before the release, and the click
+              is lost. The pressed row takes the focus as the click lands instead, before the
+              control acts, as `Shift+K` and `Shift+C` find it focused. The form Change opens
+              keeps its own default. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only steer where the focus goes for the two buttons inside, which carry the role. */}
           <div
             className="mt-1 mb-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 [&>[role=alert]]:order-last [&>[role=alert]]:basis-full [&>form]:order-last [&>form]:basis-full"
             data-entry-actions=""
+            onClickCapture={(event) => {
+              if (!(event.target instanceof Element) || event.target.closest(ROW_ACTIONS) === null)
+                return;
+              const element = row.current;
+              if (element === null || element.contains(document.activeElement)) return;
+              element.focus({ preventScroll: true });
+            }}
+            onMouseDown={(event) => {
+              if (event.target instanceof Element && event.target.closest(ROW_ACTIONS) !== null)
+                event.preventDefault();
+            }}
           >
             {review ? (
               <DecisionActions
@@ -400,6 +418,10 @@ export function DecisionsRow({
     </div>
   );
 }
+
+/** Keep and Change, by the mark `DecisionActions.tsx` writes and reads through its own
+ *  `rowActionSelector`, so this file does not spell it. */
+const ROW_ACTIONS = `${rowActionSelector("keep")}, ${rowActionSelector("change")}`;
 
 /** A row's colour, as `pageKindBullet` and `pageKindTag` name them. */
 type Tone = "context" | "decision" | "question";
