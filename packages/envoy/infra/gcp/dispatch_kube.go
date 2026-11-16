@@ -215,24 +215,6 @@ func readyProbe(port, periodSeconds, timeoutSeconds, failureThreshold int) *core
 	}
 }
 
-// natsConnectedProbe is the startup probe envoy-dispatch gets where its start waits for NATS
-// (appStartup): curl -f of /healthz on the container's loopback port, piped into grep under
-// /bin/sh -c, which exits 0 only once /healthz answers 200 and reports "nats":true. curl -f fails
-// on any other status and then writes nothing, and grep finds nothing in a 200 that reports nats
-// false or null, so the pipeline, whose status is grep's, fails both; --max-time 8 makes curl give
-// up inside the probe's 9 s timeout. The envoy image (debian:bookworm-slim) carries /bin/sh and
-// grep, both Essential. A startup probe that has passed runs no more, so a later NATS outage
-// reaches only readiness and liveness, neither of which reads NATS on envoy-dispatch.
-func natsConnectedProbe(port, periodSeconds, failureThreshold int) *corev1.ProbeArgs {
-	return &corev1.ProbeArgs{
-		Exec: &corev1.ExecActionArgs{Command: pulumi.StringArray{
-			pulumi.String("/bin/sh"), pulumi.String("-c"),
-			pulumi.String("curl -fsS --max-time 8 http://127.0.0.1:" + strconv.Itoa(port) + `/healthz | grep -qF '"nats":true'`),
-		}},
-		PeriodSeconds: pulumi.Int(periodSeconds), TimeoutSeconds: pulumi.Int(9), FailureThreshold: pulumi.Int(failureThreshold),
-	}
-}
-
 // sleepPreStop holds a stopping container open for seconds before the kubelet signals it, while
 // the pod's removal from its Service's endpoints reaches every node's proxy.
 func sleepPreStop(seconds int) *corev1.LifecycleArgs {
@@ -901,23 +883,6 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	appReady := readyProbe(8766, 10, 3, 3)
 	appReady.InitialDelaySeconds = pulumi.Int(5)
-	// envoy-dispatch's /healthz answers 200 on the database alone, reporting nats false
-	// meanwhile, so a pod whose projected token the auth service refuses goes ready while it
-	// cannot publish. Where that pod's start can wait for its first NATS connect without leaving
-	// Dispatch unserved, its startup probe requires "nats":true instead (natsConnectedProbe), in
-	// the 30 minutes the migrations get: with natsAudience, where the app Deployment rolls
-	// (RollingUpdate with maxUnavailable 0, above one replica) and its NATS is in the cluster. A
-	// refused credential never passes there, so the new pods never go ready and the rollout
-	// stalls while the old pods serve. Everywhere else the probe is answersProbe, as it always
-	// was, and a refused credential shows as "nats":false on /healthz: at one replica the
-	// Deployment is Recreate, which has already stopped the old pod, so waiting would leave no pod
-	// serving; and in the SOCKS5 mode the first connect goes through the front door's proxy,
-	// which a starting pod must not wait on (the cutover note above). A startup probe that has
-	// passed runs no more, so a later NATS outage takes no started pod out of its Service.
-	appStartup := answersProbe(8766, 10, 180)
-	if s.natsAudience != "" && s.socks5Proxy() == "" && dispatchStrategyFor(s.replicas).strategyType == dispatchStrategyRollingUpdate {
-		appStartup = natsConnectedProbe(8766, 10, 180)
-	}
 	appPod := corev1.PodSpecArgs{
 		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(35), EnableServiceLinks: pulumi.Bool(false),
 		InitContainers: corev1.ContainerArray{
@@ -931,7 +896,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("envoy-dispatch"), Image: pulumi.String(s.images.envoy), Command: pulumi.StringArray{pulumi.String("/usr/local/bin/envoy-dispatch")}, Resources: sizedResources(s.appResources.appCPU, s.appResources.appMemory, s.appResources.appEphemeralStorage), Env: appEnv, VolumeMounts: appMounts, Lifecycle: appPreStop,
-				StartupProbe: appStartup, LivenessProbe: answersProbe(8766, 10, 3), ReadinessProbe: appReady,
+				StartupProbe: answersProbe(8766, 10, 180), LivenessProbe: answersProbe(8766, 10, 3), ReadinessProbe: appReady,
 			},
 		},
 		Volumes: appVolumes,

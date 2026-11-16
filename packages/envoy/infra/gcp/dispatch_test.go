@@ -2234,9 +2234,7 @@ func podProbes(t *testing.T, m *pulumitest.Mocks, deployment string) map[string]
 // /livez, which runs no check. Every serving container of the app and the listener has both
 // probes; the listener's readiness allows the 6 s its /healthz may take to answer; and the app's
 // startup probe allows 30 minutes, since envoy-dispatch migrates the database before it listens
-// and nothing bounds a migration's run time. The one startup probe that waits on a dependency,
-// envoy-dispatch's with natsAudience on a rolling app with NATS in the cluster, is outside this
-// render (TestDispatchAppStartWaitsForNATSOnlyWhereItRolls).
+// and nothing bounds a migration's run time.
 func TestDispatchLivenessFailsOnlyWhenAProcessDoesNotAnswer(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
