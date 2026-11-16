@@ -10,8 +10,10 @@ The reader did not see the work of the writer agent. The reader must understand 
 
 - Put first what the reader must decide or know.
 - Use the words that the reader uses. If the text uses a word or a name that the reader cannot know, say what it is.
-- Use only facts that are in the record{{if .Answer}} or in the answer of the writer agent{{end}}. If the reader needs a fact that is not in {{if .Answer}}them{{else}}the record{{end}}, say in one sentence that this fact is missing. Do not guess the fact.
+- Use only facts that are in the record{{if .Answer}} or in the answer of the writer agent{{end}}. Do not guess a fact.
 - Obey each rule of this prompt.
+{{- template "own-voice" .}}
+{{- template "no-padding" .}}
 {{- template "keep" .}}
 
 ## Your answer

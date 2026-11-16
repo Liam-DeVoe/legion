@@ -100,6 +100,9 @@ type promptData struct {
 	Ask, Block, Comment, Issue bool
 	// Answer says the call reads the writer's answer, and Define that it defines words.
 	Answer, Define bool
+	// Review says the call is a review, whose rewrite fixes its own findings, not a rewrite for
+	// the reader by the rules alone.
+	Review bool
 	// Noslop and Phrases are the texts of those two rule sets.
 	Noslop, Phrases string
 }
@@ -141,7 +144,7 @@ func prepare(ctx context.Context, m Model, prompt string, rules []RuleSet, recor
 	data := promptData{
 		Kind: kind.spoken(), On: map[string]bool{},
 		Ask: kind.asks(), Block: kind == KindDecisionBlock, Comment: kind == KindComment, Issue: kind == KindIssue,
-		Answer: x.answer != "", Define: x.words != nil,
+		Answer: x.answer != "", Define: x.words != nil, Review: prompt == "review",
 		Noslop: noslopText, Phrases: phrasesText,
 	}
 	for _, set := range p.on {

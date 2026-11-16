@@ -17,9 +17,10 @@ const (
 	// DefaultTimeout bounds one call, its wait for the pacer included: the default of
 	// DISPATCH_REVIEWER_TIMEOUT.
 	DefaultTimeout = 120 * time.Second
-	// DefaultOutputTokens bounds one reply: a review's findings and a rewrite of a text of
-	// about 25,000 characters. A caller that rewrites longer texts sets Model.OutputTokens.
-	DefaultOutputTokens = 8192
+	// DefaultOutputTokens bounds one reply, the model's reasoning included: a model that reasons
+	// spends its reasoning against this bound before it writes a review's findings and a rewrite.
+	// A caller that rewrites longer texts sets Model.OutputTokens.
+	DefaultOutputTokens = 32768
 	// charsPerToken is how many characters a token is taken to hold when a call is charged to
 	// the pacer before it is made.
 	charsPerToken = 4

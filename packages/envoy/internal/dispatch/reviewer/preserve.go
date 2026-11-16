@@ -17,6 +17,10 @@ type Keep string
 
 // The rules of what a rewrite keeps.
 const (
+	// KeepMostWords: a third of the text's words or more, for every kind. A rewrite of fewer
+	// words is a stub or a summary in place of the text ("placeholder", "(no change)", an empty
+	// body), which the reader would read in place of the whole text.
+	KeepMostWords Keep = "most_words"
 	// KeepOptionCount: an ask's number of options.
 	KeepOptionCount Keep = "option_count"
 	// KeepOptionOrder: the order of an ask's options.
@@ -60,13 +64,16 @@ func (n *NotApplied) Error() string {
 
 // Preserve weighs rewrite against the text of record by the rules of what a rewrite keeps, in
 // the order of Keep's constants, and answers the first rule it breaks; nil where it breaks none.
-// An ask and a decision block keep their options, their choice, their first line, their `Ref: `
-// line, their picture lines and their links; a decision block also keeps the option lines its
-// document's ask-edit route does not rewrite, which Preserve weighs where the record holds the
-// document and the block's id; a comment keeps its first line. Every other kind keeps nothing
-// of these.
+// Every kind keeps a third of its words or more. An ask and a decision block keep their
+// options, their choice, their first line, their `Ref: ` line, their picture lines and their
+// links; a decision block also keeps the option lines its document's ask-edit route does not
+// rewrite, which Preserve weighs where the record holds the document and the block's id; a
+// comment keeps its first line. Every other kind keeps nothing more.
 func Preserve(record Record, rewrite Text) *NotApplied {
 	original := record.Text
+	if broken := keepMostWords(original, rewrite); broken != nil {
+		return broken
+	}
 	switch {
 	case original.Kind.asks():
 		if broken := keepOptions(original, rewrite); broken != nil {
@@ -82,6 +89,30 @@ func Preserve(record Record, rewrite Text) *NotApplied {
 		return keepFirstLine(original.Body, rewrite.Body, KeepCommentFirstLine)
 	}
 	return nil
+}
+
+// keepMostWords weighs a rewrite's words against the text's: the rewrite has a third of them or
+// more, counted over every field a reader sees (the title, the body and each option).
+func keepMostWords(original, rewrite Text) *NotApplied {
+	was, now := wordCount(original), wordCount(rewrite)
+	if 3*now >= was {
+		return nil
+	}
+	words := fmt.Sprintf("%d words", now)
+	if now == 1 {
+		words = "1 word"
+	}
+	return &NotApplied{KeepMostWords, fmt.Sprintf("the rewrite has %s, fewer than a third of the text's %d", words, was)}
+}
+
+// wordCount is the number of words of text's title, body and options, words being the runs of
+// characters between white space.
+func wordCount(text Text) int {
+	n := len(strings.Fields(text.Title)) + len(strings.Fields(text.Body))
+	for _, option := range text.Options {
+		n += len(strings.Fields(option.Label)) + len(strings.Fields(option.Description))
+	}
+	return n
 }
 
 // keepOptions weighs a rewrite's options and choice against the ask's: their number, their

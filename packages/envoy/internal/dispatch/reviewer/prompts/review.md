@@ -21,7 +21,8 @@ Do these steps:
 ## How to write the rewrite
 
 - Fix each finding.
-- Change only the sentences that a finding names. Keep each other sentence as the writer wrote it.
+{{- template "own-voice" .}}
+{{- template "no-padding" .}}
 {{- template "keep" .}}
 
 ## Your answer

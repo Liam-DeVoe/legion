@@ -94,7 +94,7 @@ func TestTheFirstLineIsKeptWhereItIsShortAndNotAlone(t *testing.T) {
 		want          Keep
 	}{
 		{"an ask of one line", Text{Kind: KindAsk, Body: "Ship?"}, Text{Kind: KindAsk, Body: "Ship it today?"}, ""},
-		{"an ask whose first line is long", Text{Kind: KindAsk, Body: long}, Text{Kind: KindAsk, Body: "Short.\nThe rest."}, ""},
+		{"an ask whose first line is long", Text{Kind: KindAsk, Body: long}, Text{Kind: KindAsk, Body: "This first line is shorter than the line before.\nThe rest."}, ""},
 		{"a comment's first line", Text{Kind: KindComment, Body: "Finding from tester\nThis names the problem."},
 			Text{Kind: KindComment, Body: "Finding from the tester\nThe test fails."}, KeepCommentFirstLine},
 		{"a comment that keeps its first line", Text{Kind: KindComment, Body: "Finding from tester\nThis names the problem."},
@@ -109,6 +109,52 @@ func TestTheFirstLineIsKeptWhereItIsShortAndNotAlone(t *testing.T) {
 				t.Errorf("Preserve = %+v, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+// A rewrite of fewer than a third of the text's words is a stub in place of the text, of any
+// kind, and is not applied, before any other rule is weighed; a rewrite that keeps half of the
+// words, or a third, is applied.
+func TestARewriteOfFewerThanAThirdOfTheWordsIsNotApplied(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("The test node fails on its first call, so the release waits for the store to answer. ", 5))
+	words := strings.Fields(long)
+	if len(words) != 85 {
+		t.Fatalf("the text has %d words, want 85", len(words))
+	}
+	for _, kind := range []Kind{KindComment, KindMessage, KindDocument} {
+		original := Text{Kind: kind, Body: long}
+		for stub, reason := range map[string]string{
+			"placeholder":                 "the rewrite has 1 word, fewer than a third of the text's 85",
+			"":                            "the rewrite has 0 words, fewer than a third of the text's 85",
+			"(no change)":                 "the rewrite has 2 words, fewer than a third of the text's 85",
+			strings.Join(words[:28], " "): "the rewrite has 28 words, fewer than a third of the text's 85",
+		} {
+			got := Preserve(Record{Text: original}, Text{Kind: kind, Body: stub})
+			if got == nil || got.Rule != KeepMostWords || got.Reason != reason {
+				t.Errorf("%s: Preserve of %q = %+v, want not applied: %s", kind, stub, got, reason)
+			}
+		}
+		for _, kept := range []int{len(words) / 2, 29} {
+			if got := Preserve(Record{Text: original}, Text{Kind: kind, Body: strings.Join(words[:kept], " ")}); got != nil {
+				t.Errorf("%s: a rewrite of %d of the text's 85 words: %v", kind, kept, got)
+			}
+		}
+	}
+	// An ask counts its options with its question, and a stub of its question is refused for
+	// its words before its options are weighed.
+	ask := pictureAsk()
+	stub := ask
+	stub.Body, stub.Options = "placeholder", nil
+	if got := Preserve(Record{Text: ask}, stub); got == nil || got.Rule != KeepMostWords || got.Reason != "the rewrite has 1 word, fewer than a third of the text's 20" {
+		t.Errorf("Preserve of a stub ask = %+v", got)
+	}
+	// An issue counts its title with its spec.
+	issue := Text{Kind: KindIssue, Title: "Land the reviewer before the release", Body: "This names the problem."}
+	if got := Preserve(Record{Text: issue}, Text{Kind: KindIssue, Title: "Land the reviewer", Body: "Today."}); got != nil {
+		t.Errorf("an issue's rewrite of 4 of its 10 words, most in its title: %v", got)
+	}
+	if got := Preserve(Record{Text: issue}, Text{Kind: KindIssue, Body: "Land it."}); got == nil || got.Rule != KeepMostWords {
+		t.Errorf("an issue's rewrite of 2 of its 10 words = %+v", got)
 	}
 }
 
