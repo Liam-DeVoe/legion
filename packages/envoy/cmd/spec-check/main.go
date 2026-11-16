@@ -11,7 +11,7 @@
 //	spec-check tree --dir <dir> [--allow-empty] [--retired <file>]
 //	spec-check changes --base <dir> --dir <dir>
 //	spec-check checks --dir <dir> --job <job>
-//	spec-check compare --dir <dir> --approved <approved.json>
+//	spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]
 //	spec-check print --approved <approved.json> --id <id> [--id <id>...]
 //	spec-check guard --root <dir>
 //
@@ -40,19 +40,25 @@
 // <dir>/<file>:<line>: <node>: <detail>", and "spec-check: <dir>: the comparison fails on <n>
 // nodes" on standard output. It exits 0 otherwise, with "spec-check: <dir>: the approved spec held
 // every text that the files hold; 5 of 7 approved statements are in the files at their current
-// text", then one line for each other approved statement, "spec-check: statement <id>: not in
-// the files" or "spec-check: statement <id>: the files hold approved version 1, and version 2 is
-// current", then one line for each node that the files hold and the approved spec removed,
-// "spec-check: <kind> <id>: the files hold it, and the approved spec removed it", the kind being
-// statement, check, component, interface or term (R28). It
-// exits 2, and makes no comparison, for files that do not parse or a directory that holds no spec
-// file. The comparison does not judge the tree, which is tree's work. No CI job runs compare (R2):
-// Dispatch makes the comparison at each push. So compare exits 2, before it reads an argument,
-// when GITHUB_ACTIONS or CI is "true", with the one line "spec-check: compare does not run in a CI
-// job (<variable>=true): Dispatch compares the files with the approved spec at each push (R2)".
-// That covers each route that passes the runner's environment on to the command. A route that
-// drops it, such as sudo or a container that docker run starts, gets neither variable, and the
-// command compares there: only guard names such a line, in the files that it reads.
+// text", which counts statements only, the verb and its pronoun in the singular for 1 held and
+// the noun for 1 of 1. Then come one line for each other current approved node, of each kind,
+// "spec-check: <kind> <id>: not in the files" or "spec-check: <kind> <id>: the files hold approved
+// version 1, and version 2 is current", and one line for each node that the files hold and the
+// approved spec removed, "spec-check: <kind> <id>: the files hold it, and the approved spec removed
+// it" (R28). The kind is statement, check, component, interface or term. It exits 2, and makes no
+// comparison, for files that do not parse. A directory that does not exist or holds no spec file
+// is exit 2 too, with a line that names --allow-empty. With --allow-empty, compare reads it as the
+// empty tree, with a line on standard error that says so, since git keeps no empty directory and a
+// revert of the last spec file leaves none. The comparison does not judge the tree, which is tree's
+// work. R2 gives the comparison at each push to Dispatch, and no CI job runs compare. So compare
+// exits 2, before it reads an argument, when GITHUB_ACTIONS is "true", with the one line
+// "spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of
+// the files with the approved spec at each push to Dispatch". GitHub sets GITHUB_ACTIONS=true in
+// each step of each job. CI=true alone, as an agent's shell sets it, is no CI job, and compare runs
+// there. The refusal covers each route that passes the runner's environment on to the command. A
+// route that drops it, such as sudo or a container that docker run starts, does not pass
+// GITHUB_ACTIONS, and the command compares there: only guard names such a line, in the files that
+// it reads.
 //
 // print writes the current approved block of each node it is named, in the order named, and after
 // a statement the block of each current check that serves it, each block once and the blocks
@@ -99,7 +105,7 @@ import (
 const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <file>]
        spec-check changes --base <dir> --dir <dir>
        spec-check checks --dir <dir> --job <job>
-       spec-check compare --dir <dir> --approved <approved.json>
+       spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]
        spec-check print --approved <approved.json> --id <id> [--id <id>...]
        spec-check guard --root <dir>`
 
