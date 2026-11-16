@@ -66,46 +66,62 @@ func (s *Store) HoldSessions(ctx context.Context, project string, token claim.To
 }
 
 // SessionConflict is one name of a session (supervise.Hold) that claims of a project record without
-// holding it: a name the table holds for no claim, with every claim whose row records it; or a name
-// it holds for another claim, Holder, with every other claim whose row records it.
+// holding it: a name the table holds for no claim (Holder empty), or one it holds for another claim,
+// Holder. Claims is every claim not holding it whose current session records it, which the daemon
+// suspends at boot; Abandoned is every claim not holding it that records it only in the session it
+// last abandoned, which nothing resumes or enrolls, so the boot suspends none of them.
 type SessionConflict struct {
-	Hold   supervise.Hold
-	Holder claim.Token
-	Claims []claim.Token
+	Hold      supervise.Hold
+	Holder    claim.Token
+	Claims    []claim.Token
+	Abandoned []claim.Token
 }
 
-// recordedNames is every name a claim of project records, of its session or of the session it last
-// abandoned (supervise.RecordedHolds), each with the claims whose rows record it, in token order.
-func recordedNames(ctx context.Context, q pgx.Tx, project string) (map[supervise.Hold][]claim.Token, error) {
+// recordedNames is every name a claim of project records (supervise.RecordedHolds), each with the
+// claims recording it, in token order: current is the names of each claim's current session, and
+// abandoned the names only the session it last abandoned gives it.
+func recordedNames(ctx context.Context, q pgx.Tx, project string) (current, abandoned map[supervise.Hold][]claim.Token, err error) {
 	rows, err := q.Query(ctx, `select token, session, session_file,
 			coalesce(abandoned_session ->> 'session', ''), coalesce(abandoned_session ->> 'sessionFile', '')
 		from claims where project = $1 order by token collate "C"`, project)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	recorders := map[supervise.Hold][]claim.Token{}
-	var token, session, file, abandoned, abandonedFile string
-	if _, err := pgx.ForEachRow(rows, []any{&token, &session, &file, &abandoned, &abandonedFile}, func() error {
+	current, abandoned = map[supervise.Hold][]claim.Token{}, map[supervise.Hold][]claim.Token{}
+	var token, session, file, abandonedSession, abandonedFile string
+	if _, err := pgx.ForEachRow(rows, []any{&token, &session, &file, &abandonedSession, &abandonedFile}, func() error {
 		seen := map[supervise.Hold]bool{}
-		for _, h := range append(supervise.RecordedHolds(session, file), supervise.RecordedHolds(abandoned, abandonedFile)...) {
+		for _, h := range supervise.RecordedHolds(session, file) {
 			if !seen[h] {
 				seen[h] = true
-				recorders[h] = append(recorders[h], claim.Token(token))
+				current[h] = append(current[h], claim.Token(token))
+			}
+		}
+		for _, h := range supervise.RecordedHolds(abandonedSession, abandonedFile) {
+			if !seen[h] {
+				seen[h] = true
+				abandoned[h] = append(abandoned[h], claim.Token(token))
 			}
 		}
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return recorders, nil
+	return current, abandoned, nil
 }
 
-// sortedHolds is the names of recorders in the one order every transaction that holds several
+// sortedHolds is the names of every map in the one order every transaction that holds several
 // takes them in (HoldSessions): kind, then name.
-func sortedHolds(recorders map[supervise.Hold][]claim.Token) []supervise.Hold {
-	holds := make([]supervise.Hold, 0, len(recorders))
-	for h := range recorders {
-		holds = append(holds, h)
+func sortedHolds(recorders ...map[supervise.Hold][]claim.Token) []supervise.Hold {
+	var holds []supervise.Hold
+	seen := map[supervise.Hold]bool{}
+	for _, r := range recorders {
+		for h := range r {
+			if !seen[h] {
+				seen[h] = true
+				holds = append(holds, h)
+			}
+		}
 	}
 	slices.SortFunc(holds, func(a, b supervise.Hold) int {
 		return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Name, b.Name))
@@ -115,32 +131,42 @@ func sortedHolds(recorders map[supervise.Hold][]claim.Token) []supervise.Hold {
 
 // HoldRecordedSessions holds every name a claim of project records that the table holds for no
 // one yet, as the claim_sessions migration's backfill held every name recorded before the table
-// existed: for the one claim recording it, or for none where several do. It answers how many names
-// it held. The daemon runs it at every boot (internal/daemon's suspendSessionConflicts), because a
-// claim records a name without holding it whenever a daemon from before the hold runs on this
-// database, as one rolled back to an earlier release does: such a daemon applies only the
-// migrations it has and never writes claim_sessions, and the migration's own backfill has run by
-// then. On a database only daemons with the hold have run, every recorded name is held already and
-// this holds nothing.
+// existed: for the one claim recording it, of its current session or the one it abandoned, or for
+// none where several do. It answers how many names it held. The daemon runs it at every boot
+// (internal/daemon's suspendSessionConflicts), because a claim records a name without holding it
+// whenever a daemon from before the hold runs on this database, as one rolled back to an earlier
+// release does: such a daemon applies only the migrations it has and never writes claim_sessions,
+// and the migration's own backfill has run by then. On a database only daemons with the hold have
+// run, every recorded name is held already and this holds nothing.
+//
+// It is one read of the claims and one insert of every name, whatever the project's size, both
+// inside the boot's budget: a statement per name was one round trip per name, which at a project
+// of 7,508 claims and 33,786 names took 4.2 s on a loopback and would take the whole 30 s budget at
+// Cloud SQL's round trip (review R2-1 of #4220). The insert takes the names in kind and name order,
+// the order HoldSessions takes them in, so it never deadlocks with a registration.
 func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, error) {
 	held := 0
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		recorders, err := recordedNames(ctx, tx, project)
+		current, abandoned, err := recordedNames(ctx, tx, project)
 		if err != nil {
 			return err
 		}
-		for _, h := range sortedHolds(recorders) {
-			holder := ""
-			if tokens := recorders[h]; len(tokens) == 1 {
-				holder = string(tokens[0])
+		holds := sortedHolds(current, abandoned)
+		kinds, names, holders := make([]string, len(holds)), make([]string, len(holds)), make([]string, len(holds))
+		for i, h := range holds {
+			kinds[i], names[i] = string(h.Kind), h.Name
+			if recorders := append(slices.Clone(current[h]), abandoned[h]...); len(recorders) == 1 {
+				holders[i] = string(recorders[0])
 			}
-			tag, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ($1, $2, $3, $4)
-				on conflict (project, kind, name) do nothing`, project, string(h.Kind), h.Name, holder)
-			if err != nil {
-				return err
-			}
-			held += int(tag.RowsAffected())
 		}
+		tag, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim)
+			select $1, kind, name, claim from unnest($2::text[], $3::text[], $4::text[]) with ordinality as n(kind, name, claim, i)
+			order by i
+			on conflict (project, kind, name) do nothing`, project, kinds, names, holders)
+		if err != nil {
+			return err
+		}
+		held = int(tag.RowsAffected())
 		return nil
 	})
 	if err != nil {
@@ -153,12 +179,13 @@ func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, 
 // in kind and then name order: one held for no claim, which the claim_sessions migration or
 // HoldRecordedSessions found recorded by several claims, and one held for another claim, which a
 // daemon from before the hold let a claim record. A name no row holds is not one, since
-// HoldRecordedSessions holds it first. The daemon logs each at boot and suspends its claims, for an
-// operator to settle by hand (the claim_sessions migration gives the statement).
+// HoldRecordedSessions holds it first. The daemon logs each at boot and suspends the claims whose
+// current session records it, for an operator to settle by hand (the claim_sessions migration gives
+// the steps). It is two reads, whatever the project's size.
 func (s *Store) SessionConflicts(ctx context.Context, project string) ([]SessionConflict, error) {
 	var conflicts []SessionConflict
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		recorders, err := recordedNames(ctx, tx, project)
+		current, abandoned, err := recordedNames(ctx, tx, project)
 		if err != nil {
 			return err
 		}
@@ -174,19 +201,23 @@ func (s *Store) SessionConflicts(ctx context.Context, project string) ([]Session
 		}); err != nil {
 			return err
 		}
-		for _, h := range sortedHolds(recorders) {
+		others := func(tokens []claim.Token, holder claim.Token) []claim.Token {
+			var out []claim.Token
+			for _, token := range tokens {
+				if token != holder {
+					out = append(out, token)
+				}
+			}
+			return out
+		}
+		for _, h := range sortedHolds(current, abandoned) {
 			holder, held := holders[h]
 			if !held {
 				continue
 			}
-			var others []claim.Token
-			for _, token := range recorders[h] {
-				if token != holder {
-					others = append(others, token)
-				}
-			}
-			if len(others) > 0 {
-				conflicts = append(conflicts, SessionConflict{Hold: h, Holder: holder, Claims: others})
+			c := SessionConflict{Hold: h, Holder: holder, Claims: others(current[h], holder), Abandoned: others(abandoned[h], holder)}
+			if len(c.Claims) > 0 || len(c.Abandoned) > 0 {
+				conflicts = append(conflicts, c)
 			}
 		}
 		return nil

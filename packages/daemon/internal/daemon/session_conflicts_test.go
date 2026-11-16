@@ -191,13 +191,18 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 // A daemon rolled back to a release before the hold runs on the claim_sessions table without
 // writing it, and the migration's backfill does not run again on the roll forward: so the boot
 // holds every name a claim records that no row holds (store.HoldRecordedSessions), for the one claim
-// recording it, and suspends a claim that recorded a name another claim holds, which the
-// rolled-back daemon let it register (store.SessionConflicts). The claim it took the name from, and
-// a claim whose name was merely left unheld, are left as they were.
+// recording it, and suspends a claim whose current session records a name another claim holds,
+// which the rolled-back daemon let it register (store.SessionConflicts). The claim it took the name
+// from, and a claim whose name was merely left unheld, are left as they were. So is a claim that
+// lost a conflict and was given a new session: the lost name is in its abandoned session now, which
+// nothing resumes or enrolls, so the boot logs it at Warn and suspends nothing (review R2-2). The
+// line for a name held for another claim gives no settle statement, since that name stays its
+// holder's (review N6).
 //
-// The controls (the pull request records both runs): the boot without HoldRecordedSessions leaves
+// The controls (the pull request records each run): the boot without HoldRecordedSessions leaves
 // the window's name unheld, so the next claim to register it takes it; the boot without the
-// conflict read leaves the taker idle on the other claim's session.
+// conflict read leaves the taker idle on the other claim's session; counting the abandoned
+// session's names as the current session's suspends the claim that lost the conflict again.
 func TestABootHoldsWhatARolledBackDaemonRecorded(t *testing.T) {
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
@@ -206,6 +211,7 @@ func TestABootHoldsWhatARolledBackDaemonRecorded(t *testing.T) {
 	}
 	token := projectTokens(t, project)
 	window, holder, taker := token("LEGION-905", claim.RoleImplementer), token("LEGION-906", claim.RoleImplementer), token("LEGION-907", claim.RoleImplementer)
+	loser := token("LEGION-908", claim.RoleImplementer)
 
 	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
 		// Registered while the rolled-back daemon ran: nothing holds ses_window.
@@ -214,7 +220,10 @@ func TestABootHoldsWhatARolledBackDaemonRecorded(t *testing.T) {
 		// ran.
 		{holder, "LEGION-906", "ses_taken", "/sessions/7.jsonl", supervise.StateIdle},
 		{taker, "LEGION-907", "ses_taken", "/sessions/8.jsonl", supervise.StateIdle},
-	}, `($1, 'session', 'ses_taken', $2)`, project, string(holder))
+		// loser lost ses_lost to holder, and an operator gave it a new session.
+		{loser, "LEGION-908", "ses_loser_fresh", "/sessions/9.jsonl", supervise.StateIdle},
+	}, `($1, 'session', 'ses_taken', $2), ($1, 'session', 'ses_lost', $2)`, project, string(holder))
+	abandonSession(t, cfg.PostgresDSN, loser, "ses_lost")
 
 	rt := fake.NewRuntime()
 	logs := &syncBuffer{}
@@ -232,7 +241,7 @@ func TestABootHoldsWhatARolledBackDaemonRecorded(t *testing.T) {
 	if got := d.claim(taker); got.State != string(supervise.StateSuspended) || got.SuspendedBy != string(supervise.SuspendedByOperator) {
 		t.Errorf("%s, which records %s's session, is %s suspended by %q after the boot; want it suspended by the operator's suspend", taker, holder, got.State, got.SuspendedBy)
 	}
-	for _, tok := range []claim.Token{window, holder} {
+	for _, tok := range []claim.Token{window, holder, loser} {
 		if got := d.claim(tok); got.State != string(supervise.StateIdle) {
 			t.Errorf("%s is %s after the boot, want it idle as it was", tok, got.State)
 		}
@@ -240,9 +249,34 @@ func TestABootHoldsWhatARolledBackDaemonRecorded(t *testing.T) {
 	lines := loggedLines(t, logs.String(), "recorded by claims that do not hold it")
 	if len(lines) != 1 || lines[0]["name"] != "ses_taken" || lines[0]["holder"] != string(holder) {
 		t.Errorf("the boot logged %v, want one error naming ses_taken, held by %s", lines, holder)
+	} else if settle, ok := lines[0]["settle"]; ok {
+		t.Errorf("the boot's line for ses_taken, held for %s, gives the statement %q; want none for a name held for another claim", holder, settle)
+	}
+	warned := loggedLines(t, logs.String(), "only an abandoned session records")
+	if len(warned) != 1 || warned[0]["level"] != "WARN" || warned[0]["name"] != "ses_lost" {
+		t.Errorf("the boot logged %v, want one warning naming ses_lost, which only %s's abandoned session records", warned, loser)
+	} else if abandoned, _ := warned[0]["abandoned"].([]any); len(abandoned) != 1 || abandoned[0] != string(loser) {
+		t.Errorf("the warning names %v, want %s", warned[0]["abandoned"], loser)
 	}
 	if held := loggedLines(t, logs.String(), "held session names claims recorded"); len(held) != 1 {
 		t.Errorf("the boot logged %d lines of the names it held, want 1", len(held))
+	}
+}
+
+// abandonSession records session as the one token's claim last abandoned, as forget-session leaves
+// it.
+func abandonSession(t *testing.T, dsn string, token claim.Token, session string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.Pool().Exec(ctx, `update claims set abandoned_session = jsonb_build_object(
+		'session', $2::text, 'why', 'an operator gave the claim a new session', 'at', '2026-11-16T00:00:00Z')
+		where token = $1`, string(token), session); err != nil {
+		t.Fatalf("record %s's abandoned session: %v", token, err)
 	}
 }
 

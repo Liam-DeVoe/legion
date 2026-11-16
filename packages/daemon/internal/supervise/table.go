@@ -2307,6 +2307,9 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // agent that just registered is not the one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
+	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
+		return err
+	}
 	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
 		return err
 	}
@@ -2339,6 +2342,9 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 // register's is (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
+	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
+		return err
+	}
 	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
 		return err
 	}

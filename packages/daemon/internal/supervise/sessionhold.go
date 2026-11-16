@@ -52,18 +52,23 @@ type Hold struct {
 // `<timestamp>_<id>.jsonl` gives; and the Claude Code session a file named `<uuid>.jsonl` gives,
 // where that is not the session id itself. The last is wider than a Claude Code resume, which also
 // asks for a `projects` directory two levels up (claudelaunch.Transcript): it refuses more, never
-// less, and no Oh My Pi file is named for a bare uuid. An empty session or file names nothing. The
-// claim_sessions migration's backfill spells the same rule in SQL, and its test holds the two to
-// one answer.
+// less, and no Oh My Pi file is named for a bare uuid. An empty session or file names nothing, and
+// a session id or file name longer than claim.MaxSessionNameBytes names nothing either: a
+// registration of one is refused (checkSessionNames), and one a daemon from before the bound
+// recorded is left unheld rather than stopping the boot that would hold it. The claim_sessions
+// migration's backfill spells the same rule in SQL, and its test holds the two to one answer.
 func RecordedHolds(session, sessionFile string) []Hold {
 	var holds []Hold
-	if session != "" {
+	if session != "" && len(session) <= claim.MaxSessionNameBytes {
 		holds = append(holds, Hold{Kind: HoldSessionID, Name: session})
 	}
 	if sessionFile == "" {
 		return holds
 	}
 	base := filepath.Base(sessionFile)
+	if len(base) > claim.MaxSessionNameBytes {
+		return holds
+	}
 	holds = append(holds, Hold{Kind: HoldFileName, Name: base})
 	if stem, ok := strings.CutSuffix(base, ".jsonl"); ok {
 		if _, id, ok := strings.Cut(stem, "_"); ok && id != "" {
@@ -74,6 +79,19 @@ func RecordedHolds(session, sessionFile string) []Hold {
 		}
 	}
 	return holds
+}
+
+// checkSessionNames refuses a registration whose session id, or whose session file's base name, is
+// longer than claim.MaxSessionNameBytes (claim.SessionNameTooLong): such a name could not be held,
+// and no real session has one.
+func checkSessionNames(session, sessionFile string) error {
+	if len(session) > claim.MaxSessionNameBytes {
+		return claim.SessionNameTooLong("session id", len(session))
+	}
+	if base := filepath.Base(sessionFile); sessionFile != "" && len(base) > claim.MaxSessionNameBytes {
+		return claim.SessionNameTooLong("session file's name", len(base))
+	}
+	return nil
 }
 
 // holdRecorded holds every name a claim's record gives its session (RecordedHolds) to the claim,

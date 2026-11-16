@@ -42,17 +42,25 @@
 -- is this hole already used, or a bug, and nothing recorded which claim took it first. Such a name
 -- is held for neither: its claim is the empty string, which no claim's token is, so every claim is
 -- refused every registration, resume and enrollment under it. The daemon logs each such name at boot
--- at Error, naming every claim whose row records it, and suspends them (internal/daemon's
+-- at Error, naming every claim whose current session records it, and suspends them (internal/daemon's
 -- suspendSessionConflicts), and an operator records the rightful holder by hand:
 --   update claim_sessions set claim = '<token>'
 --     where project = '<project>' and kind = '<kind>' and name = '<name>';
+-- and gives every other claim that records the name a new session (`legion claims forget-session`,
+-- then `legion claims resume`). A name only an abandoned session records suspends nothing: nothing
+-- resumes or enrolls an abandoned session, so the boot logs it at Warn alone.
 --
 -- A daemon rolled back to a release before this one runs on this table without writing it, so the
 -- claims it registers record names no row holds. This backfill runs once, so the daemon runs its
 -- rule again at every boot (store.HoldRecordedSessions), holding each name no row holds for the one
--- claim recording it or for none, and suspends every claim that records a name another claim, or
--- none, holds (store.SessionConflicts), with the same log line and statement. Nothing needs
--- repairing by hand after a rollback but those names.
+-- claim recording it or for none, and suspends every claim whose current session records a name
+-- another claim, or none, holds (store.SessionConflicts). After a rollback, each such claim is a
+-- claim that took another's name while the rolled-back daemon ran: the operator gives it a new
+-- session as above, and records a holder for each name held for none.
+--
+-- A session id or a file name longer than 255 bytes (claim.MaxSessionNameBytes) is held by no row:
+-- the primary key's btree holds at most 2,704 bytes, so one such name would stop this migration,
+-- and a registration of one is refused.
 create table claim_sessions (
   project text not null,
   kind text not null check (kind in ('session', 'file-name', 'file-id')),
@@ -75,8 +83,10 @@ with recorded as (
     select project, token, session, file,
       case when rtrim(file, '/') = '' then '/' else regexp_replace(rtrim(file, '/'), '^.*/', '') end as base
     from recorded where coalesce(file, '') <> '') named
+  where octet_length(base) <= 255
 ), names as (
-  select project, token, 'session' as kind, session as name from recorded where coalesce(session, '') <> ''
+  select project, token, 'session' as kind, session as name from recorded
+    where coalesce(session, '') <> '' and octet_length(session) <= 255
   union all
   select project, token, 'file-name', base from files
   union all

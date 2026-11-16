@@ -5,9 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -155,7 +162,9 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 
 	// The migration's backfill is SQL, and the rule a registration holds by is Go
 	// (supervise.RecordedHolds): the rows below are what each answers for the same claims, every
-	// kind of name and its edges among them, and the two must be one answer.
+	// kind of name and its edges among them, and the two must be one answer. A name past
+	// claim.MaxSessionNameBytes is held by neither, and does not stop the migration: a 3,200-byte id
+	// would be past the 2,704 bytes a btree row holds (review N3).
 	t.Run("the migration holds each recorded name as RecordedHolds does, and one two claims record for none", func(t *testing.T) {
 		ctx := context.Background()
 		store := emptyStore(t)
@@ -176,12 +185,16 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 			{"legion-LEGION-308-implementer", "legion", recorded{"ses_308", "/sessions/w/a_b_c.jsonl"}, recorded{"", "/trailing/dir/"}},
 			{"legion-LEGION-309-implementer", "legion", recorded{"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "/c/projects/-w-/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.jsonl"}, recorded{}},
 			{"other-OTHER-301-implementer", "other", recorded{"ses_own", "/state/sessions/--w--/2026-11-16T00-00-00-000Z_ses_own.jsonl"}, recorded{}},
+			{"legion-LEGION-310-implementer", "legion", recorded{strings.Repeat("s", 3200), "/sessions/w/" + strings.Repeat("f", 300) + ".jsonl"}, recorded{}},
+			{"legion-LEGION-311-implementer", "legion", recorded{strings.Repeat("s", claim.MaxSessionNameBytes), "/sessions/w/" + strings.Repeat("f", claim.MaxSessionNameBytes-len(".jsonl")) + ".jsonl"}, recorded{}},
 		}
 		type key struct {
 			project string
 			hold    supervise.Hold
 		}
-		recorders := map[key][]claim.Token{}
+		// current and abandoned are the claims recording each name in their current session and
+		// only in the session they last abandoned, as the boot reads them (store.recordedNames).
+		current, abandonedOnly := map[key][]claim.Token{}, map[key][]claim.Token{}
 		for _, row := range rows {
 			var abandoned any
 			if row.abandoned != (recorded{}) {
@@ -201,20 +214,36 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 				row.token, row.project, row.now.session, row.now.file, abandoned); err != nil {
 				t.Fatalf("record %s before the migration: %v", row.token, err)
 			}
-			for _, h := range append(supervise.RecordedHolds(row.now.session, row.now.file), supervise.RecordedHolds(row.abandoned.session, row.abandoned.file)...) {
+			for _, h := range supervise.RecordedHolds(row.now.session, row.now.file) {
 				k := key{row.project, h}
-				if !slices.Contains(recorders[k], claim.Token(row.token)) {
-					recorders[k] = append(recorders[k], claim.Token(row.token))
+				if !slices.Contains(current[k], claim.Token(row.token)) {
+					current[k] = append(current[k], claim.Token(row.token))
+				}
+			}
+			for _, h := range supervise.RecordedHolds(row.abandoned.session, row.abandoned.file) {
+				k := key{row.project, h}
+				if !slices.Contains(current[k], claim.Token(row.token)) && !slices.Contains(abandonedOnly[k], claim.Token(row.token)) {
+					abandonedOnly[k] = append(abandonedOnly[k], claim.Token(row.token))
 				}
 			}
 		}
 		want := map[key]claim.Token{}
-		for k, tokens := range recorders {
-			if len(tokens) == 1 {
-				want[k] = tokens[0]
-			} else {
-				want[k] = ""
+		for _, recorders := range []map[key][]claim.Token{current, abandonedOnly} {
+			for k := range recorders {
+				if tokens := append(slices.Clone(current[k]), abandonedOnly[k]...); len(tokens) == 1 {
+					want[k] = tokens[0]
+				} else {
+					want[k] = ""
+				}
 			}
+		}
+		for k := range want {
+			if len(k.hold.Name) > claim.MaxSessionNameBytes {
+				t.Errorf("RecordedHolds names %s of %d bytes, past the bound", k.hold.Kind, len(k.hold.Name))
+			}
+		}
+		if _, ok := want[key{"legion", sessionHold(strings.Repeat("s", claim.MaxSessionNameBytes))}]; !ok {
+			t.Errorf("RecordedHolds names no session id of exactly %d bytes, the bound", claim.MaxSessionNameBytes)
 		}
 
 		if _, err := store.Migrate(ctx); err != nil {
@@ -273,9 +302,10 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		var wantConflicts []SessionConflict
 		for k, holder := range want {
 			if k.project == "legion" && holder == "" {
-				tokens := slices.Clone(recorders[k])
-				slices.Sort(tokens)
-				wantConflicts = append(wantConflicts, SessionConflict{Hold: k.hold, Claims: tokens})
+				c := SessionConflict{Hold: k.hold, Claims: slices.Clone(current[k]), Abandoned: slices.Clone(abandonedOnly[k])}
+				slices.Sort(c.Claims)
+				slices.Sort(c.Abandoned)
+				wantConflicts = append(wantConflicts, c)
 			}
 		}
 		slices.SortFunc(wantConflicts, func(a, b SessionConflict) int {
@@ -285,10 +315,16 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 			t.Fatalf("the rows above give %d names held for none, want 4: %+v", len(wantConflicts), wantConflicts)
 		}
 		sameConflicts := func(a, b SessionConflict) bool {
-			return a.Hold == b.Hold && a.Holder == b.Holder && slices.Equal(a.Claims, b.Claims)
+			return a.Hold == b.Hold && a.Holder == b.Holder && slices.Equal(a.Claims, b.Claims) && slices.Equal(a.Abandoned, b.Abandoned)
 		}
 		if !slices.EqualFunc(conflicts, wantConflicts, sameConflicts) {
 			t.Errorf("the session conflicts read %+v, want %+v", conflicts, wantConflicts)
+		}
+		// ses_taken: 304's current session records it and 305's abandoned one, so the boot suspends
+		// 304 alone (review R2-2).
+		taken := SessionConflict{Hold: sessionHold("ses_taken"), Claims: []claim.Token{"legion-LEGION-304-implementer"}, Abandoned: []claim.Token{"legion-LEGION-305-implementer"}}
+		if !slices.ContainsFunc(conflicts, func(c SessionConflict) bool { return sameConflicts(c, taken) }) {
+			t.Errorf("the session conflicts read %+v, want %+v among them", conflicts, taken)
 		}
 
 		// A daemon from before the hold, as one rolled back is, records names no row holds: one
@@ -321,4 +357,115 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 			t.Errorf("the session conflicts read %+v, want the four held for none and %+v", conflicts, took)
 		}
 	})
+}
+
+// statementTracer counts every statement a pool sends and holds each back by delay before it goes,
+// which gives a loopback Postgres the round trip of one across a network.
+type statementTracer struct {
+	delay time.Duration
+	sent  atomic.Int64
+}
+
+func (s *statementTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	s.sent.Add(1)
+	time.Sleep(s.delay)
+	return ctx
+}
+
+func (*statementTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// tracedStore is a second Store on store's database whose pool sends every statement through tracer.
+func tracedStore(t *testing.T, store *Store, tracer pgx.QueryTracer) *Store {
+	t.Helper()
+	ctx := context.Background()
+	var name string
+	if err := store.Pool().QueryRow(ctx, `select current_database()`).Scan(&name); err != nil {
+		t.Fatalf("read the test database's name: %v", err)
+	}
+	u, err := url.Parse(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + name
+	config, err := pgxpool.ParseConfig(u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.Tracer = tracer
+	raw, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traced := &Store{pool: NewPool(raw)}
+	t.Cleanup(traced.Close)
+	return traced
+}
+
+// productionClaims is the size of the largest project at the time of writing: INFRA's daemon booted
+// with 7,508 claims on 2026-11-16 (`legion daemon started`, field claims), about 250 more a day.
+const productionClaims = 7508
+
+// The boot holds every recorded name and reads every conflict on each boot, inside a 30 s budget
+// (internal/daemon's bootTimeout), so its cost must not grow with the project's names (review R2-1
+// of #4220): over a project of production size, 7,508 claims recorded as Oh My Pi records them, half
+// with an abandoned session, which is 33,786 names, the whole boot step is a few statements and
+// takes well inside the budget while each statement is held back by a millisecond, the round trip
+// of a database reached across a network. The time bound is a third of the budget, so a loaded
+// runner has room; the statement bound is what does not depend on the runner.
+//
+// The control (the pull request records the run): HoldRecordedSessions as a statement per name,
+// which sends 33,786 inserts and, at a millisecond each, takes past the bound.
+func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
+	const (
+		statementBound = 10
+		timeBound      = 10 * time.Second
+		names          = productionClaims*3 + productionClaims/2*3
+	)
+	ctx := context.Background()
+	store := migratedStore(t)
+	if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation,
+		session, session_file, state, failure, launch_failures, prompt_failures, prompt_retires, uncertain_streak,
+		abandoned_session)
+		select 'legion-LEGION-' || n || '-implementer', 'legion', 'LEGION-' || n, 'LEGION-' || n, 'implementer', 1,
+			s, '/state/sessions/--w--/2026-11-16T00-00-00-000Z_' || s || '.jsonl', 'retired', '', 0, 0, 0, 0,
+			case when n % 2 = 0 then jsonb_build_object('session', a,
+				'sessionFile', '/state/sessions/--w--/2026-11-15T00-00-00-000Z_' || a || '.jsonl',
+				'why', 'a retry asked for a new session', 'at', '2026-11-16T00:00:00Z') end
+		from (select n, gen_random_uuid()::text as s, gen_random_uuid()::text as a
+			from generate_series(1, $1::int) as n) as seeded`, productionClaims); err != nil {
+		t.Fatalf("record %d claims: %v", productionClaims, err)
+	}
+	tracer := &statementTracer{delay: time.Millisecond}
+	traced := tracedStore(t, store, tracer)
+
+	// The first boot after a rollback holds every name.
+	started := time.Now()
+	held, err := traced.HoldRecordedSessions(ctx, "legion")
+	firstTook, firstSent := time.Since(started), tracer.sent.Swap(0)
+	if err != nil || held != names {
+		t.Fatalf("the first hold held %d names, %v; want %d", held, err, names)
+	}
+
+	// Every boot after it holds nothing and reads every conflict.
+	started = time.Now()
+	again, err := traced.HoldRecordedSessions(ctx, "legion")
+	if err != nil || again != 0 {
+		t.Fatalf("the steady hold held %d names, %v; want none", again, err)
+	}
+	conflicts, err := traced.SessionConflicts(ctx, "legion")
+	if err != nil || len(conflicts) != 0 {
+		t.Fatalf("the conflict read answered %+v, %v; want none", conflicts, err)
+	}
+	steadyTook, steadySent := time.Since(started), tracer.sent.Load()
+	t.Logf("%d claims, %d names, a millisecond a statement: the first hold %d statements in %v; a steady boot step %d statements in %v",
+		productionClaims, names, firstSent, firstTook, steadySent, steadyTook)
+
+	if firstSent > statementBound || steadySent > statementBound {
+		t.Errorf("the boot step sent %d statements at the first hold and %d at a steady boot; want at most %d each, whatever the project's size",
+			firstSent, steadySent, statementBound)
+	}
+	if firstTook > timeBound || steadyTook > timeBound {
+		t.Errorf("the boot step took %v at the first hold and %v at a steady boot; want each within %v, a third of the 30 s boot budget",
+			firstTook, steadyTook, timeBound)
+	}
 }

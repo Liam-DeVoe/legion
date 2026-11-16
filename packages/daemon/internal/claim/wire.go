@@ -286,6 +286,20 @@ func SessionHeldRefusal(session string) Refusal {
 		"session %s is recorded for another claim of this daemon; a claim registers only a session it recorded itself, or one no claim has recorded", session)}
 }
 
+// MaxSessionNameBytes is the longest a name of a session may be: a session id, or the base name of a
+// session file, in bytes. The daemon holds every name of a session in claim_sessions, whose primary
+// key a PostgreSQL btree indexes, and a btree row holds at most 2,704 bytes (SQLSTATE 54000 past
+// it), so a name without a bound could stop the migration or the boot that holds it. 255 is the
+// longest file name Linux allows (NAME_MAX), and a real name is a uuid or such a file name.
+const MaxSessionNameBytes = 255
+
+// SessionNameTooLong refuses a registration whose session id, or whose session file's base name,
+// is longer than MaxSessionNameBytes. It is a 400: the request is malformed, whoever sends it.
+func SessionNameTooLong(what string, bytes int) Refusal {
+	return Refusal{Status: http.StatusBadRequest, Message: fmt.Sprintf(
+		"the %s is %d bytes; a session id, and a session file's name, are at most %d bytes", what, bytes, MaxSessionNameBytes)}
+}
+
 // staleContract renders the opening sentence a stale-caller refusal shares: got is the contract
 // the plugin declared, 0 when it declared none; want is the daemon's own (api.DaemonAPIVersion,
 // which this package cannot import, so the caller names it). remedy is the clause that tells the

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -498,6 +500,55 @@ func TestAnUnansweredHoldAtAResumeChargesNothing(t *testing.T) {
 	if c := h.claim(); c.Budgets.LaunchFailures != 0 {
 		t.Fatalf("the claim has %d launch failures charged after the retry, want none", c.Budgets.LaunchFailures)
 	}
+}
+
+// A session id, and a session file's base name, are at most claim.MaxSessionNameBytes: past it a
+// name could not be held, since a btree row of claim_sessions' primary key holds at most 2,704
+// bytes and one such name would stop the boot that holds it (review N3 of #4220). A registration of
+// one is refused 400, recording and enrolling nothing; one at the bound registers.
+//
+// The control (the pull request records the run): no check at registration admits both, since the
+// hold skips a name past the bound rather than refusing it.
+func TestASessionNamePastTheBoundIsRefused(t *testing.T) {
+	long := strings.Repeat("s", claim.MaxSessionNameBytes+1)
+	for _, tc := range []struct {
+		name, session, file string
+		want                claim.Refusal
+	}{
+		{"a session id past the bound", long, sessionFile, claim.SessionNameTooLong("session id", len(long))},
+		{"a session file's name past the bound", session, "/state/sessions/" + long, claim.SessionNameTooLong("session file's name", len(long))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			broker := h.withSecrets()
+			h.launch()
+			h.helloWithIdentity()
+			err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: tc.session, SessionFile: tc.file,
+				CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+			var refusal claim.Refusal
+			if !errors.As(err, &refusal) || refusal != tc.want || refusal.Status != http.StatusBadRequest {
+				t.Fatalf("registering %s = %v, want %v", tc.name, err, tc.want)
+			}
+			if c := h.claim(); c.Session != "" || c.SessionFile != "" {
+				t.Fatalf("the refused registration left the claim recording %q and %q", c.Session, c.SessionFile)
+			}
+			if enrolled := broker.enrolled(); len(enrolled) != 0 {
+				t.Fatalf("the refused registration enrolled %+v", enrolled)
+			}
+		})
+	}
+
+	t.Run("a session id and a file name at the bound", func(t *testing.T) {
+		h := newHarness(t)
+		h.launch()
+		h.connect()
+		atBound := strings.Repeat("s", claim.MaxSessionNameBytes)
+		h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: atBound,
+			SessionFile: "/state/sessions/" + atBound, CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		if c := h.claim(); c.Session != atBound {
+			t.Fatalf("the claim records %q, want the session at the bound", c.Session)
+		}
+	})
 }
 
 func TestAFailedRevocationIsRetriedThenLeftToTheLease(t *testing.T) {
