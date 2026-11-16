@@ -556,15 +556,28 @@ write identity errors with `identity.WriteError`.
   (migration `0150`), swept beside the idempotency keys. A verified caller is
   `{kind: "session", id: <the token's session>}` carrying either `owner`, the
   person it acts for, or `service`, the fleet of a machine nobody has signed
-  in on — never both and never neither — and `project`, the one project a
-  named-scope token may write, each read from the token and never from a body;
-  a person-scoped token names no single project and carries none. A caller
+  in on or the service a read entry names — never both and never neither —
+  and `project`, the one project a named-scope token may write, each read
+  from the token and never from a body; a person-scoped token names no single
+  project and carries none. A caller
   naming a service and no person reads everything its session may read, and
   `api.writeNeedsASignedInPerson` refuses its every write
   `403 SIGN_IN_REQUIRED` (`contracts.DispatchSignInRequired`) at one chokepoint
   in front of every mutating route, whatever its write class, naming
   `agent-secrets login` as the remedy: Dispatch records a write under the
-  person who made it, and this credential names none. Since the credential
+  person who made it, and this credential names none. A read-only token is the
+  exception. The broker mints it from a read entry
+  (`BROKER_EXCHANGE_READ_ACCOUNTS`): it names a service and a fixed session,
+  holds the OAuth scope `read` alone and the project scope `none`, and names
+  no person and no project. `brokerTokenVerifier` sets
+  `brokertoken.Options.ServesReadOnly`, so Dispatch accepts that token and
+  marks its credential `model.Credential.ReadOnly`, with no OAuth scope.
+  `api.refuseReadOnlyToken` then answers it `403 READ_ONLY_TOKEN`
+  (`contracts.DispatchReadOnlyToken`) on every route the read list
+  (`readScopeRoutes`) does not name and on `/ws/live`, with no
+  `WWW-Authenticate` challenge. That refusal comes before the scope gate, the
+  sign-in check, the `Idempotency-Key` and the handler, so such a token never
+  reaches the sign-in refusal above. Since the credential
   proves the session, `bearerSessionActor` takes a body with no `actor` at all,
   takes one naming that same session for its `origin`, and refuses one naming
   any other writer `403 ACTOR_SESSION_MISMATCH` naming the session the token
@@ -574,7 +587,9 @@ write identity errors with `identity.WriteError`.
   credential — one naming no session, one naming neither a person nor a
   service, or one issued to a client other than the exchange, which a machine
   login's own access token is, so a body cannot name a session for a credential
-  that proves none —
+  that proves none, or one whose project scope and OAuth scope are a shape no
+  broker mints (the scope `read` beside `named` or `person`, or the project
+  scope `none` in any shape but a read-only token's) —
   `429 BROKER_TOKEN_RATE_LIMITED` and `503 BROKER_UNAVAILABLE`, which is a 503
   for the reason `OIDC_ISSUER_UNAVAILABLE` is: the broker answered nothing, so
   the token was never judged. A proof is single use by its `jti` and `htu`, so
@@ -627,7 +642,12 @@ one of the 151 rows carry a sixth value, and most rows need no scope. A name in 
 no row of the table refuses to mount (`scopedRoutesNotMounted`), as an unclassed mutating row
 does. `register` gates every row that map names (`gateRouteScopes`) ahead of the keyed, project
 and session layers, so no handler restates a scope, and `envoy-dispatch routes` prints
-each route's `scopes` as `GET /api/v1` does. An unknown path
+each route's `scopes` as `GET /api/v1` does. Beside that map, `readScopeRoutes` lists the routes
+a read-only broker token may call, today `GET /api/v1/projects/{key}/architecture` alone.
+`routes()` stamps it onto `apiRoute.ReadScope`, a listed name that is not a mounted GET row
+refuses to mount (`readRoutesNotMountedAsGET`), and neither `GET /api/v1` nor the OpenAPI document
+carries it. `register` wraps every row in `refuseReadOnlyToken`, outside `gateRouteScopes`, so a
+route added later stays closed to such a token until it is listed. An unknown path
 under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`), and a known path asked with a
 method its route does not serve, is answered by `routes/router.go` with
 `404 {"code":"NOT_FOUND","error":"no route for <METHOD> <path>","hint":"GET /api/v1 lists every
@@ -690,6 +710,8 @@ broker-issued token the broker scoped to its person holds both, and one scoped t
 neither; the shared agent token and a Kubernetes service-account token hold neither. A credential
 short of a scope its route needs is `403 OAUTH_SCOPE_REQUIRED` naming that scope, under
 `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1).
+A read-only broker token holds neither scope, and every route the read list does not name answers
+it `403 READ_ONLY_TOKEN` with no challenge, since no scope makes that route its to call.
 
 Every `POST` and `PATCH` route takes an optional `Idempotency-Key` request header (1 to 128
 letters, digits, `.`, `_`, `:` and `-`, bare or double-quoted; anything else is
