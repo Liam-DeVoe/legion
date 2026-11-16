@@ -93,7 +93,18 @@ var storeWriteCallSites = []string{
 	// the tuples - is the order of the write they share (WriteUncaused, then Caused), which
 	// TestEveryStoreWriteTakesOneLockOrder proves on this package's own writers, and the node
 	// before its row is held at each site by api's TestEveryCreateStoresItsNode and the node-first
-	// trigger of object_nodes_issue_test.go and object_nodes_items_test.go.
+	// trigger of object_nodes_issue_test.go and object_nodes_items_test.go. statedVersionBytes is
+	// the bytes of an image's or a file's later version, stated on the node its row names with no
+	// node written, after the owner row and that row read FOR SHARE and before the event
+	// storeArtifact appends, which causes them (dispatch://INFRA-1253; api's
+	// TestALaterVersionStatesItsBytesInTheStoreLockOrder proves its steps, and that a later version
+	// waits for a backfill naming its node). removedDocumentNode is a removal's node of the
+	// document stated gone, after the issue's row and before the document's row is deleted, and
+	// removeArtifact appends what it stated under the artifact.removed event, through Caused
+	// (api's TestARemovalStatesItsDocumentGoneInTheStoreLockOrder).
+	"api/artifact_removal.go#removeArtifact",
+	"api/artifact_removal.go#removedDocumentNode",
+	"api/artifacts.go#statedVersionBytes",
 	"api/broadcasts.go#writeBroadcast",
 	"api/message_delivery.go#insertSessionReply",
 	"api/messages.go#createStoredMessage",
@@ -118,11 +129,13 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
 	// The backfill's passes over the project of every node (dispatch://INFRA-3862): the nodes of
-	// the issues, documents, asks and messages written before their writers wrote one, in one
-	// graphstore.Write per batch that takes no other row, and the project of the comment and
-	// block nodes written before a node named one (graphstore.FillScopes), the block batch under
-	// the revision fence (lockBlockDocuments). graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject
-	// runs both.
+	// the issues, documents, asks and messages written before their writers wrote one, and the
+	// project of the comment and block nodes written before a node named one
+	// (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
+	// graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject runs both. An issue's or a
+	// document's batch takes the owner rows it stands under first, then its node rows, then names
+	// each node on its row (dispatch://INFRA-1253), which graphcensus'
+	// TestTheObjectBatchTakesTheStoreLockOrder proves; an ask's or a message's takes no other row.
 	"graphcensus/projects.go#writeObjectBatch",
 	"graphcensus/projects.go#writeScopeBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both

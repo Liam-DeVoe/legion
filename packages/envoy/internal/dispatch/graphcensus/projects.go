@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -221,26 +224,33 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 }
 
 // objectKinds are the kinds the backfill writes a node for from their rows, each with the id it
-// walks from and the read of one batch of its rows naming no node, after the id $1 and at most $2
-// of them, in the order of the index that keys them, as (id, created_at, author, project, session,
-// root author, root target). session is a conversation's, for a document or an ask on one; the
-// root columns are a message's on no issue alone: the author and the target of its thread's root,
-// its parties (graphstore.ThreadParties).
+// walks from and the read of one batch of the rows its marker does not mark, after the id $1 and at
+// most $2 of them, in the order of the index that keys them, as (id, created_at, author, project,
+// session, root author, root target, issue). session is a conversation's, for a document or an ask
+// on one; the root columns are a message's on no issue alone: the author and the target of its
+// thread's root, its parties (graphstore.ThreadParties); issue is the issue that owns a document,
+// which its part_of names (graphstore.ArtifactPartOf).
+//
+// An issue's and a document's marker is the node pair its row names (node_kind and node_address,
+// migration 20261116092210), so a row whose node an INFRA-3862 build wrote with no part_of, and
+// named nowhere, is walked too. An ask's and a message's is the node itself, which no row of
+// theirs names in a column of its own.
 var objectKinds = []struct{ kind, start, read string }{
 	{graphstore.KindIssue, "", `
-		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text
+		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, null::text
 		from issues i
-		where i.key > $1 and not exists (select 1 from graph_nodes n where n.kind = 'issue' and n.id = i.key)
+		where i.key > $1 and i.node_kind is null
 		order by i.key limit $2`},
 	{graphstore.KindArtifact, "", `
-		select a.ref_key, a.created_at, a.created_by, a.project_key, a.session_id, null::jsonb, null::text
+		select a.ref_key, a.created_at, a.created_by, a.project_key, a.session_id, null::jsonb, null::text, a.issue_key
 		from artifacts a
 		where a.ref_key > $1 and octet_length(a.ref_key) <= ` + strconv.Itoa(graphstore.MaxAddressBytes) + `
-		  and not exists (select 1 from graph_nodes n where n.kind = 'artifact' and n.id = a.ref_key)
+		  and a.node_kind is null
 		order by a.ref_key limit $2`},
 	{graphstore.KindAsk, zeroUUID, `
 		select k.id::text, k.created_at, k.author, coalesce(i.project_key, a.project_key),
-		       case when coalesce(i.project_key, a.project_key) is null then a.session_id end, null::jsonb, null::text
+		       case when coalesce(i.project_key, a.project_key) is null then a.session_id end, null::jsonb, null::text,
+		       null::text
 		from asks k left join issues i on i.key = k.issue_key left join artifacts a on a.id = k.artifact_id
 		where k.id > $1::uuid and not exists (select 1 from graph_nodes n where n.kind = 'ask' and n.id = k.id::text)
 		order by k.id limit $2`},
@@ -256,7 +266,7 @@ var objectKinds = []struct{ kind, start, read string }{
 			union all
 			select walk.message, parent.id, parent.in_reply_to from walk join messages parent on parent.id = walk.in_reply_to
 		)
-		select batch.id::text, batch.created_at, batch.author, i.project_key, null::text, root.author, root.target
+		select batch.id::text, batch.created_at, batch.author, i.project_key, null::text, root.author, root.target, null::text
 		from batch
 		left join issues i on i.key = batch.issue_key
 		left join walk on walk.message = batch.id and walk.in_reply_to is null
@@ -269,17 +279,19 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 
 // backfillObjectNodes writes the node of every issue, document, ask and message written before
 // its kind's writer wrote one, under INFRA-1149's r-view-end contract: it walks only the rows its
-// marker does not mark - the marker is the node itself, which no row of these kinds names in a
-// column of its own - dates each node at its row's own created_at, made by the row's own author,
-// and writes the marker in the transaction that writes the node, so a second run reads no row the
-// first one wrote. It appends no event, and every fact it states carries the sentinel.
+// marker does not mark (objectKinds), dates each node at its row's own created_at, made by the
+// row's own author, and writes the marker in the transaction that writes the node, so a second run
+// reads no row the first one wrote. Beside a document's node it states what its kind's writer
+// states (R16 of dispatch://INFRA-1253): its part_of the issue that owns it, at the node's time,
+// and an image's or a file's newest bytes (writeObjectBatch). It appends no event, and every fact
+// it states carries the sentinel.
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range objectKinds {
 		report := KindBackfill{Kind: kind.kind}
 		after := kind.start
 		for {
-			nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
+			nodes, tuples, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
 			if err != nil {
 				return done, err
 			}
@@ -287,17 +299,18 @@ func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBack
 				break
 			}
 			after = nodes[len(nodes)-1].ID
-			if err := writeObjectBatch(ctx, database, nodes); err != nil {
+			written, stated, err := writeObjectBatch(ctx, database, kind.kind, nodes, tuples)
+			if err != nil {
 				return done, err
 			}
-			report.Rows += int64(len(nodes))
-			report.Nodes += int64(len(nodes))
-			report.Tuples += statedOf(nodes)
+			report.Rows += written
+			report.Nodes += written
+			report.Tuples += stated
 			if len(nodes) < backfillBatch {
 				break
 			}
 		}
-		left, err := readObjectNodes(ctx, database, kind.kind, kind.read, kind.start, math.MaxInt32)
+		left, _, err := readObjectNodes(ctx, database, kind.kind, kind.read, kind.start, math.MaxInt32)
 		if err != nil {
 			return done, err
 		}
@@ -321,26 +334,28 @@ func statedOf(nodes []graphstore.Node) int64 {
 	return stated
 }
 
-// readObjectNodes reads one batch of a kind's rows naming no node, and answers the node its
-// kind's writer writes for each (graphstore.IssueNode and its siblings).
-func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]graphstore.Node, error) {
+// readObjectNodes reads one batch of a kind's rows its marker does not mark, and answers the node
+// its kind's writer writes for each (graphstore.IssueNode and its siblings), with the part_of to
+// its issue of each document an issue owns (graphstore.ArtifactPartOf), dated as its node.
+func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]graphstore.Node, []graphstore.Tuple, error) {
 	rows, err := database.Pool.Query(ctx, read, after, limit)
 	if err != nil {
-		return nil, fmt.Errorf("read the %s rows naming no node: %w", kind, err)
+		return nil, nil, fmt.Errorf("read the %s rows naming no node: %w", kind, err)
 	}
 	defer rows.Close()
 	var nodes []graphstore.Node
+	var tuples []graphstore.Tuple
 	for rows.Next() {
 		var id string
 		var createdAt time.Time
 		var authorJSON, rootAuthorJSON []byte
-		var project, session, rootTarget *string
-		if err := rows.Scan(&id, &createdAt, &authorJSON, &project, &session, &rootAuthorJSON, &rootTarget); err != nil {
-			return nil, fmt.Errorf("read a %s row naming no node: %w", kind, err)
+		var project, session, rootTarget, issue *string
+		if err := rows.Scan(&id, &createdAt, &authorJSON, &project, &session, &rootAuthorJSON, &rootTarget, &issue); err != nil {
+			return nil, nil, fmt.Errorf("read a %s row naming no node: %w", kind, err)
 		}
 		var author model.Actor
 		if err := json.Unmarshal(authorJSON, &author); err != nil {
-			return nil, fmt.Errorf("read the author of %s %s: %w", kind, id, err)
+			return nil, nil, fmt.Errorf("read the author of %s %s: %w", kind, id, err)
 		}
 		var parties []string
 		if session != nil {
@@ -351,6 +366,9 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 			nodes = append(nodes, graphstore.IssueNode(id, derefText(project), author, createdAt))
 		case graphstore.KindArtifact:
 			nodes = append(nodes, graphstore.ArtifactNode(id, derefText(project), derefText(session), author, createdAt))
+			if issue != nil {
+				tuples = append(tuples, graphstore.ArtifactPartOf(id, *issue, author, createdAt))
+			}
 		case graphstore.KindAsk:
 			nodes = append(nodes, graphstore.AskNode(id, derefText(project), parties, author, createdAt))
 		case graphstore.KindMessage:
@@ -358,7 +376,7 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 				var root model.Actor
 				if len(rootAuthorJSON) > 0 {
 					if err := json.Unmarshal(rootAuthorJSON, &root); err != nil {
-						return nil, fmt.Errorf("read the thread root's author of message %s: %w", id, err)
+						return nil, nil, fmt.Errorf("read the thread root's author of message %s: %w", id, err)
 					}
 				}
 				parties = graphstore.ThreadParties(root, rootTarget)
@@ -366,7 +384,7 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 			nodes = append(nodes, graphstore.MessageNode(id, derefText(project), parties, author, createdAt))
 		}
 	}
-	return nodes, rows.Err()
+	return nodes, tuples, rows.Err()
 }
 
 func derefText(value *string) string {
@@ -376,20 +394,218 @@ func derefText(value *string) string {
 	return *value
 }
 
-// writeObjectBatch writes one batch's nodes in one transaction (graphstore.Write), which takes
-// their rows in ascending (kind, id) and states each one's base attributes. A node a live writer
-// wrote meanwhile is written again with nothing moved, and states nothing: each node restates its
-// object (graphstore.IssueNode and its siblings), so a state or a visibility a later write gave it
-// stays. One in another project fails the batch (graphstore.ErrProjectMoved), which is a
-// difference for the census to report rather than for this run to paper over. The rows carry no
-// column naming their node, so the write takes no lock of a row beside the nodes'.
-func writeObjectBatch(ctx context.Context, database *store.Store, nodes []graphstore.Node) error {
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		return graphstore.Write(ctx, tx, nodes, nil)
-	}); err != nil {
-		return fmt.Errorf("write a batch of %s nodes: %w", nodes[0].Kind, err)
+// writeObjectBatch writes one batch's nodes and the facts beside them in one transaction, in the
+// store's lock order (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's rows
+// stand under first (lockObjectOwners), then graphstore.Write, which takes the node rows in
+// ascending (kind, id), states each one's base attributes and appends the facts, and only then the
+// rows that name their nodes. A node a live writer wrote meanwhile is written again with nothing
+// moved, and states nothing: each node restates its object (graphstore.IssueNode and its
+// siblings), so a state or a visibility a later write gave it stays. One in another project fails
+// the batch (graphstore.ErrProjectMoved), which is a difference for the census to report rather
+// than for this run to paper over. An ask's and a message's row carries no column naming its node,
+// so their write takes no lock of a row beside the nodes'.
+//
+// The batch was read outside this transaction, so an issue's or a document's row may have been
+// removed or named its node since (api's removeArtifact, a second run of this pass). Under the
+// owner rows it reads the batch's rows again (heldObjects) and writes the nodes and the facts of
+// the rows still there and still naming none, and no others, as writeBlockBatch does under the
+// revision fence: a node written for a removed row would bring the document back as a live node
+// hanging under its issue, with no row. It answers how many rows it gave a node and how many
+// tuples it stated: the base attributes of each node it made, its part_of, and the bytes of each
+// image and file.
+func writeObjectBatch(ctx context.Context, database *store.Store, kind string, nodes []graphstore.Node, tuples []graphstore.Tuple) (int64, int64, error) {
+	ids := make([]string, len(nodes))
+	for index, node := range nodes {
+		ids[index] = node.ID
 	}
-	return nil
+	var written, stated int64
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := lockObjectOwners(ctx, tx, kind, ids); err != nil {
+			return err
+		}
+		held, err := heldObjects(ctx, tx, kind, ids)
+		if err != nil {
+			return err
+		}
+		nodes, tuples := nodes, tuples
+		if held != nil {
+			nodes = slices.DeleteFunc(slices.Clone(nodes), func(node graphstore.Node) bool {
+				_, still := held[node.ID]
+				return !still
+			})
+			tuples = slices.DeleteFunc(slices.Clone(tuples), func(tuple graphstore.Tuple) bool {
+				_, still := held[tuple.FromID]
+				return !still
+			})
+			ids = slices.Collect(maps.Keys(held))
+		}
+		if len(nodes) == 0 {
+			return nil
+		}
+		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+			return err
+		}
+		written, stated = int64(len(nodes)), statedOf(nodes)+int64(len(tuples))
+		switch kind {
+		case graphstore.KindIssue:
+			_, err := tx.Exec(ctx, `
+				update issues set node_kind = $2, node_address = key
+				where key = any($1::text[]) and node_kind is null
+			`, ids, graphstore.KindIssue)
+			return err
+		case graphstore.KindArtifact:
+			values, err := nameArtifactNodes(ctx, tx, ids)
+			if err != nil || len(values) == 0 {
+				return err
+			}
+			stated += int64(len(values))
+			return graphstore.Write(ctx, tx, nil, values)
+		}
+		return nil
+	}); err != nil {
+		return 0, 0, fmt.Errorf("write a batch of %s nodes: %w", kind, err)
+	}
+	return written, stated, nil
+}
+
+// lockObjectOwners takes the owner rows a batch of issues or documents stands under before the
+// batch writes a node: an issue's own row, and a document's issue's row, or the document's own row
+// where no issue owns it, each once, in ascending owner key (events.LockOwnerRows), as
+// lockBlockDocuments takes the owners of a block batch's documents. A batch of asks or messages
+// names no node on a row of its own, and takes none.
+func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind string, ids []string) error {
+	owners := events.OwnerRows{}
+	switch kind {
+	case graphstore.KindIssue:
+		for _, key := range ids {
+			owners.Add(key, "", "issue "+key)
+		}
+	case graphstore.KindArtifact:
+		rows, err := tx.Query(ctx, `
+			select id::text, coalesce(issue_key, '') from artifacts where ref_key = any($1::text[])
+		`, ids)
+		if err != nil {
+			return fmt.Errorf("load the owners of a batch's documents: %w", err)
+		}
+		documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+			var document [2]string
+			err := row.Scan(&document[0], &document[1])
+			return document, err
+		})
+		if err != nil {
+			return fmt.Errorf("load the owners of a batch's documents: %w", err)
+		}
+		for _, document := range documents {
+			owners.Add(document[1], document[0], "document "+document[0])
+		}
+	default:
+		return nil
+	}
+	return events.LockOwnerRows(ctx, tx, owners)
+}
+
+// heldObjects reads again, under the owner rows lockObjectOwners took, which rows of a batch of
+// issues or documents are still there and still name no node, and answers their ids; it answers
+// nil for a batch of asks or messages, whose rows name no node in a column of their own and are
+// written whole. A plain read is enough: the one writer that deletes such a row, the removal of
+// an issue's document, takes that issue's row first (api's removeArtifact, through
+// beginArtifactWrite), another run of this pass names a node only under the owner rows this one
+// holds, and no route moves a document to another owner or changes its ref_key, so what this
+// reads stands until the batch commits.
+func heldObjects(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[string]struct{}, error) {
+	var read string
+	switch kind {
+	case graphstore.KindIssue:
+		read = `select key from issues where key = any($1::text[]) and node_kind is null`
+	case graphstore.KindArtifact:
+		read = `select ref_key from artifacts where ref_key = any($1::text[]) and node_kind is null`
+	default:
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, read, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the batch's %s rows again under their owners: %w", kind, err)
+	}
+	still, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the batch's %s rows again under their owners: %w", kind, err)
+	}
+	held := make(map[string]struct{}, len(still))
+	for _, id := range still {
+		held[id] = struct{}{}
+	}
+	return held, nil
+}
+
+// nameArtifactNodes names each document's node on its row, then reads, in a statement of its own,
+// the bytes of the newest version of each image and file it named, and answers them as the values
+// its node states (graphstore.ArtifactBytes), dated at that version and by its first author, or by
+// the row's author where the version names none. A version row missing its mime, its size or its
+// sha256 states none of them.
+//
+// The read follows the update, under the owner rows the batch took first: an upload of a later
+// version takes its issue's row, or its project document's own row, before it writes, and reads its
+// document's row FOR SHARE, which the update's lock conflicts with, before it states that
+// version's bytes on the node the row names (api's statedVersionBytes). So either the upload
+// commits first and this read, a statement after it, finds its version as the newest, or the
+// upload waits for this transaction, sees the node named, and states its bytes after these.
+func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]graphstore.Tuple, error) {
+	rows, err := tx.Query(ctx, `
+		update artifacts set node_kind = $2, node_address = ref_key
+		where ref_key = any($1::text[]) and node_kind is null
+		returning id::text, kind <> 'doc'
+	`, refKeys, graphstore.KindArtifact)
+	if err != nil {
+		return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
+	}
+	var files []string
+	for rows.Next() {
+		var id string
+		var file bool
+		if err := rows.Scan(&id, &file); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
+		}
+		if file {
+			files = append(files, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	rows, err = tx.Query(ctx, `
+		select a.ref_key, v.mime, v.size, v.sha256, v.created_at, coalesce(v.authors->0, a.created_by)
+		from artifacts a
+		cross join lateral (
+			select mime, size, sha256, created_at, authors from artifact_versions
+			where artifact_id = a.id order by number desc limit 1
+		) v
+		where a.id = any($1::uuid[]) and v.mime is not null and v.size is not null and v.sha256 is not null
+	`, files)
+	if err != nil {
+		return nil, fmt.Errorf("read the newest bytes of a batch's images and files: %w", err)
+	}
+	defer rows.Close()
+	var stated []graphstore.Tuple
+	for rows.Next() {
+		var refKey, mime, digest string
+		var size int64
+		var at time.Time
+		var whoJSON []byte
+		if err := rows.Scan(&refKey, &mime, &size, &digest, &at, &whoJSON); err != nil {
+			return nil, fmt.Errorf("read the newest bytes of a batch's images and files: %w", err)
+		}
+		var who model.Actor
+		if err := json.Unmarshal(whoJSON, &who); err != nil {
+			return nil, fmt.Errorf("read the author of the newest version of %s: %w", refKey, err)
+		}
+		stated = graphstore.ArtifactBytes(stated, refKey, mime, size, digest, who, at)
+	}
+	return stated, rows.Err()
 }
 
 // scopeKinds are the kinds whose writers stored nodes before a node named its project, each with

@@ -363,21 +363,23 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	issueRank := rank.Between(lastRank, "")
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
-	// them in the store's order, each in the issue's project; what that write states waits for
-	// the issue.created event below (graphstore.Caused).
+	// them in the store's order, each in the issue's project, with the spec's part_of the issue
+	// (R16 of dispatch://INFRA-1253); what that write states waits for the issue.created event
+	// below (graphstore.Caused). Each row names its node in the same transaction.
 	createdAt := time.Now().UTC()
+	specRefKey := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
 	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{
 		graphstore.IssueNode(key, input.Project, actor, createdAt),
-		graphstore.ArtifactNode(graphstore.ArtifactRefKey(key, input.Project, "", "spec"), input.Project, "", actor, createdAt),
-	}, nil)
+		graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt),
+	}, []graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
-		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
+		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $1)
+	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo, graphstore.KindIssue); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -422,10 +424,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	var artifactID string
 	if err := tx.QueryRow(r.Context(), `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3)
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3, $4, $5)
 		returning id::text
-	`, key, input.Project, actorJSON).Scan(&artifactID); err != nil {
+	`, key, input.Project, actorJSON, graphstore.KindArtifact, specRefKey).Scan(&artifactID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

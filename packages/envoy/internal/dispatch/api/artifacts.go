@@ -438,6 +438,28 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 	return docs.RecordTaskProgressMarkdown(ctx, tx, artifactID, markdown)
 }
 
+// statedVersionBytes states, on the node an image's or a file's row names, the bytes a later
+// version of it holds (graphstore.ArtifactBytes), held for the event the upload appends
+// (graphstore.Caused), so the node's current values are its newest version's (R16 of
+// dispatch://INFRA-1253). A row an older build wrote names no node and states nothing here: the
+// backfill gives it its node and its newest version's bytes in the transaction that names the node
+// on the row (graphcensus' writeObjectBatch). The read takes the row FOR SHARE, which conflicts
+// with the backfill's lock of the row, so the two cannot both miss this version: either the
+// backfill named the node first and this read waits for it, sees the node and states these bytes
+// after the backfill's, or this upload holds the row first, the backfill waits for it to commit,
+// and then reads this version as the row's newest.
+func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifactID, mime string, size int, digest string, who model.Actor) (graphstore.Uncaused, error) {
+	var address *string
+	if err := tx.QueryRow(ctx, `select node_address from artifacts where id = $1 for share`, artifactID).Scan(&address); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the node artifact %s names: %w", artifactID, err)
+	}
+	if address == nil {
+		return graphstore.Uncaused{}, nil
+	}
+	return graphstore.WriteUncaused(ctx, tx, nil,
+		graphstore.ArtifactBytes(nil, *address, mime, int64(size), digest, who, time.Now().UTC()))
+}
+
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -495,8 +517,13 @@ func (s *server) storeArtifact(
 	// The node of a document this upload creates: written before its row, in the project of the
 	// issue or the project that owns it, or between the parties of the conversation that does,
 	// and stated under the event the upload appends, or at the sentinel where its owner records
-	// none (agentArtifactTarget.ownsEvents). A ref_key past the store's address bound is no node
-	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
+	// none (agentArtifactTarget.ownsEvents). It states beside it the facts the row projects: its
+	// part_of the issue that owns it, and an image's or a file's bytes (R16 of
+	// dispatch://INFRA-1253); a project's document and a conversation's file hang under no issue.
+	// The row names the node in the same transaction. A ref_key past the store's address bound is
+	// no node of it (graphstore.AddressFits), as every writer of the store leaves such an address
+	// out, and its row names none. An image's or a file's later version states its bytes on the
+	// node its row names (statedVersionBytes).
 	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -527,19 +554,30 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		var nodeKind, nodeAddress *string
 		if refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug); graphstore.AddressFits(refKey) {
+			at := time.Now().UTC()
+			var facts []graphstore.Tuple
+			if target.IssueKey != nil {
+				facts = append(facts, graphstore.ArtifactPartOf(refKey, *target.IssueKey, actor, at))
+			}
+			if kind != "doc" {
+				facts = graphstore.ArtifactBytes(facts, refKey, input.contentType, int64(len(input.content)), sha, actor, at)
+			}
 			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{graphstore.ArtifactNode(
-				refKey, deref(project), deref(session), actor, time.Now().UTC())}, nil)
+				refKey, deref(project), deref(session), actor, at)}, facts)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
+			storeKind := graphstore.KindArtifact
+			nodeKind, nodeAddress = &storeKind, &refKey
 		}
 		artifact, err = scanArtifact(tx.QueryRow(r.Context(), `
-			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by)
-			values ($1, $2, $3, $4, $5, $6, false, $7, $8)
+			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, node_kind, node_address)
+			values ($1, $2, $3, $4, $5, $6, false, $7, $8, $9, $10)
 			returning `+artifactColumns,
-			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON))
+			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON, nodeKind, nodeAddress))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -656,6 +694,15 @@ func (s *server) storeArtifact(
 			}
 			if !keep {
 				content = nil
+			}
+		}
+		// A later version moves the node's bytes to its own, held for the event this upload
+		// appends below; a version this upload creates the document with was stated with the node.
+		if !created {
+			documentNode, err = statedVersionBytes(r.Context(), tx, artifact.ID, input.contentType, size, sha, actor)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
 			}
 		}
 		var versionAuthors []byte

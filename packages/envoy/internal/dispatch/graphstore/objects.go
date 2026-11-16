@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,13 +49,57 @@ func IssueNode(key, project string, who model.Actor, at time.Time) Node {
 
 // ArtifactNode is a document's node, addressed by its ref_key (ArtifactRefKey), as its upload
 // writes it. A document of an issue or a project is in that project; an agent conversation's
-// document is in none, and is between the parties of that conversation, its session.
+// document is in none, and is between the parties of that conversation, its session. Every write
+// of it states beside it the facts its row projects: the part_of to its issue where an issue owns
+// it (ArtifactPartOf), and the bytes of an image or a file (ArtifactBytes).
 func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time) Node {
 	var parties []string
 	if session != "" {
 		parties = []string{PartySession(session)}
 	}
 	return objectNode(KindArtifact, refKey, SupertagDocument, project, parties, who, at)
+}
+
+// ArtifactPartOf is the fact that hangs a document under the issue that owns it: the part_of tuple
+// from the document's node, addressed by its ref_key, to the issue's node, which
+// artifacts.issue_key projects (R16 of dispatch://INFRA-1253). Every write of the node of an
+// issue's document states it beside that node, and a document no issue owns - a project's, or a
+// file of an agent's conversation - states none. It carries who wrote it and when; its cause is
+// Caused's to fill, or the sentinel where no event recorded the write.
+func ArtifactPartOf(refKey, issueKey string, who model.Actor, at time.Time) Tuple {
+	return Tuple{
+		FromKind: KindArtifact, FromID: refKey, Kind: TuplePartOf,
+		ToKind: KindIssue, ToID: issueKey,
+		At: at, Who: who, SourceEvent: NoEvent, Asserted: true,
+	}
+}
+
+// The attributes the node of an image or a file carries of the bytes its newest version holds,
+// each named as the artifact_versions column that holds it: the media type the bytes are stored
+// and served under, how many bytes there are, in decimal, and their sha256, in lower-case hex. A
+// markdown document carries none of them, since its body is its blocks.
+const (
+	AttributeMIME   = "mime"
+	AttributeSize   = "size"
+	AttributeSHA256 = "sha256"
+)
+
+// ArtifactBytes is what the node of an image or a file states of the bytes one version of it holds
+// (R16): their mime, their size and their sha256, each a value of the node, since none of them
+// points at anything. Each version states them again, so the node's current values are its newest
+// version's. They are appended to tuples, so a writer stating a batch of documents grows one
+// slice. Their cause is Caused's to fill, or the sentinel where no event recorded the write.
+func ArtifactBytes(tuples []Tuple, refKey, mime string, size int64, sha256 string, who model.Actor, at time.Time) []Tuple {
+	for _, value := range [...]struct{ attribute, value string }{
+		{AttributeMIME, mime}, {AttributeSize, strconv.FormatInt(size, 10)}, {AttributeSHA256, sha256},
+	} {
+		tuples = append(tuples, Tuple{
+			FromKind: KindArtifact, FromID: refKey, Kind: value.attribute,
+			ToKind: KindValue, ToID: value.value,
+			At: at, Who: who, SourceEvent: NoEvent, Asserted: true,
+		})
+	}
+	return tuples
 }
 
 // AskNode is an ask's node, addressed by the ask's id, in the project of the issue or the document

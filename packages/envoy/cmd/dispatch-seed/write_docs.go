@@ -19,10 +19,14 @@ import (
 // the only version a block index records (refs.IndexBlocks) and the only one search, the
 // related-item check and every anchor read look at.
 func (r *seedRun) writeDocuments(ctx context.Context) error {
+	marked, err := r.carriesNodeMarker(ctx, "artifacts")
+	if err != nil {
+		return err
+	}
 	return r.inBatches(ctx, "documents", len(r.plan.documents), batchDocuments,
 		func(ctx context.Context, tx pgx.Tx, from, to int) error {
 			for index := from; index < to; index++ {
-				if err := r.writeDocument(ctx, tx, index); err != nil {
+				if err := r.writeDocument(ctx, tx, index, marked); err != nil {
 					return fmt.Errorf("document %s: %w", r.plan.documents[index].RefKey, err)
 				}
 			}
@@ -34,8 +38,10 @@ func (r *seedRun) writeDocuments(ctx context.Context) error {
 // latest version's markdown is the markdown the renderer wrote (RenderWithBlockOffsets), not the
 // markdown the renderer was given, because refs.IndexBlocks indexes `markdown[block.From:block.To]`
 // and those offsets are into that render: a row holding anything else would index the wrong
-// bytes.
-func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error {
+// bytes. Every document the seed writes is markdown, so its node carries no bytes values
+// (graphstore.ArtifactBytes). marked is whether artifacts carries the node columns
+// (carriesNodeMarker).
+func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marked bool) error {
 	document := r.plan.documents[index]
 	var issueKey *string
 	owner := ""
@@ -45,18 +51,29 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	}
 	projectKey := r.plan.projects[document.Project].Key
 	created := timeAt(index, len(r.plan.documents))
-	// The document's node goes in before its row, in its project, as the server's upload writes
-	// it (api's writeObjectNodes); the seed records no event of a document, so what the node
-	// write states carries the sentinel.
-	node := graphstore.ArtifactNode(graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug), projectKey, "", seedAuthor, created)
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+	// The document's node goes in before its row, in its project and part_of its issue where an
+	// issue owns it, and the row names it, as the server's upload writes them (api's
+	// storeArtifact); the seed records no event of a document, so what the node write states
+	// carries the sentinel.
+	refKey := graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug)
+	node := graphstore.ArtifactNode(refKey, projectKey, "", seedAuthor, created)
+	var facts []graphstore.Tuple
+	if issueKey != nil {
+		facts = append(facts, graphstore.ArtifactPartOf(refKey, *issueKey, seedAuthor, created))
+	}
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, facts); err != nil {
 		return fmt.Errorf("artifact node: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, last_seq)
-		values ($1, $2, $3, $4, $5, 'doc', $6, $7::jsonb, $8, 0)
-	`, document.ID, issueKey, projectKey, document.Slug,
-		r.plan.vocabulary.phrase(r.random, 4), document.Primary, seedActor, created); err != nil {
+	columns := "id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, last_seq"
+	values := "$1, $2, $3, $4, $5, 'doc', $6, $7::jsonb, $8, 0"
+	args := []any{document.ID, issueKey, projectKey, document.Slug,
+		r.plan.vocabulary.phrase(r.random, 4), document.Primary, seedActor, created}
+	if marked {
+		columns += ", node_kind, node_address"
+		values += ", $9, $10"
+		args = append(args, graphstore.KindArtifact, refKey)
+	}
+	if _, err := tx.Exec(ctx, `insert into artifacts (`+columns+`) values (`+values+`)`, args...); err != nil {
 		return fmt.Errorf("artifact row: %w", err)
 	}
 

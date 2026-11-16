@@ -165,6 +165,68 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	}
 }
 
+// The seed writes issues and documents as the server writes them (dispatch://INFRA-1253): each
+// row names its node, and each document an issue owns hangs under that issue through its part_of.
+// On the schema before the marker migration (20261116092210), which the measurement protocol
+// seeds with --no-migrate, the rows are written without the columns that schema lacks, and the
+// nodes and their part_of the same.
+func TestSeedWritesTheIssueTreeMarkersWhereTheSchemaCarriesThem(t *testing.T) {
+	ctx := context.Background()
+	for _, schema := range []struct {
+		name   string
+		before bool
+	}{{"the schema of this release", false}, {"the schema before the markers", true}} {
+		t.Run(schema.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			if schema.before {
+				if _, err := database.Pool.Exec(ctx, `
+					alter table issues drop column node_kind, drop column node_address;
+					alter table artifacts drop column node_kind, drop column node_address;
+				`); err != nil {
+					t.Fatalf("restore the schema before the markers: %v", err)
+				}
+			}
+			if _, err := seed(ctx, database, testScale, io.Discard); err != nil {
+				t.Fatalf("seed on %s: %v", schema.name, err)
+			}
+			var documents, hanging, unhung int
+			if err := database.Pool.QueryRow(ctx, `
+				select count(*),
+				       count(*) filter (where exists (
+				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key
+				           and t.kind = 'part_of' and t.to_kind = 'issue' and t.to_id = a.issue_key and t.asserted)),
+				       count(*) filter (where a.issue_key is null and exists (
+				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key and t.kind = 'part_of'))
+				from artifacts a
+			`).Scan(&documents, &hanging, &unhung); err != nil {
+				t.Fatalf("read the seeded documents' part_of: %v", err)
+			}
+			var issueDocuments int
+			if err := database.Pool.QueryRow(ctx, `select count(*) from artifacts where issue_key is not null`).Scan(&issueDocuments); err != nil {
+				t.Fatalf("count the seeded issues' documents: %v", err)
+			}
+			if issueDocuments == 0 || hanging != issueDocuments || unhung != 0 {
+				t.Errorf("on %s, %d of the %d documents of an issue hang under it and %d documents of no issue hang under one, want all %d and none",
+					schema.name, hanging, issueDocuments, unhung, issueDocuments)
+			}
+			if schema.before {
+				return
+			}
+			var issues, issuesNamed, documentsNamed int
+			if err := database.Pool.QueryRow(ctx, `
+				select (select count(*) from issues),
+				       (select count(*) from issues where node_kind = 'issue' and node_address = key),
+				       (select count(*) from artifacts where node_kind = 'artifact' and node_address = ref_key)
+			`).Scan(&issues, &issuesNamed, &documentsNamed); err != nil {
+				t.Fatalf("read the seeded rows' markers: %v", err)
+			}
+			if issues == 0 || issuesNamed != issues || documentsNamed != documents {
+				t.Errorf("%d of %d issues and %d of %d documents name their node, want every one", issuesNamed, issues, documentsNamed, documents)
+			}
+		})
+	}
+}
+
 func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 	plan := newPlan(newSizes(testScale))
 	for index, comment := range plan.comments {
