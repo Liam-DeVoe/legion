@@ -13900,13 +13900,39 @@ console.log(JSON.stringify(args));
     // directory, and what it printed goes three ways - the live view's conversation, the
     // person's message on Dispatch, and the agent's transcript for its next turn.
     describe("a person's shell command", () => {
-      /** The working directories these rows ran their commands in. */
+      /** The working directories these rows ran their commands in. A command that a row lets run
+       *  writes its shell's pid to `pid` there before it waits, and that shell leads the command's
+       *  process group (`src/typed-shell.ts` spawns it detached), so the afterEach kills the group
+       *  before it removes the directory: a command the code under test failed to stop ends with
+       *  its row, whether the row returned or the runner abandoned it at its limit. */
       const workDirectories: string[] = [];
+      // A hang guard, not a bound on the work: the body is a read, a signal and a removal per
+      // directory. Timed round it on this two-CPU pod: 0.34 / 0.64 / 2.47 ms (min / median / max)
+      // over the 81 invocations of 3 idle runs of this describe, and 0.48 / 1.01 / 563.68 ms over
+      // the 81 of 3 runs at 96 busy loops (48 per CPU). A limit does not interrupt a synchronous
+      // body: bun fails the hook after the fact once the body ran past it, and skips the hooks
+      // after it, so this one carries its own rather than bun's 5 s default, which a starved host
+      // passes on charges alone (hooks of this package were charged 11035.86 ms and 15887.94 ms
+      // at 240 busy loops for work of this size). 60_000 is 3.8 times the worst of those charges
+      // and sits well inside the pi-envoy job's `timeout-minutes: 10`.
       afterEach(() => {
         for (const directory of workDirectories.splice(0)) {
+          let pid = 0;
+          try {
+            pid = Number(readFileSync(join(directory, "pid"), "utf8").trim());
+          } catch {
+            // This row's command wrote no pid, or never ran.
+          }
+          if (Number.isInteger(pid) && pid > 0) {
+            try {
+              process.kill(-pid, "SIGKILL");
+            } catch {
+              // The expected path: the command's group has already ended.
+            }
+          }
           rmSync(directory, { recursive: true, force: true });
         }
-      });
+      }, 60_000);
 
       /** The user messages this session's live stream carried. */
       const streamFrames = () =>
@@ -14215,7 +14241,7 @@ console.log(JSON.stringify(args));
           {
             accept: () => ({
               accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              body: "!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf hi",
             }),
           }
         );
@@ -14270,7 +14296,7 @@ console.log(JSON.stringify(args));
           {
             accept: () => ({
               accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              body: "!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf hi",
             }),
             hostSessionID: () => live,
           }
@@ -14957,7 +14983,7 @@ console.log(JSON.stringify(args));
               accepted: true,
               body:
                 count === 1
-                  ? "!touch running; until [ -f go ]; do sleep 0.05; done; printf first"
+                  ? "!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf first"
                   : "!touch ran; printf second",
             }),
           }
@@ -14998,7 +15024,7 @@ console.log(JSON.stringify(args));
         expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toEqual({
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
-          body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
+          body: `!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
       }, 20_000);
 
@@ -15013,7 +15039,7 @@ console.log(JSON.stringify(args));
           {
             accept: () => ({
               accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              body: "!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf hi",
             }),
           }
         );
@@ -15025,7 +15051,7 @@ console.log(JSON.stringify(args));
         writeFileSync(join(work, "go"), "");
         await replied(1);
 
-        const report = `!touch running; until [ -f go ]; do sleep 0.05; done; printf hi\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
+        const report = `!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf hi\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
         expect(replies[0]?.body).toMatchObject({ body: report });
         const frames = streamFrames();
         expect(frames).toHaveLength(1);
@@ -15055,7 +15081,7 @@ console.log(JSON.stringify(args));
           "shell-command-shutdown-kill",
           // Written in the session's own working directory, which the command runs in: the pid
           // is the group's leader, and `exec` leaves the shell's own pid to `sleep`.
-          { accept: () => ({ accepted: true, body: "!echo $$ > pid; exec sleep 600" }) }
+          { accept: () => ({ accepted: true, body: "!echo $$ > pid && exec sleep 600" }) }
         );
         const pidFile = join(work, "pid");
 
@@ -15074,7 +15100,7 @@ console.log(JSON.stringify(args));
         // is the end of the command, and its words are the stop rather than an exit status.
         await replied(1);
         expect(replies[0]?.body).toMatchObject({
-          body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
+          body: "!echo $$ > pid && exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
       }, 20_000);
 
@@ -19935,11 +19961,9 @@ console.log(JSON.stringify(args));
     // from bun's junit reporter on this two-CPU pod: 63.57 / 66.97 / 198.97 ms (min/median/max
     // over 5 idle runs), and 707.61 / 1_699.56 / 4_438.23 ms over 20 runs under 96 busy loops, 48
     // per CPU, this row's acceptance rung. Six times that worst is 26_629 ms, rounded up to 30_000.
-    // The 120_000 this replaces was sized when the row still waited out the handler's real 1 s
-    // deadline, at a worst of 22_970 ms over 60 runs at that rung; the test's clock took that wait
-    // out of the row. It stays well inside the pi-envoy job's `timeout-minutes: 10`
-    // (.github/workflows/ci.yaml), so a hang reddens with this test named instead of cancelling
-    // the job, which names nothing.
+    // This replaces bun's 5 s default, which the row carried at the base, having no limit of its
+    // own. It stays well inside the pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml),
+    // so a hang reddens with this test named instead of cancelling the job, which names nothing.
   }, 30_000);
 
   test("starts NATS drain while listener deregistration is still pending", async () => {
@@ -20080,11 +20104,12 @@ console.log(JSON.stringify(args));
     );
     await subscribing;
     // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
-    // waits out a registration that never settles. Measured as the row above: 570 / 578 / 627 ms
-    // (min/median/max over 5 idle runs) and 5_922 / 13_072 / 19_279 ms over 20 runs under 96 busy
-    // loops, 48 per CPU. The old 30_000 sat inside six times that worst loaded cost, so this row
-    // is raised too: 120_000 is six times 19_279 ms (115_673 ms), rounded up, and still well
-    // inside the pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml).
+    // waits out a registration that never settles. Measured on this two-CPU pod from bun's junit
+    // reporter: 570 / 578 / 627 ms (min/median/max over 5 idle runs) and 5_922 / 13_072 / 19_279
+    // ms over 20 runs under 96 busy loops, 48 per CPU. At the base the row carried no limit of its
+    // own, so bun's 5 s default applied, inside that loaded cost. 120_000 is six times 19_279 ms
+    // (115_673 ms), rounded up, and still well inside the pi-envoy job's `timeout-minutes: 10`
+    // (.github/workflows/ci.yaml).
   }, 120_000);
 
   // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the old one from then on:
