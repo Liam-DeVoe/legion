@@ -354,6 +354,10 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
+    f"{ENVOY}/cmd/spec-check/main_test.go": reads(
+        (f"{ENVOY}/internal/dispatch/specgraph/testdata/**",
+         "cmd/spec-check/main_test.go:331 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
+         "lists at :68 and its built binary reads")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "internal/broker/config/config_test.go:1332")),
     f"{ENVOY}/internal/broker/oauth/claims_doc_test.go": reads(("docs/kubernetes.md", "internal/broker/oauth/claims_doc_test.go:161")),
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:56")),
@@ -386,6 +390,8 @@ RULES = {
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
+    f"{ENVOY}/internal/dispatch/specgraph/imports_test.go": [
+        run(f"{ENVOY}/internal/dispatch/specgraph", ["."], "internal/dispatch/specgraph/imports_test.go:15 go list -deps .", mode="build")],
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
     f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
@@ -1328,15 +1334,18 @@ GATES = [
 
     # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
-    # they are split out), with the tests of the architecture-note rules and their command and the
-    # note check over this repository's notes through the composite action. Its gofmt step reads
-    # the whole module, so no closure stands for it.
+    # they are split out), with the tests of the architecture-note and spec-file rules and their
+    # commands, the note check over this repository's notes through the composite action, and the
+    # spec-file check over its spec directory through the other one. Its gofmt step reads the
+    # whole module, so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
-        step_run("envoy-go-checks", "Test the architecture-note rules and their command",
-                 "go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./cmd/architecture-check/", ENVOY,
-                 ["./internal/dispatch/architecture/notes/", "./internal/runnerlog/", "./cmd/architecture-check/"]),
+        step_run("envoy-go-checks", "Test the architecture-note and spec-file rules and their commands",
+                 "go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ "
+                 "./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/", ENVOY,
+                 ["./internal/dispatch/architecture/notes/", "./internal/runnerlog/", "./internal/dispatch/specgraph/",
+                  "./cmd/architecture-check/", "./cmd/spec-check/"]),
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
@@ -1376,9 +1385,9 @@ GATES = [
         (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
-        # The action builds cmd/architecture-check with GOWORK=off, so it reads packages/envoy's
-        # go.mod and go.sum and the command's packages, all under the packages/envoy/** read; what
-        # is outside packages/envoy is the action itself and the notes it judges.
+        # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
+        # go.sum and the command's packages, all under the packages/envoy/** read; what is outside
+        # packages/envoy is the action itself and the files it judges.
         (".github/actions/architecture-check/action.yml",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
         (".github/actions/architecture-check/check.sh",
@@ -1388,6 +1397,18 @@ GATES = [
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
          "(.github/actions/architecture-check/action.yml:16), which check.sh:82 resolves against GITHUB_WORKSPACE "
          "and the command it runs at check.sh:92 reads"),
+        (".github/actions/spec-check/action.yml",
+         f"{at('envoy-go-checks', './.github/actions/spec-check')} runs the action it defines"),
+        (".github/actions/spec-check/check.sh",
+         f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
+         ".github/actions/spec-check/action.yml:90 and :115 run it"),
+        # The step judges the action's default path, .dispatch/spec, which holds no file on main;
+        # the read names .dispatch whole because a read that matches no file is refused, and the
+        # envoy_go_checks filter names .dispatch whole too.
+        (".dispatch/**",
+         f"{at('envoy-go-checks', './.github/actions/spec-check')} judges the action's default path "
+         "(.github/actions/spec-check/action.yml:17), which check.sh:84 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:94 reads"),
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks") + CI_SELF),
 
 
