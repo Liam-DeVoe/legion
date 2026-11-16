@@ -353,9 +353,11 @@ package can take it, and `testpool` is a package of its own because envoy's `int
 imports testcontainers. A test writes `testdb.NewPool(ctx, dsn)` or `testpool.NewPool(ctx, dsn)`
 where it would write `pgxpool.New`, and sets `config.MaxConns` to the constant on a config from
 `pgxpool.ParseConfig`; a test that needs another size sets `MaxConns` itself. A pool copied from
-another pool's `Config()` keeps that pool's size: `testpg.ClonePool` and the broker's
-`storetest.URL` and `storetest.Open` are sized at the constant, and Dispatch's `store.Open` sizes
-its own pool.
+another pool's `Config()` keeps that pool's size, and `testpg.ClonePool` is sized at the
+constant. A store a product opens sizes its own pool on every machine, so a test that opens one,
+or a process it starts on a test's DSN, gets that store's size: the daemon's `store.Open` holds
+32 and the broker's 10 unless the DSN names `pool_max_conns`, and Dispatch's `store.Open` holds
+its `sharedPoolSize` and refuses a DSN that names one.
 
 ## A Go test that opens a NATS client
 

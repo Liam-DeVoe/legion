@@ -625,7 +625,6 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
-              - 'packages/envoy/internal/testpool/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -3210,7 +3209,6 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
-              - 'packages/envoy/internal/testpool/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
@@ -4073,7 +4071,6 @@ jobs:
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/testpg/testdb/*'
-              - 'packages/envoy/internal/testpool/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
