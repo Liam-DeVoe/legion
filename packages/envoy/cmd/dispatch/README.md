@@ -4549,7 +4549,9 @@ Each item below names a path with its method and identity, then its purpose.
     When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms}`.
     `texts` counts each kind of text that Dispatch read in the documents it judged.
     A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
-    Dispatch judges no carried approval: a text approved outside a root stays approved under it, as does a later version with the same bytes.
+    A carry of an approval to a new version passes the same gate.
+    So Dispatch carries no approval to a version whose text breaks the form, and the person's own Approve then gets the refusal.
+    An approval given outside a root was never judged, and it stays when its issue moves under the root.
 
 - `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
 
