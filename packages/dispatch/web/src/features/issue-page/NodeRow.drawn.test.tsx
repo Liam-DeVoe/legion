@@ -668,7 +668,7 @@ test("a chip named as a numbered step draws its number", () => {
 // and the read answers it gone and ambiguous. Its chip draws the reference as its author wrote
 // it, as words with no link, and never as a target deleted.
 test("a chip of an ambiguous short reference draws the reference as written, not as deleted", () => {
-  const ambiguous: NodeChip & { readonly ambiguous: true } = {
+  const ambiguous: NodeChip = {
     ambiguous: true,
     answered: true,
     gone: true,

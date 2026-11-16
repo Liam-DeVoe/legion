@@ -1011,17 +1011,13 @@ export function NodeEdges({
  * target's name is plain words already (`tree-drafts.ts`'s `treeContext` names every kind of
  * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
  * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
- *
- * `ambiguous` is part F's `NodeChip.ambiguous`, which its `chipOf` sets where the read answers
- * `ReferenceTarget.ambiguous` (decision 89); the prop names it until F's head that carries it
- * is merged here.
  */
 function Chip({
   chip,
   label,
   tabStops,
 }: {
-  chip: NodeChip & { readonly ambiguous?: true };
+  chip: NodeChip;
   label?: string;
   tabStops: boolean;
 }): ReactNode {
