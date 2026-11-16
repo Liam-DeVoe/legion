@@ -351,11 +351,16 @@ type ErasedScope struct {
 }
 
 // ErasedReply names an erased reply's entry in the margin record of the thread it stands in: the
-// root's mark id, and the reply's author as the record writes it (ActorRef). An entry of that
-// record goes when its author is that one and its text is one of the erased texts, which is the
-// reply's body as the reply's write projected it (api's commentMarkRecord).
+// root's mark id, the reply's author as the record writes it (ActorRef), and the time the reply
+// was made as the record writes it (MarkTime). An entry of that record goes when its author and
+// its time are those.
+//
+// The entry is named by who and when, never by its text: an edit of a reply projects the root's
+// record no more (api's editComment re-projects an anchored comment alone), so the entry holds
+// the body the reply had when the record was last written, which an erase after an edit no longer
+// reads as any one of its texts.
 type ErasedReply struct {
-	Record, By string
+	Record, By, At string
 }
 
 // ReadErasedLiveText reads, inside tx, the live state of the document artifactID names as the
@@ -429,7 +434,7 @@ func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope
 	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
-	margin, moved := erasedMargin(doc, scope)
+	margin, moved := keptMargin(marginOf(doc), scope)
 	if erased.seed, err = encodeDocumentSeed(seeded, tree, margin); err != nil {
 		return nil, fmt.Errorf("seed the redacted document %s: %w", artifactID, err)
 	}
@@ -473,13 +478,18 @@ func replacedAt(tree *pmdoc.Node, path []int, with *pmdoc.Node) *pmdoc.Node {
 	return &copied
 }
 
-// erasedMargin is the live document's margin as the erase leaves it, and how many records it
-// dropped or rewrote: every record but those scope names whole, and the record of each thread an
-// erased reply stands in with that reply's entries taken out. Every other record is another
-// comment's, which stands as it is.
-func erasedMargin(doc *crdt.Doc, scope ErasedScope) (map[string]any, int) {
+// marginOf is every margin record doc holds, by its mark id.
+func marginOf(doc *crdt.Doc) map[string]any {
 	margin := map[string]any{}
 	doc.GetMap(marksMapName).ForEach(func(key string, record any) { margin[key] = record })
+	return margin
+}
+
+// keptMargin is margin as the erase leaves it, and how many records it dropped or rewrote: every
+// record but those scope names whole, and the record of each thread an erased reply stands in
+// with that reply's entry taken out (ErasedReply). Every other record is another comment's, which
+// stands as it is.
+func keptMargin(margin map[string]any, scope ErasedScope) (map[string]any, int) {
 	moved := 0
 	for _, key := range scope.Records {
 		if _, held := margin[key]; held {
@@ -497,8 +507,8 @@ func erasedMargin(doc *crdt.Doc, scope ErasedScope) (map[string]any, int) {
 		for _, entry := range replies {
 			fields, _ := entry.(map[string]any)
 			by, _ := fields["by"].(string)
-			text, _ := fields["text"].(string)
-			if by == reply.By && slices.Contains(scope.Texts, text) {
+			at, _ := fields["at"].(string)
+			if by == reply.By && at == reply.At {
 				continue
 			}
 			kept = append(kept, entry)
@@ -512,6 +522,66 @@ func erasedMargin(doc *crdt.Doc, scope ErasedScope) (map[string]any, int) {
 		moved++
 	}
 	return margin, moved
+}
+
+// KeptMarginQuoting answers the mark id of every margin record of the document artifactID names
+// that the erase keeps (scope) and that holds one of scope.Texts, read through q from the stored
+// history and taking no lock, so a run without --confirm lists them in its read-only transaction.
+//
+// Such a record is another comment's - a suggestion whose replacement, or a comment whose body,
+// quotes the erased text - and it is that comment's text, which the erase leaves (R5). It stands
+// in the seed the erase writes in place of the document's history, so those bytes stay in that
+// document's doc_updates, and the listing names each such record as left rather than reading the
+// whole history as the erased node's.
+func KeptMarginQuoting(ctx context.Context, q Queryer, artifactID string, scope ErasedScope) ([]string, error) {
+	head, err := NewPgVersioned(nil).head(ctx, q, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if head == 0 {
+		return nil, nil
+	}
+	doc, err := documentThrough(artifactID, head, storedUpdates(ctx, q, artifactID, head), maxUpdateItems)
+	if err != nil {
+		return nil, fmt.Errorf("load document %s: %w", artifactID, err)
+	}
+	if doc == nil {
+		return nil, nil
+	}
+	kept, _ := keptMargin(marginOf(doc), scope)
+	var quoting []string
+	for key, record := range kept {
+		if holdsAnyText(record, scope.Texts) {
+			quoting = append(quoting, key)
+		}
+	}
+	slices.Sort(quoting)
+	return quoting, nil
+}
+
+// holdsAnyText is whether any string in value, at any depth, holds one of texts.
+func holdsAnyText(value any, texts []string) bool {
+	switch value := value.(type) {
+	case string:
+		for _, text := range texts {
+			if strings.Contains(value, text) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range value {
+			if holdsAnyText(item, texts) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range value {
+			if holdsAnyText(item, texts) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // encodeDocumentSeed writes tree and margin into a fresh document and returns its one durable

@@ -2953,7 +2953,9 @@ It rewrites, with a marker naming the node and the `graph_erasures` record where
   A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited: the erase replaces the whole history with one fresh update of the live document as it leaves it, through the statements a rebuild writes (`docs.ReadErasedLiveText`, `PgVersioned.RebuildTx`).
   For a block, that update holds the live document with the marker in place of the erased text inside the erased block's own range and nowhere else.
   For a comment, it holds the live document with the comment's margin record, or a reply's entry in its root's record, taken out and nothing else.
+  A reply's entry is found by its author and the time the reply was made, never by its text, since an edit of a reply does not write the root's record again and the entry keeps the body the reply had before.
   Every other block, anchor mark and margin record stands as it was, so another comment stays anchored and its suggestion can still be accepted.
+  A kept record that quotes the erased text - a suggestion's replacement, or another comment's body - is that comment's text, and the listing names it as left, by its document, its mark id and its comment, since those bytes stay in the new history.
   The change is announced, so a room any server holds of the document finds its history replaced, closes and reloads.
   It writes no version: the document reads as its live text, ahead of whatever version the erase left it.
   What that costs is the edits before the erase as separate steps, the anchor marks inside the erased block, and the keystrokes of an editor open on it that were not yet stored.
