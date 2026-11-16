@@ -1271,6 +1271,18 @@ jobs:
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
+              # The daemon's NATS connection presents its service token through natscred and takes
+              # its reply prefix from natsgrant (internal/natsauth), which reach the token client,
+              # the bus and the packages under them.
+              - 'packages/envoy/internal/broker/oauthwire/*'
+              - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
+              - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/id/*'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/natsgrant/**'
               - *go_workspace
               # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
               - 'AGENTS.md'
