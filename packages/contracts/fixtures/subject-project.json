@@ -398,5 +398,89 @@
       "forms": ["notifications.github.acme.widgets.>"]
     },
     { "topic": "notifications.dispatch.issue.>", "forms": ["notifications.dispatch.issue.>"] }
+  ],
+  "roleClaimKey": [
+    { "project": "INFRA", "role": "legion-infra-controller", "key": "legion-infra-controller" },
+    {
+      "project": "PRIV",
+      "role": "legion-priv-priv-1-architect",
+      "key": "legion-priv-priv-1-architect"
+    },
+    { "project": "_", "role": "lead-reviewer", "key": "lead-reviewer" },
+    { "project": "_", "role": "legion-x-controller", "key": "legion-x-controller" },
+    { "project": "INFRA", "role": "reviewer", "key": "INFRA.reviewer" },
+    { "project": "PRIV", "role": "reviewer", "key": "PRIV.reviewer" },
+    { "project": "_", "role": "legion-infra-controller", "key": "_.legion-infra-controller" },
+    {
+      "project": "PRIV",
+      "role": "legion-infra-controller",
+      "key": "PRIV.legion-infra-controller"
+    },
+    { "project": "LEGION", "role": "lead-reviewer", "key": "LEGION.lead-reviewer" }
+  ],
+  "issueEventKey": [
+    {
+      "subject": "notifications.dispatch.issue.INFRA-12.comment.created",
+      "key": "INFRA-12",
+      "legacy": true,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA.INFRA-12.comment.created",
+      "key": "INFRA-12",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA-12",
+      "key": "INFRA-12",
+      "legacy": true,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA.INFRA-12",
+      "key": "INFRA-12",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.PRIV.PRIV-1.issue.updated",
+      "key": "PRIV-1",
+      "legacy": false,
+      "ok": true
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA.LINUX-5.comment.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    {
+      "subject": "notifications.dispatch.issue._.INFRA-12.comment.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    {
+      "subject": "notifications.dispatch.issue.INFRA.comment.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    { "subject": "notifications.dispatch.issue.INFRA", "key": "", "legacy": false, "ok": false },
+    {
+      "subject": "notifications.dispatch.issue.infra-12.comment.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    { "subject": "notifications.dispatch.issue.", "key": "", "legacy": false, "ok": false },
+    {
+      "subject": "notifications.dispatch.document.INFRA.INFRA-12.created",
+      "key": "",
+      "legacy": false,
+      "ok": false
+    },
+    { "subject": "notifications.agent.INFRA-12", "key": "", "legacy": false, "ok": false }
   ]
 }

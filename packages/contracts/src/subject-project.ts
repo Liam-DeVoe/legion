@@ -302,3 +302,51 @@ export function canonicalRole(role: string): { project: string; name: string; le
   }
   return { project: roleProject(role), name: role, legacy: true };
 }
+
+/**
+ * The issue key an issue event's name carries, in either form: the new form names the key's own
+ * project and then the key (`notifications.dispatch.issue.INFRA.INFRA-12.<type>`), and the old form
+ * the key alone (`notifications.dispatch.issue.INFRA-12.<type>`), with `legacy` true. Undefined for
+ * a name of the family whose key is in neither form, a project that is not the key's own among
+ * them, and for a name of any other family. The old form is read until it is refused only.
+ */
+export function issueEventKey(subject: string): { key: string; legacy: boolean } | undefined {
+  if (!subject.startsWith(DISPATCH_ISSUE_TOPIC_PREFIX)) return undefined;
+  const [first = "", second = ""] = subject.slice(DISPATCH_ISSUE_TOPIC_PREFIX.length).split(".");
+  if (issueProject(first) !== undefined) return { key: first, legacy: true };
+  if (issueProject(second) === first) return { key: second, legacy: false };
+  return undefined;
+}
+
+/**
+ * The key of a role claim in the `envoy_roles` bucket: the bare role name when `project` is
+ * `roleProject(role)`, which every claim made before a producer addresses a role under another
+ * project is, and `<project>.<role>` only when it is not, so no claim that exists ever changes key.
+ * `project` is a project key or `NO_PROJECT`. A role's name holds no dot, so the two kinds of key
+ * never collide.
+ */
+export function roleClaimKey(project: string, role: string): string {
+  return project === roleProject(role) ? role : `${project}.${role}`;
+}
+
+/**
+ * A role claim's key read back to the project and role it was written from (`roleClaimKey`): a key
+ * naming a project and a role is that pair, and a bare key is the role, working for the project
+ * its name says (`roleProject`). Unlike `canonicalRole`, which goes with the old form of a claimed
+ * role, it stays: a bare key is how every claim of a role's own project is keyed for good.
+ */
+export function parseRoleClaimKey(key: string): { project: string; role: string } {
+  const dot = key.indexOf(".");
+  if (dot >= 0) {
+    const project = key.slice(0, dot);
+    const role = key.slice(dot + 1);
+    if (
+      (PROJECT_KEY_PATTERN.test(project) || project === NO_PROJECT) &&
+      role !== "" &&
+      !role.includes(".")
+    ) {
+      return { project, role };
+    }
+  }
+  return { project: roleProject(key), role: key };
+}

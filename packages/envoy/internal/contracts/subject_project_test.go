@@ -51,6 +51,17 @@ type subjectProjectFixture struct {
 		Topic string   `json:"topic"`
 		Forms []string `json:"forms"`
 	} `json:"topicForms"`
+	RoleClaimKey []struct {
+		Project string `json:"project"`
+		Role    string `json:"role"`
+		Key     string `json:"key"`
+	} `json:"roleClaimKey"`
+	IssueEventKey []struct {
+		Subject string `json:"subject"`
+		Key     string `json:"key"`
+		Legacy  bool   `json:"legacy"`
+		OK      bool   `json:"ok"`
+	} `json:"issueEventKey"`
 }
 
 func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
@@ -74,6 +85,8 @@ func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
 		"legacyTwin":     {len(fixture.LegacyTwin), 20},
 		"canonicalRole":  {len(fixture.CanonicalRole), 8},
 		"topicForms":     {len(fixture.TopicForms), 7},
+		"roleClaimKey":   {len(fixture.RoleClaimKey), 9},
+		"issueEventKey":  {len(fixture.IssueEventKey), 13},
 	} {
 		if count[0] < count[1] {
 			t.Fatalf("the shared cases' %s section holds %d rows, want at least %d", section, count[0], count[1])
@@ -169,6 +182,33 @@ func TestATopicsFormsAreItselfAndItsOtherForm(t *testing.T) {
 	for _, row := range readSubjectProjectFixture(t).TopicForms {
 		if got := TopicForms(row.Topic); !slices.Equal(got, row.Forms) {
 			t.Errorf("TopicForms(%q) = %q, want %q", row.Topic, got, row.Forms)
+		}
+	}
+}
+
+// A role claim is keyed by its bare name whenever its project is the one the name itself gives
+// (RoleProject), which is every claim a build made before any producer addressed a role under
+// another project, and by its project and name only when the project differs; each key reads back
+// to the pair it was written from.
+func TestARoleClaimIsKeyedByItsBareNameUnlessItsProjectDiffers(t *testing.T) {
+	for _, row := range readSubjectProjectFixture(t).RoleClaimKey {
+		if got := RoleClaimKey(row.Project, row.Role); got != row.Key {
+			t.Errorf("RoleClaimKey(%q, %q) = %q, want %q", row.Project, row.Role, got, row.Key)
+		}
+		if project, role := ParseRoleClaimKey(row.Key); project != row.Project || role != row.Role {
+			t.Errorf("ParseRoleClaimKey(%q) = %q, %q; want %q, %q", row.Key, project, role, row.Project, row.Role)
+		}
+	}
+}
+
+// An issue event's name carries its issue's key in either form, the new one under the key's own
+// project; a name of the family whose key is in neither form, and a name of any other family,
+// carries none.
+func TestAnIssueEventNamesItsKeyInEitherForm(t *testing.T) {
+	for _, row := range readSubjectProjectFixture(t).IssueEventKey {
+		key, legacy, ok := IssueEventKey(row.Subject)
+		if key != row.Key || legacy != row.Legacy || ok != row.OK {
+			t.Errorf("IssueEventKey(%q) = %q, %v, %v; want %q, %v, %v", row.Subject, key, legacy, ok, row.Key, row.Legacy, row.OK)
 		}
 	}
 }

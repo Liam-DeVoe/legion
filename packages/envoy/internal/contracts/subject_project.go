@@ -313,3 +313,51 @@ func CanonicalRole(role string) (project, name string, legacy bool) {
 	}
 	return RoleProject(role), role, true
 }
+
+// IssueEventKey reads the issue key an issue event's name carries, in either form: the new form
+// names the key's own project and then the key (notifications.dispatch.issue.INFRA.INFRA-12.<type>),
+// and the old form the key alone (notifications.dispatch.issue.INFRA-12.<type>), with legacy
+// true. ok is false for a name of the family whose key is in neither form, a project that is not
+// the key's own among them, and for a name of any other family. The old form is read until it is
+// refused only.
+func IssueEventKey(subject string) (key string, legacy, ok bool) {
+	rest, found := strings.CutPrefix(subject, DispatchIssueTopicPrefix)
+	if !found {
+		return "", false, false
+	}
+	first, after, _ := strings.Cut(rest, ".")
+	if _, isKey := IssueProject(first); isKey {
+		return first, true, true
+	}
+	second, _, _ := strings.Cut(after, ".")
+	if project, isKey := IssueProject(second); isKey && project == first {
+		return second, false, true
+	}
+	return "", false, false
+}
+
+// RoleClaimKey is the key of a role claim in the envoy_roles bucket: the bare role name when
+// project is RoleProject(role), which every claim made before a producer addresses a role under
+// another project is, and project + "." + role only when it is not, so no claim that exists ever
+// changes key. project is a project key or NoProject. A role's name holds no dot
+// (roles.PatternString), so the two kinds of key never collide.
+func RoleClaimKey(project, role string) string {
+	if project == RoleProject(role) {
+		return role
+	}
+	return project + "." + role
+}
+
+// ParseRoleClaimKey reads a role claim's key back to the project and role it was written from
+// (RoleClaimKey): a key naming a project and a role is that pair, and a bare key is the role,
+// working for the project its name says (RoleProject). Unlike CanonicalRole, which goes with the
+// old form of a claimed role, it stays: a bare key is how every claim of a role's own project is
+// keyed for good.
+func ParseRoleClaimKey(key string) (project, role string) {
+	if project, role, found := strings.Cut(key, "."); found {
+		if (projectKey.MatchString(project) || project == NoProject) && role != "" && !strings.Contains(role, ".") {
+			return project, role
+		}
+	}
+	return RoleProject(key), key
+}

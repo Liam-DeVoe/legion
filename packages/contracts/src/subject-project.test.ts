@@ -4,8 +4,11 @@ import path from "node:path";
 import {
   canonicalRole,
   canonicalTopic,
+  issueEventKey,
   issueProject,
   legacyTwin,
+  parseRoleClaimKey,
+  roleClaimKey,
   roleProject,
   subjectProject,
   subjectProjectFamilies,
@@ -26,6 +29,8 @@ const fixture = JSON.parse(
   legacyTwin: { canonical: string; twin: string | null }[];
   canonicalRole: { role: string; project: string; name: string; legacy: boolean }[];
   topicForms: { topic: string; forms: string[] }[];
+  roleClaimKey: { project: string; role: string; key: string }[];
+  issueEventKey: { subject: string; key: string; legacy: boolean; ok: boolean }[];
 };
 
 // Each section held at least this many rows when this was written: a read that finds a handful,
@@ -39,6 +44,8 @@ const least = {
   legacyTwin: 20,
   canonicalRole: 8,
   topicForms: 7,
+  roleClaimKey: 9,
+  issueEventKey: 13,
 } as const;
 
 for (const [section, count] of Object.entries(least)) {
@@ -103,6 +110,21 @@ test("a claimed role reads in either form", () => {
 test("a topic's forms are itself and the other form of its name", () => {
   for (const row of fixture.topicForms) {
     expect(topicForms(row.topic), row.topic).toEqual(row.forms);
+  }
+});
+
+test("a role claim is keyed by its bare name unless its project differs, and reads back", () => {
+  for (const row of fixture.roleClaimKey) {
+    expect(roleClaimKey(row.project, row.role), `${row.project} ${row.role}`).toBe(row.key);
+    expect(parseRoleClaimKey(row.key), row.key).toEqual({ project: row.project, role: row.role });
+  }
+});
+
+test("an issue event's name carries its key in either form, and any other name none", () => {
+  for (const row of fixture.issueEventKey) {
+    expect(issueEventKey(row.subject), row.subject).toEqual(
+      row.ok ? { key: row.key, legacy: row.legacy } : undefined
+    );
   }
 });
 
