@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { graphNode, graphNodeFields } from "../../__tests__/graph-fixture";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
@@ -50,14 +50,13 @@ function itemEdge(issueKey: string, kind: BlockItemKind, id: string, text: strin
     direction: "in",
     excerpt: { text },
     kind: "mentions",
-    node: {
-      ...graphNodeFields(),
+    node: graphNode({
       id,
       issue_key: issueKey,
       kind,
       project: "CORE",
       ref: `dispatch://${issueKey}/${kind}/${id}`,
-    },
+    }),
     source_seq: 7,
   };
 }
@@ -76,8 +75,7 @@ const READ: GraphReferences = {
       direction: "in",
       excerpt: { block_id: "b2", text: WORDS.ownBlock },
       kind: "mentions",
-      node: {
-        ...graphNodeFields(),
+      node: graphNode({
         block_id: "b2",
         id: `comment/${OWN_COMMENT}#b2`,
         issue_key: "CORE-1",
@@ -85,7 +83,7 @@ const READ: GraphReferences = {
         parent: { id: OWN_COMMENT, kind: "comment", ref: OWN_COMMENT_REFERENCE },
         project: "CORE",
         ref: `${OWN_COMMENT_REFERENCE}#b-b2`,
-      },
+      }),
       source_seq: 8,
     },
     itemEdge("CORE-1", "ask", OWN_ASK, WORDS.ownAsk),
@@ -204,7 +202,7 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
 
 /** The reads open Details makes of the fixture's issue beside the references, each answering the
  *  API's empty shape (`IssueMargin.test.tsx`'s `stubIssueApi`); a read that reached the network
- *  would fail the file (`__tests__/network-guard.ts`). */
+ *  would fail the file (`__tests__/network.ts`). */
 function stubDetailsReads(details: IssueDetails): () => void {
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(details),

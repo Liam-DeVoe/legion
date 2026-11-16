@@ -794,7 +794,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
   const { unmount } = renderDetails();
 
   try {
-    const toggle = await screen.findByRole("button", { name: "Referenced by" });
+    const toggle = await screen.findByRole("button", { name: PROPERTY_LABELS.referenced_by });
     expect(toggle, "Referenced by's control is not in the page's ink").toHaveClass(pageInkText);
     for (const token of linkText.split(" ")) {
       expect(toggle, "Referenced by's control is in the application's link blue").not.toHaveClass(
@@ -813,7 +813,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
       list.id
     );
     expect(
-      await screen.findByRole("button", { name: "Referenced by (0)" }),
+      await screen.findByRole("button", { name: `${PROPERTY_LABELS.referenced_by} (0)` }),
       "Referenced by's control does not read the rows of the list it opened"
     ).toBe(toggle);
   } finally {

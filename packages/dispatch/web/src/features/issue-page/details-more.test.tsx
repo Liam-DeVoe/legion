@@ -14,10 +14,12 @@ import type {
   CommentDelivery,
   DispatchEvent,
   IssueDetails,
+  MessageDelivery,
+  MessageRead,
   Subscriber,
   UserState,
 } from "../../api/types";
-import { queuedWait } from "../conversation/delivery";
+import { answeredWithErrorGuidance, queuedWait } from "../conversation/delivery";
 import { conversationItemId, pinnedItemMarker } from "../issue/pins";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
@@ -137,17 +139,21 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
       <QueryClientProvider client={readsHeld()}>{facts}</QueryClientProvider>
     </MemoryRouter>
   );
-  await waitFor(() =>
-    expect(screen.getByTestId("focused-node-facts").getAttribute("data-focused-node")).toBe(
-      "comment-1"
-    )
-  );
-  expect(screen.queryByRole("button", { name: CONTROL_LABELS.edit })).toBeNull();
-  alone.unmount();
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("focused-node-facts").getAttribute("data-focused-node")).toBe(
+        "comment-1"
+      )
+    );
+    expect(screen.queryByRole("button", { name: CONTROL_LABELS.edit })).toBeNull();
+  } finally {
+    alone.unmount();
+  }
 
+  const client = readsHeld();
   const view = render(
     <MemoryRouter>
-      <QueryClientProvider client={readsHeld()}>
+      <QueryClientProvider client={client}>
         <OutlineWriterProvider issueKey={KEY}>
           <Probe />
           {facts}
@@ -165,6 +171,30 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
       expect(writer?.editing).toEqual({ body: OWN_COMMENT.body, id: "comment-1" })
     );
     expect(writer?.reply).toBeNull();
+
+    // The reader's own comment is told by the page's one rule (`isReader`), as the outline's
+    // row tells it: their login in any casing, and never words an agent wrote for them, which
+    // the row calls the agent's.
+    act(() => {
+      client.setQueryData(
+        ["comments", KEY],
+        [{ ...OWN_COMMENT, author: { id: "Alice", kind: "user" } }]
+      );
+    });
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.edit }),
+      "the reader's own comment under their login in another casing draws no Edit"
+    ).not.toBeNull();
+    act(() => {
+      client.setQueryData(
+        ["comments", KEY],
+        [{ ...OWN_COMMENT, author: { ...OWN_COMMENT.author, act: { session: "planner" } } }]
+      );
+    });
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.edit }),
+      "an agent's comment for the reader draws Edit"
+    ).toBeNull();
   } finally {
     view.unmount();
   }
@@ -456,6 +486,26 @@ function attempt(target: string, over: Partial<CommentDelivery>): CommentDeliver
   };
 }
 
+/** One attempt to deliver `message-1` to the session it reached, `""` where it reached none. */
+function messageAttempt(over: Partial<MessageDelivery>): MessageDelivery {
+  return {
+    accepted_as: null,
+    accepted_at: null,
+    attempt: 1,
+    created_at: new Date().toISOString(),
+    delivery: "btw",
+    duplicate: false,
+    envelope_id: null,
+    error: null,
+    message_id: "message-1",
+    reply_id: null,
+    requested_by: null,
+    session_id: "",
+    state: "sent",
+    ...over,
+  };
+}
+
 // R6 of dispatch://INFRA-3948, and the Spec's `activity-feed-names-mention-delivery-outcomes`:
 // each delivery of the focused comment says how it stands. One that could not reach its agent
 // reads "Not delivered", with Retry only while a Retry cannot deliver it twice (`isSafeRetry`),
@@ -473,26 +523,65 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
     ],
   });
   const listComments = spyOn(api, "listComments").mockResolvedValue([mentioned]);
+  // Bob's message to a role: the session it reached answered the first attempt with an error,
+  // and the second could not reach the one it named.
+  const thread: MessageRead = {
+    message: {
+      author: { id: "bob", kind: "user" },
+      body: "Bob's message.",
+      broadcast_id: null,
+      created_at: "2026-11-15T10:00:00Z",
+      deliveries: [
+        messageAttempt({
+          envelope_id: "envelope-1",
+          error: "the side turn failed",
+          state: "failed",
+        }),
+        messageAttempt({
+          attempt: 2,
+          error: "no live session reviewer-3",
+          session_id: "reviewer-3",
+          state: "failed",
+        }),
+      ],
+      id: "message-1",
+      in_reply_to: null,
+      issue_key: KEY,
+      reply_block: null,
+      target: "role:legion-p-core-1-reviewer",
+    },
+    replies: [],
+  };
+  const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([thread]);
   const createCommentDelivery = spyOn(api, "createCommentDelivery").mockImplementation(
     async (_id, target, delivery) => attempt(target ?? "", { attempt: 2, delivery })
   );
+  const createMessageDelivery = spyOn(api, "createMessageDelivery").mockImplementation(
+    async (_id, delivery) => messageAttempt({ attempt: 3, delivery })
+  );
   const client = readsHeld();
-  client.setQueryData(["comments", KEY], [mentioned]);
-  const node = commentNode(mentioned);
-  const view = render(
+  // The outline read the comments a minute ago, and the app's client holds a read 30 s
+  // (`main.tsx`): the facts read them from the cache all the same, so the focus landing on the
+  // comment costs no request (R9).
+  client.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
+  client.setQueryData(["comments", KEY], [mentioned], { updatedAt: Date.now() - 60_000 });
+  client.setQueryData(["issue-messages", KEY], [thread]);
+  const drawn = (focused: FocusedNode) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <FocusedNodeProvider>
-          <Focus node={node} />
+          <Focus node={focused} />
           <DetailsFocusedNode issue={issue} state={undefined} />
         </FocusedNodeProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const view = render(drawn(commentNode(mentioned)));
   try {
     await waitFor(() =>
       expect(document.querySelectorAll("[data-deliveries] > li")).toHaveLength(3)
     );
+    expect(listComments, "the facts read the outline's comments again").not.toHaveBeenCalled();
     const [failed, old, queued] = [
       ...document.querySelectorAll<HTMLElement>("[data-deliveries] > li"),
     ];
@@ -524,10 +613,66 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
       )
     );
     expect(createCommentDelivery).toHaveBeenCalledTimes(1);
+
+    // A mention sent to a role is named by the session that took it, and one no session took
+    // by the page's word for an agent: an address is no name (D6 of dispatch://INFRA-3948).
+    const roled = bobsComment("comment-2", {
+      deliveries: [
+        attempt("role:legion-p-core-1-tester", { session_id: "tester-7" }),
+        attempt("role:legion-p-core-1-reviewer", {}),
+      ],
+    });
+    listComments.mockResolvedValue([roled]);
+    await act(() => client.invalidateQueries({ queryKey: ["comments", KEY] }));
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-deliveries] [data-agent-name="tester-7"]'),
+        "the mention's delivery is not named by the session it reached"
+      ).not.toBeNull()
+    );
+    const [reached, unheld] = [...document.querySelectorAll<HTMLElement>("[data-deliveries] > li")];
+    expect(reached?.textContent).not.toContain("role:");
+    expect(unheld?.textContent).toStartWith(`${CONTROL_LABELS.unnamed_recipient} · `);
+
+    // A message's deliveries the same, its Retry sent again for that message.
+    view.rerender(
+      drawn({
+        author: thread.message.author,
+        id: "message-1",
+        item: { id: "message-1", kind: "message" },
+        title: thread.message.body,
+        type: "message",
+      })
+    );
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-deliveries] [data-agent-name="reviewer-3"]')
+      ).not.toBeNull()
+    );
+    const [answered, refused] = [
+      ...document.querySelectorAll<HTMLElement>("[data-deliveries] > li"),
+    ];
+    if (answered === undefined || refused === undefined) {
+      throw new Error("the message's facts draw fewer than two deliveries");
+    }
+    expect(answered.textContent).toStartWith(`${CONTROL_LABELS.unnamed_recipient} · `);
+    expect(answered.textContent).not.toContain("role:");
+    expect(retryOf(answered)).toBeNull();
+    // What a message's failure says is the message's own card's guidance, not a mention's.
+    expect(answered.textContent).toContain(answeredWithErrorGuidance("card"));
+
+    await userEvent.click(within(refused).getByRole("button", { name: CONTROL_LABELS.retry }));
+
+    await waitFor(() =>
+      expect(createMessageDelivery).toHaveBeenCalledWith("message-1", "btw", keyedAttempt)
+    );
+    expect(createMessageDelivery).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
     listComments.mockRestore();
+    listIssueMessages.mockRestore();
     createCommentDelivery.mockRestore();
+    createMessageDelivery.mockRestore();
   }
 });
 
@@ -577,6 +722,20 @@ test("the line that says what is new holds across a close and an open of Details
     [4, 3, 2, 1].map((seq) => claim(seq))
   );
   const hold: DrawerHold = {};
+  // The outline read the issue's comments, messages and asks a minute ago, and the app's client
+  // holds a read 30 s (`main.tsx`): each open of Details draws the history from them all the
+  // same, so an open costs no request but the log's (R9).
+  const outlineReads = [
+    spyOn(api, "listComments").mockResolvedValue([OWN_COMMENT]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const client = readsHeld();
+  client.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
+  const minuteAgo = { updatedAt: Date.now() - 60_000 };
+  client.setQueryData(["asks", KEY], [], minuteAgo);
+  client.setQueryData(["comments", KEY], [OWN_COMMENT], minuteAgo);
+  client.setQueryData(["issue-messages", KEY], [], minuteAgo);
   /** The history's entries in the order it draws them: each event by its sequence, and the
    *  line that says what is new by its words. */
   const drawn = () =>
@@ -586,7 +745,7 @@ test("the line that says what is new holds across a close and an open of Details
   const atTheMark = ["4", "3", CONTROL_LABELS.history_unread, "2", "1"];
   const view = render(
     <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
-      <QueryClientProvider client={readsHeld()}>
+      <QueryClientProvider client={client}>
         <HistoryInDrawer hold={hold} />
       </QueryClientProvider>
     </MemoryRouter>
@@ -598,6 +757,10 @@ test("the line that says what is new holds across a close and an open of Details
 
     act(() => hold.open?.(true));
     await waitFor(() => expect(drawn()).toEqual(atTheMark));
+    expect(
+      outlineReads.map((read) => read.mock.calls.length),
+      "the history read the outline's comments, messages or asks again"
+    ).toEqual([0, 0, 0]);
 
     act(() => hold.open?.(false));
     expect(screen.queryByTestId("issue-history")).toBeNull();
@@ -606,8 +769,10 @@ test("the line that says what is new holds across a close and an open of Details
 
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(4));
     expect(drawn()).toEqual(atTheMark);
+    expect(outlineReads.map((read) => read.mock.calls.length)).toEqual([0, 0, 0]);
   } finally {
     view.unmount();
     getIssueEvents.mockRestore();
+    for (const read of outlineReads) read.mockRestore();
   }
 });

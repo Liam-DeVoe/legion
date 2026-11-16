@@ -7,7 +7,8 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
-import type { DispatchEvent, IssueDetails, MessageRead } from "../../api/types";
+import type { Artifact, DispatchEvent, IssueDetails, MessageRead } from "../../api/types";
+import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey } from "../activity/activity-model";
 import { IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -29,6 +30,23 @@ function claim(seq: number): DispatchEvent {
     seq,
     type: "issue.claimed",
   } as DispatchEvent;
+}
+
+/** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events` and the
+ *  issue's messages read `messages`, with no comment and no ask. Returns what restores them. */
+function stubHistoryReads(
+  events: readonly DispatchEvent[],
+  messages: readonly MessageRead[] = []
+): () => void {
+  const reads = [
+    spyOn(api, "getIssueEvents").mockResolvedValue([...events]),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([...messages]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  return () => {
+    for (const read of reads) read.mockRestore();
+  };
 }
 
 const ROW_HEIGHT = 40;
@@ -86,12 +104,9 @@ function installRowLayout(): { restore: () => void } {
 // `data-history-entry`, its own id, the identity the anchor follows.
 test("an event arriving while the reader is in the history leaves their entry where it was", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue(
+  const restoreReads = stubHistoryReads(
     Array.from({ length: 12 }, (_, index) => claim(12 - index))
   );
-  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
-  const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const layout = installRowLayout();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -113,7 +128,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
         </QueryClientProvider>
       </MemoryRouter>
     ).unmount;
-    await screen.findByRole("list", { name: "Issue activity" });
+    await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(12));
     setScrollY(300);
     const reading = document.querySelectorAll<HTMLElement>("[data-event-seq]")[8];
@@ -133,10 +148,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
   } finally {
     unmount?.();
     layout.restore();
-    getIssueEvents.mockRestore();
-    listComments.mockRestore();
-    listIssueMessages.mockRestore();
-    listIssueAsks.mockRestore();
+    restoreReads();
     if (scrollY === undefined) {
       Reflect.deleteProperty(window, "scrollY");
     } else {
@@ -170,15 +182,10 @@ function agentMessage(id: string, ago: number): MessageRead {
 // entry's own id instead, or it holds the first of them while the reader is on the second.
 test("a reader on one of two threads whose events are unread keeps their entry when an event arrives", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue(
-    Array.from({ length: 6 }, (_, index) => claim(6 - index))
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 6 }, (_, index) => claim(6 - index)),
+    [agentMessage("m-older", 200), agentMessage("m-newer", 100)]
   );
-  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
-  const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([
-    agentMessage("m-older", 200),
-    agentMessage("m-newer", 100),
-  ]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const layout = installRowLayout();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -200,7 +207,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
         </QueryClientProvider>
       </MemoryRouter>
     ).unmount;
-    await screen.findByRole("list", { name: "Issue activity" });
+    await screen.findByRole("list", { name: CONTROL_LABELS.history_list });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(8));
     const entries = [...document.querySelectorAll<HTMLElement>("[data-event-seq]")];
     expect(entries.slice(6).map((entry) => entry.getAttribute("data-event-seq"))).toEqual([
@@ -222,10 +229,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
   } finally {
     unmount?.();
     layout.restore();
-    getIssueEvents.mockRestore();
-    listComments.mockRestore();
-    listIssueMessages.mockRestore();
-    listIssueAsks.mockRestore();
+    restoreReads();
     if (scrollY === undefined) {
       Reflect.deleteProperty(window, "scrollY");
     } else {
@@ -237,12 +241,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
 // R7 of dispatch://INFRA-3948: a turn's Reply is drawn only under the page's writer, and sets it
 // to reply to that turn; the box at the foot of the outline that sends it is part L's.
 test("a turn's Reply sets the writer to reply to that turn", async () => {
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
-  const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([
-    agentMessage("m-turn", 60),
-  ]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const restoreReads = stubHistoryReads([], [agentMessage("m-turn", 60)]);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -271,11 +270,14 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
         <QueryClientProvider client={queryClient}>{history}</QueryClientProvider>
       </MemoryRouter>
     );
-    await waitFor(() =>
-      expect(document.querySelector('[data-history-item="m-turn"]')).not.toBeNull()
-    );
-    expect(document.querySelectorAll("[data-history-reply]")).toHaveLength(0);
-    alone.unmount();
+    try {
+      await waitFor(() =>
+        expect(document.querySelector('[data-history-item="m-turn"]')).not.toBeNull()
+      );
+      expect(document.querySelectorAll("[data-history-reply]")).toHaveLength(0);
+    } finally {
+      alone.unmount();
+    }
 
     unmount = render(
       <MemoryRouter>
@@ -299,22 +301,46 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
     expect(writer?.editing).toBeUndefined();
   } finally {
     unmount?.();
-    getIssueEvents.mockRestore();
-    listComments.mockRestore();
-    listIssueMessages.mockRestore();
-    listIssueAsks.mockRestore();
+    restoreReads();
   }
 });
 
 // R4 of dispatch://INFRA-3948: the address of a turn in a day before today opens that day with
 // the turn marked, and the day's line is then the reader's like any other: a press on it closes
-// the day the address opened (review 4581663780).
+// the day the address opened.
 test("a day the address opened closes when the reader presses its line", async () => {
   const earlier = agentMessage("m-earlier", 2 * 24 * 60 * 60);
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([claim(1)]);
-  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
-  const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([earlier]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  // Today's lines beside it: a document added, then renamed, each a link to the document.
+  const plan: Artifact = {
+    created_at: new Date().toISOString(),
+    created_by: { id: "planner", kind: "session" },
+    id: "plan",
+    issue_key: KEY,
+    kind: "doc",
+    name: "plan.md",
+    primary: false,
+    project: "CORE",
+    ref_key: "artifact:plan",
+    session_id: null,
+    slug: "plan-md",
+    versions: [],
+  };
+  const restoreReads = stubHistoryReads(
+    [
+      {
+        ...claim(3),
+        payload: { artifact: plan, previous_name: "draft.md" },
+        type: "artifact.renamed",
+      } as DispatchEvent,
+      {
+        ...claim(2),
+        payload: { artifact: { ...plan, name: "draft.md" } },
+        type: "artifact.created",
+      } as DispatchEvent,
+      claim(1),
+    ],
+    [earlier]
+  );
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -351,11 +377,19 @@ test("a day the address opened closes when the reader presses its line", async (
 
     expect(dayLine()?.getAttribute("aria-expanded")).toBe("false");
     expect(document.querySelector('[data-history-item="m-earlier"]')).toBeNull();
+
+    // A document's lines link to it in the page's ink, as an upload's do, never in the
+    // application's link blue (decision 56).
+    for (const name of ["draft.md", "plan.md"]) {
+      const link = screen.getByRole("link", { name });
+      expect(link.getAttribute("href")).toBe(`/issues/${KEY}/artifacts/plan-md`);
+      expect(link, `${name}'s link is not in the page's ink`).toHaveClass(pageInkText);
+      for (const token of linkText.split(" ")) {
+        expect(link, `${name}'s link is in the application's link blue`).not.toHaveClass(token);
+      }
+    }
   } finally {
     unmount?.();
-    getIssueEvents.mockRestore();
-    listComments.mockRestore();
-    listIssueMessages.mockRestore();
-    listIssueAsks.mockRestore();
+    restoreReads();
   }
 });

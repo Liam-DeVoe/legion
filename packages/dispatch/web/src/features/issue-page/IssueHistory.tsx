@@ -9,7 +9,7 @@ import { Link, useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
-import type { IssueDetails, UserState } from "../../api/types";
+import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import {
   pageHairBg,
@@ -27,9 +27,9 @@ import { scrollElementToTop } from "../doc/scroll-block";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
-import { AgentName } from "../refs/AgentName";
+import { AgentName, type AgentPart, AgentParts } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
@@ -133,19 +133,24 @@ export function IssueHistory({
         mergeEventPages(current as EventPages | undefined, incoming as EventPages)
       ),
   });
-  // The outline's own reads, under its keys, so the threads cost no request of their own. The
-  // asks tell a reply under a question, the outline's, from one under an approval request.
+  // The outline's own reads, under its keys, so the threads cost no request of their own: never
+  // stale here, since the outline's own reads and every invalidation keep them current, so an
+  // open of Details reads the cache however long ago the outline read it. The asks tell a reply
+  // under a question, the outline's, from one under an approval request.
   const comments = useQuery({
     queryFn: () => api.listComments(issueKey),
     queryKey: ["comments", issueKey],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   const messages = useQuery({
     queryFn: () => api.listIssueMessages(issueKey),
     queryKey: ["issue-messages", issueKey],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   const asks = useQuery({
     queryFn: () => api.listIssueAsks(issueKey, "all"),
     queryKey: ["asks", issueKey],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   const issueState = stateForIssue(state, issueKey);
   const events = useMemo(() => log.data?.pages.flat() ?? [], [log.data]);
@@ -436,7 +441,13 @@ function Entry({
       >
         <span className="min-w-40 flex-1 break-words">
           {head}
-          <ActivityLine description={entry.description} event={entry.event} issueKey={issueKey} />
+          {/* `main`'s line links a document's name in the application's link blue, which
+              Details draws in no line (decision 56): those two lines are the history's own. */}
+          {entry.event.type === "artifact.created" || entry.event.type === "artifact.renamed" ? (
+            <DocumentLine artifact={entry.event.payload.artifact} description={entry.description} />
+          ) : (
+            <ActivityLine description={entry.description} event={entry.event} issueKey={issueKey} />
+          )}
         </span>
         <PinButton
           label={isPinned ? CONTROL_LABELS.unpin : CONTROL_LABELS.pin}
@@ -493,6 +504,46 @@ function Entry({
         </ol>
       )}
     </li>
+  );
+}
+
+/** The line of a document added or renamed, as `ActivityLine` draws it - its words, with the
+ *  last reading of the document's name a link to its page, the new title of a rename, whose slug
+ *  does not move - in the page's ink and its rows' underline, as an upload's file is. */
+function DocumentLine({
+  artifact,
+  description,
+}: {
+  artifact: Pick<
+    Artifact,
+    "issue_key" | "kind" | "name" | "primary" | "project" | "session_id" | "slug"
+  >;
+  description: readonly AgentPart[];
+}): ReactNode {
+  const name = artifact.name;
+  const linked = description.findIndex((part) => typeof part === "string" && part.includes(name));
+  return (
+    <span>
+      <AgentParts
+        parts={description}
+        text={(part, index) => {
+          if (index !== linked) return part;
+          const at = part.lastIndexOf(name);
+          return (
+            <>
+              {part.slice(0, at)}
+              <Link
+                className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
+                to={buildReferencePath(documentRoute(artifact))}
+              >
+                {name}
+              </Link>
+              {part.slice(at + name.length)}
+            </>
+          );
+        }}
+      />
+    </span>
   );
 }
 

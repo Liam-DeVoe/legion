@@ -912,6 +912,11 @@ export const CONTROL_LABELS = freeze({
   history_list: "Issue activity",
   history_unread: "New since you last read",
   history_uploaded: "uploaded",
+  /** What the history heads today's entries and yesterday's with (`history-model.ts`,
+   *  dispatch://INFRA-3948 R2), the Activity tab's words: an older day is headed by its date,
+   *  written out in the reader's locale (`dayLabel`). */
+  history_today: "Today",
+  history_yesterday: "Yesterday",
   /** A file's latest version as a download, in the node menu, before that version's number:
    *  the link the Artifacts list drew on each row (R3, c-nothing-lost). */
   download_version: "Download version",
@@ -1153,6 +1158,10 @@ export const CONTROL_LABELS = freeze({
    *  role no session held, or no target at all. An address is no name (R22), so the history's
    *  line and the focused row's delivery say what it is rather than where it was sent. */
   unnamed_recipient: "an agent",
+  /** What the shell's indicator calls an Unsubscribe of Details' People section while its write
+   *  is out, between the agent's name and the issue's key (`useIssueSubscribers.ts`): today's
+   *  issue header's words. */
+  unsubscribed_from: "unsubscribed from",
   /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task,
    *  a note and a decision, whose reads carry none. It is the page's own word, drawn with a
    *  shape of its own (`AuthorKind`), so no reader takes it for somebody's name. */

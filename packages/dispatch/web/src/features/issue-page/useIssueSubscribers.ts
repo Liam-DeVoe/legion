@@ -4,6 +4,7 @@ import { api } from "../../api/client";
 import type { Subscriber } from "../../api/types";
 import { useAgentText } from "../refs/AgentName";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
+import { CONTROL_LABELS } from "./page-words";
 
 /** The sessions subscribed to an issue, and the write that takes one off. The panel's People
  *  section draws both (dispatch://INFRA-1196 R12). */
@@ -13,7 +14,7 @@ export interface IssueSubscribers {
   readonly counted: boolean;
   readonly error: boolean;
   /** The failure itself, so the panel can tell a listener that is refilling from one that
-   *  failed (`QueryError`). */
+   *  failed (`DetailsErrorLine`). */
   readonly failure: unknown;
   readonly fetching: boolean;
   readonly refetch: () => void;
@@ -33,7 +34,7 @@ export function useIssueSubscribers(issueKey: string): IssueSubscribers {
     write: (sessionId: string, bounds) => api.unsubscribeIssueSession(issueKey, sessionId, bounds),
     inline: true,
     label: (sessionId) =>
-      `${agentText.sessionText(sessionId, rows.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issueKey}`,
+      `${agentText.sessionText(sessionId, rows.find((row) => row.session_id === sessionId)?.title)} ${CONTROL_LABELS.unsubscribed_from} ${issueKey}`,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["subscribers", issueKey] });
     },

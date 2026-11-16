@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -47,6 +47,8 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   const { pathname } = useLocation();
   const opensCollaborators = parseIssuePath(pathname)?.kind === "collaborators";
   const subscribers = useIssueSubscribers(issue.key);
+  // The session the last Unsubscribe was for: where Dispatch refused it, Retry sends it again.
+  const refused = subscribers.unsubscribe.variables;
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(opensCollaborators);
   // The address opens the list; closing it again is the reader's, so this only ever opens.
@@ -86,7 +88,9 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
         {subscribers.unsubscribe.isError ? (
           <DetailsErrorLine
             message={ANSWER_LINES.unsubscribe_failed}
-            onRetry={() => subscribers.unsubscribe.mutate(subscribers.unsubscribe.variables ?? "")}
+            onRetry={
+              refused === undefined ? undefined : () => subscribers.unsubscribe.mutate(refused)
+            }
             retrying={subscribers.unsubscribe.isPending}
           />
         ) : null}
@@ -154,15 +158,19 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     route === undefined ? undefined : issueAddress(route, search, hash, primarySpec(issue)?.slug);
   // An address naming a comment or a message, and opening no document.
   const namesItem = addressed?.document === undefined && addressed?.target?.kind === "item";
+  // The outline's reads, never stale here, as the history holds them (`IssueHistory.tsx`), so
+  // an address that names an item reads the cache however long ago the outline read it.
   const comments = useQuery({
     enabled: namesItem,
     queryFn: () => api.listComments(issue.key),
     queryKey: ["comments", issue.key],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   const messages = useQuery({
     enabled: namesItem,
     queryFn: () => api.listIssueMessages(issue.key),
     queryKey: ["issue-messages", issue.key],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   // The asks tell a reply under a question, which the outline draws, from one under an approval
   // request, which it does not (`agents-only.ts`).
@@ -170,16 +178,22 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     enabled: namesItem,
     queryFn: () => api.listIssueAsks(issue.key, "all"),
     queryKey: ["asks", issue.key],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   // A comment or message an agent wrote outside every thread a person wrote in is no row of the
   // outline: it is an entry of the history, which Details opens at, with the entry marked.
   // The outline's own ask input (`tree-drafts.ts`), so an address names the same turns it does.
-  const item = namesItem
-    ? agentsOnlyItem(addressed?.target, comments.data, messages.data, [
-        ...(issue.open_asks ?? []),
-        ...(asks.data ?? []),
-      ])
-    : undefined;
+  const named = namesItem ? addressed?.target?.id : undefined;
+  const item = useMemo(
+    () =>
+      named === undefined
+        ? undefined
+        : agentsOnlyItem({ id: named, kind: "item" }, comments.data, messages.data, [
+            ...(issue.open_asks ?? []),
+            ...(asks.data ?? []),
+          ]),
+    [asks.data, comments.data, issue.open_asks, messages.data, named]
+  );
   const opensHistory = route?.kind === "activity" || item !== undefined;
   const opensCollaborators = route?.kind === "collaborators";
   const drawer = useMarginDrawer();

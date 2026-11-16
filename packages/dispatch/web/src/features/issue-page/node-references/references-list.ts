@@ -16,9 +16,9 @@ import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-referen
  * newest first.
  *
  * The old page drew this per block of a document, as a disclosure on the Spec, Verification and
- * Plan tabs (`features/refs/ReferencedBy.tsx`'s `BlockReferences` at the merge base): what
- * serves the block, what needs it, and every mention of it. The new page draws `serves` as the
- * spine - a check and a plan task sit under the requirement they serve - and `needs` as a chip
+ * Plan tabs (`features/refs/ReferencedBy.tsx`'s `BlockReferences`): what serves the block, what
+ * needs it, and every mention of it. The new page draws `serves` as the spine - a check and a
+ * plan task sit under the requirement they serve - and `needs` as a chip
  * (`tree-drafts.ts`'s `servePlacements`), so those two reach the reader from the outline; a
  * mention of a node reaches them nowhere else, which is what this list is for.
  *
@@ -111,7 +111,7 @@ export function issueItemWords(reads: IssueItemReads): ReadonlyMap<string, strin
  * other node. The graph resolves a mention inside an item's words to that item's block
  * (`refs/item_block_nodes.go`), and hides the item's own mention whenever one of its blocks
  * holds the link, so this is how a comment that mentions the row reads as a comment and not as
- * a document (`features/refs/ReferencedBy.tsx`'s `blockItem`, ported).
+ * a document (`features/refs/ReferencedBy.tsx`'s `blockItem`).
  */
 function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["parent"]> | undefined {
   return node.kind === "block" &&
@@ -145,6 +145,9 @@ export function referenceRows(
   names: ReadonlyMap<string, string> = NO_NAMES
 ): ReferenceRow[] {
   const rows = new Map<string, ReferenceRow>();
+  // The issues the page's names know, which a citing item's line tells its references by: read
+  // once for the whole list.
+  const issues = knownIssueKeys(names);
   for (const edge of edges) {
     const item = blockItem(edge.node);
     const nodeKind = item?.kind ?? edge.node.kind;
@@ -157,7 +160,7 @@ export function referenceRows(
       at: held?.at ?? edge.created_at,
       key,
       kind: edge.kind,
-      line: words === undefined ? "" : itemLine(words, names),
+      line: words === undefined ? "" : itemLine(words, names, issues),
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
@@ -173,13 +176,17 @@ export function referenceRows(
  * by its target's words. The server's reading of a bare `dispatch://` reference is a link whose
  * words are the address itself, so the words write it as typed; a line holding a reference the
  * read has not named is `""`, and the row is named by its word, since an address is no name (R8,
- * R22).
+ * R22). `issues` is `knownIssueKeys(names)`.
  */
-function itemLine(words: string, names: ReadonlyMap<string, string>): string {
+function itemLine(
+  words: string,
+  names: ReadonlyMap<string, string>,
+  issues: readonly string[]
+): string {
   const first = firstLineOf(words);
   let line = "";
   let at = 0;
-  for (const one of rowReferences(first.line, knownIssueKeys(names))) {
+  for (const one of rowReferences(first.line, issues)) {
     if ((names.get(one.reference) ?? "").trim() === "") return "";
     const named = rowReferenceWords(one, names);
     line += first.line.slice(at, one.start);

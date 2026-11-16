@@ -6,8 +6,9 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
-import { collaboratorSections, IssueCollaboratorList } from "./IssueCollaboratorList";
-import { CONTROL_LABELS } from "./page-words";
+import { collaboratorSections } from "../issue/CollaboratorsTab";
+import { IssueCollaboratorList } from "./IssueCollaboratorList";
+import { CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
 
 function legionAgent(
   sessionId: string,
@@ -71,7 +72,6 @@ function renderCollaborators(collaborators: IssueCollaborators, agents: readonly
   );
   return {
     read,
-    view,
     restore: () => {
       view.unmount();
       read.mockRestore();
@@ -115,7 +115,7 @@ test("the collaborators split Legion agents into role sections and keep the serv
   );
 
   try {
-    const legion = await screen.findByRole("region", { name: "Legion agents" });
+    const legion = await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_legion });
     expect(
       within(legion)
         .getAllByRole("heading", { level: 3 })
@@ -142,17 +142,17 @@ test("the collaborators split Legion agents into role sections and keep the serv
         ?.getAttribute("data-agent-state")
     ).toBe("not-running");
 
-    const others = screen.getByRole("region", { name: "Other agents" });
+    const others = screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others });
     expect(sessionsIn(others)).toEqual(["newer", "older", "quiet"]);
 
-    const people = screen.getByRole("region", { name: "People" });
+    const people = screen.getByRole("region", { name: CONTROL_LABELS.collaborators_people });
     expect(
       within(people)
         .getAllByRole("listitem")
         .map((row) => row.textContent)
     ).toEqual([expect.stringContaining("bobwrote here"), "aliceassigned, claimed it"]);
     expect(within(people).queryByRole("link")).toBeNull();
-    expect(screen.queryByText("No one has worked this issue yet.")).toBeNull();
+    expect(screen.queryByText(EMPTY_STATE_LINES.no_collaborators)).toBeNull();
   } finally {
     tab.restore();
   }
@@ -166,9 +166,11 @@ test("the collaborators say when Legion's record could not be read, and when nob
     people: [],
   });
   try {
-    await screen.findByText("Legion's record of this issue's agents could not be read.");
-    expect(screen.queryByRole("region", { name: "Legion agents" })).toBeNull();
-    expect(sessionsIn(screen.getByRole("region", { name: "Other agents" }))).toEqual(["writer"]);
+    await screen.findByText(STATE_LINES.legion_record_unreadable);
+    expect(screen.queryByRole("region", { name: CONTROL_LABELS.collaborators_legion })).toBeNull();
+    expect(
+      sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
+    ).toEqual(["writer"]);
   } finally {
     unavailable.restore();
   }
@@ -180,10 +182,8 @@ test("the collaborators say when Legion's record could not be read, and when nob
     people: [],
   });
   try {
-    await screen.findByText("No one has worked this issue yet.");
-    expect(
-      screen.queryByText("Legion's record of this issue's agents could not be read.")
-    ).toBeNull();
+    await screen.findByText(EMPTY_STATE_LINES.no_collaborators);
+    expect(screen.queryByText(STATE_LINES.legion_record_unreadable)).toBeNull();
     expect(empty.read).toHaveBeenCalledWith("CORE-1");
   } finally {
     empty.restore();
@@ -209,9 +209,11 @@ test("a collaborator's reasons are the page's words, never their tokens", async 
       (name) => name.nextElementSibling?.textContent ?? ""
     );
   try {
-    const people = await screen.findByRole("region", { name: "People" });
+    const people = await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_people });
     expect(reasonsIn(people)).toEqual([`${words.claimed}, ${words.posted}`]);
-    expect(reasonsIn(screen.getByRole("region", { name: "Other agents" }))).toEqual([words.posted]);
+    expect(
+      reasonsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
+    ).toEqual([words.posted]);
     expect(reasonsIn(people).flatMap((line) => line.split(", "))).not.toContain("posted");
   } finally {
     list.restore();

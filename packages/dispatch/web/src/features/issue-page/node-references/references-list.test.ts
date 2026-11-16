@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { graphNodeFields } from "../../../__tests__/graph-fixture";
+import { graphNode } from "../../../__tests__/graph-fixture";
 import type { DisplayTree, GraphEdge } from "../../../api/types";
 import { issueItemWords, referenceRows } from "./references-list";
 
@@ -53,8 +53,7 @@ function edge(fields: {
     direction: "in",
     ...(fields.excerpt === undefined ? {} : { excerpt: { text: fields.excerpt } }),
     kind: fields.kind,
-    node: {
-      ...graphNodeFields(),
+    node: graphNode({
       id: fields.id,
       ...(fields.issueKey === undefined ? {} : { issue_key: fields.issueKey }),
       kind: fields.nodeKind,
@@ -62,7 +61,7 @@ function edge(fields: {
       ...(fields.project === undefined ? {} : { project: fields.project }),
       ...(fields.ref === undefined ? {} : { ref: fields.ref }),
       ...(fields.text === undefined ? {} : { text: fields.text }),
-    },
+    }),
     source_seq: null,
   };
 }

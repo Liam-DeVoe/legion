@@ -1,12 +1,15 @@
 import { expect, test } from "bun:test";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Actor, Artifact, Comment, DispatchEvent, MessageRead } from "../../api/types";
+import { dayLabel } from "../activity/activity-model";
 import {
   buildHistory,
   type HistoryDay,
   type HistoryEntry,
   type HistoryInput,
 } from "./history-model";
+import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
 
 /**
  * The issue's history as the panel draws it (dispatch://INFRA-1196 R15): every event that is no
@@ -53,19 +56,15 @@ function file(id: string, kind: Artifact["kind"], name: string): Artifact {
 
 function comment(id: string, at: string, author: Actor, over: Partial<Comment> = {}): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
-    answers: null,
-    artifact_id: null,
     ask_id: null,
     author,
     body: `Comment ${id}.`,
     created_at: at,
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: KEY,
-    mentions: [],
-    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -256,7 +255,17 @@ test("each day is headed, newest first, and the read mark falls between read and
     ["2026-11-14", false],
     ["2026-11-13", false],
   ]);
-  expect(days[1]?.label).toBe("Yesterday");
+  // Today and Yesterday are the page's own words, each a word it declares (decision 14); an
+  // older day is its date, written out in the reader's locale.
+  expect(
+    wordsIn(`${days[0]?.label} ${days[1]?.label}`).filter((word) => !DECLARED_WORDS.includes(word)),
+    "a day's heading draws a word the page does not declare"
+  ).toEqual([]);
+  expect(days.map((day) => day.label)).toEqual([
+    CONTROL_LABELS.history_today,
+    CONTROL_LABELS.history_yesterday,
+    dayLabel("2026-11-13", "2026-11-15"),
+  ]);
   // The line that says what is new closes the day of the oldest unread entry - today's list,
   // which is open - and never heads an earlier day, which the list folds.
   expect(days[0]?.entries.map((entry) => entry.kind)).toEqual(["event", "unread"]);
@@ -372,7 +381,4 @@ test("a delivery of an agents' thread names its agent, never its address", () =>
     ["delivered a comment mention to ", { sessionId: "tester-7", storedTitle: undefined }],
     ["delivered a comment mention to ", { sessionId: "reviewer", storedTitle: undefined }],
   ]);
-  expect(
-    lines.flat().filter((piece) => typeof piece === "string" && /session:|role:/u.test(piece))
-  ).toEqual([]);
 });

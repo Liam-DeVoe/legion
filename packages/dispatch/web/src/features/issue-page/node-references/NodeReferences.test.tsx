@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
-import { graphNodeFields } from "../../../__tests__/graph-fixture";
+import { graphNode } from "../../../__tests__/graph-fixture";
 import { api } from "../../../api/client";
 import type { CommentWithTrees, GraphEdge, GraphReferences } from "../../../api/types";
 import { MarginSlotProvider } from "../margin-slot";
@@ -21,13 +21,12 @@ const ANSWER: GraphReferences = {
       direction: "in",
       excerpt: { text: "Thread 1 opens here. Its second paragraph is a block of its own." },
       kind: "mentions",
-      node: {
-        ...graphNodeFields(),
+      node: graphNode({
         id: "11111111-1111-4111-8111-111111111111",
         issue_key: "LAY-2",
         kind: "comment",
         ref: "dispatch://LAY-2/comment/11111111-1111-4111-8111-111111111111",
-      },
+      }),
       source_seq: null,
     },
     {
@@ -41,26 +40,24 @@ const ANSWER: GraphReferences = {
           ":::",
       },
       kind: "serves",
-      node: {
-        ...graphNodeFields(),
+      node: graphNode({
         block_id: "c1",
         document: "dispatch://LAY-2/artifact/verification-md",
         id: "verification-md#c1",
         issue_key: "LAY-2",
         kind: "block",
         ref: "dispatch://LAY-2/artifact/verification-md#b-c1",
-      },
+      }),
       source_seq: null,
     },
   ],
-  node: {
-    ...graphNodeFields(),
+  node: graphNode({
     block_id: "r1",
     id: "spec#r1",
     issue_key: "LAY-2",
     kind: "block",
     ref: STATEMENT,
-  },
+  }),
 };
 
 /** The comment `ANSWER` names first, as this issue's comments read answers it: the outline has
@@ -203,24 +200,36 @@ test("the focus moving to another row closes the list, so the next row costs no 
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
   );
   expect(getReferences.mock.calls).toHaveLength(1);
-  view.rerender(
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const onRow = (drawn: Drawn) => (
     <MemoryRouter>
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
+      <QueryClientProvider client={client}>
         <MarginSlotProvider drawer={{ open: true, setOpen: () => {}, setPage: () => {} }}>
-          <NodeReferences
-            node={{ id: "spec#b-r2", type: "requirement" }}
-            reference="dispatch://LAY-2/spec#b-r2"
-          />
+          <NodeReferences node={drawn.node} reference={drawn.reference} />
         </MarginSlotProvider>
       </QueryClientProvider>
     </MemoryRouter>
+  );
+  view.rerender(
+    onRow({
+      node: { id: "spec#b-r2", type: "requirement" },
+      reference: "dispatch://LAY-2/spec#b-r2",
+    })
   );
   const control = await screen.findByRole("button", {
     name: NODE_REFERENCES_WORDS.what_references,
   });
   expect(control.getAttribute("aria-expanded")).toBe("false");
+  expect(getReferences.mock.calls).toHaveLength(1);
+  // The reader coming back to the row they opened it on finds it closed too (R9): the row it
+  // was opened on was let go of as the focus left it.
+  view.rerender(onRow(STATEMENT_ROW));
+  expect(
+    screen
+      .getByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+      .getAttribute("aria-expanded"),
+    "the list opened again as the focus came back to its row"
+  ).toBe("false");
   expect(getReferences.mock.calls).toHaveLength(1);
 });
 
@@ -277,8 +286,7 @@ test("a comment's block that mentions the row reads as that comment, with where 
     direction: "in",
     excerpt: { text },
     kind: "mentions",
-    node: {
-      ...graphNodeFields(),
+    node: graphNode({
       id,
       issue_key: "LAY-9",
       kind: "block",
@@ -288,7 +296,7 @@ test("a comment's block that mentions the row reads as that comment, with where 
         ref: "dispatch://LAY-9/comment/22222222-2222-4222-8222-222222222222",
       },
       ref: `dispatch://LAY-9/comment/22222222-2222-4222-8222-222222222222#${id}`,
-    },
+    }),
     source_seq: null,
   });
   const [mention] = ANSWER.edges ?? [];
@@ -330,8 +338,7 @@ test("a citing node of another issue is drawn by its kind's word with its issue 
     direction: "in",
     excerpt: { block_id: "r4", text: stored },
     kind: "mentions",
-    node: {
-      ...graphNodeFields(),
+    node: graphNode({
       block_id: "r4",
       document: "dispatch://CORE-2/spec",
       id: "spec#r4",
@@ -339,7 +346,7 @@ test("a citing node of another issue is drawn by its kind's word with its issue 
       kind: "block",
       ref: "dispatch://CORE-2/spec#b-r4",
       text: stored,
-    },
+    }),
     source_seq: null,
   };
   draw(true, STATEMENT_ROW, { ...ANSWER, edges: [elsewhere] });
@@ -366,15 +373,14 @@ test("a node the read gives no words for is drawn by its word alone, with no add
     created_at: "2026-11-15T08:00:00Z",
     direction: "in",
     kind: "serves",
-    node: {
-      ...graphNodeFields(),
+    node: graphNode({
       block_id: "c2",
       document: "dispatch://LAY-2/artifact/verification-md",
       id: "verification-md#c2",
       issue_key: "LAY-2",
       kind: "block",
       ref: "dispatch://LAY-2/artifact/verification-md#b-c2",
-    },
+    }),
     source_seq: null,
   };
   draw(true, STATEMENT_ROW, { ...ANSWER, edges: [wordless] });

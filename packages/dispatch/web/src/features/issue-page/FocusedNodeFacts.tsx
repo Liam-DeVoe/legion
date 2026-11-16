@@ -11,6 +11,7 @@ import {
   pageMutedText,
   pageQuietText,
 } from "../../theme/classes";
+import { storedMessages } from "../agent-view/stored-messages";
 import {
   type DeliveryOutcome,
   deliveryMode,
@@ -26,15 +27,21 @@ import { AskHandOn } from "../inbox/AskCard";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
 import { useCommentActionQueue } from "../margin/useCommentActionQueue";
-import { AgentParts, useAgentText } from "../refs/AgentName";
-import { sessionOfAddress } from "../refs/routes";
+import { type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { DetailsErrorLine } from "./details-error";
 import type { FocusedNode } from "./focused-node";
+import { recipient } from "./history-model";
 import { NodeReferences } from "./node-references/NodeReferences";
 import { useOutlineWriter } from "./outline-writer";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, DELIVERY_STATE_WORDS, NODE_TYPE_NAMES, sentenceCase } from "./page-words";
+import {
+  CONTROL_LABELS,
+  DELIVERY_STATE_WORDS,
+  isReader,
+  NODE_TYPE_NAMES,
+  sentenceCase,
+} from "./page-words";
 
 /**
  * The facts of whatever the reader's focus is on, in the panel (dispatch://INFRA-1196 R12, R14):
@@ -89,13 +96,16 @@ export function FocusedNodeFacts({
   );
 }
 
-/** One attempt to deliver a comment's mention, or a message, to an agent: who it went to, how it
- *  stands, and how a Retry sends it again in its own mode. */
+/** One attempt to deliver a comment's mention, or a message, to an agent: who it went to, as
+ *  the history names them (`recipient`), how it stands, how a Retry sends it again in its own
+ *  mode, and whose guidance a failure reads (`failureGuidance`): a mention's, or a message's
+ *  own card's. */
 interface Delivery extends DeliveryOutcome {
   readonly error: string | null;
   readonly key: string;
+  readonly recipient: AgentPart;
   readonly retry: (bounds: WriteBounds) => Promise<unknown>;
-  readonly target: string | null;
+  readonly surface: "card" | "mention";
 }
 
 /** The pin of an ask, a comment or a message; an open question's hand-on; a thread head's Resolve
@@ -113,21 +123,26 @@ function ItemControls({
   const queryClient = useQueryClient();
   const writer = useOutlineWriter();
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  // The reads the outline is drawn from, under its keys, so the controls cost no request.
+  // The reads the outline is drawn from, under its keys, so the controls cost no request: never
+  // stale here, since the outline's own reads and every invalidation keep them current, so
+  // the focus landing on a row reads the cache however long ago the outline read it.
   const comments = useQuery({
     enabled: item.kind === "comment",
     queryFn: () => api.listComments(issueKey),
     queryKey: ["comments", issueKey],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   const messages = useQuery({
     enabled: item.kind === "message",
     queryFn: () => api.listIssueMessages(issueKey),
     queryKey: ["issue-messages", issueKey],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   const asks = useQuery({
     enabled: item.kind === "ask",
     queryFn: () => api.listIssueAsks(issueKey, "all"),
     queryKey: ["asks", issueKey],
+    staleTime: Number.POSITIVE_INFINITY,
   });
   const actions = useCommentActionQueue({
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
@@ -146,9 +161,7 @@ function ItemControls({
     item.kind === "comment" ? comments.data?.find((one) => one.id === item.id) : undefined;
   const message =
     item.kind === "message"
-      ? (messages.data ?? [])
-          .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
-          .find((one) => one.id === item.id)
+      ? storedMessages(messages.data ?? []).find((one) => one.id === item.id)
       : undefined;
   const openAsk =
     item.kind === "ask"
@@ -156,8 +169,8 @@ function ItemControls({
       : undefined;
   const head = comment !== undefined && comment.reply_to === null;
   const undecided = comment?.suggestion !== null && comment?.suggestion?.accepted === null;
-  const own =
-    comment !== undefined && comment.author.kind === "user" && comment.author.id === viewer;
+  // The reader's own words by the page's one rule, as the outline's row tells them.
+  const own = isReader(comment?.author, viewer);
   const pending = actions.pendingActionIds.has(item.id);
   const control = `${pageHeaderControl} disabled:opacity-50`;
   const deliveries: Delivery[] = [
@@ -169,10 +182,11 @@ function ItemControls({
         duplicate: row.duplicate,
         error: row.error,
         key: `${row.target}:${row.attempt}`,
+        recipient: recipient(row.session_id, undefined, row.target),
         retry: (bounds: WriteBounds) =>
           api.createCommentDelivery(row.comment_id, row.target, mode, bounds),
         state: deliveryOutcomeState(row.state),
-        target: row.target,
+        surface: "mention" as const,
       };
     }),
     ...(message?.deliveries ?? []).map((row, index) => {
@@ -182,10 +196,11 @@ function ItemControls({
         createdAt: row.created_at,
         duplicate: row.duplicate,
         error: row.error,
-        key: `${message?.id ?? ""}:${index}`,
-        retry: (bounds: WriteBounds) => api.createMessageDelivery(message?.id ?? "", mode, bounds),
+        key: `${row.message_id}:${index}`,
+        recipient: recipient(row.session_id, undefined, message?.target ?? undefined),
+        retry: (bounds: WriteBounds) => api.createMessageDelivery(row.message_id, mode, bounds),
         state: deliveryOutcomeState(row.state),
-        target: row.session_id === "" ? (message?.target ?? null) : `session:${row.session_id}`,
+        surface: "card" as const,
       };
     }),
   ];
@@ -263,16 +278,7 @@ function ItemControls({
       {deliveries.length === 0 ? null : (
         <ul className={`flex flex-col gap-0.5 text-xs ${pageMutedText}`} data-deliveries="">
           {deliveries.map((delivery) => {
-            const guidance = failureGuidance(delivery, "mention");
-            const recipient =
-              delivery.target === null
-                ? CONTROL_LABELS.unnamed_recipient
-                : (() => {
-                    const sessionId = sessionOfAddress(delivery.target);
-                    return sessionId === undefined
-                      ? delivery.target
-                      : { sessionId, storedTitle: undefined };
-                  })();
+            const guidance = failureGuidance(delivery, delivery.surface);
             return (
               <li
                 className="flex flex-wrap items-center gap-x-2"
@@ -280,11 +286,11 @@ function ItemControls({
                 {...authorText}
               >
                 <span>
-                  <AgentParts parts={[recipient]} /> ·{" "}
+                  <AgentParts parts={[delivery.recipient]} /> ·{" "}
                   {/* A queued attempt waits for a session that is not running, which is what
                       the sender acts on, so it is read before a duplicate. */}
                   {delivery.state === "queued" ? (
-                    <AgentParts parts={queuedParts(recipient)} />
+                    <AgentParts parts={queuedParts(delivery.recipient)} />
                   ) : delivery.duplicate === true ? (
                     duplicateText
                   ) : (

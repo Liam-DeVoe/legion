@@ -15,13 +15,16 @@ import { authorText, pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
 import { useKnownReferenceNames } from "../reference-names";
 import { ROW_LINK } from "../row-references";
-import { issueItemWords, referenceRows } from "./references-list";
+import { issueItemWords, type ReferenceRow, referenceRows } from "./references-list";
 
 const EDGE_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.edges;
 const KIND_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.kinds;
 
 /** The words of no item, while the list is shut. */
 const NO_ITEM_WORDS: ReadonlyMap<string, string> = new Map();
+
+/** The rows of no list, while the list is shut. */
+const NO_ROWS: readonly ReferenceRow[] = [];
 
 /**
  * The words of the comments, messages and questions of the focused row's own issue, by their
@@ -122,8 +125,13 @@ export function NodeReferences({
   const names = useKnownReferenceNames();
   // An edge a newer build answers with, of a kind or to a node this page does not know, is left
   // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
-  // the node kind's, which says it was only named.
-  const rows = referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge), names);
+  // the node kind's, which says it was only named. Built while the list is open, and again only
+  // when what they are read from changes, not on every move of the focus.
+  const rows = useMemo(
+    () =>
+      open ? referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge), names) : NO_ROWS,
+    [itemWords, names, open, query.data]
+  );
   if (addressed === undefined) {
     return null;
   }

@@ -33,7 +33,7 @@ import { CONTROL_LABELS, issueStatusWord } from "./page-words";
  */
 export interface HistoryDay {
   readonly date: string;
-  /** What the day is headed, in the reader's words: Today, Yesterday, or the date. */
+  /** What the day is headed, in the page's words: Today, Yesterday, or the date written out. */
   readonly label: string;
   readonly today: boolean;
   /** The day's entries, newest first, with the reader's read mark among them where it falls. */
@@ -155,11 +155,14 @@ type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
 
 /** The issue's history by day, newest first (`HistoryDay`). */
 export function buildHistory(input: HistoryInput): HistoryDay[] {
-  const kinds = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
+  const artifacts = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
   const agentsOnly = agentsOnlyIds(input.comments, input.messages, input.asks);
   const entries: Dated[] = [];
   let previousStatus: string | undefined;
-  let run: { author: Actor; at: string; entry: Extract<Dated, { kind: "uploads" }> } | undefined;
+  // The upload entry one author's uploads are gathering in, and its place among `entries`.
+  let run:
+    | { author: Actor; at: string; entry: Extract<Dated, { kind: "uploads" }>; index: number }
+    | undefined;
   const ordered = [...input.events].sort((left, right) => left.seq - right.seq);
   const seqOf = new Map<string, number>();
   for (const event of ordered) {
@@ -172,8 +175,8 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
       event.type === "issue.closed"
         ? event.payload.status
         : undefined;
-    const upload = uploadOf(event, kinds);
-    if (ofOutlineRow(event, agentsOnly) || isDocumentVersion(event, kinds)) {
+    const upload = uploadOf(event, artifacts);
+    if (ofOutlineRow(event, agentsOnly) || isDocumentVersion(event, artifacts)) {
       if (status !== undefined) previousStatus = status;
       continue;
     }
@@ -186,7 +189,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
       if (near && run !== undefined) {
         const files = [...run.entry.files, upload];
         const grown = { ...run.entry, at: event.created_at, files, seq: event.seq };
-        entries[entries.indexOf(run.entry)] = grown;
+        entries[run.index] = grown;
         run = { ...run, entry: grown };
       } else {
         const entry = {
@@ -197,8 +200,8 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
           kind: "uploads" as const,
           seq: event.seq,
         };
+        run = { at: event.created_at, author: event.actor, entry, index: entries.length };
         entries.push(entry);
-        run = { at: event.created_at, author: event.actor, entry };
       }
       continue;
     }
@@ -237,10 +240,21 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     }
     day.entries.push(entry);
   }
+  // Today and yesterday are headed in the page's words (decision 14), an older day by its date
+  // as the Activity tab writes it out. Yesterday is read back from today's noon, so no change of
+  // the clocks moves it to another day.
+  const noon = new Date(`${input.today}T12:00:00`);
+  noon.setDate(noon.getDate() - 1);
+  const yesterday = dateKey(noon.toISOString());
   return days.map((day) => ({
     date: day.date,
     entries: day.entries,
-    label: dayLabel(day.date, input.today),
+    label:
+      day.date === input.today
+        ? CONTROL_LABELS.history_today
+        : day.date === yesterday
+          ? CONTROL_LABELS.history_yesterday
+          : dayLabel(day.date, input.today),
     today: day.date === input.today,
   }));
 }
@@ -272,10 +286,18 @@ function threadsOf(
     threads.push(threadEntry(commentTurn(root), replies.map(commentTurn), seqOf));
   }
   const unasked = comments.filter((comment) => comment.ask_id === null);
-  for (const root of unasked.filter((comment) => comment.reply_to === null)) {
-    const replies = unasked
-      .filter((comment) => comment.reply_to === root.id)
-      .sort((one, other) => compareTimestamps(one.created_at, other.created_at));
+  const repliesTo = new Map<string, typeof comments>();
+  for (const comment of unasked) {
+    if (comment.reply_to === null) continue;
+    const replies = repliesTo.get(comment.reply_to);
+    if (replies === undefined) repliesTo.set(comment.reply_to, [comment]);
+    else replies.push(comment);
+  }
+  for (const root of unasked) {
+    if (root.reply_to !== null) continue;
+    const replies = (repliesTo.get(root.id) ?? []).sort((one, other) =>
+      compareTimestamps(one.created_at, other.created_at)
+    );
     threads.push(threadEntry(commentTurn(root), replies.map(commentTurn), seqOf));
   }
   for (const thread of input.messages ?? []) {
@@ -355,8 +377,9 @@ function withPart(line: AgentPart[], token: string | undefined, part: AgentPart)
 
 /** Who a delivery went to, as the page names an agent (`AgentName`): the session the attempt
  *  reached, with the title the listener gave it, else the session its target names, else the
- *  page's word for an agent nothing names, where the target is a role no session held. */
-function recipient(
+ *  page's word for an agent nothing names, where the target is a role no session held. The
+ *  history's lines and the focused row's deliveries (`FocusedNodeFacts.tsx`) name it alike. */
+export function recipient(
   sessionId: string | null,
   title: string | undefined,
   target: string | undefined
