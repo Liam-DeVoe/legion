@@ -96,7 +96,12 @@ race lane filters are here, and so is envoy_client, which the first step had no 
 once main's new test files grew its generated blocks, and so is private_names_port, whose
 generated block names every migration test of the daemon's store and grows with each one
 main adds. They share no group with a filter of the other steps but ci_router,
-go_workspace, bun_install and legion_command, which this string writes again.
+go_workspace, bun_install and legion_command, which this string writes again. Seven more
+filters moved here when main's growth and the spec-check filters took the second string
+to 98,525 bytes, past the margin: broker_multiprocess, airlock_lean, envoy_smoke,
+worker_image, ci_filters, tool_fallback and ci_images, which need no group but ci_router
+and go_workspace. With them here, each of the three strings had 21,000 bytes or more of
+room to rule 18's margin again.
 
 filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq
 reads. A GitHub expression can build no object from three, so jq merges them here. A
@@ -520,13 +525,22 @@ must start this job too (check-ci-filters.sh's rule 15).
 
 envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
 checks, the seven shell-script tests, and the build and pack of the envoy commands,
-with the tests of internal/dispatch/architecture/notes and cmd/architecture-check,
-whose one run this is (envoy-go's unit step leaves them out), and the
-architecture-note check over this repository's own notes through the composite
-action .github/actions/architecture-check. gofmt -l . walks every .go file under
-packages/envoy, those tests and the scripts they drive live there, and `go build
-./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as the
-action's build of cmd/architecture-check does.
+with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
+internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
+run this is (envoy-go's unit step leaves them out), the architecture-note check over
+this repository's own notes through the composite action
+.github/actions/architecture-check, and the spec-file check over its .dispatch/spec
+through the composite action .github/actions/spec-check. gofmt -l . walks every .go
+file under packages/envoy, those tests and the scripts they drive live there, and
+`go build ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as
+the two actions' builds of their commands do.
+
+## envoy_go_checks: Those two steps judge the files at the actions' default paths,
+
+Those two steps judge the files at the actions' default paths,
+.dispatch/architecture and .dispatch/spec. The pattern names .dispatch whole:
+main holds no spec file yet, and check-ci-filters.sh refuses a pattern that
+matches no file (its rule 9).
 
 ## text_checks: The text checks of the three Go modules, the Dispatch
 
@@ -547,11 +561,11 @@ every package of this module it imports - the prompt below and the committed
 copies its text checks hold to the texts they copy, so the module's other files -
 its .sql, .json and .md - are no input of this job and no pattern here matches them.
 
-## text_checks: The six copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
+## text_checks: The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
 
-The six copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
-reads to hold them to the texts themselves: the waiting line's four, the way
-back's (way_back_doc_test.go:45) and the troubleshooting page's refusal table's
+The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
+reads to hold them to the texts themselves: the waiting line's four, the two way
+backs' (way_back_doc_test.go:70) and the troubleshooting page's refusal table's
 (troubleshooting_refusals_doc_test.go:36), each committed beside the package whose
 own check reads it. They are .txt files, which the module's `**/*.go` above does
 not match.
@@ -954,10 +968,10 @@ docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
 Caches: one step of the jobs this workflow calls saves an Actions cache entry itself,
 dispatch-two-builds' `Cache the previous build` (ci-job-dispatch-two-builds.yaml), which keeps
-the build of the previous commit that job compares against; two actions its jobs call can
-save one too, and only in a dispatched run (setup-bun and architecture-check, at this
-paragraph's end).
-setup-go caches nothing here (`cache: false` on every step, the architecture-check action's
+the build of the previous commit that job compares against; three actions its jobs call can
+save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
+this paragraph's end).
+setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of six families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
@@ -977,9 +991,9 @@ build cache is content-addressed, so a stale entry costs a run only what changed
 go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
 prefix, when the exact key misses, now applies on every run, a dispatched one on main
 included: it was held off main so that the entry a run saved after a Go bump held nothing the
-older Go built, and no step of this workflow saves a family any more (the architecture-check
-action below falls back only to an entry of its own Go version, so an entry it saves holds
-nothing an older Go built). There is no browser cache beside the Go
+older Go built, and no step of this workflow saves a family any more (the two check actions
+below fall back only to an entry of their own Go version, so an entry one saves holds nothing an
+older Go built). There is no browser cache beside the Go
 families any more: dispatch-browser.yaml's shard and alone jobs run in the image this
 repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 ~/.cache/ms-playwright restore would carry nothing they do not already have, and
@@ -990,16 +1004,17 @@ not in the tool-fallback and tool-fallback-arm jobs at all: that action reads th
 job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
 stand in for the install each of their cases is a reading of. A seventh family,
 `architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
-.github/actions/architecture-check's own, which envoy-go-checks runs: the action restores it
-and saves it itself, from $RUNNER_TEMP/architecture-check and not from the Go caches above,
-keyed on the Go version its own setup-go installed and on the SHA-256 of packages/envoy/go.sum
-(a miss restores the newest entry of that Go version), and ci-caches.yaml's architecture-check
-job fills it on main. The action saves only in a push, schedule or workflow_dispatch run, so
-within this workflow, which runs on no push and no schedule, only a dispatched run can save it
-(the bypass check dispatches one at main), only on a miss of the exact key, and into the scope
-of the ref it was dispatched on. check-ci-filters.sh's cache-family rule reads a workflow's own
-actions/cache steps and not a composite action's, so this paragraph is the one record of the
-action's restore and save.
+.github/actions/architecture-check's own, and an eighth,
+`spec-check-<os>-<arch>-go<version>-<hash>`, is .github/actions/spec-check's; envoy-go-checks runs
+both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
+or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own
+setup-go installed and on the SHA-256 of packages/envoy/go.sum (a miss restores the newest entry
+of that Go version), and the ci-caches.yaml job of the action's name fills it on main. Each
+action saves only in a push, schedule or workflow_dispatch run, so within this workflow, which
+runs on no push and no schedule, only a dispatched run can save it (the bypass check dispatches
+one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched
+on. check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a
+composite action's, so this paragraph is the one record of the two actions' restores and saves.
 
 ## Why the router runs on these events and no others
 
@@ -1520,11 +1535,12 @@ recheck a slow-suite failure on a pull request: the label picks the lane, while 
 
 envoy-go's fast half: the Go format check, the two generated-code checks, the seven
 shell-script tests and the build and pack of the envoy commands. It also runs the tests of
-internal/dispatch/architecture/notes and cmd/architecture-check, whose one run this is
-(envoy-go's unit step leaves them out), and the architecture-note check over this
-repository's own .dispatch/architecture through the composite action
-.github/actions/architecture-check,
-which other repositories call. The slow half below (the module's unit tests, the
+internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
+cmd/architecture-check and cmd/spec-check, whose one run this is (envoy-go's unit step leaves
+them out), the architecture-note check over this repository's own .dispatch/architecture
+through the composite action .github/actions/architecture-check, and the spec-file check over
+its .dispatch/spec through the composite action .github/actions/spec-check, both of which
+other repositories can call. The slow half below (the module's unit tests, the
 container-backed NATS matrix and the integration suite) is one of the nine slow suites,
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
