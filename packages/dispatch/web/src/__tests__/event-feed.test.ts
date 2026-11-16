@@ -1721,6 +1721,24 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     { change: "updated", id: "linkage-closure" },
     { issue_key: null, project: undefined }
   ),
+  "project.access_changed": event(
+    "project.access_changed",
+    {
+      project: "PROJ",
+      owner: "alice@example.com",
+      visibility: "public",
+      people: ["carol@example.com"],
+      groups: [],
+      change: "person_added",
+      principal: "carol@example.com",
+    },
+    { issue_key: null, project: "PROJ" }
+  ),
+  "access_group.changed": event(
+    "access_group.changed",
+    { change: "created", name: "crew" },
+    { issue_key: null, project: undefined }
+  ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),
   "result.recorded": event("result.recorded", {

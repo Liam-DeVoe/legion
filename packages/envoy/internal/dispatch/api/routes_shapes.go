@@ -565,6 +565,17 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
 	},
+	"GET /api/v1/projects/{key}/access":                   {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"PATCH /api/v1/projects/{key}/access":                 {Status: http.StatusOK, Response: model.ProjectAccess{}, Request: projectAccessInput{}},
+	"PUT /api/v1/projects/{key}/access/people/{email}":    {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"DELETE /api/v1/projects/{key}/access/people/{email}": {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"PUT /api/v1/projects/{key}/access/groups/{name}":     {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"DELETE /api/v1/projects/{key}/access/groups/{name}":  {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"GET /api/v1/access-groups":                           {Status: http.StatusOK, Response: []model.AccessGroup{}},
+	"PUT /api/v1/access-groups/{name}":                    {Status: http.StatusOK, Response: model.AccessGroup{}, Request: accessGroupInput{}},
+	"DELETE /api/v1/access-groups/{name}":                 {Status: http.StatusNoContent},
+	"GET /api/v1/access/projects/{key}":                   {Status: http.StatusOK, Response: model.AccessAnswer{}},
+	"GET /api/v1/access/person":                           {Status: http.StatusOK, Response: model.PersonAnswer{}},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
