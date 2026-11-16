@@ -706,7 +706,7 @@ const afterShots: Shot[] = [
     },
   },
   // Why it waits, ticked in the Columns menu, with its filter open: the daemon's reason for each
-  // card in the queue (Its slot back shows only while a row holds it), and None.
+  // card in the queue (Capacity shows only while a row waits for a slot), and None.
   {
     name: "filter-why-it-waits-1440",
     viewport: DESKTOP,
@@ -716,13 +716,13 @@ const afterShots: Shot[] = [
       await page.getByRole("button", { name: "Filter Why it waits", exact: true }).click();
       await page.waitForTimeout(500);
       const choices = await filterChoices(page, "Why it waits");
+      const gone = ["Its turn", "Its slot back", "Ready to start"];
       check(
-        ["Its turn", "A blocker", "A person", "None"].every((reason) =>
+        ["In the queue", "A blocker", "A person", "None"].every((reason) =>
           choices.some((each) => each.startsWith(`${reason}, `))
         ) &&
-          !["Ready to start", "Capacity"].some((old) =>
-            choices.some((each) => each.startsWith(old))
-          ),
+          !gone.some((old) => choices.some((each) => each.startsWith(old))) &&
+          !choices.some((each) => /slot/i.test(each)),
         `Why it waits filters by ${choices.join("; ")}`
       );
     },

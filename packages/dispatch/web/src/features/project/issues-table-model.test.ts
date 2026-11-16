@@ -395,10 +395,10 @@ test("Open asks, Review rounds, Workers and Legion tree filter by what their cel
   expect(show("waited", "1h-1d")).toBe("1 hour to 1 day");
   expect(show("activity", "held_children")).toBe("Waiting on child issues");
   expect(show("activity", "held_idle")).toBe("Idle");
-  // Why it waits says what holds the card up, as the daemon's `CardWaiting` does.
+  // Why it waits says what holds the card up, in this design's words.
   expect(
     ["ready", "slot", "blocked", "person", "none"].map((value) => show("waiting_reason", value))
-  ).toEqual(["Its turn", "Its slot back", "A blocker", "A person", "None"]);
+  ).toEqual(["In the queue", "Capacity", "A blocker", "A person", "None"]);
 });
 
 test("a link that picked open asks by count keeps its rows", () => {

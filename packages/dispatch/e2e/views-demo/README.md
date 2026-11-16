@@ -176,8 +176,8 @@ Without `--before` it takes the design's pictures, each named by what it shows. 
 - `columns-menu-1440`: the Columns menu;
 - `filter-open-asks-1440`: Open asks' filter open (With open asks, No open asks);
 - `filter-time-in-legion-phase-1440` and `filter-why-it-waits-1440`: Time in Legion phase, and
-  Why it waits (Its turn, A blocker, A person, None), each ticked in the Columns menu with its
-  filter open;
+  Why it waits (In the queue, A blocker, A person, None; Capacity stands where a row waits for
+  a slot), each ticked in the Columns menu with its filter open;
 - `view-open-info-hint-open-1440`: the Legion daemon hint open, from its place in the control
   row;
 - `project-settings-legion-panel-1440`: the project's settings page;
@@ -233,7 +233,8 @@ check of what the page drew failed:
   phase under `group=legion_phase`;
 - the Columns menu missing a Legion column's name, holding an old one, or scrolling;
 - Open asks', Time in Legion phase's or Why it waits' filter missing one of its choices, or Why
-  it waits still offering an old word;
+  it waits still offering an old word (Its turn, Its slot back, Ready to start, or any choice
+  holding the word slot);
 - the saved tab not standing open, or a failure flag left in the address.
 
 The report in the output lists all of it.
