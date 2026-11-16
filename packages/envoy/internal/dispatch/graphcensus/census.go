@@ -257,9 +257,9 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
-	table:    "comments.author",
+	table:    "comments.author, asks.author, asks.answer",
 	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
-		" and the owner of each session the server proved that wrote one",
+		" the owner of each session the server proved that wrote one, and the person each ask's answer names",
 	rows: `
 		select 'person ' || p.login, '` + graphstore.KindPerson + `', p.login, ''
 		from (` + commentPeople + `) p`,
@@ -389,6 +389,10 @@ var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key)
 // to or owned by a document whose address is past the bound is left whole out of the store, so
 // it states no authored_by and makes no author node, and a person whose only comment is one of
 // those is no node of the store and no difference of this census.
+//
+// An ask whose row names its node names people too (dispatch://INFRA-1150): its author, read as a
+// comment's is (graphstore.AskFacts states its authored_by), and the person whose answer it holds,
+// whose node its answered_by and decided_by point at (asks.Settle).
 var commentPeople = `
 	select distinct user_threads_login(author.login) as login
 	from (
@@ -406,6 +410,21 @@ var commentPeople = `
 		  and c.author->'act'->>'session' = c.author->>'id'
 		  and octet_length(c.author->>'id') <= ` + addressBound + `
 		  and ` + commentInTheStore + `
+		union all
+		select case
+			when k.author->>'kind' = 'user' and coalesce(k.author->>'id', '') <> '' then k.author->>'id'
+			when k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> '' then null
+			when coalesce(k.author->>'owner', '') <> '' then k.author->>'owner'
+		end
+		from asks k where k.node_kind is not null
+		union all
+		select k.author->>'owner'
+		from asks k
+		where k.node_kind is not null and k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> ''
+		  and k.author->'act'->>'session' = k.author->>'id'
+		  and octet_length(k.author->>'id') <= ` + addressBound + `
+		union all
+		select k.answer->>'user' from asks k where k.node_kind is not null and k.answer is not null
 	) author
 	where author.login is not null and user_threads_login(author.login) <> ''`
 

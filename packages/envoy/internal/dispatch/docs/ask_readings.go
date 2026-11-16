@@ -6,6 +6,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -57,14 +59,22 @@ type askAnswer struct {
 
 // askAnswers reads the ask each of blockIDs, ask blocks of artifactID, opens, as the store holds
 // it now, by block id; a block that opens no ask yet has none. It is the one reader of whether an
-// ask holds an answer that a reading inside it depends on, and the ask's `asks` row is what says
-// so today.
+// ask holds an answer that a reading inside it depends on, and it reads the ask's node: its newest
+// answer_state value (graphstore.TupleAnswerState), which asks.Settle appends, and which an ask
+// node holding none - an ask a process of the release before wrote, before the boot step states
+// it - reads as open. The asks row names the ask and its document's address alone.
 func askAnswers(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string) (map[string]askAnswer, error) {
 	rows, err := tx.Query(ctx, `
-		select k.block_id, k.id::text, k.state, k.issue_key, a.project_key, coalesce(a.slug, '')
+		select k.block_id, k.id::text, coalesce(answer.to_id, $3), k.issue_key, a.project_key, coalesce(a.slug, '')
 		from asks k join artifacts a on a.id = k.block_artifact_id
+		left join lateral (
+			select t.to_id, t.asserted from graph_tuples t
+			where t.from_kind = $4 and t.from_id = k.id::text and t.kind = $5 and t.to_kind = $6
+			order by t.seq desc
+			limit 1
+		) answer on answer.asserted
 		where k.block_artifact_id = $1 and k.block_id = any($2::text[])
-	`, artifactID, blockIDs)
+	`, artifactID, blockIDs, asks.StateOpen, graphstore.KindAsk, graphstore.TupleAnswerState, graphstore.KindValue)
 	if err != nil {
 		return nil, fmt.Errorf("read the answers of the asks of document %s: %w", artifactID, err)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -729,6 +730,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// The cause of the copies' copied_from (claimCopies): the version this settlement writes, or
+	// none for a settlement that writes no version.
+	copiesCause := graphstore.NoEvent
 	if versioning {
 		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.actor, &versionWrite{
 			authors:          st.credit.authors,
@@ -776,16 +780,26 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// What this settlement's block index stated waits for that event: its id is the cause
 		// every node and tuple of the pass carries, and it exists only now
 		// (graphstore.Caused). st.published's last entry is the event just appended.
-		if err := graphstore.Caused(ctx, tx, result.blocks, st.published[len(st.published)-1].ID); err != nil {
+		versionEventID := st.published[len(st.published)-1].ID
+		if err := graphstore.Caused(ctx, tx, result.blocks, versionEventID); err != nil {
 			return settleDone, st.abandon(err)
 		}
+		copiesCause = versionEventID
 	}
 	if err := st.appendEvents(ctx, st.reconciliation.events); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The follows of the asks this settlement opened wait for those asks' ask.opened events, which
-	// are among st.published now; causeFollows finds each by the ask its payload names.
+	// are among st.published now; causeFollows finds each by the ask its payload names, and
+	// causeSettledAnswers each answer state the settlement wrote by its event's type and ask.
 	if err := st.reconciliation.causeFollows(ctx, tx, st.published); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := st.reconciliation.causeSettledAnswers(ctx, tx, st.published); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	// The copies among the document's ask blocks, once the version's blocks are nodes.
+	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.actor, time.Now().UTC(), copiesCause); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the

@@ -3,7 +3,6 @@ package docs
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,7 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -569,30 +570,28 @@ func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID s
 
 // answerApprovalAsk answers the open approval request ask with Approve in actor's name, giving
 // reason as the answer's text, as a human's answer through the answer route is written, and
-// appends its ask.answered event on the ask's owner. The write names the open state it answers
-// from: a request that is no longer open is an error, not a second answer. The answer's time is
-// the transaction's now(), as the answer route's is: each process's host keeps its own clock, and
-// this one is the created_at of the ask.answered event appended here and of the review the carry
-// writes beside it, and the time the answer's part is written at (IndexAskPartsCounted below).
+// appends its ask.answered event on the ask's owner. The answer goes through the one writer of an
+// ask's answer state (asks.Settle), on the ask's node and then its row, and what it states on the
+// node is appended under that ask.answered once it exists. The write names the open state it
+// answers from: a request that is no longer open is an error, not a second answer. The answer's
+// time is the transaction's now(), as the answer route's is: each process's host keeps its own
+// clock, and this one is the created_at of the ask.answered event appended here and of the review
+// the carry writes beside it, and the time the answer's part is written at (IndexAskPartsCounted
+// below).
 func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ask *model.Ask, actor model.Actor, reason, serverURL string) (model.Event, error) {
 	var answeredAt time.Time
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&answeredAt); err != nil {
 		return model.Event{}, fmt.Errorf("read the approval answer's time: %w", err)
 	}
 	answer := model.AskAnswer{User: actor.ID, Selected: []string{ApprovalOptionApprove}, Text: &reason, At: answeredAt.UTC()}
-	encoded, err := json.Marshal(answer)
-	if err != nil {
-		return model.Event{}, fmt.Errorf("encode approval answer: %w", err)
-	}
-	answered, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $2 where id = $1 and state = 'open'`, ask.ID, encoded)
+	var held graphstore.Uncaused
+	change := asks.Answered(answer)
+	change.From, change.Who, change.At, change.Held = asks.StateOpen, actor, answer.At, &held
+	settled, err := asks.Settle(ctx, tx, ask.ID, change)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("answer approval ask: %w", err)
 	}
-	if answered.RowsAffected() != 1 {
-		return model.Event{}, fmt.Errorf("answer approval ask %s: it is no longer open", ask.ID)
-	}
-	ask.State = "answered"
-	ask.Answer = &answer
+	ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
 	// The answer is a part of the request, so its text reaches the graph with it, and the
 	// ask.answered below names what it moved.
 	changes, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, serverURL),
@@ -616,6 +615,9 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, as
 	// a ?since= read lists them.
 	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
 		return model.Event{}, fmt.Errorf("stamp approval ask answer references: %w", err)
+	}
+	if err := graphstore.Caused(ctx, tx, held, event.ID); err != nil {
+		return model.Event{}, fmt.Errorf("state the answer of approval ask %s: %w", ask.ID, err)
 	}
 	return event, nil
 }

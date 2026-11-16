@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -127,6 +128,17 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 		for _, kind := range done {
 			writeKindBackfill(out, kind)
 		}
+		if err != nil {
+			return report, err
+		}
+	}
+	// The asks and their followers (dispatch://INFRA-1150), after the object pass above wrote the
+	// node of every ask: the rest of the boot step's first phase (BackfillAsks), so a database the
+	// command fills reads as one the boot fills.
+	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){backfillAsks, backfillAskFollowers} {
+		done, err := write(ctx, database)
+		report.Kinds = append(report.Kinds, done)
+		writeKindBackfill(out, done)
 		if err != nil {
 			return report, err
 		}
@@ -1094,4 +1106,347 @@ func writeSessionBatch(ctx context.Context, database *store.Store, batch []sessi
 		return 0, 0, fmt.Errorf("write the nodes of a session batch: %w", err)
 	}
 	return int64(len(nodes)), 2 * int64(len(nodes)), nil
+}
+
+// The asks and their followers (dispatch://INFRA-1150 R3). An ask's node holds the documents it is
+// anchored to, owned by and part of, who asked it, its answer and the sessions that follow it, and
+// asks and ask_followers are the projection of those tuples from the moment a row names its node
+// (20261116094058's node_kind and node_address). A row a build before this release wrote names
+// none, and graph_edges' old arms answer it until these two passes state the row on the node and
+// mark it, on INFRA-1149's backfill contract: each walks only the rows its marker does not mark,
+// states every fact of a row in the transaction that marks it, and reads no marked row, so a run
+// after another, or beside a live server, does only the rows still owed. They are the boot step's
+// first phase after the object nodes (docs' decision step), and `backfill-graph-store` runs them
+// too.
+
+// askRowsRead is one batch of the asks rows that name no node and whose node the store holds, after
+// the id $1 and at most $2 of them, locked as an update of each row locks it: an answer this
+// release writes on such a row (asks.Settle) takes the same lock and writes the row alone, so the
+// batch reads the answer it marks, and an answer written after it finds the row marked and states
+// itself on the node. Each row answers its author, created_at, answer state, answer and resolution,
+// the addresses of its three documents (graphstore.AskPlaces), the ask.opened that recorded it and
+// the newest event that wrote its answer state, each 0 where none is found. A row any of whose
+// documents' addresses is past the store's bound is left out whole, as a comment is.
+var askRowsRead = `
+	select k.id::text, k.author, k.created_at, k.state, k.answer, k.resolution,
+	       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), coalesce(document.ref_key, ''),
+	       coalesce((select e.id from events e
+	                 where e.payload->>'id' = k.id::text and e.type = 'ask.opened'
+	                 order by e.id limit 1), $3),
+	       coalesce((select e.id from events e
+	                 where e.payload->>'id' = k.id::text and e.type in ('ask.opened', 'ask.answered', 'ask.resolved')
+	                 order by e.id desc limit 1), $3)
+	from asks k
+	join graph_nodes node on node.kind = 'ask' and node.id = k.id::text
+	left join artifacts anchor on anchor.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid)
+	left join artifacts owner on owner.id = k.artifact_id
+	left join artifacts document on document.id = k.block_artifact_id
+	where k.node_kind is null and k.id > $1::uuid` + askPlacesFit + `
+	order by k.id
+	limit $2
+	for no key update of k`
+
+// askPlacesFit is the test askRowsRead and the count of what is owed make of an ask's three
+// documents: each address inside the store's bound (graphstore.AskPlaces.Fit).
+var askPlacesFit = `
+	  and octet_length(coalesce(anchor.ref_key, '')) <= ` + addressBound + `
+	  and octet_length(coalesce(owner.ref_key, '')) <= ` + addressBound + `
+	  and octet_length(coalesce(document.ref_key, '')) <= ` + addressBound
+
+// backfillAsks states each asks row that names no node on the ask's node and marks the row: the
+// documents it is anchored to, owned by and part of and who asked it (graphstore.AskFacts), dated
+// at the row's created_at under the ask.opened that recorded it, and its answer state
+// (asks.AnswerFacts), dated at the answer's or the resolution's own `at` - the row's created_at for
+// an open ask - under the newest event that wrote it, each written by the person the row records
+// beside it. An ask whose node the store does not hold yet is left for the object pass that writes
+// it (backfillObjectNodes), which runs before this.
+func backfillAsks(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: "asks"}
+	after := zeroUUID
+	for {
+		rows, nodes, tuples, last, err := writeAskBatch(ctx, database, after)
+		if err != nil {
+			return done, err
+		}
+		done.Rows += rows
+		done.Nodes += nodes
+		done.Tuples += tuples
+		if rows < backfillBatch {
+			break
+		}
+		after = last
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from asks k
+		join graph_nodes node on node.kind = 'ask' and node.id = k.id::text
+		left join artifacts anchor on anchor.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid)
+		left join artifacts owner on owner.id = k.artifact_id
+		left join artifacts document on document.id = k.block_artifact_id
+		where k.node_kind is null`+askPlacesFit).Scan(&done.Remaining); err != nil {
+		return done, fmt.Errorf("count the asks still naming no node: %w", err)
+	}
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// writeAskBatch reads, locks and states one batch of the asks rows after the id after that name no
+// node (askRowsRead), in one transaction, and answers how many rows it marked, the nodes and the
+// tuples it stated as the upper bound the report states, and the last id it read. Every node of the
+// batch - the authors' and the answerers' - goes in its one store write before the first tuple, and
+// the rows are marked after both, as writeCommentBatch orders its write. The ask nodes themselves
+// are not written again: the object pass wrote each, and this states only the facts the row
+// projects.
+func writeAskBatch(ctx context.Context, database *store.Store, after string) (int64, int64, int64, string, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, 0, "", fmt.Errorf("begin an ask batch: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, askRowsRead, after, backfillBatch, graphstore.NoEvent)
+	if err != nil {
+		return 0, 0, 0, "", fmt.Errorf("read the asks naming no node: %w", err)
+	}
+	var ids []string
+	var nodes []graphstore.Node
+	var tuples []graphstore.Tuple
+	written := map[[2]string]struct{}{}
+	addNodes := func(more []graphstore.Node) {
+		for _, node := range more {
+			if _, made := written[[2]string{node.Kind, node.ID}]; !made {
+				written[[2]string{node.Kind, node.ID}] = struct{}{}
+				nodes = append(nodes, node)
+			}
+		}
+	}
+	for rows.Next() {
+		var id, state string
+		var authorJSON, answerJSON, resolutionJSON []byte
+		var createdAt time.Time
+		var places graphstore.AskPlaces
+		var opened, settled int64
+		if err := rows.Scan(&id, &authorJSON, &createdAt, &state, &answerJSON, &resolutionJSON,
+			&places.Anchor, &places.Owner, &places.Document, &opened, &settled); err != nil {
+			rows.Close()
+			return 0, 0, 0, "", fmt.Errorf("read an ask naming no node: %w", err)
+		}
+		var author model.Actor
+		if err := json.Unmarshal(authorJSON, &author); err != nil {
+			rows.Close()
+			return 0, 0, 0, "", fmt.Errorf("read the author of ask %s: %w", id, err)
+		}
+		var answer *model.AskAnswer
+		if len(answerJSON) > 0 {
+			answer = &model.AskAnswer{}
+			if err := json.Unmarshal(answerJSON, answer); err != nil {
+				rows.Close()
+				return 0, 0, 0, "", fmt.Errorf("read the answer of ask %s: %w", id, err)
+			}
+		}
+		var resolution *model.AskResolution
+		if len(resolutionJSON) > 0 {
+			resolution = &model.AskResolution{}
+			if err := json.Unmarshal(resolutionJSON, resolution); err != nil {
+				rows.Close()
+				return 0, 0, 0, "", fmt.Errorf("read the resolution of ask %s: %w", id, err)
+			}
+		}
+		// The ask's node is the object pass's, written already; its facts are what this states.
+		askNodes, facts, _ := graphstore.AskFacts(id, "", nil, author, createdAt, opened, places)
+		addNodes(askNodes[1:])
+		tuples = append(tuples, facts...)
+		who, at := backfillActor, createdAt
+		switch {
+		case state == asks.StateResolved && resolution != nil:
+			who, at = resolution.Actor, resolution.At
+		case answer != nil:
+			who, at = model.Actor{Kind: "user", ID: answer.User, Act: answer.Act}, answer.At
+		}
+		answerNodes, answerFacts, err := asks.AnswerFacts(id, state, answer, resolution, who, at, settled)
+		if err != nil {
+			rows.Close()
+			return 0, 0, 0, "", err
+		}
+		addNodes(answerNodes)
+		tuples = append(tuples, answerFacts...)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, "", fmt.Errorf("read the asks naming no node: %w", err)
+	}
+	if len(ids) == 0 {
+		return 0, 0, 0, "", nil
+	}
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		return 0, 0, 0, "", fmt.Errorf("state a batch of asks: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		update asks set node_kind = $2, node_address = id::text
+		where id = any($1::uuid[]) and node_kind is null
+	`, ids, graphstore.KindAsk); err != nil {
+		return 0, 0, 0, "", fmt.Errorf("name the nodes of an ask batch on their rows: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, 0, "", fmt.Errorf("commit an ask batch: %w", err)
+	}
+	return int64(len(ids)), int64(len(nodes)), int64(len(tuples)) + 2*int64(len(nodes)), ids[len(ids)-1], nil
+}
+
+// askFollowerRowsRead is one batch of the ask_followers rows that name no node, of an ask whose node
+// the store holds and a session the store can key, after the pair ($1, $2) and at most $3 of them,
+// locked as an update locks each, as askRowsRead locks the asks.
+var askFollowerRowsRead = `
+	select f.ask_id::text, f.session_id, f.since
+	from ask_followers f
+	join graph_nodes node on node.kind = 'ask' and node.id = f.ask_id::text
+	where f.node_kind is null and (f.ask_id, f.session_id) > ($1::uuid, $2::text)
+	  and octet_length(f.session_id) <= ` + addressBound + `
+	order by f.ask_id, f.session_id
+	limit $3
+	for no key update of f`
+
+// backfillAskFollowers states each ask_followers row that names no node as the ask node's
+// followed_by to the session, dated at the row's since, and marks the row; the session is a node
+// of the store from the same write on, as a follow makes it (asks.Follow). No row records who
+// added a follower, so the writer is the run (backfillActor), and no event is found for a row, so
+// the cause is the sentinel. A row of an ask the store holds no node of is left for the object
+// pass, and one of a session past the store's bound is no relation the store can key.
+func backfillAskFollowers(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: "ask_followers"}
+	after := [2]string{zeroUUID, ""}
+	for {
+		rows, nodes, tuples, last, err := writeAskFollowerBatch(ctx, database, after)
+		if err != nil {
+			return done, err
+		}
+		done.Rows += rows
+		done.Nodes += nodes
+		done.Tuples += tuples
+		if rows < backfillBatch {
+			break
+		}
+		after = last
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from ask_followers f
+		join graph_nodes node on node.kind = 'ask' and node.id = f.ask_id::text
+		where f.node_kind is null and octet_length(f.session_id) <= `+addressBound).Scan(&done.Remaining); err != nil {
+		return done, fmt.Errorf("count the ask followers still naming no node: %w", err)
+	}
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// writeAskFollowerBatch reads, locks and states one batch of the follower rows after the pair
+// after that name no node (askFollowerRowsRead), in one transaction - the sessions' nodes, then
+// each followed_by, then the marks - and answers how many rows it marked, the nodes and the tuples
+// it stated as the upper bound the report states, and the last pair it read.
+func writeAskFollowerBatch(ctx context.Context, database *store.Store, after [2]string) (int64, int64, int64, [2]string, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, 0, after, fmt.Errorf("begin an ask follower batch: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, askFollowerRowsRead, after[0], after[1], backfillBatch)
+	if err != nil {
+		return 0, 0, 0, after, fmt.Errorf("read the ask followers naming no node: %w", err)
+	}
+	var askIDs, sessions []string
+	var nodes []graphstore.Node
+	var tuples []graphstore.Tuple
+	made := map[string]struct{}{}
+	for rows.Next() {
+		var askID, session string
+		var since time.Time
+		if err := rows.Scan(&askID, &session, &since); err != nil {
+			rows.Close()
+			return 0, 0, 0, after, fmt.Errorf("read an ask follower naming no node: %w", err)
+		}
+		if _, ok := made[session]; !ok {
+			made[session] = struct{}{}
+			nodes = append(nodes, graphstore.SessionNode(session, backfillActor, since, graphstore.NoEvent))
+		}
+		tuples = append(tuples, graphstore.Tuple{
+			FromKind: graphstore.KindAsk, FromID: askID, Kind: graphstore.TupleFollowedBy,
+			ToKind: graphstore.KindSession, ToID: session,
+			At: since, Who: backfillActor, SourceEvent: graphstore.NoEvent, Asserted: true,
+		})
+		askIDs = append(askIDs, askID)
+		sessions = append(sessions, session)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, after, fmt.Errorf("read the ask followers naming no node: %w", err)
+	}
+	if len(askIDs) == 0 {
+		return 0, 0, 0, after, nil
+	}
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		return 0, 0, 0, after, fmt.Errorf("state a batch of ask followers: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		update ask_followers f set node_kind = $3, node_address = p.ask_id
+		from unnest($1::text[], $2::text[]) as p (ask_id, session_id)
+		where f.ask_id = p.ask_id::uuid and f.session_id = p.session_id and f.node_kind is null
+	`, askIDs, sessions, graphstore.KindAsk); err != nil {
+		return 0, 0, 0, after, fmt.Errorf("name the nodes of an ask follower batch on their rows: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, 0, after, fmt.Errorf("commit an ask follower batch: %w", err)
+	}
+	last := len(askIDs) - 1
+	return int64(len(askIDs)), int64(len(nodes)), int64(len(tuples)) + 2*int64(len(nodes)), [2]string{askIDs[last], sessions[last]}, nil
+}
+
+// BackfillAsks is the boot step's first phase (docs' decision step): the object nodes of every
+// issue, document, ask and message written before their writers wrote one (backfillObjectNodes),
+// so every ask a build before this release wrote has its node before a mark names it, then the
+// asks and the ask_followers rows that name no node, each in committed batches of backfillBatch.
+// It answers what each pass did; an error stops it where it stands, and every batch committed
+// before it stays.
+func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
+	done, err := backfillObjectNodes(ctx, database)
+	if err != nil {
+		return done, err
+	}
+	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){backfillAsks, backfillAskFollowers} {
+		report, err := write(ctx, database)
+		done = append(done, report)
+		if err != nil {
+			return done, err
+		}
+	}
+	return done, nil
+}
+
+// AsksOwed reports whether BackfillAsks has anything to do: a row of an object kind that names no
+// node, or an asks or ask_followers row the passes would mark. Each read stops at its first row,
+// so a store with nothing owed costs one probe per kind.
+func AsksOwed(ctx context.Context, q graphstore.Queryer) (bool, error) {
+	for _, kind := range objectKinds {
+		var owed bool
+		if err := q.QueryRow(ctx, `select exists (`+kind.read+`)`, kind.start, 1).Scan(&owed); err != nil {
+			return false, fmt.Errorf("read whether a %s row names no node: %w", kind.kind, err)
+		}
+		if owed {
+			return true, nil
+		}
+	}
+	var owed bool
+	if err := q.QueryRow(ctx, `
+		select exists (
+			select 1 from asks k
+			join graph_nodes node on node.kind = 'ask' and node.id = k.id::text
+			left join artifacts anchor on anchor.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid)
+			left join artifacts owner on owner.id = k.artifact_id
+			left join artifacts document on document.id = k.block_artifact_id
+			where k.node_kind is null`+askPlacesFit+`)
+		or exists (
+			select 1 from ask_followers f
+			join graph_nodes node on node.kind = 'ask' and node.id = f.ask_id::text
+			where f.node_kind is null and octet_length(f.session_id) <= `+addressBound+`)
+	`).Scan(&owed); err != nil {
+		return false, fmt.Errorf("read whether an ask or a follower names no node: %w", err)
+	}
+	return owed, nil
 }

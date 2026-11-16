@@ -134,6 +134,25 @@ var storeWriteCallSites = []string{
 	"graphstore/people.go#Authored",
 	"graphstore/people.go#Reached",
 	"graphstore/people.go#SessionRecorded",
+	// The one writer of an ask's answer state (dispatch://INFRA-1150): asks.Settle states the answer
+	// on the ask's node, appended at once under the event it is given or held for the caller's, and
+	// then writes the row; the catch-up of a follow another build recorded states it on the node.
+	// Each site that appends what a transition held under the event it appends after it, through
+	// Caused: the answer, resolve and decline routes' transition, an issue's close and reopen, the
+	// approval carry's answer, and a settlement's retractions and restorations. The settlement
+	// states the copies among a document's ask blocks as claims once its version is indexed, and
+	// the backfill of the boot step's first phase states the asks and the followers written before
+	// this release, each batch with its rows locked first.
+	"api/ask_transitions.go#closeAskTx",
+	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx",
+	"api/issue_ask_lifecycle.go#restoreIssueAsksTx",
+	"asks/followers.go#CatchUpFollower",
+	"asks/settle.go#Settle",
+	"docs/approval_carry.go#answerApprovalAsk",
+	"docs/ask_blocks.go#causeSettledAnswers",
+	"docs/ask_blocks.go#claimCopies",
+	"graphcensus/backfill.go#writeAskBatch",
+	"graphcensus/backfill.go#writeAskFollowerBatch",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",

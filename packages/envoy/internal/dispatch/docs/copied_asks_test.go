@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -1262,13 +1263,21 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 			return fmt.Errorf("answer the source ask: %w", err)
 		}
 		source.State, source.Answer = "answered", answer
-	} else if source, err = WriteAskResolution(ctx, tx, source, "resolved", "Waived.", alice); err != nil {
-		return fmt.Errorf("resolve the source ask: %w", err)
 	}
-	if _, err := service.events.Append(ctx, tx, documentAskEvent(
+	var held graphstore.Uncaused
+	if answer == nil {
+		if source, err = WriteAskResolution(ctx, tx, source, "resolved", "Waived.", alice, &held); err != nil {
+			return fmt.Errorf("resolve the source ask: %w", err)
+		}
+	}
+	appended, err := service.events.Append(ctx, tx, documentAskEvent(
 		owner, original, eventType, alice, model.NewAskEventPayload(source, model.ReferenceChanges{}),
-	)); err != nil {
+	))
+	if err != nil {
 		return fmt.Errorf("append the source's %s event: %w", eventType, err)
+	}
+	if err := graphstore.Caused(ctx, tx, held, appended.ID); err != nil {
+		return fmt.Errorf("state the source's resolution: %w", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return fmt.Errorf("commit closing the source: %w", err)

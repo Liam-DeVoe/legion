@@ -1752,6 +1752,27 @@ A message on no issue is between the parties of its thread's root (`graphstore.T
 A node's project never moves once stated: a write naming another fails with `graphstore.ErrProjectMoved`.
 A create route that stores an object of these kinds without its node fails `api`'s `TestEveryCreateStoresItsNode`, which calls every `POST` row of `writeClasses` and reads `graphcensus.ProjectComplete`; `envoy-dispatch census --store` prints the same classes per kind (`census: project kind=`), and `backfill-graph-store` writes the nodes and the projects of the rows written before.
 
+An ask's node holds the ask's relations and its answer, and `asks` and `ask_followers` are their projection (dispatch://INFRA-1150 R3, migrations 20261116094058 to 20261116094101).
+The ask's create writes, with its node, its `anchored_to` (the document holding its block, else the document its anchor quotes), its `owned_by` (the document an ask on no issue belongs to), its `part_of` (the document holding its block) and its `authored_by`, all dated at the row's `created_at` (`graphstore.AskFacts`), and stamps the row's `node_kind` and `node_address`.
+An ask any of whose documents' addresses is past the store's bound keeps its node but states none of its three relations, and its row names no node.
+`asks.Settle` is the one writer of an ask's answer state: it appends `answer_state` (`open`, `answered` or `resolved`, never the node's own `state`), the answer's `answer`, `selected` and `answered_at` values, its person as the far end of `answered_by` and `decided_by`, and the `resolution` value, then writes the row from them in the same transaction.
+A request's facts wait for its event (`Change.Held`, then `graphstore.Caused`); the answer, resolve and decline routes, an issue's close and reopen, the approval carry's answer and settlement's retraction and restoration all write through it, and `TestEveryWriterOfAnAnswerWritesItOnTheNode` holds each to a node and a row that agree.
+A row that names no node is written alone and left to the backfill.
+A follow (`asks.Follow`) stamps the follower row's marker in its statement and states the ask's `followed_by` to the session, dated at the row's `since`, only when it marks the row; `asks.Unfollow` holds the retraction for its event.
+Settlement claims a copy's `copied_from` to the ask it copies (`claimCopies`), and a reader takes the source's document from the source ask's `part_of`.
+Every read of whether an ask is answered reads the node's `answer_state`, and a node holding none reads `open`.
+
+`graph_edges`' three arms over those rows - an ask's `anchored_to` and `owned_by` over `asks`, and `followed_by` over `ask_followers` - answer only the rows whose `node_kind` is null, and the tuple arm answers those relations from an ask's node only while the row that names the node carries it (for a follower, the row of that ask and that session), as it does for a comment's; it also renders an answered ask's `shaped` through the `block_refs` row marked `('ask', <ask id>)`.
+`TestTheAsksArmsAnswerEachRowOnce` holds the three arms to that, and the root's own pull request (dispatch://INFRA-1098) deletes them.
+
+The decisions step (`docs.DecisionStep`) brings what the release before wrote onto the ask's node.
+Its first phase runs at boot, after `schemanodes.InstallFromStore` and before the server serves, and stops the boot on a failure: the object nodes (`graphcensus.BackfillAsks` runs `backfillObjectNodes` first), then every unmarked `asks` and `ask_followers` row, stated and marked in transactions of 200 rows that lock the rows they read.
+Its second phase, on its own tick at `docs.BlockIndexReconcileInterval` while any phase has work, catches up the `ask.answered`, `ask.resolved`, `ask.opened`, `ask.follower_added` and `ask.follower_removed` events that no tuple of their ask names as `source_event`, from the newest `server_build_announcements` row naming another commit, applying each event's payload under that event and skipping an event older than the node's newest tuple of the same attribute.
+It runs while `processes.Live` lists a process of another build, and once more on the first tick that finds one build.
+A session advisory lock keeps two processes from running it together: a booting process waits for it, and a tick that finds it held skips.
+Each pass counts what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed` once a pass has run.
+`DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, beside `DISPATCH_TEST_HOOKS=1`, keeps every phase from running, and `backfill-graph-store` runs the first phase.
+
 The document keeps its own `refs` rows, which the closure and the older `GET /api/v1/artifacts/{id}/references` read, but a document's mention of a target that one of its blocks holds a link of any kind to, listed or not, is listed and counted from that block alone (`heldByABlock`, in `refs.Edges` and `refs.BacklinkCounts`), so a node is counted once for each block link to it and each link shows once, where its block holds it.
 A document's own read (`?to=` or `?from=` a document reference) also lists the edges at its current blocks, each naming that block as the edge's `block`;
 its `part_of` edges are left out unless `?kind=` names them.

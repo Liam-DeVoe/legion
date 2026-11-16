@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -58,6 +59,22 @@ type settlementReconciliation struct {
 	// a session author's node is written before the ask.opened that records the ask exists, and
 	// learns that event once the settlement has appended its events (causeFollows).
 	follows []openedFollow
+	// answers are the answer states this settlement wrote through asks.Settle - a retraction of an
+	// ask whose block left, the restoration of one whose block came back - each beside the event
+	// that records it, whose facts on the ask's node wait for that event (causeSettledAnswers).
+	answers []settledAnswer
+	// copiedFrom is, for every ask block of the tree settlement read, the ask its block is a copy
+	// of (copiedAskSources), or "" for a block that is no copy, which claimCopies states as the
+	// copied_from of the block's node once the version's blocks are indexed.
+	copiedFrom map[string]string
+}
+
+// settledAnswer is one answer state this settlement wrote: the ask, the type of the event the
+// settlement appends for it, and what asks.Settle stated on its node, held for that event.
+type settledAnswer struct {
+	ask       string
+	eventType string
+	held      graphstore.Uncaused
 }
 
 // openedFollow is one ask this settlement opened: the ask's own node, written before its row
@@ -96,6 +113,86 @@ func (r *settlementReconciliation) causeFollows(ctx context.Context, tx pgx.Tx, 
 		if err := graphstore.Caused(ctx, tx, follow.followed.Uncaused, event); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// causeSettledAnswers appends what asks.Settle stated on each ask whose answer state this
+// settlement wrote under the event that records that write, found among appended by its type and
+// the ask its payload names, as causeFollows finds an ask.opened. An answer state whose event is
+// not among appended is a settlement that lost the event recording a write it made, and fails here
+// naming the ask.
+func (r *settlementReconciliation) causeSettledAnswers(ctx context.Context, tx pgx.Tx, appended []model.Event) error {
+	if len(r.answers) == 0 {
+		return nil
+	}
+	type recorded struct{ ask, eventType string }
+	events := make(map[recorded]int64, len(r.answers))
+	for _, event := range appended {
+		if payload, ok := event.Payload.(model.AskEventPayload); ok {
+			events[recorded{payload.ID, event.Type}] = event.ID
+		}
+	}
+	for _, answer := range r.answers {
+		event, found := events[recorded{answer.ask, answer.eventType}]
+		if !found {
+			return fmt.Errorf("settlement wrote the answer state of ask %s and appended no %s for it", answer.ask, answer.eventType)
+		}
+		if err := graphstore.Caused(ctx, tx, answer.held, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// claimCopies states, for each ask block of the tree settlement read whose block node the store
+// holds, the copied_from of that node (dispatch://INFRA-1150 R3): the source ask where
+// copiedAskSources resolved one, and none where it resolved none, so a block that stopped being a
+// copy - its source retracted, its wording changed, its own ask opened - retracts the copied_from
+// it held. Each is a claim (graphstore.WriteArms), which appends only where the node holds another
+// far end or none, so a settlement that moved no copy appends nothing. It runs once the version's
+// blocks are indexed, so a copy pasted in this version has its node, and event is that version's
+// event, or graphstore.NoEvent for a settlement that wrote no version. The copy's source document
+// is not stated here: a reader takes it from the source ask's own part_of (graphstore.AskFacts).
+func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, artifactID string, who model.Actor, at time.Time, event int64) error {
+	if len(r.copiedFrom) == 0 {
+		return nil
+	}
+	blockIDs := slices.Sorted(maps.Keys(r.copiedFrom))
+	rows, err := tx.Query(ctx, `
+		select block_id, node_id from document_blocks
+		where artifact_id = $1 and block_id = any($2) and node_kind is not null
+		order by block_id
+	`, artifactID, blockIDs)
+	if err != nil {
+		return fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+	}
+	var claims []graphstore.Claim
+	for rows.Next() {
+		var blockID, node string
+		if err := rows.Scan(&blockID, &node); err != nil {
+			rows.Close()
+			return fmt.Errorf("read the node of an ask block of %s: %w", artifactID, err)
+		}
+		claims = append(claims, graphstore.Claim{
+			FromKind: refs.BlockNodeKind, FromID: node, Kind: graphstore.TupleCopiedFrom,
+			ToKind: graphstore.KindAsk, ToID: r.copiedFrom[blockID],
+			At: at, Who: who, SourceEvent: event,
+		})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+	}
+	if len(claims) == 0 {
+		return nil
+	}
+	arms, params, err := graphstore.WriteArms(1, nil, nil, claims)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
+		return fmt.Errorf("state the copies of %s: %w", artifactID, err)
 	}
 	return nil
 }
@@ -231,7 +328,8 @@ func (r *settlementReconciliation) nameVersion(
 		}
 	}
 	for _, ask := range r.retracted {
-		retracted, err := WriteAskResolution(ctx, tx, ask, "retracted", fmt.Sprintf("%s %d", SettlementRetractionReason, version), SettlementActor)
+		var held graphstore.Uncaused
+		retracted, err := WriteAskResolution(ctx, tx, ask, "retracted", fmt.Sprintf("%s %d", SettlementRetractionReason, version), SettlementActor, &held)
 		if err != nil {
 			return fmt.Errorf("retract deleted ask block: %w", err)
 		}
@@ -239,6 +337,7 @@ func (r *settlementReconciliation) nameVersion(
 		if err != nil {
 			return err
 		}
+		r.answers = append(r.answers, settledAnswer{ask: ask.ID, eventType: "ask.resolved", held: held})
 		r.events = append(r.events, documentAskEvent(owner, artifactID, "ask.resolved", SettlementActor, payload))
 	}
 	return nil
@@ -363,6 +462,18 @@ func (s *Service) reconcileAskBlocks(
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
+	// Every ask block of the tree, readable or not, names the ask it is a copy of, or none, for
+	// claimCopies once the version's blocks are indexed.
+	reconciled.copiedFrom = make(map[string]string, len(blocks)+len(invalidBlocks))
+	for _, invalid := range invalidBlocks {
+		reconciled.copiedFrom[invalid.id] = ""
+	}
+	for _, block := range blocks {
+		reconciled.copiedFrom[block.id] = ""
+		if source, copied := sources[block.id]; copied {
+			reconciled.copiedFrom[block.id] = source.ask.ID
+		}
+	}
 	for _, block := range blocks {
 		ask, exists := rows[block.id]
 		if !exists {
@@ -411,7 +522,8 @@ func (s *Service) reconcileAskBlocks(
 		delete(rows, block.id)
 
 		if settlementRetracted(ask) {
-			restored, err := restoreRetractedAsk(ctx, tx, ask)
+			var held graphstore.Uncaused
+			restored, err := restoreRetractedAsk(ctx, tx, ask, actor, &held)
 			if err != nil {
 				return settlementReconciliation{}, err
 			}
@@ -420,6 +532,7 @@ func (s *Service) reconcileAskBlocks(
 			if ask.State == "answered" {
 				eventType = "ask.answered"
 			}
+			reconciled.answers = append(reconciled.answers, settledAnswer{ask: ask.ID, eventType: eventType, held: held})
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved.
 			restoredAt := refs.AskPartsAt(ask)
@@ -925,24 +1038,34 @@ func createAskBlock(
 	if owner.IssueKey == nil {
 		ownerArtifactID = new(artifactID)
 	}
+	// The ask's id and created_at, drawn before anything is written, as the ask routes draw them:
+	// the node goes in before the row, dated by the default the insert gives created_at.
 	var ask model.Ask
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&ask.ID); err != nil {
+	var createdAt time.Time
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&ask.ID, &createdAt); err != nil {
 		return model.Ask{}, openedFollow{}, fmt.Errorf("draw the id of a new ask block: %w", err)
 	}
 	project, parties, err := graphstore.ScopeOf(ctx, tx, owner.IssueKey, &artifactID)
 	if err != nil {
 		return model.Ask{}, openedFollow{}, err
 	}
-	node, err := graphstore.WriteUncaused(ctx, tx,
-		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, author, time.Now().UTC())}, nil)
+	// The ask is anchored to and part of the document holding its block, and belongs to that
+	// document where it is on no issue (graphstore.AskFacts).
+	places, err := graphstore.ReadAskPlaces(ctx, tx, &artifactID, ownerArtifactID, &artifactID)
+	if err != nil {
+		return model.Ask{}, openedFollow{}, err
+	}
+	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, author, createdAt, graphstore.NoEvent, places)
+	node, err := graphstore.WriteUncaused(ctx, tx, nodes, facts)
 	if err != nil {
 		return model.Ask{}, openedFollow{}, fmt.Errorf("write the node of a new ask block: %w", err)
 	}
+	nodeKind, nodeAddress := graphstore.AskRowNode(ask.ID, marked)
 	if err := tx.QueryRow(ctx, `
-		insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question')
+		insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', $11, $12)
 		returning created_at
-	`, ask.ID, owner.IssueKey, ownerArtifactID, block.id, artifactID, authorJSON, block.question, options, block.multiple, block.urgency).Scan(&ask.CreatedAt); err != nil {
+	`, ask.ID, owner.IssueKey, ownerArtifactID, block.id, artifactID, authorJSON, block.question, options, block.multiple, block.urgency, nodeKind, nodeAddress).Scan(&ask.CreatedAt); err != nil {
 		return model.Ask{}, openedFollow{}, fmt.Errorf("create ask block row: %w", err)
 	}
 	followed, err := asks.FollowAuthor(ctx, tx, ask.ID, author, ask.CreatedAt, graphstore.NoEvent)
@@ -963,7 +1086,12 @@ func createAskBlock(
 	return ask, openedFollow{ask: ask.ID, node: node, followed: followed}, nil
 }
 
-func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
+// restoreRetractedAsk gives an ask settlement retracted, whose block came back, the state and the
+// answer it held before the retraction - read from the newest ask.opened, ask.edited or
+// ask.answered that recorded it - and takes the retraction off, through the one writer of an
+// ask's answer state (asks.Settle) in who's name. What that writes on the ask's node waits in held
+// for the event the settlement appends for the restoration (causeSettledAnswers).
+func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who model.Actor, held *graphstore.Uncaused) (model.Ask, error) {
 	var payload []byte
 	if err := tx.QueryRow(ctx, `
 		select payload from events
@@ -976,23 +1104,16 @@ func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.A
 	if err := json.Unmarshal(payload, &prior); err != nil {
 		return model.Ask{}, fmt.Errorf("decode ask state before retraction: %w", err)
 	}
-	if prior.State != "open" && prior.State != "answered" {
+	if prior.State != asks.StateOpen && prior.State != asks.StateAnswered {
 		return model.Ask{}, fmt.Errorf("ask %q state before retraction is %q", ask.ID, prior.State)
 	}
-	var answer any
-	if prior.Answer != nil {
-		encoded, err := json.Marshal(prior.Answer)
-		if err != nil {
-			return model.Ask{}, fmt.Errorf("encode restored ask answer: %w", err)
-		}
-		answer = encoded
-	}
-	if _, err := tx.Exec(ctx, `update asks set state = $2, answer = $3, resolution = null where id = $1`, ask.ID, prior.State, answer); err != nil {
+	change := asks.Restored(prior.State, prior.Answer)
+	change.Who, change.At, change.Held = who, time.Now().UTC(), held
+	settled, err := asks.Settle(ctx, tx, ask.ID, change)
+	if err != nil {
 		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
 	}
-	ask.State = prior.State
-	ask.Answer = prior.Answer
-	ask.Resolution = nil
+	ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
 	return ask, nil
 }
 
