@@ -228,6 +228,15 @@ start each agent as a machine session, so the helper signs for it:
 agent-secrets register --wait 10 --exec -- <agent command>
 ```
 
+A session that works on a private Dispatch project names it when it starts, so the broker
+releases that project's secrets to it: set `AGENT_SECRETS_PROJECTS` to the project keys, separated
+by spaces (`AGENT_SECRETS_PROJECTS="PRIV CORE"`), or pass `register --projects` (and
+`enroll --helper --projects` for a box). The session's token trade reads the same variable. The
+broker takes the list only when Dispatch says your person may see every project on it, and the
+list is fixed for the session's life. `agent-secrets self` prints it as a `projects:` line. A
+request for a private project's secret from a session that does not name the project is denied
+`project-not-named`, and the denial says how to name it.
+
 A Kubernetes pod or a Google Cloud VM does not use the helper or a person's approval: the Legion
 daemon enrolls its pods with their service-account tokens, and a VM enrolls itself (above). The
 docs site's [Log a machine in](https://cybermonklabs.github.io/legion/broker/guides/log-a-machine-in/)

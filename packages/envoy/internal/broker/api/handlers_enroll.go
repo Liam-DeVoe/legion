@@ -37,6 +37,11 @@ type createEnrollmentBody struct {
 	SessionID *string `json:"session_id"`
 	// A pod only: its projected service-account token, which proves the runtime id is its UID.
 	PodToken *string `json:"pod_token"`
+	// Optional, a session acting for a person only: the Dispatch projects the session names, at
+	// most 16 project keys, each once, in any order. The broker takes the list only when Dispatch
+	// says the session's person may see every project on it, and releases a private project's
+	// secret only to a session whose list names that project. Absent or empty names none.
+	Projects []string `json:"projects"`
 }
 
 // enrollmentResponse is POST /v1/enrollments's answer: 201 for a new enrollment, 200 when the same
@@ -79,6 +84,8 @@ type selfResponse struct {
 	Operator *string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`
+	// The Dispatch projects the session named when it enrolled, sorted; empty for none.
+	Projects []string `json:"projects"`
 }
 
 // createEnrollment authenticates by launcher proof now (payload carries "lid"), never a bearer
@@ -105,6 +112,7 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 		Thumbprint: body.Thumbprint,
 		SessionID:  body.SessionID,
 		PodToken:   derefOr(body.PodToken, ""),
+		Projects:   body.Projects,
 	})
 	switch {
 	case errors.Is(err, enroll.ErrUnauthenticated):
@@ -122,6 +130,25 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 	// (SESSION_FIXED).
 	case errors.Is(err, enroll.ErrSessionHeld):
 		writeError(w, http.StatusForbidden, "SESSION_HELD", err.Error())
+		return
+	// The session's projects (enroll.Service.Create's project checks): a list that is no list, one
+	// named by an enrollment that acts for no person, one naming a project its person cannot see,
+	// a restricted member's session naming none, and a list the broker could not check with
+	// Dispatch, which is the one of the five a retry can change.
+	case errors.Is(err, enroll.ErrProjectsInvalid):
+		writeError(w, http.StatusBadRequest, "PROJECTS_INVALID", err.Error())
+		return
+	case errors.Is(err, enroll.ErrProjectsNeedAPerson):
+		writeError(w, http.StatusBadRequest, "PROJECTS_NEED_A_PERSON", err.Error())
+		return
+	case errors.Is(err, enroll.ErrProjectNotVisible):
+		writeError(w, http.StatusForbidden, "PROJECT_NOT_VISIBLE", err.Error())
+		return
+	case errors.Is(err, enroll.ErrProjectsRequired):
+		writeError(w, http.StatusForbidden, "PROJECTS_REQUIRED", err.Error())
+		return
+	case errors.Is(err, enroll.ErrProjectsUnchecked):
+		writeError(w, http.StatusServiceUnavailable, "PROJECTS_UNCHECKED", err.Error())
 		return
 	case errors.Is(err, enroll.ErrAlreadyEnrolled):
 		writeError(w, http.StatusConflict, "ALREADY_ENROLLED", err.Error())
@@ -274,7 +301,16 @@ func (s *server) readSelf(w http.ResponseWriter, r *http.Request, id string) {
 		LeaseExpiresAt: enr.LeaseExpires,
 		Operator:       enr.Operator,
 		Slot:           strPtr(enr.Slot),
+		Projects:       nonNilProjects(enr.Projects),
 	})
+}
+
+// nonNilProjects is projects, or an empty list for none, so the answer always carries an array.
+func nonNilProjects(projects []string) []string {
+	if projects == nil {
+		return []string{}
+	}
+	return projects
 }
 
 func derefOr(s *string, def string) string {

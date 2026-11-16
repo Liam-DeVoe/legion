@@ -9,6 +9,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
 // helperConnectPatience is how long cmdRegister retries connecting to a still-starting helper
@@ -47,8 +50,18 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	// requests of the one before it, so the session keeps them even where its key and its
 	// runtime id are new: another box, a container, a machine rebuilt from nothing.
 	sessionID := flags.String("session-id", "", "the omp session id this session keeps its broker identity under, across a restart of the helper or the machine")
+	// --projects names the Dispatch projects the session works on, whose private secrets the
+	// broker may then release to it. It defaults to AGENT_SECRETS_PROJECTS, the variable the
+	// session's own token trade reads, so one setting names both. The list is fixed at the
+	// session's first register: the helper refuses another list for a registered session.
+	projectsFlag := flags.String("projects", "", "the Dispatch projects this session works on, project keys separated by spaces (\"PRIV CORE\"); default "+brokerclient.ProjectsVar)
 	if err := flags.Parse(args); err != nil {
 		return exitUsage(err)
+	}
+	projects, err := sessionProjectsFlag(*projectsFlag, flags)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)
+		return exitUsageError
 	}
 	command := flags.Args()
 	if *doExec && len(command) == 0 {
@@ -69,7 +82,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 
-	resp, err := registerWithPatience(sock, *wait, *sessionID, helperConnectPatience)
+	resp, err := registerWithPatience(sock, *wait, *sessionID, projects, helperConnectPatience)
 	if !*doExec {
 		if err != nil {
 			fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)
@@ -117,12 +130,12 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 // with the user manager at boot), for patience at most, and retries a DRAINING answer (a helper
 // install is about to restart) until the larger of patience and the --wait seconds has passed, so
 // the session registers with the restarted helper rather than launching with no broker identity.
-func registerWithPatience(sock string, wait int, sessionID string, patience time.Duration) (helper.Response, error) {
+func registerWithPatience(sock string, wait int, sessionID string, projects []string, patience time.Duration) (helper.Response, error) {
 	start := time.Now()
 	deadline := start.Add(patience)
 	drainDeadline := start.Add(max(patience, time.Duration(wait)*time.Second))
 	for {
-		req := helper.Request{Op: "register", WaitSeconds: wait}
+		req := helper.Request{Op: "register", WaitSeconds: wait, Projects: projects}
 		if sessionID != "" {
 			req.SessionID = &sessionID
 		}
@@ -142,4 +155,20 @@ func registerWithPatience(sock string, wait int, sessionID string, patience time
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// sessionProjectsFlag is the projects a register or a helper enroll names: --projects when the
+// command line sets it, AGENT_SECRETS_PROJECTS otherwise (brokerclient.TradeProjects), read by the
+// broker's own rule for a list, so a list that is no list is refused before the helper is asked.
+func sessionProjectsFlag(raw string, flags *flag.FlagSet) ([]string, error) {
+	set := false
+	flags.Visit(func(f *flag.Flag) { set = set || f.Name == "projects" })
+	if !set {
+		return brokerclient.TradeProjects(os.Getenv)
+	}
+	projects, err := oauthwire.ParseProjects(raw)
+	if err != nil {
+		return nil, fmt.Errorf("--projects: %w", err)
+	}
+	return projects, nil
 }

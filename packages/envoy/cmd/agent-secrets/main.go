@@ -94,6 +94,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
@@ -952,6 +954,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	case "pending":
 		return exitPending
 	case "denied":
+		projectHint(stderr, result.Detail)
 		return exitDenied
 	default:
 		return 0
@@ -1095,8 +1098,8 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 	if result.Operator != nil {
 		operator = *result.Operator
 	}
-	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
-		result.EnrollmentID, result.Kind, operator, result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
+	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nprojects: %s\nlease_expires_at: %s\nsource: %s\n",
+		result.EnrollmentID, result.Kind, operator, orDash(oauthwire.JoinProjects(result.Projects)), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
 		if g.ExpiresAt == nil {
 			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", g.GrantID, g.RequestID)
@@ -1214,6 +1217,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return exitPending
 	case "denied":
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", requestID, src(), deniedBecause(detail))
+		projectHint(stderr, detail)
 		return exitDenied
 	case "cancelled", "expired":
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", requestID, src(), state)
@@ -1349,6 +1353,21 @@ func deniedBecause(detail *string) string {
 		return ""
 	}
 	return ": " + *detail
+}
+
+// projectNotNamedHint is the line a denial for an unnamed private project adds: what the session
+// can do about it. It names no project, because the broker names none — the person asking may be
+// one who may not see it — so it says where the project is to be found instead.
+const projectNotNamedHint = "agent-secrets: this secret belongs to a private project this session does not name; start the session with " +
+	brokerclient.ProjectsVar + " naming that project (its owner, or `agent-secrets secret show NAME` under a credential that reads the store, says which)"
+
+// projectHint writes projectNotNamedHint after a denial whose detail carries
+// policy.ReasonProjectNotNamed, the one reason a session is told for a private project's secret
+// it does not name; any other denial adds nothing.
+func projectHint(stderr io.Writer, detail *string) {
+	if detail != nil && strings.Contains(*detail, policy.ReasonProjectNotNamed) {
+		fmt.Fprintln(stderr, projectNotNamedHint)
+	}
 }
 
 // printDetail writes the broker's own sentence about a request, the one the request row keeps as

@@ -36,6 +36,7 @@ type Request struct {
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
 	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id; register: the omp session id this session is to be known by
 	EnrollmentID    string   `json:"enrollment_id,omitempty"`    // unenroll-session-key: which enrollment to end
+	Projects        []string `json:"projects,omitempty"`         // register, enroll-session-key: the Dispatch projects the session names, fixed at its first register
 }
 
 // Response is the helper's one line. Code and Error are set only when OK is false, except that

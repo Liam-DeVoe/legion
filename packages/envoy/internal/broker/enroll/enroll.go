@@ -24,6 +24,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -83,6 +85,27 @@ var (
 	// the session and says what to do about it, as that refusal's own text and the exchange's
 	// do, and names no holder: whoever holds the name is not this caller's to learn.
 	ErrSessionHeld = errors.New("another identity holds this session name")
+	// ErrProjectsInvalid refuses a list of projects that is no credential's list
+	// (oauthwire.ValidProjects): more than 16 keys, a key that is no Dispatch project key, or one
+	// named twice.
+	ErrProjectsInvalid = errors.New("projects is a list of at most 16 Dispatch project keys, each once")
+	// ErrProjectsNeedAPerson refuses projects named by an enrollment that acts for no person: a
+	// pod, whose project is the one its operator's entry maps its account to
+	// (exchange.Set.MappedProjects), and a machine's own session. A list is what a person's
+	// session asks for, and only a person can be asked whether they may see a project.
+	ErrProjectsNeedAPerson = errors.New("only a session that acts for a person names projects")
+	// ErrProjectsUnchecked refuses a session naming projects that the broker cannot check with
+	// Dispatch: it holds no client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL), or
+	// Dispatch did not answer. A list taken unchecked could name a project its person may not see,
+	// so the enrollment is refused rather than made; a session naming no project enrols as before.
+	ErrProjectsUnchecked = errors.New("the broker could not check the session's projects with Dispatch")
+	// ErrProjectNotVisible refuses a session naming a project its person may not see, or one
+	// Dispatch does not hold: the two read alike, so a refusal never says whether a project exists.
+	ErrProjectNotVisible = errors.New("the session names a project its person cannot see")
+	// ErrProjectsRequired refuses a session of a restricted member that names no project: such a
+	// person sees only the projects that name them, so their session names which
+	// (projectaccess.ErrListRequired).
+	ErrProjectsRequired = errors.New("a restricted member's session names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on")
 )
 
 type Credential struct {
@@ -144,6 +167,12 @@ type Enrollment struct {
 	Subject      *string
 	LeaseExpires time.Time
 	Existing     bool // true when Create returned an already-live enrollment for the same key
+	// Projects are the Dispatch projects the session names, sorted and each once
+	// (oauthwire.ParseProjects), nil for none: the projects whose private secrets the broker may
+	// release to it (requests.Machine). Create takes a list only from a session that acts for a
+	// person and only when Dispatch says that person may see every project on it; the list is
+	// fixed for the enrollment's life, and an adoption never carries it to a successor.
+	Projects []string
 	// carry is the principal the enrollment belongs to, as enrollments.carry_principal records
 	// it: Create works it out from what the caller proved (carryPrincipal) and nothing reads it
 	// back off this struct, so it is the package's own and never a caller's to state.
@@ -179,6 +208,12 @@ type Service struct {
 	// BROKER_K8S_OIDC_AUDIENCE; nil on a broker that trusts no Kubernetes token issuer, which enrolls
 	// no pod and serves no Kubernetes token login.
 	Pod PodVerifier
+
+	// Projects asks Dispatch whether a person may see a project and what kind of member they are
+	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL): Create checks a session's list through it
+	// before its transaction begins. nil on a broker with no such client, which enrolls a session
+	// naming no project as before and refuses one that names any (ErrProjectsUnchecked).
+	Projects projectaccess.Access
 
 	// Sessions binds every enrollment that names a session to the principal that enrollment
 	// belongs to (carryPrincipal), in the enrollment's own transaction, and refuses it a name
@@ -625,6 +660,15 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		}
 		in.Subject = &claims.Subject
 	}
+	// The list is held sorted, the one order a credential's list takes (oauthwire.ValidProjects),
+	// so a caller's order is no refusal and two spellings of one list are one list.
+	in.Projects = slices.Sorted(slices.Values(in.Projects))
+	if len(in.Projects) == 0 {
+		in.Projects = nil
+	}
+	if err := s.checkProjects(ctx, in); err != nil {
+		return Enrollment{}, err
+	}
 	// The other half of the pair a grant follows, read from what the caller has just proved and
 	// written beside the session's name in the insert below (carryPrincipal).
 	in.carry = carryPrincipal(cred, in)
@@ -643,6 +687,43 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		return result, err
 	}
 	return Enrollment{}, fmt.Errorf("create enrollment: exhausted retries after concurrent changes to runtime %s", in.RuntimeID)
+}
+
+// checkProjects is Create's rule for the projects a session names, run before any transaction
+// begins so that no call to Dispatch holds a row lock or a pooled connection: the list must be a
+// credential's list (ErrProjectsInvalid); only a session acting for a person names one
+// (ErrProjectsNeedAPerson); a list is taken only where the broker can check it with Dispatch
+// (ErrProjectsUnchecked); and then projectaccess.ListAllowed, the one statement of the rule the
+// token exchange applies too, decides: every project named must be one the person may see
+// (ErrProjectNotVisible), and a restricted member must name at least one (ErrProjectsRequired).
+// An empty list enrolls as before with no client, and with a client whose Dispatch did not
+// answer (ListAllowed asks the member kind alone and takes an outage as no restriction); a list
+// Dispatch did not answer for is refused, since taking it unchecked could name a project its
+// person may not see.
+func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
+	if err := oauthwire.ValidProjects(in.Projects); err != nil {
+		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)
+	}
+	if len(in.Projects) > 0 && (in.Kind == "pod" || in.Operator == nil) {
+		return ErrProjectsNeedAPerson
+	}
+	if s.Projects == nil || in.Operator == nil {
+		if len(in.Projects) > 0 {
+			return fmt.Errorf("%w: this broker holds no client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL)", ErrProjectsUnchecked)
+		}
+		return nil
+	}
+	err := projectaccess.ListAllowed(ctx, s.Projects, *in.Operator, in.Projects)
+	var unseen *projectaccess.NotVisibleError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &unseen):
+		return fmt.Errorf("%w: %s", ErrProjectNotVisible, unseen.Project)
+	case errors.Is(err, projectaccess.ErrListRequired):
+		return ErrProjectsRequired
+	}
+	return fmt.Errorf("%w: %v", ErrProjectsUnchecked, err)
 }
 
 // createAttempt makes one insert-then-recover attempt. retry is true when the row that conflicted
@@ -672,9 +753,9 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 	// pod_token_renewed_at starts null on every row, a pod's included: the first renewal carrying
 	// the pod's token sets it, and from then on Renew refuses a token-less renewal from every live
 	// enrollment naming that pod UID (podTokenRatcheted).
-	_, err = tx.Exec(ctx, `insert into enrollments (id, kind, runtime_id, slot, operator, thumbprint, session_id, carry_principal, subject, launcher_credential_id, lease_expires_at)
-		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		in.ID, in.Kind, in.RuntimeID, in.Slot, in.Operator, in.Thumbprint, in.SessionID, in.carry, in.Subject, cred.ID, in.LeaseExpires)
+	_, err = tx.Exec(ctx, `insert into enrollments (id, kind, runtime_id, slot, operator, thumbprint, session_id, carry_principal, subject, launcher_credential_id, lease_expires_at, projects)
+		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,coalesce($12::text[], '{}'))`,
+		in.ID, in.Kind, in.RuntimeID, in.Slot, in.Operator, in.Thumbprint, in.SessionID, in.carry, in.Subject, cred.ID, in.LeaseExpires, in.Projects)
 	if store.IsUniqueViolation(err) {
 		// The failed insert aborted tx, which still holds its pooled connection. Release it before
 		// recovery asks the pool for one: holding one connection while waiting for a second is how
@@ -964,9 +1045,9 @@ func (s *Service) recoverConflict(ctx context.Context, cred Credential, in Enrol
 	defer tx.Rollback(ctx)
 	var existing Enrollment
 	var live bool
-	err = tx.QueryRow(ctx, `select id, thumbprint, lease_expires_at, enrollment_lease_live(lease_expires_at) from enrollments
+	err = tx.QueryRow(ctx, `select id, thumbprint, lease_expires_at, enrollment_lease_live(lease_expires_at), projects from enrollments
 		where launcher_credential_id=$1 and runtime_id=$2 and slot=$3 and revoked_at is null for update`, cred.ID, in.RuntimeID, in.Slot).
-		Scan(&existing.ID, &existing.Thumbprint, &existing.LeaseExpires, &live)
+		Scan(&existing.ID, &existing.Thumbprint, &existing.LeaseExpires, &live, &existing.Projects)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Enrollment{}, true, nil
 	}
@@ -981,6 +1062,12 @@ func (s *Service) recoverConflict(ctx context.Context, cred Credential, in Enrol
 	}
 	if existing.Thumbprint != in.Thumbprint {
 		return Enrollment{}, false, ErrAlreadyEnrolled
+	}
+	// The same key back is a retry of the same enrollment, which names the same projects: a list
+	// is fixed for an enrollment's life, so a retry naming another one is a second enrollment of
+	// a live runtime, and refused as one rather than answered with a list it did not ask for.
+	if !slices.Equal(existing.Projects, in.Projects) {
+		return Enrollment{}, false, fmt.Errorf("%w under the projects %q, not %q", ErrAlreadyEnrolled, oauthwire.JoinProjects(existing.Projects), oauthwire.JoinProjects(in.Projects))
 	}
 	in.ID, in.LeaseExpires, in.Existing = existing.ID, existing.LeaseExpires, true
 	return in, false, nil
@@ -2015,8 +2102,8 @@ func (s *Service) Lookup(ctx context.Context, id string) (string, bool, error) {
 // authenticated, so it need not guard against a non-UUID id the way Lookup does.
 func (s *Service) Get(ctx context.Context, id string) (Enrollment, error) {
 	var e Enrollment
-	err := s.Store.Pool.QueryRow(ctx, `select id, kind, runtime_id, operator, slot, lease_expires_at from enrollments where id=$1 and revoked_at is null`, id).
-		Scan(&e.ID, &e.Kind, &e.RuntimeID, &e.Operator, &e.Slot, &e.LeaseExpires)
+	err := s.Store.Pool.QueryRow(ctx, `select id, kind, runtime_id, operator, slot, lease_expires_at, projects from enrollments where id=$1 and revoked_at is null`, id).
+		Scan(&e.ID, &e.Kind, &e.RuntimeID, &e.Operator, &e.Slot, &e.LeaseExpires, &e.Projects)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Enrollment{}, ErrNotLive
 	}
