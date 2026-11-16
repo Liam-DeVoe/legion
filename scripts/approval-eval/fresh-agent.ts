@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
 import { labelKey, type ArmReading as RoundArm, readRound } from "./analyze";
 import type { CaseRow } from "./build-corpus";
@@ -26,6 +26,7 @@ import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
 import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
+import { bytesDigestOf, DigestError, executableOf } from "./reserve";
 import {
   CACHE_VERSION,
   cachePath,
@@ -46,10 +47,10 @@ import {
  * given no skill at all, over the same cases of the report slice, in one run.
  *
  * This is check C6 of the plan (dispatch://INFRA-2897): the skills carry the answer, and another
- * agent reproduces the number. The skill records what the round measured over the 250 approval
- * cases of the report slice - `many-shot-opus-5-5` 0.772 against `bare-opus-5-5` 0.656, a gain of
- * 0.116 for the retrieval recipe - and this asks whether an agent handed the skill, and nothing
- * else, beats an agent handed nothing.
+ * agent reproduces the number. The round measured, over the 250 approval cases of the report
+ * slice, `many-shot-opus-5-5` 0.772 against `bare-opus-5-5` 0.656, a gain of 0.116 for the
+ * retrieval recipe, and this asks whether an agent handed the skill, and nothing else, beats an
+ * agent handed nothing.
  *
  * **The two arms differ in the skill and in nothing else.** Each arm is the same binary, the same
  * model, the same flags and the same one message. What differs is the profile the agent starts
@@ -74,8 +75,8 @@ import {
  * **Neither shape alone answers the question, which is why both are kept.** With the file, the
  * control reads it unprompted, so the comparison measures the skill's text on top of a recipe
  * both arms run. Without it, the skill arm can read the skill but cannot run the retrieval the
- * skill records, so the comparison measures the skill's text alone against nothing. The gain
- * the skill records is retrieval over nothing, and no shape reachable from here separates that:
+ * skill describes, so the comparison measures the skill's text alone against nothing. The gain
+ * the round measured is retrieval over nothing, and no shape reachable from here separates that:
  * `fresh-agent.json` holds both shapes so a reader sees the pair and not one number.
  *
  * **One judgement per case and arm.** The round took five and read the mode; this takes one, so
@@ -87,7 +88,7 @@ import {
  * control's number is reported whatever it is.
  */
 
-/** The model both arms run on, which is the model the numbers the skill records were measured on. */
+/** The model both arms run on, which is the model the round's numbers were measured on. */
 const MODEL = "claude-opus-5-5";
 
 /** The profile name both arms use, each under its own home, so neither sees the other's state. */
@@ -1015,6 +1016,28 @@ async function modelsFileOf(omp: string): Promise<string | null> {
 }
 
 /**
+ * What a run that reads the reserve adds to its digest (`reserve.ts`) for the agent it scores,
+ * which lives outside the repository: the bytes of the executable, the version it prints, and the
+ * bytes of the models file every profile copies. `omp` is the path `readFlags` resolved, the one
+ * each case runs; a bare name `PATH` did not find is refused (`DigestError`), since the runtime
+ * could still find another executable under it. An upgrade of the agent or a change of its models
+ * is then another run, which the reserve's registration does not name.
+ */
+async function agentInputsOf(omp: string): Promise<string[]> {
+  if (!isAbsolute(omp)) {
+    throw new DigestError(`${omp} is not found on PATH, so no digest covers the agent`);
+  }
+  const child = Bun.spawn({ cmd: [omp, "--version"], stdout: "pipe", stderr: "ignore" });
+  const [printed, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  const models = await modelsFileOf(omp);
+  return [
+    `agent ${await bytesDigestOf(omp)}`,
+    `agent version ${code === 0 ? JSON.stringify(printed.trim()) : `exit ${code}`}`,
+    `agent models ${models === null ? "none" : await bytesDigestOf(models)}`,
+  ];
+}
+
+/**
  * The environment one agent run is given: its own home, `PATH`, `TMPDIR` where this process has
  * one, and the two variables the run needs to reach the model gateway, `ANTHROPIC_BASE_URL` and
  * `ANTHROPIC_API_KEY`. So the agent does get this session's model credential, here and in the
@@ -1144,7 +1167,7 @@ function readFlags(argv: readonly string[]): Flags {
     cases: whole(values.cases, "--cases", DEFAULT_CASES, 1, USAGE),
     neighbours: shapeOf(values.neighbours, "--neighbours", DEFAULT_SHAPE, USAGE),
     answers: answersOf(values.answers),
-    omp: values.omp?.trim() || DEFAULT_OMP,
+    omp: executableOf(values.omp?.trim() || DEFAULT_OMP, process.env.PATH),
     concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1, USAGE),
   };
 }
@@ -1229,7 +1252,7 @@ async function fresh(flags: Flags): Promise<number> {
   const log = (line: string): void => {
     process.stderr.write(`${line}\n`);
   };
-  const corpus = await readCorpus(flags.corpus);
+  const corpus = await readCorpus(flags.corpus, { inputs: () => agentInputsOf(flags.omp) });
   const out = await outDirectory(flags.out);
   await mkdir(out, { recursive: true });
   refuseReportsOutside(await readShapes(out), corpus.byCaseId, out);
