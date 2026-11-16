@@ -9,7 +9,6 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -41,7 +40,9 @@ func (g GoCode) Find(t Test) (int, error) {
 	// "--" ends go's flags, so a path that starts with "-" is a path that go refuses, never a flag.
 	cmd := exec.Command("go", "list", "-json=Dir,TestGoFiles,XTestGoFiles", "--", path)
 	cmd.Dir = g.Dir
-	cmd.Env = append(os.Environ(), g.Env...)
+	// The environment that exec gives a command with no Env, as every other command of this
+	// package runs, then g.Env: Find reads no variable of its own.
+	cmd.Env = append(cmd.Environ(), g.Env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
