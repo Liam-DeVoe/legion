@@ -143,6 +143,20 @@ func TestKeyKeepsServingTheCachedSetWhenAReadFails(t *testing.T) {
 	}
 }
 
+// A Keys as NewKeys builds it, the one the secrets broker and Dispatch verify through, waits a
+// key-set read out, up to FetchTimeout: a cold read slower than the listener's 3 s wait but inside
+// FetchTimeout answers the key, never ErrKeySet, which the broker would answer as a refusal. Only
+// a caller that sets FetchWait (the listener) gives up sooner.
+func TestKeysFromNewKeysWaitASlowReadOut(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	issuer.DelayKeys(3500 * time.Millisecond)
+	start := time.Now()
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key on a cold cache whose read takes 3.5 s, inside FetchTimeout (%s) = %v after %s, want the key", keys.FetchTimeout, err, time.Since(start).Round(time.Millisecond))
+	}
+}
+
 // A set past its Lifetime that holds the key answers at once, from the cache, and the issuer is
 // read again behind the answer: an issuer that hangs costs a token the cache can judge nothing.
 func TestKeyAnswersAStaleSetAtOnceAndReadsItAgainBehind(t *testing.T) {
@@ -159,7 +173,7 @@ func TestKeyAnswersAStaleSetAtOnceAndReadsItAgainBehind(t *testing.T) {
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(a key the stale set holds) while the issuer hangs: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > keys.FetchWait/2 {
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Errorf("Key(a key the stale set holds) took %s while the issuer hangs, want an answer at once", elapsed)
 	}
 	deadline := time.Now().Add(5 * time.Second)

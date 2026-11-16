@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/config"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -275,23 +276,30 @@ func TestAPIAuthAnswersAnIssuerOutage503(t *testing.T) {
 	}
 }
 
-// dispatchListenerWindow is the window Dispatch's listener client gives every call
-// (internal/dispatch/envoy, defaultTimeout): an answer later than this never reaches Dispatch.
-const dispatchListenerWindow = 5 * time.Second
+// The listener's key-set wait stays inside the window Dispatch's client gives each call, so an
+// issuer that hangs reaches Dispatch as the listener's 503, which it retries, never as its own
+// timeout. It compares the two symbols, so a change to either that breaks the order fails here.
+func TestListenerKeySetWaitIsInsideDispatchsCallWindow(t *testing.T) {
+	if listenerKeySetWait >= dispatchenvoy.DefaultTimeout {
+		t.Fatalf("listenerKeySetWait = %s, want below Dispatch's listener call window, envoy.DefaultTimeout = %s", listenerKeySetWait, dispatchenvoy.DefaultTimeout)
+	}
+}
 
 // An issuer that accepts the key-set request and never answers is an outage as much as one that
-// answers 500: the listener answers a token it cannot judge 503 with a Retry-After, and inside
-// the window Dispatch's client gives the call, so Dispatch reads an answer it retries rather than
-// its own timeout. The key-set read goes on behind the answer, under the verifier's FetchTimeout.
+// answers 500: the listener, its verifier built as the listener builds it at boot
+// (discoverListenerVerifier), answers a token it cannot judge 503 with a Retry-After, and inside
+// the window Dispatch's client gives the call (envoy.DefaultTimeout), so Dispatch reads an answer
+// it retries rather than its own timeout. The key-set read goes on behind the answer, under the
+// verifier's FetchTimeout.
 func TestAPIAuthAnswersAnIssuerThatHangs503InsideDispatchsWindow(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
+	verifier, err := discoverListenerVerifier(context.Background(), issuer.URL(), listenerTestAudience)
 	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
+		t.Fatalf("discoverListenerVerifier(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
 	}
 	token := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
 	issuer.DelayKeys(time.Hour)
@@ -303,9 +311,9 @@ func TestAPIAuthAnswersAnIssuerThatHangs503InsideDispatchsWindow(t *testing.T) {
 	start := time.Now()
 	apiAuth("", verifier, nil, nil, logging.NewWithWriter("test-machine", io.Discard), next).ServeHTTP(recorder, request)
 	elapsed := time.Since(start)
-	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") == "" || elapsed >= dispatchListenerWindow {
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") == "" || elapsed >= dispatchenvoy.DefaultTimeout {
 		t.Fatalf("while the issuer's key set hangs: status %d, Retry-After %q after %s; want 503 with a Retry-After inside Dispatch's %s",
-			recorder.Code, recorder.Header().Get("Retry-After"), elapsed.Round(time.Millisecond), dispatchListenerWindow)
+			recorder.Code, recorder.Header().Get("Retry-After"), elapsed.Round(time.Millisecond), dispatchenvoy.DefaultTimeout)
 	}
 	t.Logf("the listener answered %d after %s", recorder.Code, elapsed.Round(time.Millisecond))
 }

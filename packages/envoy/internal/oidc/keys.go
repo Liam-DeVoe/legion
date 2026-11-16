@@ -40,13 +40,6 @@ const (
 	// DefaultKeysFetchTimeout bounds one key-set read. An issuer that accepts the connection and
 	// never answers would otherwise hold a read open for ever.
 	DefaultKeysFetchTimeout = 10 * time.Second
-	// DefaultKeysFetchWait is the longest a Key waits on a key-set read before it answers that the
-	// set could not be read (ErrKeySet); the read goes on, under FetchTimeout, for the next Key. It
-	// is what keeps an issuer that hangs, rather than fails, from holding a verification past its
-	// caller's own window: the Envoy listener answers each of Dispatch's calls within the 5 s
-	// Dispatch's client gives it (internal/dispatch/envoy), and a key-set outage there is a 503
-	// Dispatch retries, which an answer that came too late would not be.
-	DefaultKeysFetchWait = 3 * time.Second
 )
 
 // maxKeySetBytes is the most of an issuer's key-set response that is read. A real set is a few
@@ -75,7 +68,11 @@ type Keys struct {
 	// FetchTimeout bounds one key-set read, which no caller's context ends
 	// (DefaultKeysFetchTimeout).
 	FetchTimeout time.Duration
-	// FetchWait is the longest a Key waits on a read (DefaultKeysFetchWait).
+	// FetchWait is the longest a Key waits on a read before it answers that the set could not be
+	// read (ErrKeySet), the read going on for the next Key. Zero, as NewKeys leaves it, waits the
+	// read out, up to FetchTimeout: the secrets broker and Dispatch answer a slow read with the
+	// key. A caller whose own answer has a deadline shorter than FetchTimeout sets it, as the
+	// Envoy listener does (cmd/listener, listenerKeySetWait).
 	FetchWait time.Duration
 	// HTTPClient reads the key set. A caller replaces it to route the read through a proxy or an
 	// instrumented transport; it is never nil.
@@ -123,7 +120,6 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 		Lifetime:     DefaultKeysLifetime,
 		MinRefresh:   DefaultKeysMinRefresh,
 		FetchTimeout: DefaultKeysFetchTimeout,
-		FetchWait:    DefaultKeysFetchWait,
 		HTTPClient:   &http.Client{},
 		jwksURI:      discovery.JWKSURI,
 	}, nil
@@ -227,18 +223,22 @@ func (k *Keys) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	return k.await(ctx, k.begin(ctx))
 }
 
-// await waits at most FetchWait for inflight. A caller whose own context ends first, or whose
-// wait runs out, leaves with that error and the read carries on for the others; a wait that runs
-// out is kept as the read's failure until the read ends.
+// await waits for inflight, at most FetchWait when it is set. A caller whose own context ends
+// first, or whose wait runs out, leaves with that error and the read carries on for the others;
+// a wait that runs out is kept as the read's failure until the read ends.
 func (k *Keys) await(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey, error) {
-	wait := time.NewTimer(k.FetchWait)
-	defer wait.Stop()
+	var waited <-chan time.Time
+	if k.FetchWait > 0 {
+		wait := time.NewTimer(k.FetchWait)
+		defer wait.Stop()
+		waited = wait.C
+	}
 	select {
 	case <-inflight.done:
 		return inflight.keys, inflight.err
 	case <-ctx.Done():
 		return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, k.jwksURI, ctx.Err())
-	case <-wait.C:
+	case <-waited:
 		err := fmt.Errorf("%w: %s has not answered in %s", ErrKeySet, k.jwksURI, k.FetchWait)
 		k.mu.Lock()
 		if k.inflight == inflight {
