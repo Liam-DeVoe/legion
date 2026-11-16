@@ -525,44 +525,82 @@ func holdsLane(grant natsgrant.Permissions, repository string) bool {
 	})
 }
 
-// Two public projects can map repositories onto one GitHub lane: a rename (PUB1's acme/a, renamed
-// to acme/b, which PUB2 maps) or two spellings of one lane (PUB1's acme/a.b and PUB2's acme/a_b,
-// a dot written "_"). Neither project's held daemon is served that lane, PUB1's keeps acme/a's,
-// the broker logs the lane and both projects at error once for the pass, and each
-// repository withheld is counted (broker_nats_callout_shared_lanes_dropped_total). The control
-// builds the grant without the drop: PUB1's grant holds the shared lane.
+// sharedLanesDropped is broker_nats_callout_shared_lanes_dropped_total as registry serves it, 0
+// while it has counted nothing.
+func sharedLanesDropped(t *testing.T, registry *metrics.Registry) int {
+	t.Helper()
+	scrape := httptest.NewRecorder()
+	registry.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for line := range strings.Lines(scrape.Body.String()) {
+		if value, found := strings.CutPrefix(strings.TrimSpace(line), "broker_nats_callout_shared_lanes_dropped_total "); found {
+			var dropped int
+			_, err := fmt.Sscan(value, &dropped)
+			require.NoError(t, err, "the counter's line %q", line)
+			return dropped
+		}
+	}
+	return 0
+}
+
+// Two projects can map repositories onto one GitHub lane: a rename (PUB1's acme/a, renamed to
+// acme/b, which PUB2 maps) or two spellings of one lane (acme/a.b and acme/a_b, a dot written
+// "_"). A held daemon is not served such a lane when a project its entry does not name maps it:
+// the daemon of neither entry is, each keeps its other lanes, the broker logs the lane and its
+// projects at error once for the pass, and each repository withheld is counted
+// (broker_nats_callout_shared_lanes_dropped_total). A lane shared only among one entry's own
+// projects (PUB1 and PUB3, both PUB's) is that entry's, and served. The controls: a grant built
+// without the drop serves PUB's daemon the lane PUB2 maps; one that counts the entry's own
+// projects as another's withholds the lane PUB1 and PUB3 share.
 func TestAHeldDaemonIsNotServedASharedLane(t *testing.T) {
 	renamed := "acme/b"
 	for _, row := range []struct {
-		name         string
-		answers      map[string][]string
-		mapping      []projectaccess.RepoProject
-		kept, shared string
+		name     string
+		pub      []string // the projects PUB's entry names; PUB2's entry names PUB2
+		answers  map[string][]string
+		mapping  []projectaccess.RepoProject
+		served   []string // the repositories whose lanes PUB's daemon is served
+		withheld []string // the repositories whose lanes neither daemon is served
+		logged   string   // the projects of the one error line, "" for none
+		dropped  int
 	}{
 		{
-			name:    "a rename onto another project's repository",
+			name:    "a rename onto another entry's project's repository",
+			pub:     []string{"PUB1"},
 			answers: map[string][]string{"PUB1": {"acme/a", "acme/b"}, "PUB2": {"acme/b"}},
 			mapping: []projectaccess.RepoProject{{Repo: "acme/a", Project: "PUB1", RenamedTo: &renamed}, {Repo: "acme/b", Project: "PUB2"}},
-			kept:    "acme/a", shared: "acme/b",
+			served:  []string{"acme/a"}, withheld: []string{"acme/b"}, logged: "[PUB1 PUB2]", dropped: 2,
 		},
 		{
-			name:    "two spellings of one lane",
+			name:    "two spellings of one lane in two entries' projects",
+			pub:     []string{"PUB1"},
 			answers: map[string][]string{"PUB1": {"acme/a", "acme/a.b"}, "PUB2": {"acme/a_b"}},
-			kept:    "acme/a", shared: "acme/a.b",
+			served:  []string{"acme/a"}, withheld: []string{"acme/a.b"}, logged: "[PUB1 PUB2]", dropped: 2,
+		},
+		{
+			name:    "two spellings of one lane in two of one entry's projects",
+			pub:     []string{"PUB1", "PUB3"},
+			answers: map[string][]string{"PUB1": {"acme/a", "acme/a.b"}, "PUB3": {"acme/a_b"}, "PUB2": {"acme/c"}},
+			served:  []string{"acme/a", "acme/a.b", "acme/a_b"},
+		},
+		{
+			name:    "a lane one of the entry's projects shares with a project outside it",
+			pub:     []string{"PUB1", "PUB3"},
+			answers: map[string][]string{"PUB1": {"acme/a"}, "PUB3": {"acme/a.b"}, "PUB2": {"acme/a_b"}},
+			served:  []string{"acme/a"}, withheld: []string{"acme/a.b"}, logged: "[PUB2 PUB3]", dropped: 2,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			now := time.Now()
 			services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
 			tokens := map[string]platformToken{
-				"pub1-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
+				"pub-token":  {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
 				"pub2-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
 			}
 			dispatch := &dispatchAnswers{answers: row.answers, mapping: row.mapping}
 			var logged bytes.Buffer
 			registry := metrics.New()
 			deps := Deps{
-				ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB1"}, slowDaemonAccount: {"PUB2"}}),
+				ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: row.pub, slowDaemonAccount: {"PUB2"}}),
 				Access: dispatch.access, RepoProjects: dispatch.repoProjects,
 				Log: slog.New(slog.NewTextHandler(&logged, nil)), Metrics: NewMetrics(registry),
 			}
@@ -570,21 +608,26 @@ func TestAHeldDaemonIsNotServedASharedLane(t *testing.T) {
 			require.NotNil(t, deps.held)
 			deps.held.refresh(t.Context())
 
-			pub1, err := Decide(t.Context(), deps, services, serviceRequest("pub1-token"))
+			pub, err := Decide(t.Context(), deps, services, serviceRequest("pub-token"))
 			require.NoError(t, err)
 			pub2, err := Decide(t.Context(), deps, services, serviceRequest("pub2-token"))
 			require.NoError(t, err)
-			require.True(t, holdsLane(pub1.Grant, row.kept), "PUB1's held daemon lost %s, which no other project maps", row.kept)
-			for project, grant := range map[string]natsgrant.Permissions{"PUB1": pub1.Grant, "PUB2": pub2.Grant} {
-				require.False(t, holdsLane(grant, row.shared), "%s's held daemon is served the lane PUB1 and PUB2 share", project)
+			for _, repository := range row.served {
+				require.True(t, holdsLane(pub.Grant, repository), "PUB's held daemon is not served %s, which no project outside its entry maps", repository)
 			}
-			require.Equal(t, 1, strings.Count(logged.String(), "level=ERROR"), "want one error line for the shared lane:\n%s", logged.String())
-			require.Contains(t, logged.String(), "lane="+natsgrant.GitHubPrefix(row.shared)+" ")
-			require.Contains(t, logged.String(), `projects="[PUB1 PUB2]"`)
-
-			scrape := httptest.NewRecorder()
-			registry.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-			require.Contains(t, scrape.Body.String(), "\nbroker_nats_callout_shared_lanes_dropped_total 2\n", "want one repository withheld from each grant:\n%s", scrape.Body.String())
+			for _, repository := range row.withheld {
+				for name, grant := range map[string]natsgrant.Permissions{"PUB": pub.Grant, "PUB2": pub2.Grant} {
+					require.False(t, holdsLane(grant, repository), "%s's held daemon is served %s, whose lane a project outside its entry maps", name, repository)
+				}
+			}
+			if row.logged == "" {
+				require.NotContains(t, logged.String(), "level=ERROR", "a lane no project outside an entry maps was logged as shared:\n%s", logged.String())
+			} else {
+				require.Equal(t, 1, strings.Count(logged.String(), "level=ERROR"), "want one error line for the shared lane:\n%s", logged.String())
+				require.Contains(t, logged.String(), "lane="+natsgrant.GitHubPrefix(row.withheld[0])+" ")
+				require.Contains(t, logged.String(), `projects="`+row.logged+`"`)
+			}
+			require.Equal(t, row.dropped, sharedLanesDropped(t, registry), "the repositories withheld from the two grants")
 		})
 	}
 }
