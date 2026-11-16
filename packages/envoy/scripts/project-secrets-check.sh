@@ -168,17 +168,80 @@ start_stack() {
   exit 1
 }
 
-echo "project-secrets-check: this driver needs Dispatch's access routes (avenue A's t-a-3) and its" >&2
-echo "  DISPATCH_ACCESS_ACCOUNTS boot setting (t-a-5). Run it on a branch that has both." >&2
+# --- The stack, and what this run reads off its banner. ---
 if [ -z "$LIVE_BROKER_URL" ]; then
   start_stack
-  pass "the stack is ready ($(exported DEV_STACK_DIR))"
-  note "PRIV is $(exported DEV_STACK_PRIV_PROJECT), its pod $(exported DEV_STACK_PRIV_ACCOUNT)"
+  BROKER_URL="$(exported AGENT_SECRETS_URL)"
+  DISPATCH_URL="$(exported DISPATCH_URL)"
+  STACK_DIR="$(exported DEV_STACK_DIR)"
+  PRIV_PROJECT="$(exported DEV_STACK_PRIV_PROJECT)"
+  PRIV_SECRET="$(exported DEV_STACK_PRIV_SECRET)"
+  PRIV_OWNER="$(exported DEV_STACK_PRIV_OWNER)"
+  PRIV_SERVICE="$(exported DEV_STACK_PRIV_SERVICE)"
+  PRIV_EXCHANGE_TOKEN_FILE="$(exported DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE)"
+  PRIV_POD_TOKEN_FILE="$(exported DEV_STACK_PRIV_POD_TOKEN_FILE)"
+  AIRLOCK_PROXY_URL="$(exported DEV_STACK_AIRLOCK_PROXY_URL)"
+  AIRLOCK_BOUND_URL="$(exported DEV_STACK_AIRLOCK_BOUND_URL)"
+  AIRLOCK_CA_CERT_FILE="$(exported DEV_STACK_AIRLOCK_CA_CERT_FILE)"
+  BIN_DIR="$STACK_DIR/bin"
+  FAKE_SECRETS_FILE="$STACK_DIR/fake-secrets.json"
+  pass "the stack is ready ($STACK_DIR)"
+  note "broker $BROKER_URL, Dispatch $DISPATCH_URL, airlock proxy $AIRLOCK_PROXY_URL"
+  note "$PRIV_PROJECT's pod trades $PRIV_EXCHANGE_TOKEN_FILE and enrols as the service $PRIV_SERVICE"
 else
-  pass "live mode against $LIVE_BROKER_URL and $LIVE_DISPATCH_URL, secret $LIVE_SECRET"
+  BROKER_URL="$LIVE_BROKER_URL"
+  DISPATCH_URL="$LIVE_DISPATCH_URL"
+  PRIV_SECRET="$LIVE_SECRET"
+  pass "live mode against $BROKER_URL and $DISPATCH_URL, secret $PRIV_SECRET"
 fi
 
+# --- The secrets this run writes, unless it is live: PRIV_KEY of the private project, shared and
+# agent tier, so owner and tier alone would give it to every session at once and only the project
+# decides; PUB_KEY with no project at all, the control that must go on being served to everyone
+# its owner and tier allow. The control run (--control untagged) writes PRIV_KEY with no project
+# tag, which is exactly a secret the rule cannot see. ---
+PUB_SECRET="PUB_KEY"
+write_secrets() {
+  local tag='"dispatch-project": "'"$PRIV_PROJECT"'", '
+  [ "$CONTROL" != untagged ] || tag=""
+  local prefix="example/agent-secrets/"
+  local key="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+  python3 - "$FAKE_SECRETS_FILE" <<PY
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    store = json.load(handle)
+store["secrets"] = [s for s in store["secrets"] if s["name"] not in (
+    "${prefix}priv-key", "${prefix}pub-key")]
+store["secrets"].append({"name": "${prefix}priv-key", "kms_key_id": "${key}",
+    "tags": {${tag}"owner": "shared", "tier": "agent"}, "value": "priv-key-value"})
+store["secrets"].append({"name": "${prefix}pub-key", "kms_key_id": "${key}",
+    "tags": {"owner": "shared", "tier": "agent"}, "value": "pub-key-value"})
+with open(path, "w") as handle:
+    json.dump(store, handle, indent=2)
+PY
+  curl -sf -X POST "$BROKER_URL/v1/secrets/$PRIV_SECRET/reread" >/dev/null ||
+    fail "the broker would not reread $PRIV_SECRET"
+  curl -sf -X POST "$BROKER_URL/v1/secrets/$PUB_SECRET/reread" >/dev/null ||
+    fail "the broker would not reread $PUB_SECRET"
+}
+
+# --- PRIV, private, with carol its owner. Avenue A's own route for this is
+# PATCH /api/v1/projects/{key}/access {"visibility": "private"}, which succeeds only once t-a-5
+# (DISPATCH_ACCESS_ACCOUNTS at boot) and t-a-20 (DISPATCH_PRIVATE_PROJECTS and the bus write) are
+# on the branch under test; until then it answers 409 PRIVATE_PROJECTS_OFF. So this run writes the
+# column directly, which is the one thing K3's answer and the read rule both read, and says so.
+# When the route answers, this stand-in goes and the route takes its place.
+make_priv_private() {
+  local database="$1"
+  psql "$database" -v ON_ERROR_STOP=1 -q \
+    -c "insert into projects (key, name) values ('$PRIV_PROJECT', '$PRIV_PROJECT') on conflict (key) do nothing;" \
+    -c "update projects set visibility = 'private', owner = '$PRIV_OWNER' where key = '$PRIV_PROJECT';" ||
+    fail "could not make $PRIV_PROJECT private (the stand-in for PATCH /api/v1/projects/$PRIV_PROJECT/access, avenue A's t-a-5 and t-a-20)"
+  note "made $PRIV_PROJECT private by writing its row: the stand-in for PATCH /api/v1/projects/$PRIV_PROJECT/access {\"visibility\":\"private\"} until avenue A's t-a-5 and t-a-20 land"
+}
+
 echo
-echo "project-secrets-check: not yet implemented past this point." >&2
-echo "  The rows above are the stack; the rows below need avenue A's routes to make PRIV private." >&2
+echo "project-secrets-check: the rows below need avenue A's access routes (t-a-3) and its" >&2
+echo "  DISPATCH_ACCESS_ACCOUNTS boot setting (t-a-5) on the branch under test." >&2
 exit 1
