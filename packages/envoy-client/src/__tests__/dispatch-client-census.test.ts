@@ -144,6 +144,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       to: "trade-off",
       actor,
     }),
+  lenses: (client) => client.lenses("dispatch://DSP-1/spec"),
 };
 
 afterEach(forgetKeyedLayerMemory);

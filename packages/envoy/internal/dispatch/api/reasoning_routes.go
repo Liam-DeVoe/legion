@@ -96,15 +96,20 @@ func (s *server) reasoningCallerOf(w http.ResponseWriter, r *http.Request, suppl
 type storedEnd struct{ kind, id string }
 
 // findStoredNodeUnderIssue is FindNodeUnderIssue's node for address, with the kind and the id
-// the store keys it by, which a tuple naming it carries. They are the node's own kind and id but
-// for two: a finding of a lens is a node of kind block at its own id (graphstore.AddressKind),
-// and a document, whose node answers its uuid, is keyed by its ref_key, the id its address
-// decodes to (decodeNodeAddress).
+// the store keys it by (storedEndOf), which a tuple naming it carries.
 func findStoredNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key, address string) (model.GraphNode, storedEnd, error) {
 	node, err := FindNodeUnderIssue(ctx, q, who, key, address)
 	if err != nil {
 		return model.GraphNode{}, storedEnd{}, err
 	}
+	return node, storedEndOf(node, address), nil
+}
+
+// storedEndOf is the kind and the id the store keys node by, where address is what named it
+// (decodeNodeAddress). They are the node's own kind and id but for two: a finding of a lens is a
+// node of kind block at its own id (graphstore.AddressKind), and a document, whose node answers
+// its uuid, is keyed by its ref_key, the id its address decodes to.
+func storedEndOf(node model.GraphNode, address string) storedEnd {
 	end := storedEnd{kind: node.Kind, id: node.ID}
 	switch node.Kind {
 	case graphstore.KindLensBlock:
@@ -112,7 +117,7 @@ func findStoredNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Act
 	case graphstore.KindArtifact:
 		_, end.id, _ = decodeNodeAddress(address)
 	}
-	return node, end, nil
+	return end
 }
 
 // lensKindNamed is the lens_kind node of the catalogue id names - the bare id (`pre-mortem`), its

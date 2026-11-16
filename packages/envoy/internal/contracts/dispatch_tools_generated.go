@@ -565,4 +565,12 @@ var DispatchTools = []DispatchTool{
 		},
 		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"node\":\"dispatch://lens/01234567-0000-4000-8000-000000000001\",\"kind\":\"has_kind\",\"action\":\"retarget\",\"from\":\"trade-off\",\"to\":\"botec\"}"),
 	},
+	{
+		Name:        "dispatch_lenses",
+		Description: "Read the lenses invoked on one node, in the order they were invoked, and each chain of triggered lenses they stand in. on is the dispatch:// address of any node you may see: an issue, a document or a block of one, an ask, a comment or a message, or a lens (dispatch://lens/<uuid>), a finding, a risk or a constraint; a node that does not exist and one you may not see are both 404 NOT_FOUND. Each lens comes whole: its dispatch://lens/<uuid> address, its kind with the words a person reads for it, the node it stands on, who invoked it (nobody under the deployment's shared agent token, which proves no author), when, its verdict, its state, author where it is yours alone, the lenses that triggered it and the lenses it triggered, its findings in rank order, and its risks each with the checks that prevent it. Where on is itself a lens, the result reads that lens too, so either end of a trigger reads the other. A chain is the lenses joined by triggered_by, walked both ways, in the order they were invoked; it lists at most 50 and names the lens where it stopped. A lens, a finding or a risk you may not see is in no list and no chain. Invoke a lens with dispatch lens.",
+		Arguments: []ToolField{
+			{Name: "on", Kind: ToolFieldString, Required: true, Description: "The dispatch:// address of the node whose lenses to read, such as dispatch://KEY-1/spec or dispatch://lens/<uuid>."},
+		},
+		Example: json.RawMessage("{\"on\":\"dispatch://DSP-1/spec\"}"),
+	},
 }

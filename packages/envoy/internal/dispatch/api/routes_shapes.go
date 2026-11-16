@@ -662,9 +662,12 @@ var routeShapes = map[string]routeShape{
 	// The references read answers graphReferencesRead, whose node carries its text's tree and
 	// whose pin carries the pinned text's, so the row names that read for the same reason the
 	// architecture row above does.
-	"GET /api/v1/references":                               {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
-	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
-	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
+	"GET /api/v1/references":           {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
+	"GET /api/v1/references/questions": {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/block-links":          {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
+	// The lens read of dispatch://INFRA-1950 (lens_read.go): the lenses on one node and the chains
+	// of triggered lenses they stand in, each lens whole with its findings and its risks.
+	"GET /api/v1/lenses":                                   {Status: http.StatusOK, Response: nodeLenses{}, Params: lensesQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {Status: http.StatusNoContent},
 	"GET /api/v1/issues/{key}/artifacts":                   {Status: http.StatusOK, Response: []artifactRead{}},

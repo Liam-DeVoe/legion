@@ -207,6 +207,7 @@ const validCalls = {
   dispatch_constraint: specFor("dispatch_constraint").example,
   dispatch_constraints: { issue: "DSP-1" },
   dispatch_pointer: specFor("dispatch_pointer").example,
+  dispatch_lenses: { on: "dispatch://DSP-1/spec" },
 } as const;
 
 function schemaFor(name: keyof typeof validCalls) {
@@ -316,6 +317,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_constraint",
       "dispatch_constraints",
       "dispatch_pointer",
+      "dispatch_lenses",
     ]);
 
     for (const [name, args] of Object.entries(validCalls) as Array<

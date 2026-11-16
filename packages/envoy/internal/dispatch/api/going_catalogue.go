@@ -6,7 +6,7 @@ package api
 // The catalogue is the dispatch tools that write, all but one: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty-six of the forty-one tools write,
+// what a model chooses on, and its own argument schema. Twenty-six of the forty-two tools write,
 // and the catalogue holds twenty-five of them, so the list is read whole: nothing searches it,
 // and no second schema is authored per route. Twenty was the count this header called under the
 // one where a model's choice measurably falls apart; dispatch://INFRA-1950 added five writes of
@@ -78,13 +78,14 @@ type goingToolRoute struct {
 
 // goingToolRoutes is the rows of the server's table each dispatch tool writes, by the tool's own
 // name, and so the tools the catalogue holds: twenty-five of the twenty-six tools that write, of
-// the forty-one tool specs, five of them the writes of the reasoning nodes dispatch://INFRA-1950
+// the forty-two tool specs, five of them the writes of the reasoning nodes dispatch://INFRA-1950
 // added, whose effect on a model's choice among the catalogue that child did not measure. A tool
-// this map does not name is not in the catalogue: the read tools, `dispatch_constraints` among
-// them; `dispatch_related`, whose POST row writes nothing (it runs the related-item check and
-// records none of it); and `dispatch_review`, which writes and is left out on purpose. A review
-// records an approval or a changes request in a person's name, and the loop that proposes
-// operations on Dispatch's graph must never propose one, so it gets no row here.
+// this map does not name is not in the catalogue: the read tools, `dispatch_constraints` and
+// `dispatch_lenses` among them; `dispatch_related`, whose POST row writes nothing (it runs the
+// related-item check and records none of it); and `dispatch_review`, which writes and is left
+// out on purpose. A review records an approval or a changes request in a person's name, and the
+// loop that proposes operations on Dispatch's graph must never propose one, so it gets no row
+// here.
 //
 // The rows of one tool are tried in order, so the row a call performs is the first whose guard
 // it satisfies and whose placeholders it fills: a document write names its issue, else its

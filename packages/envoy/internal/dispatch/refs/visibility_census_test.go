@@ -324,6 +324,16 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
+	// Nodes is Node over a batch: one target of every kind, so each kind's loader issues its
+	// statement in the one call.
+	record("Nodes", "Nodes of every kind at once", func() error {
+		targets := make([]Target, len(nodeKinds))
+		for index, kind := range nodeKinds {
+			targets[index] = Target{Kind: kind, ID: "no-such-node"}
+		}
+		_, err := Nodes(ctx, recorder, who, true, targets)
+		return err
+	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
 		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
 		return err

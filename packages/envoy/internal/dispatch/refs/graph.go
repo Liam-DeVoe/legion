@@ -446,6 +446,26 @@ func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRe
 	return node.GraphNode, found, nil
 }
 
+// Nodes is Node for many nodes at once: each target resolved for who, as Node resolves one, in
+// one read per kind rather than one per node, and answered under the target it was asked by. A
+// target that names no node, and a node reserved for an author who is not who, is absent from
+// the answer, exactly as Node answers it not found.
+func Nodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[Target]model.GraphNode, error) {
+	rows := make([]edgeRow, len(targets))
+	for index, target := range targets {
+		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
+	}
+	resolved, err := resolveNodes(ctx, q, who, byRefKey, rows)
+	if err != nil {
+		return nil, err
+	}
+	nodes := make(map[Target]model.GraphNode, len(resolved))
+	for key, node := range resolved {
+		nodes[Target{Kind: key[0], ID: key[1]}] = node.GraphNode
+	}
+	return nodes, nil
+}
+
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
 // excerpt, already cut.
 type resolvedNode struct {

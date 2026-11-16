@@ -40,6 +40,7 @@ import {
   constraintsCommand,
   findingCommand,
   lensCommand,
+  lensesCommand,
   pointerCommand,
   riskCommand,
 } from "./reasoning";
@@ -118,4 +119,5 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_constraint: acting(constraintCommand),
   dispatch_constraints: acting(constraintsCommand),
   dispatch_pointer: acting(pointerCommand),
+  dispatch_lenses: acting(lensesCommand),
 };

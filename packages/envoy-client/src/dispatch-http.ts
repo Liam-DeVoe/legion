@@ -67,6 +67,7 @@ import type {
   MessageReplyInput,
   MessageReplyResult,
   MyRepliesResponse,
+  NodeLenses,
   OpenAsksResponse,
   PointerInput,
   PointerWritten,
@@ -1873,6 +1874,12 @@ export class DispatchClient {
       ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", node, "pointers"],
       input
     );
+  }
+
+  /** `GET /api/v1/lenses?on=`: the lenses invoked on the node `on` addresses, in the order they
+   *  were invoked, and each chain of triggered lenses they stand in. */
+  async lenses(on: string): Promise<NodeLenses> {
+    return this.#json("GET", ["api", "v1", "lenses"], undefined, { on });
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {

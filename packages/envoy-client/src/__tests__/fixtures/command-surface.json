@@ -1,5 +1,5 @@
 {
-  "commands": 41,
+  "commands": 42,
   "refusals": 29,
   "runs": [
     {
@@ -1128,6 +1128,36 @@
       "text": [
         "Invoked a trade-off lens on dispatch://DSP-1/spec: dispatch://lens/01234567-0000-4000-8000-000000000001, written by person person@example.com",
         "- finding dispatch://lens/01234567-0000-4000-8000-000000000001#b-01234567-0000-4000-8000-000000000002: A second region doubles the write path's cost."
+      ]
+    },
+    {
+      "tool": "dispatch_lenses",
+      "call": "valid",
+      "args": {
+        "on": "dispatch://DSP-1/spec"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/lenses?on=dispatch://DSP-1/spec",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "dispatch://DSP-1/spec holds 2 lenses you may see, in the order they were invoked:",
+        "- dispatch://lens/01234567-0000-4000-8000-000000000001: trade-off (trade-off analysis) on dispatch://DSP-1/spec, invoked by person person@example.com; live",
+        "  verdict: Keep one region.",
+        "  triggered dispatch://lens/01234567-0000-4000-8000-000000000002",
+        "  - finding dispatch://lens/01234567-0000-4000-8000-000000000001#b-01234567-0000-4000-8000-000000000002: A second region doubles the write path's cost.",
+        "- dispatch://lens/01234567-0000-4000-8000-000000000002: pre-mortem (the pre-mortem over failure modes) on dispatch://DSP-1/spec, invoked by person person@example.com; live",
+        "  triggered by dispatch://lens/01234567-0000-4000-8000-000000000001",
+        "  - risk dispatch://risk/01234567-0000-4000-8000-000000000001: The migration locks the table for minutes. (no check prevents it)",
+        "Chain of 2 triggered lenses: dispatch://lens/01234567-0000-4000-8000-000000000001, dispatch://lens/01234567-0000-4000-8000-000000000002"
       ]
     },
     {

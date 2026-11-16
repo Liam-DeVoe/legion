@@ -3,6 +3,8 @@ import type {
   IssueConstraints,
   LensFinding,
   LensInvoked,
+  LensRead,
+  NodeLenses,
   PointerInput,
   PointerWritten,
   ReasoningAuthor,
@@ -21,11 +23,12 @@ import { refusalWithCode } from "./failures";
 /**
  * The commands that write and read the nodes a piece of work is reasoned about with, on
  * Dispatch's node and tuple store: a lens invoked on a node of an issue, a finding added to one, a
- * risk under a pre-mortem, a constraint under the issue, one pointer tuple out of a node, and the
- * issue's constraints. Each write names the node it wrote by its dispatch:// address, which is how
- * every later call names it, and says when that node is the caller's alone. Dispatch refuses
- * these writes by code (LENS_KIND_REQUIRED, INVALID_POINTER, POINTER_ALREADY_ASSERTED,
- * AUTHOR_NAMES_NOBODY, NOT_FOUND), and each description names them, so the code reaches the caller.
+ * risk under a pre-mortem, a constraint under the issue, one pointer tuple out of a node, the
+ * issue's constraints, and the lenses on any node. Each write names the node it wrote by its
+ * dispatch:// address, which is how every later call names it, and says when that node is the
+ * caller's alone. Dispatch refuses these writes by code (LENS_KIND_REQUIRED, INVALID_POINTER,
+ * POINTER_ALREADY_ASSERTED, AUTHOR_NAMES_NOBODY, NOT_FOUND), and each description names them, so
+ * the code reaches the caller.
  */
 
 /** `visibility` as the schema parsed it: project, author, or nothing at all. */
@@ -242,6 +245,78 @@ export async function pointerCommand(context: CommandContext): Promise<DispatchT
       action: written.action,
       to: written.to.address,
       ...(written.from === null ? {} : { from: written.from.address }),
+    },
+  };
+}
+
+/** One lens as `dispatch lenses` lists it: its line, then its verdict, its triggers, its findings
+ *  and its risks, indented beneath it. */
+function lensLines(lens: LensRead): string[] {
+  const kind = lens.kind === null ? "a lens of no kind" : `${lens.kind.id} (${lens.kind.words})`;
+  const lines = [
+    `- ${lens.address}${reservedNote(lens.visibility)}: ${kind} on ${lens.on ?? "a node you may not see"}, invoked by ${authorText(lens.author)}; ${lens.state}`,
+  ];
+  if (lens.verdict !== null) lines.push(`  verdict: ${lens.verdict}`);
+  // The document renders a Go list as nullable, and Dispatch answers an empty one.
+  const triggeredBy = lens.triggered_by ?? [];
+  const triggered = lens.triggered ?? [];
+  if (triggeredBy.length > 0) lines.push(`  triggered by ${triggeredBy.join(", ")}`);
+  if (triggered.length > 0) lines.push(`  triggered ${triggered.join(", ")}`);
+  for (const finding of lens.findings ?? []) {
+    lines.push(
+      `  - finding ${finding.address}${reservedNote(finding.visibility)}: ${finding.text}`
+    );
+  }
+  for (const risk of lens.risks ?? []) {
+    const preventedBy = risk.prevented_by ?? [];
+    const prevention =
+      preventedBy.length === 0 ? "no check prevents it" : `prevented by ${preventedBy.join(", ")}`;
+    lines.push(
+      `  - risk ${risk.address}${reservedNote(risk.visibility)}: ${risk.heading} (${prevention})`
+    );
+  }
+  return lines;
+}
+
+/** `dispatch lenses`: the lenses invoked on one node, in the order they were invoked, and each
+ *  chain of triggered lenses they stand in. */
+export async function lensesCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client } = context;
+  const on = stringArg(args, "on");
+  let read: NodeLenses;
+  try {
+    read = await client.lenses(on);
+  } catch (error) {
+    throw refusalWithCode(error);
+  }
+  const node = read.on.address === "" ? on : read.on.address;
+  const lenses = read.lenses ?? [];
+  const chains = read.chains ?? [];
+  const lines: string[] = read.lens === null ? [] : [`${node} is a lens:`, ...lensLines(read.lens)];
+  lines.push(
+    lenses.length === 0
+      ? `${node} holds no lens you may see.`
+      : `${node} holds ${lenses.length} lens${lenses.length === 1 ? "" : "es"} you may see, in the order they were invoked:`,
+    ...lenses.flatMap(lensLines)
+  );
+  for (const chain of chains) {
+    const members = (chain.lenses ?? []).map((lens) => lens.address);
+    const stopped =
+      chain.stopped_at === null
+        ? ""
+        : `; the walk stopped at ${chain.stopped_at}, past the lenses it lists`;
+    lines.push(`Chain of ${members.length} triggered lenses: ${members.join(", ")}${stopped}`);
+  }
+  return {
+    text: lines.join("\n"),
+    details: {
+      on: node,
+      ...(read.lens === null ? {} : { lens: read.lens.address }),
+      lenses: lenses.map((lens) => lens.address),
+      chains: chains.map((chain) => ({
+        lenses: (chain.lenses ?? []).map((lens) => lens.address),
+        stopped_at: chain.stopped_at,
+      })),
     },
   };
 }

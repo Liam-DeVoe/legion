@@ -4044,7 +4044,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty-five of the twenty-six dispatch tools that write, of the forty-one tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty-five of the twenty-six dispatch tools that write, of the forty-two tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
   The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   The catalogue is read whole: it takes no query and serves no page.
@@ -4124,6 +4124,18 @@ Each item below names a path with its method and identity, then its purpose.
   `from`, `to` and every link's two blocks carry the eight facts of every node ([Reference graph](#reference-graph)).
   A link is listed only while both blocks are current blocks of their documents, and a typed block's `block[]` pointer only while its target has a type the attribute allows.
   `400 INVALID_REFERENCE` when either is not a document reference; `404 NOT_FOUND` for a document that does not exist.
+
+- `/api/v1/lenses?on=` (GET; cookie, trusted header, or bearer)
+
+  The lenses invoked on one node, and each chain of triggered lenses they stand in (`api/lens_read.go`).
+  `on` is the node's `dispatch://` address, or its store address as the `/nodes/{id}` routes take one, of any node the caller may see, of an issue or of none; an address that names no node, a node nobody holds and a node the caller may not see are one `404 NOT_FOUND`, in the same words but the address, and an empty `on` is `400 INVALID_QUERY`.
+  It takes no other query: nothing chooses a kind, an edge or a depth.
+  Answers `{on, lens, lenses, chains}`: `on` the node read (address, kind, state and visibility); `lens` the node itself, whole, where it is a lens, so either end of a trigger reads the other, and null otherwise; `lenses` the lenses whose `part_of` tuple points at the node, in the order they were invoked, the `seq` of that tuple, so a later write of a lens's row does not move it.
+  Each lens carries its address `dispatch://lens/<uuid>`, its `kind` (`{id, words}`, the `lens_kind` its `has_kind` tuple names), `on` (the node it stands on, null where the caller may not see it), `author` (the person or session its `authored_by` tuple names, null on the shared bearer), `created_at`, `verdict`, `state`, `visibility`, `triggered_by` (the lenses its `triggered_by` tuples point at) and `triggered` (the lenses whose `triggered_by` tuples point at it), each by address in the order the tuples were written, since the store holds `triggered_by` as many-valued.
+  Its `findings` come in rank order, each `{address, text, rank, state, visibility}`, `rank` being the `seq` of its `part_of` tuple, a sparse key; its `risks` in the order of their `part_of` tuples, each `{address, heading, early_warning, prevention, prevented_by, state, visibility}`, `prevented_by` the address of each check that prevents it and `[]` where none does.
+  A chain is `{lenses, stopped_at}`: the lenses joined to one another by `triggered_by` tuples the caller may see, walked both ways, breadth first, from the node itself where it is a lens and from each lens on the node, in that order, that no earlier chain lists; a visited set lists each lens once, so a cycle is read once, and the chain lists its lenses whole in the order they were invoked.
+  A chain lists at most `lensChainDepth` (50) lenses, the depth counted in lenses: past them `stopped_at` names the first lens the walk reached and did not list, and a lens on the node past that cut begins a chain of its own; a chain of exactly 50 has `stopped_at` null. A chain holds two lenses or more.
+  A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's chains.
 
 - `/api/v1/issues` (POST; cookie, trusted header, or bearer)
 

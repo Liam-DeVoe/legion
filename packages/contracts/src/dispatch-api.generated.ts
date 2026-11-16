@@ -1228,7 +1228,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty-five of the twenty-six dispatch tools that write, of the forty-one tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty-five actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty-five of the twenty-six dispatch tools that write, of the forty-two tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty-five actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1868,6 +1868,23 @@ export interface paths {
     };
     /** @description What a reference to an issue shows, read without the full issue: {key, project, title, status, documents}, documents every artifact of the issue in the order the issue read lists them, each {id, slug, name, kind, latest_version, primary}, primary whether the document is the issue's spec; 404 NOT_FOUND for no such issue. */
     get: operations["getApiV1IssuesByKeySummary"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/lenses": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The lenses invoked on one node, and each chain of triggered lenses they stand in: ?on= the node's dispatch:// address (or its store address as /nodes/{id} takes one), any node the caller may see, of an issue or of none; an address that names no node, a node nobody holds and a node the caller may not see are one 404 NOT_FOUND, and an empty on is 400 INVALID_QUERY. It takes no other query: nothing chooses a kind, an edge or a depth. Answers {on, lens, lenses, chains}: on the node read (address, kind, state, visibility); lens the node itself, whole, where it is a lens, else null; lenses the lenses whose part_of tuple points at the node, in the order they were invoked (the seq of that tuple, so a later write of a lens's row does not move it); and chains. Each lens is {address, kind {id, words}, on, author, created_at, verdict, state, visibility, triggered_by, triggered, findings, risks}: kind the lens_kind its has_kind tuple names with that kind's words, on the address of the node it stands on (null where the caller may not see it), author the person or session its authored_by tuple names (null on the shared bearer), triggered_by the lenses its triggered_by tuples point at and triggered the lenses whose triggered_by tuples point at it, each by address in the order written; findings in rank order, each {address, text, rank, state, visibility}, rank the seq of its part_of tuple, a sparse key; risks in the order of their part_of tuples, each {address, heading, early_warning, prevention, prevented_by, state, visibility}, prevented_by the address of each check that prevents it, [] where none does. A chain is {lenses, stopped_at}: the lenses joined to one another by triggered_by tuples the caller may see, walked both ways from each lens on the node (and from the node itself where it is a lens) that no earlier chain lists, breadth first, with a visited set so a cycle lists each lens once, and listed in the order they were invoked. A chain lists at most 50 lenses: past them stopped_at names the first lens it reached and did not list, and a lens on the node past that cut begins a chain of its own; a chain of exactly 50 has stopped_at null. A chain holds two lenses or more. A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's. */
+    get: operations["getApiV1Lenses"];
     put?: never;
     post?: never;
     delete?: never;
@@ -5477,6 +5494,10 @@ export interface components {
       opened_to_merge: components["schemas"]["DeliverySpread"];
       opened_to_production: components["schemas"]["DeliverySpread"];
     };
+    LensChain: {
+      lenses: components["schemas"]["LensRead"][] | null;
+      stopped_at: null | string;
+    };
     LensFinding: {
       address: string;
       author: components["schemas"]["ReasoningAuthor"] | null;
@@ -5496,6 +5517,16 @@ export interface components {
       text: string;
       /** @enum {string} */
       visibility?: "project" | "author";
+    };
+    LensFindingRead: {
+      address: string;
+      /** Format: int64 */
+      rank: number;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+      /** @enum {string} */
+      visibility: "project" | "author";
     };
     LensInvocationInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -5534,6 +5565,27 @@ export interface components {
       ref: string;
       reference: string;
       standard: string;
+    };
+    LensRead: {
+      address: string;
+      author: components["schemas"]["ReasoningAuthor"] | null;
+      /** Format: date-time */
+      created_at: string;
+      findings: components["schemas"]["LensFindingRead"][] | null;
+      kind: components["schemas"]["LensReadKind"] | null;
+      on: null | string;
+      risks: components["schemas"]["RiskRead"][] | null;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      triggered: string[] | null;
+      triggered_by: string[] | null;
+      verdict: null | string;
+      /** @enum {string} */
+      visibility: "project" | "author";
+    };
+    LensReadKind: {
+      id: string;
+      words: string;
     };
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
@@ -5718,6 +5770,12 @@ export interface components {
     NewIssueSettingsInput: {
       label: string;
       session: string;
+    };
+    NodeLenses: {
+      chains: components["schemas"]["LensChain"][] | null;
+      lens: components["schemas"]["LensRead"] | null;
+      lenses: components["schemas"]["LensRead"][] | null;
+      on: components["schemas"]["ReasoningEnd"];
     };
     OpenAsk: {
       /** Format: int64 */
@@ -6155,6 +6213,17 @@ export interface components {
       prevention: string;
       /** @enum {string} */
       visibility?: "project" | "author";
+    };
+    RiskRead: {
+      address: string;
+      early_warning: string;
+      heading: string;
+      prevented_by: string[] | null;
+      prevention: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      /** @enum {string} */
+      visibility: "project" | "author";
     };
     RiskWritten: {
       address: string;
@@ -11395,6 +11464,39 @@ export interface operations {
       };
     };
   };
+  getApiV1Lenses: {
+    parameters: {
+      query?: {
+        on?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeLenses"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Limits: {
     parameters: {
       query?: {
@@ -14483,12 +14585,16 @@ export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
+export type LensChain = components["schemas"]["LensChain"];
 export type LensFinding = components["schemas"]["LensFinding"];
 export type LensFindingInput = components["schemas"]["LensFindingInput"];
+export type LensFindingRead = components["schemas"]["LensFindingRead"];
 export type LensInvocationInput = components["schemas"]["LensInvocationInput"];
 export type LensInvoked = components["schemas"]["LensInvoked"];
 export type LensKindRead = components["schemas"]["LensKindRead"];
 export type LensKindSourceRead = components["schemas"]["LensKindSourceRead"];
+export type LensRead = components["schemas"]["LensRead"];
+export type LensReadKind = components["schemas"]["LensReadKind"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
@@ -14510,6 +14616,7 @@ export type MyReplyRow = components["schemas"]["MyReplyRow"];
 export type MyReplySession = components["schemas"]["MyReplySession"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
+export type NodeLenses = components["schemas"]["NodeLenses"];
 export type OpenAsk = components["schemas"]["OpenAsk"];
 export type OpenAskDocument = components["schemas"]["OpenAskDocument"];
 export type OpenAskIssue = components["schemas"]["OpenAskIssue"];
@@ -14566,6 +14673,7 @@ export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];
 export type ResultCommitStands = components["schemas"]["ResultCommitStands"];
 export type RiskInput = components["schemas"]["RiskInput"];
+export type RiskRead = components["schemas"]["RiskRead"];
 export type RiskWritten = components["schemas"]["RiskWritten"];
 export type RoomCounters = components["schemas"]["RoomCounters"];
 export type RouteIndex = components["schemas"]["RouteIndex"];

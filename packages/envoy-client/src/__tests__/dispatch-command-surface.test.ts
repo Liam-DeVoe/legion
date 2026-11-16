@@ -470,6 +470,62 @@ function pointerBody() {
   };
 }
 
+/** `GET /api/v1/lenses?on=`: the spec's trade-off analysis with its finding, the pre-mortem it
+ *  triggered with one risk no check prevents yet, and the chain the two make. */
+function lensesBody() {
+  const spec = `dispatch://${ISSUE}/spec`;
+  const premortem = `dispatch://lens/${OTHER_UUID}`;
+  const lens = (address: string, kind: string, words: string) => ({
+    address,
+    kind: { id: kind, words },
+    on: spec,
+    author: reasoningAuthor,
+    created_at: AT,
+    verdict: null,
+    state: "live",
+    visibility: "project",
+    triggered_by: [] as string[],
+    triggered: [] as string[],
+    findings: [] as unknown[],
+    risks: [] as unknown[],
+  });
+  const tradeOff = {
+    ...lens(LENS, "trade-off", "trade-off analysis"),
+    verdict: "Keep one region.",
+    triggered: [premortem],
+    findings: [
+      {
+        address: `${LENS}#b-${OTHER_UUID}`,
+        text: "A second region doubles the write path's cost.",
+        rank: 41,
+        state: "live",
+        visibility: "project",
+      },
+    ],
+  };
+  const preMortem = {
+    ...lens(premortem, "pre-mortem", "the pre-mortem over failure modes"),
+    triggered_by: [LENS],
+    risks: [
+      {
+        address: `dispatch://risk/${UUID}`,
+        heading: "The migration locks the table for minutes.",
+        early_warning: "Writes queue behind the migration's lock.",
+        prevention: "Build the index concurrently.",
+        prevented_by: [],
+        state: "live",
+        visibility: "project",
+      },
+    ],
+  };
+  return {
+    on: { address: spec, kind: "artifact", state: "live", visibility: "project" },
+    lens: null,
+    lenses: [tradeOff, preMortem],
+    chains: [{ lenses: [tradeOff, preMortem], stopped_at: null }],
+  };
+}
+
 function architectureSource() {
   return {
     project: "CORE",
@@ -594,6 +650,8 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       });
     case "GET /api/v1/references":
       return response({ node: { kind: "issue", id: ISSUE }, edges: [] });
+    case "GET /api/v1/lenses":
+      return response(lensesBody());
     // The Inbox's two lists, both empty: every line the summary prints from a row carries the
     // row's own age, which the record must not date against the wall clock.
     case "GET /api/v1/inbox":
