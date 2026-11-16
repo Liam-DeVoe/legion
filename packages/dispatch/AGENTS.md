@@ -2203,7 +2203,7 @@ page now sends 2 in two (`e2e/landing-reads.e2e.ts`, which prints every landing'
 and holds each page to its bound).
 The parse was measured before this release split the shell, and it is a parse of the entry
 chunk, which the split halved: 485,658 bytes at `61e5c402` (measured 2026-11-16) against
-1,055,583 on the default branch the same day, at `d5e2a5fe` (the
+1,055,583 on the default branch the same day, at `545b2116` (the
 Layout section above).
 No reading at this head splits those two parts. The reading that stands in for them is the
 timing fixture's `first-page-load` (`e2e/measure-reporter.ts`): the duration of a row's first
@@ -3044,14 +3044,14 @@ reader's by counting rendering frames, not milliseconds, since a busy page can d
 task (CI's WebKit did), and a text change in the margin opens that window too: a `dispatch://` reference resolving to
 its title can resize an ask card and make Firefox or WebKit anchor the margin's scroll.
 
-The `webkit-iphone` project runs, in WebKit with the iPhone 13 profile, four rows of `e2e/agent-view.e2e.ts` (the live view's phone layout, its Jump to latest, a capped model name, and a document-scrolling route the keyboard cap leaves alone), `e2e/agent-view-settings.e2e.ts`'s `the header shows the session's reported model` row, the rows of `e2e/phone-conversation.e2e.ts` titled `covers none of`, which check what the Conversation's floating pills cover on a phone (the stuck live-updates pill's Reload among them), `e2e/delivery-live.e2e.ts`'s `on a phone the delivery page` row, and `e2e/live-socket.e2e.ts`'s one-socket row: iOS Safari is the engine the keyboard cap and those layouts exist for, and the `iphone` project is Chromium. Its project `grep` selects those rows by title, so renaming any of them silently drops its WebKit run with no failure; rename the `grep` with it. WebKit delivers a scroll container's `scroll` event a frame later than Chromium, and the thread follows its bottom only once that event has arrived, so the live view's rows scroll the thread through `scrollThreadTo`, which waits for the event, before they raise a keyboard.
+The `webkit-iphone` project runs, in WebKit with the iPhone 13 profile, five rows of `e2e/agent-view.e2e.ts` (the live view's phone layout, its Jump to latest, a capped model name, a reasoning link's padded box, and a document-scrolling route the keyboard cap leaves alone), `e2e/agent-view-settings.e2e.ts`'s `the header shows the session's reported model` row, the rows of `e2e/phone-conversation.e2e.ts` titled `covers none of`, which check what the Conversation's floating pills cover on a phone (the stuck live-updates pill's Reload among them), `e2e/delivery-live.e2e.ts`'s `on a phone the delivery page` row, and `e2e/live-socket.e2e.ts`'s one-socket row: iOS Safari is the engine the keyboard cap and those layouts exist for, and the `iphone` project is Chromium. Its project `grep` selects those rows by title, so renaming any of them silently drops its WebKit run with no failure; rename the `grep` with it. WebKit delivers a scroll container's `scroll` event a frame later than Chromium, and the thread follows its bottom only once that event has arrived, so the live view's rows scroll the thread through `scrollThreadTo`, which waits for the event, before they raise a keyboard.
 
 No Playwright hook asserts what a project's title `grep` selected, so that guard is a one-time manual check: rename one selected test in a scratch copy and confirm `bunx playwright test --config e2e/playwright.config.ts --project=webkit-iphone --list` drops it (the count falls by one, with no error), then restore it. Repeat it whenever the `grep` or the titles change.
 
 The `firefox` Playwright project runs the rows tagged `@firefox` (`firefoxTagged` in
 `e2e/playwright.config.ts`), 45 rows: the same rows of the same specs as `webkit` but
-`e2e/collab-cursor.e2e.ts`'s and the two `webkit` alone carries, and the rows of `e2e/code-line-replace.e2e.ts` and
-`e2e/picture-link-click.e2e.ts`. Firefox's native editing puts text
+`e2e/collab-cursor.e2e.ts`'s and the two `webkit` alone carries, and the rows of `e2e/code-line-replace.e2e.ts`,
+`e2e/picture-link-click.e2e.ts` and `e2e/live-socket.e2e.ts`'s rotation row. Firefox's native editing puts text
 typed over a code block's last line before that line's newline, and deletes a paragraph's hard break
 along with the text after it, which Chromium and WebKit never do, so that spec is the one that needs
 a second engine; the picker, deep-link, download-name, keyed, live-socket, offline-edits, mermaid
