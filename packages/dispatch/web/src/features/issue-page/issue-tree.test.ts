@@ -17,6 +17,7 @@ import type {
   IssueDetails,
   Message,
   MessageRead,
+  ReferenceTarget,
   RequirementCoverage,
 } from "../../api/types";
 import { askResolutionBadge } from "../refs/actor";
@@ -28,7 +29,7 @@ import {
   nodeWords,
   type TreeNode,
 } from "./issue-tree";
-import { nodeStateWord } from "./page-words";
+import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { blockNodeId } from "./tree-drafts";
 
 /**
@@ -505,8 +506,8 @@ test("a pointer whose target is gone is drawn as a chip that says so", () => {
 
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
 // which is its source: `:::plan_task{#t1 serves="…" needs="…"}`, its words, and the closing
-// fence. The opening line and the fence are markup, so a block's row and every chip naming it
-// carry its words alone.
+// fence. The opening line and the fence are markup, so a block's row carries its words alone,
+// and a chip naming it the words of the server's reading of it.
 test("a typed block's row and a chip naming it carry its words, not its directive's source", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
@@ -530,6 +531,7 @@ test("a typed block's row and a chip naming it carry its words, not its directiv
         kind: "block",
         name: `:::plan_task{#t0 serves="${serves}"}\nAdd the routes.\n:::`,
         ref: needs,
+        text_tree: readingOf("Add the routes."),
       },
       {
         gone: false,
@@ -553,6 +555,96 @@ test("a typed block's row and a chip naming it carry its words, not its directiv
   expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.text).toBe(
     "The page loads in one second.\n\nOn a phone too."
   );
+});
+
+// R1, R21: a chip names a block by the first line a row draws for it, read from the server's
+// reading of the block's words and never from its stored source, whose directive and markdown
+// are markup: where the read sent no reading, the chip draws no words of it. A chip naming a
+// whole document names it by the page's word for it, never by its file name.
+test("a chip of a block draws the first line of its reading, and a document's chip its role word", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const first = `dispatch://${KEY}/spec#b-r1`;
+  const second = `dispatch://${KEY}/spec#b-r2`;
+  const whole = `dispatch://${KEY}/spec`;
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [
+          { marks: [{ type: "strong" }], text: "R2.", type: "text" },
+          { text: " The second statement. It goes on.", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  // The second statement as the batched read answers it: its stored source as its name, and
+  // the server's reading of its words where the read sends one.
+  const statement = (tree?: DisplayTree): ReferenceTarget => ({
+    gone: false,
+    kind: "block",
+    name: ":::requirement{#r2}\n**R2.** The second statement. It goes on.\n:::",
+    ref: second,
+    ...(tree === undefined ? {} : { text_tree: tree }),
+  });
+  // A decision tied to the spec as a whole, which the read names by its file name.
+  const tied: Decision = {
+    ...decision("d1", "Keep the spec as one document.", []),
+    links: [
+      {
+        created_at: "2026-11-05T00:00:00Z",
+        created_version: 1,
+        from_block: "d1",
+        stale: false,
+        to: {
+          changed_at: null,
+          changed_by: null,
+          id: spec.id,
+          kind: "artifact",
+          made_at: null,
+          made_by: null,
+          parent: null,
+          parent_version: null,
+          ref: whole,
+        },
+      },
+    ],
+  };
+  const build = (member: ReferenceTarget) =>
+    buildIssueTree({
+      coverage: coverage([
+        requirement("r1", "The first statement."),
+        requirement("r2", "The second statement."),
+      ]),
+      decisions: decisions([tied]),
+      documents: [
+        { artifactId: spec.id, blocks: [block("r1", "requirement"), block("r2", "requirement")] },
+        {
+          artifactId: plan.id,
+          blocks: [block("t1", "plan_task", { serves: `${first} ${second}` })],
+        },
+      ],
+      issue: issueDetails([spec, plan, made]),
+      targets: [member, { gone: false, kind: "artifact", name: "spec.md", ref: whole }],
+    });
+  // The chip the task's placement under the first statement draws for its other placement.
+  const otherPlacement = (root: TreeNode) => {
+    const chips = placementsOf(root, blockNodeId("plan-md", "t1"))[0]?.node.alsoUnder ?? [];
+    expect(chips.map((chip) => chip.ref)).toEqual([second]);
+    return chips[0]?.name;
+  };
+
+  const root = build(statement(reading));
+  const line = otherPlacement(root) ?? "";
+  expect(line).not.toContain("**");
+  expect(line).not.toContain(":::");
+  expect(line).toBe("R2. The second statement.");
+  expect(otherPlacement(build(statement()))).toBe("");
+  expect(
+    nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips.map(({ name, ref }) => ({ name, ref }))
+  ).toEqual([{ name: PRESET_NAMES.spec, ref: whole }]);
 });
 
 // R4, R20: the model takes any depth. Today's data reaches two levels below the issue, because
@@ -735,7 +827,8 @@ test("no document is a node, and each typed block and child sits under the issue
 
 // The coverage read names a requirement by its words with every `://` word left out
 // (`blockWords`, `api/results.go`), so the document a requirement cites is read from the
-// block's own source, which the reference read names it by.
+// block's own source, which the reference read names it by. A document of no role is named by
+// the page's word for a document, never by its file name.
 test("a requirement whose source cites a document carries its chip, whatever words name it", () => {
   const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -755,13 +848,15 @@ test("a requirement whose source cites a document carries its chip, whatever wor
   });
 
   const chips = nodeOf(root, blockNodeId(SPEC, "r-cites"))?.chips ?? [];
-  expect(chips.map(({ name, ref }) => ({ name, ref }))).toEqual([{ name: "notes.md", ref: cites }]);
+  expect(chips.map(({ name, ref }) => ({ name, ref }))).toEqual([
+    { name: NODE_TYPE_NAMES.document, ref: cites },
+  ]);
 });
 
 // R3: a document is no node, so a block whose words cite one carries a chip that opens it, at
-// its own address and named by the document's name - the spec's included, whose `spec`
-// reference is the Spec filter's address. A citation of one block of a document is that
-// block's, and draws no document chip.
+// its own address and named by the page's word for it - the spec's included, which is named as
+// the Spec filter is and whose `spec` reference is that filter's address. A citation of one
+// block of a document is that block's, and draws no document chip.
 test("a block whose text cites a document carries a chip that opens it", () => {
   const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -786,8 +881,12 @@ test("a block whose text cites a document carries a chip that opens it", () => {
 
   const chipsOf = (id: string) =>
     (nodeOf(root, blockNodeId(SPEC, id))?.chips ?? []).map(({ name, ref }) => ({ name, ref }));
-  expect(chipsOf("r1")).toEqual([{ name: "notes.md", ref: `dispatch://${KEY}/artifact/notes-md` }]);
-  expect(chipsOf("r2")).toEqual([{ name: "spec.md", ref: `dispatch://${KEY}/artifact/${SPEC}` }]);
+  expect(chipsOf("r1")).toEqual([
+    { name: NODE_TYPE_NAMES.document, ref: `dispatch://${KEY}/artifact/notes-md` },
+  ]);
+  expect(chipsOf("r2")).toEqual([
+    { name: PRESET_NAMES.spec, ref: `dispatch://${KEY}/artifact/${SPEC}` },
+  ]);
   expect(chipsOf("r3")).toEqual([]);
 });
 

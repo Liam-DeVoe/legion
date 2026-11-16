@@ -93,7 +93,10 @@ export interface NodeChip {
   /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
-  /** The words shown for the target, from the batched reference read; `""` until it answers. */
+  /** The words shown for the target (`treeContext`): a block's first line, as a row draws one
+   *  (R1), of the server's reading of its words, and `""` where the batched reference read sent
+   *  none; a whole document's word on the page, `Spec` and not `spec.md`; and anything else's
+   *  name as that read answers it, `""` until it answers. `""` for a target that is gone. */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -318,9 +321,11 @@ export function nodeWords(node: TreeNode): string {
   return node.tree === undefined ? node.text : wordsOf(node.tree);
 }
 
-/** The issue's whole tree, from the reads it was given. */
+/** The issue's whole tree, from the reads it was given. A chip names a block by the first line
+ *  a row draws for it (`drawnLine`), which `tree-drafts.ts` is handed rather than imports, since
+ *  this module imports it. */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
-  const context = treeContext(reads);
+  const context = treeContext(reads, (words) => drawnLine(firstLineOf(words)));
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
 }
 

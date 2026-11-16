@@ -1,10 +1,20 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
-import type { Actor, Ask, CheckBlock, Decision, DisplayTree, IssueChild } from "../../api/types";
+import type {
+  Actor,
+  ArtifactWithTrees,
+  Ask,
+  CheckBlock,
+  Decision,
+  DisplayTree,
+  IssueChild,
+  ReferenceTarget,
+} from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
+import { wordsOf } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
@@ -30,9 +40,11 @@ import {
   type DecisionState,
   type GapKind,
   NODE_STATE_WORDS,
+  NODE_TYPE_NAMES,
   NODE_TYPES,
   type NodeState,
   type NodeType,
+  PRESET_NAMES,
 } from "./page-words";
 
 /**
@@ -135,8 +147,15 @@ export const ROOT_ORDER = {
 /** What every builder needs of the reads: how this issue addresses a node, and what a reference
  *  points at. Held as one value so the placement and the names are read the same way everywhere. */
 export interface TreeContext {
-  /** A chip naming what `reference` points at, by the one batched reference read. */
+  /** A chip naming what `reference` points at, by the one batched reference read and the
+   *  issue's own documents (`treeContext`). */
   readonly chipOf: (reference: string) => NodeChip;
+  /** The words of the stored excerpt the batched reference read names `reference`'s target by
+   *  (`ReferenceTarget.name`), with a typed block's directive left out (`blockWords`); `""` for
+   *  a target the read has not answered for and for one nothing answers to now. It is a block's
+   *  source, cut at 480 runes and unread, so no chip draws it: it is where a node's citations
+   *  are read from beside its words, and a block's words where the read sent no reading. */
+  readonly excerptOf: (reference: string) => string;
   readonly key: string;
   /** The node `reference` names, as this issue addresses it; undefined for anything else. */
   readonly nodeIdOf: (reference: string) => string | undefined;
@@ -152,11 +171,34 @@ export interface TreeContext {
   readonly viewer: string | undefined;
 }
 
-export function treeContext(reads: IssueTreeReads): TreeContext {
+/**
+ * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
+ * for a node draws, from the node's words: `buildIssueTree` gives R1's rule
+ * (`drawnLine(firstLineOf(words))`), which this module cannot import, since `issue-tree.ts`
+ * imports it, and a caller that reads no chip's name gives none, which keeps the words whole.
+ *
+ * A chip names its target by the words a reader reads it by, and never by markup:
+ *
+ * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone.
+ * - **A block** - the reference names one, or the read answers that its target is one - by
+ *   `lineOf` of the words of the server's reading of it (`ReferenceTarget.text_tree`), and by
+ *   `""` where the read sent none. The read's `name` for a block is its stored excerpt, which
+ *   is the block's source: a typed block's directive and the markdown its words are written in
+ *   are markup and no word of it (R21).
+ * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
+ *   word for it (`documentWord`), and never by its file name.
+ * - **Anything else** - an issue, an ask, a comment, a message - by the read's `name` for it.
+ */
+export function treeContext(
+  reads: IssueTreeReads,
+  lineOf: (words: string) => string = (words) => words
+): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
-  const specSlug = artifacts.find((artifact) => artifact.primary)?.slug ?? "";
+  const documents = new Map(artifacts.map((artifact) => [artifact.slug, artifact]));
+  const spec = artifacts.find((artifact) => artifact.primary);
+  const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
   const nodeIdOf = (reference: string): string | undefined => {
     const route = parseNodeReference(reference);
@@ -173,6 +215,20 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
     }
     return route.kind === "issue" ? key : undefined;
   };
+  const nameOf = (reference: string, target: ReferenceTarget | undefined): string => {
+    const route = parseNodeReference(reference);
+    const block = route !== undefined && "block" in route ? route.block : undefined;
+    if (block !== undefined || target?.kind === "block") {
+      const reading = target?.text_tree;
+      return reading === undefined ? "" : lineOf(wordsOf(reading));
+    }
+    // Another issue's document is named by no role of this issue's.
+    if (route?.kind === "spec") return documentWord(route.key === key ? spec : undefined);
+    if (route?.kind === "artifact") {
+      return documentWord(route.key === key ? documents.get(route.slug) : undefined);
+    }
+    return blockWords(target?.name ?? "");
+  };
   return {
     chipOf: (reference: string): NodeChip => {
       const target = names.get(reference);
@@ -180,9 +236,13 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
       return {
         answered: target !== undefined,
         gone,
-        name: gone ? "" : blockWords(target?.name ?? ""),
+        name: gone ? "" : nameOf(reference, target),
         ref: reference,
       };
+    },
+    excerptOf: (reference: string): string => {
+      const target = names.get(reference);
+      return target === undefined || target.gone ? "" : blockWords(target.name);
     },
     key,
     nodeIdOf,
@@ -193,17 +253,34 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
   };
 }
 
+/**
+ * The page's word for one document of the issue, which a chip naming the whole document draws:
+ * the name of the filter that draws what it holds (`PRESET_NAMES`) for the spec and for the
+ * plan, Verification and decisions documents, and the page's word for a document
+ * (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`). A
+ * document's own name is its file name, `spec.md`, which is no word a reader reads it by (R21).
+ */
+function documentWord(document: Pick<ArtifactWithTrees, "primary" | "role"> | undefined): string {
+  if (document?.primary === true) return PRESET_NAMES.spec;
+  const role = document?.role;
+  if (role === "plan" || role === "verification" || role === "decisions") {
+    return PRESET_NAMES[role];
+  }
+  return NODE_TYPE_NAMES.document;
+}
+
 /** A directive's own opening line, `:::plan_task{#t1 serves="…"}`, and its closing fence. */
 const DIRECTIVE_OPENER = /^:{3,}[a-z_]/;
 const DIRECTIVE_FENCE = /^:{3,}\s*$/;
 
 /**
- * The words a target is named by. The reference read names a document's block by its stored
- * excerpt, which is the block's source: a typed block is a directive, so its excerpt opens on
- * the directive's line - its type and its attributes - and, where the excerpt holds the whole
- * block, ends on its closing fence. Both are markup and no word of the block (R21), so they are
- * left out, as the head's three sentences leave them out of the callout they read
- * (`IssueThreeThings.tsx`). Any other name is its own words already.
+ * The words of the name the batched reference read gives a target (`ReferenceTarget.name`).
+ * The read names a document's block by its stored excerpt, which is the block's source: a typed
+ * block is a directive, so its excerpt opens on the directive's line - its type and its
+ * attributes - and, where the excerpt holds the whole block, ends on its closing fence. Both are
+ * markup and no word of the block (R21), so they are left out, as the head's three sentences
+ * leave them out of the callout they read (`IssueThreeThings.tsx`). Any other name is its own
+ * words already.
  */
 export function blockWords(name: string): string {
   const lines = name.trimEnd().split("\n");
@@ -270,10 +347,12 @@ function orderConversation(drafts: Map<string, Draft>): void {
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
  * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip is
- * named by the document's name, which the issue's own read carries, and addresses the document
- * as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec filter's address. A
- * citation of one block of a document names that block, which the text's own link opens, and
- * no chip.
+ * named by the page's word for the document, as every chip naming a whole document is
+ * (`documentWord`): the filter's name for the spec and for the plan, Verification and decisions
+ * documents, and "document" for any other, never the file name the issue's own read carries. It
+ * addresses the document as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec
+ * filter's address. A citation of one block of a document names that block, which the text's
+ * own link opens, and no chip.
  */
 function addDocumentChips(
   drafts: Map<string, Draft>,
@@ -286,8 +365,8 @@ function addDocumentChips(
   for (const draft of drafts.values()) {
     // The words a node is drawn by can leave a citation out - the coverage read drops every
     // `://` word of a requirement (`blockWords`, `api/results.go`) - so the node's own source,
-    // which the reference read names it by, is read as well.
-    const source = draft.reference === undefined ? "" : context.chipOf(draft.reference).name;
+    // the excerpt the reference read names it by, is read as well.
+    const source = draft.reference === undefined ? "" : context.excerptOf(draft.reference);
     for (const span of [
       ...referenceSpans(draft.text, "dispatch://"),
       ...referenceSpans(source, "dispatch://"),
@@ -301,7 +380,10 @@ function addDocumentChips(
       if (artifact === undefined) continue;
       const ref = buildDispatchReference({ key: context.key, kind: "artifact", slug });
       if (draft.chips.some((chip) => chip.ref === ref)) continue;
-      draft.chips = [...draft.chips, { answered: true, gone: false, name: artifact.name, ref }];
+      draft.chips = [
+        ...draft.chips,
+        { answered: true, gone: false, name: documentWord(artifact), ref },
+      ];
     }
   }
 }
@@ -383,9 +465,9 @@ function addDocumentBlocks(
       const draft = add(drafts, blank(blockNodeId(slug, block.id), block.type as NodeType, order));
       draft.pointers = pointers;
       draft.reference = reference;
-      draft.text = context.chipOf(reference).name;
+      draft.text = context.excerptOf(reference);
       // The block's own words whole, as the server reads them, where the reference read sent
-      // them: the name above is the stored excerpt, cut at 480 runes and unread.
+      // them: the excerpt above is the block's stored source, cut at 480 runes and unread.
       const tree = context.treeOf(reference);
       if (tree !== undefined) {
         draft.tree = tree;
