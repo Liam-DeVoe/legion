@@ -202,6 +202,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/ask-answer-area.e2e.ts` | Answer, Ask back and Reply are writes the rows re-read, the picked session's message is read back from the fake Envoy, and the decision-block rows answer inside the live document |
 | `e2e/ask-blocks.e2e.ts` | decision answers the server records, and pastes in the live document editor |
 | `e2e/ask-concurrent-edit.e2e.ts` | two editors crossing in one `/ws/doc` room |
+| `e2e/ask-header-sweep.e2e.ts` | every state a header is swept in is one the server derives from the row's own seeded writes - the agent's turn the reader's reply hands back, the decision blocks' asks indexed out of the spec, and the ask a closed issue's close resolves - and the margin card's and the decision block's headers are drawn inside the live document, whose Yjs socket no recording replays |
 | `e2e/ask-part-references.e2e.ts` | the reference and backlink index the server builds from the write |
 | `e2e/asked-of-cli.e2e.ts` | runs the real `dispatch open-asks` against the server and reads the person it names, which the server's own expression answers, before and after a hand-on made in a browser |
 | `e2e/asked-of.e2e.ts` | hands an ask on and re-reads the write on every surface that draws it; whose Inbox the row sits in is the server's own expression, and each move arrives over the live socket with no reload |
