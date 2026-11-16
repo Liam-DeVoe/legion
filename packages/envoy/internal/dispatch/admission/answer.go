@@ -129,17 +129,22 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 //     the refusal;
 //   - the read's deadline passed (DeadlinePassed): 503 REQUEST_TIMEOUT, whatever err says,
 //     since every failure after the deadline is the deadline's;
-//   - the client went away (ctx cancelled): nothing is written, since nobody reads it, and the
-//     access log records the request as 499 rather than as the 200 a handler that wrote nothing
-//     would otherwise be logged as (accesslog.ClientGone);
+//   - the client went away (ctx cancelled with net/http's own cause, the plain context.Canceled):
+//     nothing is written, since nobody reads it, and the access log records the request as 499
+//     rather than as the 200 a handler that wrote nothing would otherwise be logged as
+//     (accesslog.ClientGone). A context the server cancelled with a cause of its own is no client
+//     gone: the client is still there and is owed an answer. A cause that wraps store.ErrPoolBusy,
+//     as a connection's heartbeat failing to resolve its caller again under load does (api's
+//     whileCallerResolves), is answered as the pool busy, below, and any other cause is left to
+//     the cases after this one, as an error that ended no context is;
 //   - a bound of the server's own ended the call before the database answered it, and nothing
 //     of it can have committed: no connection of a pool came free within its acquire bound
-//     (store.IsPoolBusy), or the database stopped answering on the connection the handler held
-//     while the request's own context was still live (store.DatabaseStalled, a pgx socket
-//     timeout pgx raises only from a context it was watching). 503 DATABASE_BUSY. The second is
-//     read off the error here as well as inside the store, because a statement inside a
-//     transaction runs on pgx directly, never passes through a pool's own error mapping, and
-//     rolls back with the transaction it was in;
+//     (store.IsPoolBusy, of err or of ctx's cause), or the database stopped answering on the
+//     connection the handler held while the request's own context was still live
+//     (store.DatabaseStalled, a pgx socket timeout pgx raises only from a context it was
+//     watching). 503 DATABASE_BUSY. The second is read off the error here as well as inside the
+//     store, because a statement inside a transaction runs on pgx directly, never passes through
+//     a pool's own error mapping, and rolls back with the transaction it was in;
 //   - a call the database never answered, met by a request that wrote nothing: its
 //     transaction's COMMIT, or a statement a pool ran outside any transaction. 503
 //     DATABASE_BUSY, since what a read runs commits nothing however the database answered it,
@@ -204,10 +209,10 @@ func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 	case DeadlinePassed(ctx):
 		slog.Debug("dispatch: read ran past its deadline", "error", err)
 		writeRetryable(w, http.StatusServiceUnavailable, CodeRequestTimeout, "the read ran past its deadline; retry after Retry-After")
-	case errors.Is(ctx.Err(), context.Canceled):
+	case context.Cause(ctx) == context.Canceled:
 		slog.Debug("dispatch: request's client went away", "error", err)
 		accesslog.ClientGone(ctx)
-	case store.IsPoolBusy(err), store.DatabaseStalled(ctx, err):
+	case store.IsPoolBusy(err), store.IsPoolBusy(context.Cause(ctx)), store.DatabaseStalled(ctx, err):
 		writeDatabaseBusy(w, err)
 	default:
 		return false

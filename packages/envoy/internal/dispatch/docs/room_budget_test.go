@@ -223,6 +223,58 @@ func TestTheRoomBudgetClosesTheLeastRecentlyUsedRoomPastItsWindow(t *testing.T) 
 	}
 }
 
+// The trim holds the peerless rooms to the room cap less its headroom (roomCapHeadroomShare) as
+// well as to the bytes budget: the cap counts every room, and a bytes budget that is a share of
+// the process's memory can hold more peerless rooms than the cap has places for, so a browser
+// opening a document would be refused 503 while idle rooms held its place. Here the cap is ten,
+// its headroom one, and twelve peerless rooms past their window fill it while their bytes stay
+// far inside the budget: a browser opening another document is refused; the trim then closes
+// the three least recently used, keeps the nine newest, which are inside both bounds, and the
+// browser's socket gets a room.
+func TestTheTrimKeepsTheRoomCapsHeadroomFreeOfPeerlessRooms(t *testing.T) {
+	const roomCap, peerless = 10, 12
+	keep := roomCap - roomCap/roomCapHeadroomShare
+	service, database := newRoomBudgetServiceWithCap(t, 100*peerless, roomCap)
+	advance := roomBudgetClock(service)
+	ids := createDocuments(t, database, peerless+1)
+	rooms, browsers := ids[:peerless], ids[peerless]
+	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(httpServer.Close)
+
+	// A tenth of a second apart, so the order the trim reads is the order loaded and no room is
+	// past its window while the others load.
+	for _, id := range rooms {
+		warmRoom(t, service, id)
+		advance(100 * time.Millisecond)
+	}
+	refuseSocket(t, httpServer.URL, browsers, "a browser opening a document while peerless rooms fill the room cap")
+
+	advance(roomBudgetMinIdle)
+	trimNow(service)
+	waitFor(t, 30*time.Second, "the rooms past the cap's headroom to close", func() bool {
+		return service.roomPlaces() <= keep
+	})
+	left := peerlessRoomNames(service)
+	want := slices.Clone(rooms[peerless-keep:])
+	slices.Sort(left)
+	slices.Sort(want)
+	if !slices.Equal(left, want) {
+		t.Fatalf("the peerless rooms left are %v, want the %d loaded last, %v", left, keep, want)
+	}
+	if bytes, budget := service.PeerlessRoomBytes(), service.peerlessRoomBytes.Load(); bytes >= budget {
+		t.Fatalf("the peerless rooms left weigh %d bytes against a budget of %d, so the bytes and not the cap closed them", bytes, budget)
+	}
+
+	connection, err := dialDocument(httpServer.URL, browsers)
+	if err != nil {
+		t.Fatalf("the browser's socket was refused once the trim had freed the cap's headroom: %v", err)
+	}
+	defer leaveDocument(connection)
+	waitFor(t, 30*time.Second, "the browser's room to load", func() bool {
+		return service.srv.GetDoc(browsers) != nil
+	})
+}
+
 // newRoomBudgetService is a document service whose budget of resident peerless rooms holds rooms
 // of this package's test documents, and whose rooms idle out no sooner than production's
 // roomIdleTimeout, so a test sees the budget's closes and nothing else. The budget is bytes
@@ -232,13 +284,21 @@ func TestTheRoomBudgetClosesTheLeastRecentlyUsedRoomPastItsWindow(t *testing.T) 
 // wants one shortens it.
 func newRoomBudgetService(t *testing.T, rooms int) (*Service, *store.Store) {
 	t.Helper()
+	return newRoomBudgetServiceWithCap(t, rooms, 0)
+}
+
+// newRoomBudgetServiceWithCap is newRoomBudgetService with a room cap of roomCap
+// (Deps.MaxLiveRooms; 0 is maxLiveRooms).
+func newRoomBudgetServiceWithCap(t *testing.T, rooms, roomCap int) (*Service, *store.Store) {
+	t.Helper()
 	database := storetest.Open(t)
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:        database,
+		Events:       events.NewBroker(),
+		Identity:     identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
+		ServerURL:    "https://dispatch.example",
+		Settle:       time.Hour,
+		MaxLiveRooms: roomCap,
 	})
 	service.peerlessRoomBytes.Store(int64(rooms) * roomHeapFloor)
 	t.Cleanup(func() {

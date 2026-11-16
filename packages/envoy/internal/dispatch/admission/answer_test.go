@@ -32,6 +32,19 @@ func cancelledRequest() context.Context {
 	return ctx
 }
 
+// heartbeatFailedUnderLoad is the cause api's whileCallerResolves cancels a stream's context with
+// when its heartbeat's re-resolution of the caller finds the pool busy: its own sentinel
+// (errCallerNoLongerResolves, which this stands in for) wrapping the resolution's error.
+var heartbeatFailedUnderLoad = fmt.Errorf("%w: %w", errors.New("the connection's caller did not resolve again on its heartbeat"),
+	fmt.Errorf("read the caller's session: %w", store.ErrPoolBusy))
+
+// cancelledBy is a request context the server cancelled with cause, its client still there.
+func cancelledBy(cause error) context.Context {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(cause)
+	return ctx
+}
+
 func assertRetryable(t *testing.T, w *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	if w.Code != status || !strings.Contains(w.Body.String(), `"code":"`+code+`"`) {
@@ -63,6 +76,11 @@ func TestWriteUnservedTellsTheCausesApartInOrder(t *testing.T) {
 		{"the read's deadline passed, whatever the handler failed with", expiredRequest(t), busy, false, http.StatusServiceUnavailable, CodeRequestTimeout, true},
 		{"the client went away", cancelledRequest(), context.Canceled, true, 0, "", true},
 		{"the client went away while the pool was busy", cancelledRequest(), busy, true, 0, "", true},
+		// A context the server cancelled is no client gone: a busy pool behind the cause is the
+		// pool busy, and any other cause is left to the caller as an error that ended no
+		// context is.
+		{"the heartbeat found the pool busy", cancelledBy(heartbeatFailedUnderLoad), context.Canceled, false, http.StatusServiceUnavailable, CodeDatabaseBusy, true},
+		{"the server cancelled the context for another reason", cancelledBy(errors.New("schema revoked")), context.Canceled, false, 0, "", false},
 		{"the pool was busy", context.Background(), busy, true, http.StatusServiceUnavailable, CodeDatabaseBusy, true},
 		// A commit the database never answered may have committed where the request wrote;
 		// where it wrote nothing its transaction was read-only, so the commit committed
@@ -154,6 +172,39 @@ func TestARequestWhoseClientWentAwayIsLogged499(t *testing.T) {
 	line := logged.String()
 	if !strings.Contains(line, "msg=\""+accesslog.Message+"\"") || !strings.Contains(line, "status=499") {
 		t.Fatalf("the access-log line of a request whose client went away:\n%s\nwant one carrying status=499", line)
+	}
+}
+
+// A request whose context the server cancelled under it - a stream whose heartbeat could not
+// resolve its caller again because the pool was busy - is no client gone: its client is still
+// there, so it is answered 503 DATABASE_BUSY with Retry-After and its access-log line carries
+// that 503, never 499. A context its client cancelled is still the 499 above.
+func TestARequestTheServerCancelledOnABusyPoolIsAnswered503AndNot499(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		ctx    context.Context
+		status string
+	}{
+		{"cancelled by the heartbeat on a busy pool", cancelledBy(heartbeatFailedUnderLoad), "status=503"},
+		{"cancelled by its client", cancelledRequest(), "status=499"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logged := &bytes.Buffer{}
+			logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
+			w := httptest.NewRecorder()
+			handler := accesslog.Handler("/ws/live", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !WriteUnserved(w, r.Context(), fmt.Errorf("resolve the caller: %w", context.Canceled), !Reads(r.Method)) {
+					t.Error("WriteUnserved left the request to its caller")
+				}
+			}))
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ws/live", nil).WithContext(test.ctx))
+			if test.status == "status=503" {
+				assertRetryable(t, w, http.StatusServiceUnavailable, CodeDatabaseBusy)
+			}
+			if line := logged.String(); !strings.Contains(line, "msg=\""+accesslog.Message+"\"") || !strings.Contains(line, test.status) {
+				t.Fatalf("the access-log line:\n%s\nwant one carrying %s", line, test.status)
+			}
+		})
 	}
 }
 

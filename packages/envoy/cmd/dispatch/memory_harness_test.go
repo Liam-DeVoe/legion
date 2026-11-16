@@ -151,6 +151,13 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		// about twice what it holds. A test that needs another value sets GOGC in
 		// memoryHarness.env, which is appended after this and wins.
 		"GOGC=25",
+		// Every measured server runs under a Go memory limit of 4 GiB, so its memory budgets -
+		// the cold reads' cache's 256 MiB (documentReadBudgetForTest) and the rooms' 1 GiB -
+		// are the same on every box, where without one they follow the cgroup limit of whatever
+		// container the test runs in (docs.processMemoryLimit). The bounds these servers are
+		// held to (requestMemoryBound, concurrentMemoryBound) lie far below 4 GiB, so it is
+		// GOGC=25 and not the limit that paces their collector.
+		"GOMEMLIMIT=4GiB",
 	}
 	command.Env = append(command.Env, h.env...)
 	held.Pass(command, "DISPATCH_LISTEN_FD")
@@ -744,7 +751,7 @@ func (h *memoryHarness) coldPeaks(t *testing.T, name, artifactID string, edit ma
 // coldReads reads a document on servers that have not loaded it - its text and a websocket load of
 // its room, each on a fresh server, then four reads of its text at once - and fails the test where
 // one of the first two holds more than the bound above idle. Every peak is logged under name; the
-// four reads at once are logged beside the production task's 4,096 MiB.
+// four reads at once are logged beside production's container of 20 GiB.
 func (h *memoryHarness) coldReads(t *testing.T, name, artifactID string) {
 	t.Helper()
 	for _, cold := range []struct {

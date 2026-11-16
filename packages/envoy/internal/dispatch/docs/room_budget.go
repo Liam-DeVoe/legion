@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -12,25 +13,60 @@ import (
 )
 
 // peerlessRoomHeapBudget is how much heap Dispatch keeps in rooms for documents no browser peer is
-// connected to. roomIdleTimeout bounds such a room's residency in time alone, so what they hold
-// together is whatever the load puts there, and a room holds two decoded copies of its document:
-// the room's own and the replica its update observer renders (renderedReplica). At the end of the
-// load test's 10x minute (packages/envoy/loadtest, 0.5x:60s,10x:60s,0.5x:120s) those were 391 to
-// 447 MB of room documents and 327 to 398 MB of replicas over about 200 resident rooms, and the
-// live heap was still 1.2 to 1.4 GiB a minute after the burst, where each garbage collection's
-// marking cost the whole process seconds of latency (a four-second patch of slow requests at the
-// base tree, requests answered at 30 to 46 a second throughout, while the heap grew from 1,159 to
-// 1,491 MB between two cycles) and left requests at a 1.0 to 2.1 s p99 a minute after the load
-// had dropped.
+// connected to, in a process with no memory limit known; a process with one keeps a share of that
+// limit (roomBudgetFor). roomIdleTimeout bounds such a room's residency in time alone, so what
+// they hold together is whatever the load puts there, and a room holds two decoded copies of its
+// document: the room's own and the replica its update observer renders (renderedReplica). At the
+// end of the load test's 10x minute (packages/envoy/loadtest, 0.5x:60s,10x:60s,0.5x:120s) those
+// were 391 to 447 MB of room documents and 327 to 398 MB of replicas over about 200 resident
+// rooms, and the live heap was still 1.2 to 1.4 GiB a minute after the burst, where each garbage
+// collection's marking cost the whole process seconds of latency (a four-second patch of slow
+// requests at the base tree, requests answered at 30 to 46 a second throughout, while the heap
+// grew from 1,159 to 1,491 MB between two cycles) and left requests at a 1.0 to 2.1 s p99 a minute
+// after the load had dropped.
 //
-// 256 MiB is the cold reads' cache's budget (documentReadBudget), the other bound of this size in
-// the service, inside a production task's 4,096 MiB (cmd/dispatch/memory_test.go). It is a budget
-// of bytes rather than of rooms because a room's cost is its document's size, which spans two
-// orders of magnitude across a project's documents: a count that fits the big ones wastes the
-// heap on the small, and one that fits the small refuses to hold a working set of either. A
-// budget of bytes also tightens itself exactly when it must - the burst grows the documents it
-// writes, so the same budget holds fewer of them.
+// 256 MiB is the cold reads' cache's budget with no limit known (documentReadBudget), the other
+// bound of this kind in the service. It is a budget of bytes rather than of rooms because a
+// room's cost is its document's size, which spans two orders of magnitude across a project's
+// documents: a count that fits the big ones wastes the heap on the small, and one that fits the
+// small refuses to hold a working set of either. A budget of bytes also tightens itself exactly
+// when it must - the burst grows the documents it writes, so the same budget holds fewer of them.
 const peerlessRoomHeapBudget = 256 << 20
+
+// roomBudgetDivisor, roomBudgetFloor and roomBudgetCap shape the budget of a process whose memory
+// limit is known (roomBudgetFor): a quarter of the limit, at least 256 MiB and at most 8 GiB.
+// Production runs in 16 CPU and 20 GiB with no GOMEMLIMIT (agent-infra dispatch/Pulumi.prod.yaml,
+// appCpu and appMemory), where a fixed 256 MiB made the service reload documents it had the
+// memory to keep: on the load test's bed decoding stored documents again took about a third of
+// Dispatch's CPU at 10x (49 to 51 s of 155 s, against 16 of 110 s on main, which has no such
+// budget), and at 2x it refused 80 heavy reads main served. A quarter of production's 20 GiB,
+// 5 GiB, holds the 10x working set measured below with the rest of the heap for requests. The
+// floor is that fixed budget, so a container whose quarter falls short of it keeps the budget
+// every process had before; the cap keeps a very large container from growing a heap whose
+// marking the process pays for (peerlessRoomHeapBudget).
+//
+// Measured: on the load test's bed (Dispatch on two pinned CPUs, GOMAXPROCS 2, the INFRA-589 seed
+// of 2,310 documents), with the budget lifted in a measurement-only build, the resident peerless
+// rooms peaked at an estimated 3.3 GiB (479 rooms) at 2x and 4.6 to 4.8 GiB (672 to 682 rooms) at
+// 10x, with Dispatch's RSS at 5.4 GiB and 9.8 to 10.1 GiB, and the 10x steps answered 62,726 and
+// 63,131 of 108,339 requests with 2xx, where the fixed 256 MiB budget, closing about 1,090 rooms
+// each three-minute window, answered 49,175 to 54,262, and the 2x step refused nothing.
+const (
+	roomBudgetDivisor = 4
+	roomBudgetFloor   = 256 << 20
+	roomBudgetCap     = 8 << 30
+)
+
+// roomBudgetFor is the heap budget of the peerless rooms for a process that may use memoryLimit
+// bytes (processMemoryLimit, math.MaxInt64 when nothing says how much): a roomBudgetDivisor-th of
+// the limit, at least roomBudgetFloor and at most roomBudgetCap, and peerlessRoomHeapBudget with
+// no limit.
+func roomBudgetFor(memoryLimit int64) int64 {
+	if memoryLimit == math.MaxInt64 {
+		return peerlessRoomHeapBudget
+	}
+	return min(max(memoryLimit/roomBudgetDivisor, roomBudgetFloor), roomBudgetCap)
+}
 
 // roomHeapPerStoredByte is how much heap a resident room costs for each byte of the stored state
 // its load decoded, and roomHeapFloor what one costs whatever that state's size. Neither ygo nor
@@ -68,6 +104,18 @@ const roomBudgetCloseWait = 2 * time.Second
 // all, where four reach it. Four is also what settles at once (settlementWorkers), the other
 // background work of the service that writes through the store.
 const roomBudgetClosers = 4
+
+// roomCapHeadroomShare is the share of the room cap (Service.roomCap, maxLiveRooms) the trim keeps
+// free of peerless rooms: a tenth, 100 places of the default 1,000. The cap counts every room,
+// and the bytes budget, now a share of the process's memory, can hold more peerless rooms than the
+// cap leaves room for - production's 5 GiB holds about 720 of the ~7 MiB rooms the load test
+// measured, and 8 GiB more than 1,000 - so the rooms nobody has open could fill the cap and a
+// browser opening a document be refused 503 while idle rooms hold its place. So the trim also
+// closes peerless rooms past roomBudgetMinIdle, least recently used first, while the rooms holding
+// places exceed the cap less this headroom (peerlessRoomsOverBudget). The headroom is what a burst
+// of browsers opening new documents has while the trim catches up: it runs at most every
+// roomTrimInterval, a tenth of a second, and closes four rooms at a time (roomBudgetClosers).
+const roomCapHeadroomShare = 10
 
 // roomBudgetMinIdle is how long a room must have gone unused before the budget closes it. A
 // close frees the room's heap and costs the document's next use a reload, and that reload reads
@@ -298,32 +346,52 @@ func owesSettlementLocked(state *roomState, timerArmed bool) bool {
 	return timerArmed || state.settling > 0 || state.settleDeferred || state.unsettled
 }
 
-// peerlessRoomsOverBudget is the peerless rooms whose weight the budget does not hold and which
-// it may close, least recently used first: the most recently used are kept until the budget is
-// full, and the rest - the oldest - are the rooms a close brings the heap back inside it. The
-// rooms the budget may not close yet are weighed with the others, so they take the budget's
-// bytes from the rooms behind them rather than hiding them; a pass that finds them all too
-// young, or all owing a settlement, closes nothing and leaves the heap above the budget until
-// they age (roomBudgetMinIdle).
+// peerlessRoomsOverBudget is the peerless rooms the budget does not hold and which it may close,
+// least recently used first: the most recently used are kept until the budget is full, and the
+// rest - the oldest - are the rooms a close brings the heap back inside it. The rooms the budget
+// may not close yet are weighed with the others, so they take the budget's bytes from the rooms
+// behind them rather than hiding them; a pass that finds them all too young, or all owing a
+// settlement, closes nothing and leaves the heap above the budget until they age
+// (roomBudgetMinIdle).
+//
+// The budget is also a count: while the rooms holding places under the room cap exceed the cap
+// less its headroom (roomCapHeadroomShare), the oldest closable peerless rooms are closed until
+// they no longer do, whatever their bytes. The rooms either bound closes are the oldest closable
+// ones, so the pass closes as many of them as the tighter bound asks for.
 func (s *Service) peerlessRoomsOverBudget() []string {
 	peerless := s.peerlessRooms()
 	slices.SortFunc(peerless, func(a, b peerlessRoom) int { return b.used.Compare(a.used) })
+	// Oldest first, so a pass cut short by a shutdown has closed the rooms least likely to be
+	// wanted again.
+	var closable []string
+	for _, room := range slices.Backward(peerless) {
+		if room.closable {
+			closable = append(closable, room.room)
+		}
+	}
+	overBytes := 0
 	held := int64(0)
 	for i, candidate := range peerless {
 		held += candidate.weight
 		if held > s.peerlessRoomBytes.Load() {
-			over := make([]string, 0, len(peerless)-i)
-			// Oldest first, so a pass cut short by a shutdown has closed the rooms least
-			// likely to be wanted again.
-			for _, dropped := range slices.Backward(peerless[i:]) {
+			for _, dropped := range peerless[i:] {
 				if dropped.closable {
-					over = append(over, dropped.room)
+					overBytes++
 				}
 			}
-			return over
+			break
 		}
 	}
-	return nil
+	overPlaces := s.roomPlaces() - (s.roomCap - s.roomCap/roomCapHeadroomShare)
+	return closable[:min(max(overBytes, overPlaces), len(closable))]
+}
+
+// roomPlaces is how many rooms hold a place under the room cap now (roomSlots): the count
+// reserveRoom refuses a new room at.
+func (s *Service) roomPlaces() int {
+	s.roomSlots.mu.Lock()
+	defer s.roomSlots.mu.Unlock()
+	return len(s.roomSlots.rooms)
 }
 
 // roomWeight is the heap a room whose load decoded stored is taken to hold, its document and its

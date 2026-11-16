@@ -60,14 +60,15 @@ func readDocumentStamp(ctx context.Context, q Queryer, room string) (DocumentSta
 }
 
 // documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds in a
-// process that runs with no Go memory limit, where nothing says how much memory it has: 256 MiB.
-// An entry heavier than an eighth of the budget is never stored.
+// process with no memory limit known (processMemoryLimit), where nothing says how much memory it
+// has: 256 MiB. An entry heavier than an eighth of the budget is never stored.
 const documentReadBudget = 256 << 20
 
-// readBudgetFor is the cold reads' cache budget for a process whose Go memory limit is memoryLimit
-// (debug.SetMemoryLimit(-1), math.MaxInt64 when none is set): a sixteenth of the limit, so the
-// cache follows the memory the process is given, at least 64 MiB, so the cache still stores a
-// document of 8 MiB, and at most 1 GiB; documentReadBudget with no limit.
+// readBudgetFor is the cold reads' cache budget for a process that may use memoryLimit bytes
+// (processMemoryLimit: the Go memory limit, else the container's cgroup limit, and math.MaxInt64
+// when neither says): a sixteenth of the limit, so the cache follows the memory the process is
+// given, at least 64 MiB, so the cache still stores a document of 8 MiB, and at most 1 GiB;
+// documentReadBudget with no limit.
 func readBudgetFor(memoryLimit int64) int64 {
 	if memoryLimit == math.MaxInt64 {
 		return documentReadBudget

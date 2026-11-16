@@ -242,19 +242,29 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		if r.Context().Err() != nil {
+		cause := context.Cause(r.Context())
+		if cause == context.Canceled {
 			// The browser left while its document loaded, which ends the load with the request's
 			// own cancellation (loadTree): nothing refused the socket, and nobody is left to read
 			// an answer, so none is written and the line carries the client gone, as a request
-			// whose client left in admission's queue does (accesslog.ClientGone).
+			// whose client left in admission's queue does (accesslog.ClientGone). net/http ends a
+			// request's context with the plain context.Canceled, and only then is the client gone:
+			// a context the server ended under the socket carries a cause of its own - the
+			// heartbeat's re-resolution of the caller failed (api's whileCallerResolves), which
+			// under load is a busy pool and not a browser that left - and that socket's browser is
+			// still waiting, so it is refused below like any other.
 			accesslog.ClientGone(r.Context())
 			return
 		}
 		// The 503 alone names neither the room nor what refused it, so a refusal that reached a
 		// person could be placed only from a neighbouring line: the reason is logged here, with
-		// the pool the admission's load read through (loadPoolName).
-		slog.Warn("dispatch: a document socket was refused: its document could not be admitted",
-			"room", room, "pool", loadPoolName(r.Context()), "error", err)
+		// the pool the admission's load read through (loadPoolName), and with what ended the
+		// request's context when something did.
+		attrs := []any{"room", room, "pool", loadPoolName(r.Context()), "error", err}
+		if cause != nil {
+			attrs = append(attrs, "cause", cause)
+		}
+		slog.Warn("dispatch: a document socket was refused: its document could not be admitted", attrs...)
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}

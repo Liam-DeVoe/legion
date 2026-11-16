@@ -1100,10 +1100,18 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
 // it resolves on a context detached from the access-log line, which names the caller the socket
 // was admitted as (accesslog.Detached).
+//
+// The cancellation carries errCallerNoLongerResolves as its cause, so a handler can tell it from
+// its client's own going: net/http ends a request's context with the plain context.Canceled when
+// the client leaves, and a resolution can fail while the client is still there - under load, the
+// read of the session or the record of the person finds the pool busy (store.ErrPoolBusy) - and
+// a socket still being admitted must then be refused, not left unanswered as a client gone
+// (docs.Service.ServeHTTP). The cause changes nothing for a reader of the context's Err, which is
+// context.Canceled either way.
 func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, closeConnection := context.WithCancel(r.Context())
-		defer closeConnection()
+		ctx, closeConnection := context.WithCancelCause(r.Context())
+		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
@@ -1117,9 +1125,11 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 					// detached copy of that request, which for a broker-issued token asks the
 					// broker's answer alone rather than the proof the upgrade already spent
 					// (callerStillResolves). Every other credential is resolved exactly as it
-					// is on a request.
+					// is on a request. A check that failed because the client left finds the
+					// context already ended with the client's own cause, which this cancel
+					// leaves as it is.
 					if err := s.callerStillResolves(check); err != nil {
-						closeConnection()
+						closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
 						return
 					}
 				}
@@ -1128,6 +1138,10 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 		handler(w, r.WithContext(ctx))
 	}
 }
+
+// errCallerNoLongerResolves is the cause whileCallerResolves ends a connection's context with
+// when a heartbeat's re-resolution of its caller fails, wrapping the resolution's own error.
+var errCallerNoLongerResolves = errors.New("the connection's caller did not resolve again on its heartbeat")
 
 type apiError struct {
 	status  int

@@ -177,10 +177,10 @@ type Service struct {
 	afterEditNoticeIDs func(ids []string)
 	rooms              sync.Map
 	shutdownRooms      sync.Map
-	// peerlessRoomBytes is the heap the service keeps in rooms with no browser connected
-	// (peerlessRoomHeapBudget, which New sets it to, and which says why there is a budget at
-	// all); a test lowers it, which is why it is atomic - every trim reads it. Zero leaves such
-	// a room to roomIdleTimeout alone.
+	// peerlessRoomBytes is the heap the service keeps in rooms with no browser connected, which New
+	// sets from the memory the process may use (roomBudgetFor; peerlessRoomHeapBudget says why
+	// there is a budget at all); a test lowers it, which is why it is atomic - every trim reads
+	// it. Zero leaves such a room to roomIdleTimeout alone.
 	peerlessRoomBytes atomic.Int64
 	// trimmingRooms is held by the one trim of those rooms that runs at a time
 	// (trimPeerlessRooms), trimPending records an ask for a trim that arrived while one ran,
@@ -476,8 +476,8 @@ type Service struct {
 	instances sync.Map
 	roomLoads sync.Map
 	// reads holds the renderings of the documents cold reads served, each under the stored state
-	// it was rendered from (coldRead), within the budget New gives it from the Go memory limit
-	// (readBudgetFor).
+	// it was rendered from (coldRead), within the budget New gives it from the memory the process
+	// may use (readBudgetFor).
 	reads *documentReads
 	// roomCap and connectionCap are the most room places and browser connections a document socket
 	// may find before it is refused (reserveRoom, reserveConnection): Deps.MaxLiveRooms and
@@ -887,10 +887,12 @@ func New(deps Deps) *Service {
 	if connectionCap <= 0 {
 		connectionCap = maxRoomConnections
 	}
-	// The Go memory limit is the process's, set before New runs (GOMEMLIMIT, or the runtime's
-	// default of none), so the budget is read once here.
-	readBudget := readBudgetFor(debug.SetMemoryLimit(-1))
+	// The memory the process may use is set before New runs - GOMEMLIMIT, or the container's cgroup
+	// limit (processMemoryLimit) - so it is read once here, and both budgets that follow it with it.
+	limit := processMemoryLimit(debug.SetMemoryLimit(-1), os.ReadFile)
+	readBudget, roomBudget := readBudgetFor(limit.bytes), roomBudgetFor(limit.bytes)
 	slog.Info("dispatch: document rooms' limits", "read_budget_bytes", readBudget,
+		"room_budget_bytes", roomBudget, "memory_limit_source", limit.source,
 		"max_live_rooms", roomCap, "max_doc_connections", connectionCap)
 	processID := uuid.NewString()
 	persist := deps.Persistence
@@ -935,7 +937,7 @@ func New(deps Deps) *Service {
 	if deps.TestHooks {
 		service.hooks = newTestHooks()
 	}
-	service.peerlessRoomBytes.Store(peerlessRoomHeapBudget)
+	service.peerlessRoomBytes.Store(roomBudget)
 	service.compactions = startCompactionQueue(service.compactionStep,
 		newRequestYield(deps.Requests, service.now, compactionMaxDeferral, compactionFoldGap))
 	// The store tells the queue of every append it commits and every load it reads; a store that

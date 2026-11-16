@@ -57,13 +57,17 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 			"DISPATCH_APP_PEM_B64":     pemText,
 			"DISPATCH_GITHUB_API_BASE": github.URL,
 			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
-			// Five minutes is longer than any test may wait for a pass.
-			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
+			// Five minutes is longer than any test may wait for a pass. A pass is also bounded
+			// at its interval (Reconciler.PassTimeout), and at one second a loaded run cuts every
+			// pass at that bound, so no pass logs its records (as the row below found); three
+			// seconds still fits ten passes in the thirty seconds WaitForOutput waits for these
+			// lines.
+			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "3s",
 		},
 	})
 	process.waitHealthy(t)
 	process.WaitForOutput(t,
-		`msg="dispatch: reconciling the CI records GitHub's webhook never delivered" client_id=Iv1.cireconcile interval=1s`,
+		`msg="dispatch: reconciling the CI records GitHub's webhook never delivered" client_id=Iv1.cireconcile interval=3s`,
 		`msg="ci reconcile pass" list_pages=1 heads=1 head_requests=2 heads_not_modified=0 records=1 mappings_skipped=0 heads_too_large=0 rate_limited=false`,
 		`msg="dispatch duty: leased pass ran" lease=ci-reconcile`,
 	)
