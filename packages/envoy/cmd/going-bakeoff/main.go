@@ -22,7 +22,9 @@
 // Run it from inside the envoy module: the case file and the record default to their committed
 // paths under the module's root. It never prints the key. With no key it says so, writes no fit
 // and exits non-zero; with fewer than 80 cases or fewer than 20 chart-worthy cases run, the run is
-// void and writes nothing.
+// void and writes nothing. The record it writes is Go's indented JSON; run
+// `bunx biome format --write going/decision_models.json` from the module after a run, since the
+// repository's lint job holds every JSON file to Biome's layout.
 package main
 
 import (
