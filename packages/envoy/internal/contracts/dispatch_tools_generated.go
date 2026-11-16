@@ -600,4 +600,19 @@ var DispatchTools = []DispatchTool{
 		},
 		Example: json.RawMessage("{\"issue\":\"DSP-1\"}"),
 	},
+	{
+		Name:        "dispatch_premortem_convert",
+		Description: "Convert a pre-mortem document of an issue into nodes, once: one lens of kind pre-mortem under the issue, whose verdict is the document's verdict followed by its two closing sections, \"What a world-class implementation looks like\" and \"The smallest first slice that proves the model\", word for word, and under it one risk for risk 0 and each numbered risk, each with its heading, its early warning and its prevention and a prevented_by pointer to each check its entry names. The document is then retired, and its address answers the lens. prevented_by holds one entry for each risk the document holds: its number as the document numbers it, the dispatch:// addresses of the check blocks that prevent it, of any issue ([] for none), and why. An entry for a number the document does not hold, a number twice, a risk with no entry, an address that names no check block you may see, a blank reason, and an entry of any other shape are refused with 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, and nothing is written. preview answers what the conversion would write and writes nothing; run it first. A document converted already is answered as such, naming its lens, and nothing is written. The result names the lens's dispatch://lens/<uuid> address and each risk's dispatch://risk/<uuid> address. The write appends no event and notifies nobody: a reader finds what it wrote by reading it. A refused write stores nothing. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
+		Arguments: []ToolField{
+			{Name: "issue", Kind: ToolFieldString, Required: true, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
+			{Name: "artifact", Kind: ToolFieldString, Required: true, Description: "The slug of the issue's pre-mortem document, such as graph-premortem-md."},
+			{Name: "prevented_by", Kind: ToolFieldArray, Required: true, Description: "One entry { risk, checks, reason } for each risk the document holds.", Item: &ToolField{Kind: ToolFieldObject, Required: true, Fields: []ToolField{
+				{Name: "risk", Kind: ToolFieldNumber, Required: true, Description: "The risk's number as the document numbers it: 0 for risk 0."},
+				{Name: "checks", Kind: ToolFieldArray, Required: true, Description: "The dispatch:// addresses of the check blocks that prevent the risk, such as dispatch://KEY-1/artifact/verification-md#b-<id>; [] for none.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
+				{Name: "reason", Kind: ToolFieldString, Required: true, Description: "Why those checks prevent the risk, or why none does."},
+			}}},
+			{Name: "preview", Kind: ToolFieldBoolean, Description: "true answers what the conversion would write and writes nothing."},
+		},
+		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"artifact\":\"premortem-md\",\"prevented_by\":[{\"risk\":0,\"checks\":[\"dispatch://DSP-1/artifact/verification-md#b-k1\"],\"reason\":\"k1 fails a slice that ships nothing a user sees.\"},{\"risk\":1,\"checks\":[],\"reason\":\"No check covers a second indexer yet.\"}],\"preview\":true}"),
+	},
 }

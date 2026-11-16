@@ -23,10 +23,10 @@ import (
 
 // goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
 // performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
-// operation the bar cannot yet propose. Three are not, the two review routes and the settle of a
-// proposed node, and their rows say why. TestTheMutatingRoutesNoToolSpecNames holds the list to
-// the table, so a write added later is named here or in goingToolRoutes and never silently
-// missing.
+// operation the bar cannot yet propose. Four are not, the two review routes, the settle of a
+// proposed node and the pre-mortem conversion, and their rows say why.
+// TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
+// named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
@@ -66,6 +66,12 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/credential-requests/{id}/deny",
 	"POST /api/v1/delivery/session-groups",
 	"POST /api/v1/going/requests",
+	// The pre-mortem conversion dispatch_premortem_convert performs: it retires a document once,
+	// turning it into a lens and its risks (dispatch://INFRA-1950/spec#b-r-premortem-nodes), so the
+	// loop that proposes operations on the graph must never propose it, and goingToolRoutes gives
+	// it no row for that reason, as it gives dispatch_review's routes none. Keep it here; never
+	// give it a row.
+	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert",
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
 	// The settle dispatch_settle performs: a settle written by a person's credential records that
 	// the person settled a proposal, which is the person's own call

@@ -211,6 +211,7 @@ const validCalls = {
   dispatch_state: specFor("dispatch_state").example,
   dispatch_settle: specFor("dispatch_settle").example,
   dispatch_proposed: { issue: "DSP-1" },
+  dispatch_premortem_convert: specFor("dispatch_premortem_convert").example,
 } as const;
 
 function schemaFor(name: keyof typeof validCalls) {
@@ -324,6 +325,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_state",
       "dispatch_settle",
       "dispatch_proposed",
+      "dispatch_premortem_convert",
     ]);
 
     for (const [name, args] of Object.entries(validCalls) as Array<

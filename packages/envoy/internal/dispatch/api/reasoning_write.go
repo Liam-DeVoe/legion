@@ -177,10 +177,10 @@ const (
 
 // reasoningPointer is one request's write of one pointer tuple out of a node that stands under
 // the issue issue names: a lens's has_kind or triggered_by, a requirement's constrained_by, a
-// risk's prevented_by. action is pointerAppend, pointerRetract or pointerRetarget. pointer is the
-// tuple the write names, dated and signed by the write and at graphstore.NoEvent: the one it
-// appends, the one it retracts, or, for a retarget, the one the node holds now, which moves to
-// toKind and toID.
+// risk's prevented_by, or the moved_to from a document the pre-mortem conversion retires to its
+// lens. action is pointerAppend, pointerRetract or pointerRetarget. pointer is the tuple the write
+// names, dated and signed by the write and at graphstore.NoEvent: the one it appends, the one it
+// retracts, or, for a retarget, the one the node holds now, which moves to toKind and toID.
 type reasoningPointer struct {
 	issue        string
 	action       string
@@ -190,14 +190,15 @@ type reasoningPointer struct {
 
 // writeReasoningPointer is the one write path of a pointer tuple a request appends, retracts or
 // retargets out of a node of dispatch://INFRA-1950's reasoning kinds, or out of a requirement
-// block, in the caller's transaction. It takes the issue's row `for no key update` first, the
-// owner row the lock order on api/inbox_read.go's markInboxReadThreads puts before every other,
-// and then writes through the store, which holds the tuple to its type rule (graphstore's
-// pointerRules) and takes the node rows that rule names after the owner row: an append and a
-// retraction through graphstore.Write, a retarget through graphstore.Retarget. No event is
-// appended, as none is for the nodes these tuples tie (writeReasoningNodes). The pointer is marked
-// as changing the node it goes out of (graphstore.Tuple's Changes), so a write made for a run names
-// that node, and not its far end, as changed by it.
+// block, and of the moved_to the pre-mortem conversion appends out of the document it retires
+// (retireConvertedDocument), in the caller's transaction. It takes the issue's row `for no key
+// update` first, the owner row the lock order on api/inbox_read.go's markInboxReadThreads puts
+// before every other, and then writes through the store, which holds the tuple to its type rule
+// (graphstore's pointerRules) and takes the node rows that rule names after the owner row: an
+// append and a retraction through graphstore.Write, a retarget through graphstore.Retarget. No
+// event is appended, as none is for the nodes these tuples tie (writeReasoningNodes). The pointer
+// is marked as changing the node it goes out of (graphstore.Tuple's Changes), so a write made for a
+// run names that node, and not its far end, as changed by it.
 //
 // A retraction of a tuple the node does not hold now is a 404, as a retarget of one is
 // (graphstore.ErrPointerNotHeld): there is nothing to retract. That both ends exist, are not

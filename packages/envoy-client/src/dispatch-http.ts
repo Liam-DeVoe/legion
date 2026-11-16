@@ -75,6 +75,8 @@ import type {
   OpenAsksResponse,
   PointerInput,
   PointerWritten,
+  PremortemConvertInput,
+  PremortemReport,
   Priorities,
   Project,
   RecordCheckResultInput,
@@ -1913,6 +1915,29 @@ export class DispatchClient {
   /** `GET /api/v1/issues/{key}/proposed`: the nodes under the issue at state proposed. */
   async issueProposed(issue: string): Promise<IssueProposed> {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "proposed"]);
+  }
+
+  /** `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert`: the conversion of the
+   *  issue's pre-mortem document `slug` into a lens and its risks, once; with `dry_run`, what it
+   *  would write, writing nothing. */
+  async convertPremortem(
+    issue: string,
+    slug: string,
+    input: PremortemConvertInput
+  ): Promise<PremortemReport> {
+    return this.#json(
+      "POST",
+      [
+        "api",
+        "v1",
+        "issues",
+        await this.#resolveIssue(issue),
+        "artifacts",
+        slug,
+        "premortem-convert",
+      ],
+      input
+    );
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {

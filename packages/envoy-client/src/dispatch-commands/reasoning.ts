@@ -10,6 +10,9 @@ import type {
   NodeStateWritten,
   PointerInput,
   PointerWritten,
+  PremortemConvertInput,
+  PremortemReport,
+  PremortemRisk,
   ProposedNode,
   ReasoningAuthor,
   RiskWritten,
@@ -18,6 +21,7 @@ import {
   type CommandContext,
   type DispatchToolResult,
   defined,
+  optionalBoolean,
   optionalString,
   optionalStringArray,
   stringArg,
@@ -405,5 +409,48 @@ export async function proposedCommand(context: CommandContext): Promise<Dispatch
   return {
     text: lines.join("\n"),
     details: { issue: read.issue, proposed: nodes.map(address) },
+  };
+}
+
+/** `dispatch premortem-convert`: the conversion of the issue's pre-mortem document into a lens of
+ *  kind pre-mortem and its risks, once; with `preview`, what it would write, writing nothing. */
+export async function premortemConvertCommand(
+  context: CommandContext
+): Promise<DispatchToolResult> {
+  const { args, client, actor, issue } = context;
+  const issueKey = issue();
+  let report: PremortemReport;
+  try {
+    report = await client.convertPremortem(issueKey, stringArg(args, "artifact"), {
+      actor,
+      // The schema took the entries whole: one { risk, checks, reason } for each risk.
+      prevented_by: args.prevented_by as PremortemConvertInput["prevented_by"],
+      dry_run: optionalBoolean(args, "preview") === true,
+    });
+  } catch (error) {
+    throw refusalWithCode(error);
+  }
+  // The document renders a Go list as nullable, and Dispatch answers an empty one.
+  const risks = report.risks ?? [];
+  const riskLine = (risk: PremortemRisk) => {
+    const preventedBy = risk.prevented_by ?? [];
+    return `- risk ${risk.number}${risk.address === null ? "" : ` ${risk.address}`}: ${risk.heading}; ${
+      preventedBy.length === 0 ? "prevented by nothing" : `prevented by ${preventedBy.join(", ")}`
+    }`;
+  };
+  return {
+    text: [report.summary, ...risks.map(riskLine)].join("\n"),
+    details: {
+      issue: issueKey,
+      document: report.document.address,
+      dry_run: report.dry_run,
+      already_converted: report.already_converted,
+      lens: report.lens.address,
+      risks: risks.map((risk) => ({
+        number: risk.number,
+        address: risk.address,
+        prevented_by: risk.prevented_by ?? [],
+      })),
+    },
   };
 }

@@ -510,6 +510,43 @@ function proposedBody() {
   };
 }
 
+/** `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert`: the example's dry run, the lens
+ *  and the two risks it would write, none of them at an address yet. */
+function premortemReportBody() {
+  const risk = (number: number, heading: string, preventedBy: string[], reason: string) => ({
+    number,
+    address: null,
+    heading,
+    early_warning: "A third issue parked until the graph lands.",
+    prevention: "Every slice ships one visible change.",
+    prevented_by: preventedBy,
+    reason,
+  });
+  return {
+    document: {
+      address: `dispatch://${ISSUE}/artifact/premortem-md`,
+      id: ARTIFACT_ID,
+      version: 1,
+      moved_to: null,
+    },
+    dry_run: true,
+    already_converted: false,
+    lens: { address: null, kind: "pre-mortem", on: `dispatch://${ISSUE}`, verdict: "Ship it." },
+    risks: [
+      risk(
+        0,
+        "Risk 0, the rewrite eats the quarter",
+        [`dispatch://${ISSUE}/artifact/verification-md#b-k1`],
+        "k1 fails a slice that ships nothing a user sees."
+      ),
+      risk(1, "1\\. Two indexers, one truth", [], "No check covers a second indexer yet."),
+    ],
+    summary:
+      `Dry run, nothing written: converting dispatch://${ISSUE}/artifact/premortem-md (version 1) ` +
+      `writes one pre-mortem lens under ${ISSUE} with 2 risks and moves the document's address to that lens.`,
+  };
+}
+
 /** `GET /api/v1/lenses?on=`: the spec's trade-off analysis with its finding, the pre-mortem it
  *  triggered with one risk no check prevents yet, and the chain the two make. */
 function lensesBody() {
@@ -775,6 +812,9 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       return response(nodeStateBody("proposed", "settled"));
     }
     if (rest === "proposed") return response(proposedBody());
+    if (segments[4] === "artifacts" && segments[6] === "premortem-convert") {
+      return response(premortemReportBody());
+    }
   }
   if (segments[2] === "artifacts" && segments.length >= 4) {
     if (rest === "" && method === "GET") return response(artifactBody("spec.md"));

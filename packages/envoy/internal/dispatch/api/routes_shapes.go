@@ -728,9 +728,14 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: nodeStateWritten{}, Request: actorInput{}, OptionalRequest: true,
 	},
 	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
-	"GET /api/v1/handoffs/{id}":         {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":         {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":  {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	// The pre-mortem conversion of dispatch://INFRA-1950 (premortem_convert.go): the map from each
+	// risk to its checks, read entry by entry, and the report the command prints too.
+	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": {
+		Status: http.StatusOK, Response: PremortemReport{}, Request: premortemConvertInput{},
+	},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
