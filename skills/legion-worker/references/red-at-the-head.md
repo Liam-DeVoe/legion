@@ -206,17 +206,18 @@ there spends the head's one re-run on a run nobody counted. The wait ends one of
   more and takes whichever of the first two the reading gives.
 
 The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then, in the
-same turn, it does these two things and nothing else:
+same turn:
 
-1. Subscribes to the pull request's own topic, `github.<owner>.<repo>.pr.<n>.>`, with the Envoy
+1. It subscribes to the pull request's own topic, `github.<owner>.<repo>.pr.<n>.>`, with the Envoy
    subscribe tool its host gives it (`skill://envoy`, *Wait for CI or a merge*).
-2. Ends the turn, with a last line that starts WAITING and names the re-run it waits on.
+2. It may go on with work that reads none of the head's checks or runs, subagents included.
+3. It ends the turn, with a last line that starts WAITING and names the re-run it waits on.
 
-The wait is the end of the turn, never time inside it. Re-reading the head to see whether the
-re-run has settled is the poll this forbids, with a `sleep` in it or without one, and so are
-`gh run watch` and `gh pr checks --watch`. Under `runtime: kubernetes` the daemon may release the
-issue's pod while the role waits, and the wake brings the role back with its session, its phase
-and its task kept.
+The wait is the end of the turn, never time inside it: the role reads the counted set again only
+on the wake the settlement brings. A read of the head's checks or runs in the turn that pressed
+the re-run is the poll this forbids, whatever work came between, and so are `gh run watch` and
+`gh pr checks --watch`. Under `runtime: kubernetes` the daemon may release the issue's pod while
+the role waits, and the wake brings it back with its session, its phase and its task kept.
 
 The settlement wakes the role in that same session. One read of the head's checks then is the
 result of the wait and no poll at all:
