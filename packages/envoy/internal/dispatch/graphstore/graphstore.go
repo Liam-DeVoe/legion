@@ -79,8 +79,8 @@ func AddressFits(address string) bool { return len(address) <= MaxAddressBytes }
 
 // Node is one thing the store holds. Its row is the projection of its own tuples: Write may
 // write it again, and a second write moves every column but MadeAt and MadeBy, which stay as the
-// row's first write left them, and Project, which never moves once a write has stated it
-// (ErrProjectMoved).
+// row's first write left them, Project, which never moves once a write has stated it
+// (ErrProjectMoved), and the state and the visibility a write that Restates the node keeps.
 //
 // Project is the key of the project the node belongs to, and Parties the parties a node no
 // project owns is between (PartyPerson, PartySession). Both are base attributes, stated by the
@@ -95,6 +95,20 @@ type Node struct {
 	MadeAt                                time.Time
 	MadeBy                                model.Actor
 	SourceEvent                           int64
+	// Restates says the write restates a node whose state and visibility its writer does not
+	// own: the writer writes the node again for what it does own - a block's text, a comment's
+	// anchor, a document's address - and says of the state only whether the node is there
+	// (StateLive) or not (StateGone). Over a node the store holds, such a write keeps the stored
+	// visibility, and keeps a stored state of live, proposed, settled or overtaken, since a
+	// write that marked the node so is not this writer's to undo: it writes its state only over
+	// a node stored gone, which comes back live, and writes gone whenever it says gone. A node
+	// the store does not hold is made as the writer states it. Every writer that writes a node
+	// again for facts of its own restates it: the block index (refs.IndexBlocks), CommentFacts,
+	// IssueNode, ArtifactNode, AskNode and MessageNode, and the backfill
+	// (internal/dispatch/graphcensus). A write that means to move a node's state or visibility
+	// leaves it false. WriteArms reads none of it: its upsert moves nothing on a node already
+	// there.
+	Restates bool
 }
 
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is

@@ -254,7 +254,10 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 // as the row's own first write left them - the row is the projection of its tuples and may be
 // written again, and a later write that learns the event id has to be able to move source_event.
 // A node written with no project or no parties keeps what its row holds of each: that writer
-// knows neither, and is no word that the node has none.
+// knows neither, and is no word that the node has none. A node the write restates
+// (Node.Restates) keeps its row's visibility, and its row's state unless that state or the
+// node's is gone: its writer says only whether the node is there, so the row moves to gone when
+// the writer says gone, and to the writer's state only from gone.
 //
 // It answers the base attributes this write states as tuples, one attribute at a time. A node
 // the insert made is stated `visibility` and `state`, and `project` and `parties` where it
@@ -262,12 +265,14 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 // there is stated each attribute this write moved on its row, each on its own: a write that
 // moves one states that one, a write that gives a node an earlier build stored without a project
 // its project states `project` alone, and a node written again with nothing moved is stated
-// nothing, so a re-index of a document nothing moved appends nothing. They are read and compared
-// separately because they move separately - a node hidden from a project keeps its state, and a
-// deleted block keeps its visibility - and a row whose column moved while the log said nothing
-// would be a row no appended fact explains, which nothing may mend later, since no tuple is ever
-// updated. Each tuple carries the time, the writer and the cause of the node write that states
-// it.
+// nothing, so a re-index of a document nothing moved appends nothing. An attribute a restating
+// write kept did not move, so nothing is stated of it, and one it moved moved to the value the
+// node carries, which is what its tuple states: the log never says a restated node went live
+// while its row stayed proposed. They are read and compared separately because they move
+// separately - a node hidden from a project keeps its state, and a deleted block keeps its
+// visibility - and a row whose column moved while the log said nothing would be a row no
+// appended fact explains, which nothing may mend later, since no tuple is ever updated. Each
+// tuple carries the time, the writer and the cause of the node write that states it.
 //
 // A write naming a project for a node the row holds in another is refused with ErrProjectMoved,
 // whether or not anything else of the node moved, and the row keeps its project either way.
@@ -285,13 +290,15 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 // that then waited on a row, they would be the row as it stood before the writer it waited on,
 // while the write goes over the version that writer committed: one writer states a node gone, a
 // second waits on its row and moves it back to live, compares live with live and states nothing,
-// and the row says live while its newest state tuple says gone. Locking the rows already there
-// in a statement of their own before inserting the new ones would read fresh values too, but it
-// takes the rows out of ascending (kind, id) wherever a new node sorts before one already there.
-// Two writes racing over a node the store does not hold yet are one case of the same: the
-// second's insert waits on the first's, then finds the row there and locks it, and its second
-// statement compares against what the first committed. The pass that writes a block's node holds
-// its document's owner row before it reaches this.
+// and the row says live while its newest state tuple says gone. What a restating write keeps is
+// read off that same row, so one that waited on a write marking the node proposed keeps the
+// proposed that write committed, rather than writing live over it and stating nothing. Locking
+// the rows already there in a statement of their own before inserting the new ones would read
+// fresh values too, but it takes the rows out of ascending (kind, id) wherever a new node sorts
+// before one already there. Two writes racing over a node the store does not hold yet are one
+// case of the same: the second's insert waits on the first's, then finds the row there and locks
+// it, and its second statement compares against what the first committed. The pass that writes
+// a block's node holds its document's owner row before it reaches this.
 func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, error) {
 	if err := checkBaseValues(nodes, stated, nil); err != nil {
 		return nil, err
@@ -303,6 +310,14 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 	if err != nil {
 		return nil, err
 	}
+	// Whether the write restates each node rides beside nodeParams' eleven arrays, where
+	// incomingNodes binds it. Only moveNodes reads it: a node the insert makes has no stored
+	// state or visibility to keep.
+	restates := make([]bool, len(nodes))
+	for index := range nodes {
+		restates[index] = nodes[index].Restates
+	}
+	args = append(args, restates)
 	// marks holds, by each node's position, the base attributes this write states for it: each
 	// one the node carries for a node the insert made, each one that moved for a node already
 	// there. It is made by the first node that states one, so a write that states none - a
@@ -366,12 +381,28 @@ const (
 )
 
 // incomingNodes is the common table expression both of writeNodes' statements read the nodes
-// through, each with its position in the caller's list, from the arrays bound at $1 (nodeBound).
+// through, each with its position in the caller's list, from the arrays bound at $1 (nodeBound)
+// and, in the parameter after those (nodeArrayTypes), whether the write restates the node
+// (Node.Restates).
 var incomingNodes = `with incoming as (
-			select ` + nodeBound + `, ordinality
-			from unnest(` + nodeArrays(1) + `)
-				with ordinality as node(` + nodeColumns + `, ordinality)
+			select ` + nodeBound + `, restates, ordinality
+			from unnest(` + nodeArrays(1) + `, ` + arrayList(1+len(nodeArrayTypes), "boolean") + `)
+				with ordinality as node(` + nodeColumns + `, restates, ordinality)
 		)`
+
+// writtenVisibility and writtenState are the visibility and the state moveNodes writes a row at,
+// read off the row its update holds (graph_nodes, before the update) and the node it was handed
+// (incoming): the node's own, but for a node the write restates (Node.Restates), which keeps the
+// row's visibility, and the row's state unless the row's or the node's is gone. A state that
+// moves therefore moves to the node's own, the value writeNodes states of it. Each is spelled
+// once and read twice, by the update's set and by its condition, so a row a restating write
+// keeps as it is takes no update.
+const (
+	writtenVisibility = `case when incoming.restates then graph_nodes.visibility else incoming.visibility end`
+	writtenState      = `case when incoming.restates and incoming.state <> '` + StateGone + `'
+				and graph_nodes.state <> '` + StateGone + `'
+			then graph_nodes.state else incoming.state end`
+)
 
 // insertNodes is writeNodes' first statement: it inserts every node the store does not hold and
 // locks every node it does, all in ascending (kind, id), and calls made with the position of
@@ -425,10 +456,13 @@ func insertNodes(ctx context.Context, tx pgx.Tx, args []any, made func(position 
 // moveNodes is writeNodes' second statement: it moves every node already there whose supertag,
 // visibility, state, attributes or parties this write changes, or whose missing project it gives,
 // and calls moved with the position of each and the base attributes it moved, comparing against
-// the row as its own snapshot holds it, which is the row insertNodes locked. A node insertNodes
-// made holds what this write states, so it moves nothing here. It answers ErrProjectMoved for a
-// node whose stored project this write names another for, whether or not the update fired: the
-// update keeps the stored project, and the refusal ends the caller's transaction.
+// the row as its own snapshot holds it, which is the row insertNodes locked. A node the write
+// restates is written at the visibility and the state it keeps (writtenVisibility,
+// writtenState), and the update's condition compares the row against those, so an attribute it
+// keeps neither moves nor is stated. A node insertNodes made holds what this write states, so it
+// moves nothing here. It answers ErrProjectMoved for a node whose stored project this write
+// names another for, whether or not the update fired: the update keeps the stored project, and
+// the refusal ends the caller's transaction.
 func moveNodes(ctx context.Context, tx pgx.Tx, args []any, nodes []Node, moved func(position int64, attributes byte)) error {
 	rows, err := tx.Query(ctx, incomingNodes+`,
 		stored as (
@@ -439,8 +473,8 @@ func moveNodes(ctx context.Context, tx pgx.Tx, args []any, nodes []Node, moved f
 		written as (
 			update graph_nodes set
 				supertag = incoming.supertag,
-				visibility = incoming.visibility,
-				state = incoming.state,
+				visibility = `+writtenVisibility+`,
+				state = `+writtenState+`,
 				attributes = incoming.attributes,
 				source_event = incoming.source_event,
 				project_key = coalesce(graph_nodes.project_key, incoming.project_key),
@@ -448,8 +482,8 @@ func moveNodes(ctx context.Context, tx pgx.Tx, args []any, nodes []Node, moved f
 			from incoming
 			where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id
 			  and (graph_nodes.supertag is distinct from incoming.supertag
-			       or graph_nodes.visibility is distinct from incoming.visibility
-			       or graph_nodes.state is distinct from incoming.state
+			       or graph_nodes.visibility is distinct from `+writtenVisibility+`
+			       or graph_nodes.state is distinct from `+writtenState+`
 			       or graph_nodes.attributes is distinct from incoming.attributes
 			       or (graph_nodes.project_key is null and incoming.project_key is not null)
 			       or (incoming.parties is not null and graph_nodes.parties is distinct from incoming.parties))

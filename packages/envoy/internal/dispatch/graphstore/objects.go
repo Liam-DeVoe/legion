@@ -69,12 +69,20 @@ func MessageNode(id, project string, parties []string, who model.Actor, at time.
 	return objectNode(KindMessage, id, SupertagMessage, project, parties, who, at)
 }
 
+// objectNode is the node of an issue, a document, an ask or a message as the write that stores it
+// states it. Each of those writers - a create, an upload, the seed, the backfill of the nodes an
+// older build wrote without a project (internal/dispatch/graphcensus) - writes the node for its
+// address, its project and its parties, and owns neither its state nor its visibility, which a
+// later write may mark (a proposed issue, say). So the node restates the object (Node.Restates):
+// one written again keeps what the store holds of both, unless it was gone, when it comes back
+// live.
 func objectNode(kind, id, supertag, project string, parties []string, who model.Actor, at time.Time) Node {
 	return Node{
 		Kind: kind, ID: id, Supertag: supertag,
 		Visibility: VisibilityProject, State: StateLive,
 		Project: project, Parties: parties,
 		MadeAt: at, MadeBy: who, SourceEvent: NoEvent,
+		Restates: true,
 	}
 }
 

@@ -378,10 +378,11 @@ func derefText(value *string) string {
 
 // writeObjectBatch writes one batch's nodes in one transaction (graphstore.Write), which takes
 // their rows in ascending (kind, id) and states each one's base attributes. A node a live writer
-// wrote meanwhile is written again with nothing moved, and states nothing; one in another project
-// fails the batch (graphstore.ErrProjectMoved), which is a difference for the census to report
-// rather than for this run to paper over. The rows carry no column naming their node, so the
-// write takes no lock of a row beside the nodes'.
+// wrote meanwhile is written again with nothing moved, and states nothing: each node restates its
+// object (graphstore.IssueNode and its siblings), so a state or a visibility a later write gave it
+// stays. One in another project fails the batch (graphstore.ErrProjectMoved), which is a
+// difference for the census to report rather than for this run to paper over. The rows carry no
+// column naming their node, so the write takes no lock of a row beside the nodes'.
 func writeObjectBatch(ctx context.Context, database *store.Store, nodes []graphstore.Node) error {
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		return graphstore.Write(ctx, tx, nodes, nil)

@@ -80,9 +80,10 @@ func BlockRefKinds() []string {
 // A block whose text (markdown[From:To]) is unchanged keeps its changed version; a new, changed
 // or restored block takes this version, and its text is recorded in document_block_texts; a
 // block the version no longer holds is deleted, recorded there with no text, its node's state
-// stated gone, and the edges at it stop resolving until a version holds its id again. A block's
-// stored excerpt is its text cut to BlockExcerptRunes, the excerpt a document's mention has
-// shown since migration 0092.
+// stated gone, and the edges at it stop resolving until a version holds its id again. A block the
+// version holds keeps the state and the visibility its node has, unless it was gone, when it
+// comes back live (blockNode restates every node it writes). A block's stored excerpt is its text
+// cut to BlockExcerptRunes, the excerpt a document's mention has shown since migration 0092.
 //
 // A pair (block, kind, target) that survives keeps its created version, time and source event,
 // and takes the to_types this version gives it. A new pair takes this version and versionAt, and
@@ -205,6 +206,9 @@ func IndexBlocks(
 	for _, id := range ids {
 		changed[id] = struct{}{}
 	}
+	// Every node the pass writes restates its block (blockNode): a block this version holds is
+	// written live and keeps a state a write marked it with, so a version that changes a
+	// proposed requirement's words leaves it proposed, and comes back live only from gone.
 	blockNodes := make([]graphstore.Node, 0, len(ids)+len(deleted)+len(nodeless))
 	for _, id := range ids {
 		if !blockIDFits(refKey, id) {
@@ -212,10 +216,11 @@ func IndexBlocks(
 		}
 		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateLive))
 	}
-	// A block the version no longer holds has its node stated gone. The tuple that says so is
-	// not built here: the node write states a base attribute it moved, with this write's own
-	// time and writer, so a block restored by a later version is stated live by the same rule
-	// and no writer of this store states a base attribute of its own.
+	// A block the version no longer holds has its node stated gone, whatever state it held: a
+	// restating write that says gone is written gone, and keeps only the visibility. The tuple
+	// that says so is not built here: the node write states a base attribute it moved, with this
+	// write's own time and writer, so a block restored by a later version is stated live by the
+	// same rule and no writer of this store states a base attribute of its own.
 	for _, id := range deleted {
 		if !blockIDFits(refKey, id) {
 			continue
