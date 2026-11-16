@@ -147,7 +147,7 @@ func TestAReclaimRegistersANewIdNoOtherClaimHolds(t *testing.T) {
 // session, no transcript and no secret, and no enrollment of the claim's role.
 func (h *harness) wantSessionRefused(broker *enrollmentRecorder, token claim.Token, boot, session string, holder claim.Token) {
 	h.t.Helper()
-	before := h.stored(token)
+	before, calls := h.stored(token), broker.calls()
 	recorder := h.register(boot, session)
 	if recorder.Code != http.StatusConflict {
 		h.t.Errorf("%s registering %s, which %s recorded first, = %d, want 409; body %s", token, session, holder, recorder.Code, recorder.Body)
@@ -166,6 +166,9 @@ func (h *harness) wantSessionRefused(broker *enrollmentRecorder, token claim.Tok
 	}
 	if enrolled := broker.enrolledAs(token); len(enrolled) != 0 {
 		h.t.Errorf("the refused claim %s was enrolled with the broker as %v, want no enrollment", token, enrolled)
+	}
+	if got := broker.calls(); got != calls {
+		h.t.Errorf("the broker received %d calls from the refused registration, want none", got-calls)
 	}
 }
 
@@ -273,12 +276,13 @@ func unexpiredPodToken() string {
 }
 
 // enrollmentRecorder is the secrets broker's enrollment routes as the daemon calls them,
-// recording each enrollment. An enrollment naming another claim's session is the grant move
-// itself: the broker binds the session to the pod's account and moves onto it every other
-// enrollment's grants of that account and session.
+// recording each enrollment and counting every call, revocations too. An enrollment naming
+// another claim's session is the grant move itself: the broker binds the session to the pod's
+// account and moves onto it every other enrollment's grants of that account and session.
 type enrollmentRecorder struct {
 	mu          sync.Mutex
 	enrollments []supervise.PodEnrollment
+	revocations int
 }
 
 func (e *enrollmentRecorder) Enroll(_ context.Context, p supervise.PodEnrollment) (string, error) {
@@ -288,7 +292,19 @@ func (e *enrollmentRecorder) Enroll(_ context.Context, p supervise.PodEnrollment
 	return fmt.Sprintf("enr-%d", len(e.enrollments)), nil
 }
 
-func (*enrollmentRecorder) Revoke(context.Context, string) error { return nil }
+func (e *enrollmentRecorder) Revoke(context.Context, string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.revocations++
+	return nil
+}
+
+// calls is how many calls the daemon made of the broker, of either route.
+func (e *enrollmentRecorder) calls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.enrollments) + e.revocations
+}
 
 // enrolledAs is the session of every enrollment the claim's role made, in order: an issue pod's
 // role enrolls under its pod's uid with a slot of its own role and process generation

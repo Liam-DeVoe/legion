@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"testing"
@@ -180,6 +181,32 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		}
 		if holder := h.store.holds["ses_fresh"]; holder != h.token {
 			t.Fatalf("ses_fresh is held for %q, want %s", holder, h.token)
+		}
+	})
+
+	// The recorded session registering again (reregister) is held as a first registration is,
+	// before anything of it is written: a claim a daemon before the hold recorded on a session the
+	// store holds for another claim is refused its re-registration, and its record and the broker
+	// are left as they were.
+	t.Run("a re-registration of a session another claim holds", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.reach(StateReady)
+		h.store.setHold(session, "legion-legion-LEGION-209-tester")
+		h.restart()
+		before := h.claim()
+		err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+			SessionFile: "/state/sessions/again.jsonl", CapabilityHash: []byte("again"), PluginContract: h.deps.PluginContract})
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(session) {
+			t.Fatalf("re-registering the tester's session = %v, want %v", err, claim.SessionHeldRefusal(session))
+		}
+		if c := h.claim(); c.State != before.State || c.SessionFile != before.SessionFile || !bytes.Equal(c.CapabilityHash, before.CapabilityHash) {
+			t.Fatalf("the refused re-registration left the claim %s recording %q and capability %q; want it %s recording %q and %q, as before",
+				c.State, c.SessionFile, c.CapabilityHash, before.State, before.SessionFile, before.CapabilityHash)
+		}
+		if enrolled := broker.enrolled(); len(enrolled) != 0 {
+			t.Fatalf("the refused re-registration reached the broker: %+v", enrolled)
 		}
 	})
 
