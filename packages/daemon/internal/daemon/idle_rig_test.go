@@ -758,11 +758,19 @@ func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
 // claim, so this back-dates every claim and not only the ones that reported activity: a claim an
 // operator stopped may hold no activity_at at all (it reported none before it was retired), and a
 // release of its pod waits out the real idle period unless its updated_at is moved back here too.
+//
+// A claim the idle release suspended keeps its own time. That suspension is a write of the claim
+// row, so in a deployment the pod it released reads busy for a whole idle period from then, and
+// the rule for a pod no claim owns cannot take it again while its release is still finishing.
+// Back-dated, the next pass read that pod as quiet for the period while the runtime's watch of
+// Sandboxes still held the one the release was deleting, and released it a second time: a second
+// release record, naming no role, beside the idle one (TestIdleReleaseHoldsForARunningSubagent,
+// once in a whole-package run under 32 busy loops with -race).
 func (r *idleWakeRig) quiet() {
 	r.t.Helper()
 	if _, err := r.pool.Exec(context.Background(),
 		`update claims set updated_at = now() - interval '30 minutes'
-		 where project = $1`, r.project); err != nil {
+		 where project = $1 and not (state = 'suspended' and suspended_by = 'released')`, r.project); err != nil {
 		r.t.Fatalf("back-date the project's claims: %v", err)
 	}
 }
