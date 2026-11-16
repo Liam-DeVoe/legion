@@ -124,6 +124,21 @@ An ask must give the reader these five parts:
 
 An ask breaks this rule set for each part that it does not give. A part that the record{{if .Answer}} or the answer of the writer agent{{end}} does not hold is a missing fact, not a part for you to write.
 {{- end}}
+{{- if .On.pointers}}
+
+### Rule set "pointers"
+
+A pointer is a place where the text points at a thing, such as an issue, a pull request, a comment, an ask, a message or a document. The text must say in plain words what that thing delivers or says. A link can stand beside these words. A link never stands in their place. A text breaks this rule set at each of these pointers:
+
+- A key or a link that carries the meaning, for example "INFRA-12 moves that code", "see #340" or "as dispatch://INFRA-12/comment/c1 asks".
+- A pointer with neither these words nor a link, for example "see my note above", "as agreed" or "that report".
+
+To find such a pointer, take each key and each link out of its sentence. If the sentence then does not say what the thing delivers or says, a key or a link stood in the place of words.
+
+The fix says in plain words what the thing delivers or says, as the record{{if .Answer}} or the answer of the writer agent{{end}} states it, and keeps the link beside these words. For example, "the move of the export code to the new repository (INFRA-12)". Where the pointer has no link and the record gives the link of the thing, the fix adds that link beside the words. Where {{if .Answer}}the record and the answer do{{else}}the record does{{end}} not say what the thing delivers or says, keep the words of the text.
+
+These break no rule: a pointer that says in plain words what the thing delivers or says, with its link beside these words; a quoted passage; the name of a thing that the reader uses, for example a run id or a file name; a line that this prompt says to keep exactly. An issue key or a pull request number is not such a name.
+{{- end}}
 {{- if .On.structure}}
 
 ### Rule set "structure"

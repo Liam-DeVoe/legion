@@ -74,7 +74,7 @@ var (
 	defaultReviewerRules = ruleSetNames(reviewer.RuleNoslop, reviewer.RulePhrases, reviewer.RuleReaderWords, reviewer.RuleAskParts)
 	// writingRulesExtraSets are the rule sets DISPATCH_WRITING_RULES_EXTRA may name, the ones the
 	// server's writing rules show (api.WritingRulesConfig).
-	writingRulesExtraSets = []string{api.WritingRulesReaderWords, api.WritingRulesAskParts}
+	writingRulesExtraSets = []string{api.WritingRulesReaderWords, api.WritingRulesAskParts, api.WritingRulesPointers}
 )
 
 // ruleSetNames is the names of sets, as a setting spells them.

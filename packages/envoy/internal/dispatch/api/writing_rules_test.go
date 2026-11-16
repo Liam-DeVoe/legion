@@ -64,7 +64,7 @@ func TestTheWritingRulesAnswerTheSkillForTheWritesReader(t *testing.T) {
 	if comment.Text != plainwords.Rules {
 		t.Fatalf("a comment's rules are not the skill's text alone: %d characters, want %d", len(comment.Text), len(plainwords.Rules))
 	}
-	if !strings.Contains(comment.Text, "## The phrases the owner asked to stop") || !strings.Contains(comment.Text, "# Pattern catalog") {
+	if !strings.Contains(comment.Text, "## The phrases to stop") || !strings.Contains(comment.Text, "# Pattern catalog") {
 		t.Fatal("the rules lack the six phrases or the pattern catalog")
 	}
 
@@ -92,6 +92,25 @@ func TestTheWritingRulesAnswerTheSkillForTheWritesReader(t *testing.T) {
 	long := strings.Repeat("a", int(maxJSONRequestBytes)-64)
 	if full := rules("POST /api/v1/issues/"+key+"/comments", map[string]any{"body": long}); full.Reader != *issue.Assignee {
 		t.Fatalf("a comment at the JSON limit: reader %q, want %q", full.Reader, *issue.Assignee)
+	}
+}
+
+// The rule set of pointers comes after the skill's text for every write, a comment's among them,
+// where the deployment names it; the test above reads a comment's rules where it does not.
+func TestTheWritingRulesShowPointersWhereTheDeploymentNamesThem(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{writingRules: WritingRulesConfig{
+		Refusal: true, Extra: []string{WritingRulesPointers},
+	}})
+	key := createTestIssue(t, handler, "RUL", "The written rules")
+	answer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/writing-rules", map[string]any{
+		"route": "POST /api/v1/issues/" + key + "/comments", "body": map[string]any{"body": "The deploy finished."},
+	}, "alice")
+	if answer.Code != http.StatusOK {
+		t.Fatalf("rules for a comment: status=%d body=%s", answer.Code, answer.Body.String())
+	}
+	text := decodeBody[writingRulesResponse](t, answer).Text
+	if !strings.HasPrefix(text, plainwords.Rules) || !strings.Contains(text[len(plainwords.Rules):], "## Pointers") {
+		t.Fatalf("a comment's rules with pointers on = %q after the skill's text, want the pointers", strings.TrimPrefix(text, plainwords.Rules))
 	}
 }
 

@@ -15,8 +15,8 @@ import (
 // The phrases judgement follows the measured definition of a vacuous verb phrase (INFRA-3231's
 // vacuous-verb definition, the rule of writing-check's labeller): it judges sentences one at a
 // time. The candidates are the sentences of the text that hold a verb the definition names (and
-// the phrases the owner asked agents to stop); the grader judges each with the sentences next to
-// it. A text with no candidate has no finding and no call.
+// the phrases skills/plain-words tells agents to stop); the grader judges each with the sentences
+// next to it. A text with no candidate has no finding and no call.
 
 // candidateVerb matches the forms of the verbs the definition names.
 var candidateVerb = regexp.MustCompile(`(?i)\b(names?|named|naming|shows?|showed|shown|showing|pays?|paid|paying|carr(?:y|ies|ied|ying)|holds?|held|holding|lands?|landed|landing|arrives?|arrived|arriving|unblocks?|unblocked|surfaces?|surfaced)\b`)

@@ -43,7 +43,7 @@ Apply these to every sentence, in author mode as constraints and in edit or dete
 
 Keep exact identifiers, paths, commands, and thresholds. For wording choices, read `skill://plain-words/references/terminology.md`.
 
-## The phrases the owner asked to stop
+## The phrases to stop
 
 | Never | What to write |
 |---|---|

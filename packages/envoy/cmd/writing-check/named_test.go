@@ -58,10 +58,14 @@ func namedFixture() (f *dsFixture, versions map[string]string, second, third int
 	return f, versions, second, third
 }
 
+// namedAskIssues are the asks the stand-in Dispatch serves, each with the issue it gives the ask.
+// No event of the fixture opens ask-unopened.
+var namedAskIssues = map[string]string{"ask-named": "NAMED-2", "ask-unopened": "NAMED-2", "ask-elsewhere": "OTHER-1"}
+
 // standInDispatch serves the routes `dataset named` reads, to a caller with the bearer token
-// "stand-in": a document of NAMED-2 by its slug or its file name, the issue's event log two
-// events a page by sequence, the parent issue, and the versions. It sets the environment the
-// command reads its Dispatch from.
+// "stand-in": a document of NAMED-2 by its slug or its file name, each ask of namedAskIssues, the
+// issue's event log two events a page by sequence, the parent issue, and the versions. It sets
+// the environment the command reads its Dispatch from.
 func standInDispatch(t *testing.T, f *dsFixture, versions map[string]string) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +94,9 @@ func standInDispatch(t *testing.T, f *dsFixture, versions map[string]string) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"key": "NAMED-1", "parent": nil})
 		case strings.HasPrefix(path, "/api/v1/artifacts/") && versions[strings.TrimPrefix(path, "/api/v1/artifacts/")] != "":
 			_ = json.NewEncoder(w).Encode(map[string]any{"markdown": versions[strings.TrimPrefix(path, "/api/v1/artifacts/")]})
+		case strings.HasPrefix(path, "/api/v1/asks/") && namedAskIssues[strings.TrimPrefix(path, "/api/v1/asks/")] != "":
+			id := strings.TrimPrefix(path, "/api/v1/asks/")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ask": map[string]any{"id": id, "issue_key": namedAskIssues[id], "kind": "question"}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -228,26 +235,95 @@ func TestDatasetNamedRecordsAPersonAsTheAuthor(t *testing.T) {
 	}
 }
 
+// An ask is a case of its own: the question and the options its ask.opened wrote, not a later
+// edit, by the writer Dispatch records, with the record build gives an ask: the issue's title and
+// each document as they stood before the ask was opened. The ask heads its thread, so the record
+// holds no thread.
+func TestDatasetNamedMakesACaseOfAnAsk(t *testing.T) {
+	f, versions, _, _ := namedFixture()
+	opened := f.event("ask.opened", fixtureAgent, "NAMED-2", map[string]any{"id": "ask-named", "issue_key": "NAMED-2", "kind": "question",
+		"question": "Which gantry goes first?", "options": []map[string]any{{"label": "East", "description": "the east gantry"}, {"label": "West"}}})
+	f.event("ask.edited", fixtureAgent, "NAMED-2", map[string]any{"id": "ask-named", "issue_key": "NAMED-2", "kind": "question",
+		"question": "Which gantry do we build first?", "options": []map[string]any{{"label": "East"}, {"label": "West"}}})
+	f.event("artifact.version", fixtureAgent, "NAMED-2", map[string]any{"artifact_id": "art-notes", "name": "notes.md", "version": map[string]any{"number": 5}})
+	versions["art-notes/versions/5"] = namedNotes4 + "\n\nA line written after the ask."
+	standInDispatch(t, f, versions)
+	out := filepath.Join(t.TempDir(), "named")
+	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"dataset", "named", "--ask", "NAMED-2/ask-named", "--doc", "NAMED-2/notes-md@2", "--out", out, "--owner", fixtureOwner}, &stdout, &stderr); code != 0 {
+		t.Fatalf("named: exit %d: %s", code, stderr.String())
+	}
+	ds, err := harness.LoadDataset(out, harness.PartDevelopment, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds.Cases) != 2 || ds.Cases[0].ID != "plain/named:NAMED-2/ask:ask-named" || ds.Cases[1].ID != "plain/named:NAMED-2/notes-md@2" {
+		t.Fatalf("the development part holds %d cases, want the ask's and the version's", len(ds.Cases))
+	}
+	c, agent := ds.Cases[0], fixtureAgent["id"].(string)
+	if c.Group != harness.GroupPlain || c.Part != harness.PartDevelopment || c.Kind != "ask" || c.Conversation {
+		t.Errorf("%s is a %s of group %s in part %s (conversation %t), want a plain ask in development outside a conversation", c.ID, c.Kind, c.Group, c.Part, c.Conversation)
+	}
+	if want := "Which gantry goes first?\n- East: the east gantry\n- West"; c.Agent.Text != want {
+		t.Errorf("the text is %q, want the question and the options as the ask was opened, %q", c.Agent.Text, want)
+	}
+	if c.Agent.Key != "ask:ask-named" || c.Agent.EventID != opened || c.Agent.EventType != "ask.opened" {
+		t.Errorf("the text is %s of event %d (%s), want ask:ask-named of event %d (ask.opened)", c.Agent.Key, c.Agent.EventID, c.Agent.EventType, opened)
+	}
+	if c.WriterSession != agent || c.Agent.ActorKind != "session" || c.Agent.Actor != agent || c.WriteTime != c.Agent.Time {
+		t.Errorf("writer session %q, actor %s %q, written %q; want session %s, the event's actor", c.WriterSession, c.Agent.ActorKind, c.Agent.Actor, c.WriteTime, agent)
+	}
+	if c.Tree != "NAMED-1" || c.SplitGroup != "NAMED-1" {
+		t.Errorf("tree %s, split group %s; want the root of its issue, NAMED-1, for both", c.Tree, c.SplitGroup)
+	}
+	if is := c.Record.Issue; is == nil || is.Key != "NAMED-2" || is.Title != "Second title" || is.Root != "NAMED-1" {
+		t.Errorf("the record's issue is %+v, want NAMED-2 \"Second title\" under NAMED-1", is)
+	}
+	documents := []harness.CaseDocument{{ArtifactID: "art-NAMED-2", Name: "spec.md", Version: 2}, {ArtifactID: "art-gone", Name: "gone.md", Version: 1, Missing: true}, {ArtifactID: "art-notes", Name: "notes.md", Version: 4}}
+	if !slices.Equal(c.Record.Documents, documents) {
+		t.Errorf("the record's documents are %+v, want each as it stood before the ask, %+v", c.Record.Documents, documents)
+	}
+	if part := ds.RecordPart(c); !strings.Contains(part, namedNotes4+"\n</document>") {
+		t.Errorf("the record a grading call reads lacks version 4 of the notes:\n%s", part)
+	}
+	if c.OwnerReply != nil || c.Question != nil || c.Phrase != nil || len(c.Record.Thread) != 0 {
+		t.Errorf("%s holds an owner reply, a question, a phrase or a thread; an ask named here has none", c.ID)
+	}
+	var counts dsNamedCounts
+	data, err := os.ReadFile(filepath.Join(out, "counts.json"))
+	if err != nil || json.Unmarshal(data, &counts) != nil {
+		t.Fatalf("counts.json: %v: %s", err, data)
+	}
+	if counts.Cases != 2 || strings.Join(counts.Named, " ") != "NAMED-2/ask:ask-named NAMED-2/notes-md@2" {
+		t.Errorf("counts.json is %+v, want the ask and the version named", counts)
+	}
+}
+
 // The command refuses what it cannot build a case from, and writes no file then.
 func TestDatasetNamedRefusals(t *testing.T) {
 	f, versions, _, _ := namedFixture()
 	standInDispatch(t, f, versions)
 	for _, tc := range []struct {
-		name string
-		doc  string
-		code int
-		want string
+		name  string
+		flag  string
+		value string
+		code  int
+		want  string
 	}{
-		{"a version no event wrote", "NAMED-2/notes-md@9", 1, "NAMED-2/notes-md@9: no event of its issue wrote this version"},
-		{"a document the issue does not hold", "NAMED-2/absent-md@1", 1, "document absent-md of NAMED-2: not found"},
-		{"an image", "NAMED-2/picture-png@1", 1, "picture-png of NAMED-2 is not a document: Dispatch gives its kind as image"},
-		{"no issue", "notes-md@1", 2, "is not <issue>/<document>@<version>[,<version>...]"},
-		{"no version", "NAMED-2/notes-md", 2, "is not <issue>/<document>@<version>[,<version>...]"},
-		{"a version that is no number", "NAMED-2/notes-md@2,latest", 2, `version "latest" is not a number above 0`},
+		{"a version no event wrote", "--doc", "NAMED-2/notes-md@9", 1, "NAMED-2/notes-md@9: no event of its issue wrote this version"},
+		{"a document the issue does not hold", "--doc", "NAMED-2/absent-md@1", 1, "document absent-md of NAMED-2: not found"},
+		{"an image", "--doc", "NAMED-2/picture-png@1", 1, "picture-png of NAMED-2 is not a document: Dispatch gives its kind as image"},
+		{"no issue", "--doc", "notes-md@1", 2, "is not <issue>/<document>@<version>[,<version>...]"},
+		{"no version", "--doc", "NAMED-2/notes-md", 2, "is not <issue>/<document>@<version>[,<version>...]"},
+		{"a version that is no number", "--doc", "NAMED-2/notes-md@2,latest", 2, `version "latest" is not a number above 0`},
+		{"an ask no event opened", "--ask", "NAMED-2/ask-unopened", 1, "NAMED-2/ask:ask-unopened: no event of its issue opened this ask with words"},
+		{"an ask of another issue", "--ask", "NAMED-2/ask-elsewhere", 1, `ask ask-elsewhere is not an ask of NAMED-2: Dispatch gives its issue as "OTHER-1"`},
+		{"an ask Dispatch does not hold", "--ask", "NAMED-2/ask-absent", 1, "ask ask-absent of NAMED-2: not found"},
+		{"an ask with no issue", "--ask", "ask-named", 2, "is not <issue>/<ask id>"},
 	} {
 		out := filepath.Join(t.TempDir(), "named")
 		var stdout, stderr bytes.Buffer
-		code := run(t.Context(), []string{"dataset", "named", "--doc", tc.doc, "--out", out}, &stdout, &stderr)
+		code := run(t.Context(), []string{"dataset", "named", tc.flag, tc.value, "--out", out}, &stdout, &stderr)
 		if code != tc.code || !strings.Contains(stderr.String(), tc.want) {
 			t.Errorf("%s: exit %d, stderr %q; want exit %d and %q", tc.name, code, stderr.String(), tc.code, tc.want)
 		}
@@ -256,6 +332,10 @@ func TestDatasetNamedRefusals(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"dataset", "named", "--out", filepath.Join(t.TempDir(), "named")}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "--doc or --ask, and --out, are required") {
+		t.Errorf("with neither --doc nor --ask: exit %d, stderr %q; want exit 2", code, stderr.String())
+	}
+	stderr.Reset()
 	t.Setenv("DISPATCH_TOKEN_FILE", "")
 	if code := run(t.Context(), []string{"dataset", "named", "--doc", "NAMED-2/notes-md@2", "--out", filepath.Join(t.TempDir(), "named")}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "DISPATCH_URL and DISPATCH_TOKEN_FILE must be set") {
 		t.Errorf("with no token file named: exit %d, stderr %q; want exit 2", code, stderr.String())

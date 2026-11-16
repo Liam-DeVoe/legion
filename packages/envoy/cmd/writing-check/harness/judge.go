@@ -42,7 +42,7 @@ type promptData struct {
 	// WriterAnswer says the user message holds the writer's answer to a side question, and
 	// HasOwnWords the words of the text that the reader wrote himself before it.
 	WriterAnswer, HasOwnWords bool
-	// Phrases is the table of the phrases the owner asked agents to stop.
+	// Phrases is the table of the phrases skills/plain-words tells agents to stop.
 	Phrases string
 }
 
@@ -73,9 +73,9 @@ func PromptsDigest() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// phrasesHeading heads the section of skills/plain-words that lists the phrases the owner asked
-// agents to stop.
-const phrasesHeading = "## The phrases the owner asked to stop"
+// phrasesHeading heads the section of skills/plain-words that lists the phrases it tells agents to
+// stop.
+const phrasesHeading = "## The phrases to stop"
 
 // stoppedPhrases is that section's table, from the skill as package plainwords holds it.
 func stoppedPhrases() string {

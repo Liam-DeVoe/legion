@@ -1,6 +1,6 @@
 // Package plainwords is the text of the repository's skills/plain-words skill, the rules agents
 // write by (INFRA-3231, R6): ce-noslop's tests, its pattern catalog and its terminology, and the
-// six phrases the owner asked to stop. The server shows these rules to an agent before its write
+// six phrases it tells agents to stop. The server shows these rules to an agent before its write
 // (POST /api/v1/writing-rules), so the agent reads the same rules as the skill holds.
 //
 // The text is embedded from skill/, a copy of skills/plain-words that `go generate` makes, since
@@ -32,7 +32,7 @@ var Patterns string
 var Terminology string
 
 // Skill is SKILL.md after its frontmatter: ce-noslop's modes, register and tests, then the six
-// phrases the owner asked to stop.
+// phrases it tells agents to stop.
 var Skill = withoutFrontmatter(skillFile)
 
 // Rules is the whole of the written rules as one text: Skill, then Patterns, then Terminology,

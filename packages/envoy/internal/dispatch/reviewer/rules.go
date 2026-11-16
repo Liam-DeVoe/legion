@@ -28,8 +28,8 @@ const (
 	// RuleNoslop is ce-noslop's tests, its pattern catalog and its terminology: skills/plain-words
 	// without the six phrases (plainwords).
 	RuleNoslop RuleSet = "noslop"
-	// RulePhrases is the six phrase shapes the owner asked agents to stop: the last section of
-	// skills/plain-words.
+	// RulePhrases is the six phrase shapes skills/plain-words tells agents to stop: the last
+	// section of that skill.
 	RulePhrases RuleSet = "phrases"
 	// RuleReaderWords is each use of a word the reader asked about before, unless the text
 	// defines it (Record.ReaderWords).
@@ -37,6 +37,10 @@ const (
 	// RuleAskParts is an ask's five parts: the decision, why it is needed now, the facts, a
 	// recommendation, and what each option causes. It applies to an ask and a decision block.
 	RuleAskParts RuleSet = "ask_parts"
+	// RulePointers is each pointer at an issue, a pull request, a comment, an ask, a message or a
+	// document that does not say in plain words what the thing delivers or says: a key or a link
+	// in place of those words, or neither those words nor a link.
+	RulePointers RuleSet = "pointers"
 	// RuleStructure is writingcheck's structure rules (writingcheck.EnabledRules), which run
 	// before the model call; their findings are an input of the call.
 	RuleStructure RuleSet = "structure"
@@ -46,10 +50,10 @@ const (
 )
 
 // AllRuleSets is every rule set, in the order DISPATCH_REVIEWER_RULES's description names them.
-var AllRuleSets = []RuleSet{RuleNoslop, RulePhrases, RuleReaderWords, RuleAskParts, RuleStructure, RuleDetector}
+var AllRuleSets = []RuleSet{RuleNoslop, RulePhrases, RuleReaderWords, RuleAskParts, RulePointers, RuleStructure, RuleDetector}
 
 // phrasesHeading is the heading of skills/plain-words' section of the six phrases.
-const phrasesHeading = "## The phrases the owner asked to stop"
+const phrasesHeading = "## The phrases to stop"
 
 // noslopText and phrasesText are skills/plain-words split into the two rule sets: ce-noslop's
 // SKILL.md body with its pattern catalog and its terminology, and the table of the six phrases.

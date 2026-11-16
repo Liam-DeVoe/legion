@@ -28,6 +28,9 @@ const (
 	WritingRulesReaderWords = "reader_words"
 	// WritingRulesAskParts is the parts of an ask, for a write of an ask.
 	WritingRulesAskParts = "ask_parts"
+	// WritingRulesPointers is how a text points at an issue, a pull request, a comment, an ask, a
+	// message or a document: in plain words, with the link beside them.
+	WritingRulesPointers = "pointers"
 )
 
 // WritingRulesConfig is the refusal as the deployment set it (cmd/dispatch:
@@ -35,8 +38,8 @@ const (
 type WritingRulesConfig struct {
 	// Refusal is whether the command refuses the write the rules come before.
 	Refusal bool
-	// Extra are the rule sets shown beside the written rules: WritingRulesReaderWords and
-	// WritingRulesAskParts, in the order the deployment named them.
+	// Extra are the rule sets shown beside the written rules: WritingRulesReaderWords,
+	// WritingRulesAskParts and WritingRulesPointers, in the order the deployment named them.
 	Extra []string
 }
 
@@ -186,6 +189,11 @@ func (s *server) writingRulesText(ctx context.Context, route, reader string) (st
 				"3. The facts that the person must know to make the decision.\n" +
 				"4. Your recommendation.\n" +
 				"5. What each option causes.\n")
+		case WritingRulesPointers:
+			text.WriteString("\n## Pointers\n\n" +
+				"Where your text points at an issue, a pull request, a comment, an ask, a message or a document, say in plain words what that thing delivers or says. " +
+				"Put its link beside these words, never in their place. " +
+				"For example, write \"the move of the export code to the new repository (INFRA-12)\", not \"see INFRA-12\".\n")
 		}
 	}
 	return text.String(), nil

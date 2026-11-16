@@ -23,6 +23,7 @@ var ruleSetMarkers = map[RuleSet][]string{
 	RulePhrases:     {`### Rule set "phrases"`, "| land the change, land the PR |"},
 	RuleReaderWords: {`### Rule set "reader_words"`, "<reader_words>\n- store\n</reader_words>"},
 	RuleAskParts:    {`### Rule set "ask_parts"`, "2. Why the decision is necessary now."},
+	RulePointers:    {`### Rule set "pointers"`, "take each key and each link out of its sentence"},
 	RuleStructure:   {`### Rule set "structure"`, "<structure_findings>", "Rule phrasal-verb."},
 	RuleDetector:    {`### Rule set "detector"`, "<detector_findings>", "Rule vacuous-verb-phrase."},
 }

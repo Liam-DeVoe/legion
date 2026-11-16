@@ -1,12 +1,12 @@
 package main
 
-// dataset named builds cases from the document versions its --doc flags list, read from the live
-// Dispatch. A text the dataset's snapshot does not hold, such as a version written after its end
-// time, becomes a case that `harness load` and `harness score` read as they read a build's. It
-// reads the event log of each issue into the index build reads a snapshot into, so a case's
-// fields and its record come from build's own code. Every file it writes holds Dispatch text, so
-// each belongs under $TMPDIR and never in a repository. README.md, "dataset", "named", says what
-// it does.
+// dataset named builds cases from the document versions its --doc flags list and the asks its
+// --ask flags list, read from the live Dispatch. A text the dataset's snapshot does not hold, such
+// as a version written after its end time, becomes a case that `harness load` and `harness score`
+// read as they read a build's. It reads the event log of each issue into the index build reads a
+// snapshot into, so a case's fields and its record come from build's own code. Every file it
+// writes holds Dispatch text, so each belongs under $TMPDIR and never in a repository. README.md,
+// "dataset", "named", says what it does.
 
 import (
 	"cmp"
@@ -68,12 +68,40 @@ func (d *dsNamedDocs) Set(v string) error {
 	return nil
 }
 
-// dsNamedPrefix opens the id of a case of `dataset named`, before <issue>/<slug>@<version>.
+// dsNamedAsk is one --ask value: an ask of an issue, by its id.
+type dsNamedAsk struct {
+	issue, id string
+}
+
+// dsNamedAsks is the --ask flag, which a command line may give more than once.
+type dsNamedAsks []dsNamedAsk
+
+func (a *dsNamedAsks) String() string {
+	values := make([]string, len(*a))
+	for i, ask := range *a {
+		values[i] = ask.issue + "/" + ask.id
+	}
+	return strings.Join(values, " ")
+}
+
+// Set reads one value: <issue>/<ask id>.
+func (a *dsNamedAsks) Set(v string) error {
+	issue, id, found := strings.Cut(v, "/")
+	if !found || issue == "" || id == "" || strings.Contains(id, "/") {
+		return fmt.Errorf("%q is not <issue>/<ask id>", v)
+	}
+	*a = append(*a, dsNamedAsk{issue: issue, id: id})
+	return nil
+}
+
+// dsNamedPrefix opens the id of a case of `dataset named`, before <issue>/<slug>@<version> or
+// <issue>/ask:<id>.
 const dsNamedPrefix = dsGroupPlain + "/named:"
 
 // dsNamedCounts is the counts.json `dataset named` writes: the owner, whom `harness load` reads
-// from it, the versions the cases are (<issue>/<slug>@<version>), the sessions listed in
-// sessions.tsv and left out of it, and the SHA-256 of the other files. It holds no text.
+// from it, the versions and the asks the cases are (<issue>/<slug>@<version>, <issue>/ask:<id>),
+// the sessions listed in sessions.tsv and left out of it, and the SHA-256 of the other files. It
+// holds no text.
 type dsNamedCounts struct {
 	Owner            string            `json:"owner"`
 	Named            []string          `json:"named"`
@@ -95,7 +123,9 @@ func runDatasetNamed(ctx context.Context, args []string, stdout, stderr io.Write
 	flags := flag.NewFlagSet("writing-check dataset named", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var docs dsNamedDocs
-	flags.Var(&docs, "doc", "versions of one document of an issue, <issue>/<document>@<version>[,<version>...], the document by its slug or its file name (required; repeatable)")
+	var asks dsNamedAsks
+	flags.Var(&docs, "doc", "versions of one document of an issue, <issue>/<document>@<version>[,<version>...], the document by its slug or its file name (repeatable; give --doc, --ask or both)")
+	flags.Var(&asks, "ask", "an ask of an issue, <issue>/<ask id>: the ask as its writer opened it, its question and its options (repeatable; give --doc, --ask or both)")
 	out := flags.String("out", "", "the directory for cases.jsonl.gz, documents.jsonl.gz, sessions.tsv and counts.json (required; keep it under $TMPDIR)")
 	owner := flags.String("owner", dsDefaultOwner, "the person the texts are written to: harness load gives each case a reader in his place")
 	if err := flags.Parse(args); err != nil {
@@ -106,8 +136,8 @@ func runDatasetNamed(ctx context.Context, args []string, stdout, stderr io.Write
 	case flags.NArg() > 0:
 		fmt.Fprintf(stderr, "writing-check dataset named: unexpected argument %q\n", flags.Arg(0))
 		return 2
-	case len(docs) == 0 || *out == "":
-		fmt.Fprintln(stderr, "writing-check dataset named: --doc and --out are required")
+	case len(docs) == 0 && len(asks) == 0 || *out == "":
+		fmt.Fprintln(stderr, "writing-check dataset named: --doc or --ask, and --out, are required")
 		return 2
 	case base == "" || tokenFile == "":
 		fmt.Fprintln(stderr, "writing-check dataset named: DISPATCH_URL and DISPATCH_TOKEN_FILE must be set")
@@ -115,7 +145,7 @@ func runDatasetNamed(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	started := time.Now()
 	dispatch := newClient(base, tokenFile)
-	result, err := buildNamed(ctx, dispatch, docs, *owner, *out, stderr)
+	result, err := buildNamed(ctx, dispatch, docs, asks, *owner, *out, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset named: %v\n", err)
 		return 1
@@ -132,16 +162,17 @@ func runDatasetNamed(ctx context.Context, args []string, stdout, stderr io.Write
 	return 0
 }
 
-// buildNamed writes a build directory to out with one case for each version of docs: a plain
-// case of the development part whose text is the version's whole Markdown, and whose record is
-// the one build gives a document version. notes takes a line for each version whose author's
-// writes the writing check does not read.
-func buildNamed(ctx context.Context, dispatch *client, docs []dsNamedDoc, owner, out string, notes io.Writer) (dsNamedResult, error) {
+// buildNamed writes a build directory to out with one case for each version of docs and each ask
+// of asks: a plain case of the development part whose text is the version's whole Markdown, or the
+// ask's question and options as its writer opened it, and whose record is the one build gives
+// that text. notes takes a line for each text whose author's writes the writing check does not
+// read.
+func buildNamed(ctx context.Context, dispatch *client, docs []dsNamedDoc, asks []dsNamedAsk, owner, out string, notes io.Writer) (dsNamedResult, error) {
 	var res dsNamedResult
 	src := newLiveSource(dispatch)
 	ix := newDSIndex(owner, "")
 
-	// The versions to build, and the events of their issues in id order, as build reads the log.
+	// The texts to build, and the events of their issues in id order, as build reads the log.
 	type namedVersion struct {
 		ref      string
 		artifact string
@@ -176,6 +207,36 @@ func buildNamed(ctx context.Context, dispatch *client, docs []dsNamedDoc, owner,
 				counts.Named = append(counts.Named, ref)
 				named = append(named, namedVersion{ref: ref, artifact: doc.ID, number: n})
 			}
+		}
+	}
+	type namedAsk struct {
+		ref, id string
+	}
+	var namedAsks []namedAsk
+	for _, a := range asks {
+		var got struct {
+			Ask struct {
+				ID       string  `json:"id"`
+				IssueKey *string `json:"issue_key"`
+			} `json:"ask"`
+		}
+		err := dispatch.get(ctx, "/api/v1/asks/"+url.PathEscape(a.id), nil, &got)
+		switch {
+		case err != nil:
+			return res, fmt.Errorf("ask %s of %s: %w", a.id, a.issue, err)
+		case got.Ask.ID == "":
+			return res, fmt.Errorf("ask %s of %s: Dispatch answered no id for it", a.id, a.issue)
+		case !strings.EqualFold(deref(got.Ask.IssueKey), a.issue):
+			return res, fmt.Errorf("ask %s is not an ask of %s: Dispatch gives its issue as %q", a.id, a.issue, deref(got.Ask.IssueKey))
+		}
+		issue := *got.Ask.IssueKey
+		if !slices.Contains(issues, issue) {
+			issues = append(issues, issue)
+		}
+		ref := issue + "/ask:" + got.Ask.ID
+		if !slices.Contains(counts.Named, ref) {
+			counts.Named = append(counts.Named, ref)
+			namedAsks = append(namedAsks, namedAsk{ref: ref, id: got.Ask.ID})
 		}
 	}
 	var events []dsLogEvent
@@ -230,6 +291,22 @@ func buildNamed(ctx context.Context, dispatch *client, docs []dsNamedDoc, owner,
 		ix.versionsIn[k], ix.versionSHA[k], ix.versionText[k] = true, sha256Hex([]byte(text)), text
 		return nil
 	}
+	// add makes the case of ref from its text t, with each version of its record read, and a note
+	// where the writing check does not read the writes of t's author.
+	add := func(ref string, t *dsText) error {
+		for _, k := range ix.recordVersions(t) {
+			if err := read(k); err != nil {
+				return err
+			}
+		}
+		if !t.Agent {
+			fmt.Fprintf(notes, "writing-check dataset named: %s was written by %s %s, whose writes the writing check does not read: the case has no writer session\n", ref, t.ActorKind, t.ActorID)
+		}
+		made := &dsCase{ID: dsNamedPrefix + ref, Group: dsGroupPlain, Part: dsDevelopment, agent: t}
+		ix.fill(made)
+		res.cases = append(res.cases, made)
+		return nil
+	}
 	for _, n := range named {
 		texts := ix.texts[versionKey(n.artifact, n.number)]
 		if len(texts) == 0 {
@@ -246,17 +323,20 @@ func buildNamed(ctx context.Context, dispatch *client, docs []dsNamedDoc, owner,
 		// The text is the whole version, where build takes the blocks the version before it does
 		// not hold (fillVersionText): --doc gives a version, not a part of one.
 		t.Text = ix.versionText[own]
-		for _, k := range ix.recordVersions(t) {
-			if err := read(k); err != nil {
-				return res, err
-			}
+		if err := add(n.ref, t); err != nil {
+			return res, err
 		}
-		if !t.Agent {
-			fmt.Fprintf(notes, "writing-check dataset named: %s was written by %s %s, whose writes the writing check does not read: the case has no writer session\n", n.ref, t.ActorKind, t.ActorID)
+	}
+	// An ask's text is its question and its options as its ask.opened wrote them: the first text
+	// of its key in the index. Each later edit is a later text of that key.
+	for _, n := range namedAsks {
+		texts := ix.texts["ask:"+n.id]
+		if len(texts) == 0 || texts[0].EventType != "ask.opened" {
+			return res, fmt.Errorf("%s: no event of its issue opened this ask with words", n.ref)
 		}
-		made := &dsCase{ID: dsNamedPrefix + n.ref, Group: dsGroupPlain, Part: dsDevelopment, agent: t}
-		ix.fill(made)
-		res.cases = append(res.cases, made)
+		if err := add(n.ref, texts[0]); err != nil {
+			return res, err
+		}
 	}
 	slices.SortFunc(res.cases, func(a, b *dsCase) int { return strings.Compare(a.ID, b.ID) })
 	dsSplitGroups(res.cases)

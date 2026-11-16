@@ -19,7 +19,9 @@ body: |-
   A review whose model fails, or that takes longer than `DISPATCH_REVIEWER_TIMEOUT` (default
   `120s`), posts the text as written.
   `DISPATCH_REVIEWER_RULES` names the rule sets the reviewer applies, from `noslop`, `phrases`,
-  `reader_words`, `ask_parts`, `structure` and `detector`. The default is
+  `reader_words`, `ask_parts`, `pointers`, `structure` and `detector`. `pointers` asks that a
+  pointer at an issue, a pull request, a comment, an ask, a message or a document say in plain
+  words what that thing delivers or says, with its link beside those words. The default is
   `noslop,phrases,reader_words,ask_parts`.
   A value other than `off` needs the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`): without
   it the server refuses to start.

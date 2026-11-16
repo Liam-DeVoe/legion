@@ -71,7 +71,7 @@ func TestTheRulesAreTheSkillsBodyAndItsReferences(t *testing.T) {
 	}
 	for _, want := range []string{
 		"## The tests",
-		"## The phrases the owner asked to stop",
+		"## The phrases to stop",
 		"| land the change, land the PR |",
 	} {
 		if !strings.Contains(Skill, want) {

@@ -26,7 +26,7 @@
 //	writing-check dataset build (--snapshot <file> --verdicts <file> --seed N | --from <bundle>) --out <dir>
 //	writing-check dataset pack --snapshot <file> --verdicts <file> --seed N --out <bundle.tar.gz>
 //	writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
-//	writing-check dataset named --doc <issue>/<document>@<version>[,<version>...] [--doc ...] --out <dir>
+//	writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
 //	writing-check harness probe|score|grader-test|local|load [flags]
 //
 // probe-model measures the latency of the model reader's calls, fetch reads the prose agents
@@ -40,8 +40,8 @@
 // labelled writes and computes the figures, reproduce recomputes them from the stored outputs,
 // and validate checks a description file. dataset builds the dataset of INFRA-3231's R1 from the
 // event log: a snapshot, the verdicts of the selection prompt, and the cases; its named step
-// builds cases from document versions read from the live Dispatch. harness scores the changes of
-// INFRA-3231's R3 on that dataset (package harness). README.md says what each one does.
+// builds cases from document versions and asks read from the live Dispatch. harness scores the
+// changes of INFRA-3231's R3 on that dataset (package harness). README.md says what each one does.
 package main
 
 import (
