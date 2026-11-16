@@ -33,7 +33,7 @@ import { Writes } from "../writes/write-store";
 import { type HeldSend, HeldSends, heldSends, stoppable } from "./held-sends";
 import { PendingSendTurn } from "./PendingSendTurn";
 import { carriedIdsOf, type SentRequest, saveCommentEdit } from "./send-request";
-import { useSessionSends } from "./useSessionSends";
+import { type SessionSends, useSessionSends } from "./useSessionSends";
 
 const request: SentRequest = {
   anchor: undefined,
@@ -664,6 +664,15 @@ test("a late send can be stopped, and its Retry goes under its key", async () =>
   });
 });
 
+/** A held send's turn, as the live view draws it: under a query client, since the draft is drawn
+ *  through the plain-text projection, which names what the draft references. */
+function heldTurn(held: HeldSend, sends: Pick<SessionSends, "discard" | "retry" | "stop">) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    createElement(QueryClientProvider, { client }, createElement(PendingSendTurn, { held, sends }))
+  );
+}
+
 // W51. A message the person's sign-out in another tab holds says so on its pending turn, and its
 // trying goes on once that tab's hold lifts.
 test("a send held for a sign-out in another tab says so, and goes on once released", async () => {
@@ -680,7 +689,7 @@ test("a send held for a sign-out in another tab says so, and goes on once releas
       await settle();
       const waiting = held.get(agentKey);
       expect(waiting?.signingOutElsewhere).toBe(true);
-      const turn = render(createElement(PendingSendTurn, { held: waiting as HeldSend, sends }));
+      const turn = heldTurn(waiting as HeldSend, sends);
       expect(turn.getByRole("status").textContent).toBe("Waiting for a sign-out in another tab");
       turn.unmount();
       const calls = createAgentMessage.mock.calls.length;
@@ -693,7 +702,7 @@ test("a send held for a sign-out in another tab says so, and goes on once releas
       const going = held.get(agentKey);
       expect(going?.signingOutElsewhere).toBe(false);
       expect(createAgentMessage.mock.calls.length).toBeGreaterThan(calls);
-      const again = render(createElement(PendingSendTurn, { held: going as HeldSend, sends }));
+      const again = heldTurn(going as HeldSend, sends);
       expect(again.getByRole("status").textContent).toBe("Sending…");
       again.unmount();
     } finally {
@@ -737,7 +746,7 @@ test("a send whose key has run out says so on its turn, with Retry and Discard",
       const spent = held.get(agentKey);
       expect(spent?.status === "refused" && spent.refusal).toBeInstanceOf(SendExpiredError);
 
-      const turn = render(createElement(PendingSendTurn, { held: spent as HeldSend, sends }));
+      const turn = heldTurn(spent as HeldSend, sends);
       try {
         expect(turn.getByTestId("agent-send-error").textContent).toBe(
           new SendExpiredError().message

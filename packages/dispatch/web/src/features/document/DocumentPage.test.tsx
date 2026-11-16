@@ -106,6 +106,16 @@ test("renders the header, the document, versions, and Referenced by for an unlin
       ref: "dispatch://CORE/artifact/design-notes",
     }),
   });
+  // The citing comment's excerpt is the head of its body, which the renderer draws, so the
+  // reference in it reads the document's summary for its name.
+  const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
+    id: "artifact-1",
+    kind: "doc",
+    latest_version: 1,
+    name: "design-notes",
+    project: "CORE",
+    slug: "design-notes",
+  });
   const { runtime, view } = renderDocumentPage();
 
   try {
@@ -130,6 +140,7 @@ test("renders the header, the document, versions, and Referenced by for an unlin
     );
   } finally {
     view.unmount();
+    getProjectDocumentSummary.mockRestore();
     getArtifactText.mockRestore();
     getArtifactSubscribers.mockRestore();
     getArtifact.mockRestore();

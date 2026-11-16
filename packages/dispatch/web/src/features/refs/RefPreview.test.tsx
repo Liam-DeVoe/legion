@@ -180,6 +180,7 @@ test("a hover over a target whose read fails asks for it once, not again when it
   jest.useFakeTimers();
   const view = render(<Harness />);
   try {
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
     fireEvent.pointerOver(screen.getByRole("link", { name: "first" }), { pointerType: "mouse" });
     // The mocked read settles on microtasks alone, which the async act flushes.
     await act(async () => {});
