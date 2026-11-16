@@ -415,6 +415,13 @@ func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testi
 	if !claimedPending(t, database, second.ID, "session:s1") {
 		t.Fatal("the second comment's attempt is not held while the first's send to the same session is still held")
 	}
+	// The second comment's send waits behind the first on their one lane. A send that jumped the
+	// lane would reach the listener now, and the stand-in reports each arrival as it is taken, so
+	// its arrivals stay quiet while the first is held; the count after it is the first alone.
+	testwait.Quiet(t, "a second send to s1 while the first is held", state.arrived, 500*time.Millisecond,
+		"the mention sender keeps a lane's queued sends in its own memory, which no route or row reads, so no "+
+			"state says the second send is waiting rather than on its way, and every later action of the test "+
+			"releases the first send, after which the second may go")
 	if sent := state.sent(); len(sent) != 1 {
 		t.Fatalf("sends while the first was still held = %#v, want the first alone", sent)
 	}
