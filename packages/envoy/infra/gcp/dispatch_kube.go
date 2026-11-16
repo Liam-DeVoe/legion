@@ -309,14 +309,10 @@ func refuseDispatchSeedInSecret(value pulumi.StringInput, dispatch, input string
 // the pods dial the URL themselves, and a loopback URL has them dial themselves. natsReplicas and
 // streamMaxBytes reach no refusal of core's own, since newDispatchSettings bounds them more
 // tightly (1 to bus.MaxReplicas, and at least 1) before anything registers, which is why every
-// refusal that is not socks5Proxy's is natsUrl's.
-// The listener serves on every address of its pod, and its API refuses to start on a non-loopback
-// listen host without a bearer or an OIDC pair (packages/envoy/cmd/listener/apiauth.go), so the
-// environment names the bearer in Secret listenerSecret, or, with listenerAudience, the pair it
-// verifies the app's own token with: issuer, this cluster's, and listenerAudience. With
-// natsAudience the listener's NATS credential is the projected token core's Env names, and no
-// seed.
-func dispatchListenerEnv(s dispatchSettings, listenerSecret, url, issuer string) (corev1.EnvVarArray, error) {
+// refusal that is not socks5Proxy's is natsUrl's. The NATS credential is the seed's file, or, with
+// natsAudience, the projected token's, which core's Env names; the listener's API credential
+// follows this environment (dispatchListenerAPIEnv).
+func dispatchListenerEnv(s dispatchSettings, url string) (corev1.EnvVarArray, error) {
 	if s.natsInCluster && bus.LocalNATSURL(url) {
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
@@ -343,10 +339,19 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url, issuer string)
 	if s.natsAudience == "" {
 		values = append(values, valueEnv("NATS_NKEY_SEED_FILE", dispatchNatsSeedFile))
 	}
+	return values, nil
+}
+
+// dispatchListenerAPIEnv is the listener's API credential, the end of its environment. The
+// listener serves on every address of its pod, and its API refuses to start on a non-loopback
+// listen host without a bearer or an OIDC pair (packages/envoy/cmd/listener/apiauth.go), so it is
+// the bearer in Secret listenerSecret, or, with listenerAudience, the pair the listener verifies
+// the app's own token with: issuer, this cluster's, and listenerAudience.
+func dispatchListenerAPIEnv(s dispatchSettings, listenerSecret, issuer string) corev1.EnvVarArray {
 	if s.listenerAudience == "" {
-		return append(values, secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN")), nil
+		return corev1.EnvVarArray{secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN")}
 	}
-	return append(values, valueEnv("ENVOY_OIDC_ISSUER", issuer), valueEnv("ENVOY_OIDC_AUDIENCE", s.listenerAudience)), nil
+	return corev1.EnvVarArray{valueEnv("ENVOY_OIDC_ISSUER", issuer), valueEnv("ENVOY_OIDC_AUDIENCE", s.listenerAudience)}
 }
 
 // envVars is env, core.ListenerConfig's NAME=value rendering, as a container's environment, in
@@ -414,16 +419,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// own, which the listener's pod names, never the component's dispatch Secret, which holds
 	// DATABASE_URL and DISPATCH_SIGNING_KEY: the app reads it as ENVOY_TOKEN, and its checksum is
 	// on both pods. With listenerAudience the app presents its own token instead, which the
-	// listener verifies with its OIDC pair (dispatchListenerEnv) against this cluster's issuer,
+	// listener verifies with its OIDC pair (dispatchListenerAPIEnv) against this cluster's issuer,
 	// which mints it: the kubelet mints it for listenerAudience into a projected volume mounted
 	// read-only into envoy-dispatch alone, and ENVOY_ACCOUNT_TOKEN_FILE, in ENVOY_TOKEN's place,
 	// names the file Dispatch reads at call time. No bearer is shared then, so there is no Secret
-	// and no checksum, no issuer reaches the listener without it, and Dispatch refuses ENVOY_TOKEN
-	// beside the file. The listener's Deployment, Service and bearer share one name.
+	// and no checksum, and Dispatch refuses ENVOY_TOKEN beside the file. The listener's
+	// Deployment, Service and bearer share one name.
 	listenerName := s.hostname + "-listener"
 	listenerChecksums := map[string]*corev1.Secret{}
 	var (
-		listenerIssuer     pulumi.StringOutput
 		appListenerEnv     corev1.EnvVarArgs
 		appListenerMounts  corev1.VolumeMountArray
 		appListenerVolumes corev1.VolumeArray
@@ -436,10 +440,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			return err
 		}
 		listenerChecksums[listenerName] = listenerSecret
-		listenerIssuer = pulumi.String("").ToStringOutput()
 		appListenerEnv = secretEnv("ENVOY_TOKEN", listenerName, "ENVOY_API_TOKEN")
 	} else {
-		listenerIssuer = cloud.issuer
 		appListenerEnv = valueEnv("ENVOY_ACCOUNT_TOKEN_FILE", dispatchListenerTokenFile)
 		appListenerMounts = corev1.VolumeMountArray{corev1.VolumeMountArgs{Name: pulumi.String(dispatchListenerTokenName), MountPath: pulumi.String(dispatchListenerTokenMount), ReadOnly: pulumi.Bool(true)}}
 		appListenerVolumes = corev1.VolumeArray{projectedTokenVolume(dispatchListenerTokenName, s.listenerAudience)}
@@ -512,19 +514,25 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 
 	// natsURL is the one NATS URL once checked: every container reads this output rather than the
 	// raw input, so envoy-dispatch's NATS_URLS is never an unchecked copy beside the listener's
-	// checked environment. The issuer reaches no refusal, so the check renders without it.
+	// checked environment.
 	natsURL := args.NatsUrl.ToStringOutput().ApplyT(func(url string) (string, error) {
-		if _, err := dispatchListenerEnv(s, listenerName, url, ""); err != nil {
+		if _, err := dispatchListenerEnv(s, url); err != nil {
 			return "", fmt.Errorf("%s: %w", dispatch, err)
 		}
 		return url, nil
 	}).(pulumi.StringOutput)
-	listenerEnv := pulumi.All(natsURL, listenerIssuer).ApplyT(func(values []any) (corev1.EnvVarArray, error) {
-		env, err := dispatchListenerEnv(s, listenerName, values[0].(string), values[1].(string))
+	// The listener's environment is the checked NATS environment and then its API credential,
+	// which with listenerAudience names the cluster's issuer.
+	listenerEnv := pulumi.All(natsURL, cloud.issuer).ApplyT(func(values []any) (corev1.EnvVarArray, error) {
+		parts, err := outputStrings(dispatch, values, "natsUrl", "the cluster's issuer")
+		if err != nil {
+			return nil, err
+		}
+		env, err := dispatchListenerEnv(s, parts[0])
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dispatch, err)
 		}
-		return env, nil
+		return append(env, dispatchListenerAPIEnv(s, listenerName, parts[1])...), nil
 	}).(corev1.EnvVarArrayOutput)
 
 	// Unset, the pods name no priority class. Set, the class is read once and every Deployment
