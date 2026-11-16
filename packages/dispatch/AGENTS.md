@@ -876,6 +876,8 @@ From 1280 px wide the Inbox page is a reading pane: the rows in a left column an
 
 Text that truncates inside a control that is a flex container goes in `components/TruncatedText.tsx`, and the control keeps `truncate` on itself. Below 1280 px every link that is not `.prose a` or `.dispatch-inline-link` (an inline link keeps its own line box instead) and every button is an inline-flex box with centred items (`styles.css`, unlayered, so it beats a `block` or `items-*` class on the control); `text-overflow` never applies to a flex container's own text, so the control alone clips mid-word with no ellipsis. The span is the flex item the ellipsis applies to, and where the control is a block the control's own `truncate` draws it. The span takes a `className` for its flex sizing (`min-w-0 flex-1`, a `max-w-[18ch]` cap) and an explicit `title` — it derives none of its own, so a host passes one only when it wants the pointer tooltip: a host that already carries its own `title` on the wrapping element, a host whose link already opens a `RefPreview` hover card through `referenceTriggerProps` (both kinds of Inbox row owner, and attachment lists and component work rows), or a host whose truncated text is a quoted excerpt rather than a name — restating it in a tooltip would only repeat text already visible in the turn above it (`ReplyQuote`, whose quote is a `MarkdownPreview` given no `title` for that reason) — passes none, since a native tooltip would either duplicate the wrapper's, draw over the preview card, or restate text already on screen. A link that is not a flex item also needs a width cap (`max-w-full`), since an inline-flex box is as wide as its whole text. A link or button whose content is several lines stacks them itself, `flex flex-col` with `self-stretch` on each line (an item's `align-self` wins over the container's centred `align-items`), since below 1280 px a `block` control lays its lines side by side. Every truncating link and control does this: the project Documents list, the Artifacts tab, both kinds of Inbox row owner, the architecture rows, attachment lists and component work rows, `GitHubLink` (a pull request's title and a non-GitHub address), a document's open-decision link, the issue header's `Message route` button, a Broadcasts row, an @ picker option, `MultiSelect`'s label-picker option row, `AskCard`'s author chip, `Chip`, and `ReplyQuote`. An Agents-page row's name button is deliberately none of them: its name wraps whole at every width (`features/agents/`, above), so it holds a plain `break-words` span rather than a `TruncatedText`, and its `title` repeats the name for a reader who wants it in one line. From `sm` a Documents row is a four-column grid; on a phone the name takes its own line and the kind, issue and time share the line under it.
 
+A shared control (`components/` and the controls of `features/` that today's pages and the new issue page both draw) takes its `title`, its words and its marks from the surface, and its shape from a prop. The surface is `components/tooltips.tsx`: `useTooltips()` is true except inside `NoTooltips` (`features/issue-page/NoTooltips.tsx`), and `usePageWords()` gives the new issue page's words (`page-words.ts`, `page-structure.ts`) and its two marks (`data-page-chrome`, `data-author-text`) inside it and `null` outside. Inside `NoTooltips` a control sets no `title`, draws the fact a `title` held as visible text or as its accessible name, and says the page's words with their marks; outside it, it draws what it draws on today's pages. It is a context and not a prop because Details is drawn in the margin, which the shell mounts beside the router, so no prop of the page reaches it. A shape is a prop whose default is today's (`variant="badge"`, `size="default"`, `chipClassName`, `testId`, `actions`, `reasons`), and the props that need the page's words (`inRow`, `author`, `versions`, `Timestamp`'s `exact`) act inside `NoTooltips` alone. No shared control and not `components/tooltips.tsx` imports a module under `features/issue-page/`, and no file outside that directory imports `NoTooltips.tsx`, `useIssueHeaderWrites.ts`, `IssueFieldForms.tsx` or `issue-status.ts`, so the word list never loads with today's pages (dispatch://INFRA-1196 R33).
+
 ## Margin threads
 
 Every margin — issue and standalone project document — owns anchored comment threads beside the
@@ -1381,6 +1383,26 @@ composite to `classes.ts`, not inventing a shade inline. The document editor
 (`@legion/proof-editor`) themes itself through CSS variables scoped to `.proof-editor`;
 `styles.css` maps them to palette swatches under `.dispatch-doc .proof-editor` for both schemes,
 and those literals are what `styles-css-pin.test.ts` pins.
+
+The new issue page (dispatch://INFRA-1196, drawn only for a reader who turned it on; its
+outermost element carries `data-issue-page`) has a typeface, colours and words of its own, which
+no other page reads. Its typeface is Inter 4.1, shipped as
+`web/src/fonts/inter/InterVariable-subset.woff2` (cut by `subset.sh` beside it, which
+`subset.test.ts` holds the file and its `unicode-range` to) under the family name
+`Dispatch Inter`, which no component names. One rule of `styles.css`,
+`html:has([data-issue-page])`, applies that family to the whole document while the new page is
+drawn, so the `:root` stack, Tailwind's `font-sans` and every other page are not affected, and no
+other page requests the file. Keep it that way: name no `@font-face` `Inter`, set no
+`--font-sans` in `@theme`, and write a rule the new page needs in another form (a floor, a font,
+a padding) as a new rule under `html:has([data-issue-page])`, never as a change to the rule the
+other pages use. Its colours are the `--color-page-*` and `--color-icon-rail*` tokens of the
+`@theme` block of `styles.css`, with their dark values in a `@media (prefers-color-scheme: dark)`
+block of their own; `classes.ts` names them in `PAGE_COLORS`, and `page-colours.test.ts` holds
+each token, and each swatch `PAGE_COLORS` names, to the value of the approved design. Its words
+are the tables of `features/issue-page/page-words.ts` and `page-structure.ts` that
+`UNASKED_SOURCES` and `ANSWER_SOURCES` hold: a component of the page takes its words from there
+and keeps no copy of its own, and one test of `page-words.test.ts` reads every phrase for an
+internal word.
 
 ## Document editor
 

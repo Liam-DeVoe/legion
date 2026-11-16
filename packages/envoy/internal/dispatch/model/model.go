@@ -985,7 +985,9 @@ type RelatedCheckTiming struct {
 
 // IssueChild is a child item embedded in an issue detail response. The subtree counts
 // include the child itself, every status (icebox included); done is `status = 'done'`.
-// ActiveAt is the newest updated_at anywhere in the child's subtree.
+// ActiveAt is the newest updated_at anywhere in the child's subtree. Needs and Claim are the
+// child's own, each left out when it has none: Needs the sorted keys of the issues it waits on,
+// the elements of Issue's blocked_by, and Claim the claim holding it, in Issue's shape.
 type IssueChild struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -994,6 +996,8 @@ type IssueChild struct {
 	SubtreeTotal  int            `json:"subtree_total"`
 	ActiveAt      time.Time      `json:"active_at"`
 	ExternalLinks []ExternalLink `json:"external_links"`
+	Needs         []string       `json:"needs,omitempty"`
+	Claim         *IssueClaim    `json:"claim,omitempty"`
 }
 
 // ArchitectureTree is GET /api/v1/projects/{key}/architecture: the project's
@@ -1374,13 +1378,17 @@ type CheckResultRetraction struct {
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
 // `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run.
+// one result is the one derived from that run. Text is the block's words with every link and
+// dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
+// content whole, links and references kept, as the reader is shown it, present only for a
+// caller that sent `Dispatch-Trees: 1`.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
 	IssueKey        string        `json:"issue_key"`
 	ArtifactID      string        `json:"artifact_id"`
 	Text            string        `json:"text"`
+	TextTree        DisplayTree   `json:"text_tree,omitempty"`
 	When            string        `json:"when"`
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
@@ -1437,14 +1445,16 @@ type IssueCoverage struct {
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
 // any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
-// parsing the sentence back.
+// parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
+// are: the words with no link or reference, and the block's whole content as a tree.
 type RequirementCoverage struct {
-	BlockID   string   `json:"block_id"`
-	Ref       string   `json:"ref"`
-	Text      string   `json:"text"`
-	Checks    int      `json:"checks"`
-	PlanTasks int      `json:"plan_tasks"`
-	Gaps      []string `json:"gaps"`
+	BlockID   string      `json:"block_id"`
+	Ref       string      `json:"ref"`
+	Text      string      `json:"text"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+	Checks    int         `json:"checks"`
+	PlanTasks int         `json:"plan_tasks"`
+	Gaps      []string    `json:"gaps"`
 }
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
@@ -3176,6 +3186,31 @@ type GraphReferences struct {
 	Node         GraphNode   `json:"node"`
 	Edges        []GraphEdge `json:"edges"`
 	UnknownKinds []string    `json:"unknown_kinds,omitempty"`
+}
+
+// ReferenceTarget is what one reference of a batched reference read points at: Ref, the
+// reference as the request named it, Kind, the kind of node it names (a GraphNode kind), Name,
+// the words a reader is shown for the target in place of its text (refs.TargetNames), and Gone,
+// whether nothing answers to that reference now. A gone target carries no name: its node was
+// deleted, so there is nothing left to name it by. TextTree is a block's whole text as the tree a
+// reader is shown, every link and dispatch:// reference kept and nothing cut, where Name stops at
+// the block's stored excerpt: a typed block's is of its own content, what stands between its
+// opening line and its closing one. A typed block whose stored text does not read back as that
+// block alone (one in a quote) answers the tree of its whole stored text, its opening line
+// included. Only a member whose Kind is block carries one, and only for a caller that sent
+// `Dispatch-Trees: 1`.
+type ReferenceTarget struct {
+	Ref      string      `json:"ref"`
+	Kind     string      `json:"kind"`
+	Name     string      `json:"name"`
+	Gone     bool        `json:"gone"`
+	TextTree DisplayTree `json:"text_tree,omitempty"`
+}
+
+// ReferenceTargets is GET /api/v1/reference-targets: one member per ?ref= the request named, in
+// the request's order, a reference named twice answered twice.
+type ReferenceTargets struct {
+	Targets []ReferenceTarget `json:"targets"`
 }
 
 // BlockLink is one link from a block of one document to a block of a document: its edge kind,

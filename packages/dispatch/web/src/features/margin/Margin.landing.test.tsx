@@ -3,10 +3,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { type ReactNode, useMemo, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
+import { useDrawerPage } from "../issue-page/drawer-page";
+import {
+  type MarginDrawer,
+  type MarginDrawerPage,
+  type MarginFill,
+  MarginSlotProvider,
+  useFillMarginSlot,
+} from "../issue-page/margin-slot";
 import { buildIssuePath } from "../refs/routes";
 import { Margin } from "./Margin";
 import { MarginProvider } from "./margin-context";
@@ -15,6 +24,7 @@ import {
   CommentLink,
   comment,
   issue,
+  markedCommentPath,
   ReportEmptyLayoutButton,
   SameCommentLink,
   SelectedItemLabel,
@@ -164,6 +174,140 @@ test("a phone comment deep link highlights its card without expanding it or open
   } finally {
     view.unmount();
     restoreMatchMedia();
+  }
+});
+
+/** The new page's fill of the margin's slot, at its plainest: the margin's own content. */
+const passThrough: MarginFill = (content) => content;
+
+/** What the new issue page's root does for Details while it is mounted: it sets the drawer's
+ *  words and its address rule (`drawer-page.ts`), and, where `fills`, fills the margin's slot so
+ *  the margin's cards are drawn in Details. */
+function NewPageRoot({ fills }: { fills: boolean }): null {
+  useDrawerPage(issue);
+  useFillMarginSlot(fills ? passThrough : undefined);
+  return null;
+}
+
+/** The shell's Details drawer as `app.tsx` holds it, closed on the load unless `open`. */
+function Details({
+  children,
+  fills = false,
+  open: openAtLoad = false,
+}: {
+  children: ReactNode;
+  fills?: boolean;
+  open?: boolean;
+}): ReactNode {
+  const [open, setOpen] = useState(openAtLoad);
+  const [page, setPage] = useState<MarginDrawerPage | undefined>(undefined);
+  const drawer = useMemo<MarginDrawer>(() => ({ open, page, setOpen, setPage }), [open, page]);
+  return (
+    <MarginSlotProvider drawer={drawer} drawsSlot>
+      <NewPageRoot fills={fills} />
+      {children}
+    </MarginSlotProvider>
+  );
+}
+
+// dispatch://INFRA-1196 R20: on the new issue page a comment's own route, and `?comment=` on an
+// issue's address, open the outline on the comment's node, focused. The margin in Details marks
+// its copy of the comment and expands nothing at a desktop width either: an expanded thread's
+// Reply box takes the focus off that node as it mounts.
+test("a desktop link to a comment's node marks its card without expanding its thread", async () => {
+  const restoreMatchMedia = stubMatchMedia(false);
+  // The card below the margin's view, as main's deep-link case puts it, so a hold on it would
+  // scroll the margin: only the address's rule keeps it still.
+  const restoreRects = stubRects(() => 900);
+  const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
+  try {
+    for (const path of [
+      buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" }),
+      `${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=${comment.id}`,
+    ]) {
+      scrollTo.mockClear();
+      const view = render(
+        <MemoryRouter initialEntries={[path]}>
+          <QueryClientProvider client={landingClient([comment])}>
+            <MarginProvider>
+              <Details fills open>
+                <SelectedItemLabel />
+                <Margin />
+              </Details>
+            </MarginProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await waitFor(() =>
+          expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
+        );
+        await settled();
+        expect(
+          screen.getByTestId(`margin-comment-${comment.id}`).getAttribute("aria-expanded"),
+          `${path} expands the comment's thread`
+        ).toBe("false");
+        expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+        expect(scrollTo, `${path} scrolls the margin to the comment's card`).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    restoreMatchMedia();
+    restoreRects();
+    scrollTo.mockRestore();
+  }
+});
+
+// dispatch://INFRA-1196 R14: Details is closed on every load, but a reader who follows a link to
+// a comment beside its document asked to see that comment's card, so the drawer opens for it -
+// once, so their Close keeps it closed. A link to a comment's node lands on the outline and
+// leaves Details closed.
+test("a link to a card beside its document opens Details on it, and a link to a node does not", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(false);
+  const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
+  try {
+    for (const [path, opens] of [
+      [markedCommentPath(comment.id), true],
+      [buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" }), false],
+      [`${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=${comment.id}`, false],
+    ] as const) {
+      const view = render(
+        <MemoryRouter initialEntries={[path]}>
+          <QueryClientProvider client={landingClient([comment])}>
+            <MarginProvider>
+              <Details>
+                <SelectedItemLabel />
+                <Margin />
+              </Details>
+            </MarginProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await waitFor(() =>
+          expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
+        );
+        await settled();
+        const details = screen.getByTestId("desktop-margin-shell");
+        expect(
+          details.hasAttribute("hidden"),
+          `${path} ${opens ? "left Details closed" : "opened Details"}`
+        ).toBe(!opens);
+        if (opens) {
+          await user.click(screen.getByRole("button", { name: "Close" }));
+          await settled();
+          expect(details.hasAttribute("hidden"), "Details opened again after its Close").toBe(true);
+        }
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    restoreMatchMedia();
+    scrollTo.mockRestore();
   }
 });
 

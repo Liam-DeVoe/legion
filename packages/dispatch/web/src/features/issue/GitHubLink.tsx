@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { ApiError, api } from "../../api/client";
 import type { ExternalLink } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
+import { usePageWords } from "../../components/tooltips";
 import { safeExternalHref } from "../../lib/external-href";
 import { badgeLow, linkHoverText, linkText, textMutedOnSurface } from "../../theme/classes";
 
@@ -93,8 +94,14 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
  * shown as its number and title (the repository while the title is unknown — loading, or no
  * GitHub App installation for the repository), never as the raw address, so it fits the line on a
  * phone; the title is truncated and carried in full by the link's tooltip.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) no link carries a
+ * `title`, so what the tooltip said is drawn instead (dispatch://INFRA-1196 R19): the title
+ * whole and wrapping, a link with no GitHub reading as its whole address, and an unsafe link
+ * says so in words.
  */
 export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
+  const page = usePageWords();
   const href = safeExternalHref(link.url);
   const match =
     href?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)\/?$/) ?? null;
@@ -145,23 +152,38 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   });
 
   if (href === null) {
-    return (
+    return page === null ? (
       <span
         className={`inline-block max-w-[18ch] truncate text-sm sm:max-w-[32ch] ${textMutedOnSurface}`}
         title="Unsafe external link"
       >
         {link.url}
       </span>
+    ) : (
+      <span className={`inline-block text-sm ${textMutedOnSurface}`} {...page.pageChrome}>
+        <span className="break-all" {...page.authorText}>
+          {link.url}
+        </span>
+        <span className="ml-1">({page.CONTROL_LABELS.external_link_unsafe})</span>
+      </span>
     );
   }
   if (match === null) {
-    return (
+    return page === null ? (
       <a
         className={`inline-block max-w-[18ch] truncate text-sm underline sm:max-w-[32ch] ${linkText} ${linkHoverText}`}
         href={href}
         title={link.url}
       >
         <TruncatedText>{link.url}</TruncatedText>
+      </a>
+    ) : (
+      <a
+        className={`inline-block max-w-full break-all text-sm underline ${linkText} ${linkHoverText}`}
+        href={href}
+        {...page.authorText}
+      >
+        {link.url}
       </a>
     );
   }
@@ -182,23 +204,34 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
         : reference.state;
   return (
     <a
-      className={`inline-flex max-w-full items-center gap-2 text-sm underline ${linkText} ${linkHoverText}`}
+      className={`inline-flex max-w-full ${page === null ? "" : "flex-wrap "}items-center gap-2 text-sm underline ${linkText} ${linkHoverText}`}
       href={href}
       title={
-        unavailable
-          ? "GitHub details are unavailable for this repository."
-          : reference === undefined
-            ? link.url
-            : `${repository}${number}: ${reference.title}`
+        page !== null
+          ? undefined
+          : unavailable
+            ? "GitHub details are unavailable for this repository."
+            : reference === undefined
+              ? link.url
+              : `${repository}${number}: ${reference.title}`
       }
     >
-      <span className="shrink-0 font-medium">{number}</span>
-      <TruncatedText className="max-w-[18ch] sm:max-w-[32ch]">
-        {reference === undefined ? repository : reference.title}
-      </TruncatedText>
+      <span className="shrink-0 font-medium" {...page?.authorText}>
+        {number}
+      </span>
+      {page === null ? (
+        <TruncatedText className="max-w-[18ch] sm:max-w-[32ch]">
+          {reference === undefined ? repository : reference.title}
+        </TruncatedText>
+      ) : (
+        <span className="min-w-0 break-all" {...page.authorText}>
+          {reference === undefined ? repository : reference.title}
+        </span>
+      )}
       {state === undefined ? null : (
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeLow.bg} ${badgeLow.text}`}
+          {...page?.authorText}
         >
           {state}
         </span>
@@ -206,8 +239,15 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       {isPullRequest && !checks.isError && checks.data !== undefined ? (
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeLow.bg} ${badgeLow.text}`}
+          {...page?.pageChrome}
         >
-          checks: {checks.data}
+          {page === null ? (
+            <>checks: {checks.data}</>
+          ) : (
+            <>
+              {page.CONTROL_LABELS.github_checks}: <span {...page.authorText}>{checks.data}</span>
+            </>
+          )}
         </span>
       ) : null}
     </a>
