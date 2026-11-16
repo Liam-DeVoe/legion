@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -32,9 +33,10 @@ import (
 // token cannot disagree. The grant is held to the repositories Dispatch maps the projects to
 // (Deps.Access); WithinProjects writes that same reply prefix in place of _INBOX.>. It is refused,
 // naming why: an account no exchange entry lists, or whose entry names no project; a project
-// Dispatch holds no answer about yet, holds no such project, or whose answer says the entry's
-// person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold. ParseServices
-// refuses a dispatch or listener entry with "-" at start, since their grants carry KV calls.
+// Dispatch holds no answer about yet, refused the broker's own account token when last asked
+// about, holds no such project, or whose answer says the entry's person cannot see it; and a grant
+// entry natsgrant.WithinProjects cannot hold. ParseServices refuses a dispatch or listener entry
+// with "-" at start, since their grants carry KV calls.
 //
 // Dispatch is never asked inside a decision: the service holds Dispatch's last answer about each
 // project an entry can name (heldAccess), and a decision reads only that.
@@ -77,6 +79,10 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 		switch {
 		case !known:
 			return natsgrant.Permissions{}, refuse(labelProjectNotKnown, "project access not yet known: "+project)
+		case held.refused:
+			// The token exchange refuses every trade that asks Dispatch while it refuses the
+			// broker's token (oauth's refusedByDispatch), so the connection is refused too.
+			return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so whether the account's person may see the project is not known: "+project)
 		case held.notFound:
 			return natsgrant.Permissions{}, refuse(labelProjectNotFound, "project not found: "+project)
 		case !held.answer.Visible:
@@ -106,15 +112,19 @@ const accessFetchTimeout = 10 * time.Second
 // call may take ten. run asks about every such project and person at the start and every
 // accessRefresh after, in parallel. A project with no answer held yet (the first ask has not come
 // back, or Dispatch was down at the start) is refused as not yet known, and the client retries.
-// While Dispatch answers, a held answer is at most 60 s old: the 30 s (projectaccess.CacheTTL)
-// the Dispatch client may have kept it, the accessRefresh to the next ask, and the
-// accessFetchTimeout that ask may take. An ask that fails keeps the last answer, as plan E says
-// (an answer is used however old it is), so while Dispatch cannot be reached a project's answer
-// admits or refuses as Dispatch last said, and the broker logs each failed ask at warn.
+// While Dispatch answers a project's ask, its held answer is at most 60 s old: the 30 s
+// (projectaccess.CacheTTL) the Dispatch client may have kept it, the accessRefresh to the next
+// ask, and the accessFetchTimeout that ask may take. Dispatch refusing the broker's own account
+// token (a 401 or 403, projectaccess.ErrBrokerRefused) is no outage: the token exchange refuses
+// every trade that asks Dispatch then (oauth's refusedByDispatch), so that refusal replaces the
+// held answer, refuses every connection held to the project until an ask is answered again, and is
+// logged at error once a round of asks. Any other ask that fails keeps the last answer, as plan E
+// says (an answer is used however old it is), so while Dispatch cannot be reached a project's
+// answer admits or refuses as Dispatch last said, and the broker logs each failed ask at warn.
 type heldAccess struct {
 	access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	asks   []heldKey
-	log    func(message string, args ...any)
+	log    *slog.Logger
 
 	mu      sync.RWMutex
 	answers map[heldKey]heldAnswer
@@ -124,10 +134,12 @@ type heldAccess struct {
 // repositories it maps to the project.
 type heldKey struct{ project, person string }
 
-// heldAnswer is one question's answer: Dispatch's, or that Dispatch holds no such project.
+// heldAnswer is one question's answer: Dispatch's, that Dispatch holds no such project, or that
+// Dispatch refused the broker's own account token when asked.
 type heldAnswer struct {
 	answer   projectaccess.Answer
 	notFound bool
+	refused  bool
 }
 
 // newHeldAccess holds the answers about every project deps.Exchange gives an entry of services
@@ -154,12 +166,11 @@ func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
 	if len(asks) == 0 {
 		return nil
 	}
-	held := &heldAccess{access: deps.Access, asks: asks, answers: make(map[heldKey]heldAnswer, len(asks))}
-	held.log = func(string, ...any) {}
-	if deps.Log != nil {
-		held.log = deps.Log.Warn
+	log := deps.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
 	}
-	return held
+	return &heldAccess{access: deps.Access, asks: asks, log: log, answers: make(map[heldKey]heldAnswer, len(asks))}
 }
 
 // run asks every held question now and every accessRefresh after, until ctx ends.
@@ -180,6 +191,7 @@ func (h *heldAccess) run(ctx context.Context) {
 // returns when every ask has come back.
 func (h *heldAccess) refresh(ctx context.Context) {
 	var wait sync.WaitGroup
+	var refused sync.Once
 	for _, ask := range h.asks {
 		wait.Go(func() {
 			fetch, cancel := context.WithTimeout(ctx, accessFetchTimeout)
@@ -188,9 +200,14 @@ func (h *heldAccess) refresh(ctx context.Context) {
 			switch {
 			case errors.Is(err, projectaccess.ErrProjectNotFound):
 				h.keep(ask, heldAnswer{notFound: true})
+			case errors.Is(err, projectaccess.ErrBrokerRefused):
+				h.keep(ask, heldAnswer{refused: true})
+				refused.Do(func() {
+					h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every connection held to a project it was asked about is refused until it answers", "error", err.Error())
+				})
 			case err != nil:
 				if ctx.Err() == nil {
-					h.log("natscallout: Dispatch's answer about a project could not be read, so its last answer is kept", "project", ask.project, "error", err.Error())
+					h.log.Warn("natscallout: Dispatch's answer about a project could not be read, so its last answer is kept", "project", ask.project, "error", err.Error())
 				}
 			default:
 				h.keep(ask, heldAnswer{answer: answer})

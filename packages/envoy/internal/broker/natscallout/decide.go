@@ -145,6 +145,7 @@ const (
 	labelProjectNotKnown   = "project_not_known"
 	labelProjectNotFound   = "project_not_found"
 	labelProjectNotVisible = "project_not_visible"
+	labelAccessRefused     = "project_access_refused"
 	labelNotHeldToProjects = "not_held_to_projects"
 	labelSystemSubject     = "system_subject"
 	labelOpenDirection     = "open_direction"

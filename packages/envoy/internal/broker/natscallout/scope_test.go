@@ -1,9 +1,11 @@
 package natscallout
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -104,6 +106,16 @@ func (d *dispatchAnswers) fail(err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.failing = err
+}
+
+// hide takes entryPerson off project's access list, or with hidden false puts them back on it.
+func (d *dispatchAnswers) hide(project string, hidden bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.unseen == nil {
+		d.unseen = map[string]bool{}
+	}
+	d.unseen[project] = hidden
 }
 
 // heldDeps are Deps whose ServiceToken verifies tokens, whose exchange list is exchange, and
@@ -268,6 +280,52 @@ func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, decision.Grant.Publish, githubCreate("acme/renamed"))
 	require.NotContains(t, decision.Grant.Publish, githubCreate("acme/pub"))
+}
+
+// Dispatch refusing the broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused)
+// is no outage to admit through: the token exchange refuses every trade that asks Dispatch then
+// (oauth's refusedByDispatch), so the auth service refuses a connection held to a project it holds
+// that refusal about, under its own label and naming why, and logs it at error once a round of
+// asks. Here Dispatch answers that PUB's person sees OPS and PUB, then refuses the broker's token
+// while that person is off both access lists: PUB's daemon is refused, and one error line names
+// the refusal for the round's two asks. The next answer Dispatch gives replaces the refusal: once
+// it answers again, with the person back, the daemon is admitted. The control keeps the last
+// answer on a refusal, as on an outage: the daemon is admitted on the answer from before.
+func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
+	now := time.Now()
+	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
+	dispatch := &dispatchAnswers{
+		answers: map[string][]string{"OPS": {"acme/ops"}, "PUB": {"acme/pub"}},
+		private: map[string]bool{"OPS": true, "PUB": true},
+	}
+	var logged bytes.Buffer
+	deps := Deps{
+		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"OPS", "PUB"}}), Access: dispatch.access,
+		Log: slog.New(slog.NewTextHandler(&logged, nil)),
+	}
+	deps.held = newHeldAccess(deps, services)
+	require.NotNil(t, deps.held)
+	deps.held.refresh(t.Context())
+	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
+	require.NoError(t, err, "PUB's daemon was refused while its person sees both of its projects")
+
+	dispatch.hide("OPS", true)
+	dispatch.hide("PUB", true)
+	dispatch.fail(fmt.Errorf("%w: dispatch answered /api/v1/access/projects/PUB 403 with the code %q", projectaccess.ErrBrokerRefused, "ACCESS_ACCOUNT_REQUIRED"))
+	deps.held.refresh(t.Context())
+	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
+	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")
+	require.Equal(t, 1, strings.Count(logged.String(), "level=ERROR"), "want one error line for the round's two refused asks:\n%s", logged.String())
+	require.Contains(t, logged.String(), "ACCESS_ACCOUNT_REQUIRED")
+	require.NotContains(t, logged.String(), "level=WARN", "a refusal of the broker's token was logged as an outage:\n%s", logged.String())
+
+	dispatch.fail(nil)
+	dispatch.hide("OPS", false)
+	dispatch.hide("PUB", false)
+	deps.held.refresh(t.Context())
+	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
+	require.NoError(t, err, "Dispatch's answer after its refusal did not replace it")
 }
 
 // A service held to its exchange projects whose account no exchange entry lists is refused,
