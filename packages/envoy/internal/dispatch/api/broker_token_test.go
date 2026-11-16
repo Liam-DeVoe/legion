@@ -49,7 +49,7 @@ func liveNamedToken(jkt string) brokertoken.Introspection {
 		Session:      brokerTestSession,
 		Person:       brokerTestPerson,
 		ProjectScope: brokertoken.ProjectScopeNamed,
-		Project:      brokerTestProject,
+		Projects:     []string{brokerTestProject},
 		Scope:        "dispatch.write",
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		ClientID:     brokertoken.ExchangeClientID,
@@ -253,7 +253,7 @@ func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-session-token"
 	answer := liveNamedToken(caller.jkt)
-	answer.ProjectScope, answer.Project = brokertoken.ProjectScopePerson, ""
+	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, answer)
 
 	response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
@@ -344,6 +344,56 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	}
 	if actor.Origin == nil || actor.Origin.Cwd != "/workspace" || actor.Origin.Host != "example-host-one" || actor.Origin.Pane != "%7" {
 		t.Fatalf("the write's origin = %+v, want the body's cwd, host and pane kept", actor.Origin)
+	}
+}
+
+// TestANamedBrokerTokenLimitsWritesToItsProject: a token an operator's entry mapped to one
+// project writes that project and no other, as it always has.
+func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-named-token"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "OTHER", "Other")
+
+	own := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": brokerTestProject, "title": "Written into its own project", "spec": "# Spec",
+	}))
+	if own.Code != http.StatusCreated {
+		t.Fatalf("a named token's write into its own project: status=%d body=%s", own.Code, own.Body.String())
+	}
+	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written into another project", "spec": "# Spec",
+	}))
+	if refusal := decodeBody[refusalAnswer](t, other); other.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
+		t.Fatalf("a named token's write into another project: status=%d body=%s, want 403 %s", other.Code, other.Body.String(), codeProjectScope)
+	}
+}
+
+// TestAPersonTokenWithProjectsLimitsNoWriteYet: a token acting as its person carries the list its
+// trade asked for, and that list names no project the token writes as its own: whoami names
+// none, and the token writes another project its person may write, exactly as a token naming no
+// project does. What later reads the list is Dispatch's own project access rule.
+func TestAPersonTokenWithProjectsLimitsNoWriteYet(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-person-token-naming-a-project"
+	answer := liveNamedToken(caller.jkt)
+	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, []string{brokerTestProject}
+	rig.broker.Says(token, answer)
+	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "OTHER", "Other")
+
+	who := decodeBody[whoamiAnswer](t, rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)))
+	if who.Project != nil {
+		t.Fatalf("whoami project = %q, want null: a person token's list names no project it writes as its own", *who.Project)
+	}
+	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written into a project the list does not name", "spec": "# Spec",
+	}))
+	if other.Code != http.StatusCreated {
+		t.Fatalf("a person token's write into a project its list does not name: status=%d body=%s, want it written as before", other.Code, other.Body.String())
 	}
 }
 

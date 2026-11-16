@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,14 +19,14 @@ import (
 // wireIntrospection is the route's answer as a caller reads it: RFC 7662's active flag and, for a
 // live token, the claims the broker knows.
 type wireIntrospection struct {
-	Active     bool   `json:"active"`
-	Session    string `json:"session"`
-	Person     string `json:"person"`
-	Project    string `json:"project"`
-	Scope      string `json:"scope"`
-	ExpiresAt  int64  `json:"exp"`
-	ClientID   string `json:"client_id"`
-	Thumbprint string `json:"jkt"`
+	Active     bool     `json:"active"`
+	Session    string   `json:"session"`
+	Person     string   `json:"person"`
+	Projects   []string `json:"projects"`
+	Scope      string   `json:"scope"`
+	ExpiresAt  int64    `json:"exp"`
+	ClientID   string   `json:"client_id"`
+	Thumbprint string   `json:"jkt"`
 }
 
 // introspect posts token to the introspection route as the listed caller does, answering the
@@ -75,7 +76,7 @@ func TestIntrospectionAnswersALiveTokenAndAnUnknownOne(t *testing.T) {
 	if status != http.StatusOK || answer.Active {
 		t.Fatalf("introspecting an unknown token = %d %+v, want 200 and not active", status, answer)
 	}
-	if answer != (wireIntrospection{}) {
+	if !reflect.DeepEqual(answer, wireIntrospection{}) {
 		t.Fatalf("an unknown token's answer = %+v, want nothing but active false", answer)
 	}
 }
@@ -89,7 +90,7 @@ func TestIntrospectionAnswersARevokedTokenAsNotLive(t *testing.T) {
 		t.Fatalf("revoke = %d: %s", status, body)
 	}
 	status, answer := introspect(t, rig, tok.AccessToken, rig.UIToken)
-	if status != http.StatusOK || answer != (wireIntrospection{}) {
+	if status != http.StatusOK || !reflect.DeepEqual(answer, wireIntrospection{}) {
 		t.Fatalf("introspecting a revoked token = %d %+v, want 200 and nothing but active false", status, answer)
 	}
 }

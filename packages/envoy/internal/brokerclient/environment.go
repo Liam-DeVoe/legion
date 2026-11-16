@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
 // The variables every program that holds one of these identities reads, so `agent-secrets`, its
@@ -34,6 +36,11 @@ const (
 	// SessionVar is the session a trade writes under for a caller that acts as no session of
 	// its own, which a daemon, a command and this helper are (TradeSession).
 	SessionVar = "AGENT_SECRETS_SESSION"
+	// ProjectsVar is the projects a session works on, project keys separated by white space,
+	// which a trade that acts as its person asks the broker to name in its token (TradeProjects).
+	// The broker names only projects the person may see, and a restricted member's token must
+	// name at least one.
+	ProjectsVar = "AGENT_SECRETS_PROJECTS"
 	// SignInIssuerVar is the OpenID provider a person signs in at, Google's unless a dev stack
 	// says otherwise.
 	SignInIssuerVar = "AGENT_SECRETS_SIGNIN_ISSUER"
@@ -76,6 +83,19 @@ func TradeSession(getenv func(string) string, own string) string {
 		return acting
 	}
 	return strings.TrimSpace(getenv(SessionVar))
+}
+
+// TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, in the
+// grammar the broker reads (oauthwire.ParseProjects), sorted and each once; nil when it is blank.
+// A value that is no list is an error naming the variable, never a trade naming fewer projects
+// than its session was started with. The TypeScript client reads the same variable the same way
+// (packages/broker-client/src/environment.ts, tradeProjects).
+func TradeProjects(getenv func(string) string) ([]string, error) {
+	projects, err := oauthwire.ParseProjects(getenv(ProjectsVar))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", ProjectsVar, err)
+	}
+	return projects, nil
 }
 
 // MachineIdentity is the identity IdentityVar names, or nil when it names none, which is a

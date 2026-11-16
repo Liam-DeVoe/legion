@@ -31,17 +31,17 @@ import (
 // code's side is collected by calling decide for each kind of subject token — a pod's, whose entry
 // gives the named project scope, a machine access token's, whose scope is the person's, and a
 // machine's Google identity token, whose entry names a service — and taking the union, since
-// `project` is written under one scope and deleted under the other. So a claim a new scope or a
-// new decision adds is a claim this fails until the list names it. The one claim no decision
+// `machine` is written for one kind of trade and deleted for the others. So a claim a new scope or
+// a new decision adds is a claim this fails until the list names it. The one claim no decision
 // writes, the launcher credential a machine's exchange mints (machineCredential, which runs after
 // decide because the credential does not exist until the request's key is bound), is added to that
 // union by name; what proves it is written is the live exchange in cmd/broker.
 //
 // A claim is the backticked name a bullet opens with, followed by the em dash the list's shape puts
 // after it, and a backticked word later in a bullet's prose is not a claim. The `project_scope`
-// bullet is why: it reads "`named` or `person`, which says what `project` means", so a check that
-// asked whether the section mentions a name anywhere between its bounds would find `project` there
-// and pass with the `project` bullet deleted — the miss wearing a pass.
+// bullet is why: it reads "`named` or `person`, which says what `projects` means", so a check that
+// asked whether the section mentions a name anywhere between its bounds would find `projects`
+// there and pass with the `projects` bullet deleted — the miss wearing a pass.
 //
 // What this cannot do: it compares two sets of names, and nothing more. It does not read a bullet's
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes

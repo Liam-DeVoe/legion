@@ -57,7 +57,15 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Service, _ = session.Extra[ClaimService].(string)
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
-	answer.Project, _ = session.Extra[ClaimProject].(string)
+	// The stored claim is the list's space-joined spelling (ClaimProjects), which the store
+	// hands back as the string it wrote; one that does not parse is a row this broker did not
+	// write, and is the broker's failure rather than a token naming no project.
+	stored, _ := session.Extra[ClaimProjects].(string)
+	projects, err := oauthwire.ParseProjects(stored)
+	if err != nil {
+		return oauthwire.Introspection{}, fmt.Errorf("oauth: the stored projects of the token's session do not parse: %w", err)
+	}
+	answer.Projects = projects
 	return answer, nil
 }
 

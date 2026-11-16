@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -168,6 +169,12 @@ type Config struct {
 	// Session is the session name the minted token writes under, which an entry that fixes one
 	// refuses to be told and an entry that fixes none requires.
 	Session string
+	// Projects is the projects the minted token names, sorted and each once (TradeProjects reads
+	// them from AGENT_SECRETS_PROJECTS), sent as oauthwire.FormProjects. Only a trade that acts as
+	// its person sets it — a person's sign-in or a dev box session's machine credential — and the
+	// broker names only projects that person may see; a machine trading for itself sets none,
+	// since its entry decides its project. Nil sends no parameter at all.
+	Projects []string
 	// NoLauncherCredential declines the launcher credential this identity holds
 	// (oauthwire.FormLauncherCredential), for a caller that wants a Dispatch access token and
 	// nothing else: a trade that asks writes a launcher_credentials row and a token_login
@@ -201,6 +208,7 @@ type Client struct {
 	subject   Source
 	actor     Source
 	session   string
+	projects  []string
 	// noLauncherCredential is Config.NoLauncherCredential: this trade declines the credential.
 	noLauncherCredential bool
 	http                 *http.Client
@@ -238,6 +246,9 @@ func New(cfg Config) (*Client, error) {
 	case cfg.Subject == nil:
 		return nil, errors.New("brokerclient: no subject token source: nothing names the identity to trade")
 	}
+	if err := oauthwire.ValidProjects(cfg.Projects); err != nil {
+		return nil, fmt.Errorf("brokerclient: the projects to trade for: %w", err)
+	}
 	client := &Client{
 		wake:                 make(chan struct{}, 1),
 		brokerURL:            brokerURL,
@@ -245,6 +256,7 @@ func New(cfg Config) (*Client, error) {
 		subject:              cfg.Subject,
 		actor:                cfg.Actor,
 		session:              cfg.Session,
+		projects:             slices.Clone(cfg.Projects),
 		noLauncherCredential: cfg.NoLauncherCredential,
 		http:                 cfg.HTTP,
 		log:                  cfg.Log,
@@ -412,6 +424,11 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 	}
 	if c.session != "" {
 		form.Set(oauthwire.FormSession, c.session)
+	}
+	if len(c.projects) > 0 {
+		// Sent only when there is a list: a trade naming none reads exactly as one written before
+		// the parameter existed.
+		form.Set(oauthwire.FormProjects, oauthwire.JoinProjects(c.projects))
 	}
 	if c.noLauncherCredential {
 		// Sent only to decline: an absent parameter asks, so a broker that has never heard of

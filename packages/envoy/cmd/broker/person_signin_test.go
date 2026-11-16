@@ -103,8 +103,8 @@ func TestTheBinaryTakesAPersonsSignInOnAMachine(t *testing.T) {
 			{"person", answer["person"], person, "the person whose own Google token was the subject"},
 			{"machine", answer["machine"], pinnedFleetAccount, "the machine whose token acted for them"},
 			{"service", answer["service"], nil, "no service, since this token names a person"},
-			{"project", answer["project"], nil, "no project: a person reaches whichever projects they reach"},
-			{"project_scope", answer["project_scope"], oauthwire.ProjectScopePerson, "that the token is held to no one project"},
+			{"projects", answer["projects"], nil, "no project, since the trade asked for none"},
+			{"project_scope", answer["project_scope"], oauthwire.ProjectScopePerson, "that the token acts as its person"},
 			{"jkt", answer["jkt"], firstJKT, "the box key the sign-in is bound to"},
 		} {
 			if field.got != field.want {

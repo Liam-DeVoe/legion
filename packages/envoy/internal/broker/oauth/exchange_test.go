@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
+	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -242,10 +247,10 @@ func TestAPodExchangesItsTokenForOneThatIntrospects(t *testing.T) {
 	}
 	want := oauthwire.Introspection{
 		Active: true, Session: "implementer-g1", Person: person, ProjectScope: oauthwire.ProjectScopeNamed,
-		Project: project, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key),
+		Projects: []string{project}, ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key),
 		ExpiresAt: answer.ExpiresAt,
 	}
-	if answer != want {
+	if !reflect.DeepEqual(answer, want) {
 		t.Errorf("Introspect = %+v, want %+v", answer, want)
 	}
 	if answer.ExpiresAt <= time.Now().Unix() {
@@ -449,8 +454,8 @@ func TestADevBoxSessionExchangesItsMachineToken(t *testing.T) {
 	if !answer.Active || answer.Session != "ada-devbox" || answer.Person != person {
 		t.Fatalf("Introspect = %+v, want a live token of ada-devbox acting for %s", answer, person)
 	}
-	if answer.ProjectScope != oauthwire.ProjectScopePerson || answer.Project != "" {
-		t.Errorf("Introspect = %+v, want every project the person may write and no project named", answer)
+	if answer.ProjectScope != oauthwire.ProjectScopePerson || answer.Projects != nil {
+		t.Errorf("Introspect = %+v, want a token acting as its person that names no project, since the trade asked for none", answer)
 	}
 	if answer.Thumbprint != thumbprint(t, key) {
 		t.Errorf("Introspect answered thumbprint %q, want the machine's own key %q", answer.Thumbprint, thumbprint(t, key))
@@ -623,15 +628,19 @@ func TestAMachineExchangeOfAnEndedCredentialIsRefused(t *testing.T) {
 }
 
 // introspectsAs fails the test unless token is live and introspects under session, acting for
-// person and writing project.
+// person and naming project.
 func (f *exchangeFixture) introspectsAs(t *testing.T, token, session, person, project string) {
 	t.Helper()
 	answer, err := f.provider.Introspect(context.Background(), token)
 	if err != nil {
 		t.Fatalf("Introspect: %v", err)
 	}
-	if !answer.Active || answer.Session != session || answer.Person != person || answer.Project != project {
-		t.Fatalf("Introspect = %+v, want a live token of %s acting for %s in %s", answer, session, person, project)
+	var projects []string
+	if project != "" {
+		projects = []string{project}
+	}
+	if !answer.Active || answer.Session != session || answer.Person != person || !slices.Equal(answer.Projects, projects) {
+		t.Fatalf("Introspect = %+v, want a live token of %s acting for %s in %q", answer, session, person, project)
 	}
 }
 
@@ -882,7 +891,7 @@ func TestIntrospectingATokenTheBrokerCannotStandBehind(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Introspect = %v, want no error", err)
 			}
-			if answer != (oauthwire.Introspection{}) {
+			if !reflect.DeepEqual(answer, oauthwire.Introspection{}) {
 				t.Fatalf("Introspect = %+v, want not live and nothing else", answer)
 			}
 		})
@@ -916,7 +925,7 @@ func TestIntrospectionAnswersOnlyAnAccessToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Introspect = %v, want no error", err)
 		}
-		if answer != (oauthwire.Introspection{}) {
+		if !reflect.DeepEqual(answer, oauthwire.Introspection{}) {
 			t.Fatalf("Introspect of a refresh token = %+v, want not live and nothing else", answer)
 		}
 	}
@@ -1065,4 +1074,281 @@ func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
 	if hint, _ := body["error_description"].(string); !strings.Contains(hint, account) {
 		t.Errorf("the refusal reads %q, which does not name the account no entry lists", hint)
 	}
+}
+
+// fakeAccess is Dispatch's project-access answers for the exchange's tests: which person sees
+// which project, which projects Dispatch holds, and each person's member kind. It records every
+// question, can be made unreachable, and caches nothing, so a test changes an answer and the next
+// trade reads it.
+type fakeAccess struct {
+	mu    sync.Mutex
+	sees  map[string][]string // person → the projects they see
+	held  []string            // the projects Dispatch holds
+	kinds map[string]string   // person → member kind; absent is none
+	down  bool
+	asked []string
+}
+
+func newFakeAccess() *fakeAccess {
+	return &fakeAccess{
+		sees:  map[string][]string{person: {"PRIV", project}, otherPerson: {otherProject}},
+		held:  []string{"PRIV", "SECRET", project, otherProject},
+		kinds: map[string]string{},
+	}
+}
+
+func (a *fakeAccess) Access(_ context.Context, key, who string) (projectaccess.Answer, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.asked = append(a.asked, "access "+key+" "+who)
+	if a.down {
+		return projectaccess.Answer{}, errors.New("dispatch could not be reached")
+	}
+	if !slices.Contains(a.held, key) {
+		return projectaccess.Answer{}, projectaccess.ErrProjectNotFound
+	}
+	return projectaccess.Answer{Project: key, Visibility: "private", Person: who, Visible: slices.Contains(a.sees[who], key)}, nil
+}
+
+func (a *fakeAccess) MemberKind(_ context.Context, who string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.asked = append(a.asked, "kind "+who)
+	if a.down {
+		return "", errors.New("dispatch could not be reached")
+	}
+	if kind, held := a.kinds[who]; held {
+		return kind, nil
+	}
+	return projectaccess.MemberNone, nil
+}
+
+func (a *fakeAccess) States(context.Context, []string) (map[string]projectaccess.Answer, error) {
+	return nil, errors.New("the exchange asks no project's state")
+}
+
+// questions is every question asked so far, and forgets them.
+func (a *fakeAccess) questions() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	asked := a.asked
+	a.asked = nil
+	return asked
+}
+
+func (a *fakeAccess) set(change func(*fakeAccess)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	change(a)
+}
+
+// withProjects is form asking for the projects raw spells.
+func withProjects(form url.Values, raw string) url.Values {
+	form.Set(oauthwire.FormProjects, raw)
+	return form
+}
+
+// refusedSaying fails the test unless the exchange was refused with status and code, carried no
+// access token, and its description carries says.
+func refusedSaying(t *testing.T, status int, body map[string]any, wantStatus int, code, says string) {
+	t.Helper()
+	description, _ := body["error_description"].(string)
+	if status != wantStatus || body["error"] != code || body["access_token"] != nil || !strings.Contains(description, says) {
+		t.Fatalf("exchange = %d %v %q, want %d %s with no access token, saying %q", status, body["error"], description, wantStatus, code, says)
+	}
+}
+
+// introspectsProjects fails the test unless token is live and names exactly projects.
+func (f *exchangeFixture) introspectsProjects(t *testing.T, token string, scope string, projects []string) {
+	t.Helper()
+	answer, err := f.provider.Introspect(context.Background(), token)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+	if !answer.Active || answer.ProjectScope != scope || !slices.Equal(answer.Projects, projects) {
+		t.Fatalf("Introspect = %+v, want a live %s token naming %v", answer, scope, projects)
+	}
+}
+
+// TestAPersonTradeNamesOnlyProjectsItsPersonSees: a dev box session's trade acts as its person
+// and names the projects it asks for, each of which Dispatch must say that person sees. One it
+// does not see is refused naming it, and one Dispatch does not hold is refused in the very same
+// words; a list that is no list is refused before Dispatch is asked anything.
+func TestAPersonTradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
+	access := newFakeAccess()
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	machine := f.devBoxToken(t, key, person)
+	trade := func(raw string) (int, map[string]any) {
+		return f.exchange(t, withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), raw), key)
+	}
+
+	status, body := trade("PRIV " + project)
+	f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, []string{project, "PRIV"})
+
+	status, body = trade("PRIV SECRET")
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "The token names a project its person cannot see: SECRET.")
+	unseen, _ := body["error_description"].(string)
+	status, body = trade("PRIV NOWHERE")
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "The token names a project its person cannot see: NOWHERE.")
+	if missing, _ := body["error_description"].(string); missing != strings.ReplaceAll(unseen, "SECRET", "NOWHERE") {
+		t.Fatalf("the refusal of a project Dispatch does not hold reads %q, and of one it holds %q: the two must read alike so a refusal never says whether a project exists", missing, unseen)
+	}
+
+	access.questions()
+	status, body = trade("priv")
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "priv' is not a project key")
+	if asked := access.questions(); len(asked) != 0 {
+		t.Fatalf("a list that is no list asked Dispatch %v, want nothing", asked)
+	}
+}
+
+// TestARestrictedMembersEmptyListIsRefused: a restricted member sees only the projects that name
+// them, so their trade names which; one naming none is refused, saying how to name them.
+func TestARestrictedMembersEmptyListIsRefused(t *testing.T) {
+	access := newFakeAccess()
+	access.kinds[person] = projectaccess.MemberRestricted
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	status, body := f.exchange(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request",
+		person+" is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.")
+}
+
+// TestAFullMembersEmptyListIsTaken: a full member's trade that names no project is answered as it
+// is today, a token acting as its person that names none.
+func TestAFullMembersEmptyListIsTaken(t *testing.T) {
+	access := newFakeAccess()
+	access.kinds[person] = projectaccess.MemberFull
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	token := f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+	f.introspectsProjects(t, token, oauthwire.ProjectScopePerson, nil)
+}
+
+// TestAPersonWithNoDispatchRowIsTaken: a person Dispatch holds no row for — one who has never
+// signed in to Dispatch — is no restricted member, so their trade naming no project is answered as
+// it is today.
+func TestAPersonWithNoDispatchRowIsTaken(t *testing.T) {
+	access := newFakeAccess()
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	token := f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+	f.introspectsProjects(t, token, oauthwire.ProjectScopePerson, nil)
+	if asked := access.questions(); !slices.Equal(asked, []string{"kind " + person}) {
+		t.Fatalf("the trade asked Dispatch %v, want only %s's member kind", asked, person)
+	}
+}
+
+// TestAK3OutageMintsAnEmptyListAsToday: while Dispatch cannot be reached, a trade naming no
+// project is answered as it is today, and one naming a project is refused as a broker that cannot
+// check it — never minted unchecked — with a status a client asks again on.
+func TestAK3OutageMintsAnEmptyListAsToday(t *testing.T) {
+	access := newFakeAccess()
+	access.down = true
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	machine := f.devBoxToken(t, key, person)
+	token := f.exchanged(t, exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+	f.introspectsProjects(t, token, oauthwire.ProjectScopePerson, nil)
+
+	status, body := f.exchange(t, withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), "PRIV"), key)
+	refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch")
+}
+
+// TestASignInTradeAsksNoMemberKind: a person's sign-in was verified against the deployment's own
+// Workspace domain, so it is a full member's and asks Dispatch no member kind; a list it names is
+// still held to what that person sees.
+func TestASignInTradeAsksNoMemberKind(t *testing.T) {
+	access := newFakeAccess()
+	access.kinds[person] = projectaccess.MemberRestricted
+	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	trade := func(raw string) (int, map[string]any) {
+		form := signInForm(f.personToken(t, person, deviceAudience, true, signInDomain), f.machineToken(t, signInMachine, machineAudience, true), "ada-box-1")
+		return f.exchange(t, withProjects(form, raw), key)
+	}
+	status, body := trade("")
+	f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, nil)
+	status, body = trade("PRIV")
+	f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, []string{"PRIV"})
+	status, body = trade("SECRET")
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "The token names a project its person cannot see: SECRET.")
+	for _, question := range access.questions() {
+		if strings.HasPrefix(question, "kind ") {
+			t.Fatalf("a sign-in trade asked Dispatch %q, want no member kind asked of a person the broker verified itself", question)
+		}
+	}
+}
+
+// TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject: an operator's entry maps a token
+// to one project and one person, and the exchange holds that pairing to Dispatch at every trade,
+// for each of the three settings that write such an entry.
+func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T) {
+	access := newFakeAccess()
+	access.sees[person] = []string{"PRIV"}
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
+	status, body = f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
+
+	machines := newSignInFixtureWith(t, func(c *oauth.Config) {
+		c.Exchange.Policy = newPolicy(t, nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person})
+		c.Exchange.Projects = access
+	})
+	form := exchangeForm(machines.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, "example-machine")
+	status, body = machines.exchange(t, form, key)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
+
+	access.set(func(a *fakeAccess) { a.sees[person] = []string{project} })
+	f.introspectsProjects(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
+		oauthwire.ProjectScopeNamed, []string{project})
+	machines.introspectsProjects(t, machines.exchanged(t, form, key), oauthwire.ProjectScopeNamed, []string{project})
+}
+
+// TestANamedTradeMintsAsTodayWithNoProjectAccess: a broker with no project-access check, and one
+// whose Dispatch cannot be reached, mint an entry's token as they always have: the operator's own
+// setting is what chose its project.
+func TestANamedTradeMintsAsTodayWithNoProjectAccess(t *testing.T) {
+	unchecked := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	unchecked.registers(t, account, "pod-uid-1", "implementer-g1")
+	unchecked.introspectsProjects(t, unchecked.exchanged(t, exchangeForm(unchecked.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
+		oauthwire.ProjectScopeNamed, []string{project})
+
+	access := newFakeAccess()
+	access.down = true
+	outage := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	outage.registers(t, account, "pod-uid-1", "implementer-g1")
+	outage.introspectsProjects(t, outage.exchanged(t, exchangeForm(outage.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key),
+		oauthwire.ProjectScopeNamed, []string{project})
+
+	// A person's list, though, is never minted unchecked: with no check configured, a trade
+	// naming a project is refused naming the setting that would check it.
+	status, body := unchecked.exchange(t, withProjects(exchangeForm(unchecked.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), "PRIV"), key)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "BROKER_PROJECT_ACCESS_URL")
+}
+
+// TestEveryTradeChecksAgainBecauseThereIsNoRefreshToken: the grant issues no refresh token, so a
+// renewal is a fresh trade, and a person who lost a project since the last one is refused it at the
+// next.
+func TestEveryTradeChecksAgainBecauseThereIsNoRefreshToken(t *testing.T) {
+	access := newFakeAccess()
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	key := newKey(t)
+	machine := f.devBoxToken(t, key, person)
+	form := func() url.Values {
+		return withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), "PRIV")
+	}
+	status, body := f.exchange(t, form(), key)
+	if _, issued := body["refresh_token"]; issued {
+		t.Fatalf("the trade answered a refresh token: %v; a renewal must be a fresh trade", body)
+	}
+	f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, []string{"PRIV"})
+	access.set(func(a *fakeAccess) { a.sees[person] = []string{project} })
+	status, body = f.exchange(t, form(), key)
+	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "The token names a project its person cannot see: PRIV.")
 }
