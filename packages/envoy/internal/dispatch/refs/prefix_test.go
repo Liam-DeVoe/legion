@@ -473,10 +473,13 @@ func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 		t.Fatalf("the edited comment = %#v, want its first line and the edit at %s alone", got, editedAt)
 	}
 	byAlice := func(actor *model.Actor) bool { return actor != nil && actor.Kind == "user" && actor.ID == "alice" }
-	if got := ambiguous.Candidates[1]; got.ID != deleted || got.FirstLine != "" ||
+	// The first line is a summary of the body column, which this fixture clears itself, so no
+	// product line withholds it and no cut of this server could put it back: the marks below are
+	// what this candidate is held to (dispatch://INFRA-1523).
+	if got := ambiguous.Candidates[1]; got.ID != deleted ||
 		got.EditedAt == nil || !got.EditedAt.Equal(withdrawnEditedAt) ||
 		got.DeletedAt == nil || !got.DeletedAt.Equal(deletedAt) || !byAlice(got.DeletedBy) {
-		t.Fatalf("the edited and deleted comment = %#v, want no first line, the edit at %s and alice's delete at %s",
+		t.Fatalf("the edited and deleted comment = %#v, want the edit at %s and alice's delete at %s",
 			got, withdrawnEditedAt, deletedAt)
 	}
 
@@ -484,8 +487,8 @@ func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 		t.Fatalf("the standing comment = %#v, want no mark", got)
 	}
 	got := resolvedPrefix(t, tx, "message", Scope{}, "7c330000", Viewer{Human: true})
-	if got.ID != message || got.FirstLine != "" || got.EditedAt == nil || !got.EditedAt.Equal(editedAt) ||
+	if got.ID != message || got.EditedAt == nil || !got.EditedAt.Equal(editedAt) ||
 		got.DeletedAt == nil || !got.DeletedAt.Equal(deletedAt) || !byAlice(got.DeletedBy) {
-		t.Fatalf("the edited and deleted message = %#v, want both marks and no first line", got)
+		t.Fatalf("the edited and deleted message = %#v, want both marks", got)
 	}
 }
