@@ -1,4 +1,12 @@
-import { type ReactNode, useMemo, useState } from "react";
+import {
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { Actor, CheckBlock } from "../../../api/types";
 import {
@@ -20,6 +28,7 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
+import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
@@ -88,10 +97,10 @@ import {
  *   from reaching past its card or over another at any width (the old tab's defect).
  *
  * A check's four attributes and what its result recorded are its node's facts
- * (`check-facts.ts`), drawn in the body that opens when the reader's focus reaches the check
- * (R6): a `run` as a command with its own copy control, a screenshot as a picture, `when` as
- * words. A statement no check serves carries its gap in full, where the picture draws "No
- * check proves this" (R10).
+ * (`check-facts.ts`), drawn in the body that opens while the reader's focus is anywhere in the
+ * check's row and while the reader has pressed it open (R6, part V's departure 5): a `run` as a
+ * command with its own copy control, a screenshot as a picture, `when` as words. A statement no
+ * check serves carries its gap in full, where the picture draws "No check proves this" (R10).
  */
 export function VerificationFilterBody({
   answered = true,
@@ -140,6 +149,24 @@ export function VerificationFilterBody({
   const [rovingId, setRovingId] = useState(view.id);
   if (rovingId !== view.id && !rows.includes(rovingId)) setRovingId(view.id);
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
+  // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
+  // open, false where they pressed them shut while the focus held them open, and no entry where
+  // the focus alone decides (part V's departure 5). It is held here rather than in each check so
+  // the tree's keys and a press on a statement's words press a check as its own words do. A row
+  // that is no longer drawn forgets its press, as an unmounted row forgets its state.
+  const [presses, setPresses] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  if (presses.size > 0 && [...presses.keys()].some((id) => !rows.includes(id))) {
+    setPresses(new Map([...presses].filter(([id]) => rows.includes(id))));
+  }
+  const press = useCallback((id: string, pressed: boolean | undefined) => {
+    setPresses((held) => {
+      if (held.get(id) === pressed) return held;
+      const next = new Map(held);
+      if (pressed === undefined) next.delete(id);
+      else next.set(id, pressed);
+      return next;
+    });
+  }, []);
   return (
     <div className={BODY} data-verification-body="">
       {/* The page holds one tree on every address (R2), and it holds everything the view
@@ -186,6 +213,8 @@ export function VerificationFilterBody({
                 <Statement
                   context={context.has(statement.node.id)}
                   key={statement.node.id}
+                  onPress={press}
+                  presses={presses}
                   statement={statement}
                   tabIndexFor={tabIndexFor}
                 />
@@ -207,6 +236,9 @@ export function VerificationFilterBody({
                   check={check}
                   key={check.node.id}
                   loose={true}
+                  onPress={press}
+                  pressed={presses.get(check.node.id)}
+                  row={check.node.id}
                   tabIndex={tabIndexFor(check.node.id)}
                 />
               ))}
@@ -282,6 +314,12 @@ const CHECK_COLUMNS =
 
 /** One cell of the table, in the prototype's `.vt td`. */
 const CELL = "min-w-0 px-3 py-[11px]";
+
+/** What a pointer's press inside a check's words or its latest result's cell belongs to rather
+ *  than to the row: a link or a button, whose press is its own (a link in the words, the copy
+ *  control, the line of earlier results), and the drawn facts, where a reader reads and selects
+ *  as in the facts beside the words (part V's departure 5). */
+const OWN_PRESS = "a, button, [data-node-body]";
 
 /** The colour each state is drawn in, which repeats what its word and its shape already say
  *  (R6): met in the passed green, not met in the failed red, unknown quiet. */
@@ -506,10 +544,16 @@ function Headings(): ReactNode {
  */
 function Statement({
   context,
+  onPress,
+  presses,
   statement,
   tabIndexFor,
 }: {
   context: boolean;
+  /** Sets the press of the check row with this id (the body's `press`). */
+  onPress: (row: string, pressed: boolean | undefined) => void;
+  /** Each drawn check's press, by its row's id. */
+  presses: ReadonlyMap<string, boolean>;
   statement: StatementReading;
   /** The tab index of the row with this id, which is 0 for the tree's one tab stop. */
   tabIndexFor: (id: string) => 0 | -1;
@@ -552,14 +596,20 @@ function Statement({
         {statement.checks.length === 0 ? null : (
           // biome-ignore lint/a11y/useSemanticElements: a treeitem owns its child rows through a group, and a fieldset groups form fields.
           <div className="flex min-w-0 flex-col" role="group">
-            {statement.checks.map((check) => (
-              <Check
-                check={check}
-                key={`${check.node.id}:${check.latest?.id ?? ""}`}
-                loose={false}
-                tabIndex={tabIndexFor(checkRowId(node.id, check.node.id))}
-              />
-            ))}
+            {statement.checks.map((check) => {
+              const row = checkRowId(node.id, check.node.id);
+              return (
+                <Check
+                  check={check}
+                  key={`${check.node.id}:${check.latest?.id ?? ""}`}
+                  loose={false}
+                  onPress={onPress}
+                  pressed={presses.get(row)}
+                  row={row}
+                  tabIndex={tabIndexFor(row)}
+                />
+              );
+            })}
           </div>
         )}
       </div>
@@ -574,12 +624,16 @@ function Statement({
  * build-rulings-md: the approved picture draws one result for each check), and the result the
  * check's state stands on is marked wherever it is drawn.
  *
- * The body opens while the reader's focus is on the check's words and while the reader has
- * pressed them open, and for no other check, which is the rule the outline draws a node's body
- * by (R6). A press while it is open closes it, so the control says what it does
- * (`aria-expanded`) and does it. The words are the control, so a reader reaches every fact of
- * a check and of its results by the keyboard alone and the table stays the table the picture
- * draws.
+ * The facts of the check and of its results are drawn while the reader's focus is anywhere in
+ * the row - its words, a link in them, its facts, its results, the line of earlier results or
+ * the row itself - and while the reader has pressed them open, which is the rule the outline
+ * draws a focused node's body by (R6, part V's departure 5). A pointer's press on the words or
+ * on the latest result's cell, or Enter or Space on the words, opens them where they are shut
+ * and shuts them where they are open, the focus inside or not, so the row says what it does
+ * (`aria-expanded`) and does it; a press on a link or a button of the row is that control's
+ * own. The words are a tab stop with no role: their links are tab stops too, and no control
+ * holds another (part V's R8). So a reader reaches every fact of a check and of its results by
+ * the keyboard alone, and the table stays the table the picture draws.
  *
  * It is a row of the tree, across its words and its latest result: a row of the group under
  * its statement, or, for a check that serves no statement, a row of the table of its own
@@ -588,21 +642,38 @@ function Statement({
 function Check({
   check,
   loose,
+  onPress,
+  pressed,
+  row,
   tabIndex,
 }: {
   check: CheckReading;
   /** Whether the check serves no statement, and so stands as a row of the table itself. */
   loose: boolean;
+  /** Sets this row's press (the body's `press`). */
+  onPress: (row: string, pressed: boolean | undefined) => void;
+  /** The reader's own press: open, shut, or neither, in which case the focus decides. */
+  pressed: boolean | undefined;
+  /** The row's id in the tree: a check drawn under two statements is two rows. */
+  row: string;
   /** 0 where this row holds the tree's one tab stop, and -1 everywhere else. */
   tabIndex: 0 | -1;
 }): ReactNode {
-  const [focused, setFocused] = useState(false);
-  // The reader's own press: open, shut, or neither, in which case the focus decides.
-  const [pressed, setPressed] = useState<boolean | undefined>(undefined);
+  const [focusInside, setFocusInside] = useState(false);
   const [earlierShown, setEarlierShown] = useState(false);
+  // Whether the facts were drawn when the pointer went down: the focus its press puts in the row
+  // draws them before the click, and the click must shut only what was drawn before it.
+  const drawnAtPress = useRef<boolean | undefined>(undefined);
   const node = check.node;
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
-  const opened = pressed ?? focused;
+  const opened = pressed ?? focusInside;
+  const pointerPress = (event: MouseEvent<HTMLElement>) => {
+    const drawn = drawnAtPress.current ?? opened;
+    drawnAtPress.current = undefined;
+    const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
+    if (owner !== null && event.currentTarget.contains(owner)) return;
+    onPress(row, !drawn);
+  };
   return (
     <div
       aria-expanded={opened}
@@ -614,33 +685,48 @@ function Check({
       data-node-type={node.type}
       data-verification-check=""
       data-verification-loose={loose ? "" : undefined}
+      onBlur={(event) => {
+        const to = event.relatedTarget;
+        if (to instanceof Node && event.currentTarget.contains(to)) return;
+        setFocusInside(false);
+        // A shut the reader pressed lasts while the focus stays; the next visit opens again.
+        if (pressed === false) onPress(row, undefined);
+      }}
+      onFocus={() => setFocusInside(true)}
       role="treeitem"
       tabIndex={tabIndex}
     >
       <div className={CELL}>
-        <button
-          aria-expanded={opened}
-          className={`flex w-full min-w-0 items-baseline gap-2 text-left text-sm leading-5 ${pageWordsText} ${focusVisibleRing}`}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: the words hold links that are tab
+            stops of their own, so no role may make them a control that holds controls; the row's
+            `aria-expanded` says what a press does (part V's R8). */}
+        <div
+          className={`flex min-w-0 items-baseline gap-2 text-sm leading-5 ${pageWordsText} ${focusVisibleRing}`}
           data-verification-check-words=""
-          onBlur={() => {
-            setFocused(false);
-            setPressed((held) => (held === false ? undefined : held));
+          onClick={pointerPress}
+          onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
+            // A key on a link in the words is the link's own.
+            if (event.target !== event.currentTarget) return;
+            if (event.key !== "Enter" && event.key !== " ") return;
+            if (event.altKey || event.ctrlKey || event.metaKey) return;
+            // Space presses the words and does not scroll the page.
+            event.preventDefault();
+            onPress(row, !opened);
           }}
-          onClick={() => setPressed(!opened)}
-          onFocus={() => setFocused(true)}
-          // A pointer's press is the press alone: focusing the words on its way down would open
-          // the body before the press, and the press would then shut it.
-          onMouseDown={(event) => event.preventDefault()}
-          type="button"
+          onMouseDown={() => {
+            drawnAtPress.current = opened;
+          }}
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: a check's words are a tab stop of the view (part V's R8).
+          tabIndex={0}
         >
           <span
             aria-hidden="true"
             className={`mt-1.5 block size-[7px] shrink-0 rounded-full ${pageKindBullet.check}`}
           />
-          <span className="min-w-0 break-words" data-node-words="" {...authorText}>
-            {node.text}
-          </span>
-        </button>
+          <div className="min-w-0 break-words" data-node-words="">
+            <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+          </div>
+        </div>
         {surface === "" ? null : (
           <p
             className={`mt-0.5 text-xs leading-[18px] font-semibold ${pageKindTag.check}`}
@@ -654,11 +740,20 @@ function Check({
         <Gaps node={node} />
         {opened ? (
           <div className="mt-1 min-w-0" data-node-body="">
-            <NodeFacts facts={node.facts} />
+            <NodeFacts facts={node.facts} tabStops />
           </div>
         ) : null}
       </div>
-      <div className={CELL}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
+          pointer's way to the press the check's words take by Enter or Space; the cell is no
+          control of its own (part V's departure 5). */}
+      <div
+        className={CELL}
+        onClick={pointerPress}
+        onMouseDown={() => {
+          drawnAtPress.current = opened;
+        }}
+      >
         {check.state === undefined ? null : (
           <p
             className={`flex items-center gap-1.5 text-xs leading-5 font-semibold ${checkTone(check.state)}`}
@@ -710,9 +805,10 @@ function Check({
 }
 
 /** One result of a check: who recorded it and when, what it observed, whether the check's state
- *  stands on it, and what it holds that no line has room for, in the body the check's focus
- *  opens (R6, R9, R15). The commit it ran at is the one the summary names, drawn there and not
- *  here (R17). */
+ *  stands on it, and what it holds that no line has room for, in the body the check's row opens
+ *  (R6, R9, R15). What it observed is drawn as a node's own text is, through `RowText`, so no
+ *  stored text of the view is drawn as raw characters (part V's departure 7). The commit it ran
+ *  at is the one the summary names, drawn there and not here (R17). */
 function LatestResult({
   opened,
   result,
@@ -750,17 +846,16 @@ function LatestResult({
         )}
       </p>
       {result.text === "" ? null : (
-        <p
+        <div
           className={`mt-0.5 min-w-0 text-sm leading-5 break-words ${pageWordsText}`}
           data-node-words=""
-          {...authorText}
         >
-          {result.text}
-        </p>
+          <RowText markdown={result.text} tabStops />
+        </div>
       )}
       {opened ? (
         <div className="mt-1 min-w-0" data-node-body="">
-          <NodeFacts facts={result.facts} />
+          <NodeFacts facts={result.facts} tabStops />
         </div>
       ) : null}
     </div>
@@ -768,7 +863,10 @@ function LatestResult({
 }
 
 /** Who made something, by a name and a shape, as every other row of the page draws an author
- *  (R9): never an identifier, and the page's own words where the model holds none. */
+ *  (R9): a person by their login, an agent by its role's word as the outline's rows name one
+ *  (`agent-role.ts`), never an identifier, and the page's own words where the model holds none.
+ *  An agent's whole title is drawn nowhere in the view, which opens no body that would give it
+ *  (part V's R7). */
 function Author({ actor }: { actor: Actor | undefined }): ReactNode {
   const agentText = useAgentText();
   const kind = authorKind(actor);
@@ -776,7 +874,11 @@ function Author({ actor }: { actor: Actor | undefined }): ReactNode {
     <span className="inline-flex min-w-0 items-center gap-1" data-node-author="">
       <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors[kind]} />
       <span className="min-w-0 break-words" {...(actor === undefined ? pageChrome : authorText)}>
-        {actor === undefined ? CONTROL_LABELS.unknown_author : agentText.author(actor)}
+        {actor === undefined
+          ? CONTROL_LABELS.unknown_author
+          : kind === "agent"
+            ? agentRoleWord(agentText.author(actor))
+            : agentText.author(actor)}
       </span>
     </span>
   );

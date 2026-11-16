@@ -1,10 +1,12 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render } from "@testing-library/react";
+import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../../__tests__/display-trees";
 import type { CheckBlock } from "../../../api/types";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import {
@@ -47,6 +49,12 @@ import {
  * columns stand side by side and where they stack is the browser's own layout, which no DOM of
  * a unit test lays out, so the widths are read by the browser suite (c-checks-readable).
  */
+
+// A check's words are drawn from the results read's reading of them, which `displayTree` reads
+// with the page's own engine.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The body over the statements given, with `checks` as the issue's results read, drawn from
  *  the Verification filter's own view: the tree it leaves and the rows it marks as context. It
@@ -312,7 +320,9 @@ test("a statement no check serves carries its gap in full", () => {
 // R17: "a command renders as code with a copy control ... and `when` reads as words", and R15:
 // a check draws all four of its attributes and a result what it recorded. The body opens where
 // the reader's focus reaches the check and closes when the focus leaves it; a press keeps it
-// open once the focus has gone, and a press on an open one closes it (R6).
+// open once the focus has gone, and a press on an open one closes it (R6). Part V's departure
+// 5: the check's row says whether it is open, and its words, a tab stop with no role, take the
+// press by a pointer, Enter or Space, as its latest result's cell takes a pointer's.
 test("a check's facts open where the reader's focus is: when as words, the run as a command", async () => {
   const user = userEvent.setup();
   const shot = "dispatch://CORE-1/artifact/screenshot-png@v1";
@@ -324,12 +334,18 @@ test("a check's facts open where the reader's focus is: when as words, the run a
   const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(seeded)])], [seeded]);
   try {
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+    const card = view.container.querySelector("[data-verification-check]");
     const words = view.container.querySelector<HTMLElement>("[data-verification-check-words]");
     expect(words).not.toBeNull();
+    expect([
+      words?.tabIndex,
+      words?.hasAttribute("role"),
+      words?.hasAttribute("aria-expanded"),
+    ]).toEqual([0, false, false]);
+    expect(card?.getAttribute("aria-expanded")).toBe("false");
     act(() => words?.focus());
-    expect(words?.getAttribute("aria-expanded")).toBe("true");
+    expect(card?.getAttribute("aria-expanded")).toBe("true");
 
-    const card = view.container.querySelector("[data-verification-check]");
     expect((card?.textContent ?? "").includes(CHECK_WHEN_WORDS.before_merge)).toBe(true);
     expect(card?.textContent).not.toContain("before_merge");
     const commands = [...view.container.querySelectorAll("[data-node-command]")];
@@ -345,7 +361,7 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     // The focus leaving it closes what the focus opened.
     act(() => words?.blur());
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    expect(words?.getAttribute("aria-expanded")).toBe("false");
+    expect(card?.getAttribute("aria-expanded")).toBe("false");
     // The reader pressed it open, so it stays open with the focus elsewhere.
     await user.click(words as Element);
     act(() => words?.blur());
@@ -353,7 +369,33 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     // And a press on an open one closes it, which is what the control says it does.
     await user.click(words as Element);
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    expect(words?.getAttribute("aria-expanded")).toBe("false");
+    expect(card?.getAttribute("aria-expanded")).toBe("false");
+
+    // Enter and Space on the words are the same press, the focus on them, and Space scrolls
+    // nothing: each key's own default is held back.
+    expect(document.activeElement).toBe(words);
+    const held: string[] = [];
+    const hold = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) held.push(event.key);
+    };
+    document.addEventListener("keydown", hold);
+    await user.keyboard("{Enter}");
+    expect(card?.getAttribute("aria-expanded")).toBe("true");
+    expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
+    await user.keyboard(" ");
+    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+    document.removeEventListener("keydown", hold);
+    expect(held).toEqual(["Enter", " "]);
+
+    // A pointer's press on the latest result's cell opens the facts, and they stay open once
+    // the focus that press brought has gone.
+    act(() => words?.blur());
+    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    await user.click(view.container.querySelector("[data-verification-result]") as Element);
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(card?.getAttribute("aria-expanded")).toBe("true");
+    expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
   } finally {
     view.unmount();
   }
@@ -684,5 +726,117 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
     expect(waiting.container.querySelectorAll("[data-node-row]")).toHaveLength(0);
   } finally {
     waiting.unmount();
+  }
+});
+
+// Part V's R7 and R9: an agent that recorded a result is named by its role's word, as the
+// outline's rows name one (`agent-role.ts`), and its session's whole title is drawn nowhere in
+// the view, its opened facts included; a person is named by their login, and a result nobody
+// recorded by the page's own words for it.
+test("an agent that recorded a result is named by its role's word", async () => {
+  const user = userEvent.setup();
+  const byAgent = check({
+    block_id: "c-agent",
+    results: [
+      result({
+        actor: {
+          id: "session-9",
+          kind: "session",
+          origin: { session_title: "Legion tester · INFRA-1" },
+        },
+        check_block_id: "c-agent",
+        id: "by-agent",
+      }),
+    ],
+  });
+  const byPerson = check({
+    block_id: "c-person",
+    results: [
+      result({ actor: { id: "alice", kind: "user" }, check_block_id: "c-person", id: "by-person" }),
+    ],
+  });
+  const byNobody = check({
+    block_id: "c-nobody",
+    results: [result({ actor: undefined, check_block_id: "c-nobody", id: "by-nobody" })],
+  });
+  const view = drawBody(
+    [
+      statementNode("r1", "Three checks serve it.", [
+        checkNode(byAgent),
+        checkNode(byPerson),
+        checkNode(byNobody),
+      ]),
+    ],
+    [byAgent, byPerson, byNobody]
+  );
+  try {
+    expect(
+      Object.fromEntries(
+        [...view.container.querySelectorAll("[data-verification-result]")].map((drawn) => [
+          drawn.getAttribute("data-node-id"),
+          drawn.querySelector("[data-node-author]")?.textContent,
+        ])
+      )
+    ).toEqual({
+      "by-agent": "tester",
+      "by-nobody": CONTROL_LABELS.unknown_author,
+      "by-person": "alice",
+    });
+    // With every check's facts open too, nothing of the title is drawn: not the issue it names,
+    // nor the middle dot that set that issue apart from the role.
+    for (const words of view.container.querySelectorAll("[data-verification-check-words]")) {
+      await user.click(words);
+    }
+    expect(
+      [...view.container.querySelectorAll("[data-verification-check]")].map((row) =>
+        row.getAttribute("aria-expanded")
+      )
+    ).toEqual(["true", "true", "true"]);
+    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(6);
+    const drawn = view.container.querySelector("[data-verification-body]")?.textContent ?? "";
+    expect(drawn).not.toContain("INFRA-1");
+    expect(drawn).not.toContain("Legion");
+    expect(textsOf(view, "[data-node-author]").filter((name) => name.includes("·"))).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Part V's R5 and R8: a check's words are drawn whole through `RowText` from the results read's
+// reading of them (`text_tree`), so a link in them is a link and a reference is named, never
+// spelled as its address. The words are no button, so no control holds a link, and a press on
+// a link is the link's own: it neither opens nor shuts the check's facts.
+test("a check's words draw their links from the results read's tree", async () => {
+  const user = userEvent.setup();
+  const text = "Read [the runbook](https://example.com/runbook) and dispatch://CORE-2 first.";
+  const linked = check({ block_id: "c-one", text });
+  const view = drawBody(
+    [
+      statementNode("r1", "The page draws it.", [
+        { ...checkNode(linked), tree: displayTree(text) },
+      ]),
+    ],
+    [linked]
+  );
+  try {
+    const card = view.container.querySelector("[data-verification-check]");
+    const words = view.container.querySelector("[data-verification-check-words]");
+    const runbook = await waitFor(() => {
+      const found = words?.querySelector<HTMLElement>('a[href="https://example.com/runbook"]');
+      expect(found ?? null).not.toBeNull();
+      expect(words?.querySelector('a[data-row-reference="dispatch://CORE-2"]')).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(view.container.textContent).not.toContain("dispatch://");
+    expect(view.container.querySelectorAll("button a")).toHaveLength(0);
+
+    // The page follows no link in this test.
+    view.container.addEventListener("click", (event) => event.preventDefault());
+    await user.click(runbook);
+    act(() => runbook.blur());
+    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
+  } finally {
+    view.unmount();
   }
 });
