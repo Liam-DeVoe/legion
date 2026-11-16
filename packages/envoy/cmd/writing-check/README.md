@@ -32,8 +32,8 @@ go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bund
 go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model>] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
-go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] [--added-grader old|inputs-first|verify] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model>] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify|inputs-first-verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] [--added-grader old|inputs-first|verify|inputs-first-verify] <model flags>
 go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
 go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
 go run ./cmd/writing-check harness asked-words --run <run dir> --cases <build dir> --out <file>
@@ -1214,8 +1214,8 @@ Its inputs are in the package, and they are among the paths that decide a score:
   the price of a five-minute write (see "The prompt cache").
 - `prompts/`: `reader.md`, and one `grade-*.md` for each judgement, the system prompt of its
   calls: `answered`, `first-paragraph`, `lost`, `added`, `phrases`, `undefined`, `answer-start`,
-  `harder` and `define`. `grade-added-verify.md` is the check of `--added-grader verify` (see "The
-  added grader"). `parts.md` holds the parts they share.
+  `harder` and `define`. `grade-added-verify.md` is the check of `--added-grader verify` and
+  `inputs-first-verify` (see "The added grader"). `parts.md` holds the parts they share.
 - `writer/writer.md`: the prompts of the writer the harness plays. They are apart from
   `prompts/`, so change 1's prompt digest does not move with them; a run that plays the writer
   records their digest as `writer_sha256`.
@@ -1383,7 +1383,7 @@ model's id, or when no call answers. Then `probe` exits 1. `--out` also writes t
 | `--vocabulary` | The `owner-texts.jsonl.gz` of `dataset owner-texts`. The `undefined` judgement then reads the words of each case's text that the owner wrote himself before the case (see "The owner's own words"). |
 | `--judgements` | The judgements to give, comma-separated (default all): a measurement of a few, such as `undefined` on the question cases. A run gives no reader answer that no named judgement grades. |
 | `--repeatability` | A `repeatability.json` of `harness compare`, whose agreement `scores.md` gives beside each score. |
-| `--added-grader` | How the `added` judgement is asked (see "The added grader"): `old` (the default), the request as it was; `inputs-first`, `lost`'s and `added`'s texts after the other parts; or `verify`, the old request, then a check of each fact it lists. `run.json` records it as `added_grader`. |
+| `--added-grader` | How the `added` judgement is asked (see "The added grader"): `old` (the default), the request as it was; `inputs-first`, `lost`'s and `added`'s texts after the other parts; `verify`, the old request, then a check of each fact it lists; or `inputs-first-verify`, `inputs-first`'s requests, then the same check. `run.json` records it as `added_grader`. |
 | `--texts-from` | A run directory, or a lockstep's directory of them, whose texts this run grades again with no call of the change (see "Texts of another run"). It takes the change, its candidates, the part, the groups, the sample and `--session-chars` from that run. |
 | `--uncached-input-per-minute` | Hold the run's own model calls to this many uncached input tokens in any one minute (default 0: no pacing). See "Pacing". |
 
@@ -1708,16 +1708,30 @@ change.
   lower case, no Markdown marks, plain quotes, one space. A fact is dropped where the check says
   an input holds it and an input holds its words. Every other fact is kept: the check says no
   input holds it, or its words are in no input as given.
+- `inputs-first-verify` sends `lost` and `added` the requests of `inputs-first`. Where the `added`
+  grade lists one or more facts, it makes the check of `verify`, the same request, on those facts.
+  Its `lost` request is the request of `inputs-first`, so its `lost` grade is an `inputs-first`
+  grade: it records `added_grader` `inputs-first`, and has the `input_sha256` of `inputs-first`.
 
-A `verify` grade keeps the listed facts as `verify.listed`, the kept facts as `items` and
-`count`, the dropped facts with their words as `verify.held`, the kept facts whose words no input
-holds as `verify.held_words_not_found`, and the check's call, with its tokens and cost, as
-`verify.call`, as for every other call. A grade of `inputs-first` or `verify` records the variant
-as `added_grader`, and its `input_sha256` holds the variant's name and parts. So `--grades-from`
-never takes a grade of one variant for another, also where the two requests have the same bytes.
-Under `verify`, an `old` added grade of the same inputs is the first call: the run takes it from
-`--grades-from` and makes the check alone. That grade's `verify.first_reused` is true, and the
-figures count it as `reused_added_first_calls`. `run.json` records the variant as `added_grader`.
+A grade of `verify` or `inputs-first-verify` keeps the listed facts as `verify.listed`, the kept
+facts as `items` and `count`, the dropped facts with their words as `verify.held`, the kept facts
+whose words no input holds as `verify.held_words_not_found`, and the check's call, with its tokens
+and cost, as `verify.call`, as for every other call. A grade of a variant other than `old`
+records the variant as `added_grader`, and its `input_sha256` holds the variant's name and parts.
+So `--grades-from` never takes a grade of one variant for another, also where the two requests
+have the same bytes. The one exception is the `lost` grade of `inputs-first` and of
+`inputs-first-verify`: it is one request under one name, so each variant takes the other's.
+
+The first call of `verify` and of `inputs-first-verify` can come from another run. Under `verify`,
+an `old` added grade of the same inputs is the first call. Under `inputs-first-verify`, an
+`inputs-first` added grade of the same inputs is the first call. The run takes that grade from
+`--grades-from` and makes the check alone. The grade's `verify.first_input_sha256` is the first
+call's `input_sha256`, and its `verify.first_reused` is true. The figures count it as
+`reused_added_first_calls`. `run.json` records the variant as `added_grader`.
+
+The tests hold the `input_sha256` of the `inputs-first` and the `verify` grades to those that
+commit 2e1d5c44 gave, where the two variants were first measured, on the same fixture. So a run
+takes the grades of a run of that commit.
 
 `grade-added-verify.md` is in `prompts/`, so it changes `prompts_sha256`: a directory of a run made
 before it does not continue.

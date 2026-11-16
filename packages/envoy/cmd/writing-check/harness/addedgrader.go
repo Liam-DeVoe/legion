@@ -25,18 +25,32 @@ const (
 	// AddedVerify makes the old request, then, for a grade that lists a fact, one more call
 	// (grade-added-verify.md) that asks of each listed fact whether an input holds it.
 	AddedVerify = "verify"
+	// AddedInputsFirstVerify makes inputs-first's added request, then verify's check of the
+	// facts it lists. Lost takes inputs-first's request, and its grade is an inputs-first grade.
+	AddedInputsFirstVerify = "inputs-first-verify"
 )
 
 // AddedGraders are the variants, the default first.
-var AddedGraders = []string{AddedOld, AddedInputsFirst, AddedVerify}
+var AddedGraders = []string{AddedOld, AddedInputsFirst, AddedVerify, AddedInputsFirstVerify}
 
-// Verification is verify's check of an added grade: the facts that the old request listed, and
-// the check's call, which asks of each listed fact whether an input holds it, with the input's
-// words. The grade's Items are the listed facts that no input holds.
+// inputsFirstLayout is whether variant sends lost's and added's user message in inputs-first's
+// order, and verifies whether it checks the facts that the added call lists.
+func inputsFirstLayout(variant string) bool {
+	return variant == AddedInputsFirst || variant == AddedInputsFirstVerify
+}
+
+func verifies(variant string) bool {
+	return variant == AddedVerify || variant == AddedInputsFirstVerify
+}
+
+// Verification is the check of an added grade (verify, inputs-first-verify): the facts that the
+// first call listed, and the check's call, which asks of each listed fact whether an input holds
+// it, with the input's words. The grade's Items are the listed facts that no input holds.
 type Verification struct {
-	// FirstSHA256 is the input_sha256 of the first call, the added judgement's old request.
-	// FirstReused says that the grade of the first call is another run's (score --grades-from):
-	// its call, the grade's Call, is that run's.
+	// FirstSHA256 is the input_sha256 of the first call: the added judgement's old request under
+	// verify, inputs-first's request under inputs-first-verify. FirstReused says that the grade
+	// of the first call is another run's (score --grades-from): its call, the grade's Call, is
+	// that run's.
 	FirstSHA256 string `json:"first_input_sha256"`
 	FirstReused bool   `json:"first_reused,omitempty"`
 	// Listed are the facts that the first call listed.
@@ -119,11 +133,12 @@ func (in GradeInput) inputsHold(p contextParts) func(words string) bool {
 	}
 }
 
-// gradeVerified is the added judgement under --added-grader verify. The first call is the old
-// request, or the grade of done with no error whose inputs were that request's. Where it lists a
-// fact, the check asks of each listed fact whether an input holds it, and the grade keeps the
-// facts that no input holds. A fact is held only where the check gives the words of an input that
-// hold it and that input holds those words.
+// gradeVerified is the added judgement under --added-grader verify or inputs-first-verify. The
+// first call is the old request (verify) or inputs-first's (inputs-first-verify), or the grade of
+// done with no error whose inputs were that request's. Where it lists a fact, the check asks of
+// each listed fact whether an input holds it, and the grade keeps the facts that no input holds. A
+// fact is held only where the check gives the words of an input that hold it and that input holds
+// those words. The check is the same under both variants.
 func (g *Grader) gradeVerified(ctx context.Context, spec judgementSpec, in GradeInput, first gradeRequest, check llm.Request, done []*Grade) Grade {
 	var grade Grade
 	reused := false

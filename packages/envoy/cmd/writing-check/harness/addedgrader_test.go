@@ -98,10 +98,19 @@ func gradeTurns(t *testing.T, stand *modeltest.Model, g *Grader, in GradeInput, 
 	return grade, turns
 }
 
+// The input_sha256 of the variants' grades on gradeFixture at commit 2e1d5c44, where inputs-first
+// and verify were first measured: the same under the full and the final modes, which give lost and
+// added the full inputs. A run of later code takes the grades of a run of that commit.
+const (
+	inputsFirstLostSHA256  = "21286d07e0454ea6b5695c33a1335471e6983dccb0186dce8c5af11b77397c36"
+	inputsFirstAddedSHA256 = "d8f6a9570e6f364a2eb5735304687dae89d97d5dd9ff6c36232b64cdbf7143ef"
+	verifyAddedSHA256      = "2e924e870f9c119978b14836dd69078fce1a4e51cde4dc438efbf47667bf46d8"
+)
+
 // Under the old added grader, the default, every judgement sends what it sent before the flag:
 // its system prompt and user message byte for byte, and its grade's input_sha256. So does every
-// judgement that inputs-first and verify do not change: all but lost and added under inputs-first,
-// and all but added under verify.
+// judgement that the other variants do not change: all but lost and added under inputs-first and
+// inputs-first-verify, and all but added under verify.
 func TestEveryJudgementTheVariantDoesNotChangeSendsItsRequestOfBefore(t *testing.T) {
 	stand := modeltest.New(t, allJudgementRules(t)...)
 	session := changeSessions(t)["question/comment:c2@20"]
@@ -126,7 +135,7 @@ func TestEveryJudgementTheVariantDoesNotChangeSendsItsRequestOfBefore(t *testing
 				}
 			}
 		}
-		want := map[string]int{"": 0, AddedOld: 0, AddedInputsFirst: 4, AddedVerify: 2}[added]
+		want := map[string]int{"": 0, AddedOld: 0, AddedInputsFirst: 4, AddedVerify: 2, AddedInputsFirstVerify: 4}[added]
 		if changed != want {
 			t.Errorf("--added-grader %q changes %d of the rows, want %d", added, changed, want)
 		}
@@ -138,35 +147,49 @@ func TestEveryJudgementTheVariantDoesNotChangeSendsItsRequestOfBefore(t *testing
 // session part, then the original text and, last, the new text. The message is the old one's
 // bytes in that order. The grade's input_sha256 differs from the old one's, even where the bytes
 // are the same (lost under trimmed inputs reads the two texts alone), so --grades-from never
-// takes a grade of one variant for the other.
+// takes a grade of one variant for the other. inputs-first-verify sends lost and added the same
+// requests: its lost grade is inputs-first's, of the same input_sha256; its added grade, whose
+// first call lists no fact here, has its own, and names inputs-first's as its first call's.
 func TestInputsFirstMovesOnlyTheTextsOfLostAndAdded(t *testing.T) {
 	stand := modeltest.New(t, allJudgementRules(t)...)
 	session := changeSessions(t)["question/comment:c2@20"]
-	for _, row := range parentRequests {
-		if row.j != JLost && row.j != JAdded {
-			continue
-		}
-		old, oldTurns := gradeTurns(t, stand, standGrader(t, stand, row.mode, AddedOld), gradeFixture(row.j, session))
-		grade, turns := gradeTurns(t, stand, standGrader(t, stand, row.mode, AddedInputsFirst), gradeFixture(row.j, session))
-		if len(oldTurns) != 1 || len(turns) != 1 {
-			t.Fatalf("%s %s: %d and %d calls, want one each", row.mode, row.j, len(oldTurns), len(turns))
-		}
-		if grade.Error != "" || grade.AddedGrader != AddedInputsFirst || grade.InputSHA256 == old.InputSHA256 {
-			t.Errorf("%s %s: the grade is %+v, want inputs-first's with an input_sha256 of its own", row.mode, row.j, grade)
-		}
-		w := turns[0]
-		if sha256Text(w.system(t)) != row.calls[0].system || !sameJSON(t, w.OutputConfig.Format.Schema, judgementSpecs[row.j].schema()) || w.marks != 0 {
-			t.Errorf("%s %s: the system prompt or the schema is not the old one:\n%s", row.mode, row.j, w.system(t))
-		}
-		user, oldUser := w.user(t), oldTurns[0].user(t)
-		start := strings.TrimRight(tag("question", goldenQuestion)+goldenRecord+tag("writer_answer", writerAnswer), "\n") + "\n\n<" + claude.SessionTag + ">\n"
-		end := "\n</" + claude.SessionTag + ">\n" + tag("original_text", goldenText) + tag("new_text", fixtureNewText)
-		if !strings.HasPrefix(user, start) || !strings.HasSuffix(user, end) || len(user) != len(oldUser) {
-			t.Errorf("%s %s: the user message is\n%s\nwant the question, the record, the writer's answer, the session part, then the two texts, in the old message's bytes", row.mode, row.j, user)
-		}
-		for _, part := range []string{tag("question", goldenQuestion), goldenRecord, tag("original_text", goldenText), tag("new_text", fixtureNewText), "SESSIONFACT"} {
-			if !strings.Contains(oldUser, part) || !strings.Contains(user, part) {
-				t.Errorf("%s %s: the part %q is not in both messages", row.mode, row.j, part)
+	for _, variant := range []string{AddedInputsFirst, AddedInputsFirstVerify} {
+		for _, row := range parentRequests {
+			if row.j != JLost && row.j != JAdded {
+				continue
+			}
+			old, oldTurns := gradeTurns(t, stand, standGrader(t, stand, row.mode, AddedOld), gradeFixture(row.j, session))
+			grade, turns := gradeTurns(t, stand, standGrader(t, stand, row.mode, variant), gradeFixture(row.j, session))
+			if len(oldTurns) != 1 || len(turns) != 1 {
+				t.Fatalf("%s, %s %s: %d and %d calls, want one each", variant, row.mode, row.j, len(oldTurns), len(turns))
+			}
+			want, pinned := variant, inputsFirstAddedSHA256
+			if row.j == JLost {
+				want, pinned = AddedInputsFirst, inputsFirstLostSHA256
+			}
+			if grade.Error != "" || grade.AddedGrader != want || grade.InputSHA256 == old.InputSHA256 {
+				t.Errorf("%s, %s %s: the grade is %+v, want %s's with an input_sha256 of its own", variant, row.mode, row.j, grade, want)
+			}
+			switch {
+			case want == AddedInputsFirst && grade.InputSHA256 != pinned:
+				t.Errorf("%s, %s %s: the input_sha256 %s is not inputs-first's of commit 2e1d5c44, %s", variant, row.mode, row.j, grade.InputSHA256, pinned)
+			case want == AddedInputsFirstVerify && (grade.InputSHA256 == pinned || grade.Verify == nil || grade.Verify.FirstSHA256 != pinned || grade.Verify.Call != nil):
+				t.Errorf("%s, %s %s: the grade is %+v, want inputs-first's call as its first, an input_sha256 of its own, and no check", variant, row.mode, row.j, grade)
+			}
+			w := turns[0]
+			if sha256Text(w.system(t)) != row.calls[0].system || !sameJSON(t, w.OutputConfig.Format.Schema, judgementSpecs[row.j].schema()) || w.marks != 0 {
+				t.Errorf("%s, %s %s: the system prompt or the schema is not the old one:\n%s", variant, row.mode, row.j, w.system(t))
+			}
+			user, oldUser := w.user(t), oldTurns[0].user(t)
+			start := strings.TrimRight(tag("question", goldenQuestion)+goldenRecord+tag("writer_answer", writerAnswer), "\n") + "\n\n<" + claude.SessionTag + ">\n"
+			end := "\n</" + claude.SessionTag + ">\n" + tag("original_text", goldenText) + tag("new_text", fixtureNewText)
+			if !strings.HasPrefix(user, start) || !strings.HasSuffix(user, end) || len(user) != len(oldUser) {
+				t.Errorf("%s, %s %s: the user message is\n%s\nwant the question, the record, the writer's answer, the session part, then the two texts, in the old message's bytes", variant, row.mode, row.j, user)
+			}
+			for _, part := range []string{tag("question", goldenQuestion), goldenRecord, tag("original_text", goldenText), tag("new_text", fixtureNewText), "SESSIONFACT"} {
+				if !strings.Contains(oldUser, part) || !strings.Contains(user, part) {
+					t.Errorf("%s, %s %s: the part %q is not in both messages", variant, row.mode, row.j, part)
+				}
 			}
 		}
 	}
@@ -177,6 +200,15 @@ func TestInputsFirstMovesOnlyTheTextsOfLostAndAdded(t *testing.T) {
 	if len(turns) != 1 || oldTurns[0].user(t) != turns[0].user(t) || first.Reused || first.InputSHA256 == old.InputSHA256 {
 		t.Errorf("trimmed lost: inputs-first made %d calls, the same message: %t, reused: %t; want one call of the same message, with an input_sha256 of its own",
 			len(turns), len(turns) == 1 && oldTurns[0].user(t) == turns[0].user(t), first.Reused)
+	}
+	// The two variants' lost requests are one request: each takes the other's grade.
+	taken, turns := gradeTurns(t, stand, standGrader(t, stand, InputsTrimmed, AddedInputsFirstVerify), in, &first)
+	if len(turns) != 0 || !taken.Reused || taken.AddedGrader != AddedInputsFirst {
+		t.Errorf("trimmed lost: inputs-first-verify made %d calls with inputs-first's grade, the grade %+v; want it taken", len(turns), taken)
+	}
+	made, _ := gradeTurns(t, stand, standGrader(t, stand, InputsTrimmed, AddedInputsFirstVerify), in)
+	if back, turns := gradeTurns(t, stand, standGrader(t, stand, InputsTrimmed, AddedInputsFirst), in, &made); len(turns) != 0 || !back.Reused {
+		t.Errorf("trimmed lost: inputs-first made %d calls with inputs-first-verify's grade; want it taken", len(turns))
 	}
 }
 
@@ -264,8 +296,8 @@ func TestVerifyChecksTheListedFactsAgainstTheInputs(t *testing.T) {
 		t.Errorf("held %+v, held with words not found %+v", v.Held, v.NotFound)
 	}
 	if v.Call == nil || v.Call.Model != "claude-opus-5" || v.Call.Input == 0 || v.FirstReused || v.FirstSHA256 != golden.input ||
-		grade.InputSHA256 == golden.input || len(grade.ownCalls()) != 2 {
-		t.Errorf("the check's record: %+v; the grade's input_sha256 %s, its calls %d", v, grade.InputSHA256, len(grade.ownCalls()))
+		grade.InputSHA256 != verifyAddedSHA256 || len(grade.ownCalls()) != 2 {
+		t.Errorf("the check's record: %+v; the grade's input_sha256 %s (want verify's of commit 2e1d5c44, %s), its calls %d", v, grade.InputSHA256, verifyAddedSHA256, len(grade.ownCalls()))
 	}
 
 	// An old grade of the same inputs is the first call: the run makes the check alone.
@@ -297,54 +329,149 @@ func TestVerifyChecksTheListedFactsAgainstTheInputs(t *testing.T) {
 	}
 }
 
-// grader-test --added-grader verify checks each added output's listed facts, says the variant in
-// its report and in grader-test.json, and counts the check's call in the cost. Another variant
-// name is refused before any call.
-func TestGraderTestTakesTheAddedGrader(t *testing.T) {
-	build, sessions := writeFixture(t)
-	stand := modeltest.New(t, append([]modeltest.Rule{
-		{Contains: markCheck, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"facts": []map[string]any{{"1_number": "1", "2_input_words": "", "3_held": false}}})}},
-		{Contains: markAdded, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"added": []map[string]string{{"1_quote": "the queue of pull requests", "2_fact": "The zork train is the queue."}}})}},
-	}, allJudgementRules(t)...)...)
-	out := t.TempDir()
-	code, stdout, stderr := runHarness("grader-test", "--planted", writePlanted(t), "--cases", build, "--sessions", sessions, "--out", out,
-		"--added-grader", AddedVerify, "--gateway", stand.URL, "--gateway-key-file", keyFile(t))
-	if code != 0 {
-		t.Fatalf("grader-test --added-grader verify = %d:\n%s", code, stderr)
-	}
-	if !strings.Contains(stdout, "The added grader is verify (--added-grader).") || !strings.Contains(stdout, "| added-wrong | added | wrong | lists \"zork\" | 1 listed, 1 kept after the check | true |") {
-		t.Errorf("the report:\n%s", stdout)
-	}
-	if n := len(requestsOf(stand, markCheck)); n != 2 {
-		t.Errorf("%d checks, want one for each added output", n)
-	}
-	data, err := os.ReadFile(filepath.Join(out, "grader-test.json"))
+// inputs-first-verify makes inputs-first's added request, then, where it lists a fact, verify's
+// check: the first call is inputs-first's, and the check verify's, byte for byte. The grade keeps
+// and drops the facts as verify does, and has an input_sha256 of its own, which no other variant
+// takes, and which takes no grade of another variant whole. An inputs-first added grade of the
+// same inputs is its first call's grade: the run makes the check alone, and the figures count it
+// as they count verify's. Where the first call lists no fact, there is no check.
+func TestInputsFirstVerifyChecksTheFactsOfTheInputsFirstCall(t *testing.T) {
+	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var record struct {
-		Added   string          `json:"added_grader"`
-		Results []PlantedResult `json:"results"`
+	stand := modeltest.New(t, verifyRules(t)...)
+	session := changeSessions(t)["question/comment:c2@20"]
+	in := gradeFixture(JAdded, session)
+	both := standGrader(t, stand, InputsFull, AddedInputsFirstVerify)
+	grade, turns := gradeTurns(t, stand, both, in)
+	first, firstTurns := gradeTurns(t, stand, standGrader(t, stand, InputsFull, AddedInputsFirst), in)
+	verified, verifyTurns := gradeTurns(t, stand, standGrader(t, stand, InputsFull, AddedVerify), in)
+	old, _ := gradeTurns(t, stand, standGrader(t, stand, InputsFull, AddedOld), in)
+	if len(turns) != 2 || len(firstTurns) != 1 || len(verifyTurns) != 2 {
+		t.Fatalf("inputs-first-verify made %d calls, inputs-first %d, verify %d; want 2, 1 and 2", len(turns), len(firstTurns), len(verifyTurns))
 	}
-	if err := json.Unmarshal(data, &record); err != nil || record.Added != AddedVerify {
-		t.Errorf("grader-test.json records the added grader %q (%v)", record.Added, err)
+	if turns[0].system(t) != firstTurns[0].system(t) || turns[0].user(t) != firstTurns[0].user(t) ||
+		!strings.HasSuffix(turns[0].user(t), tag("original_text", goldenText)+tag("new_text", fixtureNewText)) {
+		t.Errorf("the first call is not inputs-first's added call:\n%s", turns[0].user(t))
 	}
-	var calls, checks int
-	for _, r := range record.Results {
-		calls += len(r.Grade.ownCalls())
-		if r.Grade.Verify != nil && r.Grade.Verify.Call != nil {
-			checks++
+	if turns[1].system(t) != verifyTurns[1].system(t) || turns[1].user(t) != verifyTurns[1].user(t) ||
+		!sameJSON(t, turns[1].OutputConfig.Format.Schema, verifyTurns[1].OutputConfig.Format.Schema) || !strings.Contains(turns[1].system(t), markCheck) {
+		t.Errorf("the second call is not verify's check:\n%s", turns[1].user(t))
+	}
+	v := grade.Verify
+	if grade.Error != "" || v == nil || grade.AddedGrader != AddedInputsFirstVerify || grade.Reused {
+		t.Fatalf("the grade is %+v", grade)
+	}
+	if !slices.Equal(v.Listed, listedFacts) || !slices.Equal(grade.Items, verified.Items) || !slices.Equal(v.Held, verified.Verify.Held) ||
+		!slices.Equal(v.NotFound, verified.Verify.NotFound) || grade.Count != 2 {
+		t.Errorf("listed %+v, kept %+v, held %+v; want verify's sort of the four facts", v.Listed, grade.Items, v.Held)
+	}
+	digests := []string{old.InputSHA256, first.InputSHA256, verified.InputSHA256}
+	if v.FirstSHA256 != inputsFirstAddedSHA256 || first.InputSHA256 != inputsFirstAddedSHA256 || slices.Contains(digests, grade.InputSHA256) ||
+		v.Call == nil || v.FirstReused || len(grade.ownCalls()) != 2 {
+		t.Errorf("the grade's input_sha256 %s, first %s, among the other variants' %v; its check %+v and %d calls", grade.InputSHA256, v.FirstSHA256, digests, v.Call, len(grade.ownCalls()))
+	}
+
+	// An inputs-first grade of the same inputs is the first call: the run makes the check alone.
+	again, turns := gradeTurns(t, stand, both, in, &first)
+	if len(turns) != 1 || !strings.Contains(turns[0].system(t), markCheck) || again.Reused || !again.Verify.FirstReused || again.Count != 2 ||
+		again.InputSHA256 != grade.InputSHA256 || again.AddedGrader != AddedInputsFirstVerify || len(again.ownCalls()) != 1 || again.ownCalls()[0] != *again.Verify.Call {
+		t.Errorf("with the inputs-first grade: %d calls, the grade %+v", len(turns), again)
+	}
+	line := CaseResult{CaseID: "question/comment:q1@11", Group: GroupQuestion, SplitGroup: "TREE-1", Grades: map[Judgement]*Grade{JAdded: &again}}
+	if f := computeFigures(RunParams{Groups: []string{GroupQuestion}}, []CaseResult{line}, 1, 1, 10, cfg); f.Run.ReusedFirstCalls != 1 || f.Run.ReusedGrades != 0 {
+		t.Errorf("the figures count %d first calls and %d grades taken, want 1 and 0", f.Run.ReusedFirstCalls, f.Run.ReusedGrades)
+	}
+	// Its own grade is taken whole. The old and the verify grades are not taken, as first call or
+	// whole; and neither inputs-first nor verify takes its grade.
+	if whole, turns := gradeTurns(t, stand, both, in, &grade); len(turns) != 0 || !whole.Reused || len(whole.ownCalls()) != 0 {
+		t.Errorf("with its own grade: %d calls, reused %t", len(turns), whole.Reused)
+	}
+	if _, turns := gradeTurns(t, stand, both, in, &old, &verified); len(turns) != 2 {
+		t.Errorf("with the old and the verify grades: %d calls, want 2", len(turns))
+	}
+	if _, turns := gradeTurns(t, stand, standGrader(t, stand, InputsFull, AddedInputsFirst), in, &grade); len(turns) != 1 {
+		t.Errorf("inputs-first made %d calls with an inputs-first-verify grade, want 1", len(turns))
+	}
+	if _, turns := gradeTurns(t, stand, standGrader(t, stand, InputsFull, AddedVerify), in, &grade); len(turns) != 2 {
+		t.Errorf("verify made %d calls with an inputs-first-verify grade, want 2", len(turns))
+	}
+
+	// A first call that lists no fact makes no check.
+	none := gradeFixture(JAdded, session)
+	none.Text = "The zork train is ready.\n\nIt merges at noon today."
+	nothing, turns := gradeTurns(t, stand, both, none)
+	if len(turns) != 1 || !strings.HasSuffix(turns[0].user(t), tag("new_text", none.Text)) || nothing.Error != "" || nothing.Verify == nil ||
+		nothing.Verify.Call != nil || nothing.Count != 0 || len(nothing.ownCalls()) != 1 {
+		t.Errorf("with no listed fact: %d calls, the grade %+v", len(turns), nothing)
+	}
+}
+
+// grader-test --added-grader verify and inputs-first-verify check each added output's listed
+// facts, say the variant in the report and in grader-test.json, and count the check's call in the
+// cost. Under inputs-first-verify, lost and added send the new text last; under verify, neither
+// does. Another variant name is refused before any call.
+func TestGraderTestTakesTheAddedGrader(t *testing.T) {
+	build, sessions := writeFixture(t)
+	const output = "The zork train is the queue of pull requests."
+	for _, variant := range []string{AddedVerify, AddedInputsFirstVerify} {
+		stand := modeltest.New(t, append([]modeltest.Rule{
+			{Contains: markCheck, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"facts": []map[string]any{{"1_number": "1", "2_input_words": "", "3_held": false}}})}},
+			{Contains: markAdded, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"added": []map[string]string{{"1_quote": "the queue of pull requests", "2_fact": "The zork train is the queue."}}})}},
+		}, allJudgementRules(t)...)...)
+		out := t.TempDir()
+		code, stdout, stderr := runHarness("grader-test", "--planted", writePlanted(t), "--cases", build, "--sessions", sessions, "--out", out,
+			"--added-grader", variant, "--gateway", stand.URL, "--gateway-key-file", keyFile(t))
+		if code != 0 {
+			t.Fatalf("grader-test --added-grader %s = %d:\n%s", variant, code, stderr)
+		}
+		if !strings.Contains(stdout, "The added grader is "+variant+" (--added-grader).") || !strings.Contains(stdout, "| added-wrong | added | wrong | lists \"zork\" | 1 listed, 1 kept after the check | true |") {
+			t.Errorf("%s: the report:\n%s", variant, stdout)
+		}
+		if n := len(requestsOf(stand, markCheck)); n != 2 {
+			t.Errorf("%s: %d checks, want one for each added output", variant, n)
+		}
+		graded := 0
+		for _, r := range stand.Requests() {
+			if strings.Contains(r.Text, markLost) || strings.Contains(r.Text, markAdded) {
+				graded++
+				if last := strings.HasSuffix(decodeTurn(t, r).user(t), tag("new_text", output)); last != inputsFirstLayout(variant) {
+					t.Errorf("%s: a lost or added call sends the new text last: %t", variant, last)
+				}
+			}
+		}
+		if graded != 4 {
+			t.Errorf("%s: %d lost and added calls, want 4", variant, graded)
+		}
+		data, err := os.ReadFile(filepath.Join(out, "grader-test.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var record struct {
+			Added   string          `json:"added_grader"`
+			Results []PlantedResult `json:"results"`
+		}
+		if err := json.Unmarshal(data, &record); err != nil || record.Added != variant {
+			t.Errorf("%s: grader-test.json records the added grader %q (%v)", variant, record.Added, err)
+		}
+		var calls, checks int
+		for _, r := range record.Results {
+			calls += len(r.Grade.ownCalls())
+			if r.Grade.Verify != nil && r.Grade.Verify.Call != nil {
+				checks++
+			}
+		}
+		if calls != len(stand.Requests()) || checks != 2 {
+			t.Errorf("%s: the results hold %d calls (%d checks), the stand-in got %d", variant, calls, checks, len(stand.Requests()))
 		}
 	}
-	if calls != len(stand.Requests()) || checks != 2 {
-		t.Errorf("the results hold %d calls (%d checks), the stand-in got %d", calls, checks, len(stand.Requests()))
-	}
-	before := len(stand.Requests())
+	stand := modeltest.New(t, allJudgementRules(t)...)
 	if code, _, stderr := runHarness("grader-test", "--planted", writePlanted(t), "--cases", build, "--sessions", sessions, "--out", t.TempDir(),
-		"--added-grader", "newest", "--gateway", stand.URL, "--gateway-key-file", keyFile(t)); code != 2 || !strings.Contains(stderr, "--added-grader is old, inputs-first, verify") {
+		"--added-grader", "newest", "--gateway", stand.URL, "--gateway-key-file", keyFile(t)); code != 2 || !strings.Contains(stderr, "--added-grader is old, inputs-first, verify, inputs-first-verify") {
 		t.Errorf("grader-test --added-grader newest = %d:\n%s", code, stderr)
 	}
-	if n := len(stand.Requests()) - before; n != 0 {
+	if n := len(stand.Requests()); n != 0 {
 		t.Errorf("the refused test made %d calls", n)
 	}
 }

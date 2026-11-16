@@ -42,7 +42,9 @@ func readLines(t *testing.T, dir string) map[string]CaseResult {
 // run.json names the change, the candidate, the writer and the run the texts are from. With
 // --grades-from on the same run, the old grader takes every grade and calls no model; verify takes
 // the old added grade as its first call and makes the check alone; inputs-first calls lost and
-// added alone, for the one text the change changed. A flag that decides the texts is refused.
+// added alone, for the one text the change changed; and inputs-first-verify, with inputs-first's
+// run among --grades-from, takes its lost grade whole and its added grade as its first call, and
+// makes the check alone. A flag that decides the texts is refused.
 func TestTextsFromGradesAnEarlierRunsTextsWithNoChangeCall(t *testing.T) {
 	const phrase = "phrase/comment:f4@40"
 	build, sessions := writeFixture(t)
@@ -138,8 +140,8 @@ func TestTextsFromGradesAnEarlierRunsTextsWithNoChangeCall(t *testing.T) {
 	}
 
 	// inputs-first on one model's directory: lost and added of the one text laneB changed, with the
-	// new text last; the run is in --out.
-	stand = modeltest.New(t, allJudgementRules(t)...)
+	// new text last; the run is in --out. Its added grade lists one fact.
+	stand = modeltest.New(t, append([]modeltest.Rule{listed}, allJudgementRules(t)...)...)
 	out = t.TempDir()
 	src := filepath.Join(lockstep, laneB)
 	if code, stderr := score(stand, out, "--added-grader", AddedInputsFirst, "--texts-from", src, "--grades-from", src); code != 0 {
@@ -158,6 +160,28 @@ func TestTextsFromGradesAnEarlierRunsTextsWithNoChangeCall(t *testing.T) {
 		t.Errorf("the inputs-first run's run.json is %+v", p)
 	}
 
+	// inputs-first-verify over the same texts, with inputs-first's run among --grades-from: the
+	// check of the phrase case's added fact is its one call.
+	inputsFirst := out
+	stand = modeltest.New(t, append([]modeltest.Rule{{Contains: markCheck,
+		Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"facts": []map[string]any{{"1_number": "1", "2_input_words": "", "3_held": false}}})}}}, allJudgementRules(t)...)...)
+	out = t.TempDir()
+	if code, stderr := score(stand, out, "--added-grader", AddedInputsFirstVerify, "--texts-from", src, "--grades-from", src+","+inputsFirst); code != 0 {
+		t.Fatalf("score --added-grader inputs-first-verify --texts-from = %d:\n%s", code, stderr)
+	}
+	if requests := stand.Requests(); len(requests) != 1 || !strings.Contains(requests[0].Text, markCheck) || !strings.Contains(requests[0].Text, writtenAgain) {
+		t.Fatalf("the inputs-first-verify run made %d calls, want the check of the phrase case alone", len(requests))
+	}
+	b = readLines(t, out)[phrase]
+	if g, lost := b.Grades[JAdded], b.Grades[JLost]; g == nil || g.AddedGrader != AddedInputsFirstVerify || g.Verify == nil || !g.Verify.FirstReused ||
+		g.Verify.FirstSHA256 != readLines(t, inputsFirst)[phrase].Grades[JAdded].InputSHA256 || g.Count != 1 || g.Verify.Call == nil ||
+		lost == nil || !lost.Reused || lost.AddedGrader != AddedInputsFirst {
+		t.Errorf("the phrase case: the added grade %+v, the lost grade %+v", g, lost)
+	}
+	if f, p := readFigures(t, out), readRunParams(t, out); f.Run.ReusedFirstCalls != 1 || p.AddedGrader != AddedInputsFirstVerify {
+		t.Errorf("inputs-first-verify: %d first calls taken, run.json's added grader %q", f.Run.ReusedFirstCalls, p.AddedGrader)
+	}
+
 	before := len(stand.Requests())
 	for _, c := range []struct {
 		args []string
@@ -166,7 +190,7 @@ func TestTextsFromGradesAnEarlierRunsTextsWithNoChangeCall(t *testing.T) {
 		{[]string{"--texts-from", lockstep, "--change", "7a", "--sample", "3"}, "give no --change, --sample"},
 		{[]string{"--texts-from", lockstep, "--models", laneA}, "give no --models"},
 		{[]string{"--texts-from", t.TempDir()}, "holds no run.json"},
-		{[]string{"--added-grader", "newest"}, "--added-grader is old, inputs-first, verify"},
+		{[]string{"--added-grader", "newest"}, "--added-grader is old, inputs-first, verify, inputs-first-verify"},
 	} {
 		if code, stderr := score(stand, filepath.Join(t.TempDir(), "run"), c.args...); code != 2 || !strings.Contains(stderr, c.says) {
 			t.Errorf("score %v = %d, want 2 saying %q:\n%s", c.args, code, c.says, stderr)

@@ -187,7 +187,7 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	sessionChars := fs.Int("session-chars", 30000, "the bytes of a case's session, its newest, that a grading call reads")
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
 	graderFlag := fs.String("grader", "", "the grading model of this test in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that plays no other role; a candidate may grade here, since no candidate wrote a planted output (default: roles.grader)")
-	addedGrader := fs.String("added-grader", AddedOld, "the added grader, as score takes it: old, inputs-first or verify")
+	addedGrader := fs.String("added-grader", AddedOld, "the added grader, as score takes it: old, inputs-first, verify or inputs-first-verify")
 	mf := addModelFlags(fs)
 	mf.addPaceFlag(fs)
 	if err := fs.Parse(args); err != nil {

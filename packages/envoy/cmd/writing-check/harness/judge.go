@@ -422,8 +422,9 @@ type Grade struct {
 	InputSHA256 string `json:"input_sha256,omitempty"`
 	Reused      bool   `json:"reused,omitempty"`
 	// AddedGrader is the --added-grader variant that made the grade where it is not the old
-	// request: lost and added under inputs-first, added under verify. Verify is verify's check
-	// of an added grade's facts: Items are then the listed facts that the check kept.
+	// request: lost and added under inputs-first, lost under inputs-first-verify (inputs-first),
+	// added under verify and inputs-first-verify. Verify is the check of an added grade's facts
+	// under verify and inputs-first-verify: Items are then the listed facts that the check kept.
 	AddedGrader string        `json:"added_grader,omitempty"`
 	Verify      *Verification `json:"verify,omitempty"`
 }
@@ -455,8 +456,8 @@ func (g *Grader) Grade(ctx context.Context, in GradeInput) Grade { return g.Grad
 
 // GradeOrReuse gives one judgement, or, where one of done is a grade with no error whose inputs
 // were the ones this grade reads (InputSHA256), that grade again, marked Reused, with no call.
-// Under --added-grader verify, an added grade of done whose inputs were those of the first call
-// is that call's grade (gradeVerified).
+// Under --added-grader verify and inputs-first-verify, an added grade of done whose inputs were
+// those of the first call is that call's grade (gradeVerified).
 func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade) Grade {
 	spec, ok := judgementSpecs[in.Judgement]
 	if !ok {
@@ -469,11 +470,14 @@ func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade)
 	variant := g.addedGrader(in.Judgement)
 	digest := r.digest
 	var check llm.Request
-	if variant == AddedVerify {
+	if verifies(variant) {
 		if check, err = checkRequest(r.data); err != nil {
 			return Grade{Error: err.Error()}
 		}
-		digest = g.digest(r.req, r.session, "added_grader "+AddedVerify, check.System, string(check.Schema), strconv.Itoa(check.MaxTokens))
+		// The grade's digest names the variant, then what else decided the first call (none for
+		// verify's, the old request), then the check's request.
+		extra := slices.Concat([]string{"added_grader " + variant}, r.extra, []string{check.System, string(check.Schema), strconv.Itoa(check.MaxTokens)})
+		digest = g.digest(r.req, r.session, extra...)
 	}
 	for _, d := range done {
 		if d != nil && d.Error == "" && d.InputSHA256 == digest {
@@ -486,7 +490,7 @@ func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade)
 	switch {
 	case spec.sentences:
 		grade = g.gradeSentences(ctx, spec, in, r.req)
-	case variant == AddedVerify:
+	case verifies(variant):
 		grade = g.gradeVerified(ctx, spec, in, r, check, done)
 	default:
 		grade = g.gradeOnce(ctx, spec, in, r)
@@ -498,11 +502,15 @@ func (g *Grader) GradeOrReuse(ctx context.Context, in GradeInput, done []*Grade)
 	return grade
 }
 
-// addedGrader is the --added-grader variant that judgement j takes: the grader's for added, and
-// for lost under inputs-first; AddedOld for every other judgement.
+// addedGrader is the --added-grader variant that judgement j takes: the grader's for added; for
+// lost, inputs-first under inputs-first and inputs-first-verify, whose lost request is the same;
+// AddedOld for every other judgement.
 func (g *Grader) addedGrader(j Judgement) string {
-	if (j == JAdded && g.Added != "") || (j == JLost && g.Added == AddedInputsFirst) {
+	switch {
+	case j == JAdded && g.Added != "":
 		return g.Added
+	case j == JLost && inputsFirstLayout(g.Added):
+		return AddedInputsFirst
 	}
 	return AddedOld
 }
@@ -516,13 +524,15 @@ func (g *Grader) readsWriterAnswer(j Judgement) bool {
 // gradeRequest is one call of a judgement, ready to make: its request; the context parts it
 // reads, and the data its system prompt was filled from; the session part it reads, empty for
 // none; after, the part of the user message that follows the session part ("" where the session
-// part ends it); and the SHA-256 of what it reads (requestDigest).
+// part ends it); extra, what decides the call beside the request (requestDigest); and the
+// SHA-256 of what it reads.
 type gradeRequest struct {
 	req     llm.Request
 	parts   contextParts
 	data    promptData
 	session claude.SessionText
 	after   string
+	extra   []string
 	digest  string
 }
 
@@ -547,14 +557,15 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 	}
 	r.req.System, err = render(spec.prompt, r.data)
 	r.req.Schema = spec.schema()
-	var extra []string
-	if g.addedGrader(in.Judgement) == AddedInputsFirst {
+	// Under inputs-first-verify, added's first call is inputs-first's, of the same digest: a run
+	// takes an inputs-first grade of the same inputs as that call (gradeVerified).
+	if inputsFirstLayout(g.addedGrader(in.Judgement)) {
 		r.req.User, r.after = in.inputsFirst(r.parts)
-		extra = []string{"added_grader " + AddedInputsFirst, r.after}
+		r.extra = []string{"added_grader " + AddedInputsFirst, r.after}
 	} else {
 		r.req.User = in.user(r.parts)
 	}
-	r.digest = g.digest(r.req, r.session, extra...)
+	r.digest = g.digest(r.req, r.session, r.extra...)
 	return r, err
 }
 
