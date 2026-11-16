@@ -80,6 +80,12 @@ export const ActorSchema = z.union([
       /** The subject of the verified service token that authenticated the write
        *  (`system:serviceaccount:<namespace>:<name>`); absent under any other bearer. */
       service: z.string().optional(),
+      /** The one project key a broker token scoped to a named project could write under. Only
+       *  servers before private projects (dispatch://INFRA-3862) write it: the server's Actor no
+       *  longer has the field and answers no actor with it. It stays here, optional, so a reader
+       *  takes an event such a server stored, or answers, while the two versions run side by side
+       *  (a stored count of 0 of 624,002 events on 2026-11-16 is no promise about tomorrow's). */
+      project: z.string().optional(),
     })
     .readonly(),
   /** A server-owned writer, such as the architecture importer
