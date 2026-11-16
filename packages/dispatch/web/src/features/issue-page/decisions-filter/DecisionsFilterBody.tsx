@@ -145,11 +145,14 @@ export function DecisionsFilterBody({
   });
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
-  // The words each statement is named by on a decision's "informs" line: the name the page's
-  // own chips give it (`tree-drafts.ts`, through the tree `useIssueTree.ts` built), so a
-  // statement reads the same here as on every chip of the outline. A chip names its target
-  // alone, so the first chip that names a statement names it everywhere; a chip whose target is
-  // gone, or that the reads have given no words yet, names nothing.
+  // The name each statement takes on a decision's "informs" line: the name a chip of the tree
+  // `useIssueTree.ts` built holds for it (`tree-drafts.ts`'s `chipOf`, the page's one naming
+  // rule, decision 49), which the row cuts with `chipWords` alone and reads through no markdown
+  // (decision 66). The outline's chip reads the same name as plain words first, so until F's
+  // `chipOf` names each target from the server's reading of it, a name here can carry its
+  // excerpt's markdown marks. A chip names its target alone, so the first chip that names a
+  // statement names it everywhere; a chip whose target is gone, or that the reads have given no
+  // words yet, names nothing.
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
     const names = new Map<string, string>();
@@ -228,13 +231,15 @@ export function DecisionsFilterBody({
     },
     [setFocusedNode]
   );
-  // The focus leaving the list closes what it opened, and the panel goes back to the issue's
-  // own facts, unless it went to Details, where a reader reads the node's (`IssueTree.tsx`).
+  // The focus leaving the list closes what it opened and takes away what a key reported, and
+  // the panel goes back to the issue's own facts, unless it went to Details, where a reader
+  // reads the node's (`IssueTree.tsx`).
   const releaseFocus = useCallback(
     (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
       const to = event.relatedTarget;
       if (to instanceof Node && event.currentTarget.contains(to)) return;
       setFocused(undefined);
+      setReport(undefined);
       if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
       setFocusedNode(undefined);
     },
@@ -398,7 +403,9 @@ export function DecisionsFilterBody({
     onZoom: NOTHING,
     oneNodeAtATime: false,
     rows,
-    root,
+    // The tree the view left, as the outline's keys read it (`IssueTree.tsx`): `q` and `w` look
+    // past the drawn rows, and a node the words filter took out of the view draws no row to go to.
+    root: view,
     writer,
     zoom: undefined,
   });

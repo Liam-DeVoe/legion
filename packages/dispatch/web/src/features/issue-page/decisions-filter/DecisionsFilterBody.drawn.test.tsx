@@ -846,9 +846,9 @@ test("an address that names a comment draws its row first and focuses it", async
   expect(view.getByText(EMPTY_LINE)).toBeTruthy();
 });
 
-// R6, the reviewer's finding at `DecisionsFilterBody.tsx:268`: the page holds which of the
-// Contents list's requests an outline or a view took (`outline-request.tsx`), so a view drawn
-// again, turned off and on, does not take the reader back to the request it took before.
+// R6: the page holds which of the Contents list's requests an outline or a view took
+// (`outline-request.tsx`), so a view drawn again, turned off and on, does not take the reader
+// back to the request it took before.
 test("a body drawn again does not act on a request the page already took", async () => {
   const request: OutlineRequest = { focusBranch: false, id: D("first"), seq: 1 };
   const view = renderBody(wholeIssue(), { request }, { requests: true });
@@ -1017,10 +1017,10 @@ test("another person's answer stands under Your decisions with their name", () =
 });
 
 // The tester's F16: a key with nowhere to go says so at the row it was pressed on, and the
-// report goes when the reader moves on.
+// report goes when the reader moves on, to another row or out of the list.
 test("a key with nowhere to go reports at the row it was pressed on", async () => {
   const user = userEvent.setup();
-  const view = renderBody(wholeIssue());
+  const view = renderBody(wholeIssue(), {}, { requests: true });
   await act(async () => rowOf(view, "q-open").focus());
   await user.keyboard("w");
   expect(words(rowOf(view, "q-open").querySelector("[data-row-report]"))).toBe(
@@ -1029,10 +1029,18 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
   expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
   await user.keyboard("j");
   expect(view.container.querySelector("[data-row-report]")).toBeNull();
+
+  await act(async () => rowOf(view, "q-open").focus());
+  await user.keyboard("w");
+  expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
+  await act(async () => view.getByRole("button", { name: "Elsewhere" }).focus());
+  expect(view.container.querySelector("[data-row-report]")).toBeNull();
 });
 
-// R20: the filter by words narrows the list to the nodes the filter's own view kept.
-test("the body draws the entries the filter's view left", () => {
+// R20: the filter by words narrows the list to the nodes the filter's own view kept, and the
+// keys that look past the drawn rows walk that view: `q` goes to the open question it kept, not
+// to one it took out, which draws no row.
+test("the body draws the entries the filter's view left", async () => {
   const whole = wholeIssue();
   const view = renderBody(whole, { view: issueTree([openAsk("q-open"), decisionNode("first")]) });
   expect(
@@ -1040,6 +1048,16 @@ test("the body draws the entries the filter's view left", () => {
       row.getAttribute("data-node-id")
     )
   ).toEqual(["q-open", D("first")]);
+  view.unmount();
+
+  const user = userEvent.setup();
+  const narrowed = renderBody(
+    { ...whole, children: [...whole.children, openAsk("q-later")] },
+    { view: issueTree([openAsk("q-later"), decisionNode("first")]) }
+  );
+  await act(async () => rowOf(narrowed, D("first")).focus());
+  await user.keyboard("q");
+  expect(focusedRow(narrowed)).toBe("q-later");
 });
 
 // R2: the filter is drawn at every width. Nothing the body draws is taken off the page at a
