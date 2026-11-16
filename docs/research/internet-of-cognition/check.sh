@@ -1185,8 +1185,8 @@ prepare_env() {
 #   form                            rows  what it is
 #   &&                                82  runs the next pipeline when this one exits 0
 #   ||                                 6  runs the next pipeline when this one fails
-#   |                                370  joins the commands of a pipeline
-#   ;                                 46  ends a pipeline
+#   |                                372  joins the commands of a pipeline
+#   ;                                 47  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  4  writes the output to a file
 #   2>                                 6  writes the error output to a file
@@ -1195,16 +1195,16 @@ prepare_env() {
 #   }                                 28  closes a group
 #   (                                  2  opens a subshell
 #   )                                  2  closes a subshell
-#   for                               12  opens a for loop
-#   in                                12  comes before a for loop's words
-#   do                                12  comes before a for loop's body
-#   done                              12  closes a for loop
+#   for                               14  opens a for loop
+#   in                                14  comes before a for loop's words
+#   do                                14  comes before a for loop's body
+#   done                              14  closes a for loop
 #   simple command                   569  a command word and its arguments
-#   pipeline                         370  two or more commands joined by |
-#   list                             100  two or more pipelines joined by ;, &&, || or newline
+#   pipeline                         372  two or more commands joined by |
+#   list                              99  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
-#   for loop                          12  for NAME in words; do list; done
+#   for loop                          14  for NAME in words; do list; done
 #   assignment before a command       23  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    13  $( ) in a word, its code admitted by this table
@@ -1220,31 +1220,31 @@ prepare_env() {
 #   assigns m                          1  a name the rows assign
 #   assigns n                          5  a name the rows assign
 #   assigns o                          1  a name the rows assign
-#   assigns p                          1  a name the rows assign
+#   assigns p                          3  a name the rows assign
 #   assigns r                          4  a name the rows assign
-#   program awk                       13  wrapped in a function that records its status
+#   program awk                       14  wrapped in a function that records its status
 #   program cat                       27  wrapped in a function that records its status
 #   program cd                        70  wrapped in a function that records its status
 #   program cmp                        1  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
-#   program curl                      10  wrapped in a function that records its status
+#   program curl                      18  wrapped in a function that records its status
 #   program cut                        4  wrapped in a function that records its status
-#   program dispatch                  86  wrapped in a function that records its status
+#   program dispatch                  79  wrapped in a function that records its status
 #   program echo                       6  wrapped in a function that records its status
 #   program env                        1  wrapped in a function that records its status
 #   program gh                         2  wrapped in a function that records its status
 #   program git                      313  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     167  wrapped in a function that records its status
-#   program jq                        20  wrapped in a function that records its status
+#   program grep                     163  wrapped in a function that records its status
+#   program jq                        28  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    10  wrapped in a function that records its status
 #   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      170  wrapped in a function that records its status
+#   program sed                      211  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
-#   program sha256sum                  9  wrapped in a function that records its status
+#   program sha256sum                  7  wrapped in a function that records its status
 #   program sort                      17  wrapped in a function that records its status
 #   program stat                       1  wrapped in a function that records its status
 #   program tail                       1  wrapped in a function that records its status
@@ -1267,7 +1267,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               6  a command whose status is no read
-#   $NAME or ${NAME}                 363  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 372  a parameter, its name in braces or not
 #   $?                                 6  the status of the last command
 #   $( )                              13  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands

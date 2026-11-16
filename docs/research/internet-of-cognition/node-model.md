@@ -2,8 +2,8 @@
 
 This page reads the node model against the work of INFRA-3134 and answers four questions about it.
 It reads `dispatch://INFRA-1098/spec` at version 97 and `dispatch://INFRA-1253/spec` at version 17.
-Both were read with `dispatch doc-read` pinned to those version numbers, so the read is re-runnable and its bytes are fixed: the v97 read is `sha256:16df219221e8cec5ab29cf0d83aca31235d4066d8d02fefd09e92592be091fdd` [n-read-1098] and the v17 read is `sha256:3c1eb50debe6f6ac1b8e84f1a97f48ab34c3b69be5a0934198dd3bf68545ab81` [n-read-1253].
-Version 97 of INFRA-1098's spec carries an approval line, `approved v97 by sami@theorem.dev` [n-read-1098]; version 17 of INFRA-1253's spec carries no approval line at all [n-read-1253].
+Both were read with `dispatch doc-read` pinned to those version numbers. A version's content is fixed, but after it the read prints the document as it stands now, its approval state and its open anchored threads, so each row whose count or search that part could move reads the content alone. Version 97's content carries `sha256:f6c88506ba193386bf9b644aeab9b8b0e2d69f7935f17b2fade89fcac3838194`, the content_sha256 of the event that approved it [n-read-1098], and version 17's content hashes to `sha256:83e7292f846a50bb37446b213209a7e7c0d5bd4c5c0a04240e6c33738193deeb` [n-read-1253].
+Version 97 of INFRA-1098's spec was approved by sami@theorem.dev, which event 405554 records at 2026-11-12T00:45:28Z [n-read-1098]; no approval of version 17 of INFRA-1253's spec was recorded at or before 2026-11-16T13:00:00Z [n-read-1253].
 
 A sentence quoted from either specification is evidence of what that specification says will exist, and never of what Dispatch does today.
 Each such row is marked as a claim of the project, not of its code.
@@ -123,7 +123,7 @@ So the two records answer different readers, and a span emitted under the `gen_a
 
 ## 5. What INFRA-323's defining-terms draft already proposes
 
-`dispatch://INFRA-323/artifact/defining-terms-draft-md` is at version 2 [n-323-version] and carries no approval line [n-323-no-approval].
+`dispatch://INFRA-323/artifact/defining-terms-draft-md` stood at version 2 at 2026-11-16T13:00:00Z [n-323-version], and no approval of it was recorded by then [n-323-no-approval].
 It is a draft of a skill, so it proposes a procedure for a definitions record rather than a schema for one.
 
 It fixes where the record lives: "Each project has ONE definitions file: a `Vocabulary` section in the repository's instruction file, or a glossary file that instruction file links." [n-323-one-file].

@@ -16,7 +16,7 @@ The issue is `dispatch://INFRA-3134`, read on 2026-11-12.
 
 Its status is `in_progress` [ts-issue-status].
 
-It holds six documents: `spec` at version 7, `verification-md` at version 4, `decisions-md` at version 4, `plan-md` at version 3, `ioc-review-2026-11-11-md` at version 1 and `ioc-design-2026-11-12-md` at version 1 [ts-issue-docs].
+On 2026-11-12, before 07:00Z, it held six documents: `spec` at version 7, `verification-md` at version 4, `decisions-md` at version 4, `plan-md` at version 3, `ioc-review-2026-11-11-md` at version 1 and `ioc-design-2026-11-12-md` at version 1 [ts-issue-docs].
 
 `spec.md` carries thirteen requirement blocks, `b-r-verify-the-answer` through `b-r-delivered` [ts-issue-requirements].
 

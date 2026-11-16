@@ -2139,6 +2139,82 @@ one_failure_result "--admitted over a claims.jsonl holding a second row of one i
     '^1 of 4 assertions failed: admitted-rows$' "^FAIL admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row, so nothing of it is read: its id \"[^\"]*\" is the id of line 1 too" \
     "$(IOC_EVIDENCE="$copy" gate_run "$HERE/check.sh" --admitted)"
 
+# 93. A row reads a fact fixed in time, never the summary of a node as it stands now (test
+# round 29, the architect's note of 2026-11-16T12:58Z). At 134143b4fb n-read-1098 held the
+# whole output of `dispatch doc-read --version 97` to its checksum and counted its line
+# `Approval: approved v97 by sami@theorem.dev`. After the version's content and its Content:
+# line the read prints the document as it stands now, its Approval: line and its open
+# anchored threads, so when an approval of version 99 was requested the checksum moved and
+# the row failed, while the approval of version 97 stood. The row now reads the approval
+# event by its id and the first Content: line of the pinned read. The case runs the row as
+# claims.jsonl holds it, its command and its predicate, over a fixture whose Dispatch is a
+# stub of the case's own first on PATH, a dispatch and a curl that answer from files and
+# reach no server: the approval event and the version's Content: line as measured, beside a
+# present state of the document that has moved on from the one the row was recorded
+# against, its approval awaiting a request for version 99 and an anchored thread whose reply
+# quotes another Content: line. The row passes there. The old form, the checksum of the
+# whole pinned read, and the count of its Approval: line, each recorded against the stub as
+# the document stood when the row was first recorded, pass there and fail once the present
+# state moves.
+PINNED="$WORK/pinned-read"
+PINNED_SHA=f6c88506ba193386bf9b644aeab9b8b0e2d69f7935f17b2fade89fcac3838194
+mkdir -p "$PINNED/recorded/bin" "$PINNED/moved/bin"
+printf 'case-93-token\n' >"$PINNED/token"
+printf '%s\n' '[{"id":405554,"issue_key":"INFRA-1098","project":"INFRA","seq":424,"type":"artifact.approved","actor":{"kind":"user","id":"sami@theorem.dev"},"created_at":"2026-11-12T00:45:28.848044Z","payload":{"kind":"person","name":"spec.md","version":97,"artifact_id":"89c8e344-c6ad-4fa0-89c5-d252856dc817","ask_id":"b5d11b18-84de-494f-af2f-9669f338882e","content_sha256":"'"$PINNED_SHA"'"}}]' >"$PINNED/event.json"
+PINNED_CONTENT='## Summary
+
+Version 97 of the spec this case stands in for.
+'
+printf '%s\n\nContent: sha256:%s\nApproval: approved v97 by sami@theorem.dev\n' "$PINNED_CONTENT" "$PINNED_SHA" >"$PINNED/recorded/doc-read.txt"
+{
+    printf '%s\n\nContent: sha256:%s\n' "$PINNED_CONTENT" "$PINNED_SHA"
+    printf 'Approval: awaiting, waiting on human (requested by 01a1bb6a-b605-779a-879f-16af577b2512, ask 2ae7547f-3262-4f02-998a-e950aea19501)\n\nOpen anchored threads:\n\n'
+    printf 'comment 93930000-0000-4000-8000-000000000093 · user sami@theorem.dev · 2026-11-16T12:00:00Z\n> Version 97 of the spec this case stands in for.\nBody: Which version did I approve?\n'
+    printf 'reply 93930000-0000-4000-8000-000000000094 · session 01a1bb6a-b605-779a-879f-16af577b2512 · 2026-11-16T12:01:00Z\nBody: Version 97, whose read prints\nContent: sha256:%s\n' "$(printf '0%.0s' $(seq 64))"
+} >"$PINNED/moved/doc-read.txt"
+for state in recorded moved; do
+    cat >"$PINNED/$state/bin/dispatch" <<STUB
+#!/bin/sh
+[ "\$*" = 'doc-read --issue INFRA-1098 --artifact spec --version 97' ] && exec cat '$PINNED/$state/doc-read.txt'
+printf 'the stub dispatch of case 93 answers no %s\n' "\$*" >&2
+exit 2
+STUB
+    cat >"$PINNED/$state/bin/curl" <<STUB
+#!/bin/sh
+for url; do :; done
+case "\$url" in
+*'/api/v1/issues/INFRA-1098/events?ids=405554') exec cat '$PINNED/event.json' ;;
+esac
+printf 'curl: (7) the stub curl of case 93 answers no %s\n' "\$url" >&2
+exit 7
+STUB
+    chmod +x "$PINNED/$state/bin/dispatch" "$PINNED/$state/bin/curl"
+done
+# pinned_run <name> <recorded|moved> <command> <predicate>; plants the form into a fresh
+# fixture and sets PINNED_OUT to its --replay over that state of the stub Dispatch.
+pinned_run() {
+    local dir
+    dir="$(fresh "pinned-$1-$2")"
+    plant_behaviour "$dir" "$3" "$4"
+    PINNED_OUT="$(PATH="$PINNED/$2/bin:$PATH" DISPATCH_URL=http://dispatch.case-93.invalid DISPATCH_TOKEN_FILE="$PINNED/token" fixture_run "$dir" --replay)"
+}
+PINNED_MISSED="replay-command: f-behaviour-1 ran '.*' and its output does not meet"
+pinned_run row moved "$(jq -r 'select(.id == "n-read-1098") | .command' "$HERE/claims.jsonl")" "$(jq -c 'select(.id == "n-read-1098") | .expect' "$HERE/claims.jsonl")"
+honest_result "n-read-1098 as claims.jsonl holds it passes over a Dispatch whose document moved on while version 97 and its approval stand" replay-command "$PINNED_OUT"
+# pinned_old <name> <what it reads> <command> <predicate>; the old form recorded against the
+# stub as the document stood, which passes there, and the same form once it moved on.
+pinned_old() {
+    pinned_run "$1" recorded "$3" "$4"
+    honest_result "the old form of n-read-1098, $2, passes over the Dispatch it was recorded against" replay-command "$PINNED_OUT"
+    pinned_run "$1" moved "$3" "$4"
+    case_result "the old form of n-read-1098, $2, fails once the document's approval and threads move on" "$PINNED_MISSED" "$PINNED_OUT"
+}
+pinned_old checksum "the checksum of the whole pinned read" \
+    "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | sha256sum && dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | grep -c '^Approval: approved v97 by sami@theorem.dev'" \
+    "{\"contains\":\"$(sha256sum <"$PINNED/recorded/doc-read.txt" | cut -d' ' -f1)\"}"
+pinned_old approval "the count of the read's Approval: line" \
+    "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | grep -c '^Approval: approved v97 by sami@theorem.dev'" '{"equals":"1"}'
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, prints the
