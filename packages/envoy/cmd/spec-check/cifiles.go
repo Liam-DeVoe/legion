@@ -22,17 +22,22 @@ var compareCall = regexp.MustCompile(`spec-check\S*\s+compare\b`)
 
 // ciFilesThatCompare is "<path>:<line>" for each line of files that runs the comparison of the
 // spec files with the approved spec, sorted by path, then by line, each line once. No CI job
-// compares the files, and R2 gives that comparison at each push to Dispatch. It reads each
-// literal word of a line, quoted or not. It does not expand a brace, a glob, a variable or a
-// command substitution, and the reviewer of a change to the CI files reads those. It reads each
-// file two ways:
+// compares the files, and R2 gives that comparison at each push to Dispatch. It names each line
+// that runs spec-check, under any path, with compare as its first argument, after Bash's quote
+// removal and line continuation. It expands nothing and runs no nested shell. For each other
+// form, such as a brace, a glob, a variable, a command substitution, a nested shell or a quote
+// that an earlier line leaves open, the refusal of compare itself stops the comparison in a step
+// that keeps GITHUB_ACTIONS. Of the lines that it reads, only a line that both writes the word in
+// such a form and drops that variable passes both, and no program finds it. It reads each file
+// two ways:
 //
 //   - Its lines: a line that names the command spec-check and, in the next word, the word
 //     compare. A quote is removed, a backslash escape reads as the character it escapes, and
 //     Bash's $'…' and $"…" read as Bash reads them, so spec-check "compare" and spec-check
-//     $'com\x70are' are named. A line that ends in an odd number of backslashes goes on in the
-//     next line, and the line named is the one that names spec-check. A comment that names the
-//     command is named too: the text does not say that it is a comment.
+//     $'com\x70are' are named. A backslash and the line break after it go first, as Bash removes
+//     them outside '…' and $'…', so a command goes on in the next line, and the line named is the
+//     one that names spec-check. A comment that names the command is named too: the text does not
+//     say that it is a comment.
 //   - A file whose name ends in .yml or .yaml, as YAML reads it: the value of each run: key, in
 //     each document up to the first one that YAML cannot read, through an alias, its words read
 //     as a line's are. A plain, quoted or folded value over two lines is one line, named at the
@@ -76,34 +81,39 @@ func ciFilesThatCompare(files map[string][]byte) []string {
 	return named
 }
 
-// shellHits is the index from 0 of each line of text that runs the comparison, its literal words
-// read as shellWords reads them, each line once.
+// shellHits is the index from 0 of each line of text that runs the comparison, each line once. It
+// reads text as Bash does, in one pass before the words: a backslash and the line break after it
+// go, with nothing in their place, outside '…' and $'…' (continues). So one command can hold
+// several lines of text, and shellWords reads the words of the whole command.
 func shellHits(text string) []int {
 	lines := strings.Split(text, "\n")
 	var hits []int
 	for i := 0; i < len(lines); {
-		// One command line: lines[i], and the line after each one that ends in an odd number of
-		// backslashes, joined as a shell joins them, with that backslash and the line break
-		// removed, and each line's words read by shellWords. starts holds where each
-		// of its lines starts in text.
+		// One command: lines[i], and the line after each one that continues, joined with that
+		// backslash and the line break removed. Each command starts outside quotes. starts holds
+		// where each of its lines starts in command.
 		first := i
-		var text strings.Builder
+		var command strings.Builder
 		var starts []int
+		q := unquoted
 		for {
 			line := strings.TrimSuffix(lines[i], "\r")
-			starts = append(starts, text.Len())
+			starts = append(starts, command.Len())
 			i++
-			if continues(line) && i < len(lines) {
-				text.WriteString(shellWords(line[:len(line)-1]))
+			var more bool
+			if more, q = continues(line, q); more && i < len(lines) {
+				command.WriteString(line[:len(line)-1])
 				continue
 			}
-			text.WriteString(shellWords(line))
+			command.WriteString(line)
 			break
 		}
-		last := -1 // the line of the last hit of this command line: one hit a line
-		for _, match := range compareCall.FindAllStringIndex(text.String(), -1) {
+		words, from := shellWords(command.String())
+		last := -1 // the line of the last hit of this command: one hit a line
+		for _, match := range compareCall.FindAllStringIndex(words, -1) {
 			// The last line that starts at or before the match is the one that holds it.
-			if n := first + sort.Search(len(starts), func(j int) bool { return starts[j] > match[0] }) - 1; n != last {
+			at := from[match[0]]
+			if n := first + sort.Search(len(starts), func(j int) bool { return starts[j] > at }) - 1; n != last {
 				last = n
 				hits = append(hits, n)
 			}
@@ -112,10 +122,49 @@ func shellHits(text string) []int {
 	return hits
 }
 
-// continues reports whether the shell reads the next line as part of line: line ends in an odd
-// number of backslashes, so its last one escapes the line break.
-func continues(line string) bool {
-	return (len(line)-len(strings.TrimRight(line, `\`)))%2 == 1
+// quoting is where a byte of a command is, as Bash reads it: outside quotes, or inside '…', "…"
+// or $'…'.
+type quoting int
+
+const (
+	unquoted quoting = iota
+	inSingle
+	inDouble
+	inANSIC
+)
+
+// continues reports whether Bash reads the next line as part of line, which starts in the quoting
+// q, and answers the quoting at the end of line. It does when line ends in a backslash that no
+// backslash before it escapes, outside '…' and $'…', where Bash keeps a backslash and a line
+// break. A comment is read as text, so a comment that ends in a backslash goes on in the next line
+// too, where Bash ends it: the reader reads more there, not less.
+func continues(line string, q quoting) (bool, quoting) {
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; {
+		case q == inSingle:
+			if c == '\'' {
+				q = unquoted
+			}
+		case c == '\\' && i+1 == len(line):
+			return q != inANSIC, q
+		case c == '\\':
+			i++ // the byte it escapes
+		case q == inANSIC:
+			if c == '\'' {
+				q = unquoted
+			}
+		case c == '"' && q == inDouble:
+			q = unquoted
+		case c == '"':
+			q = inDouble
+		case q == unquoted && c == '\'':
+			q = inSingle
+		case q == unquoted && c == '$' && i+1 < len(line) && line[i+1] == '\'':
+			q = inANSIC
+			i++
+		}
+	}
+	return false, q
 }
 
 // shellWords is line with each quote removed and each backslash escape read as the character it
@@ -124,13 +173,18 @@ func continues(line string) bool {
 // (ansiC), so $'com\x70are' reads as compare, and $"…" is the quoted text. Of the literal words of
 // a line it reads more as the comparison than the shell does, never fewer: a quoted "spec-check
 // compare" is one word to the shell and two here. It expands no brace, glob, variable or command
-// substitution.
-func shellWords(line string) string {
+// substitution. from is, for each byte of the words, the index in line of the byte that it reads:
+// the escaped byte, or the $ of a $'…' quote.
+func shellWords(line string) (words string, from []int) {
 	var b strings.Builder
 	for i := 0; i < len(line); i++ {
 		switch c := line[i]; {
 		case c == '$' && i+1 < len(line) && line[i+1] == '\'':
+			quote := i
 			i = ansiC(&b, line, i+2)
+			for b.Len() > len(from) {
+				from = append(from, quote)
+			}
 		case c == '$' && i+1 < len(line) && line[i+1] == '"':
 			// $"…" is a text that Bash translates by the locale's message catalog, and no catalog
 			// holds the words of this command, so it is the quoted text.
@@ -138,11 +192,13 @@ func shellWords(line string) string {
 		case c == '\\' && i+1 < len(line):
 			i++
 			b.WriteByte(line[i])
+			from = append(from, i)
 		default:
 			b.WriteByte(c)
+			from = append(from, i)
 		}
 	}
-	return b.String()
+	return b.String(), from
 }
 
 // ansiC writes to b the text of the ANSI-C quote $'…' of line whose text starts at start, as Bash

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -197,6 +198,42 @@ func TestCIFilesThatCompareReadsBashLiteralQuoting(t *testing.T) {
 	}
 }
 
+// Bash removes a backslash and the line break after it before it reads the words, with nothing
+// in their place, except inside '…' and $'…', where it keeps them. So a line continuation inside
+// a word, between $ and its quote, or between two words gives the words that the joined line
+// gives. bash is what bash 5.2.21 prints for printf '%s|' and the row's text, run from a file;
+// the reader names the row's first line when bash reads spec-check, then compare.
+func TestCIFilesThatCompareJoinsALineAsBashDoes(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct{ name, text, bash string }{
+		{"between $ and an ANSI-C quote", "spec-check $\\\n'com\\x70are' --dir a", "spec-check|compare|--dir|a|"},
+		{"between $ and a locale quote", "spec-check $\\\n\"compare\" --dir a", "spec-check|compare|--dir|a|"},
+		{"inside a word", "spec-check com\\\npare --dir a", "spec-check|compare|--dir|a|"},
+		{"two times inside a word", "spec-check c\\\no\\\nmpare --dir a", "spec-check|compare|--dir|a|"},
+		{"between two words", "spec-check \\\ncompare --dir a", "spec-check|compare|--dir|a|"},
+		{"inside double quotes", "spec-check \"com\\\npare\" --dir a", "spec-check|compare|--dir|a|"},
+		{"after a single quote inside double quotes", "env X=\"it's\" spec-check com\\\npare --dir a", "env|X=it's|spec-check|compare|--dir|a|"},
+		{"inside single quotes, where it stays", "spec-check 'com\\\npare' --dir a", "spec-check|com\\\npare|--dir|a|"},
+		{"inside an ANSI-C quote, where it stays", "spec-check $'com\\\npare' --dir a", "spec-check|com\\\npare|--dir|a|"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			var want []string
+			if strings.Contains("|"+row.bash, "|spec-check|compare|") {
+				want = []string{".github/workflows/a.yaml:5", "scripts/a.sh:1"}
+			}
+			block := "          " + strings.ReplaceAll(row.text, "\n", "\n          ")
+			files := map[string][]byte{
+				"scripts/a.sh":             []byte(row.text + "\n"),
+				".github/workflows/a.yaml": []byte(workflowSteps + "      - run: |\n" + block + "\n"),
+			}
+			if got := ciFilesThatCompare(files); !reflect.DeepEqual(got, want) {
+				t.Errorf("ciFilesThatCompare(%q) = %q, want %q", row.text, got, want)
+			}
+		})
+	}
+}
+
 // shellWords reads $'…' as Bash decodes it: each escape that Bash's ANSI-C quoting names, an
 // unknown escape as its backslash and its letter, and a NUL as the end of the quoted text. Each
 // want but the last is what bash 5.2.21 prints for printf %s with the same text; the last is a
@@ -221,7 +258,7 @@ func TestShellWordsDecodesAnANSICQuoteAsBashDoes(t *testing.T) {
 		{`$'com\x70are'`, "compare"},
 		{`$'never closed`, "never closed"},
 	} {
-		if got := shellWords(row.in); got != row.want {
+		if got, _ := shellWords(row.in); got != row.want {
 			t.Errorf("shellWords(%q) = %q, want %q", row.in, got, row.want)
 		}
 	}
