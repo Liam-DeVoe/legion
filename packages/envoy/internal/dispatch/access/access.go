@@ -93,6 +93,13 @@ func VisibleProjectsSQL() string {
 // The clauses below test one row against the viewer a statement binds as jsonb at viewerParam,
 // in the shape of "the visibility argument": {"person", "session", "open", "all", "sees",
 // "private"}. "all" is the server's own viewer (model.ServerViewer), which passes every clause.
+//
+// Each clause answers true or false, never NULL. A viewer that names no person or session, or a
+// row whose key is NULL, makes a comparison NULL; a NULL clause passes no row in a positive WHERE,
+// but its negation is NULL as well, so a rule written as `not <clause>` ("no recipient the viewer
+// may not see") would admit the row. clause wraps each one so the negation fails closed too
+// (TestEveryClauseAnswersTrueOrFalseNeverNull).
+func clause(name, sql string) string { return fragment(name, "coalesce("+sql+", false)") }
 
 func viewerFlag(viewerParam, flag string) string {
 	return fmt.Sprintf(`coalesce((%s::jsonb->>'%s')::boolean, false)`, viewerParam, flag)
@@ -100,14 +107,14 @@ func viewerFlag(viewerParam, flag string) string {
 
 // ProjectClause passes a row of the project projectExpr names when the viewer sees that project.
 func ProjectClause(projectExpr, viewerParam string) string {
-	return fragment("ProjectClause", fmt.Sprintf(`(%s or (%s::jsonb->'sees') ? (%s))`,
+	return clause("ProjectClause", fmt.Sprintf(`(%s or (%s::jsonb->'sees') ? (%s))`,
 		viewerFlag(viewerParam, "all"), viewerParam, projectExpr))
 }
 
 // PersonClause passes a person, by login, to an open viewer; to any other viewer, when it is the
 // viewer's own person or a person of a project the viewer sees: one that the rule lets see it.
 func PersonClause(loginExpr, viewerParam string) string {
-	return fragment("PersonClause", fmt.Sprintf(`(%[2]s or %[3]s or (%[1]s) = %[4]s::jsonb->>'person'
+	return clause("PersonClause", fmt.Sprintf(`(%[2]s or %[3]s or (%[1]s) = %[4]s::jsonb->>'person'
 		or exists (
 			select 1 from projects seen
 			where (%[4]s::jsonb->'sees') ? seen.key
@@ -120,7 +127,7 @@ func PersonClause(loginExpr, viewerParam string) string {
 // SessionClause passes a session, by id, to an open viewer; to any other viewer, when it is the
 // viewer's own session or it has acted in a project the viewer sees (session_projects).
 func SessionClause(sessionExpr, viewerParam string) string {
-	return fragment("SessionClause", fmt.Sprintf(`(%[2]s or %[3]s or (%[1]s) = %[4]s::jsonb->>'session'
+	return clause("SessionClause", fmt.Sprintf(`(%[2]s or %[3]s or (%[1]s) = %[4]s::jsonb->>'session'
 		or exists (
 			select 1 from session_projects acted
 			where acted.session_id = (%[1]s) and (%[4]s::jsonb->'sees') ? acted.project_key
@@ -131,7 +138,7 @@ func SessionClause(sessionExpr, viewerParam string) string {
 // RoleClause passes a role, by name, to an open viewer; to any other viewer, when the session that
 // holds the role now (its held_by tuple not retracted since) passes SessionClause.
 func RoleClause(roleExpr, viewerParam string) string {
-	return fragment("RoleClause", fmt.Sprintf(`(%[2]s or %[3]s
+	return clause("RoleClause", fmt.Sprintf(`(%[2]s or %[3]s
 		or exists (
 			select 1 from graph_tuples holder
 			where holder.from_kind = 'role' and holder.from_id = (%[1]s) and holder.kind = 'held_by'
@@ -152,7 +159,7 @@ func RoleClause(roleExpr, viewerParam string) string {
 // when every session party passes SessionClause. A restricted member and a credential that lists
 // projects so read only their own direct conversations.
 func PartyClause(partiesExpr, viewerParam string) string {
-	return fragment("PartyClause", fmt.Sprintf(`(%[2]s
+	return clause("PartyClause", fmt.Sprintf(`(%[2]s
 		or ('person:' || (%[4]s::jsonb->>'person')) = any(%[1]s)
 		or ('session:' || (%[4]s::jsonb->>'session')) = any(%[1]s)
 		or (%[3]s and not exists (
