@@ -197,7 +197,7 @@ func (k *Keys) state() ([]jose.JSONWebKey, time.Time) {
 
 // spacedFailure is the last read's error while that read failed and none has succeeded since, on
 // a Keys whose caller set FailureSpacing, and nil otherwise: a Keys with no spacing answers an
-// unknown key as one nobody published, as it did before the spacing existed.
+// unknown key as one nobody published.
 func (k *Keys) spacedFailure() error {
 	k.mu.Lock()
 	defer k.mu.Unlock()

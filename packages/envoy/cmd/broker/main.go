@@ -1338,7 +1338,8 @@ func (l loggedIssuers) note(ctx context.Context, issuer oidc.NamedIssuer, err er
 			slog.Warn(issuerUnreadableMessage, append(issuerAttrs(issuer), "error", err)...)
 		}
 	case err == nil:
-		if unreadable.Swap(false) {
+		// Loaded before it is swapped, so a token of an issuer that can be read writes nothing.
+		if unreadable.Load() && unreadable.Swap(false) {
 			slog.Info(issuerReadableMessage, issuerAttrs(issuer)...)
 		}
 	}

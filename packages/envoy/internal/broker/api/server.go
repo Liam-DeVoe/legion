@@ -679,7 +679,7 @@ func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 // each such answer in broker_answers_total as outcome failed with code HTTP_503, since it reads a
 // code from a 4xx answer alone, and writes no line for it.
 func writeIssuerUnavailable(w http.ResponseWriter) {
-	writeError(w, http.StatusServiceUnavailable, "OIDC_ISSUER_UNAVAILABLE", "the service-account token issuer cannot be reached; try again in a minute")
+	writeError(w, http.StatusServiceUnavailable, oidc.IssuerUnavailableCode, oidc.IssuerUnavailableMessage)
 }
 
 // writeJSON answers status with v, which is one of this package's named response types: the

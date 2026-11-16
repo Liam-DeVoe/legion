@@ -18,6 +18,16 @@ import (
 // verifiable ID token). A caller answers it as a service that is down, and ends nothing on it.
 var ErrIssuerUnavailable = errors.New("oidc: the issuer cannot be reached")
 
+// IssuerUnavailableCode and IssuerUnavailableMessage are the error code and the sentence of the
+// answer, 503, to a service-account token whose issuer could not be asked (ErrIssuerUnavailable).
+// The broker's routes, its token exchange and Dispatch's API all answer that token with this
+// pair, and a client compares the code. A sign-in whose issuer could not be asked is answered in
+// the sign-in's own words, not these.
+const (
+	IssuerUnavailableCode    = "OIDC_ISSUER_UNAVAILABLE"
+	IssuerUnavailableMessage = "the service-account token issuer cannot be reached; try again in a minute"
+)
+
 // ErrGrantRefused means the issuer's token endpoint refused a refresh token (RFC 6749 section
 // 5.2, invalid_grant): it has expired, been revoked, or is not the client's. The sign-in it renews
 // is over.

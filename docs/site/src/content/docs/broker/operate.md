@@ -104,8 +104,10 @@ exchange takes that account's token only from those issuers. An entry that names
 first issuer of `BROKER_K8S_OIDC_ISSUER` alone, so an entry written for one cluster keeps its
 meaning. An entry of five or more `=`-separated fields names its issuers after its last `=`, so a
 fixed session that holds `=` needs the issuer field after it. The broker refuses to start, naming
-`BROKER_EXCHANGE_K8S_ISSUER`, for an entry that names an issuer that setting does not name, or
-names one issuer twice.
+`BROKER_EXCHANGE_K8S_ISSUER`, for an entry that names an issuer that setting does not name, names
+one issuer twice, or names none while that setting leaves out the first issuer of
+`BROKER_K8S_OIDC_ISSUER`. It refuses to start as well, naming `BROKER_K8S_OIDC_ISSUER`, for an
+entry that names any issuer while that list is one bare URL.
 
 `BROKER_API_ACCOUNTS` lists the callers of the broker's named-caller routes, here Dispatch's
 server as the caller `dispatch`, each by its own account. An account is written in one of two

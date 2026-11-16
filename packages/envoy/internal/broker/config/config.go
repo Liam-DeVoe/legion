@@ -876,7 +876,7 @@ func accountIssuers(setting, text string, names []string, google bool, issuers [
 		if slices.Contains(names[:i], name) {
 			return nil, fmt.Errorf("%s names the issuer %q twice, got %q; name it once", setting, name, text)
 		}
-		if !slices.ContainsFunc(issuers, func(issuer oidc.NamedIssuer) bool { return issuer.Name == name }) {
+		if issuerNamed(issuers, name) < 0 {
 			return nil, fmt.Errorf("%s names the issuer %q, which BROKER_K8S_OIDC_ISSUER does not hold, got %q: its issuers are %s", setting, name, text, issuerNames(issuers))
 		}
 	}
@@ -890,6 +890,11 @@ func issuerNames(issuers []oidc.NamedIssuer) string {
 		names = append(names, issuer.Name)
 	}
 	return strings.Join(names, ", ")
+}
+
+// issuerNamed answers the index in issuers of the issuer named name, and -1 where none has it.
+func issuerNamed(issuers []oidc.NamedIssuer, name string) int {
+	return slices.IndexFunc(issuers, func(issuer oidc.NamedIssuer) bool { return issuer.Name == name })
 }
 
 // exchangeIssuers resolves BROKER_EXCHANGE_K8S_ISSUER, value, comma-separated issuer names, to
@@ -915,11 +920,11 @@ func exchangeIssuers(value, audience string, issuers []oidc.NamedIssuer) ([]oidc
 	var taken []oidc.NamedIssuer
 	for _, name := range strings.Split(value, ",") {
 		name = strings.TrimSpace(name)
-		held := slices.IndexFunc(issuers, func(issuer oidc.NamedIssuer) bool { return issuer.Name == name })
+		held := issuerNamed(issuers, name)
 		switch {
 		case name == "":
 			return nil, fmt.Errorf("BROKER_EXCHANGE_K8S_ISSUER must be issuer names of BROKER_K8S_OIDC_ISSUER separated by commas, with none empty, got %q", value)
-		case slices.ContainsFunc(taken, func(issuer oidc.NamedIssuer) bool { return issuer.Name == name }):
+		case issuerNamed(taken, name) >= 0:
 			return nil, fmt.Errorf("BROKER_EXCHANGE_K8S_ISSUER names the issuer %q twice, got %q; name it once", name, value)
 		case held < 0:
 			return nil, fmt.Errorf("BROKER_EXCHANGE_K8S_ISSUER names %q, which BROKER_K8S_OIDC_ISSUER does not hold: its issuers are %s", name, issuerNames(issuers))
@@ -931,43 +936,41 @@ func exchangeIssuers(value, audience string, issuers []oidc.NamedIssuer) ([]oidc
 
 // exchangeAccountIssuers answers the names of the issuers whose tokens the exchange takes for the
 // BROKER_EXCHANGE_ACCOUNTS entry text, which names names: accountIssuers' answer, so the first of
-// issuers alone where it names none, each of which must be one of exchange, the issuers
-// BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming setting and the entry, an entry naming none
-// whose first issuer exchange does not hold, and, naming BROKER_EXCHANGE_K8S_ISSUER as well, what
-// accountIssuers refuses of the names an entry gives and a name exchange does not hold. Such a
-// refusal also says where an entry's issuer names are, because an entry whose fixed session holds
-// "=" and gives no issuer field reads the session's last part as issuer names. With no exchange
-// issuers it answers none, and Load refuses the entry for the audience it needs.
-func exchangeAccountIssuers(setting, text string, names []string, issuers, exchange []oidc.NamedIssuer) ([]string, error) {
-	if len(exchange) == 0 {
+// issuers alone where it names none, each of which must be one of exchangeTakes, the issuers
+// BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming setting and the entry: an entry naming none
+// whose first issuer exchangeTakes does not hold, naming BROKER_EXCHANGE_K8S_ISSUER; what
+// accountIssuers refuses of the names an entry gives; and a name exchangeTakes does not hold. A
+// refusal of the names an entry gives also says where those names are, because an entry whose
+// fixed session holds "=" and gives no issuer field reads the session's last part as issuer names,
+// and, where the issuers have names, lists the issuers BROKER_EXCHANGE_K8S_ISSUER names. With no
+// exchange issuers it answers none, and Load refuses the entry for the audience it needs.
+func exchangeAccountIssuers(setting, text string, names []string, issuers, exchangeTakes []oidc.NamedIssuer) ([]string, error) {
+	if len(exchangeTakes) == 0 {
 		return nil, nil
 	}
-	takes := func(name string) bool {
-		return slices.ContainsFunc(exchange, func(issuer oidc.NamedIssuer) bool { return issuer.Name == name })
-	}
-	if names == nil {
-		if first := issuers[0].Name; !takes(first) {
-			return nil, fmt.Errorf("%s gives the entry %q no issuer, so it takes the first issuer of BROKER_K8S_OIDC_ISSUER, %q, which BROKER_EXCHANGE_K8S_ISSUER does not name: name the entry's issuers, of %s", setting, text, first, issuerNames(exchange))
+	// namesRefused is err, a refusal of the names the entry gives, saying as well where those
+	// names are and, where the issuers have names, which of them the exchange takes.
+	namesRefused := func(err error) error {
+		err = fmt.Errorf(`%w; an entry's issuer names follow its last "=", so a fixed session that holds "=" is written with the issuer field after it, <service account>=<project>=<person>=<session>=<issuer name>`, err)
+		if exchangeTakes[0].Name == "" {
+			return err
 		}
-		return []string{issuers[0].Name}, nil
+		return fmt.Errorf("%w; the exchange takes the issuers BROKER_EXCHANGE_K8S_ISSUER names, %s", err, issuerNames(exchangeTakes))
 	}
 	taken, err := accountIssuers(setting, text, names, false, issuers)
-	if err == nil {
-		for _, name := range taken {
-			if !takes(name) {
-				err = fmt.Errorf("%s names the issuer %q, which BROKER_EXCHANGE_K8S_ISSUER does not name, got %q", setting, name, text)
-				break
-			}
+	if err != nil {
+		return nil, namesRefused(err)
+	}
+	for _, name := range taken {
+		if issuerNamed(exchangeTakes, name) >= 0 {
+			continue
 		}
+		if names == nil {
+			return nil, fmt.Errorf("%s gives the entry %q no issuer, so it takes the first issuer of BROKER_K8S_OIDC_ISSUER, %q, which BROKER_EXCHANGE_K8S_ISSUER does not name: name the entry's issuers, of %s", setting, text, name, issuerNames(exchangeTakes))
+		}
+		return nil, namesRefused(fmt.Errorf("%s names the issuer %q, which BROKER_EXCHANGE_K8S_ISSUER does not name, got %q", setting, name, text))
 	}
-	if err == nil {
-		return taken, nil
-	}
-	err = fmt.Errorf(`%w; an entry's issuer names follow its last "=", so a fixed session that holds "=" is written with the issuer field after it, <service account>=<project>=<person>=<session>=<issuer name>`, err)
-	if exchange[0].Name == "" {
-		return nil, err
-	}
-	return nil, fmt.Errorf("%w; the exchange takes the issuers BROKER_EXCHANGE_K8S_ISSUER names, %s", err, issuerNames(exchange))
+	return taken, nil
 }
 
 // isDefaultServiceAccount reports whether subject is a namespace's default account, the one
@@ -1282,13 +1285,13 @@ func exchangeAccountFields(text string) (fields, names []string, ok bool) {
 // BROKER_EXCHANGE_ACCOUNTS lists, in order: <service account>=<project>=<person>[=<session>], or
 // <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] where the entry
 // names the issuers its pods' tokens come from (exchangeAccountFields). Each entry's issuers are
-// exchangeAccountIssuers' answer over issuers, BROKER_K8S_OIDC_ISSUER, and takes, the issuers
-// BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming the entry: one not of that form or with a
-// blank field; an account that is not system:serviceaccount:<namespace>:<name>; a namespace's
-// default account; an account listed twice, since one account writes as one identity; and what
-// exchangeAccountIssuers refuses. exchange.NewSet is the second gate, and the session name's own
-// form is its to refuse.
-func parseExchangeAccounts(setting, value string, issuers, takes []oidc.NamedIssuer) ([]exchange.AccountEntry, error) {
+// exchangeAccountIssuers' answer over issuers, BROKER_K8S_OIDC_ISSUER, and exchangeTakes, the
+// issuers BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming the entry: one not of that form or
+// with a blank field; an account that is not system:serviceaccount:<namespace>:<name>; a
+// namespace's default account; an account listed twice, since one account writes as one identity;
+// and what exchangeAccountIssuers refuses. exchange.NewSet is the second gate, and the session
+// name's own form is its to refuse.
+func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.NamedIssuer) ([]exchange.AccountEntry, error) {
 	var entries []exchange.AccountEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
@@ -1306,7 +1309,7 @@ func parseExchangeAccounts(setting, value string, issuers, takes []oidc.NamedIss
 			return nil, fmt.Errorf("%s names the service account %s twice; one account writes as one identity, so name it once", setting, fields[0])
 		}
 		seen[fields[0]] = true
-		taken, err := exchangeAccountIssuers(setting, text, names, issuers, takes)
+		taken, err := exchangeAccountIssuers(setting, text, names, issuers, exchangeTakes)
 		if err != nil {
 			return nil, err
 		}

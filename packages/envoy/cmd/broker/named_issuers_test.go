@@ -552,7 +552,7 @@ func TestAKeySetTheBrokerCannotReadIsAnswered503(t *testing.T) {
 // discovery document failing, the broker boots, the exchange takes a token of A, and a token of B
 // gets 503 OIDC_ISSUER_UNAVAILABLE. With one issuer and no BROKER_EXCHANGE_K8S_ISSUER, the
 // exchange takes that issuer's token for an entry that names no issuer, whether the issuer is
-// named or is one bare URL, as today.
+// named or is one bare URL.
 func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 	const (
 		// namingA's entry names A alone, and namingNone's names no issuer; namedWorker's names A

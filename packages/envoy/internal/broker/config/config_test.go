@@ -1476,6 +1476,14 @@ func withK8sIssuer() map[string]string {
 	return e
 }
 
+// withExchange is withK8sIssuer, whose issuer is one bare URL, with the audience of a token
+// exchange, which takes that issuer.
+func withExchange() map[string]string {
+	e := withK8sIssuer()
+	e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+	return e
+}
+
 // exampleListenerAccount is the placeholder Google service account a listed caller on a VM runs
 // as, as BROKER_API_ACCOUNTS names it; this repository is public, so no real account appears.
 const exampleListenerAccount = "example-listener@example-project.iam.gserviceaccount.com"
@@ -1864,11 +1872,6 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 			return e
 		}
 	}
-	bareExchange := func() map[string]string {
-		e := withK8sIssuer()
-		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
-		return e
-	}
 	dispatchWith := func(issuers ...string) api.Account {
 		account, _ := api.AccountFor("dispatch")
 		account.Issuers = issuers
@@ -1959,8 +1962,8 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		{"BROKER_EXCHANGE_ACCOUNTS: one issuer twice", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=example-session=first,first", []string{`"first"`, "twice", exchangeSetting}},
 		{"BROKER_EXCHANGE_ACCOUNTS: an entry ending in = with no name", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=example-session=", nil},
 		{"BROKER_EXCHANGE_ACCOUNTS: an entry naming none while the exchange leaves out the first issuer", exchangeTaking("second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com", []string{`"first"`, exchangeSetting}},
-		{"BROKER_EXCHANGE_ACCOUNTS: an issuer name beside one bare URL", bareExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com==first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
-		{"BROKER_EXCHANGE_ACCOUNTS: a fixed session holding = with no issuer field", bareExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=legion-daemon:EXAMPLE=1", []string{"<session>=<issuer name>"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: an issuer name beside one bare URL", withExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com==first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: a fixed session holding = with no issuer field", withExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=legion-daemon:EXAMPLE=1", []string{"<session>=<issuer name>"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := c.base()
@@ -2001,11 +2004,6 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	}
 	if cfg.ExchangeAccounts != nil {
 		t.Fatalf("ExchangeAccounts = %v, want nil when BROKER_EXCHANGE_ACCOUNTS is unset", cfg.ExchangeAccounts)
-	}
-	withExchange := func() map[string]string {
-		e := withK8sIssuer()
-		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
-		return e
 	}
 	e := withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com\n" +

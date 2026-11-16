@@ -146,18 +146,6 @@ func (c IssuerConfig) validate(where string) error {
 	return nil
 }
 
-// kubernetesIssuer is the one of the cluster issuers the exchange takes whose Issuer is
-// subjectToken's `iss`, and false for a token of none of them.
-func (c ExchangeConfig) kubernetesIssuer(subjectToken map[string]any) (IssuerConfig, bool) {
-	iss, _ := subjectToken["iss"].(string)
-	for _, issuer := range c.Kubernetes {
-		if issuer.Issuer == iss {
-			return issuer, true
-		}
-	}
-	return IssuerConfig{}, false
-}
-
 // ExchangeConfig is what the RFC 8693 token exchange decides and verifies with. None of it is the
 // provider's to decide: the broker's wiring reads it from the deployment's configuration and
 // hands it over whole.
@@ -395,6 +383,26 @@ func (c ExchangeConfig) personIssuer() IssuerConfig {
 	return IssuerConfig{Issuer: c.Google.Issuer, Audience: c.PersonAudience, Keys: c.Google.Keys}
 }
 
+// kubernetesIssuer is the one of the cluster issuers the exchange takes whose Issuer is
+// subjectToken's `iss`, and false for a token of none of them.
+func (c ExchangeConfig) kubernetesIssuer(subjectToken map[string]any) (IssuerConfig, bool) {
+	iss, _ := subjectToken["iss"].(string)
+	return clusterIssuer(c.Kubernetes, iss)
+}
+
+// clusterIssuer is the one of issuers, the cluster issuers the exchange takes, whose Issuer is
+// iss, and false where iss names none of them. kubernetesKeyFunc chooses the keys a token is
+// checked against by it and kubernetesIssuer the issuer name the account's entry must hold, so
+// the two agree.
+func clusterIssuer(issuers []IssuerConfig, iss string) (IssuerConfig, bool) {
+	for _, issuer := range issuers {
+		if issuer.Issuer == iss {
+			return issuer, true
+		}
+	}
+	return IssuerConfig{}, false
+}
+
 // keyFunc is a JWT subject token type's ValidateFunc: the library hands it the parsed but
 // unverified token and checks the signature with whatever key it returns.
 //
@@ -430,12 +438,11 @@ func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", errIssuerNotTaken, err)
 		}
-		for _, issuer := range issuers {
-			if issuer.Issuer == iss {
-				return keyFunc(issuer.Keys)(token)
-			}
+		issuer, taken := clusterIssuer(issuers, iss)
+		if !taken {
+			return nil, errIssuerNotTaken
 		}
-		return nil, errIssuerNotTaken
+		return keyFunc(issuer.Keys)(token)
 	}
 }
 
@@ -463,7 +470,7 @@ func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
 // for every type once the library has built the answer, because that is when the issued token's
 // expiry is set, and the claim must not end before the token it is made for. A subject token the
 // library refused for its key is answered 503 OIDC_ISSUER_UNAVAILABLE where the key could not be
-// read for want of a read of its issuer (issuerUnavailableRefusal), and in subjectKeyRefusal's
+// read for want of a read of its issuer (issuerUnavailableRefusal), and in issuerNotTakenRefusal's
 // words where the token's `iss` names no issuer the exchange takes.
 func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -485,11 +492,14 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	request, err := p.oauth.NewAccessRequest(txCtx, r, oauthstore.NewExchangeSession())
 	noteClient(ctx, request)
 	if err != nil {
-		if errors.Is(subjectKeyError(err), oidc.ErrIssuerUnavailable) {
+		switch cause := subjectKeyError(err); {
+		case errors.Is(cause, oidc.ErrIssuerUnavailable):
 			WriteRefusal(w, issuerUnavailableRefusal)
-			return
+		case errors.Is(cause, errIssuerNotTaken):
+			p.writeError(ctx, w, request, issuerNotTakenRefusal(err))
+		default:
+			p.writeError(ctx, w, request, err)
 		}
-		p.writeError(ctx, w, request, subjectKeyRefusal(err))
 		return
 	}
 	session, ok := request.GetSession().(*oauthstore.ExchangeSession)
@@ -583,8 +593,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 // as the OAuth error a client's library parses (WriteRefusal). It is a 5xx because nothing was
 // decided about the token, and a caller tries again after a 5xx.
 var issuerUnavailableRefusal = &Refusal{
-	Status: http.StatusServiceUnavailable, Code: "OIDC_ISSUER_UNAVAILABLE",
-	Message: "the service-account token issuer cannot be reached; try again in a minute",
+	Status: http.StatusServiceUnavailable, Code: oidc.IssuerUnavailableCode, Message: oidc.IssuerUnavailableMessage,
 }
 
 // subjectKeyError is the error a subject token type's key function answered, out of the
@@ -599,14 +608,11 @@ func subjectKeyError(err error) error {
 	return invalid.Inner
 }
 
-// subjectKeyRefusal is err, the library's refusal of an exchange, except where its cause is
-// errIssuerNotTaken: the library's own words for that one are that it could not parse the token,
-// so it is answered invalid_request in words that say the token's issuer is not one the exchange
-// takes, the answer and the status the library gives a token of another issuer.
-func subjectKeyRefusal(err error) error {
-	if !errors.Is(subjectKeyError(err), errIssuerNotTaken) {
-		return err
-	}
+// issuerNotTakenRefusal answers err, the library's refusal of a subject token whose key function
+// answered errIssuerNotTaken. The library's own words for that one are that it could not parse the
+// token, so it is answered invalid_request in words that say the token's issuer is not one the
+// exchange takes, the answer and the status the library gives a token of another issuer.
+func issuerNotTakenRefusal(err error) error {
 	return oauth2.ErrInvalidRequest.WithHint("Claim 'iss' from token names no issuer this broker's exchange takes.").WithWrap(err).WithDebugError(err)
 }
 

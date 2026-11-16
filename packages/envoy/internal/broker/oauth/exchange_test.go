@@ -1115,14 +1115,17 @@ func TestTheExchangeChecksEachPodTokenByTheClusterItNames(t *testing.T) {
 	}
 	t.Run("a token of an issuer the exchange is not given is refused and reads nothing of it", func(t *testing.T) {
 		status, body := f.exchange(t, exchangeForm(tokenOf(stranger, strangerKey, account, "pod-uid-stranger"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
-		refused(t, status, body, "iss")
+		refused(t, status, body, "Claim 'iss' from token names no issuer this broker's exchange takes.")
 		if reads := stranger.DiscoveryRequests() + stranger.JWKSFetches(); reads != 0 {
 			t.Fatalf("the issuer the exchange is not given was read %d times, want none", reads)
 		}
 	})
 	t.Run("a token naming the second issuer and signed with another issuer's key is refused", func(t *testing.T) {
+		// Refused in the library's words for a token it could not verify, not as a token of an
+		// issuer the exchange does not take: the key it was checked against is the second
+		// issuer's.
 		status, body := f.exchange(t, exchangeForm(tokenOf(away, strangerKey, account, "pod-uid-away"), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
-		refused(t, status, body, "")
+		refused(t, status, body, "Unable to parse the JSON web token")
 	})
 	t.Run("a token of the second issuer for an account whose entry names the first alone is refused", func(t *testing.T) {
 		status, body := f.exchange(t, exchangeForm(tokenOf(away, awayKey, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, ""), key)

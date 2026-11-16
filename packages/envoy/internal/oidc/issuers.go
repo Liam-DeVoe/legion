@@ -56,13 +56,12 @@ func (s *IssuerSet) Verify(ctx context.Context, raw string) (Claims, NamedIssuer
 	if err != nil {
 		return Claims{}, NamedIssuer{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
-	for _, entry := range s.entries {
-		if entry.issuer.URL == claims.Issuer {
-			verified, err := entry.verifier.Verify(ctx, raw)
-			return verified, entry.issuer, err
-		}
+	entry, err := s.entry(claims.Issuer)
+	if err != nil {
+		return Claims{}, NamedIssuer{}, err
 	}
-	return Claims{}, NamedIssuer{}, fmt.Errorf("%w: %q, which no issuer of the set names", ErrIssuer, claims.Issuer)
+	verified, err := entry.verifier.Verify(ctx, raw)
+	return verified, entry.issuer, err
 }
 
 // Key answers the key the issuer of the set whose URL is issuer publishes under kid for alg,
@@ -71,12 +70,22 @@ func (s *IssuerSet) Verify(ctx context.Context, raw string) (Claims, NamedIssuer
 // with their background read, their spacing and their errors, ErrIssuerUnavailable among them.
 // An issuer the set does not name is ErrIssuer, and reads nothing.
 func (s *IssuerSet) Key(ctx context.Context, issuer, kid, alg string) (crypto.PublicKey, error) {
+	entry, err := s.entry(issuer)
+	if err != nil {
+		return nil, err
+	}
+	return entry.verifier.Key(ctx, kid, alg)
+}
+
+// entry is the entry of the set whose issuer's URL is url, and ErrIssuer for a URL no issuer of
+// the set names.
+func (s *IssuerSet) entry(url string) (issuerEntry, error) {
 	for _, entry := range s.entries {
-		if entry.issuer.URL == issuer {
-			return entry.verifier.Key(ctx, kid, alg)
+		if entry.issuer.URL == url {
+			return entry, nil
 		}
 	}
-	return nil, fmt.Errorf("%w: %q, which no issuer of the set names", ErrIssuer, issuer)
+	return issuerEntry{}, fmt.Errorf("%w: %q, which no issuer of the set names", ErrIssuer, url)
 }
 
 // IssuerRead is one issuer of a set and whether its discovery document has been read.

@@ -307,8 +307,8 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 	}
 }
 
-// TestPodRefusesWhatItCannotDecide: each refusal names what to fix. A case that names no issuer
-// presents a token of the first, which every entry names.
+// TestPodRefusesWhatItCannotDecide: each refusal names what to fix. Every entry names the first
+// issuer, so a case that presents its token is refused for something other than its issuer.
 func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
@@ -319,32 +319,28 @@ func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 		want    error
 		names   string
 	}{
-		{name: "a token with no subject", token: map[string]any{}, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
-		{name: "a subject that is not a string", token: map[string]any{"sub": 7}, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
-		{name: "a token bound to no pod", token: podToken(workerAccount, ""), session: "implementer-g1", want: exchange.ErrNoPodBinding, names: workerAccount},
-		{name: "a pod binding with no uid", token: map[string]any{"sub": workerAccount, "kubernetes.io": map[string]any{"pod": map[string]any{}}},
+		{name: "a token with no subject", token: map[string]any{}, issuer: firstIssuer, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
+		{name: "a subject that is not a string", token: map[string]any{"sub": 7}, issuer: firstIssuer, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
+		{name: "a token bound to no pod", token: podToken(workerAccount, ""), issuer: firstIssuer, session: "implementer-g1", want: exchange.ErrNoPodBinding, names: workerAccount},
+		{name: "a pod binding with no uid", token: map[string]any{"sub": workerAccount, "kubernetes.io": map[string]any{"pod": map[string]any{}}}, issuer: firstIssuer,
 			session: "implementer-g1", want: exchange.ErrNoPodBinding, names: workerAccount},
-		{name: "an account no entry lists", token: podToken("system:serviceaccount:example-ns:example-other", podUID),
+		{name: "an account no entry lists", token: podToken("system:serviceaccount:example-ns:example-other", podUID), issuer: firstIssuer,
 			session: "implementer-g1", want: exchange.ErrNoEntry, names: "system:serviceaccount:example-ns:example-other"},
 		{name: "a token of an issuer the account's entry does not name", token: podToken(daemonAccount, podUID), issuer: secondIssuer,
 			session: fixedSession, want: exchange.ErrIssuerNotNamed, names: daemonAccount},
 		{name: "a token of an issuer no entry names", token: podToken(workerAccount, podUID), issuer: thirdIssuer,
 			session: "implementer-g1", want: exchange.ErrIssuerNotNamed, names: `"third"`},
-		{name: "a session the entry does not fix", token: podToken(daemonAccount, podUID), session: "implementer-g1",
+		{name: "a session the entry does not fix", token: podToken(daemonAccount, podUID), issuer: firstIssuer, session: "implementer-g1",
 			want: exchange.ErrSessionMismatch, names: fixedSession},
-		{name: "no session where the entry fixes none", token: podToken(workerAccount, podUID), session: "",
+		{name: "no session where the entry fixes none", token: podToken(workerAccount, podUID), issuer: firstIssuer, session: "",
 			want: exchange.ErrSessionRequired, names: workerAccount},
-		{name: "a session carrying whitespace", token: podToken(workerAccount, podUID), session: "implementer g1",
+		{name: "a session carrying whitespace", token: podToken(workerAccount, podUID), issuer: firstIssuer, session: "implementer g1",
 			want: exchange.ErrSessionInvalid, names: workerAccount},
-		{name: "a session longer than the cap", token: podToken(workerAccount, podUID), session: strings.Repeat("s", exchange.MaxSessionBytes+1),
+		{name: "a session longer than the cap", token: podToken(workerAccount, podUID), issuer: firstIssuer, session: strings.Repeat("s", exchange.MaxSessionBytes+1),
 			want: exchange.ErrSessionInvalid, names: workerAccount},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			issuer := c.issuer
-			if issuer == "" {
-				issuer = firstIssuer
-			}
-			claims, err := set.Pod(c.token, issuer, c.session)
+			claims, err := set.Pod(c.token, c.issuer, c.session)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Pod(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}
