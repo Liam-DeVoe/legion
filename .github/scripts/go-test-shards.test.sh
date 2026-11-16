@@ -429,9 +429,44 @@ run_shards "$root_long" pattern 0 1 .
 check "exits 2" "$(is "$status" 2)"
 check "prints nothing on standard output" "$(is "$out" "")"
 check "says the pattern is too long for one argument and to add a leg" \
-  "$(contains "$err" 'is longer than one argument may be (131071 bytes, MAX_ARG_STRLEN).*add a leg to the matrix')"
+  "$(contains "$err" 'is longer than 131060 bytes: .*131071 bytes (MAX_ARG_STRLEN).*add a leg to the matrix')"
 run_shards "$root_long" pattern 0 2 .
 check "two legs of it exit 0" "$(is "$status" 0)"
+
+echo "case: a pattern at the most the test binary can be given, and one byte past it"
+# The script gives the binary the pattern in one argument after -test.list= (11 bytes; go test
+# gives it on after -test.run=, 10), and exec takes an argument of at most 131,071 bytes
+# (MAX_ARG_STRLEN, its terminator included): 131,060 bytes of pattern are the most, and one byte
+# more must be refused by name, not left to exec's E2BIG. Each pattern names TestA and TestAB,
+# repeated to the length wanted (a part is a listed name however often it comes).
+root_argument=$(module argument)
+tests "$root_argument/argument_test.go" TestA TestAB
+# pattern_of_length <bytes>: ^(TestA|...|TestAB|...)$ of exactly that many bytes, both names in it.
+# Each TestA is 6 bytes with its |, each TestAB 7, and ^( and )$ less the last | are 3.
+pattern_of_length() {
+  local n=$(($1 - 3)) a b as bs
+  b=$((n % 6))
+  [ "$b" -gt 0 ] || b=6
+  a=$(((n - 7 * b) / 6))
+  printf -v as '%*s' "$a" ''
+  printf -v bs '%*s' "$b" ''
+  as=${as// /TestA|}
+  bs=${bs// /TestAB|}
+  printf '^(%s)$' "$as${bs%|}"
+}
+p=$(pattern_of_length 131060)
+run_shards "$root_argument" check . -- "$p"
+check "a pattern of 131060 bytes, the most, is that long and passes the check" "$(is "${#p}/$status" 131060/0)"
+for bytes in 131061 131062; do
+  p=$(pattern_of_length "$bytes")
+  run_shards "$root_argument" check . -- "$p"
+  check "a pattern of $bytes bytes is that long" "$(is "${#p}" "$bytes")"
+  check "  exits 2" "$(is "$status" 2)"
+  check "  prints nothing on standard output" "$(is "$out" "")"
+  check "  says 131060 bytes are the most and to add a leg" "$(contains "$err" \
+    "^go-test-shards.py: a pattern of $bytes bytes is longer than 131060 bytes: the test binary takes it in one argument after .-test\\.list=., and one argument may be 131071 bytes (MAX_ARG_STRLEN), so the binary could not be started with it; add a leg to the matrix, which shortens every shard's pattern\$")"
+  check "  and shows no traceback" "$(is "$(grep -c Traceback <<<"$err" || true)" 0)"
+done
 
 echo "case: the wrong arguments"
 run_shards "$root"

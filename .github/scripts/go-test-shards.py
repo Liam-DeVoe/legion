@@ -79,8 +79,9 @@ leg's `go test -run` runs both tests, as `go test` does without `-run`.
 
 Refusals, each on standard error with nothing on standard output: a usage error, an index outside
 the leg count, a build or listing that fails, a package with no test, a shard with no test (more
-legs than the package needs), and a pattern longer than 131,071 bytes, which Linux refuses as one
-argument (MAX_ARG_STRLEN), so `go test` could not start the binary with it; add a leg.
+legs than the package needs), and a pattern longer than 131,060 bytes: the test binary takes it in
+one argument after `-test.list=`, and Linux refuses an argument longer than 131,071 bytes
+(MAX_ARG_STRLEN), so the binary could not be started with it; add a leg.
 
 Exit status: 0 when every test is in exactly one shard, 1 when a test is in no shard or in two,
 or a pattern is not of that one shape, 2 for every refusal above.
@@ -124,8 +125,11 @@ SPLIT = re.compile(r"^(Test|Fuzz|Example)\S*$")
 # then no listed name.
 SHAPE = re.compile(r"\^\((.*)\)\$", re.DOTALL)
 # Linux's MAX_ARG_STRLEN, 32 pages of 4 KiB: the longest single argument exec accepts, terminator
-# included. The pattern is one argument to go test and one to the test binary.
+# included. The pattern reaches the test binary in one argument after a flag: LIST_FLAG here, and
+# `-test.run=`, one byte shorter, when the leg's go test runs it. So LIST_FLAG and the pattern
+# together must be shorter than this.
 MAX_ARGUMENT = 131072
+LIST_FLAG = "-test.list="
 
 
 class Refused(Exception):
@@ -160,13 +164,15 @@ def build(flags: list[str], package: str, directory: Path) -> Path:
 
 def listed(binary: Path, pattern: str) -> list[str]:
     """The names of the split the binary lists for one pattern."""
-    if len(pattern.encode()) >= MAX_ARGUMENT:
-        raise Refused(f"a pattern of {len(pattern.encode())} bytes is longer than one argument may be "
-                      f"({MAX_ARGUMENT - 1} bytes, MAX_ARG_STRLEN), so go test could not pass it to the "
-                      f"test binary; add a leg to the matrix, which shortens every shard's pattern")
+    argument = LIST_FLAG + pattern
+    if len(argument.encode()) >= MAX_ARGUMENT:
+        raise Refused(f"a pattern of {len(pattern.encode())} bytes is longer than "
+                      f"{MAX_ARGUMENT - 1 - len(LIST_FLAG)} bytes: the test binary takes it in one argument "
+                      f"after `{LIST_FLAG}`, and one argument may be {MAX_ARGUMENT - 1} bytes (MAX_ARG_STRLEN), "
+                      f"so the binary could not be started with it; add a leg to the matrix, which shortens "
+                      f"every shard's pattern")
     # UTF-8 whatever the locale says, since a test's name may hold any letter Go allows.
-    done = subprocess.run([str(binary), f"-test.list={pattern}"], capture_output=True, encoding="utf-8",
-                          check=False)
+    done = subprocess.run([str(binary), argument], capture_output=True, encoding="utf-8", check=False)
     if done.returncode != 0:
         raise Refused(f"`{binary.name} -test.list` exited {done.returncode}:\n{done.stderr}{done.stdout}")
     return [line for line in done.stdout.splitlines() if SPLIT.match(line)]
