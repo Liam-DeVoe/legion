@@ -695,7 +695,7 @@ func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
 
 // A page of a newer build may send members this build does not declare while a release rolls
 // out: a subscribe frame carrying them is answered with its snapshot. A frame type or a view kind
-// this build cannot serve is still refused, that subscription alone, on a socket that stays open.
+// this build cannot serve is still refused, so the page reconnects to another process.
 func TestASubscribeWithAMemberNoFrameDeclaresIsAnswered(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	seedHubSettings(t, rig.database)

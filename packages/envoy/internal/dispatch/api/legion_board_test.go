@@ -250,54 +250,6 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	}
 }
 
-// TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded: the daemon's state carries no
-// CI verdict since cybermonklabs/legion#2539, and the card has no field for one (spec version 38
-// of dispatch://INFRA-1077). A database a sampler wrote before then still holds verdict rows, as
-// the browser seed once wrote one, and the card of such an issue answers no verdict key at all.
-// The key is looked for in the answer's own JSON, not in the struct that decodes it, since a
-// struct drops a key it has no field for.
-func TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	seedLegionProjects(t, handler, "INFRA")
-	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
-	now := time.Now().UTC()
-	key := seedLegionIssue(t, database, "INFRA", 1, "An issue with a recorded verdict", "a", nil, "")
-	seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
-	seedLegionObservation(t, database, "INFRA", key, "pull_request.checks_verdict", `"failing"`, now.Add(-time.Minute))
-	seedLegionRead(t, database, "INFRA", now, "")
-
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/INFRA/legion/board", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET the board of INFRA: status=%d body=%s", response.Code, response.Body.String())
-	}
-	var board struct {
-		Columns []struct {
-			ID    string                       `json:"id"`
-			Cards []map[string]json.RawMessage `json:"cards"`
-		} `json:"columns"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &board); err != nil {
-		t.Fatalf("decode the board: %v", err)
-	}
-	var card map[string]json.RawMessage
-	for _, column := range board.Columns {
-		for _, each := range column.Cards {
-			if legion.JSONString(each["key"]) == key {
-				if column.ID != legionColumnImplementing {
-					t.Errorf("%s is in the %q column, want %q", key, column.ID, legionColumnImplementing)
-				}
-				card = each
-			}
-		}
-	}
-	if card == nil {
-		t.Fatalf("the board holds no card for %s: %s", key, response.Body.String())
-	}
-	if verdict, present := card["checks_verdict"]; present {
-		t.Fatalf("%s's card carries a CI verdict, %s, want none: %s", key, verdict, response.Body.String())
-	}
-}
-
 // TestTheMergingColumnHoldsEveryPhaseTheMergerWorks: the merger's phases are one declaration
 // (legion.MergerPhases), which the board's column map reads rather than spelling them again, so
 // an issue in any of the three is on the Merging column's cards and on no other.

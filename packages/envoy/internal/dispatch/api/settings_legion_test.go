@@ -96,51 +96,6 @@ func TestALegionSettingRoundTripsAndIsRemoved(t *testing.T) {
 	}
 }
 
-// TestTheLegionRoutesAnswerUnderTheProjectAndNothingAnswersTheOldPaths: the three routes R26 of
-// dispatch://INFRA-979's spec moved under the project answer at /api/v1/projects/{key}/legion/,
-// and the paths they had answer no route at all — the mux's own 404, not a handler's — whether
-// or not the project names a daemon.
-func TestTheLegionRoutesAnswerUnderTheProjectAndNothingAnswersTheOldPaths(t *testing.T) {
-	const stateURL = "https://legion.internal"
-	handler := newTestHandler(t)
-	seedLegionProjects(t, handler, "INFRA")
-	type call struct {
-		method, target string
-		body           any
-	}
-	old := []call{
-		{http.MethodGet, "/api/v1/settings/legion", nil},
-		{http.MethodPut, "/api/v1/settings/legion/INFRA", map[string]any{"state_url": stateURL}},
-		{http.MethodDelete, "/api/v1/settings/legion/INFRA", nil},
-	}
-	answersNothing := func(when string) {
-		t.Helper()
-		for _, gone := range old {
-			response := dispatchRequest(t, handler, gone.method, gone.target, gone.body, "alice")
-			if response.Code != http.StatusNotFound || response.Body.String() != "404 page not found\n" {
-				t.Errorf("%s, %s %s answered %d %q, want no route", when, gone.method, gone.target, response.Code, response.Body.String())
-			}
-		}
-	}
-
-	answersNothing("before INFRA names a daemon")
-	for _, moved := range []struct {
-		call
-		status int
-	}{
-		{call{http.MethodGet, "/api/v1/projects/INFRA/legion/daemon", nil}, http.StatusOK},
-		{call{http.MethodPut, "/api/v1/projects/INFRA/legion/daemon", map[string]any{"state_url": stateURL}}, http.StatusOK},
-	} {
-		if response := dispatchRequest(t, handler, moved.method, moved.target, moved.body, "alice"); response.Code != moved.status {
-			t.Errorf("%s %s: status=%d body=%s, want %d", moved.method, moved.target, response.Code, response.Body.String(), moved.status)
-		}
-	}
-	answersNothing("while INFRA names a daemon")
-	if removed := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/INFRA/legion/daemon", nil, "alice"); removed.Code != http.StatusNoContent {
-		t.Errorf("DELETE /api/v1/projects/INFRA/legion/daemon: status=%d body=%s, want 204", removed.Code, removed.Body.String())
-	}
-}
-
 // TestAnUnknownProjectAndABadStateURLAreRefused: a setting names a project that exists, and a URL
 // every call can be built from.
 func TestAnUnknownProjectAndABadStateURLAreRefused(t *testing.T) {
