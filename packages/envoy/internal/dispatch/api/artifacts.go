@@ -242,7 +242,8 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	}
 	// The upload's condition, which the command bar's in-process caller carries on the request's
 	// context (going_conditions.go): a write back of a document's content expects that content,
-	// and an upload without force is a create alone.
+	// and every other upload of the bar is a create alone, one with force too unless the bar's read
+	// before found the document of its name (goingUploadWritesOver).
 	condition := goingConditionOf(r)
 	input.expectSHA256, input.expectNew = strings.TrimSpace(condition.ExpectSHA256), condition.ExpectNew
 	if input.expectNew && input.expectSHA256 != "" {

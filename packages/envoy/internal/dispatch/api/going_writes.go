@@ -423,6 +423,17 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		claim.refuse(before, refused)
 		return
 	}
+	if goingUploadWritesOver(prepared, before) {
+		// An upload with force over the document its read before found, one the words ask for,
+		// writes that document's next version: it sheds the create alone its translation carries,
+		// and its requests are encoded again, since a condition is part of each one's digest - the
+		// digest its plan, its landing and any resume after it compare (goingSend.digest).
+		prepared.call.condition = nil
+		if specs, err = prepared.call.requests(prepared.route); err != nil {
+			claim.refuse(before, fmt.Errorf("encode %s: %w", input.Offer, err))
+			return
+		}
+	}
 	// The call is known now: the claim holds, before anything of it is sent, the requests it
 	// resumes after - a taken-over write's own landings, then what of the rest of it the
 	// invocation's writes landed, marked as theirs (goingInherited) - and what it sends

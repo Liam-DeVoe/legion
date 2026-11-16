@@ -854,13 +854,13 @@ func goingUploadContent(arguments map[string]any) (string, error) {
 }
 
 // goingTranslateUpload uploads the content as a document of the issue or the project, as the
-// JSON form of the route takes it. `force` is no field of the route's: an upload without it is
-// sent as a create alone (goingUploadCondition), so a document of its name the owner holds by the
-// time the upload takes the owner's lock - one another writer made after the write's read before -
-// is the route's to refuse, 409 DOCUMENT_EXISTS, and the writes route refuses such an upload
-// before it is sent where its read before found one, however the write came to run
-// (goingUploadForceRefusal), as the dispatch command does. An upload with force carries no
-// condition, and writes that document's next version.
+// JSON form of the route takes it. `force` is no field of the route's: every upload is sent as a
+// create alone (goingUploadCondition), so a document of its name the owner holds by the time the
+// upload takes the owner's lock - one another writer made after the write's read before - is the
+// route's to refuse, 409 DOCUMENT_EXISTS. Where that read before found one, the writes route
+// refuses an upload without force before it is sent, however the write came to run
+// (goingUploadForceRefusal), as the dispatch command does, and sends one with force, which asks
+// for that document's next version, with no condition (goingUploadWritesOver).
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	content, err := goingUploadContent(call.arguments)
 	if err != nil {
@@ -868,22 +868,21 @@ func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput)
 	}
 	body := goingPick(call.arguments, "name", "summary")
 	body["content"] = content
-	return goingCall{path: call.path, body: body, condition: goingUploadCondition(call.arguments)}, nil
+	return goingCall{path: call.path, body: body, condition: goingUploadCondition()}, nil
 }
 
 // goingUploadCondition is the condition an upload carries to its route on its context
-// (going_conditions.go): without force, a create alone (ExpectNew); with it, none.
-func goingUploadCondition(arguments map[string]any) *goingCondition {
-	if arguments["force"] == true {
-		return nil
-	}
+// (going_conditions.go): a create alone (ExpectNew), with force or without, since whether force
+// writes over a document is known only once the write's read before is in. An upload with force
+// whose read before found the document of its name sheds it there (goingUploadWritesOver).
+func goingUploadCondition() *goingCondition {
 	return &goingCondition{ExpectNew: true}
 }
 
 // goingTranslateAgentUpload uploads the content as a file of the session's conversation, which
 // takes a multipart upload alone: the file part named as the call names it, typed by its
-// extension, and plain text where the extension says nothing. An upload without force is sent as
-// a create alone, as goingTranslateUpload sends one (goingUploadCondition).
+// extension, and plain text where the extension says nothing. It is sent as a create alone, as
+// goingTranslateUpload sends one (goingUploadCondition).
 func goingTranslateAgentUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	content, err := goingUploadContent(call.arguments)
 	if err != nil {
@@ -900,7 +899,7 @@ func goingTranslateAgentUpload(_ context.Context, _ goingReader, call goingCallI
 	}
 	return goingCall{path: call.path, form: &goingUpload{
 		fields: fields, filename: name, contentType: contentType, content: []byte(content),
-	}, condition: goingUploadCondition(call.arguments)}, nil
+	}, condition: goingUploadCondition()}, nil
 }
 
 // goingTranslateHandoff records the handoff as the session the caller acts as, which the route

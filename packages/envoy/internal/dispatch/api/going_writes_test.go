@@ -1617,6 +1617,56 @@ func TestGoingWriteOfAnUploadWithoutForceNeverWritesOverADocumentMadeAsItRuns(t 
 	}
 }
 
+// TestGoingWriteOfAForcedUploadNeverWritesOverADocumentMadeAsItRuns (review round 9): an upload
+// with force whose read before finds no document of its name is sent as a create alone too
+// (goingCondition.ExpectNew, on the request's context), so a document of that name another writer
+// makes after the read and before the route takes the owner's lock is never written over: the
+// route refuses it 409 DOCUMENT_EXISTS. Each issue held no plan when the proposal offered the
+// upload as a create and when the write read before it; plan.md - slug plan-md - is made as the
+// upload's in-process request enters its route, and the person's pick is refused whether the
+// upload is named plan-md ("save this as plan-md"), plan.md ("save this as the plan") or plan.md
+// under words that write plan.md, which asked for a document the read before found none of.
+// plan.md keeps its one version.
+func TestGoingWriteOfAForcedUploadNeverWritesOverADocumentMadeAsItRuns(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, tc := range []struct{ upload, words string }{
+		{"plan-md", "save this as plan-md"},
+		{"plan.md", "save this as the plan"},
+		{"plan.md", "replace plan.md with this"},
+	} {
+		t.Run(tc.words, func(t *testing.T) {
+			issue := rig.issue(t, "A plan made as the bar uploaded, "+tc.words)
+			start := goingBrowserStart(t)
+			start.words = tc.words
+			start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+			written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": tc.upload, "content": "# Plan\n\nWritten by the model.\n", "force": true}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+				&going.Final{Answer: "Saved.", Arguments: string(written)}, start, rig.served.goingHoldsBy(context.Background()))
+			if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 || len(proposal.Offers[0].Withheld) != 0 {
+				t.Fatalf("the run proposed %+v, want the one upload offered as a create", proposal)
+			}
+			run := rig.recorded(t, "alice", false, "dispatch_artifact", start.words, proposal)
+			rig.served.inProcess = goingBefore(inner, http.MethodPost+" /api/v1/issues/"+issue+"/artifacts", func() {
+				uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "plan.md", "# Plan\n\nMade meanwhile.\n")
+			})
+			refused := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson})
+			rig.served.inProcess = inner
+			if refused.Code != http.StatusConflict || decodeBody[errorBody](t, refused).Code != "DOCUMENT_EXISTS" {
+				t.Fatalf("the forced upload as %q over a document made as it ran answered %d %s, want the route's 409 DOCUMENT_EXISTS", tc.upload, refused.Code, refused.Body.String())
+			}
+			if versions := rig.goingDocumentVersions(t, issue, "plan-md"); versions != 1 {
+				t.Fatalf("plan.md holds %d versions after the bar's forced upload as %q, want the one made meanwhile", versions, tc.upload)
+			}
+		})
+	}
+}
+
 // TestGoingWriteOfAnUploadOverAHeldNameIsRefusedWithoutForceHoweverApproved (review round 5,
 // finding 3): `force` is what asks for the next version of a document the owner already holds
 // under the upload's name, as the tool states it. Without it the upload is refused, however it

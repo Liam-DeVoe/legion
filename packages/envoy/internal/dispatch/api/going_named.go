@@ -507,6 +507,21 @@ func goingUploadOverRefusal(prepared goingPrepared, before goingObservation, wor
 	return errorf(http.StatusConflict, codeGoingNotProposed, "%s", goingUploadWithheldReason(prepared.action, name, owner, held.Name, held.Slug))
 }
 
+// goingUploadWritesOver reports whether an upload the write is about to send carries force and
+// its read before (uploadedOver) found the document of its name - one the person asked for, since
+// goingUploadOverRefusal refuses every other - so it writes that document's next version and is
+// sent without the create alone its translation carries (goingUploadCondition). Every other
+// upload stays a create alone: one with force whose read before found no document, or could name
+// no owner to read, is refused 409 DOCUMENT_EXISTS by its route where the owner holds a document
+// of the name by the time the upload takes the owner's lock, as an upload without force is. The
+// upload routes take no version or token of a document to expect, only the SHA-256 of the
+// markdown it must hold (goingCondition.ExpectSHA256), which the read before does not read and a
+// file cannot carry, so an upload over the document found is held to nothing further.
+func goingUploadWritesOver(prepared goingPrepared, before goingObservation) bool {
+	_, uploads := goingUploadNames[prepared.action]
+	return uploads && prepared.arguments["force"] == true && before.held != nil
+}
+
 // goingUploadWithheld is why an upload the answer wrote is not offered, "" where it is: one under
 // the name of a document its owner already holds, as the proposal reads the store now (holds),
 // which would write that document's next version over the text it holds. Without force every

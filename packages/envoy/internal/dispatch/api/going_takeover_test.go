@@ -113,6 +113,36 @@ func TestGoingUploadWithoutForceWhoseProcessEndedAfterItLandedIsAnsweredLanded(t
 	}
 }
 
+// TestGoingForcedUploadMadeAsACreateWhoseProcessEndedAfterItLandedIsAnsweredLanded (review round
+// 9; check c21): an upload with force whose read before found no document of its name is sent as a
+// create alone (goingCondition.ExpectNew), a condition its landing's digest covers. Where its
+// process ended after the upload committed, the next presses past the claim's bound are answered
+// the upload landed from its own landing - nothing read, conditioned or sent again - though their
+// read before would now find the document the upload made.
+func TestGoingForcedUploadMadeAsACreateWhoseProcessEndedAfterItLandedIsAnsweredLanded(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Uploaded with force as the process ended", "The spec.\n").Key
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	run := rig.proposed(t, "alice", false, "dispatch_artifact", map[string]any{
+		"issue": issue, "name": "ended.md", "content": "# Ended\n\nAlice's words.\n", "force": true,
+	})
+	press := map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson}
+	rig.served.inProcess = goingDiesAfter(inner, http.MethodPost+" /api/v1/issues/"+issue+"/artifacts")
+	rig.dieWriting(t, run, press)
+	rig.served.inProcess = inner
+	rig.ageGoingWrites(t, run)
+	for range 2 {
+		answered := rig.write(t, "alice", run, press)
+		if answered.Code != http.StatusOK || !goingLineOf(t, answered).Outcome.OK {
+			t.Fatalf("a press after the forced upload's process ended answered %d %s, want the upload landed", answered.Code, answered.Body.String())
+		}
+	}
+	if versions := rig.goingDocumentVersions(t, issue, "ended-md"); versions != 1 {
+		t.Fatalf("ended.md holds %d versions, want the one upload", versions)
+	}
+}
+
 // goingTakenOverCase is one row whose route records, beside its request's landing, what it found
 // and left: what the run proposes, the request the process ends after, and what the item holds
 // once the turn is undone.

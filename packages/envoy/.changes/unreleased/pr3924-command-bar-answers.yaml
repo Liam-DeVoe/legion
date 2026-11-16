@@ -23,8 +23,10 @@ body: |-
   words, with nothing written. A write of an upload without `force`
   under a name the store holds when it runs is refused, however it came to run:
   `400 GOING_ARGUMENTS` in the
-  `dispatch artifact` command's words where its read before finds the document, and the route's
-  `409 DOCUMENT_EXISTS` for one made after that read. Each write is
+  `dispatch artifact` command's words where its read before finds the document. Every upload is
+  sent as a create alone, one with `force` too unless its read before found the document of its
+  name, so a document made after that read is the route's `409 DOCUMENT_EXISTS` and is never
+  written over. Each write is
   claimed on the run once, so a second request while it runs answers
   `429 GOING_WRITE_IN_PROGRESS`.
   A write that sends a request before its own (a close with a reason posts the reason first)
@@ -51,8 +53,9 @@ body: |-
   naming nothing. Each route decides its condition under its own lock: the issue update
   (`409 ISSUE_CHANGED`), the ask edit (`409 ASK_CHANGED`), the release and the claim
   (`409 CLAIM_HOLDER_CHANGED`), the reopen (`409 COMMENT_CHANGED`) and an upload
-  (`409 DOCUMENT_CHANGED`), and the bar's upload without `force` is a create alone
-  (`409 DOCUMENT_EXISTS` where the owner holds the name when the upload takes its lock). A
+  (`409 DOCUMENT_CHANGED`), and the bar's upload is a create alone, one with `force` too unless
+  its read before found the document of its name (`409 DOCUMENT_EXISTS` where the owner holds
+  the name when the upload takes its lock). A
   request of the undo is marked as a write back, and a route refuses one carrying no condition it
   decides `500 GOING_CONDITION_MISSING`, with nothing written. A request the bar sends in-process
   refuses a body member or multipart field its route does not declare, `400 INVALID_JSON`
