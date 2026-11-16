@@ -20,9 +20,13 @@ var ciVariables = []string{"GITHUB_ACTIONS", "CI"}
 //
 // It answers 2, before it reads an argument, in a CI job: no CI job compares the files, since
 // Dispatch compares them at each push (R2). The refusal is the command's and not specgraph's,
-// whose Compare the Dispatch server calls and whose tests run in CI. It holds whatever route a
-// job takes to the command: a step, a package script, a make target, a script anywhere, or a link
-// to one. spec-check guard names the routes it can read in a workflow, an action or a script.
+// whose Compare the Dispatch server calls and whose tests run in CI. It reads the environment of
+// its own process, so it covers each route that passes the runner's environment on to the
+// command: a step, a package script, a make target, a script in any directory, or a link to one.
+// It does not cover a route that drops that environment, such as sudo with its default env_reset
+// or a container that docker run starts without -e for the two variables: there the command
+// compares (TestTheBuiltBinary, "compare compares behind a boundary that drops the environment").
+// spec-check guard names such a line in the workflows, actions and scripts that it reads.
 func runCompare(args []string, stdout, stderr io.Writer) int {
 	for _, variable := range ciVariables {
 		if os.Getenv(variable) == "true" {

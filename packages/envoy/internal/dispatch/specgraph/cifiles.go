@@ -41,9 +41,11 @@ var compareCall = regexp.MustCompile(`spec-check\S*\s+compare\b`)
 // and their actions, and some of the scripts that their steps run. A step can also run the
 // comparison from a file that is not there, such as a package script, a make target, a script in
 // another directory or a link to one, or through a variable. This reader does not see those
-// routes, and no list of directories closes them. spec-check compare closes them: it refuses to
-// run in a CI job (GITHUB_ACTIONS=true or CI=true). A Go program that calls Compare is outside
-// both; Dispatch itself calls Compare (R2), so no rule can refuse every Go caller.
+// routes, and no list of directories closes them. spec-check compare covers each of them that
+// passes the runner's environment on: it refuses to run when GITHUB_ACTIONS or CI is true. A
+// route that drops that environment, such as sudo or a container, reaches the comparison past
+// that refusal, and only a line this reader reads names it. A Go program that calls Compare is
+// outside both; Dispatch itself calls Compare (R2), so no rule can refuse every Go caller.
 func CIFilesThatCompare(files map[string][]byte) []string {
 	type hit struct {
 		path string

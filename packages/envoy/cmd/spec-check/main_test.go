@@ -490,6 +490,29 @@ func testCompare(t *testing.T, binary string) {
 			stdout: "spec-check: " + dir + ": every text the files hold is approved; 3 of 3 approved statements are in the files at their current text\n",
 		})
 	})
+	// The second acceptance run's D3, held as the code is: the refusal reads the command's own
+	// environment, so a step that starts the command behind a boundary that drops the runner's
+	// environment compares. sudo -n with its default env_reset and a container that docker run
+	// starts without -e both give the command neither variable. This row holds that fact with env
+	// -i, the same boundary, since a test cannot count on docker, an image or sudo: the step's own
+	// environment holds both variables, and env -i starts the command with none. A change that
+	// makes the command refuse here is a choice of the boundary, and it changes this row.
+	t.Run("compare compares behind a boundary that drops the environment", func(t *testing.T) {
+		t.Parallel()
+		envPath, err := exec.LookPath("env")
+		if err != nil {
+			t.Fatalf("no env on PATH: %v", err)
+		}
+		dir, approved := fixture(t, "compare", "approved-text", "spec"), fixture(t, "compare", "approved-text", "approved.json")
+		expect(t, runBinaryIn(t, envPath, "", []string{"GITHUB_ACTIONS=true", "CI=true"}, "-i", binary, "compare", "--dir", dir, "--approved", approved), result{
+			stdout: "spec-check: " + dir + ": every text the files hold is approved; 3 of 3 approved statements are in the files at their current text\n",
+		})
+		// The same step without the boundary is refused, so the pass above is the boundary's.
+		got := runBinaryIn(t, envPath, "", []string{"GITHUB_ACTIONS=true", "CI=true"}, binary, "compare", "--dir", dir, "--approved", approved)
+		if got.code != 2 || !strings.Contains(got.stderr, "compare does not run in a CI job") {
+			t.Errorf("compare in the step without env -i: exit %d, stderr %q; want the refusal", got.code, got.stderr)
+		}
+	})
 	t.Run("every other subcommand runs in a CI job", func(t *testing.T) {
 		t.Parallel()
 		ci := []string{"GITHUB_ACTIONS=true", "CI=true"}
@@ -669,6 +692,25 @@ func testGuard(t *testing.T, binary string) {
 				})
 			})
 		}
+	})
+	// The second acceptance run's D3: sudo -n and docker run start the command in a CI step. The
+	// guard names each such line in a workflow, which is the part of R2 that covers them.
+	t.Run("guard names a sudo or a container step that runs the comparison", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		workflow := filepath.Join(root, ".github", "workflows", "spec.yaml")
+		writeFile(t, workflow, []byte("on: pull_request\njobs:\n  spec:\n    steps:\n"+
+			"      - run: sudo -n spec-check compare --dir .dispatch/spec --approved a.json\n"+
+			"      - run: docker run --rm -v \"$PWD:/w\" -w /w -v \"$RUNNER_TEMP/spec-check:/usr/local/bin/spec-check:ro\" debian:bookworm-slim spec-check compare --dir .dispatch/spec --approved a.json\n"))
+		line := ": this line runs the comparison of the files with the approved spec, which no CI job does (R2)\n"
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+			code:   1,
+			stdout: "spec-check: " + root + ": 2 lines of CI files run the comparison\n",
+			stderr: "spec-check: " + workflow + ":5" + line + "spec-check: " + workflow + ":6" + line,
+		})
 	})
 	t.Run("guard does not pass when it reads no workflow", func(t *testing.T) {
 		t.Parallel()
