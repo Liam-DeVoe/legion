@@ -1795,6 +1795,14 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// from the configuration the build is given, so a change of either, a removal included,
 	// reaches the next launch that reads it: the instructions every launch, and the pair the next
 	// stale-plugin relaunch alone, these specs being its one holder (config.Classes).
+	//
+	// A change that names both holders builds the two and makes them current together
+	// (rebuilder.rebuildPair), so this build runs while the holder above is still serving the
+	// runtime it is replacing, and the ProvisionsWorkspaces it asks below is that runtime's.
+	// Safe only because the runtime's kind is fixed for the process (`runtime` is a ClassFixed
+	// row), so the runtime being built beside these specs answers it exactly as the one they
+	// read it from: a reader who reclassed that row would have to hand this build the runtime
+	// staged beside it.
 	buildSpecs := func(c config.Config) (specs, error) {
 		secrets, err := readLaunchSecrets(c, environLookup(p.environ))
 		if err != nil {

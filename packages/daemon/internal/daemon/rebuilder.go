@@ -1,11 +1,13 @@
 // Package daemon: this file holds the rebuilder, the daemon's one observer of applied settings
 // changes — what a holder of the class table's `rebuild` and `launch` rows is (rebuilt,
 // credentialHolder) and where it is registered (register), how a change's holders are built
-// again (observe, rebuild) and what the rebuilds a caller's change could not do answer that
-// caller (noteRebuilds, route, takeFailures), how a credential that moved under the daemon with
-// no setting changing is found (credentialDigest, rereadCredentials), and the bounds a
-// rebuild's own work is given (drainBound, natsRebuildBound, gatedStepsQueueBound). The holders
-// it rebuilds are in holders.go, nats_holder.go and runtime_holder.go.
+// again (observe, rebuild), how the two holders one launch reads are built apart and made
+// current together (staged, launchPair, rebuildPair) and what the rebuilds a caller's change
+// could not do answer that caller (noteRebuilds, route, takeFailures), how a credential that
+// moved under the daemon with no setting changing is found (credentialDigest,
+// rereadCredentials), and the bounds a rebuild's own work is given (drainBound,
+// natsRebuildBound, gatedStepsQueueBound). The holders it rebuilds are in holders.go,
+// nats_holder.go and runtime_holder.go.
 package daemon
 
 import (
@@ -14,6 +16,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -38,6 +41,65 @@ type rebuilt interface {
 	// rebuild builds this holder again from cfg and swaps it in.
 	rebuild(cfg *config.Config) error
 }
+
+// staged is a holder whose rebuild is a build and a swap rather than one step, so that two
+// holders one reader reads as a pair are built apart — each build reaching the files, the host
+// or the cluster its own holder reads — and made current together, with no lock held across
+// either build (rebuildPair).
+//
+// A holder that stages is rebuilt through its own stage by rebuild too, so one apply of its row
+// alone and one that names its partner build the same thing the same way.
+type staged interface {
+	rebuilt
+	// stage builds this holder again from cfg and answers what is left to do with what it
+	// built. A stage that fails changes nothing and leaves nothing behind.
+	stage(cfg *config.Config) (stagedBuild, error)
+}
+
+// stagedBuild is one holder's build, made and not yet current: the commit that makes it the one
+// every reader sees, the settle that ends what the commit replaced, and the discard that ends
+// what was built when it is never committed at all.
+//
+// A commit does no work a cluster or a host can hold up and nothing a reader waits behind: it is
+// the feed move and the pointer stores of the runtime holder, and one pointer store of the
+// launch specs. Only the first commit of a pair may fail, which is what keeps a pair from being
+// half made current (rebuildPair).
+type stagedBuild struct {
+	commit  func() error
+	settle  func()
+	discard func()
+}
+
+// end runs this build's settle, where it has one: the drain of what the commit replaced, which
+// runs after every commit of the pair and never between them.
+func (b stagedBuild) end() {
+	if b.settle != nil {
+		b.settle()
+	}
+}
+
+// drop ends what stage built, where there is anything to end: a runtime built for a pair that is
+// never committed is stopped where it was built, so its informers and refreshers do not outlive
+// the apply that could not use it.
+func (b stagedBuild) drop() {
+	if b.discard != nil {
+		b.discard()
+	}
+}
+
+// launchPair is the two holders one launch reads as one pair, in the order their commits run:
+// the runtime a launch is spawned on, whose commit is the one that may fail, and the launch
+// specs that launch is built from (supervise.Machine.start reads the specs, then spawns on the
+// runtime). Every apply that names both builds both and makes them current together
+// (rebuildPair), because a launch between two separate rebuilds paired the specs of one
+// configuration with the runtime of the next — a pane told the new ENVOY_URL with the old
+// ENVOY_TOKEN — for as long as the drain of the replaced runtime and a build of the specs
+// together, and for good where the second of the two could not be built.
+//
+// The rows that name both are the project's block and its members, `instructions`,
+// `worker_backends` and `nats_nkey_seed_file` (config.Classes), and an `envoy_url` beside an
+// `envoy_token_file` reaches the two in one request.
+var launchPair = [2]string{config.HolderRuntime, config.HolderLaunchSpecs}
 
 // rebuilder is the daemon's one observer of applied settings changes: it reads each change's
 // holder (config.Change.Holder) and builds that holder again, once per apply however many of its
@@ -170,13 +232,26 @@ func (r *rebuilder) observe(cfg *config.Config, applied []config.Change) {
 		return
 	}
 	failures := map[string]string{}
+	// The two holders one launch reads are built and made current together where this apply
+	// names both, at the place of whichever of them the registration order reaches first, so
+	// every other holder is built before or after the pair exactly as it was before
+	// (launchPair, rebuildPair).
+	pair, paired := r.pairable(named), false
 	for _, name := range r.order {
 		if _, asked := named[name]; asked {
-			if err := r.rebuild(cfg, r.holders[name]); err != nil {
-				// The holder's own name is in the text, because a path whose value several
-				// things hold is answered for all of them and the caller is owed the one that
-				// kept what it had.
-				failures[name] = fmt.Sprintf("%s: %v", name, err)
+			switch {
+			case pair && slices.Contains(launchPair[:], name):
+				if !paired {
+					paired = true
+					maps.Copy(failures, r.rebuildPair(cfg))
+				}
+			default:
+				if err := r.rebuild(cfg, r.holders[name]); err != nil {
+					// The holder's own name is in the text, because a path whose value several
+					// things hold is answered for all of them and the caller is owed the one that
+					// kept what it had.
+					failures[name] = fmt.Sprintf("%s: %v", name, err)
+				}
 			}
 		}
 		delete(named, name)
@@ -224,6 +299,110 @@ func (r *rebuilder) rebuild(cfg *config.Config, holder rebuilt) error {
 	}
 	r.log.Info("legion settings: holder rebuilt", "holder", name)
 	return nil
+}
+
+// pairable is whether both holders one launch reads are among the names given and both are
+// registered holders that stage their builds (launchPair, staged), which is the daemon's own
+// case. A change that names one of them alone, and a test that registered one of them alone or
+// put a holder of its own in its place, takes the single path: there is no pair to make current
+// together, and the one holder named is built as any other is.
+func (r *rebuilder) pairable(named map[string]struct{}) bool {
+	for _, name := range launchPair {
+		if _, asked := named[name]; !asked {
+			return false
+		}
+		if _, stages := r.holders[name].(staged); !stages {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildPair builds both holders one launch reads and makes them current together, and answers
+// why each of them kept what it had, by holder name, nothing where the pair was made current.
+//
+// What the swap holds, and for how long: the two commits, back to back, with nothing between
+// them. Both builds run before the first commit — the runtime's, which under Kubernetes makes a
+// cluster client and starts the informers, and the specs', which reads the launch secrets and
+// the operator's instructions and writes the deployment copy — and the drain of the runtime the
+// commit replaced runs after the second, so no lock and no half-made pair is held across work a
+// cluster or a host can hold up. The two holders disagree for the length of two pointer stores
+// instead of a build and a drain.
+//
+// What a build that fails leaves: both holders exactly as they were. The build that succeeded is
+// discarded — a runtime built and never committed is stopped where it was built — neither
+// commit runs, the daemon goes on serving the pair it had, and the caller is answered for both
+// halves (pairFailed). Neither digest is recorded, so the credentials neither could be built on
+// are read again at the next reread (rebuild).
+//
+// The residual this cannot close: a launch whose own SpawnSpec and Spawn straddle the two
+// commits still reads the specs of one configuration on the runtime of the next. Closing that
+// needs the pair pinned to the launch — supervise.Machine taking both halves at once — which is
+// no holder's to do.
+func (r *rebuilder) rebuildPair(cfg *config.Config) map[string]string {
+	first, second := r.holders[launchPair[0]].(staged), r.holders[launchPair[1]].(staged)
+	// Read before either build, for the reason one holder's own rebuild reads it before its
+	// build (rebuild): a credential that moved while the pair was being built is read again at
+	// the next reread rather than taken for the one the pair was built from.
+	credentials := map[string]string{}
+	for _, half := range []staged{first, second} {
+		if reads, is := half.(credentialHolder); is {
+			credentials[half.holder()] = reads.credentials(cfg)
+		}
+	}
+
+	firstBuild, err := first.stage(cfg)
+	if err != nil {
+		return r.pairFailed(first.holder(), second.holder(), err)
+	}
+	secondBuild, err := second.stage(cfg)
+	if err != nil {
+		firstBuild.drop()
+		return r.pairFailed(second.holder(), first.holder(), err)
+	}
+
+	// The swap. The commit that can fail is the first, so the pair is either made current whole
+	// or not at all: the second is one pointer store (specsHolder.stage), and a holder whose
+	// commit could fail put in its place would have to take the first's seat in launchPair.
+	if err := firstBuild.commit(); err != nil {
+		firstBuild.drop()
+		secondBuild.drop()
+		return r.pairFailed(first.holder(), second.holder(), err)
+	}
+	if err := secondBuild.commit(); err != nil {
+		secondBuild.drop()
+		r.log.Error("legion settings: the second half of the pair every launch reads could not be made current, and the first already is; a launch reads one of each until the next change of this row",
+			"holder", second.holder(), "made current", first.holder(), "error", err)
+		r.credentialDigests[first.holder()] = credentials[first.holder()]
+		r.log.Info("legion settings: holder rebuilt", "holder", first.holder())
+		firstBuild.end()
+		return map[string]string{second.holder(): fmt.Sprintf("%s: %v", second.holder(), err)}
+	}
+	for _, half := range []staged{first, second} {
+		if built, reads := credentials[half.holder()]; reads {
+			r.credentialDigests[half.holder()] = built
+		}
+		r.log.Info("legion settings: holder rebuilt", "holder", half.holder())
+	}
+	// Outside the swap: the drain of the runtime the commit replaced waits for the calls still
+	// inside it, as long as that runtime's own launch bound and a margin (runtimeDrainBound).
+	firstBuild.end()
+	secondBuild.end()
+	return nil
+}
+
+// pairFailed is what both holders one launch reads are answered when one of them could not be
+// built: the one that failed carries its build's own error, and the one that kept what it had
+// names the half that stopped it, since the two are made current together or not at all. A
+// caller that asked for a path they both hold is owed both (noteRebuilds).
+func (r *rebuilder) pairFailed(failed, kept string, err error) map[string]string {
+	r.log.Error("legion settings: rebuilding a holder failed; the daemon keeps the pair every launch reads",
+		"holder", failed, "kept", kept, "error", err)
+	return map[string]string{
+		failed: fmt.Sprintf("%s: %v", failed, err),
+		kept: fmt.Sprintf("%s: the %s could not be built, and the two are made current together, so every launch reads the pair the daemon had: %v",
+			kept, failed, err),
+	}
 }
 
 // noteRebuilds records what this apply's rebuilds could not do, by the path of each change that
@@ -415,25 +594,45 @@ const gatedStepsQueueBound = 30 * time.Second
 // and at every rebuild that succeeded (rebuilder.rebuild), so the first reread after boot
 // rebuilds nothing, a holder a route change has just rebuilt is left alone at the next wake, and
 // a rebuild that failed is tried again at the next reread.
+//
+// A wake that moved both halves of the pair one launch reads — the Dispatch bearer every pane
+// reads beside the Envoy bearer every spec carries, two files one rotation can move together —
+// builds them as one change too, at the place of whichever of them comes first
+// (rebuildPair). A rotation is a change of what a launch reads like any other, and a launch
+// between two separate rebuilds of it read half of one.
 func (r *rebuilder) rereadCredentials(cfg *config.Config) {
+	moved := map[string]struct{}{}
 	for _, name := range r.order {
-		holder, reads := r.holders[name].(credentialHolder)
-		if !reads || r.credentialDigests[name] == holder.credentials(cfg) {
+		if holder, reads := r.holders[name].(credentialHolder); reads && r.credentialDigests[name] != holder.credentials(cfg) {
+			moved[name] = struct{}{}
+		}
+	}
+	pair, paired := r.pairable(moved), false
+	for _, name := range r.order {
+		if _, move := moved[name]; !move {
 			continue
 		}
-		// A reread is no caller's change: a rebuild that failed is logged by rebuild itself and
+		// A reread is no caller's change: a rebuild that failed is logged where it failed and
 		// tried again at the next reread, and nothing of it is answered to a settings route
 		// call that asked for no such rebuild.
-		if r.rebuild(cfg, holder) != nil {
+		rebuiltSpecs, failed := name == config.HolderLaunchSpecs, false
+		if pair && slices.Contains(launchPair[:], name) {
+			if paired {
+				continue
+			}
+			paired, rebuiltSpecs = true, true
+			failed = len(r.rebuildPair(cfg)) != 0
+		} else {
+			failed = r.rebuild(cfg, r.holders[name]) != nil
+		}
+		if failed || !rebuiltSpecs {
 			continue
 		}
 		// A pod's record holds a launch file's path and not its content, so an edit in place opens
 		// no update round, and this line is what tells the operator where the edit lands. The
 		// runtime is left out because a build of it can rewrite a file running panes share (tmux's
 		// Dispatch bearer) and its own cluster credential reaches no role.
-		if name == config.HolderLaunchSpecs {
-			r.log.Info("legion settings: a file a launch key names changed on disk; each role reads the new content at its next launch, and every role running now keeps the old content until then",
-				"holder", name)
-		}
+		r.log.Info("legion settings: a file a launch key names changed on disk; each role reads the new content at its next launch, and every role running now keeps the old content until then",
+			"holder", config.HolderLaunchSpecs)
 	}
 }

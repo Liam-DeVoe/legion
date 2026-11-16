@@ -63,7 +63,10 @@ type servedRuntime struct {
 	drained chan struct{}
 }
 
-var _ runtime.Runtime = (*runtimeHolder)(nil)
+var (
+	_ runtime.Runtime = (*runtimeHolder)(nil)
+	_ staged          = (*runtimeHolder)(nil)
+)
 
 // runtimeHolding is the runtime behind its holder as the daemon holds it: the runtime itself,
 // and the holder the settings observer registers and rebuilds, which reports the credential
@@ -160,50 +163,82 @@ func (h *runtimeHolder) credentials(cfg *config.Config) string {
 //
 // A failure changes nothing: the runtime that was built is stopped, the feed stays on the
 // runtime the daemon is supervising with, and the rebuilder logs what could not be built.
+//
+// It is the three steps of its own stage run one after the other, which is what an apply that
+// names this holder alone asks for. An apply that names the launch specs beside it runs the same
+// three around theirs, so the pair every launch reads is made current together (rebuildPair).
 func (h *runtimeHolder) rebuild(cfg *config.Config) error {
-	next, stopNext, err := h.build(*cfg)
+	built, err := h.stage(cfg)
 	if err != nil {
 		return err
 	}
-	h.mu.Lock()
-	if h.out != nil {
-		// The feed moves to the new runtime before the old one's ends, so no observation is
-		// missed between them; a duplicate observation of one process is what every probe
-		// already answers.
-		previous := h.stopFeed
-		h.feeds++
-		if err := h.feed(next); err != nil {
-			h.feeds--
-			h.mu.Unlock()
-			stopNext()
-			return err
-		}
-		if previous != nil {
-			previous()
-		}
+	if err := built.commit(); err != nil {
+		built.drop()
+		return err
 	}
-	h.current.Store(&next)
-	replaced := h.serving
-	h.serving = &servedRuntime{rt: next, stop: stopNext}
-	var draining chan struct{}
-	if replaced.calls > 0 {
-		replaced.drained = make(chan struct{})
-		draining = replaced.drained
-	}
-	h.mu.Unlock()
-	if draining != nil {
-		bound := runtimeDrainBound(replaced.rt)
-		select {
-		case <-draining:
-		case <-time.After(bound):
-			h.log.Warn("legion settings: a call was still inside the runtime being replaced; the daemon ends that runtime anyway and the call sees its context cancelled",
-				"holder", config.HolderRuntime, "waited", bound)
-		}
-	}
-	if replaced.stop != nil {
-		replaced.stop()
-	}
+	built.end()
 	return nil
+}
+
+// stage builds the runtime from cfg and answers what is left to do with it: the commit that
+// makes it the runtime every call enters and supervision's feed reads, the settle that drains
+// and ends the runtime that commit replaced, and the discard that stops what was built where a
+// pair it belongs to is never made current.
+//
+// The build is the whole of the work a cluster or a host can hold up — the Sandbox runtime's
+// client and informers, the tmux runtime's launcher resolution and its set of provider keys
+// (daemon.go's runtimeFor) — and it runs before the commit takes any lock, so nothing waits
+// behind a half-made change.
+func (h *runtimeHolder) stage(cfg *config.Config) (stagedBuild, error) {
+	next, stopNext, err := h.build(*cfg)
+	if err != nil {
+		return stagedBuild{}, err
+	}
+	var replaced *servedRuntime
+	var draining chan struct{}
+	return stagedBuild{
+		commit: func() error {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if h.out != nil {
+				// The feed moves to the new runtime before the old one's ends, so no observation
+				// is missed between them; a duplicate observation of one process is what every
+				// probe already answers.
+				previous := h.stopFeed
+				h.feeds++
+				if err := h.feed(next); err != nil {
+					h.feeds--
+					return err
+				}
+				if previous != nil {
+					previous()
+				}
+			}
+			h.current.Store(&next)
+			replaced = h.serving
+			h.serving = &servedRuntime{rt: next, stop: stopNext}
+			if replaced.calls > 0 {
+				replaced.drained = make(chan struct{})
+				draining = replaced.drained
+			}
+			return nil
+		},
+		settle: func() {
+			if draining != nil {
+				bound := runtimeDrainBound(replaced.rt)
+				select {
+				case <-draining:
+				case <-time.After(bound):
+					h.log.Warn("legion settings: a call was still inside the runtime being replaced; the daemon ends that runtime anyway and the call sees its context cancelled",
+						"holder", config.HolderRuntime, "waited", bound)
+				}
+			}
+			if replaced.stop != nil {
+				replaced.stop()
+			}
+		},
+		discard: stopNext,
+	}, nil
 }
 
 // runtimeDrainBound is how long a rebuild waits for the calls inside the runtime it replaced to

@@ -545,6 +545,16 @@ func (h *workerStreamHolder) rebuild(cfg *config.Config) error {
 // which is what a `launch` row promises. A rebuild reads the launch secrets and the operator's
 // instructions again (readLaunchSecrets, readInstructions), so a rotated credential reaches the
 // next launch too; the specs it replaces hold nothing to drain.
+//
+// It stages its build, so that an apply naming the runtime beside it makes the pair every launch
+// reads current together rather than one after the other (rebuilder.rebuildPair). Under that
+// pair the specs are built before the runtime is made current, and the build reads the runtime
+// the holder is still serving (openSupervision's buildSpecs asks it ProvisionsWorkspaces, for
+// whether the daemon's own host provisions each workspace). That is sound only because the
+// runtime's kind cannot change under a running daemon — `runtime`, `runtime.kubernetes` and
+// `runtime.tmux` are ClassFixed rows (config/classes.go), so a rebuild builds the same kind
+// again and answers the same — and a reader who reclassed one of those rows would have to hand
+// the specs' build the runtime being staged beside it.
 type specsHolder struct {
 	current atomic.Pointer[specs]
 	// build is the specs of one configuration, over everything boot resolved that the
@@ -552,7 +562,10 @@ type specsHolder struct {
 	build func(cfg config.Config) (specs, error)
 }
 
-var _ supervise.Specs = (*specsHolder)(nil)
+var (
+	_ supervise.Specs = (*specsHolder)(nil)
+	_ staged          = (*specsHolder)(nil)
+)
 
 func newSpecsHolder(settled specs, build func(cfg config.Config) (specs, error)) *specsHolder {
 	h := &specsHolder{build: build}
@@ -569,12 +582,28 @@ func (h *specsHolder) credentials(cfg *config.Config) string {
 }
 
 func (h *specsHolder) rebuild(cfg *config.Config) error {
-	next, err := h.build(*cfg)
+	built, err := h.stage(cfg)
 	if err != nil {
 		return err
 	}
-	h.current.Store(&next)
-	return nil
+	return built.commit()
+}
+
+// stage builds the specs from cfg — reading the launch secrets and the operator's instructions,
+// and writing the deployment copy every role's prompt ends with — and answers the commit that
+// makes them the specs the next launch is built from: one pointer store, which cannot fail and
+// so is the commit a pair runs second (rebuilder.rebuildPair). There is nothing to settle or to
+// discard: the specs a commit replaces hold no connection, no informer and no process, and the
+// ones a pair never commits are collected.
+func (h *specsHolder) stage(cfg *config.Config) (stagedBuild, error) {
+	next, err := h.build(*cfg)
+	if err != nil {
+		return stagedBuild{}, err
+	}
+	return stagedBuild{commit: func() error {
+		h.current.Store(&next)
+		return nil
+	}}, nil
 }
 
 func (h *specsHolder) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
