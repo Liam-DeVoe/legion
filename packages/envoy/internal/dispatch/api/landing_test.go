@@ -251,6 +251,60 @@ func TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell(t *testing.T) {
 	assertSameJSON(t, "shell.projects", landing.Shell["projects"], readRouteBody(t, handler, "/api/v1/projects"))
 }
 
+// A routed issue makes the database parts read the route roster from the listener: the inbox
+// (an open ask on a routed issue, on every landing), the pinned issues, the board's issues and
+// the issue's own detail. With the listener silent, each such read waits the roster's shared
+// fetch out, so the landing - which holds every cold page behind it - answers well past the
+// bound the service parts keep. Measured in a browser at acc4638d: with the
+// listener silent and one open ask on a routed issue, the board drew after 7.6 s and an unrouted
+// issue's page after 3.3 s, against 3.4 s and 1.3 s at the merge base d5e2a5fe, which held no page
+// behind the inbox's read.
+func TestLandingDoesNotWaitOnASilentListenerForARoutedIssue(t *testing.T) {
+	listenerURL, _ := silentService(t)
+	brokerURL, _ := silentService(t)
+	handler := newLandingServicesHandler(t, listenerURL, brokerURL)
+	createTestProject(t, handler, "LAND")
+	issueTitled := func(title string) model.Issue {
+		t.Helper()
+		response := createIssueRequest(t, handler, map[string]any{"project": "LAND", "title": title, "spec": "# Spec\n\n" + title + ".\n"})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create issue %q: status=%d body=%s", title, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Issue](t, response)
+	}
+	routed := issueTitled("Routed reviewer handoff")
+	plain := issueTitled("Unrouted gardening notes")
+	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+routed.Key,
+		map[string]any{"route": "role:reviewer"}, "alice")
+	if patched.Code != http.StatusOK {
+		t.Fatalf("route %s: status=%d body=%s", routed.Key, patched.Code, patched.Body.String())
+	}
+	asked := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+routed.Key+"/asks",
+		map[string]any{"question": "Is the routed issue ready?", "actor": sessionActor()})
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("ask on %s: status=%d body=%s", routed.Key, asked.Code, asked.Body.String())
+	}
+	for _, target := range []string{
+		"/api/v1/landing?page=board&project=LAND",
+		"/api/v1/landing?page=issue&key=" + plain.Key,
+		"/api/v1/landing?page=issue&key=" + routed.Key,
+	} {
+		ctx, cancel := context.WithTimeout(t.Context(), landingServiceTestLimit)
+		started := time.Now()
+		response := serveLanding(ctx, handler, target)
+		took := time.Since(started)
+		cancel()
+		t.Logf("GET %s answered %d in %v", target, response.Code, took.Round(time.Millisecond))
+		if response.Code != http.StatusOK {
+			t.Errorf("GET %s: status=%d, want 200", target, response.Code)
+		}
+		if took > landingServiceBound+landingServiceTestMargin {
+			t.Errorf("GET %s answered after %v, want within %v: a routed issue's roster read waits on the silent listener outside the bound",
+				target, took.Round(time.Millisecond), landingServiceBound+landingServiceTestMargin)
+		}
+	}
+}
+
 // landingServiceTestLimit is where a test ends the request of a landing it holds to
 // landingServiceBound. It is below the listener's and the broker's own five-second windows, so a
 // landing that waits on a silent service fails its test on time rather than reaching the client's
