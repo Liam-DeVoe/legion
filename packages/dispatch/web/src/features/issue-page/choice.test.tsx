@@ -24,12 +24,17 @@ function ChoiceProbe({ name }: { name: string }): ReactNode {
   );
 }
 
+/** A client that never asks a read again once it holds an answer, and never retries one. */
+function newClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+}
+
 /** A client whose sign-in read holds alice, as `features/threads/replies-fixture.ts` seeds it,
  *  and never asks again. */
 function aliceSignedIn(): QueryClient {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
+  const client = newClient();
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   return client;
 }
@@ -75,9 +80,7 @@ for (const [title, stored, choice] of STORED) {
 
 test("with nobody signed in the choice is today's page, and turning it stores nothing", async () => {
   const user = userEvent.setup();
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
+  const client = newClient();
   // The unit network answers the sign-in read with Dispatch's own "no identity" (`network.ts`).
   await client.prefetchQuery(whoAmIQuery());
   const before = storedEntries();
