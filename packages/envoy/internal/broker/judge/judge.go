@@ -34,29 +34,32 @@ import (
 
 // runBudget is how long one run has, taken when the run starts (D9): the Dispatch phase,
 // bounded at dispatchBound, and the model call, bounded at modelBound (model.go), with room
-// left over for everything a run asks of the request machine.
+// left over for everything else a run asks of the request machine.
 const runBudget = 30 * time.Second
 
-// dispatchBound is how long the whole Dispatch phase of one run has: the project check's read
-// (Requests.JudgeProject, which asks Dispatch whether a project the request names is private)
-// and both of Runner.issue's GETs together. The three bounds sit together because they have to
-// add up, and they add up with time to spare: 5 seconds and 20 of the 30 runBudget gives, so the
-// worst case — a Dispatch phase that spends its whole bound and a model call that then times
-// out — reaches Runner.write with 5 seconds of the budget left. That is what the arithmetic is
-// for. A run that reaches runBudget writes nothing at all — Runner.write returns on ctx.Err() —
-// so a broker that paid for its Dispatch reads and a model call would record no request.judged
-// row, which is the one outcome the audit trail exists to prevent. The 5 seconds left over are
-// the run's own reads of the request machine — JudgePolicy before the Dispatch phase and
-// JudgeRequestState after it — and the short transaction that writes the row, each of them a
-// local database call.
+// dispatchBound is how long the whole Dispatch phase of one run has: every read of Dispatch before
+// the model — the policy check's (Requests.JudgePolicy reads what Dispatch holds of a tagged
+// name), the project check's (Requests.JudgeProject) and both of Runner.issue's GETs — run under
+// one requests.JudgeDispatch, so they share one bound. It is requests.JudgeDispatchBound, the bound
+// the decision's own reads of Dispatch run under too.
+//
+// The bounds sit together because they have to add up: 5 seconds and modelBound's 20 of the 30
+// runBudget gives leave the run 5 seconds after the worst case of the two, a Dispatch phase that
+// spends its whole bound and a model call that then times out. In those 5 seconds the run reads
+// the request's state (JudgeRequestState), and an approval makes its reads of Dispatch before its
+// transaction (ApplyJudgeDecision) under requests.JudgeDispatch, which ends them
+// requests.JudgeRowReserve before the run does, then its transaction. The request.judged row is
+// written on a context of its own (Runner.write), so neither a slow Dispatch at the decision nor
+// the run's own deadline can leave a run that asked the model without its row: the one outcome
+// the audit trail exists to prevent.
 //
 // The per-call bounds of the two clients are backstops under this and not the phase's bound:
 // cmd/broker's judgeDispatchTimeout is http.Client.Timeout, which is per Do, and Issue makes two
-// calls; the project-access client bounds each of its calls at 10 s, and the project read can
-// make one per project. Either client alone would let the phase run far past the arithmetic
-// above, so this deadline is the one that ends a stalled read of a run and the clients' are the
-// backstops behind it.
-const dispatchBound = 5 * time.Second
+// calls; the project-access client bounds each of its calls at 10 s, and a project read can make
+// one per project. Either client alone would let the phase run far past the arithmetic above, so
+// this deadline is the one that ends a stalled read of a run and the clients' are the backstops
+// behind it.
+const dispatchBound = requests.JudgeDispatchBound
 
 // maxJudgedLifetime is the longest grant lifetime the judge decides, whatever judge seconds a
 // rules entry allows: the bound of the class itself.
@@ -299,7 +302,13 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		return checks, data
 	}
 
-	now, withheld, admin, err := r.opts.Requests.JudgePolicy(ctx, p.EnrollmentID, name)
+	// The Dispatch phase: from here to the issue check every read of Dispatch — the policy
+	// check's, the project check's and the issue check's two GETs — runs under one
+	// requests.JudgeDispatch, so however slowly Dispatch answers, the model call and the row's
+	// write keep the part of runBudget the arithmetic gives them.
+	phase, cancel := requests.JudgeDispatch(ctx)
+	defer cancel()
+	now, withheld, admin, err := r.opts.Requests.JudgePolicy(phase, p.EnrollmentID, name)
 	switch {
 	case err != nil:
 		if !add(checkPolicy, false, "the policy could not be re-read: "+err.Error()) {
@@ -321,11 +330,6 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		return checks, data
 	}
 
-	// The Dispatch phase: the project check's read and the issue check's two GETs share one
-	// dispatchBound, so however slowly Dispatch answers, the model call and the row's write
-	// keep the part of runBudget the arithmetic gives them.
-	phase, cancel := context.WithTimeout(ctx, dispatchBound)
-	defer cancel()
 	private, err := r.opts.Requests.JudgeProject(phase, p.EnrollmentID, name, p.Reason)
 	switch {
 	case err != nil:
@@ -392,10 +396,10 @@ func decidedByAPerson(name string) string {
 // issue the check passed on; a read that failed still leaves the key there, which is what the
 // negative control shows the model.
 //
-// ctx is the Dispatch phase's, which the project check's read has already spent part of: its two
-// GETs share what is left of one dispatchBound, so the phase costs the run what runBudget gave it
-// however the reads go. They stay one after the other: a refused issue read means the spec is
-// never asked for.
+// ctx is the Dispatch phase's, which the policy and project checks' reads have already spent part
+// of: its two GETs share what is left of one dispatchBound, so the phase costs the run what
+// runBudget gave it however the reads go. They stay one after the other: a refused issue read
+// means the spec is never asked for.
 func (r *Runner) issue(ctx context.Context, p requests.PendingRequest, data *Data) (bool, string) {
 	key := record.IssueKeyInReason(p.Reason)
 	if key == "" {
@@ -485,7 +489,9 @@ func (v verdictRow) detail(modelID string) map[string]any {
 
 // write is the one place a run writes anything. An approve verdict goes through
 // ApplyJudgeDecision, which commits the approval and the row together; every other verdict, and
-// an approval the state machine refused, writes the row alone.
+// an approval the state machine refused or could not make, writes the row alone, on a context of
+// its own (rowContext), so the run's deadline cannot cancel the one write that records what the
+// judge was asked.
 func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdictRow) {
 	if ctx.Err() != nil {
 		// The run's budget went, or the broker stopped serving, so nothing is written
@@ -511,27 +517,47 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 		// A person decided the request first, it expired, or the current policy moved
 		// while the judge was reading: the session's operator withheld the name or its
 		// owner tagged it an administrator's (the two guards currentPolicyAdmits makes
-		// for the judge alone), the name's owner changed, or its max-grant fell below the
-		// request's lifetime. Each is the ordinary outcome of losing a race and no fault
-		// of the judge's (D10), and the policy's four all answer record.ErrNotApprover.
+		// for the judge alone), the name's owner changed, its max-grant fell below the
+		// request's lifetime, or the request became a private project's. Each is the
+		// ordinary outcome of losing a race and no fault of the judge's (D10), and each
+		// answers record.ErrNotApprover. Dispatch not answering the approval's check, or
+		// the run's time running out before the approval landed, is no refusal either.
 		// Any other refusal is one the judge should not have reached at all. Either way
 		// the approval wrote nothing, and the verdict is still the record of what the
 		// judge was asked and what it answered, so it is written on its own.
 		row.notApplied = err
-		if errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, record.ErrNotApprover) {
+		switch {
+		case errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, record.ErrNotApprover):
 			slog.Info("broker judge: the request was decided, expired or moved out of the judge's policy before the judge's approval landed",
 				"record", p.RecordID, "request", p.RequestID, "model", modelID, "reason", err)
-		} else {
+		case errors.Is(err, requests.ErrProjectAccessUnavailable) || errors.Is(err, context.DeadlineExceeded):
+			slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not be asked whether the request is still the judge's, or the run's time ran out; the request waits for its person",
+				"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", err)
+		default:
 			slog.Error("broker judge: the judge's approval was refused", "record", p.RecordID,
 				"request", p.RequestID, "model", modelID, "err", err)
 		}
 	}
-	if err := r.opts.Requests.LogJudged(ctx, p.RecordID, modelID, row.detail(modelID)); err != nil {
+	rowCtx, cancel := rowContext(ctx)
+	defer cancel()
+	if err := r.opts.Requests.LogJudged(rowCtx, p.RecordID, modelID, row.detail(modelID)); err != nil {
 		slog.Error("broker judge: the verdict could not be written", "record", p.RecordID,
 			"request", p.RequestID, "model", modelID, "err", err)
 		return
 	}
 	r.logged(p, row)
+}
+
+// rowContext is the context a run's request.judged row is written on when nothing else wrote it:
+// ctx's values without its cancellation, so the run's deadline cannot cancel the write, and a
+// deadline of its own, the later of ctx's and requests.JudgeRowReserve from now, so a write that
+// cannot commit still ends.
+func rowContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(requests.JudgeRowReserve)
+	if end, ok := ctx.Deadline(); ok && end.After(deadline) {
+		deadline = end
+	}
+	return context.WithDeadline(context.WithoutCancel(ctx), deadline)
 }
 
 // logged is the one line a run that wrote a row leaves behind. It carries the model's own words

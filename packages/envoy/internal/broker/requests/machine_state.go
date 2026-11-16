@@ -321,6 +321,7 @@ type Machine struct {
 	// each machine's own, so one machine's lines never silence another's.
 	channelsMissingLogged logThrottle
 	rowsUnansweredLogged  logThrottle
+	reasonsUnreadLogged   logThrottle
 	// narrowingChecks is NarrowingChecks' per-enrollment buckets, built on first use
 	// (narrowingCheckLimiter).
 	narrowingChecks     *ratelimit.Keyed
@@ -429,11 +430,12 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, fac
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
 // seam), requires iss to be this enrollment's own key and no login_hint (session requests never
-// name their own approver — that's the policy's job), rereads each name the live policy does not
-// serve (rereadMissing), and hands back a live grant for exactly these names when one may be
-// reused (reuseLiveGrant). Otherwise it decides and writes the request in one transaction: it
-// takes the advisory locks that serialize pending requests for each requested name in one
-// enrollment (lockPendingNames), then locks the enrollment live (lockLiveEnrollment), so no
+// name their own approver — that's the policy's job) and a reason naming the issue keys of no more
+// than record.MaxReasonProjects projects (record.CheckReasonProjects), rereads each name the live
+// policy does not serve (rereadMissing), and hands back a live grant for exactly these names when
+// one may be reused (reuseLiveGrant). Otherwise it decides and writes the request in one
+// transaction: it takes the advisory locks that serialize pending requests for each requested name
+// in one enrollment (lockPendingNames), then locks the enrollment live (lockLiveEnrollment), so no
 // request or grant lands on an enrollment that ended after Create first read it (such an
 // enrollment is pgx.ErrNoRows, as one that had ended before), and no withhold
 // (RevokeByApprover, which takes the same row) lands between the read of what is withheld from
@@ -480,6 +482,9 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if len(obj.Details) == 0 || obj.Details[0].Type != record.KindAgentSecret {
 		return Request{}, fmt.Errorf("%w: this endpoint accepts only agent_secret authorization_details", record.ErrRequestInvalid)
 	}
+	if err := record.CheckReasonProjects(obj.Reason); err != nil {
+		return Request{}, err
+	}
 	fresh, err := m.Replay(ctx, obj.JTI, obj.Expires.Add(m.Skew+jtiRetentionMargin))
 	if err != nil {
 		return Request{}, err
@@ -487,7 +492,15 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if !fresh {
 		return Request{}, fmt.Errorf("%w: replayed jti", record.ErrRequestInvalid)
 	}
+	return m.createChecked(ctx, enr, enrollmentID, sessionID, obj, names, narrowing)
+}
 
+// createChecked is Create past the rules a new request object alone is held to — its issuer, no
+// login_hint, agent_secret details, a reason naming at most record.MaxReasonProjects projects, a
+// fresh jti — and writes the request as Create's doc says. Those rules stay in Create, where a
+// request is new, and createChecked holds the rest, so a test can write through it the request a
+// broker from before one of them would have stored.
+func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollmentID, sessionID string, obj record.RequestObject, names []string, narrowing *secrets.GitHubNarrowing) (Request, error) {
 	set, err := m.rereadMissing(ctx, enrollmentID, names, m.Policy.Get())
 	if err != nil {
 		return Request{}, err
@@ -1309,38 +1322,18 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// was made against. It is read before the transaction because what Dispatch holds of its
 	// tagged names is resolved against it there.
 	set := m.Policy.Get()
-	// What Dispatch holds, read on the pool before the transaction takes its locks: the state
-	// of each project the request's names are tagged with and the projects its session may
-	// still name (projectFacts), and whether the one deciding may decide this record at all:
-	// a person who may see it (mayDecide), or, for the judge, a request still of no private
-	// project (judgeMayDecide, which its run checked before the model and which a project
-	// turning private during the run, or an adoption by an enrollment naming a private project,
-	// can have changed since). The transaction checks that the request still hangs off the
-	// enrollment read here, and makes another attempt when it moved.
+	// What Dispatch holds, read on the pool before the transaction takes its locks, and whether
+	// the one deciding may decide this record at all (decisionFacts: the person rule for a person;
+	// for the model judge its project rule, asked again afresh and under JudgeDispatch). The
+	// transaction checks that the request still hangs off the enrollment read here, and makes
+	// another attempt when it moved.
 	pre, err := m.readDecision(ctx, recordID)
 	if err != nil {
 		return Decision{}, false, err
 	}
-	facts, err := m.projectFacts(ctx, pre.enr, pre.names, set)
+	facts, err := m.decisionFacts(ctx, recordID, who, pre, set)
 	if err != nil {
 		return Decision{}, false, err
-	}
-	if who.isJudge() {
-		may, err := m.judgeMayDecide(ctx, facts.states, pre.enr, pre.reason)
-		if err != nil {
-			return Decision{}, false, err
-		}
-		if !may {
-			return Decision{}, false, fmt.Errorf("%w: the request now belongs to a private project, which the model judge leaves to a person", record.ErrNotApprover)
-		}
-	} else {
-		may, err := m.mayDecide(ctx, who.login, facts, m.namedProjects(pre.enr), pre.reason)
-		if err != nil {
-			return Decision{}, false, err
-		}
-		if !may {
-			return Decision{}, false, fmt.Errorf("%w: the request belongs to a private project %s may not see", record.ErrNotApprover, record.CanonicalLogin(who.login))
-		}
 	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {

@@ -556,15 +556,19 @@ its page, and cannot decide it ([Approve a request](/legion/broker/guides/approv
 tell, a broker with `BROKER_PROJECT_ACCESS_URL` asks Dispatch, for the person reading, about each
 project a request touches, the project of each issue key its reason names included, even in a
 deployment that tags nothing: the reason `INFRA-12: rotate the deploy key` costs one read of
-`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. A reason
-whose issue keys name more than 16 projects is read for none of them: its request is in no
-person's list, its page is nobody's and the judge leaves it, so it waits until it expires. While
-Dispatch cannot answer, that request alone is left out of the pending and grant lists, with a line
-in the broker's log naming its record; its page answers 503 and shows only its record id, and an
-approval of it decides nothing. Every other request is listed and decided as before. The model
-judge leaves every private project's request to a person ([the model judge](#the-model-judge)),
-and its approval checks this again before it is written, so a project that turned private while
-the judge was reading, or a session that took the request over and names a private project,
+`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. A new
+request whose reason names the issue keys of more than 16 projects is refused when it is made
+(`400 REQUEST_INVALID`, naming the bound), so the reads one request costs are bounded. A request
+stored before that rule whose reason names more is still shown: its keys are not read and count
+as naming no project, as every reader saw it when it was written, while its secrets' tags and its
+credential's projects are still asked, and the broker's log names its row once. While Dispatch
+cannot answer, a request it must ask about is left out of the pending and grant lists, with a
+line in the broker's log naming its record; its page answers 503 and shows only its record id,
+and an approval of it decides nothing. Every other request is listed and decided as before. The
+model judge leaves every private project's request to a person
+([the model judge](#the-model-judge)), and its approval asks Dispatch again, afresh and not from
+the 30 seconds of answers the broker keeps, before it is written, so a project that turned private
+while the judge was reading, or a session that took the request over and names a private project,
 leaves the request to a person. A sign-in started from a private project's request names no
 approver to the provider, since the approver is part of what the page hides.
 
@@ -1037,15 +1041,19 @@ asks afresh, as a new request, which the judge refuses while the tag stands. The
 one secret, a lifetime the rules still let the judge decide for it, and a reason naming an issue
 key, so a forged record, and one a rules change left behind, release nothing either.
 
-The judge reads Dispatch in two checks, and both share one 5-second bound inside the run's 30
-seconds, so a slow Dispatch leaves the model call and the row's write their time. On a broker with
-`BROKER_PROJECT_ACCESS_URL` set, the project check asks with the broker's account token whether a
-project the request names is private: the secret's `dispatch-project` tag, the projects of the
-credential that asked, and the project of each issue key in the signed reason. The issue check
-makes two GETs, the issue and the text of its spec
-document, with the broker's own projected ServiceAccount token, read again from its file once the
-copy it holds is 30 seconds old. A read the bound cuts short fails its check, and the request
-waits for its person. The broker writes nothing there — no ask, no comment, no
+The judge reads Dispatch in three checks, and all of them share one 5-second bound inside the
+run's 30 seconds, so a slow Dispatch leaves the model call and the row's write their time. On a
+broker with `BROKER_PROJECT_ACCESS_URL` set, the policy check reads the state of a tagged secret's
+project, and the project check asks with the broker's account token whether a project the request
+names is private: the secret's `dispatch-project` tag, the projects of the credential that asked,
+and the project of each issue key in the signed reason. The issue check makes two GETs, the issue
+and the text of its spec document, with the broker's own projected ServiceAccount token, read
+again from its file once the copy it holds is 30 seconds old. A read the bound cuts short fails
+its check, and the request waits for its person. An approval asks Dispatch again before it is
+written, under the same 5 seconds and ending a second before the run does, so a Dispatch slow to
+answer then fails the approval, and the request waits for its person. A run with a verdict writes
+its `request.judged` row on a context of its own, which the run's deadline does not cancel, so an
+approval that failed late still leaves its row. The broker writes nothing in Dispatch — no ask, no comment, no
 status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
 settings name, presenting the broker machine's own Google identity token for the audience they
 name. Those settings are all-or-none, and the

@@ -73,6 +73,11 @@ agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mentio
   `agent-secrets` exit status. `missing_scope` and `not_in_channel` also go into the next daily
   report, with the refusals of the posting path below, because only a person in the Slack
   workspace can fix them.
+- A controller whose credential names a private Dispatch project cannot make this read once the
+  token carries the tag `project-channels=slack`: the broker's airlock spends the token only on
+  `POST /api/chat.postMessage` to that project's channels, and refuses the call with `a private
+  project's grant of this secret posts only with POST /api/chat.postMessage …`. Answer from the
+  mention alone, as for any failed read.
 
 Reading a thread is not a subscription, so the rule above stands: never `envoy_subscribe` a Slack
 topic yourself.
@@ -101,7 +106,9 @@ person in the workspace can fix either, so say so in the next daily report rathe
 When it answers that the secrets broker has not granted `LEGION_SLACK_BOT_TOKEN` (its request waits
 for approval, or was denied), nothing was posted and no reply can be until the operator stores the
 token as a shared agent secret, owner `shared` and tier `agent`: name the error in the next daily
-report.
+report. A private project's controller posts only to the channels its project's owner named once
+the token carries the tag `project-channels=slack`; a reply to any other channel is refused, and is
+not posted.
 
 ## Decide what the person wants
 

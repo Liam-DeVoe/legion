@@ -236,7 +236,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 				// or joining it (the secret keeps a project tag with no guard, which a broker
 				// from before the project tags would serve), and the two need different words.
 				_, guarded := policy.SplitRequestersGuard(held.tags[policy.TagRequesters])
-				state := fmt.Sprintf("The requesters tag still holds %s, which only a broker from before the project tags reads, as a refusal", policy.RequestersRollbackGuard)
+				state := fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads, as a refusal", policy.RequestersRollbackGuard)
 				if !guarded {
 					state = fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before the project tags would serve this secret by owner and tier alone", policy.RequestersRollbackGuard)
 				}
@@ -276,7 +276,8 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 // but the guard, and answers rewrite, the value the requesters tag must then be written as, where
 // the guard leaves a list or joins one: a second write after the removal, in that order, so a
 // second write that fails leaves the guard on a secret that no longer needs it, which only a
-// broker from before the project tags reads, as a refusal. A retag that sets tags never removes
+// broker from legion-envoy-v29.23.0 (the first to read requesters) up to the release before the
+// project tags reads, as a refusal. A retag that sets tags never removes
 // the requesters tag: a guard left on a secret with no project tag, by a console's removal of the
 // tag, stays until a removal retag takes it out.
 //

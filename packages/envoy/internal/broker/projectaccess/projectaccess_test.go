@@ -127,6 +127,39 @@ func TestAccessCachesThirtySeconds(t *testing.T) {
 	}
 }
 
+// TestAFreshQuestionIsAskedOfDispatchWhateverTheCacheHolds: under Fresh, Access and MemberKind ask
+// Dispatch though the cache holds a young answer, and what Dispatch answers replaces it, so a
+// check that must see a change younger than CacheTTL (the model judge's approval) sees it. A
+// question without Fresh still reads the cache, as before.
+func TestAFreshQuestionIsAskedOfDispatchWhateverTheCacheHolds(t *testing.T) {
+	server := standIn(t)
+	client := clientOf(server)
+	if got, err := client.Access(t.Context(), "PUB", ""); err != nil || got.Private() {
+		t.Fatalf("Access(PUB) = %+v, %v; want the public answer", got, err)
+	}
+	if kind, err := client.MemberKind(t.Context(), "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted {
+		t.Fatalf("MemberKind(bob) = %q, %v; want restricted", kind, err)
+	}
+	server.SetRow("PUB", projectaccesstest.Row{Visibility: "private", Owner: "carol@example.com"})
+	if got, err := client.Access(t.Context(), "PUB", ""); err != nil || got.Private() {
+		t.Fatalf("Access(PUB) inside CacheTTL after the change = %+v, %v; want the cached public answer", got, err)
+	}
+	asked := server.Calls()
+	fresh := projectaccess.Fresh(t.Context())
+	if got, err := client.Access(fresh, "PUB", ""); err != nil || !got.Private() {
+		t.Fatalf("Access(Fresh, PUB) = %+v, %v; want Dispatch's private answer, not the cached one", got, err)
+	}
+	if kind, err := client.MemberKind(fresh, "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted {
+		t.Fatalf("MemberKind(Fresh, bob) = %q, %v; want restricted", kind, err)
+	}
+	if calls := server.Calls() - asked; calls != 2 {
+		t.Fatalf("the two fresh questions asked Dispatch %d times, want 2", calls)
+	}
+	if got, err := client.Access(t.Context(), "PUB", ""); err != nil || !got.Private() {
+		t.Fatalf("Access(PUB) after the fresh question = %+v, %v; want the fresh private answer, which replaced the cached one", got, err)
+	}
+}
+
 // TestAccessSendsTheAccountToken: every call presents the broker's own account token and puts the
 // person in the query, never in the path; any other bearer is refused, and that refusal is no
 // answer.

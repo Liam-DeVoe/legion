@@ -685,7 +685,12 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 		return policy.Decision{}, false, false, err
 	}
 	set := m.Policy.Get()
-	facts, err := m.projectFacts(ctx, enr, []string{name}, set)
+	// What Dispatch holds of a tagged name is read under the judge's bound on Dispatch, whatever
+	// ctx the caller passed (JudgeDispatch): this is the judge's first read of Dispatch, and it
+	// shares the judge's Dispatch phase when the judge asks.
+	reads, cancel := JudgeDispatch(ctx)
+	facts, err := m.projectFacts(reads, enr, []string{name}, set)
+	cancel()
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
@@ -1165,7 +1170,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string) ([]Pe
 	visible := out[:0]
 	for i, p := range out {
 		if p.Kind == record.KindAgentSecret {
-			ok, err := m.maySeeRecord(ctx, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
+			ok, err := m.maySeeRecord(ctx, "record "+p.RecordID, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
 			switch {
 			case errors.Is(err, ErrProjectAccessUnavailable):
 				m.logRowUnanswered("pending "+p.RecordID, err, "list", "pending", "record", p.RecordID)
@@ -1425,7 +1430,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	// Dispatch cannot answer for is left off alone, as PendingForApprover leaves off a request.
 	visible := out[:0]
 	for i, g := range out {
-		ok, err := m.maySeeRecord(ctx, login, g.Names, reads[i].sessionProjects, reads[i].reason)
+		ok, err := m.maySeeRecord(ctx, "grant "+g.GrantID, login, g.Names, reads[i].sessionProjects, reads[i].reason)
 		switch {
 		case errors.Is(err, ErrProjectAccessUnavailable):
 			attrs := []any{"list", "grants", "grant", g.GrantID}

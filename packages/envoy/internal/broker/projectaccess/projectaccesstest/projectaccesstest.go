@@ -114,6 +114,17 @@ func (s *Server) SetDown(down bool) {
 	s.down = down
 }
 
+// SetRow makes Dispatch hold row for key from the next request on, as an owner's change of a
+// project's visibility or access list does, so a test can change Dispatch under a client whose
+// cache already holds the earlier answer.
+func (s *Server) SetRow(key string, row Row) {
+	row.Listed, row.Repositories = slices.Clone(row.Listed), slices.Clone(row.Repositories)
+	row.SlackChannels = slices.Clone(row.SlackChannels)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows[key] = row
+}
+
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls++
@@ -141,7 +152,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"person": person, "member_kind": s.kind(person)})
 	case strings.HasPrefix(r.URL.Path, projectPath):
 		key := strings.TrimPrefix(r.URL.Path, projectPath)
+		s.mu.Lock()
 		row, held := s.rows[key]
+		s.mu.Unlock()
 		if !held || strings.Contains(key, "/") {
 			writeJSON(w, http.StatusNotFound, map[string]any{"code": "PROJECT_NOT_FOUND", "error": "no such project"})
 			return

@@ -91,9 +91,10 @@ is in no list of yours, and you cannot decide it, whoever the approver line name
 To tell whose a request is, a broker set up to ask Dispatch about projects
 (`BROKER_PROJECT_ACCESS_URL`) asks it, for you, about each project the request touches, the project
 of each issue key its reason names included: `INFRA-12: rotate the deploy key` asks about `INFRA`,
-even when no secret is tagged. A request whose reason names issues of more than 16 projects is in
-nobody's list and nobody decides it; it expires. While Dispatch cannot answer, that request is in
-no list of yours, and its page answers with its record id and `The secrets broker could not ask
+even when no secret is tagged. A session cannot make a request whose reason names the issues of
+more than 16 projects: the broker refuses it when it is made. While Dispatch cannot answer about a
+request, that request is in no list of yours, and its page answers with its record id and `The
+secrets broker could not ask
 Dispatch whether you may see this request, so it shows nothing of it and cannot decide it until
 Dispatch answers. Try again shortly.`, with no names, no reason and no buttons. Every other
 request is listed and decided as before. Open it again once Dispatch answers.

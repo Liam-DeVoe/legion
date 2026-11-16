@@ -297,8 +297,14 @@ type fakeRequests struct {
 	// applyErr is what ApplyJudgeDecision answers, and logErr what LogJudged answers.
 	applyErr, logErr error
 	// writeTakes is how long each of the two writes takes before it commits, which is how
-	// a test gives the run's own transaction something to need its remaining budget for.
-	writeTakes time.Duration
+	// a test gives the run's own transaction something to need its remaining budget for, and
+	// applyTakes how long ApplyJudgeDecision's reads before its transaction take: like the
+	// real reads of Dispatch, they give up when the context ends first.
+	writeTakes, applyTakes time.Duration
+	// bounded is, for each call to a method that reads Dispatch in the real machine
+	// (JudgePolicy and JudgeProject), the method's name and whether its context was one
+	// requests.JudgeDispatch made.
+	bounded []boundedCall
 	// applied and logged are the detail objects of each write, in order.
 	applied, logged []map[string]any
 }
@@ -310,10 +316,11 @@ func newRequests() *fakeRequests {
 	}
 }
 
-func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.Decision, bool, bool, error) {
+func (f *fakeRequests) JudgePolicy(ctx context.Context, _, name string) (policy.Decision, bool, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.policyAsked = append(f.policyAsked, name)
+	f.bounded = append(f.bounded, boundedCall{"JudgePolicy", requests.UnderJudgeDispatch(ctx)})
 	return f.decision, f.withheld, f.admin, f.policyErr
 }
 
@@ -321,6 +328,7 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 	f.mu.Lock()
 	f.projectAsked = append(f.projectAsked, name)
 	f.projectReasons = append(f.projectReasons, reason)
+	f.bounded = append(f.bounded, boundedCall{"JudgeProject", requests.UnderJudgeDispatch(ctx)})
 	takes := f.projectTakes
 	f.mu.Unlock()
 	if takes > 0 {
@@ -373,6 +381,16 @@ func (f *fakeRequests) transact(ctx context.Context) error {
 }
 
 func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID string, judged map[string]any) (requests.Decision, error) {
+	f.mu.Lock()
+	reads := f.applyTakes
+	f.mu.Unlock()
+	if reads > 0 {
+		select {
+		case <-time.After(reads):
+		case <-ctx.Done():
+			return requests.Decision{}, fmt.Errorf("%w: %v", requests.ErrProjectAccessUnavailable, ctx.Err())
+		}
+	}
 	if err := f.transact(ctx); err != nil {
 		return requests.Decision{}, err
 	}
@@ -400,6 +418,20 @@ func (f *fakeRequests) rows() (applied, logged []map[string]any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]map[string]any(nil), f.applied...), append([]map[string]any(nil), f.logged...)
+}
+
+// boundedCall is one call of a method that reads Dispatch in the real machine, and whether it was
+// made under requests.JudgeDispatch.
+type boundedCall struct {
+	method  string
+	bounded bool
+}
+
+// boundedCalls is every such call, in order.
+func (f *fakeRequests) boundedCalls() []boundedCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]boundedCall(nil), f.bounded...)
 }
 
 // tokenFile writes a projected token for the Dispatch stand-in to read back.

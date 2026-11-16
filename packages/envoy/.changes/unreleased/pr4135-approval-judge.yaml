@@ -10,13 +10,16 @@ body: |-
   `withheld` and before `issue`: a request for a secret of a private project, or of a project
   Dispatch does not hold, or from a credential that names a private project, or whose signed
   reason names any issue of a private project, is left to a person, since the judge's own token
-  names no person. The project check and the issue check share the judge's one 5-second bound on
-  its Dispatch reads, so a slow Dispatch still leaves the run time to write its row, and the
-  judge's approval checks the project rule again before it is written. A reason whose issue keys
-  name more than 16 projects is read for none: its request is shown to nobody and the judge
-  leaves it. A sign-in started from a private project's request sends the provider no
-  `login_hint`. A broker with no `BROKER_PROJECT_ACCESS_URL` judges exactly as before and asks
-  Dispatch nothing about projects.
+  names no person. Every read of Dispatch the judge makes before the model (the policy, project
+  and issue checks) shares one 5-second bound, and its approval asks Dispatch again, afresh rather
+  than from the answers the broker keeps, under the same bound and ending a second before the run
+  does; the verdict's row is written on a context of its own, so a slow Dispatch still leaves the
+  run its row. A new request or machine login whose reason names the issue keys of more than 16
+  projects is refused when it is made, `400 REQUEST_INVALID` naming the bound; a request stored
+  before that whose reason names more is still shown, its keys counted as naming no project. A
+  sign-in started from a private project's request sends the provider no `login_hint`. A broker
+  with no `BROKER_PROJECT_ACCESS_URL` judges exactly as before and asks Dispatch nothing about
+  projects.
 time: 2026-11-16T02:58:17Z
 custom:
     Issue: pr4135

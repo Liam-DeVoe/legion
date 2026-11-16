@@ -13,9 +13,9 @@
 // Answers are cached CacheTTL per project and person and per person, aged from before each
 // question was sent, which bounds how long a person removed from a project's access list goes on
 // passing a check here; Visible asks again for an answer that aged past it while a list was
-// checked, and a slower answer never replaces one to a question asked later. A failure to reach
-// Dispatch is never cached and is never an answer: each caller decides what an outage means for
-// its own check.
+// checked, a question asked under Fresh skips the cache, and a slower answer never replaces one to
+// a question asked later. A failure to reach Dispatch is never cached and is never an answer: each
+// caller decides what an outage means for its own check.
 package projectaccess
 
 import (
@@ -194,13 +194,34 @@ func New(baseURL string, account brokertoken.Account, httpClient *http.Client) *
 	}
 }
 
+// freshKey marks a context whose questions are asked of Dispatch whatever the cache holds (Fresh).
+type freshKey struct{}
+
+// Fresh is ctx for questions Dispatch must answer now rather than the cache: Access and
+// MemberKind under it ask Dispatch even while the cache holds a young answer, and keep what it
+// answers as any other answer is kept. It is for a check that must see a change younger than
+// CacheTTL, as the model judge's approval does when it checks the project rule again before it
+// is written (requests.Machine.ApplyJudgeDecision): the run's own reads filled the cache well
+// inside CacheTTL, so a check that read them back could not see a project that turned private
+// while the model was asked.
+func Fresh(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshKey{}, true)
+}
+
+// fresh reports whether ctx is one Fresh made, or derived from one.
+func fresh(ctx context.Context) bool {
+	marked, _ := ctx.Value(freshKey{}).(bool)
+	return marked
+}
+
 // Access is Dispatch's answer for project and person, from the cache while it is younger than
-// CacheTTL. A person is asked about by their lowercase login; an empty person asks whether the
-// project is public. An answer is aged from before its question was sent, so a slow answer is
-// kept no longer than CacheTTL from the moment Dispatch could last have changed it.
+// CacheTTL, unless ctx is one Fresh made. A person is asked about by their lowercase login; an
+// empty person asks whether the project is public. An answer is aged from before its question was
+// sent, so a slow answer is kept no longer than CacheTTL from the moment Dispatch could last have
+// changed it.
 func (c *Client) Access(ctx context.Context, project, person string) (Answer, error) {
 	key := accessKey{project: project, person: record.CanonicalLogin(person)}
-	if cached, ok := c.cachedAnswer(key); ok {
+	if cached, ok := c.cachedAnswer(key); ok && !fresh(ctx) {
 		if cached.projectNotFound {
 			return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
 		}
@@ -236,7 +257,8 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	return answer, nil
 }
 
-// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL.
+// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL, unless
+// ctx is one Fresh made.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
@@ -245,7 +267,7 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	c.mu.Lock()
 	cached, ok := c.kinds[person]
 	c.mu.Unlock()
-	if ok && c.now().Sub(cached.at) < CacheTTL {
+	if ok && !fresh(ctx) && c.now().Sub(cached.at) < CacheTTL {
 		return cached.kind, nil
 	}
 	asked := c.now()
