@@ -394,7 +394,11 @@ func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 // under this process's claim, with its send not started.
 func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testing.T) {
 	listener, state := newMentionListener(t)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock that stands still: the first comment's lookup of the role is answered as the
+	// listener answers it and is never left unanswered by its bound (mentionLookupTimeout), which
+	// would key its send by the role's string and put the two comments on two lanes. Every send
+	// it holds is released by the test, so no window of the listener client's ends one either.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	release := state.hold("s1")
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Mentions in order", "before")
@@ -493,7 +497,11 @@ func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock that stands still: a lookup the listener holds waits until the listener answers it
+	// and is never ended by its bound (mentionLookupTimeout), so a comment that looked its
+	// mentions up one after another never answers, where a real bound would end each held lookup
+	// in turn and let it through.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent lookups", "before")
 
 	posted := make(chan *httptest.ResponseRecorder, 1)

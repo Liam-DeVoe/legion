@@ -279,7 +279,10 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock that stands still: the comment's lookup of the role is answered as the listener
+	// answers it, s1, and is never left unanswered by its bound (mentionLookupTimeout), after which
+	// the send would look the role up a second time and find s2.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Pinned mention", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -603,7 +606,10 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock that stands still: the comment's lookup of the role is answered as the listener
+	// answers it, no holder, and is never left unanswered by its bound (mentionLookupTimeout),
+	// after which the send would look the role up a second time.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Missing role holder", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -736,7 +742,10 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	}))
 	defer listener.Close()
 	var handler http.Handler
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// A clock that stands still: each route lookup is answered as the listener answers it, once
+	// it has moved the route, and is never cut short by its bound (mentionLookupTimeout), which
+	// ended the request the listener moves the route in and left the stale resolution standing.
+	handler, database = newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	issueKey = issue.Key
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{

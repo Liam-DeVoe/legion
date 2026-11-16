@@ -38,8 +38,9 @@ type takeOverAnswer struct {
 
 // takeOverListener is a listener whose replacement is under way: session s1, which takes every
 // mode, once it answers, and until then the script it is given - each entry answers the next
-// request on its route and is spent - or, while refusing, every request refused. It records every
-// send it published, a late answer's included, and how many requests reached each route.
+// request on its route and is spent - or, while it answers every request alike (answerEvery),
+// that answer. It records every send it published, a late answer's included, and how many
+// requests reached each route.
 type takeOverListener struct {
 	server *httptest.Server
 
@@ -48,14 +49,16 @@ type takeOverListener struct {
 	// window (stepListenerWaits).
 	calls listenerCalls
 
-	mu       sync.Mutex
-	script   []takeOverAnswer
-	refusing bool
+	mu     sync.Mutex
+	script []takeOverAnswer
+	// every answers every request while it is set, in place of the script and of the listener's
+	// own answer (answerEvery).
+	every    func(l *takeOverListener, w http.ResponseWriter, r *http.Request, send resumeSend)
 	requests map[takeOverRoute]int
 	sends    []resumeSend
-	// observe runs on every request before it is answered, so a test can read the attempt row
-	// as each try finds it.
-	observe func()
+	// observe runs on every request before it is answered, with the route the request is on, so
+	// a test can read the attempt row as each try finds it, or note each lookup it took.
+	observe func(route takeOverRoute)
 }
 
 func startTakeOverListener(t *testing.T) *takeOverListener {
@@ -90,15 +93,15 @@ func (l *takeOverListener) serve(w http.ResponseWriter, r *http.Request) {
 	l.requests[route]++
 	var scripted *takeOverAnswer
 	switch {
-	case l.refusing:
-		scripted = &takeOverAnswer{answer: refuseConnection}
+	case l.every != nil:
+		scripted = &takeOverAnswer{answer: l.every}
 	case len(l.script) > 0 && (l.script[0].route == takeOverAny || l.script[0].route == route):
 		scripted = &l.script[0]
 		l.script = l.script[1:]
 	}
 	l.mu.Unlock()
 	if observe != nil {
-		observe()
+		observe(route)
 	}
 	if scripted != nil {
 		scripted.answer(l, w, r, send)
@@ -151,10 +154,13 @@ func (l *takeOverListener) play(script ...takeOverAnswer) {
 	l.sends = nil
 }
 
-func (l *takeOverListener) refuse(refusing bool) {
+// answerEvery answers every request with answer until it is called again with nil: a take-over
+// that lasts until the test ends it, refusing connections (refuseConnection) or answering a
+// status (answerJSON).
+func (l *takeOverListener) answerEvery(answer func(l *takeOverListener, w http.ResponseWriter, r *http.Request, send resumeSend)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.refusing = refusing
+	l.every = answer
 }
 
 func (l *takeOverListener) requestsTo(route takeOverRoute) int {
@@ -455,7 +461,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			var claimsMu sync.Mutex
 			var claims []time.Time
 			listener.mu.Lock()
-			listener.observe = func() {
+			listener.observe = func(takeOverRoute) {
 				var claimed *time.Time
 				err := database.Pool.QueryRow(context.Background(),
 					`select claimed_at from `+tc.table+` where state = 'pending' and attempt = 1`).Scan(&claimed)
@@ -466,7 +472,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				}
 			}
 			listener.mu.Unlock()
-			listener.refuse(true)
+			listener.answerEvery(refuseConnection)
 
 			data, err := json.Marshal(tc.body)
 			if err != nil {
@@ -526,7 +532,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				t.Fatalf("attempts after a sweep pass during the wait = %v, want attempt 1 alone, still the waiting sender's", states)
 			}
 
-			listener.refuse(false)
+			listener.answerEvery(nil)
 			response := answerWhileCallsAreHeld(t, clock, &listener.calls, answered)
 			if response.Code != http.StatusCreated {
 				t.Fatalf("send: status=%d body=%s", response.Code, response.Body.String())
