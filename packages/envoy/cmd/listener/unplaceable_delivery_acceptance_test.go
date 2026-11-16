@@ -841,17 +841,6 @@ func TestAWindowPastTheDurablesMaxDeliverStillGivesUpBeforeIt(t *testing.T) {
 	})
 }
 
-// recordsFor keeps the records that name sessionID, for runs that share one harness's log.
-func recordsFor(records []deliveryRecord, sessionID string) []deliveryRecord {
-	var kept []deliveryRecord
-	for _, record := range records {
-		if record.SessionID == sessionID {
-			kept = append(kept, record)
-		}
-	}
-	return kept
-}
-
 // A give-up whose no_holder notice can never be published is still the message's end: the counter
 // and the give-up line are written, the failed notice is logged exceptionPublishFailedLine, the
 // message is acknowledged, and nothing runs again however many deliveries of it follow. Before

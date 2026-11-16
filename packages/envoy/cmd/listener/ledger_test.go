@@ -237,6 +237,52 @@ func TestAnUnavailableLedgerLetsTheRoleLaneForwardToTheHolder(t *testing.T) {
 	noException(t, probe)
 }
 
+// A role message another pod of the machine is attempting for its holder, an attempt younger than
+// its takeover age whose forward may still land, is skipped on the role lane, which retries nothing
+// (ledgerAttempt): a forward from this pod as well would send the holder a second copy. Nothing is
+// stored on the holder's agent subject, one role dedupe skip names the deferral, and no exception
+// is published.
+func TestARoleMessageAnotherPodIsAttemptingIsSkippedOnTheRoleLane(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role, holder = "ledger-deferred", "ses_ledger_deferred_holder"
+	claimRoleFor(t, harness.registry, harness.sessions, holder, role, nil)
+	probe := exceptionProbe(t, harness.client)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "ledger-deferred-"+id.New())
+	item.Payload = `{"type":"worker-queued"}`
+
+	// The role lane asks the ledger about the message's own dedupe key for the role's holder
+	// (roleTopicDelivery), so that is the pair pod A attempts.
+	podA := testDeliveryLedger(t, harness.client.Conn, "test-machine", "boot-pod-a")
+	if attempt, err := podA.Attempt(item.DedupeKey, holder); err != nil || attempt.Verdict != dedupe.Proceed {
+		t.Fatalf("pod A's attempt = %v, %v; want it to proceed", attempt.Verdict, err)
+	}
+
+	coreNATSDeliveryHandler(harness.config)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
+	// A forward is handed to the forwarder before the handler returns (roleForwarder.enqueue), and
+	// settled returns once the stream has answered every forward handed to it, so any forward this
+	// lane made is stored by now.
+	harness.config.roleForwards.settled(t)
+	subject := contracts.AgentSubject(holder)
+	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject)
+	if err == nil {
+		t.Fatalf("this pod forwarded role message %s to %s while pod A's attempt at it may still land: the stream holds %s on %s", item.EventID, holder, stored.Data, subject)
+	}
+	if !errors.Is(err, natsgo.ErrMsgNotFound) {
+		t.Fatalf("read the holder's agent subject %s: %v", subject, err)
+	}
+	var skips []string
+	for _, line := range strings.Split(harness.logs.String(), "\n") {
+		if strings.Contains(line, `"msg":"listener role dedupe skip"`) {
+			skips = append(skips, line)
+		}
+	}
+	deferred := `"ledger":"` + dedupe.Deferred.String() + `"`
+	if len(skips) != 1 || !strings.Contains(skips[0], deferred) || !strings.Contains(skips[0], `"delivery_status":"deferred"`) {
+		t.Fatalf("logged %d role dedupe skips %q, want one carrying %s and delivery_status deferred", len(skips), skips, deferred)
+	}
+	noException(t, probe)
+}
+
 // failingOnceLedger fails its first Attempt, as a call made while the ledger's connection was
 // reconnecting does, and answers from Ledger after that.
 type failingOnceLedger struct {
