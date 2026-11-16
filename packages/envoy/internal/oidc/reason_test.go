@@ -52,12 +52,12 @@ func TestVerifyDoesNotCallAnEndedRequestAForgery(t *testing.T) {
 	}
 	token := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
 
-	// The token here is sound, so this case exists only while the key-set read
-	// is what fails. It fails for certain: the verifier reads the key set
-	// through *Keys, whose read is one HTTP request made on the caller's own
-	// context, and a request made on a context that has already ended never
-	// reaches the issuer. The delay stands in for the network all the same, so
-	// that a read which somehow did start is still the slow side.
+	// The token here is sound, so this case exists only while the caller's wait
+	// on the key-set read is what fails. It fails for certain: the context has
+	// ended before Verify, so *Keys gives up its wait at once, and the error
+	// carries that context's end. The read itself runs detached from the caller
+	// and reaches the issuer all the same (TestReviewReadOutlivesTheCallerThatStartedIt);
+	// the delay keeps it the slow side, so the wait cannot instead see it finish.
 	issuer.DelayKeys(2 * time.Second)
 
 	// Cancelled before the first Verify, so the key-set fetch is what fails:
