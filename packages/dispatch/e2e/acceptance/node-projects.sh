@@ -18,11 +18,12 @@
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
-# server's Envoy listener lists, which takes direct messages and broadcasts), DATABASE_URL (the
-# database that server serves, which `envoy-dispatch` reads from its own environment), and
-# `envoy-dispatch` on PATH. It reads this pod's own test database and never a deployment's: it
-# refuses a DATABASE_URL whose host is not loopback, and the one node it deletes is the ask this
-# run made.
+# server's Envoy listener lists, which takes direct messages and broadcasts), DEV_SIGNIN_LOGIN (a
+# login the server's dev sign-in route signs in: a direct message and a broadcast are a person's
+# writes, which an agent's bearer may not make), DATABASE_URL (the database that server serves,
+# which `envoy-dispatch` reads from its own environment), and `envoy-dispatch` on PATH. It reads
+# this pod's own test database and never a deployment's: it refuses a DATABASE_URL whose host is
+# not loopback, and the one node it deletes is the ask this run made.
 #
 # The node writers' own grep, where a reader wants one: `graphstore\.(WriteUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
 # with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
@@ -47,11 +48,16 @@ USAGE
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-require_env DISPATCH_URL PROJECT AGENT_SESSION DATABASE_URL
+require_env DISPATCH_URL PROJECT AGENT_SESSION DEV_SIGNIN_LOGIN DATABASE_URL
 require_commands curl jq psql envoy-dispatch
 read_bearer
 
 readonly base="${DISPATCH_URL%/}"
+# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
+# authenticates must name it (enforceCookieOrigin).
+base_host="${base#*://}"
+readonly origin="${base%%://*}://${base_host%%/*}"
+readonly person="$DEV_SIGNIN_LOGIN"
 # shellcheck disable=SC2153 # PROJECT and DATABASE_URL are the caller's inputs, checked by name above
 readonly project="$PROJECT" database_url="$DATABASE_URL"
 case "$database_url" in
@@ -84,12 +90,21 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-send() {
-  local -a data=()
+# send METHOD PATH [JSON]: sends METHOD PATH with the agent's bearer; send_as_person does the same
+# with the person's cookie and the dashboard's origin. The answer's body goes to $work/body and
+# its status to $status.
+send() { request "$work/auth.args" "$@"; }
+send_as_person() { request "$work/person.args" "$@"; }
+request() {
+  local -a auth data=()
+  mapfile -t auth <"$1"
+  shift
   [[ $# -lt 3 ]] || data=(-H 'Content-Type: application/json' --data-binary "$3")
-  status="$(curl -sS -X "$1" -o "$work/body" -w '%{http_code}' -H "@$work/auth" "${data[@]}" \
+  status="$(curl -sS -X "$1" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" \
     "$base$2" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
 }
+printf '%s\n' -H "@$work/auth" >"$work/auth.args"
+printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
 
 actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
 
@@ -159,23 +174,45 @@ node_names_project "$section" message "$(jq -r .id "$work/body")"
 
 section=parties
 readonly agent="$AGENT_SESSION"
+curl -sS -o /dev/null -c "$work/jar" "$base/auth/_dev/signin?login=$(q "$person")" 2>"$work/curl" ||
+  fail "$section" "sign $person in" "$(<"$work/curl")"
+[[ -s "$work/jar" ]] || fail "$section" "sign $person in" "the dev sign-in route left no cookie"
+pass "$section" "signed $person in"
+send GET /api/v1/agents
+want_status 200 "$section" "list the agents"
+jq -e --arg s "$agent" 'any(.. | objects | select(has("session_id")); .session_id == $s)' "$work/body" >/dev/null ||
+  fail "$section" "the listener lists $agent" "it lists $(jq -c '[.. | objects | .session_id? // empty]' "$work/body")"
+pass "$section" "the listener lists $agent"
+
 printf '\x89PNG\r\n\x1a\nnode-projects %s' "$stamp" >"$work/photo.png"
 status="$(curl -sS -X POST -o "$work/body" -w '%{http_code}' -H "@$work/auth" \
   -F "name=photo-$stamp.png" -F "actor=$(actor)" -F "file=@$work/photo.png;type=image/png" \
-  "$base/api/v1/agents/$agent/artifacts" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+  "$base/api/v1/agents/$(q "$agent")/artifacts" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
 want_status 201 "$section" "send a file in $agent's conversation"
 node_names_parties "$section" artifact "$(jq -r .artifact.ref_key "$work/body")" "session:$agent"
 
-send POST "/api/v1/agents/$agent/messages" "$(jq -cn --argjson a "$(actor)" --arg b "Direct $stamp." '{body: $b, delivery: "btw", actor: $a}')"
-want_status 201 "$section" "send $agent a direct message"
-node_names_parties "$section" message "$(jq -r .id "$work/body")" "session:$session" "session:$agent"
+# sender_party ID: the party the message row's own author names - a person by the canonical login
+# the server stored for them, lower-cased and trimmed as graphstore.AuthorOf reads it - into
+# $answer. It reads the row the create wrote, not the node under test.
+sender_party() {
+  query "$section" "read the sender of $1" \
+    "select case when author->>'kind' = 'user' then 'person:' || lower(btrim(author->>'id')) else '(not a person)' end from messages where id = '$1'"
+}
 
-send POST /api/v1/broadcasts "$(jq -cn --argjson a "$(actor)" --arg s "$agent" --arg b "Broadcast $stamp." \
-  '{body: $b, delivery: "btw", session_ids: [$s], actor: $a}')"
-want_status 201 "$section" "broadcast to $agent"
+send_as_person POST "/api/v1/agents/$(q "$agent")/messages" "$(jq -cn --arg b "Direct $stamp." '{body: $b, delivery: "btw"}')"
+want_status 201 "$section" "$person sends $agent a direct message"
+direct="$(jq -r .id "$work/body")"
+sender_party "$direct"
+node_names_parties "$section" message "$direct" "$answer" "session:$agent"
+
+send_as_person POST /api/v1/broadcasts "$(jq -cn --arg s "$agent" --arg b "Broadcast $stamp." \
+  '{body: $b, delivery: "btw", session_ids: [$s]}')"
+want_status 201 "$section" "$person broadcasts to $agent"
 query "$section" "read the broadcast's copy" \
   "select coalesce((select id::text from messages where broadcast_id is not null and body = 'Broadcast $stamp.'), '(no copy)')"
-node_names_parties "$section" message "$answer" "session:$session" "session:$agent"
+copy="$answer"
+sender_party "$copy"
+node_names_parties "$section" message "$copy" "$answer" "session:$agent"
 
 section=census
 envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
