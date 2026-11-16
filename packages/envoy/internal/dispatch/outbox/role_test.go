@@ -500,6 +500,7 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 		t.Fatalf("attempt_count %d, publish_error %v, published_destinations %v: want no attempt, no error and the role route recorded",
 			attempts, failure, destinations)
 	}
+	recv.settle(t)
 	if got := len(recv.received()); got != 1 {
 		t.Fatalf("the holder received %d forwards, want the one", got)
 	}
@@ -1168,6 +1169,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 		t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by the one pass",
 			held.attempts, held.settled, held.published, holder)
 	}
+	recv.settle(t)
 	forwards := recv.received()
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %d copies, want the held one: %+v", holder, len(forwards), forwards)
@@ -1274,6 +1276,7 @@ func TestARoleCopyToTheHolderWhoseOwnMentionFailedCarriesTheMentionsKey(t *testi
 
 	holding(t, deps).scan(ctx, unfenced{})
 
+	recv.settle(t)
 	forwards := recv.received()
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %d copies, want the route's one copy: %+v", holder, len(forwards), forwards)
@@ -1767,6 +1770,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		holding(t, deps).scan(ctx, unfenced{})
 		after := time.Now()
 
+		recv.settle(t)
 		if forwards := recv.received(); len(forwards) > 0 {
 			t.Fatalf("the batch sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
 				holder, len(forwards), forwards[0].DedupeKey)
@@ -1796,6 +1800,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 			t.Fatalf("the comment was not published once the holder's mention settled: attempt_count %d, publish_error %v",
 				attempts, failure)
 		}
+		recv.settle(t)
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the role route's once its own mention settled: %+v", holder, len(forwards), forwards)
@@ -1812,6 +1817,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 
 		holding(t, deps).scan(ctx, unfenced{})
 
+		recv.settle(t)
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			attempts, failure, _ := eventState(t, rig.database, event.ID)
@@ -1934,6 +1940,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while the role forward waits on the holder's own mention", at)
 	}
+	recv.settle(t)
 	if forwards := recv.received(); len(forwards) > 0 {
 		t.Fatalf("%s was sent %+v while its own mention of the comment was still being sent, want nothing: the forward waits for that mention and the claimant copy is left to it",
 			holder, forwards)
@@ -1975,6 +1982,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 		}
 	}
 	var order []string
+	recv.settle(t)
 	for _, item := range recv.received() {
 		order = append(order, item.EventID)
 	}
@@ -2204,6 +2212,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 			t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by the one pass",
 				held.attempts, held.settled, held.published, second)
 		}
+		recv.settle(t)
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the held one: %+v", second, len(forwards), forwards)
@@ -2431,6 +2440,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 		after := time.Now()
 
+		recv.settle(t)
 		if forwards := recv.received(); len(forwards) > 0 {
 			t.Fatalf("the pass sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
 				second, len(forwards), forwards[0].DedupeKey)
@@ -2466,6 +2476,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 			t.Fatalf("once the holder's mention had settled the held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by that pass",
 				settled.attempts, settled.settled, settled.published, second)
 		}
+		recv.settle(t)
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the held one once its own mention settled: %+v", second, len(forwards), forwards)
@@ -2484,6 +2495,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		row := readHeldCopy(t, rig.database, commentID, roleTopic)
+		recv.settle(t)
 		forwards := recv.received()
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies though its own mention is pending past model.DeliveryClaimLapse = %v, want the held one: the held copy is attempts=%d settled=%v published=%v",
