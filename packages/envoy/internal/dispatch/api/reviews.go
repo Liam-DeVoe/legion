@@ -740,8 +740,11 @@ func (s *server) openApprovalAsk(
 	documents []model.AskApprovalDocument,
 	question string,
 ) (*model.Ask, model.Event, error) {
+	// The request's id and created_at, drawn before anything is written, as createAskFor draws
+	// them: the node goes in before the row, dated by the default the insert gives created_at.
 	var rowID string
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
+	var createdAt time.Time
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&rowID, &createdAt); err != nil {
 		return nil, model.Event{}, err
 	}
 	approval := &model.AskApproval{Documents: documents}
@@ -780,22 +783,28 @@ func (s *server) openApprovalAsk(
 	}
 	// The request's node goes in before its row, in the project of the document it is asked on,
 	// which the issue that owns the request is in too (an issue's document carries its issue's
-	// project); what that write states waits for the ask.opened event below. The document is read
-	// already, so its project costs no round trip of its own.
+	// project), with the document a request on no issue belongs to and who requested it
+	// (graphstore.AskFacts); what that write states waits for the ask.opened event below. The
+	// document is read already, so its project costs no round trip of its own.
 	project, parties := artifact.Project, []string(nil)
 	if project == "" && artifact.SessionID != nil {
 		parties = []string{graphstore.PartySession(*artifact.SessionID)}
 	}
-	askNode, err := graphstore.WriteUncaused(ctx, tx,
-		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, time.Now().UTC())}, nil)
+	places, err := graphstore.ReadAskPlaces(ctx, tx, nil, owner.ArtifactID, nil)
 	if err != nil {
 		return nil, model.Event{}, err
 	}
+	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, actor, createdAt, graphstore.NoEvent, places)
+	askNode, err := graphstore.WriteUncaused(ctx, tx, nodes, facts)
+	if err != nil {
+		return nil, model.Event{}, err
+	}
+	nodeKind, nodeAddress := graphstore.AskRowNode(ask.ID, marked)
 	if err := tx.QueryRow(ctx, `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval)
-		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7)
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, $8, $9)
 		returning created_at
-	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval).Scan(&ask.CreatedAt); err != nil {
+	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval, nodeKind, nodeAddress).Scan(&ask.CreatedAt); err != nil {
 		return nil, model.Event{}, err
 	}
 	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)

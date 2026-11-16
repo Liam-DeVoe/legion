@@ -6,6 +6,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -47,34 +50,105 @@ func closingReadings(ask *pmdoc.Node) []askReading {
 	return readings
 }
 
-// askAnswer is what the store holds of the ask one ask block opens: its `dispatch://` address,
-// which a refusal names ("" for an ask no address names, one on an agent conversation's
-// document), and whether a person answered it.
+// askAnswer is what the store holds of the ask one ask block shows: the ask's id, its
+// `dispatch://` address, which a refusal names ("" for an ask no address names, one on an agent
+// conversation's document), whether its row names its node, and whether a person answered it.
 type askAnswer struct {
+	id       string
 	address  string
+	named    bool
 	answered bool
 }
 
-// askAnswers reads the ask each of blockIDs, ask blocks of artifactID, opens, as the store holds
-// it now, by block id; a block that opens no ask yet has none. It is the one reader of whether an
-// ask holds an answer that a reading inside it depends on, and the ask's `asks` row is what says
-// so today.
-func askAnswers(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string) (map[string]askAnswer, error) {
-	rows, err := tx.Query(ctx, `
-		select k.block_id, k.id::text, k.state, k.issue_key, a.project_key, coalesce(a.slug, '')
-		from asks k join artifacts a on a.id = k.block_artifact_id
-		where k.block_artifact_id = $1 and k.block_id = any($2::text[])
-	`, artifactID, blockIDs)
+// readingAnswers decides, for each of blockIDs, ask blocks of one document, whether the ask the
+// block shows holds an answer, by block id. It is the one decision a reading inside an ask block
+// depends on, on settlement (flagReadingsWithoutAnswers) and on every write that takes markdown
+// (refuseReadingsWithoutAnswers) alike, and it is made once the block's ask is resolved as
+// settlement resolves it (reconcileAskBlocks), so a reading meets the ask it stands in once the
+// document settles:
+//
+//   - A block an ask of its own document indexes (rows) shows that ask. One settlement retracted
+//     when its block left (settlementRetracted) is restored when the block comes back, before
+//     anything reads it again, so it shows the state the restoration gives it
+//     (stateBeforeRetraction): an ask retracted while it held an answer holds that answer again.
+//   - A block no ask of its document indexes, copied from an ask of another document of its owner
+//     (sources, copiedAskSources), opens none and shows its source's state, so it holds an answer
+//     where its source does.
+//   - Any other block opens an ask of its own once settled, which holds no answer, and has none
+//     here.
+//
+// Whether the ask a block shows holds an answer otherwise is what its node says (askAnswers).
+func readingAnswers(ctx context.Context, tx pgx.Tx, blockIDs []string, rows map[string]model.Ask, sources map[string]copiedSource) (map[string]askAnswer, error) {
+	shown := make(map[string]string, len(blockIDs))
+	restored := map[string]bool{}
+	ids := make([]string, 0, len(blockIDs))
+	for _, blockID := range blockIDs {
+		if ask, own := rows[blockID]; own {
+			if settlementRetracted(ask) {
+				prior, err := stateBeforeRetraction(ctx, tx, ask.ID)
+				if err != nil {
+					return nil, err
+				}
+				restored[blockID] = prior.State == asks.StateAnswered
+			}
+			shown[blockID] = ask.ID
+		} else if source, copied := sources[blockID]; copied {
+			shown[blockID] = source.ask.ID
+		} else {
+			continue
+		}
+		ids = append(ids, shown[blockID])
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	held, err := askAnswers(ctx, tx, ids)
 	if err != nil {
-		return nil, fmt.Errorf("read the answers of the asks of document %s: %w", artifactID, err)
+		return nil, err
+	}
+	answers := make(map[string]askAnswer, len(shown))
+	for blockID, id := range shown {
+		answer, found := held[id]
+		if !found {
+			continue
+		}
+		if answered, retracted := restored[blockID]; retracted {
+			answer.answered = answered
+		}
+		answers[blockID] = answer
+	}
+	return answers, nil
+}
+
+// askAnswers reads what the store holds now of each ask ids names, by ask id: its address,
+// whether its row names its node, and whether it holds an answer, which it reads off the ask's
+// node - its newest answer_state value (graphstore.TupleAnswerState), which asks.Settle appends,
+// and which an ask node holding none - an ask a process of the release before wrote, before the
+// boot step states it - reads as open. The asks row names the ask and its document's address alone.
+func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAnswer, error) {
+	rows, err := tx.Query(ctx, `
+		select k.id::text, coalesce(answer.to_id, $2), k.issue_key, a.project_key, coalesce(a.slug, ''),
+		       k.node_kind is not null and k.node_address is not null
+		from asks k join artifacts a on a.id = k.block_artifact_id
+		left join lateral (
+			select t.to_id, t.asserted from graph_tuples t
+			where t.from_kind = $3 and t.from_id = k.id::text and t.kind = $4 and t.to_kind = $5
+			order by t.seq desc
+			limit 1
+		) answer on answer.asserted
+		where k.id = any($1::uuid[])
+	`, ids, asks.StateOpen, graphstore.KindAsk, graphstore.TupleAnswerState, graphstore.KindValue)
+	if err != nil {
+		return nil, fmt.Errorf("read the answers of the asks readings stand in: %w", err)
 	}
 	defer rows.Close()
-	answers := make(map[string]askAnswer, len(blockIDs))
+	answers := make(map[string]askAnswer, len(ids))
 	for rows.Next() {
-		var blockID, id, state, slug string
+		var id, state, slug string
 		var issueKey, project *string
-		if err := rows.Scan(&blockID, &id, &state, &issueKey, &project, &slug); err != nil {
-			return nil, fmt.Errorf("scan the answer of an ask of document %s: %w", artifactID, err)
+		var named bool
+		if err := rows.Scan(&id, &state, &issueKey, &project, &slug, &named); err != nil {
+			return nil, fmt.Errorf("scan the answer of an ask a reading stands in: %w", err)
 		}
 		ref := text.Ref{ID: id, Document: slug}
 		if issueKey != nil {
@@ -82,12 +156,38 @@ func askAnswers(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []st
 		} else if project != nil {
 			ref.Project = *project
 		}
-		answers[blockID] = askAnswer{address: refs.AskRef(ref), answered: state == "answered"}
+		answers[id] = askAnswer{id: id, address: refs.AskRef(ref), named: named, answered: state == asks.StateAnswered}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the answers of the asks of document %s: %w", artifactID, err)
+		return nil, fmt.Errorf("read the answers of the asks readings stand in: %w", err)
 	}
 	return answers, nil
+}
+
+// blockAsks reads the asks of artifactID's ask blocks under blockIDs, by block id, as
+// loadAskBlocks reads a document's asks but without its lock: a write reads them to decide
+// whether to refuse it, and writes none of them.
+func blockAsks(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string) (map[string]model.Ask, error) {
+	rows, err := tx.Query(ctx, `
+		select `+AskColumns+`
+		from asks a where a.block_artifact_id = $1 and a.block_id = any($2::text[])
+	`, artifactID, blockIDs)
+	if err != nil {
+		return nil, fmt.Errorf("read the asks of document %s: %w", artifactID, err)
+	}
+	defer rows.Close()
+	found := make(map[string]model.Ask, len(blockIDs))
+	for rows.Next() {
+		ask, err := ScanAsk(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan an ask of document %s: %w", artifactID, err)
+		}
+		found[*ask.BlockID] = ask
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the asks of document %s: %w", artifactID, err)
+	}
+	return found, nil
 }
 
 // readingWithoutAnswer is why reading may not stand in its ask, which holds no answer yet, or
@@ -114,28 +214,46 @@ func readingWithoutAnswer(reading askReading, answers map[string]askAnswer) erro
 // edit elsewhere in the document never meets a reading another writer left. A browser's write
 // never comes here: its editor refuses such a reading, and settlement flags one it meets anyway
 // (flagReadingsWithoutAnswers).
+//
+// Whether the ask holds an answer is decided as settlement decides it (readingAnswers), over the
+// asks this document's blocks index and, for a block none indexes, the ask of another document of
+// its owner it was copied from (readCopiedAskSources). That read takes no copy lock
+// (lockProjectCopies): the lock keeps two settlements from each opening an ask for copies of one
+// ask, and this write opens none.
 func refuseReadingsWithoutAnswers(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node) error {
-	readings := askReadings(tree)
-	if len(readings) == 0 {
-		return nil
-	}
 	held := map[askReading]struct{}{}
 	for _, reading := range askReadings(prior) {
 		held[reading] = struct{}{}
 	}
 	var introduced []askReading
-	var asks []string
-	for _, reading := range readings {
-		if _, kept := held[reading]; kept {
-			continue
+	var blockIDs []string
+	var blocks []askBlock
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type != "ask" {
+			return true
 		}
-		introduced = append(introduced, reading)
-		asks = append(asks, reading.ask)
-	}
+		before := len(introduced)
+		for _, reading := range closingReadings(node) {
+			if _, kept := held[reading]; !kept {
+				introduced = append(introduced, reading)
+			}
+		}
+		if len(introduced) == before {
+			return true
+		}
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		blockIDs = append(blockIDs, id)
+		// A block the parse cannot read is a copy of nothing (askBlock.asks): it shows its own
+		// row's ask or none.
+		if block, err := parseAskBlock(node); err == nil {
+			blocks = append(blocks, block)
+		}
+		return true
+	})
 	if len(introduced) == 0 {
 		return nil
 	}
-	answers, err := askAnswers(ctx, tx, artifactID, asks)
+	answers, err := shownAskAnswers(ctx, tx, artifactID, blockIDs, blocks)
 	if err != nil {
 		return err
 	}
@@ -147,27 +265,84 @@ func refuseReadingsWithoutAnswers(ctx context.Context, tx pgx.Tx, artifactID str
 	return nil
 }
 
+// shownAskAnswers is, of blockIDs, ask blocks of document artifactID read as blocks (the readable
+// ones among them; a block the parse cannot read is a copy of nothing), the ask each one shows and
+// what its node holds (readingAnswers): its own row's, else, for a block no ask of its document
+// indexes, the ask of another document of its owner it was copied from (readCopiedAskSources). The
+// read takes no copy lock (lockProjectCopies): it opens no ask.
+func shownAskAnswers(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string, blocks []askBlock) (map[string]askAnswer, error) {
+	rows, err := blockAsks(ctx, tx, artifactID, blockIDs)
+	if err != nil {
+		return nil, err
+	}
+	var sources map[string]copiedSource
+	if unindexed := unindexedAskBlockIDs(blocks, rows); len(unindexed) > 0 {
+		owner, err := documentOwner(ctx, tx, artifactID)
+		if err != nil {
+			return nil, err
+		}
+		if sources, err = readCopiedAskSources(ctx, tx, artifactID, owner, blocks, unindexed); err != nil {
+			return nil, err
+		}
+	}
+	return readingAnswers(ctx, tx, blockIDs, rows, sources)
+}
+
+// shownAsks is shownAskAnswers for the ask blocks of tree under ids, which close with a reading,
+// as the typed-node pass reads them (refs.TypedSources.Shown): the ask each one shows, whether that
+// ask's row names its node, and whether that node holds an answer. A block that shows no ask is
+// absent.
+func shownAsks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node, ids []string) (map[string]refs.ShownAsk, error) {
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[id] = struct{}{}
+	}
+	var blocks []askBlock
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type != "ask" {
+			return true
+		}
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		if _, want := wanted[id]; want {
+			if block, err := parseAskBlock(node); err == nil {
+				blocks = append(blocks, block)
+			}
+		}
+		return true
+	})
+	answers, err := shownAskAnswers(ctx, tx, artifactID, ids, blocks)
+	if err != nil {
+		return nil, err
+	}
+	shown := make(map[string]refs.ShownAsk, len(answers))
+	for block, answer := range answers {
+		shown[block] = refs.ShownAsk{ID: answer.id, Named: answer.named, Answered: answer.answered}
+	}
+	return shown, nil
+}
+
 // flagReadingsWithoutAnswers is blocks, the readable ask blocks settlement collected from a
-// document of artifactID, less each one that closes with a reading while its ask holds no answer
-// (readingWithoutAnswer), which joins invalid with that reason: settlement flags it `invalid` as
-// it flags any ask block the strict read refuses, and leaves its row as it was. A browser's write
-// is never refused, so this is where one that left such a reading meets the rule a markdown
-// write is held to (refuseReadingsWithoutAnswers).
-func flagReadingsWithoutAnswers(ctx context.Context, tx pgx.Tx, artifactID string, blocks []askBlock, invalid []invalidAskBlock) ([]askBlock, []invalidAskBlock, error) {
+// document, less each one that closes with a reading while the ask it shows holds no answer
+// (readingAnswers, over rows, the asks of the document, and sources, the asks its copies were
+// copied from), which joins invalid with that reason (readingWithoutAnswer): settlement flags it
+// `invalid` as it flags any ask block the strict read refuses, and leaves its row as it was. A
+// browser's write is never refused, so this is where one that left such a reading meets the rule
+// a markdown write is held to (refuseReadingsWithoutAnswers).
+func flagReadingsWithoutAnswers(ctx context.Context, tx pgx.Tx, blocks []askBlock, invalid []invalidAskBlock, rows map[string]model.Ask, sources map[string]copiedSource) ([]askBlock, []invalidAskBlock, error) {
 	closing := map[string][]askReading{}
-	var asks []string
+	var blockIDs []string
 	for _, block := range blocks {
 		readings := closingReadings(block.node)
 		if len(readings) == 0 {
 			continue
 		}
 		closing[block.id] = readings
-		asks = append(asks, block.id)
+		blockIDs = append(blockIDs, block.id)
 	}
-	if len(asks) == 0 {
+	if len(blockIDs) == 0 {
 		return blocks, invalid, nil
 	}
-	answers, err := askAnswers(ctx, tx, artifactID, asks)
+	answers, err := readingAnswers(ctx, tx, blockIDs, rows, sources)
 	if err != nil {
 		return nil, nil, err
 	}

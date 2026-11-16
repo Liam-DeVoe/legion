@@ -52,6 +52,10 @@ type versionWrite struct {
 	// as the reopen's own move does (moveApprovalAsk, which takes those versions to hold that
 	// editor's text, since no stored version says whose text each added).
 	keptEditor *model.Actor
+	// settled is who introduced each credited block of the document as the settlement writing the
+	// version read it (askBlockSources), which the version's typed nodes take their authors from
+	// (typedSources); nil for a version no settlement writes.
+	settled *askBlockSources
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -589,12 +593,16 @@ func joinedSchemaError(err error, start func() error) error {
 // document's own nor above it, or one outside the document where the attribute points only inside
 // it (pmdoc.CheckBlockPointers). Each target is read as the block index would hold it once the
 // write is indexed, with the writing document's issue and that issue's ancestors
-// (refs.BlockTargets), in the write's transaction. The refusal is pmdoc.ErrBlockPointer, which no
-// schema refusal path (joinedSchemaError) reclassifies. A browser's write (settlement) and the
+// (refs.BlockTargets), in the write's transaction. It refuses too a tie the write introduces to
+// something of another issue than the document's own: a `shaped` value naming a block of another
+// issue, or a `from_ask` naming an ask of another issue (pmdoc.CheckIssueTies), which the editor
+// refuses as well (proof-editor's otherIssueRefusal). The refusal is pmdoc.ErrBlockPointer, which
+// no schema refusal path (joinedSchemaError) reclassifies. A browser's write (settlement) and the
 // reconciliation never come here: what a browser wrote is already stored, so it is never refused,
-// and a pointer of its at a block no document holds stays unresolved.
+// a pointer of its at a block no document holds stays unresolved, and a tie of its to another
+// issue is one the block index states nothing of (refs.DecisionFacts).
 func refuseBlockPointers(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
-	return pmdoc.CheckBlockPointers(tree, prior, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
+	if err := pmdoc.CheckBlockPointers(tree, prior, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
 		writing, found, err := refs.BlockTargets(ctx, tx, artifactID, offsetBlocks(offsets), targets)
 		// An item of a kind a later version adds is written only while every live process reads
 		// it, the bound a page is admitted writable under (schemaFleet.creatable).
@@ -603,6 +611,15 @@ func refuseBlockPointers(ctx context.Context, tx pgx.Tx, artifactID string, tree
 			return fleet.creatable(), err
 		}
 		return writing, found, err
+	}); err != nil {
+		return err
+	}
+	return pmdoc.CheckIssueTies(tree, prior, func() (string, error) {
+		var issue string
+		if err := tx.QueryRow(ctx, `select coalesce(issue_key, '') from artifacts where id = $1`, artifactID).Scan(&issue); err != nil {
+			return "", fmt.Errorf("read the issue of document %s: %w", artifactID, err)
+		}
+		return issue, nil
 	})
 }
 
@@ -970,7 +987,7 @@ func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string,
 	if err != nil {
 		return err
 	}
-	for id := range askBlockIDs(target) {
+	for id := range openAskBlockIDs(target) {
 		delete(open, id)
 	}
 	return refuseLostAskBlocks(open)
@@ -1050,7 +1067,7 @@ func refuseLostAskBlocks(lost map[string]struct{}) error {
 // batch that drops none answers from memory and sends no statement. An ask block carrying no id is
 // passed over, as the open asks are read by block id and no row can point at none.
 func droppedAskBlocks(before, after *pmdoc.Node) map[string]struct{} {
-	kept := askBlockIDs(after)
+	kept := openAskBlockIDs(after)
 	var dropped map[string]struct{}
 	pmdoc.WalkAskBlocks(before, func(id string) {
 		if id == "" {
@@ -2386,7 +2403,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// The version's references, its mentions' excerpts and its blocks are indexed from the render
 	// this version's markdown came from, in its own transaction, so GET /api/v1/references serves
 	// them without rendering the document.
-	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered)
+	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered, write.settled)
 	if err != nil {
 		return versionWriteResult{}, err
 	}

@@ -772,3 +772,69 @@ test("an ask a collaborator closes with a reading keeps it, and keeps it when a 
     { blockSchema }
   );
 });
+
+/** `Intro`, then a decision whose content is `We ship on Friday.` and which holds no reading. */
+const DECISION_DOC = "Intro\n\n:::decision{#d1}\nWe ship on Friday.\n:::\n";
+
+/** The decision's element in `ydoc`'s fragment, which must hold one. */
+function requireYDecision(ydoc: Y.Doc): Y.XmlElement {
+  const decision = ydoc
+    .getXmlFragment("prosemirror")
+    .toArray()
+    .find(
+      (child): child is Y.XmlElement =>
+        child instanceof Y.XmlElement && child.nodeName === "decision"
+    );
+  if (decision === undefined) throw new Error("the Yjs document holds no decision");
+  return decision;
+}
+
+test("a decision keeps its reading when a collaborator's paragraph lands after it at the same place", async () => {
+  await withMarksEditor(
+    DECISION_DOC,
+    ({ view, ydoc }) => {
+      // A person adds a paragraph at the end of the decision while an agent's write adds its first
+      // reading there. Both insert at the same index, and Yjs orders concurrent inserts there by
+      // client id, so the reading's lower id puts it first and leaves [paragraph, reading,
+      // paragraph], which the decision's own rule refuses. y-prosemirror deletes from the shared
+      // document every element it cannot build, so the decision must be built all the same.
+      const agent = peerOf(ydoc);
+      agent.clientID = 1;
+      const person = peerOf(ydoc);
+      person.clientID = 2;
+      const atAgent = requireYDecision(agent);
+      atAgent.insert(atAgent.length, [yReading("The agent reads it as Friday.")]);
+      const atPerson = requireYDecision(person);
+      const added = new Y.XmlElement("paragraph");
+      added.insert(0, [new Y.XmlText("And we say so.")]);
+      atPerson.insert(atPerson.length, [added]);
+      deliver(agent, ydoc);
+      deliver(person, ydoc);
+
+      expect(
+        requireYDecision(ydoc)
+          .toArray()
+          .map((child) => (child as Y.XmlElement).nodeName)
+      ).toEqual(["paragraph", "reading", "paragraph"]);
+      let decision: ProseMirrorNode | undefined;
+      view.state.doc.descendants((node) => {
+        if (node.type.name === "decision") decision = node;
+        return decision === undefined;
+      });
+      expect(decision).toBeDefined();
+      expect(blocks(decision as ProseMirrorNode)).toEqual([
+        ["paragraph", "We ship on Friday."],
+        ["reading", "The agent reads it as Friday."],
+        ["paragraph", "And we say so."],
+      ]);
+      for (const words of [
+        "We ship on Friday.",
+        "The agent reads it as Friday.",
+        "And we say so.",
+      ]) {
+        expect(ydoc.getXmlFragment("prosemirror").toString()).toContain(words);
+      }
+    },
+    { blockSchema }
+  );
+});

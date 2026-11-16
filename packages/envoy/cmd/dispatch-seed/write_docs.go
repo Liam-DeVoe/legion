@@ -128,10 +128,11 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 
 	versionAt := created.Add(time.Duration(document.Versions-1) * versionStep)
 	located := text.ExtractAt(latest, serverURL)
-	// No block pointers: a typed block's `block[]` attribute is what carries one, and every
-	// document this tool writes is plain markdown with no typed block in it, so the list the
-	// server builds from a document's block tree is empty here.
-	moved, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil)
+	// No block pointers and no typed facts: a typed block's `block[]` attribute is what carries
+	// a pointer, and a decision, a reading or an ask is what the typed-node pass reads, and every
+	// document this tool writes is plain markdown with no typed block in it, so the lists the
+	// server builds from a document's block tree are empty here.
+	moved, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, refs.TypedFacts{})
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}

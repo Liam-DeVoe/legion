@@ -56,6 +56,15 @@ func IsTypedBlock(name string) bool {
 	return ok
 }
 
+// BlockTypeAttributes is the attributes the installed schema declares for the typed block name,
+// in declaration order, and false for a type it does not declare. The block index reads a
+// decision's from it to tell a tie its caller writes from one the server derives (refs'
+// DecisionFacts): the schema's `server` flag is what says whose a value is.
+func BlockTypeAttributes(name string) (BlockAttributes, bool) {
+	typ, ok := typedBlock(name)
+	return typ.Attributes, ok
+}
+
 func typedBlock(name string) (BlockTypeSchema, bool) {
 	typ, ok := active.Load().types[name]
 	return typ, ok

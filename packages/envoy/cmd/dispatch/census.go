@@ -19,7 +19,9 @@ import (
 //     this binary's image.
 //   - `--store`, the node and tuple store held against the tables that project it
 //     (graphcensus.StoreCensus), in both directions and for every kind, refusing a kind it
-//     checked no row of.
+//     checked no row of but a kind of dispatch://INFRA-1150 that holds no row and no node; with
+//     the store-only lines of copied_from and moved_to, which no table projects, refusing a far
+//     end of either that does not resolve.
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
 //     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The

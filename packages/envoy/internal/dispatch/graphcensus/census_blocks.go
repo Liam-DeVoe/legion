@@ -14,7 +14,7 @@ var blockProjections = []projection{{
 	note: "one node per row, blocks past the address bound and the blocks of a lens's finding aside; the digest is" +
 		" the row's document and the block its parent_block_id names, or the document where it names none, against" +
 		" the in_document and part_of tuples the node states now, a block with no part_of telling itself from one" +
-		" the document holds directly",
+		" the document holds directly and a part_of to an ask's node read as the ask's block in the node's own document",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
@@ -26,11 +26,11 @@ var blockProjections = []projection{{
 		join artifacts a on a.id = d.artifact_id
 		where octet_length(d.node_id) <= ` + addressBound,
 	nodes: `
-		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
-		`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
+		select n.id, md5(n.id || '|' || ` + placedLinks(`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	owed: typedNodeOwed,
 }, {
 	name:     "block_ref",
 	nodeKind: refs.BlockNodeKind,
@@ -39,7 +39,13 @@ var blockProjections = []projection{{
 		" the node side is every block node not gone, a lens's finding aside, that states a link now of a kind" +
 		" refs.IndexBlocks writes into block_refs (a mention, or a pointer of a block[] attribute the store's" +
 		" type nodes declare, at any state), whether a row names it or not, and the digest is every link the" +
-		" rows of that block name against every such link its node states now",
+		" rows of that block name against every such link its node states now; a row an ask's node holds, and" +
+		" a decision's from_ask and decided_by, are no part of this kind",
+	// The rows are the block_refs rows of those kinds alone (refs.BlockRefKindsSQL). A row marked
+	// with an ask's node is the ask's shaped, which hangs on that node and not on the block
+	// (refs.TypedFacts.pairs), and a decision's from_ask and decided_by are ties of their own, of
+	// kinds no block[] attribute names: none of them is a link of the block this kind holds rows
+	// to, and the kinds of dispatch://INFRA-1150 hold them (decisionProjections).
 	rows: `
 		select 'block_ref ' || r.from_node || ' ' || r.kind || ' -> ' || r.to_kind || ' ' || r.to_id,
 		       r.node_kind, r.node_address, md5(r.from_node || '|' || named.links)
@@ -50,14 +56,16 @@ var blockProjections = []projection{{
 			                  order by b.kind || '>' || b.to_kind || ':' || b.to_id) as links
 			from block_refs b
 			where octet_length(b.from_node) <= ` + addressBound + ` and octet_length(b.to_id) <= ` + addressBound + `
+			  and b.kind in (` + refs.BlockRefKindsSQL + `) and b.node_kind is distinct from '` + graphstore.KindAsk + `'
 			group by b.from_node
 		) named on named.from_node = r.from_node
-		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound,
+		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound + `
+		  and r.kind in (` + refs.BlockRefKindsSQL + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
 	// Every block node is read, and not only those a row names: a mention or a pointer the store
 	// states out of a block no block_refs row names is a link graph_edges answers, and a node
 	// side that began at the rows could never find it. A block whose only links are its
-	// placement, or tuples no block_refs row projects, states no link here and is no node of this
-	// kind; the block kind holds it.
+	// placement, its from_ask, its decided_by, or tuples no block_refs row projects, states no
+	// link here and is no node of this kind; the block kind holds its placement.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
@@ -67,7 +75,8 @@ var blockProjections = []projection{{
 		where held.links <> ''`,
 	pastBound: `
 		select count(*) from block_refs r
-		where octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound,
+		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
+		  and r.kind in (` + refs.BlockRefKindsSQL + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
 }}
 
 // blockBackfills are the backfill's passes over the document blocks (backfillPasses): the blocks,

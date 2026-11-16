@@ -315,7 +315,11 @@ function domAttributeName(name: string): string {
 /**
  * A typed block's client-owned attributes as DOM attributes, so the block's HTML - a copy on the
  * clipboard - carries them back. A server-owned attribute is the server's to set, and a copy of a
- * block is a new block, so none is written.
+ * block is a new block, so none is written. A server-owned value a browser puts in the live
+ * document anyway is never what the server records: a decision's author is the credential of the
+ * write that first stored it, and settlement overwrites a decision's `decided_by`, `kept_by` and
+ * `kept_text_sum` in the live document with what the store holds, taking out one it holds none
+ * of (the document service's reconcileDecisionBlocks).
  */
 function domAttrs(type: BlockTypeSchema, node: ProseMirrorNode): Record<string, string> {
   const attributes: Record<string, string> = {};
@@ -333,8 +337,9 @@ function domAttrs(type: BlockTypeSchema, node: ProseMirrorNode): Record<string, 
  * editor of schema version `version` may not write yet, is not read as the typed block at all (the
  * rule does not match), since this editor never writes one. So is one naming something of another
  * issue than the document's, `documentRef` (`otherIssueRefusal`), which the document service
- * refuses: a paste - HTML, or plain text, which the editor reads through this rule too - builds no
- * block a write of the document would be refused for.
+ * refuses on every write that takes markdown and records no tie of on a browser's write: a paste -
+ * HTML, or plain text, which the editor reads through this rule too - builds no block a write of
+ * the document would be refused for.
  */
 function parsedDomAttrs(type: BlockTypeSchema, dom: HTMLElement, version: number, documentRef: string | undefined): Record<string, unknown> | false {
   const attributes: Record<string, unknown> = {};

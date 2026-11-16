@@ -285,20 +285,6 @@ func requireNoVersion(t *testing.T, database *store.Store, refKey string, number
 	}
 }
 
-// versionEvent answers the id of the artifact.version event that recorded version number of the
-// artifact.
-func versionEvent(t *testing.T, database *store.Store, artifactID string, number int) int64 {
-	t.Helper()
-	var id int64
-	if err := database.Pool.QueryRow(context.Background(), `
-		select id from events where type = 'artifact.version' and payload->>'artifact_id' = $1
-		  and (payload->'version'->>'number')::int = $2
-	`, artifactID, number).Scan(&id); err != nil {
-		t.Fatalf("read the artifact.version event of version %d of %s: %v", number, artifactID, err)
-	}
-	return id
-}
-
 // backfilledKind is one kind's line of a backfill report.
 func backfilledKind(t *testing.T, report graphcensus.BackfillReport, kind string) graphcensus.KindBackfill {
 	t.Helper()

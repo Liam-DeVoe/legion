@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -634,8 +635,9 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 }
 
 // planRepairs reconciles the document's ask blocks on the tree the settlement read, which says
-// what each block's row and the document owe each other, and holds its check blocks to the four
-// rules (reconcileCICheckBlocks): the repairs to write into the room, the events to append, and
+// what each block's row and the document owe each other, holds its check blocks to the four
+// rules (reconcileCICheckBlocks) and its decisions' server-owned attributes to what the store
+// holds (reconcileDecisionBlocks): the repairs to write into the room, the events to append, and
 // the copies to arm. On a closed issue the reconciliation changes no ask (reconcileAskBlocks), and
 // each event it appends - a block.repaired or a block.invalid, of an ask block or a check block -
 // is the settlement's own (SettlementActor), not the person whose edit the version saves: a
@@ -655,6 +657,9 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 		for index := range reconciliation.events {
 			reconciliation.events[index].Actor = SettlementActor
 		}
+	}
+	if err := reconciliation.reconcileDecisionBlocks(ctx, st.tx, st.room, st.reconciled); err != nil {
+		return settleDone, st.abandon(err)
 	}
 	st.reconciliation = reconciliation
 	if s.afterSettleReconcile != nil {
@@ -874,6 +879,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// The cause of the copies' copied_from (claimCopies): the version this settlement writes, or
+	// none for a settlement that writes no version.
+	copiesCause := graphstore.NoEvent
 	if versioning {
 		var keptEditor *model.Actor
 		if st.credit.kept {
@@ -886,6 +894,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			closedIssue:      st.issueClosed,
 			settlement:       true,
 			keptEditor:       keptEditor,
+			settled:          &st.reconciliation.sources,
 		})
 		if writeErr != nil {
 			// The version a human approved holds an element this build does not know: the version
@@ -936,7 +945,18 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// What this settlement's block index stated waits for that event: its id is the cause
 		// every node and tuple of the pass carries, and it exists only now
 		// (graphstore.Caused). st.published's last entry is the event just appended.
-		if err := graphstore.Caused(ctx, tx, result.blocks, st.published[len(st.published)-1].ID); err != nil {
+		versionEventID := st.published[len(st.published)-1].ID
+		if err := graphstore.Caused(ctx, tx, result.blocks, versionEventID); err != nil {
+			return settleDone, st.abandon(err)
+		}
+		copiesCause = versionEventID
+	}
+	// An ask this settlement opened has its row and node only now, so a version written before
+	// them stated none of its block's shaped ties; a settlement that writes a version states them
+	// in that version's index, and one that writes none writes them here, beside the row, before
+	// the ask.opened that names the targets they moved is appended.
+	if !versioning {
+		if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, settledVersion, st.versioned, offsets); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
@@ -944,8 +964,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 	// The follows of the asks this settlement opened wait for those asks' ask.opened events, which
-	// are among st.published now; causeFollows finds each by the ask its payload names.
+	// are among st.published now; causeFollows finds each by the ask its payload names, and
+	// causeSettledAnswers each answer state the settlement wrote by its event's type and ask, as
+	// causeOpenedAskTies finds the ties of each opened ask.
 	if err := st.reconciliation.causeFollows(ctx, tx, st.published); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := st.reconciliation.causeSettledAnswers(ctx, tx, st.published); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := st.reconciliation.causeOpenedAskTies(ctx, tx, st.published); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	// The copies among the document's ask blocks, once the version's blocks are nodes.
+	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.actor, time.Now().UTC(), copiesCause); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the

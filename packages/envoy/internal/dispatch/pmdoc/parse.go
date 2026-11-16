@@ -184,9 +184,14 @@ func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*N
 // for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
 // of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
 // without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
+// The tree is held to the content rule of each block a live document keeps in any order
+// (writtenContentError), since a caller wrote it in one piece.
 func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
 	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, readFrontmatter, budget)
 	if err != nil {
+		return nil, err
+	}
+	if err := writtenContentError(doc); err != nil {
 		return nil, err
 	}
 	if err := RepeatedBlockID(live, doc, doc); err != nil {

@@ -124,6 +124,15 @@ const BlockRefKindsSQL = `select 'mentions'
 // whether this version touched its text or not, because the row learns the address of that
 // node in this same pass (reconcileBlockParents) and the foreign key on it is checked inside
 // the statement that writes it.
+//
+// typed is what the typed-node pass read of the version (DecisionFacts; the zero TypedFacts for a
+// caller that reads none, which writes every decision and reading as its type's node and no tie
+// of theirs): a decision's and a reading's node takes its type's supertag, a reading in an
+// answered ask takes that ask's node for its part_of, and the pairs handed to replaceBlockRefs
+// carry each decision's from_ask and decided_by and each ask block's shaped, marked with the ask's
+// node, and none of their ties to another issue (TypedFacts.pairs). So every block_refs row of
+// the document has this one writer, the typed-node pass's above the deferral bound included
+// (IndexDecisionNodes), and the two write one set of rows for one version.
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -134,6 +143,7 @@ func IndexBlocks(
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []Pointer,
+	typed TypedFacts,
 ) ([]Target, bool, graphstore.Uncaused, error) {
 	// The fence is the pass's first write, so a pass that loses it has written nothing to undo
 	// and waits at that one row rather than at a projection row further in.
@@ -179,7 +189,7 @@ func IndexBlocks(
 		previous, held := stored[block.ID]
 		delete(stored, block.ID)
 		if held && !previous.named {
-			nodeless = append(nodeless, nodelessBlock{id: block.ID, joined: previous.joined})
+			nodeless = append(nodeless, nodelessBlock{id: block.ID, typ: block.Type, joined: previous.joined})
 		}
 		if held && previous.sum == string(sum[:]) {
 			continue
@@ -216,22 +226,31 @@ func IndexBlocks(
 	// written live and keeps a state a write marked it with, so a version that changes a
 	// proposed requirement's words leaves it proposed, and comes back live only from gone.
 	blockNodes := make([]graphstore.Node, 0, len(ids)+len(deleted)+len(nodeless))
-	for _, id := range ids {
+	for index, id := range ids {
 		if !blockIDFits(refKey, id) {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateLive))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateLive, typed.supertag(id, types[index])))
 	}
 	// A block the version no longer holds has its node stated gone, whatever state it held: a
 	// restating write that says gone is written gone, and keeps only the visibility. The tuple
 	// that says so is not built here: the node write states a base attribute it moved, with this
 	// write's own time and writer, so a block restored by a later version is stated live by the
-	// same rule and no writer of this store states a base attribute of its own.
+	// same rule and no writer of this store states a base attribute of its own. Its node keeps the
+	// supertag it holds, which no version holding the block is left to say.
+	held, err := heldSupertags(ctx, tx, refKey, deleted)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
 	for _, id := range deleted {
 		if !blockIDFits(refKey, id) {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateGone))
+		supertag, stored := held[id]
+		if !stored {
+			supertag = BlockSupertag
+		}
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateGone, supertag))
 	}
 	// A row written before this release names no node: migration 20261109022248 added the
 	// columns and filled none of them, and the backfill has not reached the document or has
@@ -253,7 +272,7 @@ func IndexBlocks(
 		}
 		address := blockNodeAddress(refKey, block.id)
 		if _, stated := changed[block.id]; !stated {
-			blockNodes = append(blockNodes, blockNode(address, document, versionAt, graphstore.StateLive))
+			blockNodes = append(blockNodes, blockNode(address, document, versionAt, graphstore.StateLive, typed.supertag(block.id, block.typ)))
 		}
 		memberships = append(memberships, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: address, Kind: TupleInDocument,
@@ -324,14 +343,14 @@ func IndexBlocks(
 			return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
 		}
 	}
-	parents, err := reconcileBlockParents(ctx, tx, artifactID, refKey, nodes, fits, versionAt, writer)
+	parents, err := reconcileBlockParents(ctx, tx, artifactID, refKey, nodes, fits, typed.askParents, nil, versionAt, writer)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, parents...)
 
-	pairs := blockPairs(nodes, located, pointers)
-	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, version, versionAt, writer, firstIndexing, pairs)
+	pairs := typed.pairs(blockPairs(nodes, located, typed.withTies(pointers)))
+	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, version, versionAt, writer, firstIndexing, pairs, nil)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
@@ -763,12 +782,39 @@ type storedBlock struct {
 	named  bool
 }
 
-// nodelessBlock is one block of the version whose document_blocks row names no node: its id
-// and the time that row was written, which the membership IndexBlocks states for it is dated
-// from.
+// nodelessBlock is one block of the version whose document_blocks row names no node: its id, its
+// type, which the node it takes is tagged by (TypedFacts.supertag), and the time that row was
+// written, which the membership IndexBlocks states for it is dated from.
 type nodelessBlock struct {
-	id     string
-	joined time.Time
+	id, typ string
+	joined  time.Time
+}
+
+// heldSupertags is the supertag the store holds for each of ids, blocks of the document refKey
+// names, by id: a block a version deletes keeps the supertag its node carries, since no block of
+// that version is left to say its type. An id the store holds no node of is absent.
+func heldSupertags(ctx context.Context, tx pgx.Tx, refKey string, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `
+		select substr(n.id, length($2) + 2), n.supertag
+		from graph_nodes n
+		where n.kind = $1 and n.id = any(select $2 || '#' || id from unnest($3::text[]) as deleted (id))
+	`, BlockNodeKind, refKey, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the supertags of the blocks of %s a version deletes: %w", refKey, err)
+	}
+	defer rows.Close()
+	held := make(map[string]string, len(ids))
+	for rows.Next() {
+		var id, supertag string
+		if err := rows.Scan(&id, &supertag); err != nil {
+			return nil, fmt.Errorf("scan the supertag of a block of %s: %w", refKey, err)
+		}
+		held[id] = supertag
+	}
+	return held, rows.Err()
 }
 
 // storedBlocks is each block the document's index holds, by id. blocks is how many blocks the
@@ -801,12 +847,16 @@ func storedBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blocks int)
 }
 
 // blockPair is one link a block holds: the block's id, the edge's kind and its target, and the
-// block types it points at (nil: any).
+// block types it points at (nil: any). nodeKind and nodeAddress name the node the link hangs on
+// where it is not the block's own: an ask block's shaped hangs on the ask's node, whose row is
+// marked ('ask', <ask id>) (TypedFacts.pairs).
 type blockPair struct {
-	blockID string
-	kind    string
-	target  Target
-	toTypes []string
+	blockID     string
+	kind        string
+	target      Target
+	toTypes     []string
+	nodeKind    string
+	nodeAddress string
 }
 
 // heldTarget is a target as one block holds it.
@@ -915,7 +965,15 @@ func pointerPairs(nodes []model.ArtifactBlock, pointers []Pointer) ([]blockPair,
 // A row's node columns are written by the insert alone: a pair written before this build keeps
 // the nulls the projection's migration left it, and takes its node's address when a version
 // writes the pair again. Adding them to the conflict update would return a row whose to_types
-// no version changed and count its target as moved.
+// no version changed and count its target as moved. A pair that names a node of its own
+// (blockPair.nodeKind: an ask block's shaped, on the ask's node) writes that node into the row,
+// which marks it, and its tuple is stated out of that node, as its retraction is once the row
+// goes.
+//
+// scope, where it is not nil, is the rows the reconcile may delete: those of its kinds held by
+// its blocks, which is the typed-node pass's reconcile of its own ties above the deferral bound
+// (IndexDecisionNodes). Every other row of the document is left as it stands, whatever pairs
+// holds, so a pass that read only those ties deletes nothing it did not read.
 func replaceBlockRefs(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -925,6 +983,7 @@ func replaceBlockRefs(
 	writer model.Actor,
 	firstIndexing bool,
 	pairs []blockPair,
+	scope *pairScope,
 ) ([]Target, []graphstore.UncausedTuple, error) {
 	blockIDs := make([]string, len(pairs))
 	kinds := make([]string, len(pairs))
@@ -933,20 +992,31 @@ func replaceBlockRefs(
 	// A pair's to_types travel as one space-joined text, null for no limit: a block type's name is
 	// a directive name (pmdoc), which holds no space.
 	toTypes := make([]*string, len(pairs))
+	// The node a pair names of its own, null for the block's.
+	nodeKinds := make([]*string, len(pairs))
+	nodeAddresses := make([]*string, len(pairs))
 	for i, pair := range pairs {
 		blockIDs[i], kinds[i], toKinds[i], toIDs[i] = pair.blockID, pair.kind, pair.target.Kind, pair.target.ID
 		if len(pair.toTypes) > 0 {
 			joined := strings.Join(pair.toTypes, " ")
 			toTypes[i] = &joined
 		}
+		if pair.nodeKind != "" {
+			nodeKinds[i], nodeAddresses[i] = &pairs[i].nodeKind, &pairs[i].nodeAddress
+		}
+	}
+	var scopeKinds, scopeBlocks []string
+	if scope != nil {
+		scopeKinds, scopeBlocks = scope.kinds, scope.blocks
 	}
 	dropped, err := scanBlockRefRows(tx.Query(ctx, `
 		delete from block_refs r
 		where r.artifact_id = $1 and not exists (
 			select 1 from unnest($2::text[], $3::text[], $4::text[], $5::text[]) as p (block_id, kind, to_kind, to_id)
 			where p.block_id = r.block_id and p.kind = r.kind and p.to_kind = r.to_kind and p.to_id = r.to_id)
-		returning r.block_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, true
-	`, artifactID, blockIDs, kinds, toKinds, toIDs))
+		  and ($6::text[] is null or (r.kind = any($6::text[]) and r.block_id = any($7::text[])))
+		returning r.block_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, true, r.node_kind, r.node_address
+	`, artifactID, blockIDs, kinds, toKinds, toIDs, scopeKinds, scopeBlocks))
 	if err != nil {
 		return nil, nil, fmt.Errorf("delete the block mentions version %d of %s dropped: %w", version, artifactID, err)
 	}
@@ -954,7 +1024,7 @@ func replaceBlockRefs(
 	var tuples []graphstore.UncausedTuple
 	for _, row := range dropped {
 		moved = append(moved, Target{Kind: row.toKind, ID: row.toID})
-		address := blockNodeAddress(refKey, row.blockID)
+		fromKind, address := row.from(refKey)
 		// A mention's or a pointer's far end is a reference target, which the block's row holds
 		// up to text.MaxTargetBytes but the store keys whole beside the block's own address: a
 		// tuple whose far end is past graphstore.MaxAddressBytes was never written, so its
@@ -966,7 +1036,7 @@ func replaceBlockRefs(
 		// The row is gone, so no source_seq is ever written for it and the retraction carries
 		// none: its time is this version's, the moment the pair stopped being held.
 		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-			FromKind: BlockNodeKind, FromID: address, Kind: row.kind,
+			FromKind: fromKind, FromID: address, Kind: row.kind,
 			ToKind: row.toKind, ToID: row.toID,
 			At: versionAt, Who: writer, Asserted: false,
 		}})
@@ -979,32 +1049,38 @@ func replaceBlockRefs(
 	written, err := scanBlockRefRows(tx.Query(ctx, `
 		insert into block_refs (artifact_id, block_id, from_node, node_kind, node_address, to_kind, to_id, kind, to_types, created_version, created_at, source_seq)
 		select $1::uuid, p.block_id, a.ref_key || '#' || p.block_id,
-		       case when octet_length(a.ref_key || '#' || p.block_id) <= $11 and octet_length(p.to_id) <= $11 then $10 end,
-		       case when octet_length(a.ref_key || '#' || p.block_id) <= $11 and octet_length(p.to_id) <= $11 then a.ref_key || '#' || p.block_id end,
+		       case when octet_length(p.to_id) > $11 then null
+		            when p.node_kind is not null then p.node_kind
+		            when octet_length(a.ref_key || '#' || p.block_id) <= $11 then $10 end,
+		       case when octet_length(p.to_id) > $11 then null
+		            when p.node_kind is not null then p.node_address
+		            when octet_length(a.ref_key || '#' || p.block_id) <= $11 then a.ref_key || '#' || p.block_id end,
 		       p.to_kind, p.to_id, p.kind, string_to_array(p.to_types, ' '), $6,
 		       coalesce(case when $8 then r.created_at end, $7), case when $8 then r.source_seq end
-		from unnest($2::text[], $3::text[], $4::text[], $5::text[], $9::text[]) as p (block_id, kind, to_kind, to_id, to_types)
+		from unnest($2::text[], $3::text[], $4::text[], $5::text[], $9::text[], $12::text[], $13::text[])
+		     as p (block_id, kind, to_kind, to_id, to_types, node_kind, node_address)
 		cross join (select ref_key from artifacts where id = $1::uuid) a
 		left join refs r on r.from_kind = 'artifact' and r.from_id = $1::uuid::text
 		                and r.to_kind = p.to_kind and r.to_id = p.to_id
 		on conflict (artifact_id, block_id, to_kind, to_id, kind) do update set to_types = excluded.to_types
 		where block_refs.to_types is distinct from excluded.to_types
-		returning block_id, kind, to_kind, to_id, created_at, source_seq, xmax = 0
-	`, artifactID, blockIDs, kinds, toKinds, toIDs, version, versionAt, firstIndexing, toTypes, BlockNodeKind, MaxBlockNodeBytes))
+		returning block_id, kind, to_kind, to_id, created_at, source_seq, xmax = 0, node_kind, node_address
+	`, artifactID, blockIDs, kinds, toKinds, toIDs, version, versionAt, firstIndexing, toTypes, BlockNodeKind, MaxBlockNodeBytes,
+		nodeKinds, nodeAddresses))
 	if err != nil {
 		return nil, nil, fmt.Errorf("record the block mentions of version %d of %s: %w", version, artifactID, err)
 	}
 	for _, row := range written {
 		moved = append(moved, Target{Kind: row.toKind, ID: row.toID})
-		if !row.inserted || !blockIDFits(refKey, row.blockID) || !graphstore.AddressFits(row.toID) {
+		fromKind, address := row.from(refKey)
+		if !row.inserted || !graphstore.AddressFits(address) || !graphstore.AddressFits(row.toID) {
 			continue
 		}
-		address := blockNodeAddress(refKey, row.blockID)
 		// Outside a first indexing the insert leaves source_seq null and the version's event
 		// fills it in this same transaction, which is what LegacyFromCause names.
 		tuples = append(tuples, graphstore.UncausedTuple{
 			Tuple: graphstore.Tuple{
-				FromKind: BlockNodeKind, FromID: address, Kind: row.kind,
+				FromKind: fromKind, FromID: address, Kind: row.kind,
 				ToKind: row.toKind, ToID: row.toID,
 				At: row.createdAt, Who: writer, LegacySourceSeq: row.sourceSeq, Asserted: true,
 			},
@@ -1014,13 +1090,31 @@ func replaceBlockRefs(
 	return moved, tuples, nil
 }
 
+// pairScope is the rows of a document's block_refs one reconcile may delete (replaceBlockRefs):
+// those of the tuple kinds kinds held by the blocks blocks.
+type pairScope struct {
+	kinds, blocks []string
+}
+
 // blockRefRow is one block_refs row as the reconcile's two statements return it, with whether
-// the insert inserted it rather than updating a row that was already there (xmax = 0).
+// the insert inserted it rather than updating a row that was already there (xmax = 0), and the
+// node it names, null where it names none.
 type blockRefRow struct {
 	blockID, kind, toKind, toID string
 	createdAt                   time.Time
 	sourceSeq                   *int64
 	inserted                    bool
+	nodeKind, nodeAddress       *string
+}
+
+// from is the node the row's tuple is stated out of: the node a marked row names (an ask's, for
+// an ask block's shaped), and the block's own otherwise, whose address is its document's ref_key
+// and its id whether or not the row names it.
+func (row blockRefRow) from(refKey string) (kind, address string) {
+	if row.nodeKind != nil && *row.nodeKind != BlockNodeKind && row.nodeAddress != nil {
+		return *row.nodeKind, *row.nodeAddress
+	}
+	return BlockNodeKind, blockNodeAddress(refKey, row.blockID)
 }
 
 func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
@@ -1031,7 +1125,7 @@ func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
 	var written []blockRefRow
 	for rows.Next() {
 		var row blockRefRow
-		if err := rows.Scan(&row.blockID, &row.kind, &row.toKind, &row.toID, &row.createdAt, &row.sourceSeq, &row.inserted); err != nil {
+		if err := rows.Scan(&row.blockID, &row.kind, &row.toKind, &row.toID, &row.createdAt, &row.sourceSeq, &row.inserted, &row.nodeKind, &row.nodeAddress); err != nil {
 			return nil, err
 		}
 		written = append(written, row)

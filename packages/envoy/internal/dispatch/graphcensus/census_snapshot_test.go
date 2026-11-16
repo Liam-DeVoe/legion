@@ -121,9 +121,11 @@ func storeCensusOf(t *testing.T, database *store.Store) *StoreReport {
 	return report
 }
 
-// seededKinds are the kinds seedAgreeingStore writes rows of, which are every kind the census
-// reads, each of which must count rows and live nodes: a kind that read zero of either compared
-// nothing, and its zero differences would prove nothing.
+// seededKinds are the kinds seedAgreeingStore writes rows of, which are every kind of
+// dispatch://INFRA-1149 the census reads, each of which must count rows and live nodes: a kind
+// that read zero of either compared nothing, and its zero differences would prove nothing. The
+// kinds of dispatch://INFRA-1150 (KindReport.EmptyAgrees) are none of them: the fixture writes no
+// decision and no ask, and those kinds read empty on both sides, which is no refusal.
 var seededKinds = []string{"comment", "block", "block_ref", graphstore.KindPerson, graphstore.KindSession,
 	graphstore.KindRole, graphstore.KindPage, "artifact", graphstore.KindVersion}
 
@@ -163,9 +165,12 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 
 // The census passes only where it checked more than zero rows of every kind it covers and found
 // zero differences (R19): a total over the kinds is no such proof, because two empty sides of one
-// kind agree. The census of the agreeing store, which checked rows of every kind, passes. The
-// same report with any one kind's rows and nodes taken out, which still reads zero differences
-// and still holds rows of every other kind, must refuse and name that kind in its verdict.
+// kind agree. The census of the agreeing store, which checked rows of every kind of
+// dispatch://INFRA-1149, passes. The same report with any one of those kinds' rows and nodes taken
+// out, which still reads zero differences and still holds rows of every other kind, must refuse
+// and name that kind in its verdict. A kind of dispatch://INFRA-1150 is a kind a deployment holds
+// none of until somebody writes one, and the agreeing store holds none: no row and no node of it
+// is no refusal, and the report says so on that kind's own line.
 func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	database := storetest.Open(t)
 	seedAgreeingStore(t, database)
@@ -179,6 +184,14 @@ func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 		emptied.Kinds[index].Rows, emptied.Kinds[index].Nodes = 0, 0
 		var printed strings.Builder
 		emptied.Write(&printed)
+		if held.EmptyAgrees {
+			line := "census: store kind=" + held.Kind + " holds no row and no node: nothing of it is written yet, which is no refusal\n"
+			if emptied.Refused() || !strings.Contains(printed.String(), line) || !strings.HasSuffix(printed.String(), "census: store ok\n") {
+				t.Errorf("a census whose %s kind holds no row and no node reads refused=%t, want a pass printing %q:\n%s",
+					held.Kind, emptied.Refused(), line, printed.String())
+			}
+			continue
+		}
 		verdict := "census: store REFUSED (kind(s) " + held.Kind + " checked no row, so the census proves nothing of them)\n"
 		if !emptied.Refused() || emptied.Rows() == 0 || !strings.HasSuffix(printed.String(), verdict) {
 			t.Errorf("a census that checked no %s row but %d rows of the other kinds reads refused=%t, want a refusal ending %q:\n%s",

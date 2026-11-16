@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -94,7 +95,10 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 			return err
 		}
 		for _, id := range withdrawn {
-			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer); err != nil {
+			// No ask.resolved is appended here, so what the resolution states on the ask's node
+			// waits for no event and is left unstated.
+			var held graphstore.Uncaused
+			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer, &held); err != nil {
 				return err
 			}
 		}

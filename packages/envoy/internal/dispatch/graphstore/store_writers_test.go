@@ -62,6 +62,9 @@ var storeWriteCallSites = []string{
 	"api/asks.go#createAskFor",
 	"api/reviews.go#renewApprovalAsk",
 	"docs/ask_blocks.go#causeFollows",
+	// The shaped ties of each ask block a settlement opened, when it writes no version: appended
+	// under the ask.opened that records the ask, through Caused, after the follow's node above.
+	"docs/ask_blocks.go#causeOpenedAskTies",
 	// The block index's cause: each site that appends what a version's index pass stated under
 	// the event that recorded the version, through Caused (refs' TestCausedTakesTheStoreLockOrder
 	// proves the step): an upload, a version write's event, an issue's spec, the block-index tick,
@@ -167,6 +170,25 @@ var storeWriteCallSites = []string{
 	"graphstore/people.go#Authored",
 	"graphstore/people.go#Reached",
 	"graphstore/people.go#SessionRecorded",
+	// The one writer of an ask's answer state (dispatch://INFRA-1150): asks.Settle states the answer
+	// on the ask's node, appended at once under the event it is given or held for the caller's, and
+	// then writes the row; the catch-up of a follow another build recorded states it on the node.
+	// Each site that appends what a transition held under the event it appends after it, through
+	// Caused: the answer, resolve and decline routes' transition, an issue's close and reopen, the
+	// approval carry's answer, and a settlement's retractions and restorations. The settlement
+	// states the copies among a document's ask blocks as claims once its version is indexed, and
+	// the backfill of the boot step's first phase states the asks and the followers written before
+	// this release, each batch with its rows locked first.
+	"api/ask_transitions.go#closeAskTx",
+	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx",
+	"api/issue_ask_lifecycle.go#restoreIssueAsksTx",
+	"asks/followers.go#CatchUpFollower",
+	"asks/settle.go#Settle",
+	"docs/approval_carry.go#answerApprovalAsk",
+	"docs/ask_blocks.go#causeSettledAnswers",
+	"docs/ask_blocks.go#claimCopies",
+	"graphcensus/backfill.go#writeAskBatch",
+	"graphcensus/backfill.go#writeAskFollowerBatch",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",
@@ -174,6 +196,11 @@ var storeWriteCallSites = []string{
 	// The block index: its nodes inside the revision fence, whose tuples and cause wait for the
 	// event that recorded the version (the sites of Caused above).
 	"refs/blocks.go#IndexBlocks",
+	// The typed-node pass (dispatch://INFRA-1150): the decision and reading nodes of a version and
+	// their authors' nodes, in the transaction that accepts it, under the document's owner row its
+	// caller holds, after the block index's own nodes where that runs and on its own above the
+	// deferral bound, its tuples and cause waiting for the same event (the sites of Caused above).
+	"refs/decision_nodes.go#IndexDecisionNodes",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

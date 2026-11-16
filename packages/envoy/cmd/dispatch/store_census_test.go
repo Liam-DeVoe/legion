@@ -1381,7 +1381,16 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 		}
 	}
 	for _, kind := range report {
-		if !slices.Contains(censusKinds, kind.kind) {
+		switch {
+		case slices.Contains(censusKinds, kind.kind):
+		case slices.Contains(decisionCensusKinds, kind.kind):
+			// dispatch://INFRA-1150's kinds, which this run writes no decision for and which a store
+			// may hold none of: no row and no node of one is no refusal, and a difference is.
+			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
+				t.Errorf("kind %s reads %d row(s) without a node and %d node(s) without a row",
+					kind.kind, kind.rowsWithoutANode, kind.nodesWithoutARow)
+			}
+		default:
 			t.Errorf("the census checked kind %s, which this test's list does not hold", kind.kind)
 		}
 	}
