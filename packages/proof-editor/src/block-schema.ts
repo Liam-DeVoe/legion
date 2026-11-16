@@ -7,6 +7,7 @@ import type {
   BlockSchemaElement,
   BlockTypeSchema,
 } from '@legion/contracts';
+import { PARENT_ATTRIBUTE, pointerItemKind } from '@legion/contracts';
 import { $nodeSchema } from '@milkdown/kit/utils';
 import { DOMParser, type DOMOutputSpec, type Fragment, type Node as ProseMirrorNode, type Schema } from '@milkdown/kit/prose/model';
 import type { MarkdownNode as ParsedMarkdownNode, NodeSchema } from '@milkdown/kit/transformer';
@@ -36,9 +37,19 @@ export function creatable(version: number, element: BlockElementVersions | undef
   return (element?.creatable_since ?? 1) <= version;
 }
 
-/** Whether an editor of schema version `version` may write `value` into `attribute`. */
+/**
+ * Whether an editor of schema version `version` may write `value` into `attribute`: the attribute,
+ * an enum's choice, and the kind of each item a `block[]` value points at (`item_versions`, such
+ * as an issue under a plan task's `needs`), each creatable at that version.
+ */
 export function creatableValue(version: number, attribute: BlockAttributeSchema, value: unknown): boolean {
   if (!creatable(version, attribute)) return false;
+  if (attribute.kind === 'block[]' && attribute.item_versions !== undefined && Array.isArray(value)) {
+    return value.every((pointer) => {
+      const item = typeof pointer === 'string' ? pointerItemKind(pointer, attribute.items) : undefined;
+      return item === undefined || creatable(version, attribute.item_versions?.[item]);
+    });
+  }
   return attribute.kind !== 'enum' || typeof value !== 'string' || creatable(version, attribute.choice_versions?.[value]);
 }
 
@@ -143,6 +154,20 @@ export function validateBlockSchema(schema: BlockSchema): void {
       if (attribute.targets !== undefined && attribute.kind !== 'block[]') {
         throw new Error(`typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} has targets, which only a block[] attribute may carry`);
       }
+      if (attribute.items !== undefined && attribute.kind !== 'block[]') {
+        throw new Error(`typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} has items, which only a block[] attribute may carry`);
+      }
+      for (const [index, item] of (attribute.items ?? []).entries()) {
+        if (!ITEM_KINDS.includes(item)) {
+          throw new Error(`typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} names the item kind ${JSON.stringify(item)}; items are ask, comment, message and issue`);
+        }
+        if (attribute.items?.indexOf(item) !== index) {
+          throw new Error(`typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} names the item kind ${JSON.stringify(item)} twice`);
+        }
+      }
+      if (name === PARENT_ATTRIBUTE && attribute.kind !== 'block[]') {
+        throw new Error(`typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} places a block in its tree, so it must be a block[] attribute`);
+      }
     }
   }
   for (const type of schema.types) {
@@ -173,12 +198,36 @@ export function typedBlockContent(type: BlockTypeSchema, admitted: readonly stri
   return [type.content, ...admitted.map((name) => `${name}*`)].join(' ');
 }
 
+/** The item kinds a `block[]` attribute's `items` may name (pmdoc's validateAttributeSchema). */
+const ITEM_KINDS: readonly string[] = ['ask', 'comment', 'message', 'issue'];
+
+// A duration in days as markdown writes one, and every spelling of it that is zero (pmdoc's
+// daysPattern and zeroDays).
+const DAYS = /^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$/;
+const ZERO_DAYS = /^0(?:\.0{1,2})?$/;
+
+/**
+ * Why `value` is no `days` attribute's value, in the document service's wording (pmdoc's
+ * validateDays, the value quoted with `JSON.stringify` where Go uses `%q`), or undefined when it is
+ * one: a positive number of days with at most two digits after its point, `0.25`, `1` or `2.5`,
+ * kept as its author wrote it.
+ */
+export function daysValueProblem(value: string): string | undefined {
+  if (DAYS.test(value) && !ZERO_DAYS.test(value)) return undefined;
+  return `${JSON.stringify(value)} is not a duration in days: a positive number with at most two digits after its point, such as 0.25, 1 or 2.5`;
+}
+
 function parseAttribute(typeName: string, name: string, attribute: BlockAttributeSchema, value: string): string | boolean | string[] {
   switch (attribute.kind) {
     case 'string':
     case 'actor':
     case 'timestamp':
       return value;
+    case 'days': {
+      const problem = daysValueProblem(value);
+      if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
+      return value;
+    }
     case 'ask': {
       const problem = askReferenceProblem(value);
       if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
@@ -205,7 +254,7 @@ function parseAttribute(typeName: string, name: string, attribute: BlockAttribut
       return values;
     }
     case 'block[]':
-      return parseBlockPointers(typeName, name, value);
+      return parseBlockPointers(typeName, name, value, attribute.items);
   }
 }
 

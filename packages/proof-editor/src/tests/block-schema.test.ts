@@ -3,7 +3,7 @@ import { DISPATCH_BLOCK_POINTER_VALUES } from '@legion/contracts';
 import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState } from '@milkdown/kit/prose/state';
 
-import { typedBlockSpec, type BlockSchema, type BlockTypeSchema } from '../block-schema.js';
+import { typedBlockSpec, validateBlockSchema, type BlockSchema, type BlockTypeSchema } from '../block-schema.js';
 import { createHeadlessProof } from '../lib-headless.js';
 import { createTypedBlockCommands } from '../typed-block-commands.js';
 
@@ -396,8 +396,14 @@ function thrownBy(run: () => unknown): Error | undefined {
 }
 
 await test('a block pointer attribute reads and writes exactly the values the shared table accepts', async () => {
-  const proof = await createHeadlessProof({ blockSchema: pointerSchema });
-  for (const { value, ok, why } of DISPATCH_BLOCK_POINTER_VALUES) {
+  for (const { value, ok, why, items } of DISPATCH_BLOCK_POINTER_VALUES) {
+    // A row's items are the item kinds its attribute declares, as the Go reader takes them.
+    const proof = await createHeadlessProof({ blockSchema: {
+      ...pointerSchema,
+      types: pointerSchema.types.map((type) => type.name === 'claim' ? {
+        ...type, attributes: { serves: { kind: 'block[]' as const, targets: ['requirement'], items } },
+      } : type),
+    } });
     const markdown = `:::claim{#c1 serves="${value}"}\nBody.\n:::\n`;
     if (ok) {
       const claim = proof.parseMarkdown(markdown).child(0);
@@ -415,6 +421,69 @@ await test('a block pointer attribute reads and writes exactly the values the sh
       assert(error !== undefined, `${why}: ${JSON.stringify(value)} was accepted`);
       assert(error!.message.includes('"serves"'), `${why}: refusal = ${error!.message}`);
     }
+  }
+});
+
+await test('a parent names one conversation item or block, a size is days, and a needs names no conversation', async () => {
+  const comment = 'dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111';
+  const parent = { kind: 'block[]', items: ['ask', 'comment', 'message'] } as const;
+  const schema = { version: 6, types: [
+    { name: 'criterion', content: 'paragraph+', render: 'host', attributes: { parent } },
+    { name: 'plan_task', content: 'paragraph+', render: 'host', attributes: {
+      needs: { kind: 'block[]', targets: ['plan_task'], items: ['issue'] },
+      size: { kind: 'days' },
+      parent,
+    } },
+  ] } as const;
+  const proof = await createHeadlessProof({ blockSchema: schema });
+  for (const markdown of [
+    `:::criterion{#k1 parent="${comment}"}\nI want it.\n:::\n`,
+    `:::criterion{#k1 parent="${comment}#b-b1"}\nI want it.\n:::\n`,
+    `:::plan_task{#t1 needs="dispatch://CORE-2" size="0.25"}\nDo it.\n:::\n`,
+    `:::plan_task{#t1 size="2.5"}\nDo it.\n:::\n`,
+  ]) {
+    assert(proof.serializeMarkdown(proof.parseMarkdown(markdown)) === markdown, `${JSON.stringify(markdown)} did not round-trip`);
+  }
+  for (const [markdown, reason] of [
+    [`:::criterion{#k1 parent="${comment} ${comment}#b-b1"}\nI want it.\n:::\n`, 'a block has one parent'],
+    [`:::criterion{#k1 parent="${comment}@v2"}\nI want it.\n:::\n`, 'is not a comment as Dispatch writes one'],
+    [`:::plan_task{#t1 needs="${comment}#b-b1"}\nDo it.\n:::\n`, 'is a block of a comment'],
+    [':::plan_task{#t1 size="0"}\nDo it.\n:::\n', 'is not a duration in days'],
+    [':::plan_task{#t1 size="1.234"}\nDo it.\n:::\n', 'is not a duration in days'],
+    [':::plan_task{#t1 size="-1"}\nDo it.\n:::\n', 'is not a duration in days'],
+  ] as const) {
+    const error = thrownBy(() => proof.parseMarkdown(markdown));
+    assert(error?.message.includes(reason) === true, `${JSON.stringify(markdown)}: refusal = ${error?.message}, want ${reason}`);
+  }
+  let state = EditorState.create({ schema: proof.schema, doc: proof.parseMarkdown(':::criterion{#k1}\nI want it.\n:::\n\n:::plan_task{#t1}\nDo it.\n:::\n') });
+  const commands = createTypedBlockCommands({ blockSchema: schema, getState: () => state, dispatch: (tr) => { state = state.apply(tr); } });
+  assert(commands.setBlockAttributes('k1', { parent: [comment] }), 'the command refused one parent');
+  assert(thrownBy(() => commands.setBlockAttributes('k1', { parent: [comment, `${comment}#b-b1`] }))?.message.includes('a block has one parent') === true, 'the command took two parents');
+  assert(commands.setBlockAttributes('t1', { size: '1.5' }), 'the command refused a size of 1.5 days');
+  assert(thrownBy(() => commands.setBlockAttributes('t1', { size: '1.555' }))?.message.includes('is not a duration in days') === true, 'the command took a size of three decimals');
+  assert(thrownBy(() => commands.setBlockAttributes('t1', { needs: [comment] }))?.message.includes('"needs"') === true, 'the command let a needs name a comment');
+  for (const attribute of [
+    { kind: 'block[]', items: ['ask', 'ask'] },
+    { kind: 'block[]', items: ['artifact'] },
+    { kind: 'string', items: ['comment'] },
+  ]) {
+    const refused = { version: 6, types: [{ name: 'claim', content: 'paragraph+', render: 'host', attributes: { parent: attribute } }] };
+    assert(thrownBy(() => validateBlockSchema(refused as unknown as BlockSchema)) !== undefined, `${JSON.stringify(attribute)} was accepted`);
+  }
+});
+
+await test('an editor writes an issue into a needs only from the version that creates that item kind', async () => {
+  const needs = { kind: 'block[]', targets: ['plan_task'], items: ['issue'], item_versions: { issue: { since: 5, creatable_since: 6 } } } as const;
+  const atVersion = (version: number) => ({ version, types: [{ name: 'plan_task', content: 'paragraph+', render: 'host', attributes: { needs } }] }) as unknown as BlockSchema;
+  for (const [version, takesIssue] of [[5, false], [6, true]] as const) {
+    const schema = atVersion(version);
+    const proof = await createHeadlessProof({ blockSchema: schema });
+    let state = EditorState.create({ schema: proof.schema, doc: proof.parseMarkdown(':::plan_task{#t1}\nFirst.\n:::\n\n:::plan_task{#t2}\nThen.\n:::\n') });
+    const commands = createTypedBlockCommands({ blockSchema: schema, getState: () => state, dispatch: (tr) => { state = state.apply(tr); } });
+    assert(commands.setBlockAttributes('t2', { needs: ['dispatch://CORE-1/spec#b-t1'] }), `an editor of version ${version} refused a plan task's needs`);
+    const issue = thrownBy(() => commands.setBlockAttributes('t2', { needs: ['dispatch://CORE-2'] }));
+    assert(takesIssue ? issue === undefined : issue?.message.includes('cannot write') === true,
+      `an editor of version ${version} writing an issue into needs: ${issue?.message}, want ${takesIssue ? 'it written' : 'it refused'}`);
   }
 });
 

@@ -33,6 +33,7 @@ var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
 	"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql",
 	"../../internal/dispatch/store/migrations/20261116121500_issue_tree_query_supertags.up.sql",
+	"../../internal/dispatch/store/migrations/20261116163700_issue_tree_block_schema.up.sql",
 }
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
@@ -169,8 +170,10 @@ func requireBaseAttributes(t *testing.T, ctx context.Context, pool *store.Pool, 
 // requireTypeNodeValuesAreTheirTuples holds every type node's row to the log it projects (R1):
 // each attribute the row's attributes column carries is the newest value tuple of that name out
 // of the node, and every value tuple out of the node other than its two base attributes names an
-// attribute the row carries. A value a migration set on the row alone, which a reader of the log
-// could not read back, fails here, and so does a tuple the row has no attribute for.
+// attribute the row carries, unless its name's newest tuple retracts it, which says the node holds
+// no such attribute now, as graphstore.CurrentValue reads one. A value a migration set on the row
+// alone, which a reader of the log could not read back, fails here, and so does a tuple the row
+// has no attribute for.
 //
 // A value is compared as the migrations write it: a JSON string as the string itself, and any
 // other JSON value as its text, so a version reads `4` and a list of choices `["note", "warning"]`.
@@ -181,11 +184,12 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 		       coalesce((
 		           select jsonb_object_agg(newest.kind, newest.to_id)
 		           from (
-		               select distinct on (t.kind) t.kind, t.to_id
+		               select distinct on (t.kind) t.kind, t.to_id, t.asserted
 		               from graph_tuples t
-		               where t.from_kind = n.kind and t.from_id = n.id and t.to_kind = $3 and t.asserted
+		               where t.from_kind = n.kind and t.from_id = n.id and t.to_kind = $3
 		               order by t.kind, t.seq desc
 		           ) newest
+		           where newest.asserted
 		       ), '{}')::text
 		from graph_nodes n where n.kind in ($1, $2)
 		order by n.kind, n.id

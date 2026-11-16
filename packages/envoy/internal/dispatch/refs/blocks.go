@@ -1135,22 +1135,27 @@ func BlockChanges(ctx context.Context, q Queryer, artifactID string) (map[string
 	return changes, nil
 }
 
-// BlockTargets is where a write to document artifactID lands and the block each of targets names,
-// by node id (text.TargetID), as the block index would hold it once that write, leaving the blocks
-// written (rendered, in document order, each parent before its children), is indexed, read through
-// q: a block of that document as written's node for its id (uniqueBlocks: the first holder of a
-// repeated id, and no id the index cannot key), any other as its document's current blocks
-// (document_blocks) hold it, with one query for every such target. A target no block has is
-// absent. The write lands in the document's own issue, or in none when a project holds it; that
-// issue's ancestors are read only once a target turns out to sit in another document
-// (IssueAncestors), since a pointer inside the writing document - a plan task's `needs`, the
-// common case - is held to nothing above it (pmdoc.CheckBlockPointers), and this runs inside
-// the write's transaction.
+// BlockTargets is where a write to document artifactID lands and the target each of targets
+// names, by node id (text.TargetID), as the block index would hold it once that write, leaving the
+// blocks written (rendered, in document order, each parent before its children), is indexed, read
+// through q: a block of that document as written's node for its id (uniqueBlocks: the first
+// holder of a repeated id, and no id the index cannot key), any other block of a document as its
+// document's current blocks (document_blocks) hold it, with one query for every such target; an
+// ask, a comment or a message, or a current block of one, as conversationTargets reads it, with
+// its item's own issue and R2's test at the write's time; and an issue by its key. A target no row
+// has is absent. The write lands in the document's own issue, or in none when a project holds
+// it; that issue's ancestors are read only once a target turns out to sit in another document or
+// in another issue's item (IssueAncestors), since a pointer inside the writing document - a plan
+// task's `needs`, the common case - is held to nothing above it (pmdoc.CheckBlockPointers), and
+// its descendants only once a target is an issue (IssueDescendants, read as a reader who proves
+// no author reads it, since a rule of a write names no reader). This runs inside the write's
+// transaction.
 func BlockTargets(ctx context.Context, q Queryer, artifactID string, written []model.ArtifactBlock, targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
 	var writing pmdoc.BlockWriting
+	var at time.Time
 	if err := q.QueryRow(ctx, `
-		select coalesce(ref_key, ''), coalesce(issue_key, '') from artifacts where id = $1
-	`, artifactID).Scan(&writing.Document, &writing.Issue); err != nil {
+		select coalesce(ref_key, ''), coalesce(issue_key, ''), clock_timestamp() from artifacts where id = $1
+	`, artifactID).Scan(&writing.Document, &writing.Issue, &at); err != nil {
 		return pmdoc.BlockWriting{}, nil, fmt.Errorf("read the reference of document %s: %w", artifactID, err)
 	}
 	nodes, _, _ := uniqueBlocks(written)
@@ -1159,9 +1164,18 @@ func BlockTargets(ctx context.Context, q Queryer, artifactID string, written []m
 		own[node.ID] = node.Type
 	}
 	found := make(map[string]pmdoc.BlockTarget, len(targets))
-	var elsewhere []string
+	var elsewhere, issues []string
+	var items []text.Ref
 	for _, target := range targets {
 		nodeID := text.TargetID(target)
+		switch {
+		case target.Kind == "issue":
+			issues = append(issues, nodeID)
+			continue
+		case pmdoc.ItemKindOf(target) != "":
+			items = append(items, target)
+			continue
+		}
 		// A ref_key holds no '#', so the node id's document part ends at its first one.
 		if document, _, _ := strings.Cut(nodeID, "#"); document != writing.Document {
 			elsewhere = append(elsewhere, nodeID)
@@ -1169,35 +1183,57 @@ func BlockTargets(ctx context.Context, q Queryer, artifactID string, written []m
 			found[nodeID] = pmdoc.BlockTarget{Types: []string{typ}, Document: writing.Document, Issue: writing.Issue}
 		}
 	}
-	if len(elsewhere) == 0 {
-		return writing, found, nil
-	}
-	rows, err := q.Query(ctx, `
-		select d.node_id, d.type, a.ref_key, coalesce(a.issue_key, '')
-		from document_blocks d join artifacts a on a.id = d.artifact_id
-		where d.node_id = any($1)
-	`, elsewhere)
-	if err != nil {
-		return pmdoc.BlockWriting{}, nil, fmt.Errorf("read the blocks %s points at: %w", artifactID, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var nodeID, typ, document, issue string
-		if err := rows.Scan(&nodeID, &typ, &document, &issue); err != nil {
-			return pmdoc.BlockWriting{}, nil, fmt.Errorf("scan a block %s points at: %w", artifactID, err)
+	if len(elsewhere) > 0 {
+		rows, err := q.Query(ctx, `
+			select d.node_id, d.type, a.ref_key, coalesce(a.issue_key, '')
+			from document_blocks d join artifacts a on a.id = d.artifact_id
+			where d.node_id = any($1)
+		`, elsewhere)
+		if err != nil {
+			return pmdoc.BlockWriting{}, nil, fmt.Errorf("read the blocks %s points at: %w", artifactID, err)
 		}
-		target := found[nodeID]
-		target.Types = append(target.Types, typ)
-		target.Document, target.Issue = document, issue
+		defer rows.Close()
+		for rows.Next() {
+			var nodeID, typ, document, issue string
+			if err := rows.Scan(&nodeID, &typ, &document, &issue); err != nil {
+				return pmdoc.BlockWriting{}, nil, fmt.Errorf("scan a block %s points at: %w", artifactID, err)
+			}
+			target := found[nodeID]
+			target.Types = append(target.Types, typ)
+			target.Document, target.Issue = document, issue
+			found[nodeID] = target
+		}
+		if err := rows.Err(); err != nil {
+			return pmdoc.BlockWriting{}, nil, err
+		}
+	}
+	held, err := conversationTargets(ctx, q, items, at)
+	if err != nil {
+		return pmdoc.BlockWriting{}, nil, err
+	}
+	aside := len(elsewhere) > 0
+	for nodeID, target := range held {
 		found[nodeID] = target
+		aside = aside || target.Issue != writing.Issue
 	}
-	if err := rows.Err(); err != nil {
-		return pmdoc.BlockWriting{}, nil, err
+	if len(issues) > 0 {
+		var keys []string
+		if err := q.QueryRow(ctx, `select coalesce(array_agg(key), '{}') from issues where key = any($1)`, issues).Scan(&keys); err != nil {
+			return pmdoc.BlockWriting{}, nil, fmt.Errorf("read the issues %s points at: %w", artifactID, err)
+		}
+		for _, key := range keys {
+			found[key] = pmdoc.BlockTarget{Issue: key}
+		}
+		if writing.Descendants, err = IssueDescendants(ctx, q, model.Actor{}, writing.Issue); err != nil {
+			return pmdoc.BlockWriting{}, nil, err
+		}
 	}
-	// Only a target in another document can sit in another issue, so the ancestor walk is paid
-	// for only here.
-	if writing.Ancestors, err = IssueAncestors(ctx, q, writing.Issue); err != nil {
-		return pmdoc.BlockWriting{}, nil, err
+	// Only a target in another document or in another issue's item can sit in another issue, so
+	// the ancestor walk is paid for only there.
+	if aside {
+		if writing.Ancestors, err = IssueAncestors(ctx, q, writing.Issue); err != nil {
+			return pmdoc.BlockWriting{}, nil, err
+		}
 	}
 	return writing, found, nil
 }

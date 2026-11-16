@@ -595,7 +595,14 @@ func joinedSchemaError(err error, start func() error) error {
 // and a pointer of its at a block no document holds stays unresolved.
 func refuseBlockPointers(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
 	return pmdoc.CheckBlockPointers(tree, prior, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
-		return refs.BlockTargets(ctx, tx, artifactID, offsetBlocks(offsets), targets)
+		writing, found, err := refs.BlockTargets(ctx, tx, artifactID, offsetBlocks(offsets), targets)
+		// An item of a kind a later version adds is written only while every live process reads
+		// it, the bound a page is admitted writable under (schemaFleet.creatable).
+		writing.Creatable = func() (int, error) {
+			fleet, err := readSchemaFleet(ctx, tx)
+			return fleet.creatable(), err
+		}
+		return writing, found, err
 	})
 }
 

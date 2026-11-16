@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -113,7 +113,20 @@
       "name": "requirement",
       "content": "paragraph+",
       "render": "host",
-      "attributes": {},
+      "attributes": {
+        "serves": {
+          "kind": "block[]",
+          "targets": ["criterion", "requirement"],
+          "since": 6,
+          "creatable_since": 6
+        },
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 6,
+          "creatable_since": 6
+        }
+      },
       "since": 3,
       "creatable_since": 3
     },
@@ -129,7 +142,19 @@
         "needs": {
           "kind": "block[]",
           "targets": ["plan_task"],
-          "scope": "document"
+          "items": ["issue"],
+          "item_versions": { "issue": { "since": 6, "creatable_since": 6 } }
+        },
+        "size": {
+          "kind": "days",
+          "since": 6,
+          "creatable_since": 6
+        },
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 6,
+          "creatable_since": 6
         }
       },
       "since": 3,
@@ -163,6 +188,12 @@
           "kind": "string",
           "since": 4,
           "creatable_since": 4
+        },
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 6,
+          "creatable_since": 6
         }
       },
       "since": 3,
@@ -233,6 +264,21 @@
       "parents": ["decision", "ask"],
       "since": 5,
       "creatable_since": 5
+    },
+    {
+      "name": "criterion",
+      "content": "paragraph+",
+      "render": "host",
+      "attributes": {
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 6,
+          "creatable_since": 6
+        }
+      },
+      "since": 6,
+      "creatable_since": 6
     }
   ]
 }

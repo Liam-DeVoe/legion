@@ -184,18 +184,19 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 }
 
 // A pointer names a block of the writing document's own issue or of an issue above it; one in a
-// sibling tree is refused, as is a needs naming a plan task of another document, and a document
-// its project holds points only inside itself. Every refusal names the reference and writes
-// nothing.
+// sibling tree is refused, a needs naming a plan task of a sibling tree among them, and a document
+// its project holds points only inside itself. A needs names a plan task of another document of
+// its own issue or of an issue above it (dispatch://INFRA-1253/spec R10). Every refusal names the
+// reference and writes nothing.
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"
 	root := createSpecIssue(t, handler, "CORE", requirement)
-	middle := createChildIssue(t, handler, "CORE", root.Key, requirement)
+	middle := createChildIssue(t, handler, "CORE", root.Key, requirement+"\n:::plan_task{#m9}\nAbove.\n:::\n")
 	issue := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#t9}\nTheirs.\n:::\n")
-	sibling := createChildIssue(t, handler, "CORE", middle.Key, requirement)
+	sibling := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#s9}\nA sibling's.\n:::\n")
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
 
 	// A requirement of the issue's own spec, of its parent's and of its root's is named.
@@ -209,18 +210,21 @@ func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	siblingR1 := "dispatch://" + sibling.Key + "/spec#b-r1"
 	expectRefusal(t, "a pointer into a sibling tree", uploadChecks(t, handler, issue.Key, claimMarkdown("c1", siblingR1)), http.StatusBadRequest,
 		"INVALID_MARKDOWN", `"serves"`, siblingR1, sibling.Key, issue.Key)
-	theirTask := "dispatch://" + issue.Key + "/spec#b-t9"
 	ourTask := ":::plan_task{#t1}\nOurs.\n:::\n"
-	expectRefusal(t, "a needs naming a plan task of another document",
-		uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+theirTask+"\"}\nAfter theirs.\n:::\n"),
-		http.StatusBadRequest, "INVALID_MARKDOWN", `"needs"`, theirTask, "its own document")
+	siblingTask := "dispatch://" + sibling.Key + "/spec#b-s9"
+	expectRefusal(t, "a needs naming a plan task of a sibling tree",
+		uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+siblingTask+"\"}\nAfter theirs.\n:::\n"),
+		http.StatusBadRequest, "INVALID_MARKDOWN", `"needs"`, siblingTask, sibling.Key, issue.Key)
 	if after := readChecks(t, database, issue.Key); !reflect.DeepEqual(after, saved) {
 		t.Fatalf("checks.md after refused writes = %+v, want %+v unchanged", after, saved)
 	}
 
-	// The control: a needs naming a plan task of the same document is written.
-	if response := uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+checks+"#b-t1\"}\nAfter ours.\n:::\n"); response.Code != http.StatusCreated {
-		t.Fatalf("a needs naming a plan task of the same document: status=%d body=%s, want 201", response.Code, response.Body.String())
+	// The controls: a needs naming a plan task of the same document, of another document of its
+	// issue and of the issue above is written.
+	for _, task := range []string{checks + "#b-t1", "dispatch://" + issue.Key + "/spec#b-t9", "dispatch://" + middle.Key + "/spec#b-m9"} {
+		if response := uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+task+"\"}\nAfter it.\n:::\n"); response.Code != http.StatusCreated {
+			t.Fatalf("a needs naming %s: status=%d body=%s, want 201", task, response.Code, response.Body.String())
+		}
 	}
 
 	// A document its project holds, and no issue does, points only at a block of itself.

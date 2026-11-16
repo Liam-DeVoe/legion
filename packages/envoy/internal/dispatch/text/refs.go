@@ -444,6 +444,59 @@ func CanonicalBlockRef(value string) (Ref, bool) {
 	return located[0].Ref, true
 }
 
+// canonicalItemUUID is an item's id as an item reference writes it: the whole uuid, in lower
+// case, with its four hyphens, which is the spelling every item route returns.
+var canonicalItemUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// FormatItemBlockRef writes an issue's ask, comment or message, or a block of one, as a
+// placement names it: `dispatch://<ISSUE>/<ask|comment|message>/<uuid>` for the item itself
+// (Kind the item's kind), and that followed by `#b-<id>` for a block of it (Kind "block", Item the
+// item's kind), the item's whole lower-case uuid and the id as EncodeBlockID writes it, with no
+// pin, because a node placed under an item is placed under the item as it stands and not under
+// one revision of it. It is false for any other reference: a document or a block of one, an item
+// a project document holds (Project set), an item whose id is no whole lower-case uuid (a prefix,
+// an upper-case spelling), a pinned block and a block with no id.
+func FormatItemBlockRef(ref Ref) (string, bool) {
+	item := ref.Item
+	if ref.Kind != "block" {
+		item = ref.Kind
+		if ref.Item != "" || ref.Block != "" {
+			return "", false
+		}
+	} else if ref.Block == "" {
+		return "", false
+	}
+	if ref.Pin != 0 || ref.Project != "" || ref.Session != "" || ref.Document != "" ||
+		!issueKeyPattern.MatchString(ref.IssueKey) || !canonicalItemUUID.MatchString(ref.ID) ||
+		(item != "ask" && item != "comment" && item != "message") {
+		return "", false
+	}
+	written := "dispatch://" + ref.IssueKey + "/" + item + "/" + ref.ID
+	if ref.Kind == "block" {
+		written += "#b-" + EncodeBlockID(ref.Block)
+	}
+	return written, true
+}
+
+// CanonicalItemBlockRef reads value as one of an issue's asks, comments or messages, or a block
+// of one, written exactly as FormatItemBlockRef writes it: value is the one reference text would
+// cite there (ExtractAt with no server URL, which holds the block id and the target id to the
+// bounds text cites by, as CanonicalBlockRef reads a block of a document), it starts at value's
+// first byte, and FormatItemBlockRef writes it back as value. That refuses what the reader alone
+// accepts: a uuid prefix or an upper-case uuid, lower-case or needless percent-encoding, a pin,
+// anything trailing the reference, a project document's item or a block of one, and a document or
+// a block of one.
+func CanonicalItemBlockRef(value string) (Ref, bool) {
+	located := ExtractAt(value, "")
+	if len(located) != 1 || located[0].Offset != 0 {
+		return Ref{}, false
+	}
+	if written, ok := FormatItemBlockRef(located[0].Ref); !ok || written != value {
+		return Ref{}, false
+	}
+	return located[0].Ref, true
+}
+
 // parseBlock reads `<document or item reference>#b-<block id>[@v<N>]`: a block of an issue's
 // spec, an issue's document or a project's document, optionally pinned to version N of that
 // document, or a part of an ask (`KEY/ask/<id>`, or a project document's

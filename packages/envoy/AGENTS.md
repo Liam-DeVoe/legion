@@ -2384,8 +2384,9 @@ no markdown makes such an href, so no write is refused.
 An `&` that opens none, as in `&foo;` or `AT&T`, is written as it is.
 
 A typed block renders its `blockId`, defaulted attributes, and every explicitly set optional attribute.
-An attribute's kind is `string`, `bool`, `enum`, `string[]`, `block[]`, `actor`, `timestamp` or `ask` (`validateAttributeSchema`).
+An attribute's kind is `string`, `bool`, `enum`, `string[]`, `block[]`, `actor`, `timestamp`, `ask` or `days` (`validateAttributeSchema`).
 An `ask` attribute names one ask of an issue, written whole as `dispatch://<ISSUE>/ask/<id>`, and a part of an ask (`…#b-<id>`) is refused with a reason of its own (`validateAskReference`).
+A `days` attribute holds a duration in days as its author wrote it: a positive decimal with at most two digits after its point, no sign, no exponent and no leading zero but the one before a point (`0.25`, `1`, `2.5`; `0`, `1.234`, `01`, `.5` are refused, `validateDays`, proof-editor's `daysValueProblem`).
 An attribute declared `markdown: false` (true when the schema names none) is never rendered, and markdown that names it is read as if it did not (`BlockAttributeSchema.InMarkdown`), since its value lives on the block's node:
 `ask`'s `invalid` and a decision's `decided_by`, `kept_by` and `kept_text_sum` are such.
 A type declaring `parents` stands only at the end of a block of one of them, after that block's own content, and in no node group (`pmdoc.TypedContent`, `isBlockNodeType`);
@@ -2394,38 +2395,48 @@ Parsing mints an omitted id, while live document reads and writes validate each 
 Schema changes are additive: add a type, add a defaulted attribute, add an enum choice, or widen a content rule.
 Tightening content, removing or renaming a type or attribute, or requiring a new attribute requires a document migration and version bump.
 
-The shipped types are `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision` and `reading` (`pmdoc/schema/blocks.json`, version 5, which added `decision`, `reading` and `ask`'s `shaped`), `requirement`, `plan_task` and `check` each holding `paragraph+`:
-`requirement`, one requirement of an issue's spec, with no attribute of its own;
-`plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first);
-`check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`);
+The shipped types are `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and `criterion` (`pmdoc/schema/blocks.json`, version 6, which added `criterion`, `parent`, `requirement`'s `serves`, `plan_task`'s `size`, widened `plan_task`'s `needs` and gave `block[]` its `items`), `requirement`, `plan_task`, `check` and `criterion` each holding `paragraph+`:
+`requirement`, one requirement of an issue's spec, with the `block[]` `serves` (the criteria and requirements it serves) and `parent`;
+`plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the plan tasks of its issue or of an issue above it it needs first, and the issues under its issue it waits on, as `dispatch://<KEY>`), the `days` `size` (absent where its author gives none) and `parent`;
+`check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`) and `parent`;
 `decision`, an agent's decision, holding `block+`, with the enum `uncertainty` (`low`, `medium`, `high`, no default), the string `uncertainty_reason`, the `block[]` `shaped` with no targets, the `ask` attribute `from_ask`, the bool `replaced` (defaulted `false`) and the server's `decided_by`, `kept_by` and `kept_text_sum`, which markdown never carries;
-and `reading`, an agent's reading of a decision, holding `paragraph+`, whose `parents` are `decision` and `ask`.
+`reading`, an agent's reading of a decision, holding `paragraph+`, whose `parents` are `decision` and `ask`;
+and `criterion`, what a person wants to be able to do, with `parent` alone.
+`parent` (`pmdoc.ParentAttribute`) places a node in its issue's tree where its rendering cannot: a `block[]` with no targets and the `items` ask, comment and message, holding at most one reference, because a node has one parent (`parentCount`, proof-editor's `parentProblem`); it is the one attribute whose items name the conversation's kinds.
+An item kind an attribute every build has read takes from a later version carries its own versions (`item_versions`, as an enum's choices carry `choice_versions`): `needs`' `issue` is read and created from version 6, so it is an element of the manifest (`pmdoc.ItemElement`, counted by `DocumentSince` and dropped by `asOfVersion` below its version), the editor writes one only from that version (proof-editor's `creatableValue`), and a server's write introduces one only while every live process reads it (below), since a build of version 5 reads such a value as outside the schema rather than as newer content.
 A reading inside an ask with no answer (its `asks` row, `askAnswers`) is refused on every write that takes markdown, `400 INVALID_ASK_BLOCK` naming the reading and `dispatch://KEY/ask/<id>` (`refuseReadingsWithoutAnswers`), and settlement flags such an ask block `invalid` with the same reason (`flagReadingsWithoutAnswers`).
 A document holding them is an ordinary document: the role its name gave it (`verification`, `plan`) says which blocks a reader expects, and nothing refuses a `check` block in another document.
 A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no recorded result (`docs.CICheckRuleIn`), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
 an API write that adds a check block, or changes a check's `ci_check`, `run`, `when` or `negative_control`, so that it breaks one is `400 INVALID_CI_CHECK` (`refuseCICheckBlocks`), and settlement repairs what a browser writes (below).
 
-A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs`, a check's `serves`, and a decision's and an ask's `shaped`.
-Its value is the empty string (no pointers) or canonical block references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, and the renderer joins them with one space);
+A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs`, a check's and a requirement's `serves`, a decision's and an ask's `shaped`, and the `parent` of a criterion, a requirement, a check and a plan task.
+Its value is the empty string (no pointers) or references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, which takes the attribute's `items`, and the renderer joins them with one space);
 anything else is refused, never normalised.
-A canonical reference is one `text.FormatBlockRef` writes back byte for byte (`text.CanonicalBlockRef`):
+A reference to a block of a document is canonical where `text.FormatBlockRef` writes it back byte for byte (`text.CanonicalBlockRef`):
 `dispatch://<ISSUE>/spec#b-<id>` for a block of an issue's primary document, `dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>` for one of any other document (a project's document whose slug is `spec` included), the id as `text.EncodeBlockID` writes it, optionally pinned `@v<N>`;
 so lower-case or needless percent-encoding, an issue's `artifact/spec` and anything trailing the reference are refused.
-A part of an ask, or a block of a comment or a message (`text.Ref.Item`), is refused with a reason of its own, which names the kind with the article it takes (`"…" is a block of an ask: …`, `of a comment`, `of a message`):
-the attribute points only at blocks of documents, whose types its targets limit.
-Go and `@legion/contracts`' `parseBlockPointerValue` are both tested against `DISPATCH_BLOCK_POINTER_VALUES`, whose Go copy is `pmdoc/testdata/block-pointer-values.json`.
+An attribute's `items` (`ask`, `comment`, `message`, `issue`; only a `block[]` carries them, each named once) admit more:
+an issue's ask, comment or message, or a block of one, written as `text.FormatItemBlockRef` writes it (`text.CanonicalItemBlockRef`), `dispatch://<ISSUE>/<kind>/<full lower-case uuid>`, with `#b-<id>` for a block and never pinned, since a parent is a place and not a quotation (a project document's item, a uuid prefix or an upper-case uuid is refused);
+and an issue, written exactly `dispatch://<ISSUE>`.
+A part of an ask, or a block of a comment or a message (`text.Ref.Item`), of a kind the attribute does not declare is refused with a reason of its own, which names the kind with the article it takes (`"…" is a block of an ask: …`, `of a comment`, `of a message`), and so is one of a kind it declares written otherwise.
+Go and `@legion/contracts`' `parseBlockPointerValue` are both tested against `DISPATCH_BLOCK_POINTER_VALUES`, each row read under the `items` it names, whose Go copy is `pmdoc/testdata/block-pointer-values.json`.
 The attribute's name is the kind of the edges it makes:
 it matches `^[a-z][a-z0-9_]*$` and is none of `model.GraphEdgeKinds`, and two types declaring one name make one edge kind (`pmdoc.LinkKinds`, which `GET /api/v1/references?kind=` accepts beside the structural kinds; any other name has no edges there and is listed in the answer's `unknown_kinds`, which the read still answers `200` with the edges of the kinds it knows).
-Its `targets`, which no other kind may carry, limit the types of the blocks it points at, each a type the schema declares or a built-in block the link graph holds (`builtInBlockNode`:
-not a list item or a table's row or cell); absent or empty, it points at any block.
+Its `targets`, which no other kind may carry, limit the types of the blocks of documents it points at, each a type the schema declares or a built-in block the link graph holds (`builtInBlockNode`:
+not a list item or a table's row or cell); absent or empty, it points at any block of a document. They limit no item its `items` admit.
 Its default is absent or `[]`.
 
-Three rules enforce `targets`.
-An agent's or API write is refused when a pointer it introduces names a block the attribute may not name (`pmdoc.CheckBlockPointers`, called by `docs.refuseBlockPointers` from `applyLive`, `SeedText`, and `RebuildDocument` given markdown):
+Three rules enforce `targets` and `items`.
+An agent's or API write is refused when a pointer it introduces names a target the attribute may not name (`pmdoc.CheckBlockPointers`, called by `docs.refuseBlockPointers` from `applyLive`, `SeedText`, and `RebuildDocument` given markdown); a pointer of an attribute declaring neither is never looked up:
 a pointer is introduced when the tree before the write holds no pointer with the same typed block id, typed block type, attribute and reference (a new pointer, a changed value, or a block retyped into a type declaring the attribute, whatever the type before declared under that name), and every pointer is when there is no such tree (a new document, a repair of a tree outside the schema, a rebuild whose latest version does not read back).
 `refs.BlockTargets` reads each target as the block index will hold it, with the writing document's own issue and that issue's ancestors (`refs.IssueAncestors`, the server's one recursive `child_of` walk, bounded by the same depth cap as every other issue walk):
-a target in the written document from the blocks the write's render leaves (the first holder of a repeated id, as `refs.IndexBlocks` takes it), any other from its current `document_blocks` rows, each with its document and that document's issue (one query for all of a write's introduced pointers).
-The write is refused when the pointer names a block no document holds, a block of a type the attribute's targets do not allow, a block of an issue that is neither the writing document's own issue nor an ancestor of it, a block of another document where a project holds the writing document and no issue does, or a block of another document under `needs`, which orders the tasks of one plan and so points only inside its own document.
+a target in the written document from the blocks the write's render leaves (the first holder of a repeated id, as `refs.IndexBlocks` takes it), any other from its current `document_blocks` rows, each with its document and that document's issue (one query for all of a write's introduced pointers);
+an ask, a comment or a message, or a current block of one, with its item's own issue and whether it is a conversation node at the write's time (`refs.IsConversationNode`, dispatch://INFRA-1253/spec R2: an ask always, a comment or a message a person wrote or one in a thread a person wrote in, never a message of the Legion daemon's `legion-daemon:<PROJECT>` session; `refs.ConversationNodes` lists an issue's);
+and an issue by its key, with the issues under the writing issue (`refs.IssueDescendants`).
+The write is refused when the pointer names a block no document holds, a block of a type the attribute's targets do not allow, a block of an issue that is neither the writing document's own issue nor an ancestor of it, a block of another document where a project holds the writing document and no issue does, or a block of another document under an attribute scoped `document` (no shipped attribute is);
+an item or item block no row holds under the issue its reference spells, one of an issue neither the writing issue nor above it, or one that is no conversation node;
+and an issue no row holds, or one not under the writing issue;
+and an item of a kind its attribute gives a `creatable_since` above 1 while the processes serving the database cannot all create it (`BlockWriting.Creatable`, which `docs.refuseBlockPointers` answers with `schemaFleet.creatable`, the bound a page is admitted writable under), in the words of `refuseUncreatable` (`this Dispatch build reads item "issue" of attribute "needs" of typed block "plan_task" but cannot write it yet. …`); a pointer the document already holds is never refused for it.
 The refusal is `400 INVALID_OP` on `attributes` on the edit route and `400 INVALID_MARKDOWN` on every other;
 a pointer the write leaves unchanged is never refused.
 A browser's write and the block-index reconciliation are never refused, and store the pointer as any other.
