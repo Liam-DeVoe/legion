@@ -275,11 +275,14 @@ test("the items read pages 200 rows at a time until the total, window by window"
     defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
   });
   const facts = await queryClient.fetchQuery(legionItemsQuery("ACME", windows));
-  const page = (window: (typeof windows)[number] | undefined, offset: number) => ({
+  const page = (
+    window: (typeof windows)[number] | undefined,
+    offset: number
+  ): Record<string, string> => ({
     key: "ACME",
     slug: "legion-work-time",
-    from: window?.from,
-    to: window?.to,
+    from: window?.from ?? "",
+    to: window?.to ?? "",
     row_kind: "issue",
     limit: String(ITEMS_PAGE_SIZE),
     offset: String(offset),

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, type QueryKey, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -262,9 +262,10 @@ test("a pick shows in a page of Done as in a listing, leaves Open's count alone,
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const { queryClient, unmount, user } = renderControl();
-  const pageKey = projectDonePageQuery("CORE", { offset: 0, size: 50 }).queryKey;
-  const otherPageKey = projectDonePageQuery("CORE", { offset: 50, size: 50 }).queryKey;
-  const countKey = projectOpenCountQuery("CORE").queryKey;
+  // Plain keys: the cache holds a hand-made value of each shape, read back as `unknown`.
+  const pageKey: QueryKey = projectDonePageQuery("CORE", { offset: 0, size: 50 }).queryKey;
+  const otherPageKey: QueryKey = projectDonePageQuery("CORE", { offset: 50, size: 50 }).queryKey;
+  const countKey: QueryKey = projectOpenCountQuery("CORE").queryKey;
   const page = { issues: [otherSummary, summary], limit: 50, offset: 0, total: 52 };
   const otherPage = { issues: [otherSummary], limit: 50, offset: 50, total: 52 };
   queryClient.setQueryData(pageKey, page);

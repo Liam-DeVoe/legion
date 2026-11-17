@@ -45,7 +45,7 @@ export function showInProjectLists(
     issues.some((issue) => issue.key === issueKey)
       ? issues.map((issue) => (issue.key === issueKey ? { ...issue, ...patch } : issue))
       : undefined;
-  queryClient.setQueriesData<unknown>({ queryKey: projectListsKey }, (current) => {
+  queryClient.setQueriesData<unknown>({ queryKey: projectListsKey }, (current: unknown) => {
     if (Array.isArray(current)) return shown(current);
     if (
       typeof current === "object" &&

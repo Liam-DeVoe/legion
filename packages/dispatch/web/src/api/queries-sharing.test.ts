@@ -243,7 +243,7 @@ test("Open's count is the total of a one-row page of the open listing", async ()
 
 test("the board is one live subscription per project, on TanStack Query's own sharing", () => {
   const board = legionBoardQuery("ACME");
-  expect(board.queryKey).toEqual(["legion", "board", { kind: "legion", project: "ACME" }]);
+  expect([...board.queryKey]).toEqual(["legion", "board", { kind: "legion", project: "ACME" }]);
   expect(board.meta).toEqual({ live: true });
   expect(board.gcTime).toBe(0);
   expect(board.staleTime).toBe(Number.POSITIVE_INFINITY);
