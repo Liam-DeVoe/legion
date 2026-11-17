@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
+import { useQuery } from "@tanstack/react-query";
 import { type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
@@ -3372,6 +3373,139 @@ test("Add in the priority's form returns the focus to its add control once its w
         undraw(view);
       }
     }
+  }
+});
+
+/** A document header's approval chip, on the document as `ProofDocument` reads it: an approval
+ *  invalidates that read, and the chip draws the document the read answers next. */
+function ReadApprovalChip({ id }: { id: string }): ReactNode {
+  const read = useQuery({ queryFn: () => api.getArtifact(id), queryKey: ["artifact", id] });
+  return read.data === undefined ? null : <ApprovalChip artifact={read.data} variant="header" />;
+}
+
+// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: Approve is disabled while its
+// write is out and leaves the page once the approval reads approved, and either drops its focus
+// to the body. Inside `NoTooltips`, once the approval lands the focus goes to the chip that
+// replaces Approve, and once the write failed it returns to Approve, drawn again. R1 of
+// dispatch://INFRA-3935: outside `NoTooltips` the chip moves no focus, and it stays on the body.
+test("inside NoTooltips Approve pressed by Enter hands its focus to what replaces it", async () => {
+  const user = userEvent.setup();
+  const awaiting = doc(SPEC_ID, "spec.md", {
+    latest_version: 2,
+    state: "awaiting",
+    waiting_on: "human",
+  });
+  const approved = doc(SPEC_ID, "spec.md", { latest_version: 2, state: "approved", version: 2 });
+  const review: ArtifactReview = {
+    actor: { id: "alice", kind: "user" },
+    artifact_id: SPEC_ID,
+    ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
+    created_at: "2026-09-11T00:00:00Z",
+    id: "review-1",
+    kind: "person",
+    reason: null,
+    state: "approved",
+    version: 2,
+  };
+  for (const surface of ["inside", "outside"] as const) {
+    for (const write of ["lands", "fails"] as const) {
+      let read = awaiting;
+      stubs.getArtifact.mockImplementation(async () => read);
+      const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+        async () => {
+          // A browser drops the focus of a button that turns disabled to the body (the focus
+          // fixup rule); happy-dom keeps it on the disabled button and will not blur it there, so
+          // the write puts it on the body while it is out.
+          document.body.focus();
+          if (write === "fails") throw new Error("the connection dropped");
+          read = approved;
+          return review;
+        }
+      );
+      const view = draw(<ReadApprovalChip id={SPEC_ID} />, surface);
+      try {
+        const scope = within(view.container);
+        const approve = await scope.findByRole("button", { name: "Approve" });
+        approve.focus();
+        await user.keyboard("{Enter}");
+        await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+        // Once the approval lands Approve is gone and the chip reads approved; once the write
+        // failed Approve is drawn again, enabled.
+        const replacement =
+          write === "lands" ? await scope.findByRole("button", { name: "Approved v2" }) : approve;
+        await settleReads();
+        expect(approve.isConnected && !approve.hasAttribute("disabled")).toBe(write === "fails");
+        expect(document.activeElement).toBe(surface === "inside" ? replacement : document.body);
+      } finally {
+        createArtifactReview.mockRestore();
+        undraw(view);
+      }
+    }
+  }
+});
+
+// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: where the clipboard is missing
+// (an origin that is not secure) or refuses, `copyText` copies through a temporary text box that
+// takes the focus and leaves the page, which drops the focus to the body. Inside `NoTooltips` the
+// focus returns to the copy button: at once where the clipboard is missing, on a second press made
+// while "Copied" still shows too, and once the copy settles where the clipboard refused. R1 of
+// dispatch://INFRA-3935: outside `NoTooltips` the focus stays where the copy left it, the body.
+test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", async () => {
+  const user = userEvent.setup();
+  const originalClipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  const copied: string[] = [];
+  Object.defineProperty(document, "execCommand", {
+    configurable: true,
+    value: (command: string) => {
+      copied.push(command);
+      return true;
+    },
+  });
+  // A browser's `select()` focuses the text box; happy-dom's only selects its text.
+  const select = spyOn(HTMLTextAreaElement.prototype, "select").mockImplementation(function (
+    this: HTMLTextAreaElement
+  ) {
+    this.focus();
+  });
+  try {
+    for (const surface of ["inside", "outside"] as const) {
+      for (const clipboard of ["missing", "refusing"] as const) {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value:
+            clipboard === "missing"
+              ? undefined
+              : { writeText: async () => Promise.reject(new Error("denied")) },
+        });
+        copied.length = 0;
+        const view = draw(<CopyButton value="CORE-1" what="issue key" />, surface);
+        try {
+          const scope = within(view.container);
+          const button = scope.getByRole("button", { name: "Copy issue key CORE-1" });
+          const presses = clipboard === "missing" ? 2 : 1;
+          for (let press = 0; press < presses; press += 1) {
+            button.focus();
+            await user.keyboard("{Enter}");
+            await scope.findByText("Copied");
+            await settleReads();
+            expect(copied).toHaveLength(press + 1);
+            expect(document.activeElement).toBe(surface === "inside" ? button : document.body);
+          }
+        } finally {
+          undraw(view);
+        }
+      }
+    }
+  } finally {
+    select.mockRestore();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
   }
 });
 

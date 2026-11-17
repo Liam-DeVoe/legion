@@ -1,5 +1,6 @@
-import type { MouseEvent, ReactNode } from "react";
+import { type MouseEvent, type ReactNode, useEffect, useRef } from "react";
 
+import { focusOnDocument } from "../features/shell/roving";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import {
   dangerText,
@@ -43,6 +44,18 @@ export function CopyButton({
   // confirmation is the page's passed green or failed red.
   const look = tooltips ? `${linkText} ${linkHoverText}` : `${pageMutedText} ${pageRowAct}`;
   const { copy, status } = useCopyFeedback();
+  // Inside `NoTooltips` the button a copy was pressed on is remembered, and a focus the copy left
+  // on the document (`focusOnDocument`), as the temporary text box of `copyText`'s fallback does,
+  // goes back to it: right after `copy` returns, where the fallback ran at once, and once `status`
+  // changes, where it ran after the clipboard refused. The press is forgotten then. A focus
+  // anywhere else is left where it is (decision 162 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  const pressed = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (status === "idle" || pressed.current === null) return;
+    if (focusOnDocument()) pressed.current.focus();
+    pressed.current = null;
+  }, [status]);
   const name = label ?? (typeof value === "string" ? `Copy ${what} ${value}` : `Copy ${what}`);
   const shape =
     children === undefined
@@ -60,7 +73,13 @@ export function CopyButton({
       <button
         aria-label={name}
         className={`inline-flex min-h-11 ${width} items-center rounded-lg md:min-h-8 ${shape} ${look} ${className ?? ""}`}
-        onClick={(event) => copy(typeof value === "string" ? value : value(event))}
+        onClick={(event) => {
+          const button = event.currentTarget;
+          copy(typeof value === "string" ? value : value(event));
+          if (tooltips) return;
+          pressed.current = button;
+          if (focusOnDocument()) button.focus();
+        }}
         title={tooltips ? name : undefined}
         type="button"
       >

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -39,6 +39,7 @@ import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { focusOnDocument } from "../shell/roving";
 import { useDialog } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -400,6 +401,21 @@ export function ApprovalChip({
     },
   });
 
+  // Inside `NoTooltips` a press of Approve is remembered, and once its write is no longer out a
+  // focus that fell to the document (`focusOnDocument`) goes to Approve where it is drawn, else to
+  // the chip, which is what replaces it once the approval reads approved; the press is forgotten
+  // then, or once the write failed. A focus anywhere else is left where it is (decision 162 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  const approvePressed = useRef(false);
+  const approveButton = useRef<HTMLButtonElement>(null);
+  const chipButton = useRef<HTMLButtonElement>(null);
+  const approvalState = approval?.state;
+  useEffect(() => {
+    if (!approvePressed.current || review.isPending) return;
+    if (focusOnDocument()) (approveButton.current ?? chipButton.current)?.focus();
+    if (approvalState === "approved" || review.isError) approvePressed.current = false;
+  }, [approvalState, review.isError, review.isPending]);
+
   if (approval === undefined || approval.state === "draft") {
     return null;
   }
@@ -430,6 +446,7 @@ export function ApprovalChip({
         // own address puts the focus on (dispatch://INFRA-1196 R20).
         data-approval-artifact={page === null ? undefined : artifact.id}
         onClick={() => setReviewsOpen(true)}
+        ref={chipButton}
         title={
           tooltips && approval.state === "stale"
             ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
@@ -453,7 +470,13 @@ export function ApprovalChip({
                   : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`
               }
               disabled={review.isPending}
-              onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
+              onClick={() =>
+                submitGuard.guard(() => {
+                  if (page !== null) approvePressed.current = true;
+                  review.mutate({ state: "approved" });
+                })
+              }
+              ref={approveButton}
               type="button"
             >
               {approveLabel}
