@@ -301,10 +301,10 @@ func SessionNameTooLong(what string, bytes int) Refusal {
 }
 
 // SessionFileNotClean refuses a registration whose session file is not the clean path it names
-// (filepath.Clean of it differs): a last part of `.` or `..`, a doubled or trailing `/`. Such a
-// path's base name is not the session's file name, so the file-name hold would hold the wrong
-// name, and a resume could reach another session's file. It is a 400: the plugins send the clean
-// path of the file they wrote.
+// (filepath.Clean of it differs): a last part of `.` or `..`, a doubled or trailing `/`. A last
+// part of `.` or `..` gives a base name that is not the session's file name, so the file-name hold
+// would hold the wrong name; a doubled or trailing `/` is refused too, so that one file has one
+// recorded spelling. It is a 400: the plugins send the clean path of the file they wrote.
 func SessionFileNotClean(file string) Refusal {
 	return Refusal{Status: http.StatusBadRequest, Message: fmt.Sprintf(
 		"the session file %q is not a clean path; a session file is the path of the file the agent writes, with no `.` or `..` part and no doubled or trailing `/`", file)}

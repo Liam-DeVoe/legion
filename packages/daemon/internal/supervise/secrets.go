@@ -209,6 +209,16 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
+	// An enrollment this claim already holds is handed to each new connection only while the claim
+	// holds its session: one a daemon from before the hold enrolled under a name another claim
+	// holds, or no claim does, goes to no new connection of a process the boot could not suspend
+	// (review round 12 of #4220). The hold is asked once per session when held (Machine.heldNames)
+	// and at each observation when refused, so an operator's settle of the name hands it over.
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		m.log.Warn("supervise: agent-secrets: not handing the enrollment to the shim: the claim does not hold its session, or the store did not say",
+			"enrollment", m.claim.Enrollment.ID, "error", err)
+		return nil
+	}
 	sending, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
 	err := conn.AgentSecretsEnrollment(sending, m.claim.Enrollment.ID)
 	cancel()

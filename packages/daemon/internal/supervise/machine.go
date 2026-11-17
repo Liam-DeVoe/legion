@@ -1404,6 +1404,10 @@ type Machine struct {
 	// no grant, since the broker enrolls a session by its id (holdRecorded says more).
 	// forgetSession empties it. Memory only: a restarted machine asks once more.
 	heldNames map[Hold]bool
+	// unheldDelivery is the pending delivery sendPending last held back because the claim records a
+	// session it does not hold, so its Error line is written once per delivery rather than at every
+	// sweep that asks again. Memory only.
+	unheldDelivery string
 	// registration is the pod-session registration this machine keeps written for the claim's
 	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
 	// writes it again at its shim's first hello to the new daemon.

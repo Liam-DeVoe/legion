@@ -132,6 +132,43 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		}
 	})
 
+	// A claim the boot could not suspend keeps its live process (review round 12 of #4220): one a
+	// daemon from before the hold enrolled, ready on a session the store now holds for another
+	// claim. Its process's new connection is handed no enrollment, and a task for it is held back
+	// unsent, since either would put that process to work under the other claim's session.
+	//
+	// The control (the pull request records the run): sendPending and the handover in
+	// ensureEnrolled without their holdRecorded checks hand the enrollment over again and send the
+	// task.
+	t.Run("a live claim whose session another claim holds is sent nothing", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.launch()
+		h.helloWithIdentity()
+		h.register()
+		h.ready()
+		if enrolled := broker.enrolled(); len(enrolled) != 1 {
+			t.Fatalf("enrollments %+v, want the first process's one", enrolled)
+		}
+		handed := len(h.conn.Enrollments())
+		h.store.setHold(sessionID(session), claim.Token("legion-legion-LEGION-209-tester"))
+		h.restart()
+		h.helloWithIdentity()
+		if got := h.conn.Enrollments(); len(got) != handed {
+			t.Fatalf("the new connection was handed enrollments %v, want none beyond the %d before: the claim does not hold %s", got[handed:], handed, session)
+		}
+		base := len(h.prompts())
+		h.must(RequestDeliver{Claim: h.token, Task: "the task"})
+		h.observe(runtime.Alive)
+		h.wantPrompts(base)
+		if p := h.pending(); p.Task != "the task" || !p.ConfirmedAt.IsZero() {
+			t.Fatalf("pending %+v, want the task held back unsent", p)
+		}
+		if enrolled := broker.enrolled(); len(enrolled) != 1 {
+			t.Fatalf("enrollments %+v, want no new one", enrolled)
+		}
+	})
+
 	// An operator settles an id held for no claim by recording its rightful holder, and that claim's
 	// next registration on the same machine is admitted: the refusal of an id held for no claim is
 	// never kept, as a claim's hold is.

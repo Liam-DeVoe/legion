@@ -213,11 +213,12 @@ type invalidName struct {
 }
 
 // invalidSessionNames is the one rule for a session name no hold can cover, in the order a
-// registration is refused by them: a session id longer than claim.MaxSessionNameBytes, a session
-// file that is not the clean path it names (whose base name is not the file's, so the file-name hold
-// would hold another name), and a file whose base name is longer than the bound. A registration is
-// refused by the first (checkSessionNames); a claim a daemon from before the hold recorded under any
-// of them takes nothing under it (UnholdableNames).
+// registration is refused by them: a session id longer than claim.MaxSessionNameBytes; a session
+// file that is not the clean path it names, since a last part of `.` or `..` gives a base name that
+// is not the file's, so the file-name hold would hold another name, and a doubled or trailing `/` is
+// refused too, so that one file has one recorded spelling; and a file whose base name is longer than
+// the bound. A registration is refused by the first (checkSessionNames); a claim a daemon from before
+// the hold recorded under any of them takes nothing under it (UnholdableNames).
 func invalidSessionNames(session, sessionFile string) []invalidName {
 	var invalid []invalidName
 	if len(session) > claim.MaxSessionNameBytes {
