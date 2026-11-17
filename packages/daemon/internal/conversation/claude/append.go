@@ -21,14 +21,16 @@ const AnswerLineType = "legion-answer"
 
 // Encode is what an append of a after the transcript writes, line for line as Claude Code writes
 // a turn: a user line with the question; for each model turn one assistant line per content block,
-// the lines of a turn sharing one message id, then one user line per tool result; the
-// legion-answer line naming the question answered; and the last-prompt line naming the last
-// conversation line, the checkpoint Claude Code resumes from (without it, a transcript whose
-// checkpoint is not the chain's last line resumes from the checkpoint and leaves the append off).
-// Each conversation line has a fresh uuid and the line before it, the session's leaf first, as
-// its parent, and the session's id, working directory, release and git branch; an assistant line
-// records the session's effort (its thinking level) as Claude Code records the effort it ran at.
-// When the transcript does not end in a newline the bytes start with one. now stamps every line.
+// the lines of a turn sharing one message id, then one user line per tool result, and after a turn
+// the loop asked again a user line holding what it asked, written as the question's is, a prompt
+// of its own whose id the tool results after it carry; the legion-answer line naming the question
+// answered; and the last-prompt line naming the last conversation line, the checkpoint Claude
+// Code resumes from (without it, a transcript whose checkpoint is not the chain's last line
+// resumes from the checkpoint and leaves the append off). Each conversation line has a fresh uuid
+// and the line before it, the session's leaf first, as its parent, and the session's id, working
+// directory, release and git branch; an assistant line records the session's effort (its
+// thinking level) as Claude Code records the effort it ran at. When the transcript does not end
+// in a newline the bytes start with one. now stamps every line.
 func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 	if err := a.Validate(); err != nil {
 		return nil, err
@@ -73,6 +75,12 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 		}
 		for _, r := range turn.Results {
 			if err := w.user(promptID, nil, &r, callLines[r.ToolCallID]); err != nil {
+				return nil, err
+			}
+		}
+		if turn.AskedAgain != "" {
+			promptID = newUUID()
+			if err := w.user(promptID, turn.AskedAgain, nil, ""); err != nil {
 				return nil, err
 			}
 		}

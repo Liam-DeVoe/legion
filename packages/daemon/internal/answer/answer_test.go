@@ -515,6 +515,84 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 	}
 }
 
+// A reply the form's own rules refuse where the strict schema cannot, a not_answered reply naming
+// no need, is asked for once again: agentloop sends parseReply's sentence as the message after it,
+// within the answer's model_calls, and the reply to it is the agent's. Both calls are counted and
+// priced, and the append holds the refused reply, the sentence and the reply after it, in the
+// order the run made them, which is what the appender writes into the conversation. The form the
+// model is held to states the rule it broke in its own descriptions.
+func TestAReplyTheFormRefusesIsAskedForOnceAgain(t *testing.T) {
+	const (
+		refused = `{"kind":"not_answered","text":"I cannot tell from here.","needs":""}`
+		needs   = "My working copy, to run the checks."
+	)
+	_, refusal := parseReply(json.RawMessage(refused), false)
+	if refusal == nil {
+		t.Fatal("parseReply takes a not_answered reply naming no need")
+	}
+	s := newStandIn(t,
+		anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicThinking("I cannot see the checks.", "sig-refused+/=="), anthropicText(refused)),
+		anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 25}, anthropicText(`{"kind":"not_answered","text":"I cannot tell from here.","needs":"`+needs+`"}`)),
+	)
+	reply, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.Fault != "" || reply.Kind != NotAnswered || reply.Text != "I cannot tell from here." || reply.Needs != needs {
+		t.Fatalf("reply %+v, want not_answered needing %q", reply, needs)
+	}
+	if reply.Calls != 2 || reply.Usage.InputTokens != 40 || reply.Usage.OutputTokens != 45 {
+		t.Errorf("calls %d, usage %+v; want both calls counted", reply.Calls, reply.Usage)
+	}
+	got := s.requests()
+	if len(got) != 2 {
+		t.Fatalf("%d model calls, want 2", len(got))
+	}
+	// The second call's messages: the history's request and answer (0, 1), the question (2), the
+	// refused reply (3) and the sentence it was asked again with (4).
+	sent := messages(t, got[1])
+	if len(sent) != 5 || sent[4]["role"] != "user" || blocks(sent[4])[0]["text"] != refusal.Error() {
+		t.Fatalf("the second call's messages %v, want the refused reply and parseReply's sentence after it", sent)
+	}
+	if turn := blocks(sent[3]); len(turn) != 2 || turn[0]["signature"] != "sig-refused+/==" || turn[1]["text"] != refused {
+		t.Errorf("the second call carries the refused reply as %v, want its signed thinking and its text", turn)
+	}
+	var body struct {
+		OutputConfig struct {
+			Format struct {
+				Schema struct {
+					Properties map[string]struct {
+						Description string `json:"description"`
+					} `json:"properties"`
+				} `json:"schema"`
+			} `json:"format"`
+		} `json:"output_config"`
+	}
+	if err := json.Unmarshal(got[0].body, &body); err != nil {
+		t.Fatal(err)
+	}
+	properties := body.OutputConfig.Format.Schema.Properties
+	if text := properties["text"].Description; !strings.Contains(text, "Never empty") {
+		t.Errorf("the form's text says %q, want it never empty", text)
+	}
+	if needs := properties["needs"].Description; !strings.Contains(needs, "not_answered") || !strings.Contains(needs, "needs_work") || !strings.Contains(needs, "Never empty for those two kinds") {
+		t.Errorf("the form's needs says %q, want it never empty for not_answered and needs_work", needs)
+	}
+	turns := reply.Append.Turns
+	if len(turns) != 2 || turns[0].AskedAgain != refusal.Error() || turns[1].AskedAgain != "" {
+		t.Fatalf("turns %+v, want the refused reply asked again with parseReply's sentence, then the reply", turns)
+	}
+	if first := turns[0].Content; len(first) != 2 || first[0].Signature != "sig-refused+/==" || first[1].Text != refused {
+		t.Errorf("the refused reply's turn %+v, want its signed thinking and its text", first)
+	}
+	if second := turns[1].Content; len(second) != 1 || !strings.Contains(second[0].Text, needs) {
+		t.Errorf("the reply's turn %+v, want the reply naming the need", second)
+	}
+	if err := reply.Append.Validate(); err != nil {
+		t.Errorf("the append does not validate: %v", err)
+	}
+}
+
 // A run no model call of which the provider metered is no answer either: a provider that sends
 // no usage, or a gateway between it and the daemon that strips it, leaves the answer unpriced,
 // so it would cost the project's daily bound nothing however many calls it made (Unmetered).

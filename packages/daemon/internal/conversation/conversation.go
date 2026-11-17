@@ -7,9 +7,9 @@
 // answers nothing from it.
 //
 // Append is the other direction: a question, the model's turns answering it (each with its tool
-// calls and their results, and the thinking it produced) and the answer, which an appender for the
-// harness writes into the session in the harness's own format, so the agent sees them when it
-// resumes.
+// calls and their results, and the thinking it produced, or with the message the loop asked it
+// again with after refusing its reply) and the answer, which an appender for the harness writes
+// into the session in the harness's own format, so the agent sees them when it resumes.
 //
 // No system message is modelled: neither harness keeps one in its session (each builds its system
 // prompt when it starts), so a caller supplies its own.
@@ -168,8 +168,10 @@ type Append struct {
 	Provider string
 	API      string
 	Model    string
-	// Turns are the model's turns, in order. Every turn but the last made tool calls and carries
-	// their results; the last made none and its Text blocks are the answer.
+	// Turns are the model's turns, in order. Every turn but the last either made tool calls and
+	// carries their results, or made none and carries the sentence it was asked again with
+	// (AskedAgain), which the next turn answers; the last made none and its Text blocks are the
+	// answer.
 	Turns []Turn
 }
 
@@ -183,6 +185,11 @@ type Turn struct {
 	Native []json.RawMessage
 	// Results are the turn's ToolResult blocks, one per ToolCall, in the calls' order.
 	Results []Block
+	// AskedAgain is the user message the loop sent after the turn's reply when it refused that
+	// reply and asked for it again: the next turn is the reply to it. An appender writes it as a
+	// user message between the two turns. Only a turn that made no tool call and is not the
+	// last carries one.
+	AskedAgain string
 	// Usage is what the turn's model call used.
 	Usage Usage
 }
@@ -227,15 +234,19 @@ func (a Append) Validate() error {
 			}
 		}
 		last := i == len(a.Turns)-1
-		if last {
-			if len(calls) > 0 {
-				return fmt.Errorf("append: the last turn makes %d tool calls; it must answer", len(calls))
-			}
-			if !hasText(turn.Content) {
-				return errors.New("append: the last turn holds no answer text")
-			}
-		} else if len(calls) == 0 {
-			return fmt.Errorf("append: turn %d makes no tool call but is not the last", i+1)
+		switch {
+		case last && len(calls) > 0:
+			return fmt.Errorf("append: the last turn makes %d tool calls; it must answer", len(calls))
+		case last && turn.AskedAgain != "":
+			return errors.New("append: the last turn is asked again, and no turn answers it")
+		case last && !hasText(turn.Content):
+			return errors.New("append: the last turn holds no answer text")
+		case len(calls) > 0 && turn.AskedAgain != "":
+			return fmt.Errorf("append: turn %d makes %d tool calls and is asked again", i+1, len(calls))
+		case !last && len(calls) == 0 && turn.AskedAgain == "":
+			return fmt.Errorf("append: turn %d makes no tool call and is not asked again, but is not the last", i+1)
+		case turn.AskedAgain != "" && !hasText(turn.Content):
+			return fmt.Errorf("append: turn %d is asked again but holds no reply text", i+1)
 		}
 		if len(turn.Results) != len(calls) {
 			return fmt.Errorf("append: turn %d: %d tool calls and %d results", i+1, len(calls), len(turn.Results))

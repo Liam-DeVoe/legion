@@ -33,7 +33,9 @@ const placeholderKey = "read-per-call"
 // or a Fault saying why the run ended short of one, each with every step that finished and what
 // those steps spent. The error is for a request the loop cannot run at all, for the caller's
 // context ending, and for a callback that returned an error; the Result then still carries what
-// the calls made so far produced and cost.
+// the calls made so far produced and cost. A reply Request.Check refuses is asked for again
+// inside the same run and the same bounds, at most Request.AskAgain times (doc.go, "Asking
+// again").
 func Run(ctx context.Context, req Request) (Result, error) {
 	if err := req.validate(); err != nil {
 		return Result{}, err
@@ -68,9 +70,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		indexes: make(map[string]int, len(req.Tools)), next: req.FirstToolIndex + 1,
 	}
 	opts := []aisdk.StreamOption{
-		aisdk.WithModelMessages(messages...),
 		aisdk.WithMaxOutputTokens(req.Bounds.OutputTokens),
-		aisdk.WithStopWhen(aisdk.StepCountIs(req.Bounds.Calls)),
 		aisdk.WithProviderOptions(options),
 		aisdk.WithMaxRetries(0),
 		aisdk.WithPrepareStep(r.prepareStep),
@@ -100,36 +100,84 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	runCtx, cancel := context.WithTimeout(ctx, req.Bounds.Time)
 	defer cancel()
 	r.cancel = cancel
-	stream := aisdk.StreamText(runCtx, model, opts...)
-	r.drain(stream)
-
-	result := r.result()
-	switch failure := r.failure(); {
-	case failure != nil:
-		return result, failure
-	case ctx.Err() != nil:
-		return result, fmt.Errorf("agentloop: %w", ctx.Err())
-	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
-		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
-	case stream.Err() != nil:
-		result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
-	case len(result.Steps) == 0:
-		result.Fault, result.Detail = FaultProviderError, "the model made no reply"
-	default:
-		r.finish(&result, stream)
+	for {
+		stream := r.ask(runCtx, model, opts, messages)
+		result := r.result()
+		switch failure := r.failure(); {
+		case failure != nil:
+			return result, failure
+		case ctx.Err() != nil:
+			return result, fmt.Errorf("agentloop: %w", ctx.Err())
+		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
+			result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
+		case stream.Err() != nil:
+			result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
+		case len(result.Steps) == r.before:
+			result.Fault, result.Detail = FaultProviderError, "the model made no reply"
+		default:
+			r.finish(&result, stream)
+		}
+		refusal, again := r.refusal(runCtx, result)
+		if !again {
+			return result, nil
+		}
+		// The run goes on from its own messages: the ones this ask was given, every
+		// message its calls produced as the SDK carries a step's turn to the next call,
+		// the refused reply among them, and the check's sentence answering that reply.
+		messages = slices.Concat(messages, stream.ResponseMessages(), []provider.Message{provider.UserText(refusal)})
+		r.askedAgain(refusal)
 	}
-	return result, nil
+}
+
+// ask makes the model calls of one ask, the run's first or one after Request.Check refused a
+// reply: a stream of the messages the run holds so far, stopped at the model calls the run has
+// left, read to its end.
+func (r *run) ask(ctx context.Context, model provider.LanguageModel, opts []aisdk.StreamOption, messages []provider.Message) *aisdk.StreamTextResult {
+	stream := aisdk.StreamText(ctx, model, slices.Concat([]aisdk.StreamOption{
+		aisdk.WithModelMessages(messages...),
+		aisdk.WithStopWhen(aisdk.StepCountIs(r.req.Bounds.Calls - r.before)),
+	}, opts)...)
+	r.drain(stream)
+	return stream
+}
+
+// refusal is the sentence the run asks the model again with, and whether it asks again at all:
+// it does where the last reply answered with a value, Request.Check refuses that value, and the
+// run has an ask, a model call and time left. A run that does not ask again returns its last
+// reply as it stands.
+func (r *run) refusal(ctx context.Context, result Result) (string, bool) {
+	if r.req.Check == nil || result.Fault != "" || result.Value == nil || r.asked >= r.req.AskAgain ||
+		len(result.Steps) >= r.req.Bounds.Calls || ctx.Err() != nil {
+		return "", false
+	}
+	if err := r.req.Check(result.Value); err != nil {
+		return err.Error(), true
+	}
+	return "", false
+}
+
+// askedAgain records the sentence the run sends after its last step's reply on that step, and
+// starts the next ask's count of calls after every call the run has made.
+func (r *run) askedAgain(refusal string) {
+	r.mu.Lock()
+	r.steps[len(r.steps)-1].AskedAgain = refusal
+	r.before = len(r.steps)
+	r.mu.Unlock()
+	r.asked++
 }
 
 // validate is whether the request is one the loop can run at all: it has its bounds, an
-// endpoint that reads a token, a model, and tools that are each named, run something and are
-// named once.
+// endpoint that reads a token, a model, a Final object for any Check to read, and tools that are
+// each named, run something and are named once.
 func (req Request) validate() error {
 	if req.Bounds.Time <= 0 || req.Bounds.Calls <= 0 || req.Bounds.OutputTokens <= 0 {
 		return errors.New("agentloop: the request has no time, call or output token bound")
 	}
 	if err := req.Model.validate(); err != nil {
 		return err
+	}
+	if req.Check != nil && req.Final == nil {
+		return errors.New("agentloop: the request checks a final object it does not ask for")
 	}
 	named := make(map[string]bool, len(req.Tools))
 	for _, t := range req.Tools {
@@ -249,6 +297,11 @@ type run struct {
 	// call; afterHistory finds where they end in a step's messages, and the marks a step
 	// moves are the ones after them.
 	history int
+	// before is how many model calls the run made before its current ask, which prepareStep
+	// adds to a step's own number, counted from the ask's first, to find the run's last
+	// allowed call; asked is how many times the run has asked again. Both change only
+	// between two asks, before the stream that reads them starts.
+	before, asked int
 
 	mu sync.Mutex
 	// steps are the model calls that finished, in order; text and reason are the last of
@@ -376,17 +429,19 @@ func (r *run) failure() error {
 	return r.failed
 }
 
-// prepareStep offers no tool on the last allowed call, so that call must answer, and on the
-// kinds Anthropic serves, where the run places cache marks, moves the newest message's mark:
-// the history keeps the marks Run put in it, because the step takes a mark off no message of
+// prepareStep offers no tool on the last allowed call of the whole run, so that call must answer,
+// and on the kinds Anthropic serves, where the run places cache marks, moves the newest message's
+// mark: the history keeps the marks Run put in it, because the step takes a mark off no message of
 // the history, the newest message gets one, and the one an earlier step put on its newest
 // message is taken off (the SDK carries a step's message overrides into later steps; Anthropic
 // allows four marks, which is this one and the three markAnthropicHistory places). Where the
 // request's Input is empty, the first call's newest message is the history's own last message,
-// which keeps the history's mark for the whole run.
+// which keeps the history's mark for the whole run. An ask after Request.Check refused a reply
+// starts from the run's own messages, which carry the history's marks and no other, so its
+// newest message, the check's sentence, takes the fourth.
 func (r *run) prepareStep(state aisdk.PrepareStepState) (*aisdk.PrepareStepResult, error) {
 	result := &aisdk.PrepareStepResult{}
-	if state.StepNumber == r.req.Bounds.Calls-1 {
+	if r.before+state.StepNumber == r.req.Bounds.Calls-1 {
 		result.ToolChoice = &provider.ToolChoice{Type: provider.ToolChoiceNone}
 	}
 	if !anthropicKind(r.kind) || r.req.NoCache || len(state.Messages) == 0 {

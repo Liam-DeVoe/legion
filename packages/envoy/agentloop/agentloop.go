@@ -244,10 +244,29 @@ type Request struct {
 	// Final is the JSON schema the last reply must be exactly one object of, which is what
 	// Result.Value holds. A nil Final asks for free text.
 	Final json.RawMessage
+	// Check is a caller's own check of the Final object, for a rule the schema cannot state
+	// inside the strict subset (strict.go), such as a property that must not be empty for one
+	// value of another. It is called in Run's goroutine, once a call's reply would end the run
+	// as its answer, a reply that ended with no fault and is exactly one object of Final, and
+	// while the run can still ask again: it has an ask, a model call and time left. A nil
+	// error accepts the reply, and the run returns it. An error refuses it, and its text is
+	// the sentence the run sends the model, as a user message after that reply, before it
+	// asks for the reply again: the run goes on with its own messages as they stand, the
+	// refused reply as the provider returned it, thinking and signatures included, then that
+	// sentence, and the next call answers it. AskAgain is the most times the run asks again.
+	// Every one of them stays inside the run's Bounds: it is a model call that counts against
+	// Calls, the last allowed call of the whole run still offers no tool, it is made only
+	// while Time is left, and its reply is held to OutputTokens like any other. When AskAgain
+	// is spent, or the bounds are, the check is not called and the run returns the last reply
+	// as it would with no check, its Value set and no fault, so the caller's own refusal of
+	// that value stands. A nil Check, or an AskAgain of zero, asks nothing again and changes
+	// nothing the run sends. A Check without a Final is a request the loop cannot run.
+	Check    func(value json.RawMessage) error
+	AskAgain int
 	// OnText is given the reply's prose as it streams, OnPartial the Final object as it is
-	// built, and OnStep every step as it finishes. An error from any of them ends the run
-	// at that point and Run returns it with the Result so far. A nil callback is not
-	// called.
+	// built, and OnStep every step as it finishes; a reply the run asked for again streams to
+	// them like any other. An error from any of them ends the run at that point and Run
+	// returns it with the Result so far. A nil callback is not called.
 	OnText    func(delta string) error
 	OnPartial func(snapshot json.RawMessage) error
 	OnStep    func(Step) error
@@ -279,6 +298,11 @@ type Step struct {
 	// word for it: stop, length, content-filter, tool-calls, error or other. A reply the
 	// provider cut at its token limit reads length, whatever the provider called it.
 	Finish string
+	// AskedAgain is the sentence the run sent the model, as a user message, after this
+	// step's reply, when Request.Check refused the value the reply held; the next step is
+	// the reply to it. It is empty on every other step, and on every step OnStep is given,
+	// since the check reads a reply only once the call that made it is over.
+	AskedAgain string
 }
 
 // Result is the outcome of a run, and every outcome is one: a run that ends on a fault, on its
@@ -290,7 +314,8 @@ type Result struct {
 	// when Request.Final asked for one.
 	Text  string
 	Value json.RawMessage
-	// Steps are the run's model calls, in order, and Usage is their total.
+	// Steps are the run's model calls, in order, a reply the run asked for again and the
+	// reply after it included, and Usage is their total.
 	Steps []Step
 	Usage Usage
 	// Fault is why the run ended short of an answer, and is empty on a run that answered.

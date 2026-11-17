@@ -7,9 +7,10 @@
 // The model calls themselves are agentloop's (github.com/sjawhar/envoy/agentloop), the one model
 // loop the daemon and Dispatch share and the only import of Grafana's SDK: the providers, the
 // retry, the step bound with no tool on the last allowed call, the thinking and reasoning
-// options, the cache marks and the check of the reply against its schema are all its. This
-// package is its caller: it builds the request (the conversation as agentloop's messages, the
-// system prompt, the reply form as the request's Final schema, the gh tool, the bounds and the
+// options, the cache marks, the check of the reply against its schema and the one ask again for
+// a reply the form's own rules refuse are all its. This package is its caller: it builds the
+// request (the conversation as agentloop's messages, the system prompt, the reply form as the
+// request's Final schema, the form's own rules as its Check, the gh tool, the bounds and the
 // endpoint `answers.providers` names, whose key is read again for every call), decides the faults
 // that need no model call (no_provider, no_price, unknown_format), refuses an answer whose calls
 // the provider metered nothing for (unmetered), maps agentloop's faults onto the daemon's own
@@ -19,6 +20,7 @@ package answer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -177,8 +179,9 @@ type Reply struct {
 	Fault  Fault
 	Detail string
 	// Append is the question and the model's turns (thinking with its signatures or OpenAI
-	// reasoning items, each tool call with its result, the reply), for the conversation's
-	// appender; set when the model replied in the form.
+	// reasoning items, each tool call with its result, a reply the form refused with the
+	// sentence it was asked again with, the reply), for the conversation's appender; set when
+	// the model replied in the form.
 	Append conversation.Append
 	// Calls is how many model calls the answer made; Usage their tokens and costs summed, cache
 	// writes and reads included, reasoning counted as output; CostUSD the sum of its costs.
@@ -314,6 +317,15 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		},
 		FirstToolIndex: firstToolIndex(req.Earlier),
 		Final:          finalSchema(req.MayAskNothing),
+		// A reply the form's own rules refuse is asked for once again, with parseReply's
+		// sentence as the message after it, within the same bounds: the rules the strict
+		// schema cannot state are the ones a model gets wrong, and one more call costs less
+		// than a question passed on as malformed. A second refusal is finish's to make.
+		Check: func(value json.RawMessage) error {
+			_, err := parseReply(value, req.MayAskNothing)
+			return err
+		},
+		AskAgain: 1,
 	})
 	reply := Reply{Calls: len(result.Steps), Usage: usageOf(result.Usage, r.price), CostUSD: result.Usage.CostUSD}
 	switch {
@@ -366,7 +378,8 @@ func firstToolIndex(earlier []store.AnswerToolCall) int {
 }
 
 // finish reads the run's last reply into reply: the agent's reply in the form, or no answer when
-// the form's own rules refuse it; and, with it, the turns to append.
+// the form's own rules refuse it, which they do once agentloop has asked again where its bounds
+// let it; and, with it, the turns to append, every call of the run in order.
 func finish(reply *Reply, req Request, r route, result agentloop.Result, question string) {
 	form, err := parseReply(result.Value, req.MayAskNothing)
 	if err != nil {
@@ -388,10 +401,11 @@ func finish(reply *Reply, req Request, r route, result agentloop.Result, questio
 
 // turnOf is one model call as a turn of the append: its thinking (with its signature), redacted
 // thinking, text and tool calls in order, each call's result, the provider's own output items for
-// a turn that has them (an OpenAI Responses turn, which the appender writes from them), and what
-// the call used and cost.
+// a turn that has them (an OpenAI Responses turn, which the appender writes from them), the
+// sentence the call's reply was asked again with when the form refused it, and what the call
+// used and cost.
 func turnOf(step agentloop.Step, price config.AnswerPrice) conversation.Turn {
-	turn := conversation.Turn{Native: step.Native, Usage: usageOf(step.Usage, price)}
+	turn := conversation.Turn{Native: step.Native, AskedAgain: step.AskedAgain, Usage: usageOf(step.Usage, price)}
 	for _, block := range step.Blocks {
 		switch block.Kind {
 		case agentloop.ThinkingBlock:

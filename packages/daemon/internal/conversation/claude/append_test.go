@@ -138,6 +138,79 @@ func TestEncodeAppendsAfterATornTailAsClaudeCodeWritesLines(t *testing.T) {
 	}
 }
 
+// The reply the loop refused, the message it asked again with, and the reply after it.
+const (
+	refusedReply = `{"kind":"not_answered","text":"I cannot tell from here.","needs":""}`
+	askedAgain   = "a not_answered reply names no needs"
+	replyAgain   = `{"kind":"not_answered","text":"I cannot tell from here.","needs":"My working copy."}`
+)
+
+// askedAgainAnswer is an answer whose first reply the loop refused and asked for again: the
+// refused reply's turn carries the message it was asked again with, and the next turn answers.
+func askedAgainAnswer() conversation.Append {
+	return conversation.Append{
+		QuestionID: "q-9", Question: "Is PR 7 green?",
+		Provider: "anthropic", API: anthropicMessages, Model: fixtureModel,
+		Turns: []conversation.Turn{
+			{Content: []conversation.Block{thinking("I cannot see the checks.", "c2lnLXI="), text(refusedReply)}, AskedAgain: askedAgain},
+			{Content: []conversation.Block{text(replyAgain)}},
+		},
+	}
+}
+
+// A turn the loop asked again is followed by the message it asked again with, written as a prompt
+// line of its own as the question is, chained between the refused reply's last line and the next
+// turn's first: read back, the transcript's conversation holds the question, the refused reply,
+// that message and the reply after it, in the order the run made them, and the last-prompt
+// checkpoint names the last reply's line.
+func TestEncodeWritesTheMessageATurnWasAskedAgainWithAfterIt(t *testing.T) {
+	f := baseTranscript()
+	s := read(t, f.bytes())
+	data, err := s.Encode(askedAgainAnswer(), appendedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("appended line %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	types := []string{"user", "assistant", "assistant", "user", "assistant", "legion-answer", "last-prompt"}
+	if len(records) != len(types) {
+		t.Fatalf("%d appended lines, want %d", len(records), len(types))
+	}
+	for i, record := range records {
+		if record["type"] != types[i] {
+			t.Errorf("line %d is a %v line, want %s", i, record["type"], types[i])
+		}
+	}
+	asked := records[3]
+	if m := asked["message"].(map[string]any); m["role"] != "user" || m["content"] != askedAgain ||
+		asked["parentUuid"] != records[2]["uuid"] || asked["promptId"] == "" || asked["promptId"] == records[0]["promptId"] {
+		t.Errorf("the line after the refused reply %v, want a prompt of its own holding what the loop asked again, after that reply", asked)
+	}
+	if m := records[1]["message"].(map[string]any); m["stop_reason"] != "end_turn" {
+		t.Errorf("the refused reply's stop reason %v, want end_turn", m["stop_reason"])
+	}
+	if last := records[6]; last["leafUuid"] != records[4]["uuid"] {
+		t.Errorf("the last-prompt line %v, want it to name the last reply's line", last)
+	}
+
+	back := read(t, append(f.bytes(), data...))
+	assertMessages(t, back.Messages[2:], []conversation.Message{
+		user(text("Is PR 7 green?")),
+		claude(thinking("I cannot see the checks.", "c2lnLXI="), text(refusedReply)),
+		user(text(askedAgain)),
+		claude(text(replyAgain)),
+	})
+	if !back.Answered("q-9") || back.Leaf != records[4]["uuid"] {
+		t.Errorf("answered %t, leaf %q; want the question answered and the last reply the leaf", back.Answered("q-9"), back.Leaf)
+	}
+}
+
 // AppendFile writes the append in one write after exactly the content the session was read from,
 // and refuses with ErrMoved once the file has grown since.
 func TestAppendFileRefusesATranscriptThatMoved(t *testing.T) {
@@ -175,6 +248,22 @@ func TestEncodeRefusesWhatClaudeCodeCannotHold(t *testing.T) {
 	invalid.Question = ""
 	if _, err := s.Encode(invalid, appendedAt); err == nil {
 		t.Error("an answer to no question was encoded")
+	}
+	notAsked := askedAgainAnswer()
+	notAsked.Turns[0].AskedAgain = ""
+	if _, err := s.Encode(notAsked, appendedAt); err == nil {
+		t.Error("an answer with a turn before its last that neither calls a tool nor is asked again was encoded")
+	}
+	lastAsked := askedAgainAnswer()
+	lastAsked.Turns[1].AskedAgain = askedAgain
+	if _, err := s.Encode(lastAsked, appendedAt); err == nil {
+		t.Error("an answer whose last turn is asked again was encoded")
+	}
+	callsAsked := toolAnswer()
+	callsAsked.Turns[0].Content = append(callsAsked.Turns[0].Content, text("Reading it."))
+	callsAsked.Turns[0].AskedAgain = askedAgain
+	if _, err := s.Encode(callsAsked, appendedAt); err == nil {
+		t.Error("an answer whose tool-calling turn is asked again was encoded")
 	}
 }
 

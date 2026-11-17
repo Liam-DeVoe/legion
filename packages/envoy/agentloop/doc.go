@@ -119,6 +119,30 @@
 // The check reaches every node: each property, an array's items, and every member of $defs and
 // definitions, whether or not a $ref names it.
 //
+// # Asking again
+//
+// Request.Check is a caller's rule of the Final object that the strict subset cannot state, such
+// as a property that must not be empty for one value of another, and the run holds a reply to
+// it as a validate-and-ask-again loop does (Pydantic AI's output validators, Instructor's
+// retries): a reply whose value the check refuses is answered, in the same conversation, with
+// the check's own sentence as a user message, and the model is asked for the reply again, at
+// most Request.AskAgain times. The run goes on from its own messages, which are the SDK's: the
+// ones the ask before was given and every message its calls produced, the refused reply among
+// them as the provider returned it. That is how the SDK carries a step's turn to the next call
+// between two tool calls, so a reply's thinking and its signature, or its reasoning item, go
+// back as they came.
+//
+// An ask again is no new run. Bounds.Calls counts every model call of the run, and the last
+// allowed call offers no tool whichever ask it falls in; Bounds.Time is the one deadline of the
+// whole run, and no ask is made again once it has passed; Bounds.OutputTokens bounds each call.
+// Tool calls are numbered on across the asks, Result.Steps holds every call in order with the
+// sentence on the step it answered (Step.AskedAgain), and Result.Usage sums them all. The cache
+// marks are placed as for any call: the history keeps its own, and the newest message, the
+// check's sentence, takes the last of the four. Where the asks or the bounds are spent, the run
+// returns the last reply as it would with no check, its Value set and no fault: a check's
+// refusal is never a fault of this package, and refusing that value is the caller's to do. A
+// request with no Check sends exactly what it sent before Check existed.
+//
 // # Bounds
 //
 // Bounds.Calls bounds model calls. A per-tool budget — how much work one tool will do before it

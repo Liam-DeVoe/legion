@@ -76,12 +76,18 @@ type form struct {
 // 2026-11-07, a form whose needs was `["string","null"]` and left out of required was carried in
 // output_config.format and then not enforced, and the model ran a one-sentence answer to the
 // whole output token bound; with this shape the same question stopped at 77 output tokens with
-// the object. What the schema cannot say — a not_answered or needs_work reply must name a need,
-// and every kind but none must carry text — parseReply checks after.
+// the object. What the schema cannot say as a constraint inside that strict subset, which takes
+// no minLength, pattern or anyOf — a not_answered or needs_work reply must name a need, and every
+// kind but none must carry text — its descriptions say to the model, parseReply checks after,
+// and a reply parseReply refuses is asked for once again (answer).
 func finalSchema(mayAskNothing bool) json.RawMessage {
 	kinds := []Kind{Answered, NotAnswered, NeedsWork}
+	text := "What the asker reads. Never empty."
+	needs := "For not_answered, what you would need to answer, such as your working copy; for needs_work, the work the message asks for. Never empty for those two kinds; empty for answered."
 	if mayAskNothing {
 		kinds = append(kinds, None)
+		text = "What the asker reads. Never empty, but for none, where it is empty."
+		needs = "For not_answered, what you would need to answer, such as your working copy; for needs_work, the work the message asks for. Never empty for those two kinds; empty for answered and for none."
 	}
 	quoted := make([]string, len(kinds))
 	for i, kind := range kinds {
@@ -89,8 +95,8 @@ func finalSchema(mayAskNothing bool) json.RawMessage {
 	}
 	return json.RawMessage(`{"type":"object","properties":` +
 		`{"kind":{"type":"string","enum":[` + strings.Join(quoted, ",") + `]},` +
-		`"text":{"type":"string"},` +
-		`"needs":{"type":"string"}},` +
+		`"text":{"type":"string","description":"` + text + `"},` +
+		`"needs":{"type":"string","description":"` + needs + `"}},` +
 		`"required":["kind","text","needs"],"additionalProperties":false}`)
 }
 

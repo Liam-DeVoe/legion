@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"os"
@@ -440,6 +441,263 @@ func TestALastReplyThatIsNotTheFinalObjectIsMalformed(t *testing.T) {
 	}
 }
 
+// askAgainSentence is the sentence the tests' checks refuse a reply with, which the run sends the
+// model as it asks for the reply again.
+const askAgainSentence = "The answer names no fruit: name the fruit the note names."
+
+// refusedAnswer is a reply of finalSchema's form that refuseEmptyAnswer refuses.
+const refusedAnswer = `{"answer":""}`
+
+// refuseEmptyAnswer is a Check of finalSchema's object: an answer that names nothing is refused,
+// which is a rule the strict subset cannot state.
+func refuseEmptyAnswer(value json.RawMessage) error {
+	var reply struct {
+		Answer string `json:"answer"`
+	}
+	if err := json.Unmarshal(value, &reply); err != nil {
+		return err
+	}
+	if reply.Answer == "" {
+		return errors.New(askAgainSentence)
+	}
+	return nil
+}
+
+// refuseEveryAnswer is a Check that refuses whatever it is given.
+func refuseEveryAnswer(json.RawMessage) error { return errors.New(askAgainSentence) }
+
+// An Anthropic reply the request's Check refuses is answered with the check's sentence as a user
+// message and asked for again in the same run: the second call carries the conversation, the
+// refused reply with its signed thinking as the provider returned it and the sentence after it,
+// marks the history as the first call did and the sentence as its newest message, four marks in
+// all, and offers no tool, being the run's last allowed call. The second reply is the value, the
+// refused step carries the sentence, and the usage sums both calls.
+func TestAnAnthropicReplyTheCheckRefusesIsAskedForAgain(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t,
+		anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20, CacheWrite: 2200},
+			anthropicThinking("Weigh the note.", "sig-ask-1+/=="), anthropicText(refusedAnswer)),
+		anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5, CacheRead: 2200}, anthropicText(finalAnswer)),
+	)
+	f := newFixture(t, s, AnthropicMessages, 2)
+	f.req.History = anthropicAnswered()
+	f.req.Final, f.req.Check, f.req.AskAgain = json.RawMessage(finalSchema), refuseEmptyAnswer, 1
+	result, err := Run(context.Background(), f.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Fault != "" || string(result.Value) != finalAnswer {
+		t.Fatalf("fault %q (%s), value %s; want no fault and the second reply's %s", result.Fault, result.Detail, result.Value, finalAnswer)
+	}
+	if len(result.Steps) != 2 || result.Steps[0].AskedAgain != askAgainSentence || result.Steps[1].AskedAgain != "" {
+		t.Fatalf("steps %+v, want the refused reply carrying the sentence and the reply after it", result.Steps)
+	}
+	if u := result.Usage; u.Input != 40 || u.Output != 25 || u.CacheWrite != 2200 || u.CacheRead != 2200 || !u.Metered {
+		t.Errorf("usage %+v, want both calls summed", u)
+	}
+	got := s.requests()
+	if len(got) != 2 {
+		t.Fatalf("%d model calls, want 2", len(got))
+	}
+	// The second call's messages: the history's two exchanges (0 to 3), the question (4),
+	// the refused reply (5) and the check's sentence (6).
+	sent := messages(t, got[1])
+	if len(sent) != 7 {
+		t.Fatalf("the second call carries %d messages, want 7", len(sent))
+	}
+	refused := blocks(sent[5])
+	if sent[5]["role"] != "assistant" || len(refused) != 2 || refused[0]["type"] != "thinking" ||
+		refused[0]["signature"] != "sig-ask-1+/==" || refused[0]["thinking"] != "Weigh the note." || refused[1]["text"] != refusedAnswer {
+		t.Errorf("the second call carries the refused reply as %v, want its signed thinking and its text", sent[5])
+	}
+	if asked := blocks(sent[6]); sent[6]["role"] != "user" || len(asked) != 1 || asked[0]["text"] != askAgainSentence {
+		t.Errorf("the second call's newest message is %v, want the check's sentence", sent[6])
+	}
+	wantMarks := [][]int{{1, 2, 3, 4}, {1, 2, 3, 6}}
+	for i, r := range got {
+		body := r.decoded(t)
+		if n := countKey(body, "cache_control"); n != len(wantMarks[i]) {
+			t.Errorf("call %d carries %d cache marks, want %d (never above 4)", i+1, n, len(wantMarks[i]))
+		}
+		if marks := marked(t, r); !reflect.DeepEqual(marks, wantMarks[i]) {
+			t.Errorf("call %d marks messages %v, want %v", i+1, marks, wantMarks[i])
+		}
+		choice, _ := body["tool_choice"].(map[string]any)
+		if last := i == 1; (choice["type"] == "none") != last {
+			t.Errorf("call %d's tool_choice %v; want none on the run's last allowed call only", i+1, body["tool_choice"])
+		}
+	}
+}
+
+// An OpenAI Responses reply the request's Check refuses is asked for again the same way: the
+// second call carries the refused reply's reasoning item with its encrypted content byte for
+// byte, the reply's own text, and the check's sentence as the newest input item, and each step
+// reports its own call's output items.
+func TestAnOpenAIResponsesReplyTheCheckRefusesIsAskedForAgain(t *testing.T) {
+	t.Parallel()
+	stepOne := []string{openaiReasoning("rs_a1", "gAAAAask+/one==", "Weighing the note"), openaiMessage("msg_a1", refusedAnswer)}
+	stepTwo := []string{openaiMessage("msg_a2", finalAnswer)}
+	s := newStandIn(t,
+		openaiStream(openaiUsage{Input: 1000, CacheWrite: 900, Output: 40, Reasoning: 20}, "", stepOne...),
+		openaiStream(openaiUsage{Input: 1100, Cached: 900, Output: 10}, "", stepTwo...),
+	)
+	f := newFixture(t, s, OpenAIResponses, 2)
+	f.req.Final, f.req.Check, f.req.AskAgain = json.RawMessage(finalSchema), refuseEmptyAnswer, 1
+	result, err := Run(context.Background(), f.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Fault != "" || string(result.Value) != finalAnswer {
+		t.Fatalf("fault %q (%s), value %s; want no fault and the second reply's %s", result.Fault, result.Detail, result.Value, finalAnswer)
+	}
+	if len(result.Steps) != 2 || result.Steps[0].AskedAgain != askAgainSentence || result.Steps[1].AskedAgain != "" {
+		t.Fatalf("steps %+v, want the refused reply carrying the sentence and the reply after it", result.Steps)
+	}
+	for i, want := range [][]string{stepOne, stepTwo} {
+		var native []string
+		for _, item := range result.Steps[i].Native {
+			native = append(native, string(item))
+		}
+		if !reflect.DeepEqual(native, want) {
+			t.Errorf("step %d's output items\n%v\nwant them as the API sent them\n%v", i+1, native, want)
+		}
+	}
+	if u, steps := result.Usage, sum(result.Steps[0].Usage, result.Steps[1].Usage); u != steps || u.Output != 50 || u.Reasoning != 20 || !u.Metered {
+		t.Errorf("usage %+v, want both calls summed: %+v", u, steps)
+	}
+	got := s.requests()
+	if len(got) != 2 {
+		t.Fatalf("%d model calls, want 2", len(got))
+	}
+	if !bytes.Contains(got[1].body, []byte(`"encrypted_content":"gAAAAask+/one=="`)) {
+		t.Error("the second call does not carry the refused reply's reasoning byte for byte")
+	}
+	if !bytes.Contains(got[1].body, []byte(quote(refusedAnswer))) {
+		t.Error("the second call does not carry the refused reply's text")
+	}
+	items := inputItems(t, got[1])
+	newest := items[len(items)-1]
+	content, _ := newest["content"].([]any)
+	if newest["role"] != "user" || len(content) != 1 || content[0].(map[string]any)["text"] != askAgainSentence {
+		t.Errorf("the second call's newest input item is %v, want the check's sentence", newest)
+	}
+	for i, r := range got {
+		if last := i == 1; (r.decoded(t)["tool_choice"] == "none") != last {
+			t.Errorf("call %d's tool_choice %v; want none on the run's last allowed call only", i+1, r.decoded(t)["tool_choice"])
+		}
+	}
+}
+
+// The calls a run makes before and after it asks again are one run's: the tool calls are numbered
+// on from the request's first index across the ask, the ask's tool results and the sentence ride
+// in the order they were made, and only the last of the run's allowed calls, made after the ask,
+// offers no tool.
+func TestAnAskAgainNumbersToolCallsOnAndOffersNoToolBeforeTheRunsLastCall(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t,
+		anthropicStream("tool_use", anthropicUsage{Output: 1}, anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
+		anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(refusedAnswer)),
+		anthropicStream("tool_use", anthropicUsage{Output: 1}, anthropicToolUse("toolu_2", toolName, map[string]any{"path": "other.txt"})),
+		anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(finalAnswer)),
+	)
+	f := newFixture(t, s, AnthropicMessages, 4)
+	f.req.FirstToolIndex = 2
+	f.req.Final, f.req.Check, f.req.AskAgain = json.RawMessage(finalSchema), refuseEmptyAnswer, 1
+	result, err := Run(context.Background(), f.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Fault != "" || string(result.Value) != finalAnswer || len(result.Steps) != 4 || result.Steps[1].AskedAgain != askAgainSentence {
+		t.Fatalf("result %+v, want the answer after four calls, the second asked again", result)
+	}
+	want := []seen{{3, "toolu_1", `{"path":"note.txt"}`}, {4, "toolu_2", `{"path":"other.txt"}`}}
+	if calls := madeSeen(f.tool.made()); !reflect.DeepEqual(calls, want) {
+		t.Errorf("the tool was given %+v, want %+v", calls, want)
+	}
+	got := s.requests()
+	if len(got) != 4 {
+		t.Fatalf("%d model calls, want 4", len(got))
+	}
+	// The last call's messages: the question (0), the first tool call and its result (1, 2),
+	// the refused reply and the sentence (3, 4), the second tool call and its result (5, 6),
+	// the newest of which alone is marked.
+	var roles []string
+	for _, m := range messages(t, got[3]) {
+		roles = append(roles, m["role"].(string))
+	}
+	if strings.Join(roles, ",") != "user,assistant,user,assistant,user,assistant,user" {
+		t.Errorf("the last call's roles %v", roles)
+	}
+	if asked := blocks(messages(t, got[3])[4]); asked[0]["text"] != askAgainSentence {
+		t.Errorf("the last call carries %v where the sentence was sent", asked)
+	}
+	for i, r := range got {
+		body := r.decoded(t)
+		if marks := marked(t, r); len(marks) != 1 || marks[0] != len(messages(t, r))-1 {
+			t.Errorf("call %d marks messages %v, want its newest alone", i+1, marks)
+		}
+		choice, _ := body["tool_choice"].(map[string]any)
+		if last := i == 3; (choice["type"] == "none") != last {
+			t.Errorf("call %d's tool_choice %v; want none on the run's last allowed call only", i+1, body["tool_choice"])
+		}
+	}
+}
+
+// A check that refuses the reply it is given again is asked again no more than the request's
+// AskAgain: the run returns the last reply as its value, with no fault, and leaves refusing it to
+// the caller, though the call bound would allow another call.
+func TestACheckRefusingPastAskAgainReturnsTheLastReply(t *testing.T) {
+	t.Parallel()
+	const pear = `{"answer":"pear"}`
+	s := newStandIn(t,
+		anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(refusedAnswer)),
+		anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(pear)),
+		anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(finalAnswer)),
+	)
+	f := newFixture(t, s, AnthropicMessages, 3)
+	f.req.Final, f.req.Check, f.req.AskAgain = json.RawMessage(finalSchema), refuseEveryAnswer, 1
+	result, err := Run(context.Background(), f.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Fault != "" || string(result.Value) != pear {
+		t.Fatalf("fault %q (%s), value %s; want no fault and the last reply's %s", result.Fault, result.Detail, result.Value, pear)
+	}
+	if len(result.Steps) != 2 || result.Steps[0].AskedAgain != askAgainSentence || result.Steps[1].AskedAgain != "" {
+		t.Errorf("steps %+v, want the one ask and the reply to it", result.Steps)
+	}
+	if n := len(s.requests()); n != 2 {
+		t.Errorf("%d model calls, want 2: one ask and the one ask again", n)
+	}
+}
+
+// A refused reply on the run's last allowed call is not asked for again: Bounds.Calls counts the
+// tool call before it, no further call is made, and the run returns the reply as its value with
+// no fault.
+func TestACheckWithNoModelCallLeftReturnsTheLastReply(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t,
+		anthropicStream("tool_use", anthropicUsage{Output: 1}, anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
+		anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(refusedAnswer)),
+		anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(finalAnswer)),
+	)
+	f := newFixture(t, s, AnthropicMessages, 2)
+	f.req.Final, f.req.Check, f.req.AskAgain = json.RawMessage(finalSchema), refuseEveryAnswer, 1
+	result, err := Run(context.Background(), f.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Fault != "" || string(result.Value) != refusedAnswer {
+		t.Fatalf("fault %q (%s), value %s; want no fault and the refused reply's %s", result.Fault, result.Detail, result.Value, refusedAnswer)
+	}
+	if len(result.Steps) != 2 || result.Steps[1].AskedAgain != "" {
+		t.Errorf("steps %+v, want the two calls the bound allows, neither asked again", result.Steps)
+	}
+	if n := len(s.requests()); n != 2 {
+		t.Errorf("%d model calls, want the 2 the bound allows", n)
+	}
+}
+
 // The last allowed model call still calling a tool is past the run's call bound, with the call it
 // made reported.
 func TestTheLastAllowedCallStillCallingAToolIsPastTheCallBound(t *testing.T) {
@@ -740,6 +998,7 @@ func TestARequestTheLoopCannotRunIsAnError(t *testing.T) {
 			r.History = []Message{{Role: Assistant, Blocks: []Block{{Kind: ToolResultBlock, ToolCallID: "toolu_1", Name: toolName}}}}
 		}},
 		{name: "a final that is no JSON schema", change: func(r *Request) { r.Final = json.RawMessage(`{"type":"object","properties":5}`) }},
+		{name: "a check with no final to read", change: func(r *Request) { r.Check, r.AskAgain = refuseEmptyAnswer, 1 }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t, s, AnthropicMessages, 1)
