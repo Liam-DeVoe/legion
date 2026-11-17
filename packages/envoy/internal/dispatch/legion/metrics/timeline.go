@@ -197,8 +197,11 @@ func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 // next mark that carries a phase or to the issue's end where none follows, and its hours stay on
 // the bar of the phase the issue was last seen in, so the bars of the issue still add up to its
 // work time (the spec's "Parked and pre-work hours in phase time"). Both readers of an issue's
-// phase marks take them from here, the timeline (observedPhases) and the root's recorded wait on a
-// person (waitingOnPersonSpans), so the two cannot read one mark two ways.
+// phase stretches take them from here, the timeline (observedPhases) and the root's recorded wait
+// on a person (waitingOnPersonSpans), so the two cannot read one mark two ways. The one other
+// reader of the phase marks, slotSpans, takes from them only the moments a read dropped the issue
+// and the moments one carried it again, and it reads a mark that names no phase as this does: a
+// read that no longer carried the issue.
 func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
 	return func(yield func(PhaseSpan) bool) {
 		var open PhaseSpan
@@ -225,10 +228,76 @@ func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
 // slotSpans are the stretches the issue held an admission slot, from its own `slot` observations:
 // never from the daemon's `admission.active`, which dispatch://INFRA-980 widens to every issue
 // holding one, children included.
+//
+// A slot mark that holds an index starts a hold, and the hold ends where the daemon released the
+// slot: at a slot mark that holds none in a read that still carries the issue. The sampler writes
+// two facts as a `null` slot mark, and only the phase marks of the same moment tell them apart. A
+// read that carries the issue observes its slot, `null` where it holds none (legion.State's
+// Observations), and its phase, which is never `null`: so a `null` slot mark beside a phase mark
+// that names a phase, or beside none, is a release. A read that no longer carries the issue writes
+// `null` for every field of it at one moment (legion's recordObservations): so a `null` slot mark
+// at the moment the phase mark went `null` is that drop, and a drop is not a release. It says the
+// daemon stopped reporting the issue, not that the issue gave up its slot, just as it is no news
+// of a phase change (phaseStretches): the hold runs on through it, so an admitted issue last seen
+// holding a slot stays in design and its hours stay on the architect's bar, since no read observed
+// it in the queue.
+//
+// The hold the drop left open runs to the first read that carries the issue again, which is the
+// next phase mark that names a phase. The issue's newest slot row is then the drop's `null`, so
+// that read writes a slot mark only where the issue holds a slot, and a return with no slot mark
+// at its moment is a release. Where no read carries the issue again, the hold runs to end.
+//
+// This is the one reader of the slot marks. The timeline's split of an admitted stretch into
+// design and queue (observedPhases), and so the queue time (queuedSpans) and every bar, take them
+// from here, as does the start of the design phase before observations (fallbackMarks).
 func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
-	return markSpans(issue.Observed[legion.FieldSlot], end, func(value string) bool {
-		return value != "" && value != "null"
-	})
+	phases, slots := issue.Observed[legion.FieldPhase], issue.Observed[legion.FieldSlot]
+	var spans []Span
+	var from time.Time
+	holding, gone := false, false
+	for len(phases) > 0 || len(slots) > 0 {
+		// The next moment either field has a mark at, and the mark each has there: both are one
+		// read's, since a read writes every row it writes at the one moment.
+		var moment time.Time
+		if len(slots) == 0 || len(phases) > 0 && phases[0].At.Before(slots[0].At) {
+			moment = phases[0].At
+		} else {
+			moment = slots[0].At
+		}
+		var phase, slot *Mark
+		if len(phases) > 0 && phases[0].At.Equal(moment) {
+			phase, phases = &phases[0], phases[1:]
+		}
+		if len(slots) > 0 && slots[0].At.Equal(moment) {
+			slot, slots = &slots[0], slots[1:]
+		}
+		dropped := phase != nil && legion.JSONString([]byte(phase.Value)) == ""
+		holds := holding
+		switch {
+		case slot != nil:
+			// A slot the read carried decides, except a drop's `null`, which ends nothing.
+			if held := slot.Value != "" && slot.Value != "null"; held || !dropped {
+				holds = held
+			}
+		case phase != nil && gone && !dropped:
+			// The issue is carried again, holding no slot.
+			holds = false
+		}
+		if phase != nil {
+			gone = dropped
+		}
+		switch {
+		case holds && !holding:
+			from = moment
+		case !holds && holding:
+			spans = append(spans, Span{From: from, To: moment})
+		}
+		holding = holds
+	}
+	if holding {
+		spans = append(spans, Span{From: from, To: end})
+	}
+	return normalize(spans)
 }
 
 // phaseMark is one moment the event log says the issue's phase changed, and what says so.
@@ -468,7 +537,10 @@ func (p *Population) parkedSpans(issue *Issue) []Span {
 // that holds a slot is in design, not in the queue" (the spec's "Rule details — Queue time, one
 // definition"). It is the phase timeline's own `queued` spans, so the work time and the bars
 // cannot read it two ways and the seven bars of an issue add up to its work time on either
-// timeline.
+// timeline. Whether the issue holds a slot is slotSpans' answer, in which the daemon dropping the
+// issue from its state releases nothing: an issue keeps through a drop the phase and the slot it
+// was last seen with, so one that held a slot when it dropped is not in the queue until a read
+// carries it again holding none.
 //
 // Before observations it is none: the timeline the event log draws holds no queued phase, and
 // the parked subtraction already covers the daemon's own parking.
