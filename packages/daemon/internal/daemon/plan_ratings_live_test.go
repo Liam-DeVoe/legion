@@ -55,7 +55,7 @@ func TestPlanRatingsLive(t *testing.T) {
 	l.step("a-retro-with-no-rating-is-refused", l.ratingRequired)
 }
 
-// readByProject is v-records, the read by project, in the form this slice can run: the rig's first
+// readByProject is the read of a project's finished issues by a person: the rig's first
 // three issues walk to done, the first with one failed review, and their retros rate the plan 3, 4
 // and 5 with a reason. `dispatch plans --project <PROJECT>` run as a person of the project then
 // prints the three, newest close first, each with the default plan, its one rating with its

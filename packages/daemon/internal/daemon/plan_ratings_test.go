@@ -28,7 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// v-records, the read by project, in the form this slice can run: three issues of one project run
+// The read of a project's finished issues, through the whole daemon: three issues of one project run
 // to done with no plan of their owner, the first with one failed review, and each retro rates the
 // plan, 3, 4 and 5, with a reason. The read lists the three, each with the default plan, its one
 // rating with its reason, its count of failed steps (1, 0 and 0), and its time: from the earliest
