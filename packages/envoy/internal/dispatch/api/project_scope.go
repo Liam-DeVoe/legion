@@ -123,28 +123,52 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // target that does not exist, or an id Postgres will not read as a uuid.
 type projectResolver func(ctx context.Context, q queryer, r *http.Request) (string, error)
 
-// projectResolverFor is the resolver a route's address calls for, read from the shape of its
-// pattern, and whether the pattern names an object at all. Every row the table classes
-// scopeProject has one; undecidableWrites holds the table to that and register refuses to
-// mount a table that breaks it, so a mounted scopeProject row always resolves.
-func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
-	switch {
-	case addresses(pattern, "/api/v1/issues/{key}"):
+// resolverOf is the resolver of the object a route's path names (routeRow.ProjectOf), and whether
+// it names one at all. Every row the table classes scopeProject names one; undecidableWrites
+// holds the table to that and register refuses to mount a table that breaks it, so a mounted
+// scopeProject row always resolves.
+func (s *server) resolverOf(of projectPath) (projectResolver, bool) {
+	switch of {
+	case projectPathIssue:
 		return s.projectOfIssue, true
-	case addresses(pattern, "/api/v1/projects/{key}"):
+	case projectPathProject:
 		return s.projectOfProject, true
-	case addresses(pattern, "/api/v1/artifacts/{id}"):
+	case projectPathArtifact:
 		return s.projectOfArtifact, true
-	case addresses(pattern, "/api/v1/asks/{id}"):
+	case projectPathAsk:
 		return s.projectOfAsk, true
-	case addresses(pattern, "/api/v1/comments/{id}"):
+	case projectPathComment:
 		return s.projectOfComment, true
-	case addresses(pattern, "/api/v1/messages/{id}"):
+	case projectPathMessage:
 		return s.projectOfMessage, true
-	case addresses(pattern, "/api/v1/results/{id}"):
+	case projectPathResult:
 		return s.projectOfCheckResult, true
 	}
 	return nil, false
+}
+
+// projectPathOf is the object a /api/v1 pattern names, read from its shape, which routes() copies
+// onto a v1 route's ProjectOf column (v1Route): the issue of /api/v1/issues/{key}, the project of
+// /api/v1/projects/{key}, and the artifact, ask, comment, message or check result of
+// /api/v1/<kind>/{id}, each with anything under it.
+func projectPathOf(pattern string) projectPath {
+	switch {
+	case addresses(pattern, "/api/v1/issues/{key}"):
+		return projectPathIssue
+	case addresses(pattern, "/api/v1/projects/{key}"):
+		return projectPathProject
+	case addresses(pattern, "/api/v1/artifacts/{id}"):
+		return projectPathArtifact
+	case addresses(pattern, "/api/v1/asks/{id}"):
+		return projectPathAsk
+	case addresses(pattern, "/api/v1/comments/{id}"):
+		return projectPathComment
+	case addresses(pattern, "/api/v1/messages/{id}"):
+		return projectPathMessage
+	case addresses(pattern, "/api/v1/results/{id}"):
+		return projectPathResult
+	}
+	return projectPathNone
 }
 
 // addresses answers whether pattern addresses the object prefix names: that object itself, or
@@ -266,7 +290,7 @@ func unaddressed(err error) bool {
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	switch route.Scope {
 	case scopeProject:
-		resolve, addressed := s.projectResolverFor(route.Pattern)
+		resolve, addressed := s.resolverOf(route.ProjectOf)
 		if !addressed {
 			// Nothing mounts such a row: undecidableWrites names it and register refuses the
 			// table holding it. A project-scoped caller is refused it here all the same, so
@@ -366,7 +390,7 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 			handler(w, r)
 			return
 		}
-		if addressed := r.PathValue("session_id"); addressed != proved && !personsOwnWrite {
+		if addressed := r.PathValue(route.SessionPath); addressed != proved && !personsOwnWrite {
 			writeError(w, r, apicode.SessionScope, fmt.Sprintf(
 				"this request's credential acts for session %s; %s %s writes into session %s",
 				proved, route.Method, route.Pattern, addressed))
@@ -377,11 +401,12 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 }
 
 // addressesOneSession answers whether route is a write to the rows of the one session its path
-// names: the scopeSession rows whose pattern carries {session_id}. The other scopeSession rows
-// address no session of their own — the `me` token rows are the calling person's, and the two
-// message rows are held to the session their delivery attempt names.
+// names: the scopeSession rows whose path names a session (routeRow.SessionPath; a v1 route's
+// {session_id}). The other scopeSession rows address no session of their own — the `me` token rows
+// are the calling person's, and the two message rows are held to the session their delivery
+// attempt names.
 func addressesOneSession(route apiRoute) bool {
-	return route.Scope == scopeSession && strings.Contains(route.Pattern, "{session_id}")
+	return route.Scope == scopeSession && route.SessionPath != ""
 }
 
 // writeNeedsASignedInPerson refuses every write by a caller whose credential names a service and
@@ -413,11 +438,11 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 	}
 }
 
-// undecidableWrites names every mutating row the project check cannot decide: one writeClasses
-// gives no class, and one classed scopeProject whose address names no object to resolve. Every
-// other class is decided: scopeDeployment and scopeProjectInBody by the class itself,
-// scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by writing
-// nothing at all.
+// undecidableWrites names every mutating row the project check cannot decide: one that names no
+// write class - in writeClasses for a route of the v1 table, in its Scope column for a routeRow -
+// and one classed scopeProject whose path names no object to resolve (ProjectOf). Every other
+// class is decided: scopeDeployment and scopeProjectInBody by the class itself, scopeSession by
+// withinSessionScope and the handlers behind it, and scopeNoWrite by writing nothing at all.
 // TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
 // table it names anything in, so a row added later cannot be left undecided. The other direction,
 // a writeClasses name that is no row of the table, is the same test's (nothing is served by it,
@@ -432,11 +457,15 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 		switch route.Scope {
 		case scopeSession, scopeDeployment, scopeProjectInBody, scopeNoWrite:
 		case scopeProject:
-			if _, addressed := s.projectResolverFor(route.Pattern); !addressed {
+			if _, addressed := s.resolverOf(route.ProjectOf); !addressed {
 				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")
 			}
 		default:
-			undecidable = append(undecidable, name+": no write class (writeClasses)")
+			source := "writeClasses"
+			if route.columns {
+				source = "its Scope column"
+			}
+			undecidable = append(undecidable, name+": no write class ("+source+")")
 		}
 	}
 	return undecidable

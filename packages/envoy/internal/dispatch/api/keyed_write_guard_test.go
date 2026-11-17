@@ -276,31 +276,123 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		t.Fatalf("read the SQL functions the migrations define: %v", err)
 	}
 	guard.writingCall = writingCallOf(writing)
-	table := graph.named["api.server.routes"]
-	if table == nil {
-		t.Fatal("the guard finds no routes table (api.server.routes)")
-	}
-	ast.Inspect(table.body, func(node ast.Node) bool {
-		literal, ok := node.(*ast.CompositeLit)
-		if !ok || len(literal.Elts) != 5 {
-			return true
+	for _, row := range tableRowsInSource(t, graph) {
+		if !keyedMethod(row.method) {
+			continue
 		}
-		method, ok := ast.Unparen(literal.Elts[0]).(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		if !keyedMethod(verb) {
-			return false
-		}
-		pattern, _ := literalText(literal.Elts[1], table.pkg, graph.constants)
-		for _, handler := range graph.functionValue(literal.Elts[4]) {
-			guard.routes[verb+" "+pattern] = handler
+		for _, handler := range graph.functionValue(row.handler) {
+			for _, name := range row.names {
+				guard.routes[name] = handler
+			}
 			guard.walk(handler)
 		}
-		return false
-	})
+	}
 	return guard
+}
+
+// sourceRow is one row of the route table as its source declares it, for the guards that read
+// what a row's handler runs from that handler's source: its method, the "<method> <pattern>" of
+// every route the server mounts it as, and the expression the row names its handler by.
+type sourceRow struct {
+	method  string
+	names   []string
+	handler ast.Expr
+}
+
+// tableRowsInSource reads the table's rows from the source of the functions that declare them,
+// since a handler read at run time is a function value and what these guards ask is what that
+// function's source runs: v1Rows and testHookRows, whose rows are positional literals, and every
+// v2<Group>Rows, whose rows name their columns. A row is named by every route the server mounts it
+// as, read off the table with its test hooks in: a v1Row at its pattern, a hook at its /api/v1 and
+// its /api/v2/_test path, a routeRow at /api/v1 and /api/v2 where it is mounted there.
+func tableRowsInSource(t *testing.T, graph *lockGraph) []sourceRow {
+	t.Helper()
+	// Each mounted route, and whether it is the mount of a routeRow rather than a route of the v1
+	// table, so a routeRow is never named by a v1 route at the same path (GET /api/v1 is a v1Row;
+	// the routeRow of the index at /api/v2 writes no /api/v1 path).
+	mounted := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		mounted[route.Method+" "+route.Pattern] = route.columns
+	}
+	methodOf := func(expression ast.Expr) (string, bool) {
+		method, ok := ast.Unparen(expression).(*ast.SelectorExpr)
+		if !ok || !strings.HasPrefix(method.Sel.Name, "Method") {
+			return "", false
+		}
+		return strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method")), true
+	}
+	var rows []sourceRow
+	add := func(declaring, method string, handler ast.Expr, columns bool, patterns ...string) {
+		row := sourceRow{method: method, handler: handler}
+		for _, pattern := range patterns {
+			name := method + " " + pattern
+			if isColumns, served := mounted[name]; served && isColumns == columns {
+				row.names = append(row.names, name)
+			}
+		}
+		if len(row.names) == 0 {
+			t.Errorf("%s declares a %s row at %v that the server mounts at none of them", declaring, method, patterns)
+			return
+		}
+		rows = append(rows, row)
+	}
+	for _, declaring := range slices.Sorted(maps.Keys(graph.named)) {
+		positional := declaring == "api.server.v1Rows" || declaring == "api.server.testHookRows"
+		declared := strings.HasPrefix(declaring, "api.server.v2") && strings.HasSuffix(declaring, "Rows")
+		if !positional && !declared {
+			continue
+		}
+		fn := graph.named[declaring]
+		ast.Inspect(fn.body, func(node ast.Node) bool {
+			literal, ok := node.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			if positional {
+				if len(literal.Elts) < 5 {
+					return true
+				}
+				method, ok := methodOf(literal.Elts[0])
+				if !ok {
+					return true
+				}
+				pattern, ok := literalText(literal.Elts[1], fn.pkg, graph.constants)
+				if !ok {
+					t.Errorf("%s holds a %s row whose pattern the guard cannot read", declaring, method)
+					return false
+				}
+				patterns := []string{pattern}
+				if declaring == "api.server.testHookRows" {
+					patterns = append(patterns, testHookV2Pattern(pattern))
+				}
+				add(declaring, method, literal.Elts[4], false, patterns...)
+				return false
+			}
+			columns := map[string]ast.Expr{}
+			for _, element := range literal.Elts {
+				if pair, ok := element.(*ast.KeyValueExpr); ok {
+					if key, ok := pair.Key.(*ast.Ident); ok {
+						columns[key.Name] = pair.Value
+					}
+				}
+			}
+			if columns["Method"] == nil || columns["Pattern"] == nil || columns["Handler"] == nil {
+				return true
+			}
+			method, ok := methodOf(columns["Method"])
+			pattern, readable := literalText(columns["Pattern"], fn.pkg, graph.constants)
+			if !ok || !readable {
+				t.Errorf("%s holds a row whose method or pattern the guard cannot read", declaring)
+				return false
+			}
+			add(declaring, method, columns["Handler"], true, "/api/v1"+pattern, "/api/v2"+pattern)
+			return false
+		})
+	}
+	if len(rows) == 0 {
+		t.Fatal("the guard reads no row off the route table's source (v1Rows, testHookRows, v2<Group>Rows)")
+	}
+	return rows
 }
 
 // walk marks fn and everything it runs while its request's commit step is live reached.

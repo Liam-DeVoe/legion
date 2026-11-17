@@ -381,8 +381,11 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime   context.Context
-	routeIndex []routeIndexEntry
+	lifetime context.Context
+	// routeIndex and routeIndexV2 are the routes GET /api/v1 and GET /api/v2 list: each version's
+	// own, rendered once at mount (register).
+	routeIndex   []routeIndexEntry
+	routeIndexV2 []routeIndexV2Entry
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
 	going           GoingCatalogue
@@ -546,8 +549,9 @@ type queryer interface {
 	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
-// Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
-// same table answers GET /api/v1.
+// Register mounts every native-workspace route on mux, at /api/v1 and at /api/v2. The routes live
+// in routes_table.go and the v2_<group>.go files (routes_versions.go); the same table answers GET
+// /api/v1 and GET /api/v2, each with the routes of its own version.
 //
 // Every route is marked so the shared pool can refuse a second connection to a handler that
 // already holds one of its transactions (store.ErrNestedAcquire): one caller, one connection is
@@ -731,17 +735,24 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// table is refused rather than mounted (routeShapes).
 		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
-	s.routeIndex = routeIndexEntries(routes)
-	replays := s.keyedReplays()
+	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
+		// A route whose id wildcard says neither what it names nor why no prefix is resolved there
+		// would answer a short id as no id at all - a row of the v1 table missing from idRoutes, a
+		// routeRow with no IDs column - so the table is refused rather than mounted (idRoutes).
+		panic("api.Register: the route table holds a route whose id the prefix layer cannot decide: " + strings.Join(undecided, "; "))
+	}
+	s.routeIndex = routeIndexEntries(servedAt(apiV1, routes))
+	s.routeIndexV2 = routeIndexV2Entries(servedAt(apiV2, routes))
 	for _, route := range routes {
-		// Every route the table holds is a /api/v1 one; the version reaches the error writers on
-		// the request (withAPIVersion) and the drain from here.
-		version := apiV1
+		// Every fact a layer below reads is the route's own (routes_versions.go): its version, which
+		// reaches the error writers on the request (withAPIVersion) and the drain from here, its
+		// replay and its body bound, its owner's closed state, its write class and the object its
+		// path names, the session its path names, its id facts and its scopes.
 		handler := route.Handler
 		if keyedMethod(route.Method) {
-			handler = s.keyedWrites(route.Method, route.Pattern, handler, replays[route.Method+" "+route.Pattern])
+			handler = s.keyedWrites(route, handler)
 		}
-		if route.Method+" "+route.Pattern == issueUploadRoute {
+		if route.RefusesClosedOwner {
 			handler = s.refuseUploadToAClosedIssue(handler)
 		}
 		if route.Method != http.MethodGet {
@@ -795,7 +806,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
 			// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
 			// pins: without either, the client is told to continue and the answer waits on its body.
-			handler = s.drainBeforeAnswer(version, route.Method, route.Pattern, handler)
+			handler = s.drainBeforeAnswer(route, handler)
 		}
 		// The access-log line is outermost but for the version, so it records what every layer
 		// answered - a keyed replay, a refused login, an early answer the drain held - and the
@@ -804,7 +815,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// on the wire. The two websockets below carry no compressed answer: the upgrade is not a
 		// body, and the frames after it are the socket's (compressAnswers). The version is put on
 		// the request before any of them, so every layer that refuses answers for it.
-		mux.HandleFunc(route.Method+" "+route.Pattern, withAPIVersion(version, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))))
+		mux.HandleFunc(route.Method+" "+route.Pattern, withAPIVersion(route.Version, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)

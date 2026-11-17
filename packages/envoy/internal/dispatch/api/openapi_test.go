@@ -63,7 +63,8 @@ func TestOpenAPIDocumentIsTheSameBytesEveryRun(t *testing.T) {
 
 // The document describes the API, so it holds the table and the table holds it: a row with no
 // operation is a route a client is given no type for, and an operation that is no row is a route
-// nothing serves.
+// nothing serves. This document is /api/v1's, so it holds the routes /api/v1 serves
+// (openAPIRoutes).
 func TestOpenAPIDocumentHasOneOperationPerMountedRoute(t *testing.T) {
 	_, document := readOpenAPI(t)
 	described := map[string]bool{}
@@ -73,7 +74,7 @@ func TestOpenAPIDocumentHasOneOperationPerMountedRoute(t *testing.T) {
 		}
 	}
 	mounted := map[string]bool{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+	for _, route := range openAPIRoutes() {
 		mounted[route.Method+" "+route.Pattern] = true
 	}
 	for name := range mounted {

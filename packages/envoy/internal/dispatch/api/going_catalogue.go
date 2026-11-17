@@ -307,14 +307,16 @@ func (c GoingCatalogue) Lookup(name string) (GoingAction, bool) {
 	return c.actions[index], true
 }
 
-// mutatingRoutes is every row of the table that changes something, in the shape
-// TestEveryMutatingRouteIsClassed reads the table in: a row whose method is not GET, each of
+// mutatingRoutes is every /api/v1 route of the table that changes something, in the shape
+// TestEveryMutatingRouteIsClassed reads the table in: a route whose method is not GET, each of
 // which writeClasses must class (undecidableWrites). It is the one classification of a write the
-// server has, and the catalogue is held to it.
+// server has, and the catalogue is held to it. The catalogue names /api/v1 routes, so it is held
+// to the routes of its own version; a table of the /api/v2 routes is another catalogue's (decision
+// 12 of the plan of dispatch://INFRA-4071).
 func mutatingRoutes(routes []apiRoute) map[string]bool {
 	mutating := make(map[string]bool, len(routes))
 	for _, route := range routes {
-		if route.Method == http.MethodGet {
+		if route.Method == http.MethodGet || route.Version == apiV2 {
 			continue
 		}
 		mutating[route.Method+" "+route.Pattern] = true
@@ -363,7 +365,9 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 	mutating := mutatingRoutes(routes)
 	served := make(map[string]bool, len(routes))
 	for _, route := range routes {
-		served[route.Method+" "+route.Pattern] = true
+		if route.Version != apiV2 {
+			served[route.Method+" "+route.Pattern] = true
+		}
 	}
 	families := edgeFamilies()
 	catalogue := GoingCatalogue{

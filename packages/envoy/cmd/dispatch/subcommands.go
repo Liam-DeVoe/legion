@@ -62,12 +62,8 @@ var subcommands = []subcommand{
 		}
 		return 0
 	}},
-	{"routes", func(_ context.Context, _ []string, _ settingValues, stdout, stderr io.Writer) int {
-		if err := api.WriteRouteIndex(stdout); err != nil {
-			fmt.Fprintf(stderr, "routes: %v\n", err)
-			return 1
-		}
-		return 0
+	{"routes", func(_ context.Context, args []string, _ settingValues, stdout, stderr io.Writer) int {
+		return writeRouteIndex(args, stdout, stderr)
 	}},
 	{"openapi", func(_ context.Context, args []string, _ settingValues, stdout, stderr io.Writer) int {
 		return writeOpenAPIDocument(args, stdout, stderr)
@@ -89,6 +85,31 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 	}
 	fmt.Fprintf(stderr, "envoy-dispatch: unknown subcommand %q; the subcommands are %s, and envoy-dispatch with no argument serves\n", args[0], strings.Join(names, ", "))
 	return 2
+}
+
+// writeRouteIndex runs `envoy-dispatch routes`: the body the route index of one version of the API
+// answers, read from the table alone. With no flag it is GET /api/v1's, as it always was; --version 2
+// is GET /api/v2's.
+func writeRouteIndex(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("routes", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	version := flags.Int("version", 1, "the version of the API whose route index to print: 1 or 2")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "routes: unexpected argument %q; the one flag is --version\n", flags.Arg(0))
+		return 2
+	}
+	if *version != 1 && *version != 2 {
+		fmt.Fprintf(stderr, "routes: --version %d: the API's versions are 1 and 2\n", *version)
+		return 2
+	}
+	if err := api.WriteRouteIndex(stdout, *version); err != nil {
+		fmt.Fprintf(stderr, "routes: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // writeOpenAPIDocument runs `envoy-dispatch openapi`. With no flag it writes the OpenAPI document

@@ -189,3 +189,9 @@ GET /api/v1/signins any
 POST /api/v1/signins/{id}/revoke any
 GET /api/v1/users any
 GET /api/v1/whoami any
+GET /api/v2 public
+GET /api/v2/delivery/measures any
+GET /api/v2/delivery/pipeline any
+GET /api/v2/delivery/timeline any
+GET /api/v2/settings/delivery any
+PUT /api/v2/settings/delivery any

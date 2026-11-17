@@ -219,8 +219,10 @@ type resolvedCaller struct {
 	err   error
 }
 
-// keyedWrites wraps the handler of a POST or PATCH route, method and pattern, in the keyed path
-// above. replay is the route's keyedReplay, nil for a route that commits no recovery point.
+// keyedWrites wraps the handler of a POST or PATCH route in the keyed path above. It reads the
+// route's own facts: its method and pattern, which the fingerprint holds; its replay
+// (routeRow.Replay), nil for a route that commits no recovery point; whether its answer holds a
+// secret no key keeps (routeRow.AnswerHoldsSecret); and its body bound (routeRow.BodyLimit).
 //
 // A keyed request's handler finishes on the server whatever its client does: it runs on its
 // request's context with the client's cancellation taken off (context.WithoutCancel), bounded by
@@ -232,10 +234,11 @@ type resolvedCaller struct {
 // died is taken over, once its lease lapses. A handler cut off with its client would roll its
 // transactions back and leave the next attempt to start again from nothing, so a write that takes
 // the server longer than the client waits could never land.
-func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, replay keyedReplay) http.HandlerFunc {
+func (s *server) keyedWrites(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	method, pattern, replay := route.Method, route.Pattern, route.Replay
 	wildcards := patternWildcards(pattern)
-	keepsAnswer := !answerHoldsSecret[method+" "+pattern]
-	bodyLimit, _ := routeBody(method, pattern)
+	keepsAnswer := !route.AnswerHoldsSecret
+	bodyLimit := route.BodyLimit.Bytes
 	run := handler
 	if s.deps.TestHooksEnabled {
 		run = s.slowedByTestHook(handler)
@@ -276,7 +279,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			if s.repeatFoundInFlight != nil {
 				s.repeatFoundInFlight()
 			}
-			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, replay)
+			s.answerDrainedRepeat(w, r, route, wildcards, login, key)
 			return
 		}
 		digest := sha256.New()
@@ -924,20 +927,21 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 //
 // The body is read for at most drainTime (readFor): one that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. A body past the
-// route's limit is answered as its route answers one (routeBody), unkeyed, as a request whose
-// body is past the limit runs unkeyed. Either keeps the read's deadline for net/http's own reads
-// after the answer; only a body read to its end lifts it.
+// route's limit is answered as its route answers one (routeRow.BodyLimit), unkeyed, as a request
+// whose body is past the limit runs unkeyed. Either keeps the read's deadline for net/http's own
+// reads after the answer; only a body read to its end lifts it.
 func (s *server) answerDrainedRepeat(
-	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay,
+	w http.ResponseWriter, r *http.Request, route apiRoute, wildcards []string, login, key string,
 ) {
 	if expectsContinue(r) {
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
 		writeKeyInFlight(w, r, key)
 		return
 	}
-	limit, tooLarge := routeBody(method, pattern)
+	limit, tooLarge := route.BodyLimit.Bytes, route.BodyLimit.TooLarge
+	replay := route.Replay
 	digest := sha256.New()
-	writeRequestFields(digest, r, method, pattern, wildcards)
+	writeRequestFields(digest, r, route.Method, route.Pattern, wildcards)
 	lift := s.readFor(w)
 	size, err := digestKeyedBody(r.Body, digest, r.Header.Get("Content-Type"), limit)
 	switch {

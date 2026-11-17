@@ -78,11 +78,12 @@ var decisionBlockGuardSees = []string{
 // once, and a writer added later gets it — to the server's own route inventory rather than to a
 // list of the paths that have it today.
 //
-// The inventory is the table (routes_table.go) with its test hooks in, read from the source so
-// that each row's handler is read with it, joined to the Go type each row takes (routeShapes,
-// routes_shapes.go). A row is in scope when its method is one register keys (keyedMethod: a POST
-// or a PATCH) and its request type carries a `body` string, the field every stored comment,
-// message, broadcast and handoff body is written into. A row in scope either runs the shared
+// The inventory is the table (routes_table.go, the v2_<group>.go files) with its test hooks in,
+// read from the source so that each row's handler is read with it, joined to the Go type each
+// route takes (apiRoute.shape: its routeShapes entry, or a routeRow's own columns). A row is in
+// scope when its method is one register keys (keyedMethod: a POST or a PATCH) and its request
+// type carries a `body` string, the field every stored comment, message, broadcast and handoff
+// body is written into. A row in scope either runs the shared
 // check — somewhere in what its handler runs inside package api, a call of blockBoundError over a
 // call of itemblocks.Check, which is the one place DECISION_BLOCK_IN_BODY is worded — or stands
 // in decisionBlockExempt with the reason it does not. A row the shapes do not describe is named
@@ -103,12 +104,13 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 		}
 	}
 	routes := decisionBlockRouteHandlers(t, graph)
+	shapes := mountedShapes()
 
 	var unchecked, unshaped, stale []string
 	for _, name := range slices.Sorted(maps.Keys(routes)) {
 		checks := decisionBlockChecked(graph, routes[name])
 		reason, exempt := decisionBlockExempt[name]
-		shape, shaped := routeShapes[name]
+		shape, shaped := shapes[name]
 		switch {
 		case exempt:
 			t.Logf("%s: exempt — %s", name, reason)
@@ -116,7 +118,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 				stale = append(stale, fmt.Sprintf("%s: runs the check now, so its exemption (%s) is no longer true", name, reason))
 			}
 		case !shaped:
-			unshaped = append(unshaped, name+": no shape (routeShapes), so whether it takes a body cannot be read")
+			unshaped = append(unshaped, name+": no shape, so whether it takes a body cannot be read")
 		case !requestCarriesBody(shape.Request):
 			t.Logf("%s: takes no body string", name)
 		case checks:
@@ -131,7 +133,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 			strings.Join(unchecked, "\n\t"))
 	}
 	if len(unshaped) > 0 {
-		t.Errorf("a POST or PATCH route has no request type to read:\n\t%s\nGive it one in routeShapes, which the OpenAPI document is reflected out of.", strings.Join(unshaped, "\n\t"))
+		t.Errorf("a POST or PATCH route has no request type to read:\n\t%s\nGive it one in routeShapes, or in its routeRow's Body column, which the OpenAPI document is reflected out of.", strings.Join(unshaped, "\n\t"))
 	}
 	if len(stale) > 0 {
 		t.Errorf("an exemption describes the opposite of what its route does:\n\t%s\nDelete the route's line from decisionBlockExempt.", strings.Join(stale, "\n\t"))
@@ -148,13 +150,14 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 	graph := copyLockGraph(t)
 	routes := decisionBlockRouteHandlers(t, graph)
+	shapes := mountedShapes()
 	for _, name := range decisionBlockGuardSees {
 		handlers, mounted := routes[name]
 		if !mounted {
 			t.Errorf("the guard reads no %s off the table", name)
 			continue
 		}
-		shape, shaped := routeShapes[name]
+		shape, shaped := shapes[name]
 		if !shaped || !requestCarriesBody(shape.Request) {
 			t.Errorf("the guard reads no body string on %s, the route that stores one", name)
 		}
@@ -202,42 +205,36 @@ func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
 	}
 }
 
-// decisionBlockRouteHandlers is every POST and PATCH row of the table, by "<method> <pattern>",
-// with the handler bodies that row mounts. It is read from the source of routes() rather than from
-// a server's own table so that each row's handler comes with it: a handler read at run time is a
-// function value, and what this guard asks is what that function's source runs.
+// decisionBlockRouteHandlers is every POST and PATCH route of the table, by "<method> <pattern>",
+// with the handler bodies its row mounts. It is read from the source of the functions that declare
+// the rows (tableRowsInSource) rather than from a server's own table so that each row's handler
+// comes with it: a handler read at run time is a function value, and what this guard asks is what
+// that function's source runs.
 func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
 	t.Helper()
-	table := graph.named["api.server.routes"]
-	if table == nil {
-		t.Fatal("the guard finds no routes table (api.server.routes)")
-	}
 	routes := map[string][]*lockFunction{}
-	ast.Inspect(table.body, func(node ast.Node) bool {
-		row, ok := node.(*ast.CompositeLit)
-		if !ok || len(row.Elts) != 5 {
-			return true
+	for _, row := range tableRowsInSource(t, graph) {
+		if !keyedMethod(row.method) {
+			continue
 		}
-		method, ok := ast.Unparen(row.Elts[0]).(*ast.SelectorExpr)
-		if !ok {
-			return true
+		for _, name := range row.names {
+			routes[name] = graph.functionValue(row.handler)
 		}
-		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		if !keyedMethod(verb) {
-			return false
-		}
-		pattern, ok := literalText(row.Elts[1], table.pkg, graph.constants)
-		if !ok {
-			t.Errorf("the guard cannot read the pattern of a %s row of the table", verb)
-			return false
-		}
-		routes[verb+" "+pattern] = graph.functionValue(row.Elts[4])
-		return false
-	})
+	}
 	if len(routes) == 0 {
 		t.Fatal("the guard reads no POST or PATCH row off the routes table")
 	}
 	return routes
+}
+
+// mountedShapes is the shape of every route the table mounts with its test hooks in, by
+// "<method> <pattern>": what the guard reads a route's request type off.
+func mountedShapes() map[string]routeShape {
+	shapes := map[string]routeShape{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		shapes[route.Method+" "+route.Pattern] = route.shape()
+	}
+	return shapes
 }
 
 // decisionBlockChecked reports whether running one of handlers runs the shared check: a call of

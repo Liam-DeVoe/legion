@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,8 +93,9 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	if !found {
 		t.Fatalf("GET /api/v1/issues/{key} missing from the index: %+v", index.Routes)
 	}
-	if len(index.Routes) != len((&server{}).routes()) {
-		t.Fatalf("index lists %d routes, table has %d", len(index.Routes), len((&server{}).routes()))
+	// GET /api/v1 lists the routes /api/v1 serves, and testdata/routes.txt both versions'.
+	if served := servedAt(apiV1, (&server{}).routes()); len(index.Routes) != len(served) {
+		t.Fatalf("index lists %d routes, /api/v1 serves %d", len(index.Routes), len(served))
 	}
 
 	// The table against the committed index. A route added, removed, or given another auth class
@@ -129,46 +131,79 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 }
 
 // WriteRouteIndex is what `envoy-dispatch routes` prints and the docs site's API reference is
-// generated from: every row of the table, as GET /api/v1 serves it, and no test hook.
+// generated from: every route of one version, as GET /api/v1 or GET /api/v2 serves it, and no test
+// hook. Each index lists its own version's routes alone, and GET /api/v2 answers them all on one
+// page.
 func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
-	var output bytes.Buffer
-	if err := WriteRouteIndex(&output); err != nil {
-		t.Fatal(err)
-	}
-	var printed routeIndex
-	if err := json.Unmarshal(output.Bytes(), &printed); err != nil {
-		t.Fatalf("decode %q: %v", output.String(), err)
-	}
-	table := (&server{}).routes()
-	if len(printed.Routes) != len(table) {
-		t.Fatalf("printed %d routes, table has %d", len(printed.Routes), len(table))
-	}
-	byKey := make(map[string]routeIndexEntry, len(printed.Routes))
-	for _, entry := range printed.Routes {
-		byKey[entry.Method+" "+entry.Path] = entry
-	}
-	for _, route := range table {
-		entry, ok := byKey[route.Method+" "+route.Pattern]
-		if !ok {
-			t.Errorf("%s %s missing from the printed index", route.Method, route.Pattern)
-			continue
-		}
-		if entry.Auth != route.Auth || entry.Description != route.Description {
-			t.Errorf("%s %s printed as auth %q, description %q; the table says %q, %q", route.Method, route.Pattern, entry.Auth, entry.Description, route.Auth, route.Description)
-		}
-	}
-	for _, entry := range printed.Routes {
-		if strings.Contains(entry.Path, "/_test/") {
-			t.Errorf("printed index carries test hook %s %s", entry.Method, entry.Path)
-		}
-	}
-
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
-	if served := response.Body.String(); served != output.String() {
-		t.Fatalf("printed index differs from GET /api/v1:\nprinted %s\nserved  %s", output.String(), served)
+	for _, version := range []apiVersion{apiV1, apiV2} {
+		prefix := versionPrefix(version)
+		t.Run(prefix, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := WriteRouteIndex(&output, int(version)); err != nil {
+				t.Fatal(err)
+			}
+			type printedEntry struct {
+				Method      string    `json:"method"`
+				Path        string    `json:"path"`
+				Auth        routeAuth `json:"auth"`
+				Description string    `json:"description"`
+			}
+			var printed struct {
+				Routes []printedEntry `json:"routes"`
+				Items  []printedEntry `json:"items"`
+				Total  int            `json:"total"`
+				Limit  int            `json:"limit"`
+				Offset int            `json:"offset"`
+			}
+			if err := json.Unmarshal(output.Bytes(), &printed); err != nil {
+				t.Fatalf("decode %q: %v", output.String(), err)
+			}
+			entries := printed.Routes
+			if version == apiV2 {
+				entries = printed.Items
+				if printed.Routes != nil || printed.Total != len(entries) || printed.Limit != len(entries) || printed.Offset != 0 {
+					t.Errorf("GET /api/v2 answers routes %v, total %d, limit %d, offset %d over %d items; want every route on one page",
+						printed.Routes, printed.Total, printed.Limit, printed.Offset, len(entries))
+				}
+			}
+			table := servedAt(version, (&server{}).routes())
+			if len(entries) != len(table) {
+				t.Fatalf("printed %d routes, %s serves %d", len(entries), prefix, len(table))
+			}
+			byKey := make(map[string]printedEntry, len(entries))
+			for _, entry := range entries {
+				byKey[entry.Method+" "+entry.Path] = entry
+			}
+			for _, route := range table {
+				entry, ok := byKey[route.Method+" "+route.Pattern]
+				if !ok {
+					t.Errorf("%s %s missing from the printed index", route.Method, route.Pattern)
+					continue
+				}
+				if entry.Auth != route.Auth || entry.Description != route.Description {
+					t.Errorf("%s %s printed as auth %q, description %q; the table says %q, %q", route.Method, route.Pattern, entry.Auth, entry.Description, route.Auth, route.Description)
+				}
+			}
+			for _, entry := range entries {
+				if strings.Contains(entry.Path, "/_test") {
+					t.Errorf("printed index carries test hook %s %s", entry.Method, entry.Path)
+				}
+				if entry.Path != prefix && !strings.HasPrefix(entry.Path, prefix+"/") {
+					t.Errorf("the %s index lists %s %s", prefix, entry.Method, entry.Path)
+				}
+			}
+
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, prefix, nil))
+			if served := response.Body.String(); served != output.String() {
+				t.Fatalf("printed index differs from GET %s:\nprinted %s\nserved  %s", prefix, output.String(), served)
+			}
+		})
+	}
+	if err := WriteRouteIndex(io.Discard, 3); err == nil {
+		t.Error("WriteRouteIndex printed an index of version 3, which the API does not have")
 	}
 }
 
@@ -205,8 +240,9 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+14 {
-		t.Fatalf("test hooks add fourteen routes: got %d, want %d", got, len(routes)+14)
+	// Fourteen hooks, each mounted at its /api/v1 path and at its /api/v2/_test path.
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+2*14 {
+		t.Fatalf("test hooks add fourteen rows at two paths each: got %d, want %d", got, len(routes)+2*14)
 	}
 }
 

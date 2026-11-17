@@ -66,16 +66,16 @@ func newKeyedRig(t *testing.T, answer func(run int32, w http.ResponseWriter, r *
 }
 
 // newKeyedRigAt is a keyedRig mounted at pattern, so a route the layer treats as its own - an
-// upload's larger body limit - can be driven too.
+// upload's larger body limit - can be driven too. The route carries what a /api/v1 route at
+// pattern carries (v1Route), with no replay.
 func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
 	t.Helper()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
 	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
-		http.MethodPost, pattern,
+		v1Route(routeRow{Method: http.MethodPost, Pattern: pattern}, nil),
 		func(w http.ResponseWriter, r *http.Request) { answer(rig.runs.Add(1), w, r) },
-		nil,
 	)))
 	rig.handler = mux
 	return rig

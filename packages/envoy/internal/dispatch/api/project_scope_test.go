@@ -45,7 +45,7 @@ func TestEveryMutatingRouteIsClassed(t *testing.T) {
 
 	t.Run("a project row whose address names no object fails it too", func(t *testing.T) {
 		undecidable := served.undecidableWrites([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint", Auth: authAny}, Scope: scopeProject},
+			{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint", Auth: authAny, Scope: scopeProject}},
 		})
 		if len(undecidable) != 1 || !strings.Contains(undecidable[0], "names no object") {
 			t.Fatalf("the walk answered %q, want the unresolvable project row named", undecidable)

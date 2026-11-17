@@ -89,9 +89,10 @@ var (
 // is left as it is, and so is the body of a client that asked to be told to continue before
 // sending it (Expect: 100-continue) and was never told: it sends nothing, and the first read would
 // tell it to send all of it. The drain refuses from inside the answer's writer, where no request
-// is in reach, so the mount builds it with the version its route serves (writeVersionedError).
-func (s *server) drainBeforeAnswer(version apiVersion, method, pattern string, handler http.HandlerFunc) http.HandlerFunc {
-	limit, tooLarge := routeBody(method, pattern)
+// is in reach, so the mount builds it with the version its route serves (writeVersionedError) and
+// the route's own body bound (apiRoute.BodyLimit).
+func (s *server) drainBeforeAnswer(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	version, limit, tooLarge := route.Version, route.BodyLimit.Bytes, route.BodyLimit.TooLarge
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Body == nil || r.Body == http.NoBody {
 			handler(w, r)

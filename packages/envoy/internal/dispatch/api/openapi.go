@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -133,7 +132,7 @@ func openAPIDocument() (*openapi31.Spec, error) {
 	hooks := openAPIHookRoutes()
 	paths := map[string]*openapi31.PathItem{}
 	operationIDs := map[string]string{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+	for _, route := range openAPIRoutes() {
 		name := route.Method + " " + route.Pattern
 		operation, err := emitter.operation(route, hooks[name])
 		if err != nil {
@@ -177,6 +176,13 @@ func openAPIDocument() (*openapi31.Spec, error) {
 	return spec, nil
 }
 
+// openAPIRoutes are the routes the document describes: every route /api/v1 serves, with the
+// test hooks in, since a hook's row is a row of the table wherever a deployment leaves it out
+// (scopedRoutesNotMounted). The /api/v2 routes are another document's.
+func openAPIRoutes() []apiRoute {
+	return servedAt(apiV1, (&server{deps: Deps{TestHooksEnabled: true}}).routes())
+}
+
 // openAPIHookRoutes names every row the table mounts only with Deps.TestHooksEnabled, read as the
 // difference between the two tables rather than listed, so a hook added to routes() is marked
 // without this file being touched.
@@ -186,7 +192,7 @@ func openAPIHookRoutes() map[string]bool {
 		served[route.Method+" "+route.Pattern] = true
 	}
 	hooks := map[string]bool{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+	for _, route := range openAPIRoutes() {
 		name := route.Method + " " + route.Pattern
 		if !served[name] {
 			hooks[name] = true
@@ -266,8 +272,12 @@ func openAPIRequestBodyTypes() (map[reflect.Type]bool, []reflect.Type) {
 		}
 	}
 	// In the table's key order, so a refusal names the same type whichever run reads it.
-	for _, name := range slices.Sorted(maps.Keys(routeShapes)) {
-		shape := routeShapes[name]
+	routes := openAPIRoutes()
+	slices.SortFunc(routes, func(left, right apiRoute) int {
+		return strings.Compare(left.Method+" "+left.Pattern, right.Method+" "+right.Pattern)
+	})
+	for _, route := range routes {
+		shape := route.shape()
 		if shape.Request != nil {
 			bodies = append(bodies, reflect.TypeOf(shape.Request))
 			reach(shape.Request, request, &bodies)
@@ -608,7 +618,7 @@ func (e *openAPIEmitter) define(name string, schema jsonschema.Schema) {
 // and every answer it gives.
 func (e *openAPIEmitter) operation(route apiRoute, hook bool) (*openapi31.Operation, error) {
 	name := route.Method + " " + route.Pattern
-	shape := routeShapes[name]
+	shape := route.shape()
 	operation := &openapi31.Operation{}
 	operation.WithID(openAPIOperationID(route.Method, route.Pattern))
 	operation.WithDescription(route.Description)

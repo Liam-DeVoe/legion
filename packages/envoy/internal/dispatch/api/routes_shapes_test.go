@@ -27,9 +27,11 @@ func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
 // answer and no reason its bytes carry no schema is a route that answers nothing at all, which
 // is 204 and no other status. A row that marks its request optional and names no body to leave
 // out is the emitter's own refusal (openapi.go, requestBody), which holds every row the document
-// is written from, so the predicate for a body is stated there alone.
+// is written from, so the predicate for a body is stated there alone. Every route is read, the
+// shapes routeShapes holds and the ones a routeRow declares in its own columns alike.
 func TestRouteShapesDescribeASuccess(t *testing.T) {
-	for name, shape := range routeShapes {
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		name, shape := route.Method+" "+route.Pattern, route.shape()
 		if shape.Status < http.StatusOK || shape.Status >= http.StatusMultipleChoices {
 			t.Errorf("%s: success status %d is not a 2xx", name, shape.Status)
 		}
