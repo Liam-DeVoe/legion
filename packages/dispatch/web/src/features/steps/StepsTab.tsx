@@ -244,10 +244,13 @@ function useCatchUp(issueKey: string, shown: boolean): void {
       return;
     }
     let timers: number[] = [];
-    const start = () => {
+    const stop = () => {
       for (const timer of timers) {
         window.clearTimeout(timer);
       }
+    };
+    const start = () => {
+      stop();
       owner.read();
       timers = CATCH_UP_READS_MS.map((ms) => window.setTimeout(owner.read, ms));
     };
@@ -255,9 +258,7 @@ function useCatchUp(issueKey: string, shown: boolean): void {
     start();
     return () => {
       owner.stop();
-      for (const timer of timers) {
-        window.clearTimeout(timer);
-      }
+      stop();
     };
   }, [issueKey, queryClient, shown, visible]);
 }
