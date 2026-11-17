@@ -18,7 +18,8 @@ const (
 	// rest: the tuple arm renders an issue's child_of, its needs to an issue under the kind
 	// blocked_by, which a process of the release before reads that wait by, and its duplicate_of
 	// and filed_from, which no row projects; and an arm over the artifacts that carry their node
-	// renders each one's attached_to while its part_of to that issue stands.
+	// renders each one's attached_to while its part_of to that issue stands. The child_of arm also
+	// answers a marked row whose parent the release before moved in place (IssueParentMoved).
 	GraphEdgesIssueRelations GraphEdgesArms = iota + 1
 )
 
@@ -39,11 +40,15 @@ const (
 // issues row carries the issue's node and names that parent, its needs to an issue while the
 // issue_links row of the pair carries it, under the kind blocked_by both arms name through this
 // release, and its duplicate_of and filed_from from the store alone, since no row projects
-// either. A document's attached_to its issue is the part_of the artifact's node states, which
-// the arm over artifacts that carry their node answers by the artifact's uuid and at its row's
-// created_at, as the arm over the rows that carry none does: an arm's from_id names an artifact
-// by its uuid, which is what every reader of the view resolves it by, and the store addresses the
-// node by its ref_key.
+// either. The release before's PATCH sets issues.parent_key and leaves the node columns as they
+// were, so a marked row can name a parent its node's child_of does not: such a row counts as
+// unmarked while that is so (IssueParentMoved, R9 of dispatch://INFRA-1253), and the child_of arm
+// answers it, through a probe that stands under an OR and ends in `offset 0` as every probe here
+// does, until the backfill states the child_of that names its parent. A document's attached_to its
+// issue is the part_of the artifact's node states, which the arm over artifacts that carry their
+// node answers by the artifact's uuid and at its row's created_at, as the arm over the rows that
+// carry none does: an arm's from_id names an artifact by its uuid, which is what every reader of
+// the view resolves it by, and the store addresses the node by its ref_key.
 func GraphEdgesView(arms GraphEdgesArms) string {
 	if arms != GraphEdgesIssueRelations {
 		panic(fmt.Sprintf("graph_edges is stated with no arm set %d", arms))
@@ -51,12 +56,37 @@ func GraphEdgesView(arms GraphEdgesArms) string {
 	return graphEdgesIssueRelations
 }
 
+// IssueParentMoved is the test that the issues row aliased i, which names its node, names a parent
+// its node does not hang under: the newest child_of tuple out of that node that names the row's
+// parent_key does not assert it, or there is none. Only the release before writes such a row: its
+// issue PATCH sets parent_key in place and leaves node_kind and node_address as they were, and
+// appends no tuple. Such a row counts as unmarked (R9 of dispatch://INFRA-1253): graph_edges' old
+// child_of arm answers it, refs.BacklinkCounts counts it the same way, and the backfill states the
+// child_of that names its parent (graphcensus' object pass). It is the complement, over a marked
+// row, of the tuple arm's own test of the same edge, the newest tuple of the relation asserting it
+// while the row names that parent, so every parent is answered by exactly one of the two arms. The
+// probe reads graph_tuples_current, whose columns are the five it binds and then the sequence, and
+// it ends in `offset 0`: it stands under an OR, where Postgres would otherwise read graph_tuples
+// whole as a hashed subplan (dispatch://INFRA-1149's 0f8b389c).
+const IssueParentMoved = `not exists (
+      select 1 from (
+        select tuple.asserted from graph_tuples tuple
+        where tuple.from_kind = i.node_kind and tuple.from_id = i.node_address and tuple.kind = 'child_of'
+          and tuple.to_kind = 'issue' and tuple.to_id = i.parent_key
+        order by tuple.seq desc
+        limit 1
+      ) newest
+      where newest.asserted
+      offset 0)`
+
 // graphEdgesIssueRelations is the statement of GraphEdgesIssueRelations.
 const graphEdgesIssueRelations = `create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all
-  select 'issue', key, 'child_of', 'issue', parent_key, created_at, null
-  from issues where parent_key is not null and node_kind is null
+  select 'issue', i.key, 'child_of', 'issue', i.parent_key, i.created_at, null
+  from issues i
+  where i.parent_key is not null
+    and (i.node_kind is null or ` + IssueParentMoved + `)
   union all
   select 'issue', issue_key, 'blocked_by', 'issue', target_key, created_at, null
   from issue_links where kind = 'blocked_by' and node_kind is null

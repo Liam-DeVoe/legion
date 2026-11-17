@@ -160,7 +160,8 @@ func resolveDuplicateOf(ctx context.Context, q queryer, issue, project string, r
 // filedFromItem is the ask, comment or message a write's filed_from names: its node's kind and id,
 // its uuid, and its canonical reference, which the issue read answers. node is what the write
 // states of the item where its row is one the release before wrote and the store holds no node
-// of it yet, nil where it holds one (stateFiledFromNode).
+// of it yet, nil where it holds one, and nil for a comment the store leaves out whole because an
+// end of its relations is past the address bound (stateFiledFromNode).
 type filedFromItem struct {
 	kind, id, ref string
 	node          *filedFromNode
@@ -233,7 +234,9 @@ func resolveFiledFrom(ctx context.Context, q queryer, project string, raw json.R
 
 // filedFromRow is what the read of an item's row answers: its owner, the issue it is on or the
 // project document that holds it, that owner's project, who wrote it and when, and what its node
-// is in the store, if it holds one.
+// is in the store, if it holds one. A comment's row answers too the addresses of the artifacts it
+// is anchored to and owned by, and the artifact it is written on, whose events hold its
+// comment.created where no issue owns it.
 type filedFromRow struct {
 	issue, project, document *string
 	author                   []byte
@@ -241,42 +244,39 @@ type filedFromRow struct {
 	nodeProject, visibility  *string
 	state                    *string
 	anchor, owner            *string
-	event                    int64
+	ownerArtifact            *string
 }
 
 // readFiledFromItem reads the row of the item ref names, by its id, and answers whether it is a
 // public item of project the reference names by its own owner (resolveFiledFrom), and the item.
+// Only an item whose row carries no node yet reads more than its row and its node: a comment's
+// comment.created event, within its owner (filedFromCommentEvent), which its node's facts carry.
 func readFiledFromItem(ctx context.Context, q queryer, project string, ref text.Ref) (*filedFromItem, bool, error) {
 	var statement string
 	switch ref.Kind {
 	case graphstore.KindAsk:
 		statement = `
 		select k.issue_key, coalesce(i.project_key, a.project_key), case when a.issue_key is null then a.slug end,
-		       k.author, k.created_at, null::text, null::text, 0::bigint
+		       k.author, k.created_at, null::text, null::text, null::text
 		from asks k left join issues i on i.key = k.issue_key left join artifacts a on a.id = k.artifact_id
 		where k.id = $1::uuid`
 	case graphstore.KindComment:
 		statement = `
 		select c.issue_key, coalesce(i.project_key, owner.project_key), case when owner.issue_key is null then owner.slug end,
-		       c.author, c.created_at, anchor.ref_key, owner.ref_key,
-		       coalesce((
-			select e.id from events e
-			where coalesce(e.issue_key, e.artifact_id::text, e.project_key) = coalesce(c.issue_key, c.artifact_id::text)
-			  and e.type = 'comment.created' and e.payload->>'id' = c.id::text
-			order by e.id limit 1), ` + fmt.Sprint(graphstore.NoEvent) + `)
+		       c.author, c.created_at, anchor.ref_key, owner.ref_key, c.artifact_id::text
 		from comments c left join issues i on i.key = c.issue_key
 		left join artifacts anchor on anchor.id = ` + store.CastableUUID(`c.anchor->>'artifact_id'`) + `
 		left join artifacts owner on owner.id = c.artifact_id
 		where c.id = $1::uuid`
 	case graphstore.KindMessage:
 		statement = `
-		select m.issue_key, i.project_key, null::text, m.author, m.created_at, null::text, null::text, 0::bigint
+		select m.issue_key, i.project_key, null::text, m.author, m.created_at, null::text, null::text, null::text
 		from messages m left join issues i on i.key = m.issue_key
 		where m.id = $1::uuid`
 	}
 	var row filedFromRow
 	err := q.QueryRow(ctx, statement, ref.ID).Scan(&row.issue, &row.project, &row.document, &row.author, &row.createdAt,
-		&row.anchor, &row.owner, &row.event)
+		&row.anchor, &row.owner, &row.ownerArtifact)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -303,17 +303,29 @@ func readFiledFromItem(ctx context.Context, q queryer, project string, ref text.
 	if err := json.Unmarshal(row.author, &author); err != nil {
 		return nil, false, fmt.Errorf("read the author of the %s filed_from names: %w", ref.Kind, err)
 	}
-	item.node = &filedFromNode{}
 	switch ref.Kind {
 	case graphstore.KindAsk:
-		item.node.nodes = []graphstore.Node{graphstore.AskNode(ref.ID, project, nil, author, row.createdAt)}
+		item.node = &filedFromNode{nodes: []graphstore.Node{graphstore.AskNode(ref.ID, project, nil, author, row.createdAt)}}
 	case graphstore.KindMessage:
-		item.node.nodes = []graphstore.Node{graphstore.MessageNode(ref.ID, project, nil, author, row.createdAt)}
+		item.node = &filedFromNode{nodes: []graphstore.Node{graphstore.MessageNode(ref.ID, project, nil, author, row.createdAt)}}
 	case graphstore.KindComment:
-		node, tuples := graphstore.CommentFacts(nil, ref.ID, author, row.createdAt, row.event, graphstore.VisibilityProject,
-			derefString(row.anchor), derefString(row.owner), project, nil)
-		item.node.nodes, item.node.tuples = []graphstore.Node{node}, tuples
-		if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, ref.ID, author, row.createdAt, row.event); named {
+		// A comment any of whose relation ends is past the store's address bound is left whole
+		// out of the store, as its own writer leaves it (commentStored) and as the backfill of the
+		// comments never reads it (graphcensus' readCommentRows): no node, no fact and no stamp,
+		// and the old comments arm answers both of its edges. The issue's filed_from still names
+		// it, as it names any item.
+		anchor, owner := derefString(row.anchor), derefString(row.owner)
+		if !graphstore.AddressFits(anchor) || !graphstore.AddressFits(owner) {
+			return item, true, nil
+		}
+		event, err := filedFromCommentEvent(ctx, q, row, ref.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		node, tuples := graphstore.CommentFacts(nil, ref.ID, author, row.createdAt, event, graphstore.VisibilityProject,
+			anchor, owner, project, nil)
+		item.node = &filedFromNode{nodes: []graphstore.Node{node}, tuples: tuples}
+		if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, ref.ID, author, row.createdAt, event); named {
 			for _, written := range authors {
 				written.Restates = true
 				item.node.nodes = append(item.node.nodes, written)
@@ -322,6 +334,30 @@ func readFiledFromItem(ctx context.Context, q queryer, project string, ref text.
 		}
 	}
 	return item, true, nil
+}
+
+// filedFromCommentEvent is the id of the comment.created event that stored the comment id whose
+// row is row, or graphstore.NoEvent where its owner holds none. It reads the events of the
+// comment's owner alone, its issue's or the artifact it is written on, through that owner's
+// (issue_key, seq) or (artifact_id, seq) index, as loadCommentCreatedEvent reads the same event,
+// rather than matching the payload id across the whole log, since it runs inside the write's
+// transaction, under the issue's row and, with a parent or a wait, the deployment's dependency lock.
+func filedFromCommentEvent(ctx context.Context, q queryer, row filedFromRow, id string) (int64, error) {
+	ownerColumn, ownerID := commentEventOwner(model.Comment{IssueKey: row.issue, ArtifactID: row.ownerArtifact})
+	var event int64
+	err := q.QueryRow(ctx, `
+		select id from events
+		where `+ownerColumn+` = $1 and type = 'comment.created' and payload ->> 'id' = $2
+		order by seq desc
+		limit 1
+	`, ownerID, id).Scan(&event)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return graphstore.NoEvent, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the event that stored the comment filed_from names: %w", err)
+	}
+	return event, nil
 }
 
 func derefString(value *string) string {
@@ -336,9 +372,11 @@ func derefString(value *string) string {
 // an ask's or a message's node as the backfill of the nodes an older build wrote no node of writes
 // it, at the sentinel, and a comment's node, its relations and who wrote it as the backfill of the
 // comments writes them, under the event that stored the comment, with the comments row named on
-// its node after both. It runs after the issue's owner row and before the issue's own node, so the
-// write takes every row of the store before its event; a backfill writing the same item meanwhile
-// is the one other writer of it, and the second of the two writes moves nothing the first wrote.
+// its node after both. A comment an end of whose relations is past the store's address bound is no
+// node of the store, as readFiledFromItem reads it, so nothing is stated of it and its row names
+// none. It runs after the issue's owner row and before the issue's own node, so the write takes
+// every row of the store before its event; a backfill writing the same item meanwhile is the one
+// other writer of it, and the second of the two writes moves nothing the first wrote.
 func stateFiledFromNode(ctx context.Context, tx pgx.Tx, item *filedFromItem) error {
 	if item == nil || item.node == nil {
 		return nil

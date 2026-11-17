@@ -365,6 +365,29 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if repoProvided {
 		set("repo", repo)
 	}
+	// A write that states a relation of the issue (stateIssueRelations) writes the issue's node,
+	// and graph_edges answers the issue's relations from the store once its row names that node. A
+	// row the release before wrote names none, so such a write stamps the marker on it in this
+	// update and claims below the child_of the row names, whether or not the parent moves: the
+	// row's marker and its node's child_of stand together, as the create and the backfill write
+	// them (R9 of dispatch://INFRA-1253). The row is this write's, locked above, so the marker it
+	// reads is the one it updates.
+	afterParent := before.Parent
+	if parentProvided {
+		afterParent = parent
+	}
+	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
+	stampsMarker := false
+	if waitsProvided || duplicateProvided || filedProvided || parentChanged {
+		if err := tx.QueryRow(r.Context(), `select node_kind is null from issues where key = $1`, key).Scan(&stampsMarker); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if stampsMarker {
+			set("node_kind", graphstore.KindIssue)
+			sets = append(sets, "node_address = key")
+		}
+	}
 	changed := len(sets) > 0 || componentsProvided || waitsProvided || duplicateProvided || filedProvided || input.Advances != nil
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
@@ -475,21 +498,24 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	statusChanged := input.Status != nil && before.Status != status
-	afterParent := before.Parent
-	if parentProvided {
-		afterParent = parent
-	}
-	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
 	// A reparent moves the issue's child_of, which the update above set issues.parent_key for,
 	// and retracts its part_of to the words of a conversation no longer on its parent or above it
 	// (R2 of dispatch://INFRA-1253): the child hangs from its new parent until someone places it
-	// again.
-	if parentChanged {
+	// again. A write that stamped the marker on the row claims the parent it names too, which is
+	// the one it already had where it did not move: that edge keeps the time the old arm dated it
+	// by, the row's created_at, as the backfill dates it.
+	if parentChanged || stampsMarker {
 		target := ""
 		if afterParent != nil {
 			target = *afterParent
 		}
-		relations.claim(key, graphstore.TupleChildOf, graphstore.KindIssue, target, relationsAt)
+		at := relationsAt
+		if !parentChanged {
+			at = before.CreatedAt
+		}
+		relations.claim(key, graphstore.TupleChildOf, graphstore.KindIssue, target, at)
+	}
+	if parentChanged {
 		stranded, err := strandedWords(r.Context(), tx, key, afterParent, relationsAt)
 		if err != nil {
 			s.writeHandlerError(w, err)

@@ -229,20 +229,22 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 // session, root author, root target, issue). session is a conversation's, for a document or an ask
 // on one; the root columns are a message's on no issue alone: the author and the target of its
 // thread's root, its parties (graphstore.ThreadParties); issue is the issue that owns a document,
-// which its part_of names (graphstore.ArtifactPartOf), and an issue's parent, which its child_of
-// names (graphstore.IssueChildOf, dispatch://INFRA-1253 R9): an issue's marker is its node and its
+// which its part_of names (graphstore.ArtifactPartOf). An issue's parent, which its child_of names
+// (dispatch://INFRA-1253 R9), is read again under the issue's own row (heldObjects), since a
+// reparent may commit between this read and that lock: an issue's marker is its node and its
 // child_of together, since graph_edges answers its parent from the store once its row names its
 // node.
 //
 // An issue's and a document's marker is the node pair its row names (node_kind and node_address,
 // migration 20261116092210), so a row whose node an INFRA-3862 build wrote with no part_of, and
-// named nowhere, is walked too. An ask's and a message's is the node itself, which no row of
-// theirs names in a column of its own.
+// named nowhere, is walked too. An issue's row also counts as unmarked while it names a parent its
+// node does not hang under, which the release before's PATCH leaves (issueRowUnmarked). An ask's
+// and a message's is the node itself, which no row of theirs names in a column of its own.
 var objectKinds = []struct{ kind, start, read string }{
 	{graphstore.KindIssue, "", `
-		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, i.parent_key
+		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, null::text
 		from issues i
-		where i.key > $1 and i.node_kind is null
+		where i.key > $1 and ` + issueRowUnmarked + `
 		order by i.key limit $2`},
 	{graphstore.KindArtifact, "", `
 		select a.ref_key, a.created_at, a.created_by, a.project_key, a.session_id, null::jsonb, null::text, a.issue_key
@@ -277,6 +279,13 @@ var objectKinds = []struct{ kind, start, read string }{
 		order by batch.id`},
 }
 
+// issueRowUnmarked is the test that the issues row aliased i is one its marker does not mark: it
+// names no node, or it names a parent its node's child_of does not name, which only the release
+// before's issue PATCH leaves, setting parent_key in place on a marked row (store.IssueParentMoved,
+// R9 of dispatch://INFRA-1253). graph_edges' old child_of arm answers such a row, and the object
+// pass states the child_of that names its parent, after which the store answers it.
+const issueRowUnmarked = `(i.node_kind is null or (i.parent_key is not null and ` + store.IssueParentMoved + `))`
+
 // zeroUUID is where a walk over a uuid key starts: every id sorts after it.
 const zeroUUID = "00000000-0000-0000-0000-000000000000"
 
@@ -287,8 +296,10 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 // reads no row the first one wrote. Beside a document's node it states what its kind's writer
 // states (R16 of dispatch://INFRA-1253): its part_of the issue that owns it, at the node's time,
 // and an image's or a file's newest bytes (writeObjectBatch); beside an issue's, its child_of to
-// the parent its row names (R9), so graph_edges answers that parent from the store once the row
-// names its node. It appends no event, and every fact it states carries the sentinel.
+// the parent its row names under the issue's own lock, as a claim (R9), so graph_edges answers
+// that parent from the store once the row names its node, and a parent the release before moved
+// in place on a marked row replaces the one the node held. It appends no event, and every fact it
+// states carries the sentinel.
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range objectKinds {
@@ -340,8 +351,8 @@ func statedOf(nodes []graphstore.Node) int64 {
 
 // readObjectNodes reads one batch of a kind's rows its marker does not mark, and answers the node
 // its kind's writer writes for each (graphstore.IssueNode and its siblings), with the part_of to
-// its issue of each document an issue owns (graphstore.ArtifactPartOf) and the child_of to its
-// parent of each issue that has one (graphstore.IssueChildOf), each dated as its node.
+// its issue of each document an issue owns (graphstore.ArtifactPartOf), dated as its node. An
+// issue's child_of is writeObjectBatch's, from the parent its row names under the issue's lock.
 func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]graphstore.Node, []graphstore.Tuple, error) {
 	rows, err := database.Pool.Query(ctx, read, after, limit)
 	if err != nil {
@@ -369,9 +380,6 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 		switch kind {
 		case graphstore.KindIssue:
 			nodes = append(nodes, graphstore.IssueNode(id, derefText(project), author, createdAt))
-			if issue != nil {
-				tuples = append(tuples, graphstore.IssueChildOf(id, *issue, author, createdAt))
-			}
 		case graphstore.KindArtifact:
 			nodes = append(nodes, graphstore.ArtifactNode(id, derefText(project), derefText(session), author, createdAt))
 			if issue != nil {
@@ -414,12 +422,16 @@ func derefText(value *string) string {
 // so their write takes no lock of a row beside the nodes'.
 //
 // The batch was read outside this transaction, so an issue's or a document's row may have been
-// removed or named its node since (api's removeArtifact, a second run of this pass). Under the
+// removed or named its node since (api's removeArtifact, a second run of this pass), and an issue
+// may have been moved under another parent (a PATCH, of this release or the one before). Under the
 // owner rows it reads the batch's rows again (heldObjects) and writes the nodes and the facts of
-// the rows still there and still naming none, and no others, as writeBlockBatch does under the
+// the rows still there and still unmarked, and no others, as writeBlockBatch does under the
 // revision fence: a node written for a removed row would bring the document back as a live node
-// hanging under its issue, with no row. It answers how many rows it gave a node and how many
-// tuples it stated: the base attributes of each node it made, its part_of, and the bytes of each
+// hanging under its issue, with no row. An issue's child_of is the parent that read answers, stated
+// as a claim (issueParentClaims), so a node holds one parent, the one its row names: a parent a
+// PATCH claimed meanwhile, or a stale one the release before moved in place, is retracted where
+// the row names another. It answers how many rows it gave a node and how many tuples it stated:
+// the base attributes of each node it made, its part_of or its child_of, and the bytes of each
 // image and file.
 func writeObjectBatch(ctx context.Context, database *store.Store, kind string, nodes []graphstore.Node, tuples []graphstore.Tuple) (int64, int64, error) {
 	ids := make([]string, len(nodes))
@@ -456,7 +468,16 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind string, n
 		written, stated = int64(len(nodes)), statedOf(nodes)+int64(len(tuples))
 		switch kind {
 		case graphstore.KindIssue:
-			_, err := tx.Exec(ctx, `
+			claims, parents := issueParentClaims(nodes, held)
+			arms, params, err := graphstore.WriteArms(1, nil, nil, claims)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
+				return fmt.Errorf("state the parents of a batch of issues: %w", err)
+			}
+			stated += parents
+			_, err = tx.Exec(ctx, `
 				update issues set node_kind = $2, node_address = key
 				where key = any($1::text[]) and node_kind is null
 			`, ids, graphstore.KindIssue)
@@ -474,6 +495,29 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind string, n
 		return 0, 0, fmt.Errorf("write a batch of %s nodes: %w", kind, err)
 	}
 	return written, stated, nil
+}
+
+// issueParentClaims is the child_of of each issue of nodes, the batch's nodes still unmarked under
+// the issue's own row, to the parent held names for it, read under that row (heldObjects), or to
+// none where it names none: a claim, which retracts every other parent the node holds and asserts
+// this one where the node is not at it already, dated and made as the node is, at the sentinel. It
+// answers how many of them name a parent, the tuples they can assert.
+func issueParentClaims(nodes []graphstore.Node, held map[string]*string) ([]graphstore.Claim, int64) {
+	claims := make([]graphstore.Claim, len(nodes))
+	var parents int64
+	for index, node := range nodes {
+		parent := ""
+		if named := held[node.ID]; named != nil {
+			parent = *named
+			parents++
+		}
+		claims[index] = graphstore.Claim{
+			FromKind: graphstore.KindIssue, FromID: node.ID, Kind: graphstore.TupleChildOf,
+			ToKind: graphstore.KindIssue, ToID: parent,
+			At: node.MadeAt, Who: node.MadeBy, SourceEvent: graphstore.NoEvent,
+		}
+	}
+	return claims, parents
 }
 
 // lockObjectOwners takes the owner rows a batch of issues or documents stands under before the
@@ -513,20 +557,22 @@ func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind string, ids []string)
 }
 
 // heldObjects reads again, under the owner rows lockObjectOwners took, which rows of a batch of
-// issues or documents are still there and still name no node, and answers their ids; it answers
-// nil for a batch of asks or messages, whose rows name no node in a column of their own and are
-// written whole. A plain read is enough: the one writer that deletes such a row, the removal of
-// an issue's document, takes that issue's row first (api's removeArtifact, through
-// beginArtifactWrite), another run of this pass names a node only under the owner rows this one
-// holds, and no route moves a document to another owner or changes its ref_key, so what this
-// reads stands until the batch commits.
-func heldObjects(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[string]struct{}, error) {
+// issues or documents are still there and still unmarked (an issue's by issueRowUnmarked), and
+// answers their ids, each with the parent an issue's row names now, nil for a document and for an
+// issue with none; it answers nil for a batch of asks or messages, whose rows name no node in a
+// column of their own and are written whole. A plain read is enough: the one writer that deletes
+// such a row, the removal of an issue's document, takes that issue's row first (api's
+// removeArtifact, through beginArtifactWrite), every PATCH that moves an issue's parent takes the
+// issue's row first (api's lockPatchRows, in this release and the one before), another run of this
+// pass names a node only under the owner rows this one holds, and no route moves a document to
+// another owner or changes its ref_key, so what this reads stands until the batch commits.
+func heldObjects(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[string]*string, error) {
 	var read string
 	switch kind {
 	case graphstore.KindIssue:
-		read = `select key from issues where key = any($1::text[]) and node_kind is null`
+		read = `select i.key, i.parent_key from issues i where i.key = any($1::text[]) and ` + issueRowUnmarked
 	case graphstore.KindArtifact:
-		read = `select ref_key from artifacts where ref_key = any($1::text[]) and node_kind is null`
+		read = `select ref_key, null::text from artifacts where ref_key = any($1::text[]) and node_kind is null`
 	default:
 		return nil, nil
 	}
@@ -534,13 +580,21 @@ func heldObjects(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map
 	if err != nil {
 		return nil, fmt.Errorf("read the batch's %s rows again under their owners: %w", kind, err)
 	}
-	still, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	type stillRow struct {
+		id     string
+		parent *string
+	}
+	still, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (stillRow, error) {
+		var held stillRow
+		err := row.Scan(&held.id, &held.parent)
+		return held, err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the batch's %s rows again under their owners: %w", kind, err)
 	}
-	held := make(map[string]struct{}, len(still))
-	for _, id := range still {
-		held[id] = struct{}{}
+	held := make(map[string]*string, len(still))
+	for _, row := range still {
+		held[row.id] = row.parent
 	}
 	return held, nil
 }

@@ -9,11 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // readRelationsIssue reads key through the issue read.
@@ -202,12 +206,15 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 // later set keeps is named on its node and its tuple dated at the row's own created_at. A write
 // refused after its rows were read writes neither a row nor a tuple. A reparent moves child_of and
 // retracts the issue's part_of to words that are on neither its new parent nor above it, and
-// keeps those that are (R2). The census reads zero differences for both projections.
+// keeps those that are (R2). A PATCH stating a relation of an issue whose row the release before
+// wrote, naming no node, stamps the issue's marker on the row and claims the parent the row names,
+// though the parent does not move, dated at the row's created_at and caused by issue.updated. The
+// census reads zero differences for both projections.
 func TestAnIssueRelationAndItsProjectionCommitTogether(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
-	keys := createListedIssues(t, handler, "REL", 4)
-	parent, first, second, old := keys[0], keys[1], keys[2], keys[3]
+	keys := createListedIssues(t, handler, "REL", 5)
+	parent, first, second, old, unstamped := keys[0], keys[1], keys[2], keys[3], keys[4]
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "REL", "title": "A child that waits", "parent": parent, "needs": []string{first}, "force": true,
 	}, "alice")
@@ -335,6 +342,37 @@ func TestAnIssueRelationAndItsProjectionCommitTogether(t *testing.T) {
 		t.Errorf("%s hangs from %v with no parent, want the words retracted", child, relationEnds(got))
 	}
 
+	// A row the release before wrote: under the parent, naming no node. A PATCH that states its
+	// wait stamps the row and claims the parent the row names beside the wait.
+	if _, err := database.Pool.Exec(ctx, `update issues set parent_key = $2, node_kind = null, node_address = null where key = $1`, unstamped, parent); err != nil {
+		t.Fatalf("write %s as the release before: %v", unstamped, err)
+	}
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+unstamped, map[string]any{"needs": []string{first}}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("state %s's wait: status=%d body=%s", unstamped, response.Code, response.Body.String())
+	}
+	var unstampedCreated time.Time
+	var unstampedMarker, unstampedAddress *string
+	if err := database.Pool.QueryRow(ctx, `select created_at, node_kind, node_address from issues where key = $1`, unstamped).Scan(
+		&unstampedCreated, &unstampedMarker, &unstampedAddress); err != nil {
+		t.Fatalf("read %s's row: %v", unstamped, err)
+	}
+	if unstampedMarker == nil || *unstampedMarker != graphstore.KindIssue || unstampedAddress == nil || *unstampedAddress != unstamped {
+		t.Errorf("after the PATCH stating its wait %s's row names node %v/%v, want %s/%s", unstamped, unstampedMarker, unstampedAddress, graphstore.KindIssue, unstamped)
+	}
+	var stampedBy int64
+	if err := database.Pool.QueryRow(ctx, `
+		select id from events where issue_key = $1 and type = 'issue.updated' order by id desc limit 1
+	`, unstamped).Scan(&stampedBy); err != nil {
+		t.Fatalf("read %s's issue.updated: %v", unstamped, err)
+	}
+	if held := currentRelations(t, database, unstamped, graphstore.TupleChildOf); len(held) != 1 || held[0].ToID != parent ||
+		!held[0].At.Equal(unstampedCreated) || held[0].SourceEvent != stampedBy {
+		t.Errorf("after the PATCH stating its wait %s states child_of %+v, want one tuple to %s at the row's created_at %s caused by issue.updated %d",
+			unstamped, held, parent, unstampedCreated, stampedBy)
+	}
+	if rows, _ := viewAnswers(t, database, rollbackEdge{"issue", unstamped, "child_of", "issue", parent}); rows != 1 {
+		t.Errorf("graph_edges answers %s's parent %s %d times, want once", unstamped, parent, rows)
+	}
 	report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
@@ -426,7 +464,11 @@ func TestDuplicateOfTakesAnIssueOfTheProjectAlone(t *testing.T) {
 // block reference, a comment of another project, a comment reference whose uuid no row holds, and
 // a spec block's reference - and a comment of the project reserved for its author, refused with
 // the same text as the item no row holds and the comment of another project, and a comment's uuid
-// written under another issue's key.
+// written under another issue's key. Its subtests take an ask, a comment and a message the release
+// before wrote, with no node, each of which the write gives its node; a comment anchored on a
+// document past the store's address bound, which the write leaves out of the store as its own
+// writer does; and they hold the read of a comment to reading its comment.created event only where
+// the comment has no node, and then within its owner, through that owner's index.
 func TestFiledFromTakesAPublicItemOfTheIssuesProjectAlone(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
@@ -510,4 +552,188 @@ func TestFiledFromTakesAPublicItemOfTheIssuesProjectAlone(t *testing.T) {
 	if got := currentRelations(t, database, key, graphstore.TupleFiledFrom); len(got) != 0 {
 		t.Errorf("after the clear %s states filed_from %v, want none", key, relationEnds(got))
 	}
+
+	t.Run("an ask, a comment and a message the release before wrote, with no node", func(t *testing.T) {
+		var oldAsk, oldMessage string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into asks (issue_key, author, question) values ($1, '{"kind":"user","id":"alice"}', 'Split it out, as asked before?')
+			returning id::text
+		`, source.Key).Scan(&oldAsk); err != nil {
+			t.Fatalf("write an ask as the release before: %v", err)
+		}
+		oldComment, stored := seedNodelessComment(t, database, source.Key, "Split it out, as said before.")
+		if err := database.Pool.QueryRow(ctx, `
+			insert into messages (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', 'Splitting it out, as said before.')
+			returning id::text
+		`, source.Key).Scan(&oldMessage); err != nil {
+			t.Fatalf("write a message as the release before: %v", err)
+		}
+		for _, item := range []struct{ what, kind, id string }{
+			{"an ask", graphstore.KindAsk, oldAsk},
+			{"a comment", graphstore.KindComment, oldComment},
+			{"a message", graphstore.KindMessage, oldMessage},
+		} {
+			if _, held, err := graphstore.ReadNode(ctx, database.Pool, item.kind, item.id); err != nil || held {
+				t.Fatalf("the store holds the node of %s the release before wrote %t (err %v), so this proves nothing", item.what, held, err)
+			}
+			ref := "dispatch://" + source.Key + "/" + item.kind + "/" + item.id
+			if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"filed_from": ref}, "alice"); response.Code != http.StatusOK {
+				t.Fatalf("take %s with no node: status=%d body=%s", item.what, response.Code, response.Body.String())
+			}
+			node, held, err := graphstore.ReadNode(ctx, database.Pool, item.kind, item.id)
+			if err != nil || !held || node.Project != "FILE" || node.Visibility != graphstore.VisibilityProject || node.State != graphstore.StateLive {
+				t.Errorf("after the PATCH the store holds %s's node %t as %+v (err %v), want it live and public in FILE", item.what, held, node, err)
+			}
+			if got := relationEnds(currentRelations(t, database, key, graphstore.TupleFiledFrom)); !slices.Equal(got, []string{item.kind + ":" + item.id}) {
+				t.Errorf("after taking %s %s states filed_from %v, want [%s:%s]", item.what, key, got, item.kind, item.id)
+			}
+			if rows, _ := viewAnswers(t, database, rollbackEdge{"issue", key, graphstore.TupleFiledFrom, item.kind, item.id}); rows != 1 {
+				t.Errorf("graph_edges answers %s's filed_from to %s %d times, want once", key, item.what, rows)
+			}
+		}
+		var marker *string
+		if err := database.Pool.QueryRow(ctx, `select node_kind from comments where id = $1::uuid`, oldComment).Scan(&marker); err != nil {
+			t.Fatalf("read the comment's row: %v", err)
+		}
+		if marker == nil || *marker != graphstore.KindComment {
+			t.Errorf("the comment's row names node %v, want %s: the write that stated its node names it", marker, graphstore.KindComment)
+		}
+		authored, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindComment, oldComment, []string{graphstore.TupleAuthoredBy})
+		if err != nil {
+			t.Fatalf("read who wrote the comment: %v", err)
+		}
+		if len(authored) != 1 || authored[0].SourceEvent != stored {
+			t.Errorf("the comment states authored_by %+v, want one tuple caused by the comment.created %d that stored it", authored, stored)
+		}
+	})
+
+	t.Run("a comment anchored on a document past the address bound stays out of the store", func(t *testing.T) {
+		slug := randText(maxNewArtifactKeyBytes - len("FILE/"))
+		var anchorID, refKey string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (project_key, slug, name, kind, created_by)
+			values ('FILE', $1, $1, 'doc', '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`, slug).Scan(&anchorID, &refKey); err != nil {
+			t.Fatalf("create the long-keyed document: %v", err)
+		}
+		if graphstore.AddressFits(refKey) {
+			t.Fatalf("the document's ref_key fits the store bound, so this proves nothing")
+		}
+		var remark string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into comments (issue_key, author, body, anchor)
+			values ($1, '{"kind":"user","id":"alice"}', 'A remark on a long-keyed document.', jsonb_build_object('artifact_id', $2::text))
+			returning id::text
+		`, source.Key, anchorID).Scan(&remark); err != nil {
+			t.Fatalf("write the anchored comment as the release before: %v", err)
+		}
+		ref := "dispatch://" + source.Key + "/comment/" + remark
+		if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"filed_from": ref}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("take the comment anchored past the bound: status=%d body=%s", response.Code, response.Body.String())
+		}
+		if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, remark); err != nil || held {
+			t.Errorf("the store holds the node of the comment anchored past the bound %t (err %v), want none", held, err)
+		}
+		var marker *string
+		if err := database.Pool.QueryRow(ctx, `select node_kind from comments where id = $1::uuid`, remark).Scan(&marker); err != nil {
+			t.Fatalf("read the comment's row: %v", err)
+		}
+		if marker != nil {
+			t.Errorf("the comment's row names node %q, want none, so the old comments arm answers its edges", *marker)
+		}
+		if got := relationEnds(currentRelations(t, database, key, graphstore.TupleFiledFrom)); !slices.Equal(got, []string{"comment:" + remark}) {
+			t.Errorf("%s states filed_from %v, want [comment:%s]", key, got, remark)
+		}
+		requireGraphEdge(t, database, graphstore.KindComment, remark, graphstore.TupleAnchoredTo, refKey)
+	})
+
+	t.Run("a comment's event is read within its owner, and only for a comment with no node", func(t *testing.T) {
+		// eventReads reads the item ref names as a filed_from does, and answers the statements the
+		// read sent over events.
+		eventReads := func(what, ref string) []sentStatement {
+			t.Helper()
+			parsed, ok := text.ParseRef(ref, "")
+			if !ok {
+				t.Fatalf("%s is no reference", ref)
+			}
+			kept := &keepingQueryer{queryer: database.Pool}
+			if _, public, err := readFiledFromItem(ctx, kept, "FILE", parsed); err != nil || !public {
+				t.Fatalf("read %s as a filed_from: public %t, err %v", what, public, err)
+			}
+			var reads []sentStatement
+			for _, sent := range kept.sent {
+				if strings.Contains(sent.sql, "from events") {
+					reads = append(reads, sent)
+				}
+			}
+			return reads
+		}
+		if reads := eventReads("a comment with its node", "dispatch://"+source.Key+"/comment/"+comment.ID); len(reads) != 0 {
+			t.Errorf("reading a comment the store holds the node of sends %d statements over events, want none: %q", len(reads), reads[0].sql)
+		}
+		nodeless, _ := seedNodelessComment(t, database, source.Key, "Said before the store held comments.")
+		reads := eventReads("a comment with no node", "dispatch://"+source.Key+"/comment/"+nodeless)
+		if len(reads) != 1 {
+			t.Fatalf("reading a comment the store holds no node of sends %d statements over events, want one", len(reads))
+		}
+		plan := planWithoutSeqScans(t, database, reads[0].sql, reads[0].args...)
+		var keyed []explaintest.IndexScan
+		for _, scan := range explaintest.IndexScans(t, plan) {
+			if scan.Relation == "events" || strings.HasPrefix(scan.Index, "events") {
+				keyed = append(keyed, scan)
+			}
+		}
+		if explaintest.SeqScansRelation(t, plan, "events") || len(keyed) == 0 {
+			t.Errorf("the read of the comment's event scans events through no index: %s\n%s", reads[0].sql, plan)
+		}
+		for _, scan := range keyed {
+			if !strings.Contains(scan.Cond, "issue_key") {
+				t.Errorf("the read of the comment's event reads %s keyed on %q, not on the comment's owner, its issue_key: %s", scan, scan.Cond, reads[0].sql)
+			}
+		}
+	})
+}
+
+// seedNodelessComment writes a comment on issue as the release before writes one, naming no node,
+// with the comment.created event that stored it, and answers its id and that event's.
+func seedNodelessComment(t *testing.T, database *store.Store, issue, body string) (string, int64) {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text
+	`, issue, body).Scan(&id); err != nil {
+		t.Fatalf("write a comment as the release before: %v", err)
+	}
+	var event int64
+	if err := database.Pool.QueryRow(ctx, `
+		with bumped as (
+			update issues set last_seq = last_seq + 1 where key = $1 returning key, last_seq
+		)
+		insert into events (issue_key, seq, type, actor, payload, notify)
+		select key, last_seq, 'comment.created', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false
+		from bumped
+		returning id
+	`, issue, id).Scan(&event); err != nil {
+		t.Fatalf("append the comment.created of the comment the release before wrote: %v", err)
+	}
+	return id, event
+}
+
+// keepingQueryer is a queryer that keeps every statement a read sends through it, with its
+// arguments, so a test reads what the read sent and can explain it.
+type keepingQueryer struct {
+	queryer
+	sent []sentStatement
+}
+
+func (k *keepingQueryer) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	k.sent = append(k.sent, sentStatement{sql: sql, args: args})
+	return k.queryer.QueryRow(ctx, sql, args...)
+}
+
+func (k *keepingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	k.sent = append(k.sent, sentStatement{sql: sql, args: args})
+	return k.queryer.Query(ctx, sql, args...)
 }

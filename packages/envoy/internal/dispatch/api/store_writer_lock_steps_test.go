@@ -63,7 +63,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
 			ownerRowStep(documentOwnerStatement, "artifacts", `select 1 from artifacts where id = $1::uuid for no key update`, rig.document)),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
-		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.issuePatchRelations(),
+		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.issuePatchRelations(), rig.issuePatchFiledFrom(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
@@ -603,6 +603,110 @@ func (r *storeWriterRig) issuePatchRelations() storeWriter {
 				},
 			}
 		},
+	}
+}
+
+// issuePatchFiledFrom is an issue's PATCH that states its filed_from at a comment the release
+// before wrote, which carries no node (patchIssue, dispatch://INFRA-1253 R9), through its route.
+// It takes the issue's row as its owner row (lockPatchRows) and updates that row; then it states
+// the comment's node as the backfill of the comments states it (stateFiledFromNode): the node rows,
+// the comment's and its author's, in one node write, the facts they hold at the sentinel, which no
+// event causes, and then the comments row naming the comment's node; then it writes the issue's
+// node (graphstore.WriteUncaused), appends issue.updated, and claims the filed_from that event
+// causes (stateIssueRelations). The comment is a row no run has seen, so its node is new, and the
+// first node write, the first tuple append and the comments row are held as their tables. The
+// issue's node exists from its create, and the node write locks it, so it is held as its row. The
+// claim is appended under the event the write draws in its own transaction, so it is held by the
+// assertion it appends under each id the next events can draw (holdNextEventsClaim). The event's
+// step takes the issue's project row `for key share`, as issuePatchForRun says.
+func (r *storeWriterRig) issuePatchFiledFrom() storeWriter {
+	event := eventAppendStep()
+	event.takes = append(event.takes, tableLock{"projects", rowShareMode})
+	var comment string
+	return storeWriter{
+		name: "patchIssue stating its filed_from at a comment with no node",
+		steps: []storeStep{
+			r.issueOwnerStep(patchOwnerStatement),
+			{
+				name: "the issue's row", order: projectionStep,
+				hold: holdTableWrites("issues"), at: patchRowStatement,
+				takes: []tableLock{{"issues", rowExclusiveMode}},
+			},
+			{
+				name: "the comment's node", order: nodeStep,
+				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			{
+				name: "the comment's facts at the sentinel", order: tupleStep,
+				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+			{
+				name: "the comment's row", order: projectionStep, names: "the comment's node",
+				hold: holdTableWrites("comments"), at: "update comments set node_kind",
+				takes: []tableLock{{"comments", rowExclusiveMode}},
+			},
+			{
+				name: "the issue's node", order: nodeStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from graph_nodes where kind = 'issue' and id = $1 for update`, r.issue)
+				},
+				at:    nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			event,
+			{
+				name: "the filed_from the event causes", order: tupleStep, caused: true,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+					holdNextEventsClaim(t, ctx, holder, r.issue, graphstore.TupleFiledFrom, graphstore.KindComment, comment)
+				},
+				at:    "with graph_claims as (",
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+		},
+		locksOwnProject: true,
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			if err := r.database.Pool.QueryRow(ctx, `
+				insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text
+			`, r.issue, r.fresh("Words the release before wrote")).Scan(&comment); err != nil {
+				t.Fatalf("write the comment the run files the issue from: %v", err)
+			}
+			ref := "dispatch://" + r.issue + "/comment/" + comment
+			return storeWriterRun{
+				made: graphstore.Node{Kind: graphstore.KindComment, ID: comment},
+				write: func() error {
+					response := dispatchRequest(t, r.call, http.MethodPatch, "/api/v1/issues/"+r.issue,
+						map[string]any{"filed_from": ref}, "alice")
+					if response.Code != http.StatusOK {
+						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					return nil
+				},
+			}
+		},
+	}
+}
+
+// claimHeldEvents is how many ids past events_id_seq's last holdNextEventsClaim holds a claim
+// under: far more events than the rig's other work appends while one run waits.
+const claimHeldEvents = 1024
+
+// holdNextEventsClaim holds the assertion a write's claim appends out of issue under kind to the
+// node toKind/toID, caused by the event the write appends, whose id it draws in its own
+// transaction after the hold is taken. The hold writes, uncommitted, that assertion under each id
+// the next claimHeldEvents events can draw (events_id_seq caches one value, so they come in order):
+// the write's insert of its own then waits on the repeat key (graph_tuples_once) to learn whether
+// the hold's row commits, and appends its own once the hold rolls back.
+func holdNextEventsClaim(t *testing.T, ctx context.Context, holder pgx.Tx, issue, kind, toKind, toID string) {
+	t.Helper()
+	if _, err := holder.Exec(ctx, `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+		select 'issue', $1, $2, $3, $4, now(), '{}'::jsonb, next.id, true
+		from events_id_seq seq
+		cross join lateral generate_series(seq.last_value + 1, seq.last_value + $5) as next (id)
+	`, issue, kind, toKind, toID, claimHeldEvents); err != nil {
+		t.Fatalf("hold the %s claim of %s under the next events: %v", kind, issue, err)
 	}
 }
 

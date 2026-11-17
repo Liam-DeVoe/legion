@@ -74,3 +74,94 @@ func TestTheIssueLinkBatchTakesTheStoreLockOrder(t *testing.T) {
 		t.Errorf("the backfill reports %#v for issue links, want 1 row, 1 tuple and every row marked", done)
 	}
 }
+
+// TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited holds the object pass to the parent an
+// issue's row names under the issue's own row (dispatch://INFRA-1253 R9): a batch reads its rows
+// outside its transaction, so a reparent can commit between that read and the issue's lock. A
+// second transaction stands for the release before's PATCH: it takes the issue's row, as
+// lockPatchRows does, and moves the issue, whose row names no node, from LOCK-1 to LOCK-2. The
+// backfill starts while that transaction is open, so its batch reads LOCK-1; the test reads the run
+// waiting at the issue's row, and only then lets the reparent commit. The issue's row then names its
+// node, which states one child_of, to LOCK-2, the parent its row names, and graph_edges answers
+// LOCK-2 once and LOCK-1 nowhere. A pass that built child_of from its first read would hang the
+// issue under LOCK-1 in the store while its row names LOCK-2, and graph_edges would answer neither.
+// A second issue, LOCK-4, whose marked row the release before moved in place from LOCK-1 to LOCK-2
+// before the run, leaving its node's child_of at LOCK-1, is read as unmarked by the same pass: its
+// node then states LOCK-2 alone, the claim retracting LOCK-1.
+func TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedLockProject(t, database)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		now := time.Now().UTC()
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{
+			graphstore.IssueNode("LOCK-1", "LOCK", alice, now), graphstore.IssueNode("LOCK-2", "LOCK", alice, now),
+			graphstore.IssueNode("LOCK-4", "LOCK", alice, now),
+		}, []graphstore.Tuple{graphstore.IssueChildOf("LOCK-4", "LOCK-1", alice, now)}); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank, parent_key, node_kind, node_address) values
+				('LOCK-1', 'LOCK', 1, 'The first parent', '{"kind":"user","id":"alice"}', 'U', null, 'issue', 'LOCK-1'),
+				('LOCK-2', 'LOCK', 2, 'The second parent', '{"kind":"user","id":"alice"}', 'V', null, 'issue', 'LOCK-2'),
+				('LOCK-3', 'LOCK', 3, 'Moved while the pass waited', '{"kind":"user","id":"alice"}', 'W', 'LOCK-1', null, null),
+				('LOCK-4', 'LOCK', 4, 'Moved in place before the pass', '{"kind":"user","id":"alice"}', 'X', 'LOCK-2', 'issue', 'LOCK-4')
+		`)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the issues: %v", err)
+	}
+
+	reparent, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reparent: %v", err)
+	}
+	defer reparent.Rollback(ctx)
+	for _, statement := range []struct{ what, sql string }{
+		{"take the issue's row", `select parent_key from issues where key = 'LOCK-3' for no key update`},
+		{"move the issue", `update issues set parent_key = 'LOCK-2' where key = 'LOCK-3'`},
+	} {
+		if _, err := reparent.Exec(ctx, statement.sql); err != nil {
+			t.Fatalf("the reparent could not %s: %v", statement.what, err)
+		}
+	}
+
+	pid, answered := startBackfill(t, database)
+	if early, done := storetest.WaitForQueuedBehind(t, reparent, pid, answered, 30*time.Second); done {
+		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the reparent's row", early.report, early.err)
+	}
+	t.Logf("the backfill waits behind the reparent at: %s", lockstep.WaitingStatement(t, database, pid))
+	if err := reparent.Commit(ctx); err != nil {
+		t.Fatalf("commit the reparent: %v", err)
+	}
+	report := awaitBackfill(t, answered)
+
+	for _, issue := range []string{"LOCK-3", "LOCK-4"} {
+		if kind, address := rowMarker(t, database, `select node_kind, node_address from issues where key = $1`, issue); kind != graphstore.KindIssue || address != issue {
+			t.Errorf("%s's row names node %q/%q, want %s/%s", issue, kind, address, graphstore.KindIssue, issue)
+		}
+		parents, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindIssue, issue, []string{graphstore.TupleChildOf})
+		if err != nil {
+			t.Fatalf("read %s's child_of: %v", issue, err)
+		}
+		if len(parents) != 1 || parents[0].ToKind != graphstore.KindIssue || parents[0].ToID != "LOCK-2" {
+			t.Errorf("%s states child_of %+v, want one tuple to issue:LOCK-2, the parent its row names", issue, parents)
+		}
+		for parent, want := range map[string]int{"LOCK-2": 1, "LOCK-1": 0} {
+			var rows int
+			if err := database.Pool.QueryRow(ctx, `
+				select count(*) from graph_edges
+				where from_kind = 'issue' and from_id = $1 and kind = 'child_of' and to_kind = 'issue' and to_id = $2
+			`, issue, parent).Scan(&rows); err != nil {
+				t.Fatalf("read %s's parent %s out of graph_edges: %v", issue, parent, err)
+			}
+			if rows != want {
+				t.Errorf("graph_edges answers %s's parent %s %d times, want %d", issue, parent, rows, want)
+			}
+		}
+	}
+	if done := reportedKind(t, report, graphstore.KindIssue); done.Rows != 2 || !done.Complete {
+		t.Errorf("the backfill reports %#v for issues, want its 2 rows and every row marked", done)
+	}
+}

@@ -5125,7 +5125,7 @@ Each item below names a path with its method and identity, then its purpose.
   Serve the dashboard static files.
 
 An event's payload says what its write moved, so a reader can refresh only what it shows (the dashboard's rules are `packages/dispatch/web/src/api/event-refresh.ts`).
-`issue.created`, `issue.updated` and `issue.closed` carry `changed`, the fields whose value the write moved (`title`, `status`, `closed_at` for a close or a reopen, `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`, `blocked_by`, `external_links`;
+`issue.created`, `issue.updated` and `issue.closed` carry `changed`, the fields whose value the write moved (`title`, `status`, `closed_at` for a close or a reopen, `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`, `blocked_by` and `needs`, the one wait under both its spellings, `duplicate_of`, `filed_from`, `external_links`;
 on `issue.created` every field the new issue holds a value in), and `ancestors`, the issue's parent chain, parent first up to the root (`[]` for a root).
 `thread_logins`, every login whose Inbox the write can have moved, is on `comment.created` and `comment.answered`, on `message.created` and `message.answered`, on `ask.opened`, `ask.answered`, `ask.resolved` and `ask.asked_of`, and on an `issue.updated` or `issue.closed` that moved the status or the assignee.
 On a comment, an ask or an issue message it is the logins with a Replies row on the write's thread once the write is in;
@@ -5148,9 +5148,11 @@ its node id `<document ref_key>#<block id>`, its reference and its document's uu
 Each kind is capped on its own at 100 targets:
 past the cap of a kind the event names none of that kind, lists it in `references_changed_truncated_kinds` (of `issue`, `ask`, `artifact` and `block`), still names the targets of every other kind, and carries `references_changed_truncated: true`, which a reader that does not read the kinds takes as every kind cut.
 It also names a target whose edge the write kept but whose excerpt it moved:
-an edit of an ask's question or a comment's body that changes the head of its text names every target the text still cites, a document version names each target whose stored excerpt it changed and each target a block it changed still cites, and a retitle names the issue's parent and the issues it is blocked by, whose panels show its title.
+an edit of an ask's question or a comment's body that changes the head of its text names every target the text still cites, a document version names each target whose stored excerpt it changed and each target a block it changed still cites, and a retitle names the issue's parent and the issues it waits on, whose panels show its title.
 A document version also names each block it changed or deleted that something cites, since every link to the block shows its text, and a comment's or issue message's write names each target whose link it moved from one of the item's blocks to another.
-An issue write that adds or removes a `blocked_by` entry names each blocker it added or removed, whose `referenced_by_count` counts the edge, and an `issue.created` names every blocker the new issue holds.
+An issue write that adds or removes an issue it waits on (`needs`, or `blocked_by` beside it) names each issue it added or removed, whose `referenced_by_count` counts the edge;
+one that moves its `duplicate_of` or its `filed_from` names the issue or the item it moved off and the one it moved onto;
+and an `issue.created` names every issue the new issue waits on and the issue and the item its `duplicate_of` and `filed_from` name.
 Each field is absent from an event written before it existed.
 
 ## Dispatch topics

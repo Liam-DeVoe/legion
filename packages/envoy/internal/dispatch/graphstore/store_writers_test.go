@@ -123,7 +123,8 @@ var storeWriteCallSites = []string{
 	// patchIssue's), the issue's event, and last the relations that event causes, its child_of,
 	// needs, duplicate_of and filed_from and the part_of it no longer hangs from, in one statement
 	// of the store's arms (stateIssueRelations). api's TestEveryApiStoreWriterTakesTheStoreLockOrder
-	// holds a PATCH that states them to those steps.
+	// holds a PATCH of its needs, and a PATCH of its filed_from at a comment with no node, to those
+	// steps.
 	"api/issue_relations.go#stateFiledFromNode",
 	"api/issue_relations.go#stateIssueRelations",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
@@ -217,7 +218,9 @@ var storeWriteCallSites = []string{
 	// project of the comment and block nodes written before a node named one
 	// (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
 	// graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject runs both. An issue's or a
-	// document's batch takes the owner rows it stands under first, then its node rows, then names
+	// document's batch takes the owner rows it stands under first, then its node rows, then, for an
+	// issue, the child_of claim of the parent its row names under that lock through WriteArms,
+	// which appends at the sentinel, outside every repeat key, and so waits on no row, then names
 	// each node on its row (dispatch://INFRA-1253), which graphcensus'
 	// TestTheObjectBatchTakesTheStoreLockOrder proves; an ask's or a message's takes no other row.
 	"graphcensus/projects.go#writeObjectBatch",

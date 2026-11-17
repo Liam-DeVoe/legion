@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // BacklinkCounts is how many edges point at each of ids, in one grouped query: the number a
@@ -246,7 +247,10 @@ const backlinkSeen = "$3"
 // an arm of this count answers exactly what the view's arm answers at every instant, including
 // for the rows a previous release wrote and for a block past the address bound, which name no
 // node and are answered by the table for as long as that is so, and for a row a previous release
-// deleted, which neither answers.
+// deleted, which neither answers. A row whose edge column a previous release moved in place counts
+// as naming no node too, while the store holds no current tuple naming the column's value
+// (backlinkArm's moved), so the table answers its new far end and the store's reading, which finds
+// no row naming the far end its tuple names, answers neither.
 func rowNamesNoNode(column string) string { return column + ` is null` }
 
 // projectionCarries is the join the store's reading of a moved kind makes to its projection row:
@@ -437,6 +441,12 @@ type backlinkArm struct {
 	projected   string
 	tupleKind   string
 	projectedIn string
+	// moved is, for an arm over a column a process of the release before updates in place while
+	// leaving the row's node columns as they were, the test that a row naming its node names a
+	// far end its node's tuple does not: the arm counts such a row as naming no node (R9 of
+	// dispatch://INFRA-1253), as graph_edges' old arm answers it. Only an issue's parent has one
+	// (store.IssueParentMoved), since the release before's issue PATCH sets parent_key in place.
+	moved string
 	// storedFrom makes the arm the store's alone: the current tuples of kind out of a node of one
 	// of these kinds, which graph_edges answers from the tuples with no projection row behind
 	// them (its tuple arm's store class, migration 20261116091932). Such an arm reads no table
@@ -465,7 +475,11 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 		if where != "" {
 			where += ` and `
 		}
-		where += rowNamesNoNode(a.projected)
+		if a.moved != "" {
+			where += `(` + rowNamesNoNode(a.projected) + ` or ` + a.moved + `)`
+		} else {
+			where += rowNamesNoNode(a.projected)
+		}
 	}
 	if where != "" {
 		where += ` and `
@@ -577,11 +591,13 @@ var filedFrom = backlinkArm{kind: graphstore.TupleFiledFrom, storedFrom: []strin
 // those joins finds exactly one row.
 var backlinkArms = map[string][]backlinkArm{
 	"issue": {
-		// issues_parent_key, partial on parent_key is not null, over the rows that name no node;
+		// issues_parent_key, partial on parent_key is not null, over the rows that name no node
+		// and the rows whose parent the release before moved in place (store.IssueParentMoved);
 		// the store states the same fact as the issue's child_of, answered while the issue's row
 		// carries its node and names that parent (migration 20261117140000).
 		{kind: graphstore.TupleChildOf, from: `issues i`, where: `i.parent_key is not null`, toID: `i.parent_key`,
-			fromKind: "issue", fromID: `i.key`, projected: `i.node_kind`, tupleKind: graphstore.TupleChildOf, projectedIn: "issues"},
+			fromKind: "issue", fromID: `i.key`, projected: `i.node_kind`, moved: store.IssueParentMoved,
+			tupleKind: graphstore.TupleChildOf, projectedIn: "issues"},
 		// issue_links_target (target_key, kind), over the rows that name no node; the store
 		// states the wait as the issue's needs, which the view names blocked_by through this
 		// release, answered while the issue_links row of the pair carries its node.

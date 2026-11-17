@@ -10,23 +10,39 @@
 -- release before deletes takes its edge with it, and one it writes again, naming no node, is
 -- answered by its old arm alone. An issue's wait on an issue keeps the edge kind blocked_by in
 -- both arms through this release, the kind a process of the release before reads it by, though
--- the store's tuple is needs. A document's attached_to is answered from its node by an arm of its
--- own over the artifacts that carry one, which names the artifact by its uuid and dates the edge
--- at the row's created_at, as the arm over the rows that carry none does.
+-- the store's tuple is needs. The release before's issue PATCH sets issues.parent_key in place and
+-- leaves the row's node columns as they were, so the child_of arm also answers a marked row while
+-- the newest child_of tuple of its node that names its parent_key does not assert it
+-- (store.IssueParentMoved, R9), until the backfill states the child_of that names it. A document's
+-- attached_to is answered from its node by an arm of its own over the artifacts that carry one,
+-- which names the artifact by its uuid and dates the edge at the row's created_at, as the arm over
+-- the rows that carry none does.
 --
 -- The statement below is store.GraphEdgesView(store.GraphEdgesIssueRelations), the one source of
 -- the view's text from this migration on, held to it byte for byte by
 -- TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives. Each probe of a projection row under the
--- tuple arm's CASE ends in `offset 0`, so a graph_edges read of one issue probes issues and
--- issue_links through their own indexes and scans neither. It drops no arm: the arms over issues,
+-- tuple arm's CASE, and the child_of arm's probe of the newest tuple under its OR, ends in
+-- `offset 0`, so a graph_edges read of one issue probes issues, issue_links and graph_tuples
+-- through their own indexes and scans none of them. It drops no arm: the arms over issues,
 -- issue_links and artifacts are the root's to delete. Re-stating the view holds graph_edges ACCESS
 -- EXCLUSIVE for the migration's short transaction, so a reference read waits behind it. Nothing
 -- here refuses or rewrites a row.
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all
-  select 'issue', key, 'child_of', 'issue', parent_key, created_at, null
-  from issues where parent_key is not null and node_kind is null
+  select 'issue', i.key, 'child_of', 'issue', i.parent_key, i.created_at, null
+  from issues i
+  where i.parent_key is not null
+    and (i.node_kind is null or not exists (
+      select 1 from (
+        select tuple.asserted from graph_tuples tuple
+        where tuple.from_kind = i.node_kind and tuple.from_id = i.node_address and tuple.kind = 'child_of'
+          and tuple.to_kind = 'issue' and tuple.to_id = i.parent_key
+        order by tuple.seq desc
+        limit 1
+      ) newest
+      where newest.asserted
+      offset 0))
   union all
   select 'issue', issue_key, 'blocked_by', 'issue', target_key, created_at, null
   from issue_links where kind = 'blocked_by' and node_kind is null

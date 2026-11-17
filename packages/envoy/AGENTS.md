@@ -2141,8 +2141,8 @@ What it costs is that dependency writes serialize across the deployment rather t
 Beside the exclusive deployment lock, the project locks decide nothing among writers of this build.
 They still fence a writer of an earlier build, which holds only its project's lock, on every project this write names (its own and each target's), so even with two builds serving only a ring through a project this write does not name could close.
 The test gates use them too: a caller that holds a project's dependency lock fences that project's dependency writes (`TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks`, `issue_dependencies_test.go`).
-Each target's project is read before any lock is taken, which is sound because no route moves an issue between projects and `writeBlockedBy`'s own read inside the transaction refuses an unknown key;
-a caller whose credential names one project is refused a target outside it there, before the deployment lock is taken, and again under the locks in `writeBlockedBy`, both through the one wording `refuseBlockedByOutsideCallerProject` writes.
+Each target's project is read before any lock is taken, which is sound because no route moves an issue between projects and `writeIssueNeeds`' own read inside the transaction refuses an unknown key;
+a caller whose credential names one project is refused a target outside it there, before the deployment lock is taken, and again under the locks in `writeIssueNeeds`, both through the one wording `refuseWaitOutsideCallerProject` writes, which names the member the request named its waits by, `needs` or `blocked_by`.
 A PATCH then locks every issue row it names `for no key update` in one key order, the order `LockOwners` takes event owners (`lockPatchRows`, `lockIssueRows`):
 the issue; its current parent when a status change or a reparent appends to it; the proposed parent; and the rank neighbours.
 `LockOwners` then re-locks rows already held, so no PATCH holds one of these rows while waiting for another that a second write holds.
