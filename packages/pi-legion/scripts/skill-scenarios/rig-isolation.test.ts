@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -170,6 +171,14 @@ put(
   ].join("\n"),
   0o755
 );
+// bun: the Bun that runs this file, so the rig's `bun` (load_label's read of the profile settings,
+// the server and the seeds) does not depend on how the caller installed one. On a devbox bun is a
+// mise shim, which finds its version in mise's global config under the developer's home, not under
+// the HOME below: there the shim exits 1 ("No version is set for shim: bun"), and load_label reads
+// that as settings without the handler limit. The link is here, not a directory added to PATH,
+// because python3 is a mise shim there too, and mise drops its install directories from the PATH
+// of what a shim runs, which is the rig.
+stagings.push(() => symlinkSync(process.execPath, path.join(bin, "bun")));
 
 // The work directory: the label's profile, and the batch's services file and Dispatch token.
 const work = path.join(scratch, "work");
