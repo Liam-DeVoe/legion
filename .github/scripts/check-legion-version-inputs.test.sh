@@ -728,6 +728,16 @@ run_check "$root"
 check "exits 1 on an object filter" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "which uses an object filter")"
 
+echo "case: a decoy of a named reader carries its if: while the reader skips"
+root=$(written reader-decoy)
+named_reader=$'      - name: "legion: Write the changelog into the release body"\n        if: "${{ !cancelled() && steps.legion_notes.outcome == \'success\' }}"\n'
+replace "$root/.github/workflows/release.yaml" "$named_reader" \
+  "$named_reader"$'        run: echo decoy\n      - name: "legion: Write the changelog into the release body"\n        if: false\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job and the name" \
+  "$(contains "$out" "release.yaml's job publish, which holds listed decision readers, has 2 steps named \`legion: Write the changelog into the release body\`")"
+
 echo "case: a new step that reads release"
 root=$(written reader-new)
 printf '      - name: Announce the release\n        if: steps.confirm.outputs.release == %s\n        run: echo released\n' "'true'" \

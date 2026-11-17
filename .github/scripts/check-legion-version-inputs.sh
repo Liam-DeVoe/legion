@@ -112,6 +112,7 @@ esac
 # go_offline.py and release_version_inputs.py sit beside this script in the repository it checks.
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 - "${1:-check}" <<'PY'
+import collections
 import itertools
 import json
 import posixpath
@@ -645,6 +646,20 @@ def decision_readers(path, doc):
                     problem(f"{described(reader_selector(reader))} of {job_name} reads steps.{ref}, which {PLAN}'s "
                             f"DECISION_READERS does not list for {job_name}: a step whose output a reader's if: reads "
                             f"is listed with it, since an if: that skips it skips the reader as well", path)
+    # One name a step in a job that holds listed readers: a reader is found by its name: when it
+    # has no id:, so a decoy of the same name ahead of it could carry its if: while the real step
+    # skips.
+    for (workflow, job_name), readers in sorted(plan.DECISION_READERS.items()):
+        job = jobs.get(job_name)
+        if workflow != path or not isinstance(job, dict):
+            continue
+        steps = job.get("steps") if isinstance(job.get("steps"), list) else []
+        counts = collections.Counter(s["name"] for s in steps if isinstance(s, dict) and isinstance(s.get("name"), str))
+        for name, count in sorted(counts.items()):
+            if count > 1:
+                problem(f"{path}'s job {job_name}, which holds listed decision readers, has {count} steps named `{name}`: "
+                        f"a step there has a name of its own, since a decoy of a reader's name could carry its if: "
+                        f"while the reader itself skips", path)
     # The order the listed readers run in: each reads the outcome of one before it, so a reader moved
     # above the step it reads finds no outcome and skips, and every reader after it with it.
     for (workflow, job_name), readers in sorted(plan.DECISION_READERS.items()):
