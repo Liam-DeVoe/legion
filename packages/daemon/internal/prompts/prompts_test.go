@@ -680,7 +680,7 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // retro, and the daemon refuses that completion without the rating from a plugin whose tool takes
 // it (api's PlanRatingContract, PLAN_RATING_REQUIRED), and a rating it cannot take: one outside 1
 // to 5, one of the two without the other, or a reason that is blank or too long (api's
-// planRatingRefusal, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
+// planRatingOf, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
 // therefore reads, in its composed prompt, which plan it rates (the issue's steps and the role that
 // worked each, never the planner's plan.md), the two fields its completion carries, both ends of
 // the scale and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
@@ -718,7 +718,7 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 // of the plugin its image carries until the update round over its pod (docs/kubernetes.md), so the
 // retro's composed prompt can reach a `legion` tool of the release before the rating, whose strict
 // handoff_complete takes neither plan_rating nor plan_reason. The daemon refuses a retro with no
-// rating only from a plugin at PlanRatingContract or above (api's planRatingRefusal), so the
+// rating only from a plugin at PlanRatingContract or above (api's planRatingOf), so the
 // prompt says the refusal comes from a tool that takes the two, and tells an agent whose tool takes
 // neither to complete with the summary alone, rather than to send fields its tool refuses.
 // This shows the text is loaded, never that a role follows it.

@@ -669,7 +669,7 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
 });
 
 // The completion that ends the retro rates the plan, and the daemon refuses each rating it cannot
-// take (planRatingRefusal in packages/daemon/internal/api/handoff.go): none at all
+// take (planRatingOf in packages/daemon/internal/api/handoff.go): none at all
 // (PLAN_RATING_REQUIRED), and a rating outside 1 to 5, one of the two without the other, or a
 // reason that is blank or too long (PLAN_RATING_INPUT), recording nothing either way. The step that
 // gives the two fields says both refusals, so an agent that sends one field alone knows what the

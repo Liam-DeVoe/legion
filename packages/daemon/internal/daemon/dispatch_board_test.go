@@ -248,7 +248,7 @@ func (b *liveDispatch) putStep(key, id string, req *http.Request, w http.Respons
 // otherwise) of kind retro alone (400 STEP_INPUT for any other kind), each written once. It does
 // not refuse a reason that is blank after trimming or longer than 2,000 code points, as Dispatch
 // does: the daemon refuses such a reason at the completion that ends the retro (PLAN_RATING_INPUT,
-// api's planRatingRefusal) before anything reaches its outbox, so no write of the daemon's carries
+// api's planRatingOf) before anything reaches its outbox, so no write of the daemon's carries
 // one, and a second copy of Dispatch's rule here would hold nothing the daemon can send.
 func (b *liveDispatch) putRating(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a step record", req, w)
