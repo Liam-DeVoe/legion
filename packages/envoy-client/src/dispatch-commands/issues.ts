@@ -714,10 +714,11 @@ async function specCheckResultsCommand(
 }
 
 /** `dispatch result`: record one result of one check of an issue's Verification document, or,
- *  with `project`, a CI job's result of a check of the spec files. What it prints back of the
- *  answer is text a session wrote (a retraction's reason, a check's words in the pull request
- *  line), so it prints by the runner log's one-line rule (runner-log.ts): no line break of it
- *  starts a line. */
+ *  with `project`, a CI job's result of a check of the spec files. It prints the recorded result's
+ *  id as `dispatch results` prints it, `Result <id>`, which `--retract` takes. What it prints back
+ *  of the answer is text a session wrote (a retraction's reason, a check's words in the pull
+ *  request line), so it prints by the runner log's one-line rule (runner-log.ts): no line break of
+ *  it starts a line. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
   if (optionalString(args, "project") !== undefined) {
@@ -763,7 +764,7 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
   });
   const shown = printableStrings(recorded.result);
   return {
-    text: `Recorded ${shown.verdict} for check ${shown.check_block_id} of ${shown.check_issue_key} at ${shown.commit_sha}, as ${shown.role}.\n\nPull request body line:\n${printableLine(recorded.line)}`,
+    text: `Recorded ${shown.verdict} for check ${shown.check_block_id} of ${shown.check_issue_key} at ${shown.commit_sha}, as ${shown.role}. Result ${shown.id}.\n\nPull request body line:\n${printableLine(recorded.line)}`,
     details: {
       issue,
       result: recorded.result.id,

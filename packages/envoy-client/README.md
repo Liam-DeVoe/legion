@@ -863,6 +863,8 @@ A CI job records its result of a check of the spec files with `dispatch result -
 one call that is no session's, and of a check its `ci_check` names with `dispatch result --issue`
 under the same identity, and a session reads those results with `dispatch results --project` and
 `dispatch results --issue`: [`docs/ci-results.md`](docs/ci-results.md) says how each works.
+A session's `dispatch result` prints the id of the result it recorded as `Result <id>`, the form
+`dispatch results` prints, which `dispatch result --retract` takes.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
