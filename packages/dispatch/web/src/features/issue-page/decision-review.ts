@@ -28,14 +28,14 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * agent edits the decision, every change is older than its words and the decision waits for
  * review again.
  *
- * A decision node of the tree read (dispatch://INFRA-1253 R8) is placed by the read, and so is
- * its Change: a comment anchored inside the decision's words hangs under its node, so its
- * Changes are the comments a person wrote that the read hangs under it, made since it last
- * changed and was last kept (`decisionNodeChanges`), and no quote is matched for it. A decision
- * the read holds no node for - a section of the decisions document, until part U - is found by
- * its section where the decisions document's blocks are read, which the Decisions filter reads
+ * A decision node of the tree read is placed by the read, and so is its Change: a comment
+ * anchored inside the decision's words hangs under its node, so its Changes are the comments a
+ * person wrote that the read hangs under it, made since it last changed and was last kept
+ * (`decisionNodeChanges`), and no quote is matched for it. A decision the read holds no node
+ * for, a section of the decisions document while decisions are such sections, is found by its
+ * section where the decisions document's blocks are read, which the Decisions filter reads
  * (`decisions-entries.ts`), and by its words alone where they are not, which is how the outline
- * and the header's count read it (decision 65). A section is a decision's own block
+ * and the header's count read it. A section is a decision's own block
  * (`Decision.block_id`, its heading) and every block after it up to the next decision's, in the
  * decisions document's blocks (`DocumentBlocks`). The block an anchor was written in
  * (`Anchor.block_id`) names the section, and so the decision: the quote alone cannot, since two
@@ -94,7 +94,8 @@ export function decisionsDocumentId(
  * The decision node of the tree read each decision of the decisions read is, by the decision's
  * address (`Decision.ref`): a decision node of this issue whose id is the decision's block
  * (`Decision.block_id`), in the document the address names where the node names its document. A
- * decision no node is is not held: a section of the decisions document, until part U.
+ * decision no node is is not held: a section of the decisions document, while decisions are such
+ * sections.
  */
 export function decisionNodes(
   decisions: readonly Pick<Decision, "block_id" | "ref">[],
@@ -176,9 +177,9 @@ export function decisionNodeChanges(answer: TreeAnswer): ReadonlyMap<string, Tre
  * The section is read from `documents`, the blocks of the issue's documents the page has read.
  * Only where the anchor stores no block, or the decisions document's blocks are not read or do not
  * hold the anchor's block yet, does the quote alone decide: the change is the first decision's
- * whose words hold it (decision 65). A block above the first decision belongs to no decision, and
- * a comment anchored there is no change. Every comment it holds is drawn under its decision; one
- * older than the decision's words is no change and is not held.
+ * whose words hold it. A block above the first decision belongs to no decision, and a comment
+ * anchored there is no change. Every comment it holds is drawn under its decision; one older than
+ * the decision's words is no change and is not held.
  */
 export function decisionChangeComments(
   decisions: Pick<IssueDecisions, "decisions" | "document"> | undefined,

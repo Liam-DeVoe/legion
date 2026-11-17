@@ -1,11 +1,6 @@
 import type { IssueDecisions, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import {
-  type ChangeComment,
-  decisionChangeComments,
-  decisionChanges,
-  inReviewList,
-} from "./decision-review";
+import { type ChangeComment, decisionChangeComments, inReviewList } from "./decision-review";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -22,11 +17,11 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
  *
- * A decision the reader asked to change waits on its agent and is not counted
- * (`decisionChanges`), by the outline's one rule (`decisionChangeComments`): a decision node's
- * Change is a comment the tree read (`tree`) hangs under it, and the Change of a decision the
- * read holds no node for is a comment of the issue's (`comments`) whose quote its words hold
- * (decision 65), so the count reads no block of the decisions document.
+ * A decision the reader asked to change waits on its agent and is not counted, by the outline's
+ * one rule (`decisionChangeComments`): a decision node's Change is a comment the tree read
+ * (`tree`) hangs under it, whether or not the comments read holds that comment yet, and the
+ * Change of a decision the read holds no node for is a comment of the issue's (`comments`) whose
+ * quote its words hold, so the count reads no block of the decisions document.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -64,18 +59,16 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
-  const changes = decisionChanges(
-    decisions,
-    comments,
-    issue.artifacts,
-    undefined,
-    decisionChangeComments(decisions, comments, issue.artifacts, undefined, tree)
+  // The decisions a Change waits on, each by its address: a decision node's from the tree read
+  // alone, as the outline finds it, so the two agree while the comments read is out or older.
+  const changed = new Set(
+    decisionChangeComments(decisions, comments, issue.artifacts, undefined, tree).values()
   );
   const reviewing =
     viewer === undefined
       ? 0
       : (decisions?.decisions ?? []).filter((decision) =>
-          inReviewList(decision, isStatement, changes.has(decision.ref))
+          inReviewList(decision, isStatement, changed.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }

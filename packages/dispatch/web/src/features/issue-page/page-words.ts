@@ -89,9 +89,9 @@ export const NODE_TYPE_NAMES = freeze({
   /** A constraint of the issue or of the lens catalogue: a standard the work keeps, or a
    *  measurement taken of it. */
   constraint: "constraint",
-  /** A `criterion` block, and a `reading` below: block types INFRA-1253's block schema
-   *  (version 6) declares, named here so every type the schema declares has a name. Part Y of
-   *  dispatch://INFRA-1196 draws them (decision 130). */
+  /** A `criterion` block, and a `reading` below: block types the model's block schema
+   *  (version 6) declares, named here so every type the schema declares has a name. A later part
+   *  of the page draws them. */
   criterion: "criterion",
   decision: "decision",
   document: "document",
@@ -715,6 +715,9 @@ export const ANSWER_LINES = freeze({
   statements_unreadable: "Could not load the statements.",
   /** What the Spec view says when the results could not be read, so it marks no statement. */
   results_unreadable: "Could not load the results.",
+  /** What the outline says when the issue's tree could not be read before it first answered,
+   *  so it holds no row to draw. */
+  outline_unreadable: "Could not load the outline.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",

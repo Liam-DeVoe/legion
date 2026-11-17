@@ -175,7 +175,7 @@ export function SpecFilterBody({
   // The two reads the statements come from, the coverage and the spec's blocks, under the keys
   // the tree reads them with (no request of their own): until both hold an answer the body
   // cannot say the issue holds no statement. Both documents' blocks, the spec's here and the
-  // Verification document's below, are the tree read's (`useTreeRead`, dispatch://INFRA-4062 R5).
+  // Verification document's below, are the tree read's (`useTreeRead`).
   const spec = primarySpec(issue);
   const coverageRead = useQuery(issueCoverageQuery(issue.key));
   const { blocksOf } = useTreeRead(issue);

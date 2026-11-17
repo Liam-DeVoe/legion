@@ -1,13 +1,13 @@
 {
-  "parts": {
-    "legion/INFRA-3936": "f6f7980400",
-    "legion/INFRA-3937": "aaa9f35e54",
-    "legion/INFRA-3938": "599e47e634",
-    "legion/INFRA-3939": "0058727eff",
-    "legion/INFRA-3943": "3e348385f1",
-    "legion/INFRA-3944": "844b578d4a",
-    "legion/INFRA-3951": "0440d42975"
-  },
+  "parts": [
+    "0058727eff",
+    "0440d42975",
+    "3e348385f1",
+    "599e47e634",
+    "844b578d4a",
+    "aaa9f35e54",
+    "f6f7980400"
+  ],
   "recordedOn": "3207d4276bb14006e6b4fd2f9d6791420bacfef0",
   "seeds": {
     "seedConversationState": {

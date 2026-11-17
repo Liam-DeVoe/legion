@@ -53,12 +53,11 @@ import {
 } from "./page-words";
 
 /**
- * F's rules for the drafts `buildIssueTree` places (dispatch://INFRA-1196 R4,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t13`), which the tree read keeps
- * (dispatch://INFRA-4062 R1): how this issue addresses a node and names what a reference points
+ * The outline's rules for the drafts `buildIssueTree` places (root R4), which the tree read
+ * keeps: how this issue addresses a node and names what a reference points
  * at (`treeContext`), a node's words read to plain words, how a check stands (`checkStanding`),
  * and the drafts of today's decisions read (`addDecisions`), which no node of the tree read holds
- * until part U.
+ * while decisions are sections of `decisions.md`.
  *
  * Every other node is drafted from the tree read (`tree-read/tree-nodes.ts`'s
  * `treeDraftsFrom`), which places and orders each one. Every function here is pure and takes the
@@ -684,9 +683,9 @@ export function askState(ask: Ask): AskState | undefined {
 
 /**
  * Each decision of today's decisions read that no node of the tree read holds
- * (`decisionNodes`) - a section of the issue's `decisions.md`, until part U moves those onto
- * decision nodes - drafted as F drafts it, beside the drafts of the tree read, with its Changes
- * under it.
+ * (`decisionNodes`) - a section of the issue's `decisions.md`, until those move onto decision
+ * nodes - drafted as the outline drafted it, beside the drafts of the tree read, with its
+ * Changes under it.
  *
  * It stands under the question it answers (R4): the asks its blocks mention (`Decision.asks`),
  * the first of them where it is edited and every other one a transclusion, as a check stands
@@ -694,13 +693,15 @@ export function askState(ask: Ask): AskState | undefined {
  * approval request - places nothing and stays the decision's chip, so a decision that names no
  * question of this issue stands under the issue, as any node whose parent is absent does, and
  * never inside `decisions.md`, which is no node at all. Wherever it stands it comes before its
- * siblings, but for the issue's memo, the first callout of its spec, which comes first: F drew
- * these decisions above the statements and the conversation. It names every node it links as a
- * chip, since a link places nothing, and each whole document its words cite (`addDocumentChips`).
+ * siblings, but for the issue's memo, the first callout of its spec, which comes first: the
+ * outline drew these decisions above the statements and the conversation. It names every node it
+ * links as a chip, since a link places nothing, and each whole document its words cite
+ * (`addDocumentChips`).
  *
- * Its Change is a comment of the issue whose quote its words hold, by decision 65's rule, with no
- * block of the decisions document read (`decisionChangeComments`). The read hangs that comment
- * under the issue, since no node holds the decision, so it is drawn under the decision it
+ * Its Change is a comment of the issue whose quote its words hold, where they are the first
+ * decision's words to hold it, with no block of the decisions document read
+ * (`decisionChangeComments`). The read hangs that comment under the issue, since no node holds
+ * the decision, so it is drawn under the decision it
  * changes, which then waits on its agent. Whether a decision waits on the reader is the review
  * list's rule (`inReviewList`), read once every statement has its draft, as the header's count
  * reads it (`waiting.ts`).
