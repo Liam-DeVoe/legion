@@ -135,7 +135,7 @@ exit "\${FAKE_DISPATCH_EXIT:-0}"
 `,
     { mode: 0o755 }
   );
-  const printed = await executeDispatchTool({
+  const rendered = await executeDispatchTool({
     tool: "dispatch_plans",
     args: { project },
     cwd: dir,
@@ -148,13 +148,21 @@ exit "\${FAKE_DISPATCH_EXIT:-0}"
     },
     fetchImpl: (async () => Response.json(answer)) as unknown as typeof fetch,
   });
-  whole = printed.text.split("\n");
+  whole = rendered.text.split("\n");
   line42 = whole.find((line) => line.startsWith(`${key} `)) ?? "";
 });
 
+/**
+ * lines as the fake `dispatch` prints them, one per line and newline-ended: the whole answer by
+ * default.
+ */
+function printed(lines: string[] = whole): string {
+  return `${lines.join("\n")}\n`;
+}
+
 // changed is whole with the line that matches pick replaced by its edit.
 function changed(pick: RegExp, edit: (line: string) => string): string {
-  return whole.map((line) => (pick.test(line) ? edit(line) : line)).join("\n") + "\n";
+  return printed(whole.map((line) => (pick.test(line) ? edit(line) : line)));
 }
 
 let runs = 0;
@@ -180,7 +188,7 @@ function read(out: string, args: string[] = [project, key], exit = 0) {
 
 describe("plan-ratings-read.sh", () => {
   test("a whole answer passes, exit 0, read once with dispatch plans --project, naming the rating and its reason", () => {
-    const { code, stdout, calls } = read(whole.join("\n") + "\n");
+    const { code, stdout, calls } = read(printed());
     expect(calls).toBe(`plans --project ${project}\n`);
     expect(stdout).toContain(whole[0]);
     expect(stdout).toContain(
@@ -190,7 +198,7 @@ describe("plan-ratings-read.sh", () => {
   });
 
   test("an issue rated twice, a reason with a quotation mark and a line break among them, passes", () => {
-    const { code, stdout } = read(whole.join("\n") + "\n", [project, "INFRA-43"]);
+    const { code, stdout } = read(printed(), [project, "INFRA-43"]);
     expect(stdout).toContain(
       `PASS: INFRA-43: ${plan}, ratings 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped.", time 0h55m, failed steps 0`
     );
@@ -198,7 +206,7 @@ describe("plan-ratings-read.sh", () => {
   });
 
   test("an issue its owner planned passes, exit 0, naming the owner's plan, among a plan whose first task has no steps", () => {
-    const { code, stdout } = read(whole.join("\n") + "\n", [project, "INFRA-44"]);
+    const { code, stdout } = read(printed(), [project, "INFRA-44"]);
     expect(stdout).toContain(
       `PASS: INFRA-44: ${owner}, ratings 3/5 "Two tasks were one too many.", time 1h2m, failed steps 0`
     );
@@ -206,7 +214,7 @@ describe("plan-ratings-read.sh", () => {
   });
 
   test("an issue with no plan and no rating fails, exit 1, one line per fault, and its unknown time is none of them", () => {
-    const { code, stdout } = read(whole.join("\n") + "\n", [project, "INFRA-7"]);
+    const { code, stdout } = read(printed(), [project, "INFRA-7"]);
     expect(stdout).toContain("FAIL: INFRA-7 lists no plan: INFRA-7 closed");
     expect(stdout).toContain("FAIL: INFRA-7 lists no rating: INFRA-7 closed");
     expect(stdout).not.toContain("lists no time");
@@ -250,7 +258,7 @@ describe("plan-ratings-read.sh", () => {
   test("a read that lists finished issues and not the issue fails, exit 1, naming it", () => {
     const lines = whole.slice(1).filter((line) => !line.startsWith(`${key} `));
     const { code, stdout } = read(
-      [`${project}: ${lines.length} finished issues`, ...lines].join("\n") + "\n"
+      printed([`${project}: ${lines.length} finished issues`, ...lines])
     );
     expect(stdout).toContain(
       `FAIL: the read lists 4 finished issues of ${project} and no line of ${key}`
@@ -262,7 +270,7 @@ describe("plan-ratings-read.sh", () => {
   test("a read that lists the issue twice, its header counting both, fails, exit 1, naming it", () => {
     const lines = [...whole.slice(1), line42];
     const { code, stdout } = read(
-      [`${project}: ${lines.length} finished issues`, ...lines].join("\n") + "\n"
+      printed([`${project}: ${lines.length} finished issues`, ...lines])
     );
     expect(stdout).not.toContain("UNKNOWN");
     expect(stdout).toContain(`FAIL: the read lists ${key} 2 times`);
@@ -291,12 +299,12 @@ describe("plan-ratings-read.sh", () => {
   });
 
   test("an answer that is no read of the project is UNKNOWN, exit 2", () => {
-    const header = read("OTHER: 3 finished issues\n" + whole.slice(1).join("\n") + "\n");
+    const header = read(printed(["OTHER: 3 finished issues", ...whole.slice(1)]));
     expect(header.stdout).toContain(
       `UNKNOWN: the first line of the answer is no header of ${project}`
     );
     expect(header.code).toBe(2);
-    const short = read(`${project}: 6 finished issues\n` + whole.slice(1).join("\n") + "\n");
+    const short = read(printed([`${project}: 6 finished issues`, ...whole.slice(1)]));
     expect(short.stdout).toContain(
       "UNKNOWN: the header says 6 finished issues and 5 lines of issues follow it"
     );
@@ -318,7 +326,7 @@ describe("plan-ratings-read.sh", () => {
       [project, "infra-42"],
       [project, "OTHER-42"],
     ]) {
-      const { code, stderr, calls } = read(whole.join("\n") + "\n", args);
+      const { code, stderr, calls } = read(printed(), args);
       expect(stderr).toContain("usage: scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>");
       expect(calls).toBe("");
       expect(code).toBe(2);
