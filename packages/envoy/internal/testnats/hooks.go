@@ -15,10 +15,12 @@
 // API request held across a restart, a committed entry held before one server stores it.
 //
 // The hook is the process's: one test of a binary hooks it at a time, and a test that hooks it
-// must not run in parallel with one that does. Release a hold before stopping the server whose
-// goroutine it parks: the server's shutdown waits for that goroutine. Every hold is released, and
-// the hook taken off, when the test that installed it ends, and each hold armed and never
-// reached fails that test.
+// must not run in parallel with one that does. A server's shutdown releases every hold that parks
+// one of its goroutines, before it waits for its goroutines to end, and parks none of its
+// goroutines again until that wait is over (ServerShutdown, ServerDown): an operation held across
+// a Stop either lands or fails, and the Stop returns. Every hold is released, and the hook taken
+// off, when the test that installed it ends, and each hold armed and never reached fails that
+// test.
 package testnats
 
 import (
@@ -62,6 +64,12 @@ const (
 	// stores it (applyStreamMsgOp). A stream with no Raft group, a lone server's, has no such
 	// point.
 	StreamApply Point = "stream.apply"
+
+	// ServerShutdown and ServerDown are no hold points: they are where a server's Shutdown begins,
+	// before it stops anything, and where it has waited for every goroutine of its own. Between
+	// the two the hook releases the server's held goroutines and parks none of them again.
+	ServerShutdown Point = "server.shutdown"
+	ServerDown     Point = "server.down"
 )
 
 // HoldPoints are the hold points, in the order above.
@@ -170,9 +178,13 @@ func Where(what string, ok func(Event) bool) Match { return Match{what, ok} }
 // OnServer takes the events of server s alone: a file store point under its store, or a server
 // point it reported. The store directory of a server is the same across its Stop and Start.
 func OnServer(s *Server) Match {
-	return Match{"on the server whose store is " + s.store, func(e Event) bool {
-		return e.Store == s.store || strings.HasPrefix(e.Store, s.store+string(filepath.Separator))
-	}}
+	return Match{"on the server whose store is " + s.store, func(e Event) bool { return underStore(s.store, e.Store) }}
+}
+
+// underStore reports whether path is the store directory root or a directory under it. A server
+// with no store directory reports its events under "", which every path is taken to be under.
+func underStore(root, path string) bool {
+	return root == "" || path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // Consumer takes the events of the consumer named name.
@@ -244,6 +256,8 @@ type Hooks struct {
 	events  []Event
 	holds   []*Hold
 	changed chan struct{}
+	// stopping are the store directories of the servers between ServerShutdown and ServerDown.
+	stopping map[string]bool
 }
 
 // Hook installs the process's hook for t and returns it. Call it after starting the servers the
@@ -255,7 +269,7 @@ func Hook(t testing.TB) *Hooks {
 	if !installed.CompareAndSwap(false, true) {
 		t.Fatal("another test's forced-order hook is installed: tests that hook the server cannot run in parallel")
 	}
-	h := &Hooks{t: t, changed: make(chan struct{})}
+	h := &Hooks{t: t, changed: make(chan struct{}), stopping: map[string]bool{}}
 	hook := h.report
 	natsserver.MeasureHook.Store(&hook)
 	t.Cleanup(func() {
@@ -277,26 +291,55 @@ func Hook(t testing.TB) *Hooks {
 }
 
 // report is the hook itself: it records the event, and parks the calling goroutine when the
-// event is the first to meet a hold's matches.
+// event is the first to meet a hold's matches. A server's ServerShutdown releases the holds that
+// park its goroutines, and none of its goroutines is parked until its ServerDown.
 func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	e := eventOf(me)
+	var released []*Hold
 	h.mu.Lock()
 	e.N = len(h.events) + 1
 	h.events = append(h.events, e)
+	switch e.Point {
+	case ServerShutdown:
+		h.stopping[e.Store] = true
+		for _, hold := range h.holds {
+			if hold.fired && underStore(e.Store, hold.event.Store) {
+				released = append(released, hold)
+			}
+		}
+	case ServerDown:
+		delete(h.stopping, e.Store)
+	}
 	var parked *Hold
-	for _, hold := range h.holds {
-		if !hold.fired && accepts(e, hold.point, hold.match) {
-			hold.fired, hold.event, parked = true, e, hold
-			break
+	if !h.stoppingLocked(e.Store) {
+		for _, hold := range h.holds {
+			if !hold.fired && accepts(e, hold.point, hold.match) {
+				hold.fired, hold.event, parked = true, e, hold
+				break
+			}
 		}
 	}
 	close(h.changed)
 	h.changed = make(chan struct{})
 	h.mu.Unlock()
+	for _, hold := range released {
+		hold.Release()
+	}
 	if parked != nil {
 		close(parked.reached)
 		<-parked.release
 	}
+}
+
+// stoppingLocked reports whether the event store belongs to a server whose shutdown is under way.
+// h.mu is held.
+func (h *Hooks) stoppingLocked(store string) bool {
+	for root := range h.stopping {
+		if underStore(root, store) {
+			return true
+		}
+	}
+	return false
 }
 
 // Mark is the number of events reported so far, for After.
@@ -397,5 +440,17 @@ func (hold *Hold) wasReached() bool {
 }
 
 // Release lets the parked goroutine go on, or, for a hold not yet reached, disarms it: whatever
-// reaches it later passes. It may be called more than once.
+// reaches it later passes. It may be called more than once. A shutdown of the held server calls
+// it too.
 func (hold *Hold) Release() { hold.once.Do(func() { close(hold.release) }) }
+
+// Released reports whether the hold has been released: by Release, by the test's end, or by a
+// shutdown of the server whose goroutine it parked.
+func (hold *Hold) Released() bool {
+	select {
+	case <-hold.release:
+		return true
+	default:
+		return false
+	}
+}

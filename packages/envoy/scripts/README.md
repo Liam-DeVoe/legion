@@ -384,14 +384,19 @@ or that holds a replace, is refused. It reads go's JSON with `jq`. Nothing else 
 changes, the repository's own files are never written, and no other build sees a hook.
 The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
 place), `flush.encoded`, `store.create`, `api.worker`, `client.publish` and `stream.apply`;
-`hooks.go` says where each one is.
+`hooks.go` says where each one is. A server's shutdown reports `server.shutdown` before it stops
+anything and `server.down` once it has waited for its goroutines: the hook releases every hold on
+that server at the first and parks none of its goroutines until the second, so a `Stop` with an
+operation held returns, and the held operation lands or fails.
 
 `-C` names the module, relative to the caller's directory, as `go -C` does (`packages/envoy` by
 default), and the packages are relative to it. `-server` is the nats-server version, by default the
 one the build links; 2.15.1 and 2.10.29 are hooked, and any other version is refused, so a
 module that moves to a new nats-server fails here until its hooks are ported. `-drop <point>`
 removes every hook line naming that point before the build, which is each test's control: a test
-holding at a dropped point fails waiting for its hold. It fails, naming the package, when a
+holding at a dropped point fails waiting for its hold, and with `-drop server.shutdown` the test
+that stops a held server fails at its own deadline, since the stop then waits for the parked
+goroutine. It fails, naming the package, when a
 package declares no `TestForcedOrder` test. `GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`.
 `ci.yaml`'s `envoy-go-race` job runs it on `./internal/testnats/hooktest/` once per hooked version, and its
 `daemon-go` job runs it with `-C packages/daemon` on 2.15.1; each counts that 10 minutes in its

@@ -272,6 +272,64 @@ func TestForcedOrderHoldsAnAPIRequestBeforeItIsServed(t *testing.T) {
 	answered(t, done, "the stream info")
 }
 
+// stopWithin bounds the wait for a Stop of a server one of whose goroutines a hold parks. A stop
+// that does not release the hold waits for that goroutine for ever, so the bound is what turns
+// the hang into this test's failure.
+const stopWithin = 20 * time.Second
+
+// A server's shutdown releases the hold that parks one of its goroutines before it waits for its
+// goroutines, so a Stop returns with an operation held: the held request then ends, answered or
+// failed. Once the server is down, a hold on it parks again. Its control is the run without the
+// release (forced-order.sh -drop server.shutdown): the Stop waits for the parked goroutine and the
+// test fails at stopWithin.
+func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
+	srv, hooks, conn, _ := heldStream(t)
+	const subject = "$JS.API.STREAM.INFO.HOLD"
+	request := func(conn *natsgo.Conn) <-chan error {
+		return answer(func() error {
+			_, err := conn.Request(subject, nil, reachWithin)
+			return err
+		})
+	}
+	answered(t, request(conn), "the unheld stream info")
+
+	hold := hooks.Hold(testnats.APIWorker, testnats.OnServer(srv), testnats.InAccount("$G"), testnats.Subject(subject))
+	done := request(conn)
+	t.Logf("held %s", hold.Reached(t))
+	stopped := make(chan struct{})
+	go func() {
+		srv.Stop(t)
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(stopWithin):
+		t.Fatalf("the server's Stop did not return within %s while a hold parked one of its goroutines", stopWithin)
+	}
+	if !hold.Released() {
+		t.Fatal("the Stop returned and the hold is not released")
+	}
+	hooks.Await(t, testnats.ServerDown, testnats.OnServer(srv))
+	select {
+	case err := <-done:
+		t.Logf("the held request ended with the stop: %v", err)
+	case <-time.After(reachWithin):
+		t.Fatalf("the held request did not end within %s of the stop", reachWithin)
+	}
+
+	// The server is down, so the hook parks its goroutines again once it is started.
+	srv.Start(t)
+	again := testnats.Connect(t, srv.URL())
+	t.Cleanup(again.Close)
+	second := hooks.Hold(testnats.APIWorker, testnats.OnServer(srv), testnats.InAccount("$G"), testnats.Subject(subject),
+		testnats.After(hooks.Mark()))
+	done = request(again)
+	t.Logf("held after the restart %s", second.Reached(t))
+	unanswered(t, done, "the stream info after the restart")
+	second.Release()
+	answered(t, done, "the stream info after the restart")
+}
+
 func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	hooks := testnats.Hook(t)

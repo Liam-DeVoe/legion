@@ -141,3 +141,25 @@ index 61f3478..947d2b5 100644
  				// Process the actual message here.
  				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts)
  
+diff --git a/server/server.go b/server/server.go
+index 77cd75c..9efacb9 100644
+--- a/server/server.go
++++ b/server/server.go
+@@ -2422,6 +2422,9 @@ func (s *Server) Shutdown() {
+ 	if s == nil {
+ 		return
+ 	}
++	if !s.isShuttingDown() {
++		measureServer(s, "server.shutdown")
++	}
+ 	// This is for JetStream R1 Pull Consumers to allow signaling
+ 	// that pending pull requests are invalid.
+ 	s.signalPullConsumers()
+@@ -2565,6 +2568,7 @@ func (s *Server) Shutdown() {
+ 
+ 	// Wait for go routines to be done.
+ 	s.grWG.Wait()
++	measureServer(s, "server.down")
+ 
+ 	if opts.PortsFileDir != _EMPTY_ {
+ 		s.deletePortsFile(opts.PortsFileDir)
