@@ -2339,6 +2339,9 @@ for form in 'gone|select(.id != "s-model-checksum")|claims\.jsonl holds no row s
     program="${form#*|}"
     program="${program%|*}"
     copy="$(admitted_copy "env-row-$planted")"
+    # claim-marks-agree, judged before the stop, reads which records are under check from
+    # sources.json, so the copy carries it beside claims.jsonl and env.sh.
+    cp "$HERE/sources.json" "$copy/"
     jq -c "$program" "$HERE/claims.jsonl" >"$copy/claims.jsonl"
     cmp -s "$copy/claims.jsonl" "$HERE/claims.jsonl" && {
         printf 'FAIL the row env.sh reads could not be planted %s in a copy of claims.jsonl\n' "$planted"
