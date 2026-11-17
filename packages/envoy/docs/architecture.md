@@ -449,16 +449,29 @@ route's alone: a message published straight onto a role lane is always kept. Dis
 role-routed events do not cross the lane: the outbox keeps its own copies on the kept lane (below).
 
 A released Legion role gets the copies kept for it when it comes back. The release ends the
-role's process and leaves its claim standing. The session's record is gone at most about five
-minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
-the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
-the claim at its next pass (`internal/store/reaper.go`). Either way it is kept and raises the
-role's wake report. When the role comes back, its session registers again or claims the role, and
-either one hands it each copy kept for the role whose hour has not ended, as an Envoy card that
-carries `kept_at` (a registration that makes the session live again starts that handover, in
-`subscribeHandler`). The card can arrive before the task the daemon gives the woken role (`WakeTask`,
-`packages/daemon/internal/workflow/wake.go`). `envoy_inbox` lists it, but the inbox is the memory
-of the running process, so in a new pod it starts empty and holds only what that process received.
+role's process. A stop that finishes gives back each role claim the process holds, and then
+deletes the session's record (`releaseRoleClaims`, `packages/pi-envoy/extensions/envoy.ts`). Once
+the claims are given back the role has no claim, so a message to it is kept as `unclaimed` at
+once. A stop that gives back nothing leaves the claim standing. An older plugin's stop gives back
+nothing, and so may a stop whose request to give the claims back is not answered within its share
+of the stop (250 ms), since the stop goes on without the answer. Such a stop still deletes the
+record when its DELETE reaches the listener, and the holder then reads `gone`. A message to the
+role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the
+claim, at its first pass after the claim's last renewal is older than the live window
+(`internal/store/reaper.go`). When such a stop deletes nothing either, the record stays. The
+holder then reads live for the live window after its last heartbeat, and a message to the role
+is forwarded to its agent subject, not kept. Past the live window the holder reads
+`unresponsive`, and a message to the role is kept as `holder_lapsed`. The record reads `gone` at
+the gone horizon in a bucket this listener creates, or at its 5-minute age in a bucket an older
+build created, about when the live window ends. The role claim reaper releases the claim at its
+first pass after that, and a message to the role is kept as `unclaimed` from then. Each keep
+raises the role's wake report. When the role comes back, its session registers again or claims
+the role, and either one hands it each copy kept for the role whose hour has not ended, as an
+Envoy card that carries `kept_at` (a registration that makes the session live again starts that
+handover, in `subscribeHandler`). The card can arrive before the task the daemon gives the woken
+role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`). `envoy_inbox` lists it, but the
+inbox is the memory of the running process, so in a new pod it starts empty and holds only what
+that process received.
 To check one message, read the session's transcript for the card with that event id and `kept_at`.
 The listener's log holds the forward of that event id, `listener role forwarded` with `kept_at`, or
 the drop line `listener dropped a kept role message older than the keep window`. The sender's

@@ -30,7 +30,8 @@ const (
 	batchSize = 100
 	// dispatchTopicPrefix is the prefix of every owner's topic family: an issue's, a document's
 	// and a project's events are published under it. It is Dispatch's lane, which only Dispatch's
-	// own NATS user may publish (bus.DispatchTopicPrefix).
+	// own NATS user may publish on directly. A host session can still have a message stored there
+	// by a stream update, until dispatch://INFRA-840 closes that gap (bus.DispatchTopicPrefix).
 	dispatchTopicPrefix = bus.DispatchTopicPrefix
 	documentTopicPrefix = dispatchTopicPrefix + "document."
 	// maxCommentThreadDepth bounds the reply_to walks in loadRootCommentAuthors and

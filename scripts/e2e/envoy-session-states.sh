@@ -452,11 +452,13 @@ api() { # api PORT METHOD PATH [BODY]
 # names a port (sjawhar/legion#2674), and a session receives what its own consumer holds and
 # nothing else, so the registration below names no port.
 # It asks for the session consumer, as every plugin's registration does (dispatch://INFRA-771):
-# whatever else a registration says, one that asks for no consumer is refused 409 not_requested
-# and writes nothing (`consumerFor`), so a session registered without it would exist for no check
-# to read. It says `self_subscribed` as every plugin's registration does, and that field decides
-# no delivery any more: it records what a session says of itself, which a check reads back, and
-# nothing follows from it, which is why no caller chooses it.
+# a registration that asks for no consumer is refused 409 not_requested and writes nothing
+# (`consumerFor`), unless it comes from @sjawhar/pi-envoy 14.1.0 or later, which the listener gives
+# a consumer whether or not it asks (`readsUnaskedRelay`, R21 of dispatch://INFRA-3589). This rig's
+# registration names no plugin, so without the ask it would be refused, and the session would
+# exist for no check to read. It says `self_subscribed` as every plugin's registration does, and
+# that field decides no delivery any more: it records what a session says of itself, which a check
+# reads back, and nothing follows from it, which is why no caller chooses it.
 registered() {
   local session=$1 body
   shift
@@ -989,6 +991,16 @@ stored_cards_landed() {
   [ "$(delivery_cards "$1" "mention $2")" -ge 1 ] && [ "$(delivery_cards "$1" "direct $2")" -ge 1 ]
 }
 
+# agent_wakes_reported SESSION counts the `listener agent wake reported` lines listener A logged
+# for SESSION. It counts rather than asks `grep -q`: under pipefail, a `grep -q` that exits at its
+# first match can cut the first grep off mid-write, and the pipe would then read as no match.
+agent_wakes_reported() {
+  local count
+  count=$(grep -F -e 'listener agent wake reported' -- "$evidence/logs/listener_a.log" |
+    grep -c -F -e "\"session_id\":\"$1\"") || count=0
+  printf '%s\n' "$count"
+}
+
 # kept_role_card_landed FILE MARKER: the role publish naming MARKER, which the listener kept on the
 # role's kept lane while its holder was unresponsive, has reached that session file.
 kept_role_card_landed() { [ "$(delivery_cards "$1" "role $2")" -ge 1 ]; }
@@ -1187,13 +1199,13 @@ check_send_to_stalled_session_is_stored() {
 # ---- 3b. every stored delivery reaches the session once ------------------------------------------------------
 # Writes on a stalled session's routes — a mention and a direct message on its own route, a publish
 # on a role route it holds — are stored while it is stalled and arrive when it answers again. Each
-# must show exactly once in the session's own transcript, no delivery may be reported failed,
-# deferred or given up, and nothing may land on the exceptions topic: a stored delivery is not a
-# failed one. The role publish is kept on the role's kept lane for one hour and answered 202 with
-# kept_reason holder_lapsed. The holder keeps its claim through the stall, so no claim follows to
-# hand the lane over: the registration that makes the holder live again after SIGCONT hands the
-# copy over (subscribeHandler), and the listener's sweep, every five minutes (main.go), is only the
-# backstop behind that handover.
+# must show exactly once in the session's own transcript, the listener may report no wake for the
+# session, which has a record throughout, and nothing may land on the exceptions topic: a stored
+# delivery is not a failed one. The role publish is kept on the role's kept lane for one hour and
+# answered 202 with kept_reason holder_lapsed. The holder keeps its claim through the stall, so no
+# claim follows to hand the lane over: the registration that makes the holder live again after
+# SIGCONT hands the copy over (subscribeHandler), and the listener's sweep, every five minutes
+# (main.go), is only the backstop behind that handover.
 check_stored_deliveries_arrive_once() {
   local role=ess-stored-$$ issue marker transcript mention direct published record claimed_at
   [ -n "$omp_pid" ] || omp_start || return 1
@@ -1264,8 +1276,8 @@ check_stored_deliveries_arrive_once() {
     refuse "the session's transcript holds $mention delivery cards for the mention naming $marker and $direct for the direct message; each stored delivery arrives exactly once" || return 1
   [ "$published" -eq 1 ] ||
     refuse "the transcript holds $published delivery cards for the role publish naming $marker, which the listener kept for its unresponsive holder; the kept copy arrives exactly once" || return 1
-  ! grep -qE 'agent delivery failed|deferred|given up' "$evidence/logs/listener_a.log" ||
-    refuse "the listener's log names a failed, deferred or given-up delivery for a stored message" || return 1
+  [ "$(agent_wakes_reported "$omp_session")" -eq 0 ] ||
+    refuse "the listener's log reports a wake for $omp_session, which has a record, for a stored message" || return 1
   [ ! -s "$work/exceptions.jsonl" ] ||
     refuse "an exception landed on notifications.envoy.exceptions.*: $(head -c 200 "$work/exceptions.jsonl")" || return 1
   note "the mention and the direct message each arrived once after SIGCONT; the role publish was kept 202 for the unresponsive holder with the claim standing, and the registration that made the holder live again handed it over once"
@@ -1444,13 +1456,14 @@ check_role_route_reaches_its_holder() {
   outbox_event_is "$issue" "stalled $marker" "$reached" 'true true' ||
     refuse "after SIGCONT the event reads published and role-route-reached '$(outbox_event "$issue" "stalled $marker" "$reached")', not 'true true'" || return 1
   # Nothing anywhere calls the hold a failure: the outbox never gave the event up (its attempts
-  # stayed under retry.DeadLetterAttempts, the tenth), neither log names a failed or given-up
-  # delivery, and nothing landed on the exceptions topic.
+  # stayed under retry.DeadLetterAttempts, the tenth), the listener reports no wake for the holder,
+  # which has a record throughout, Dispatch's log names no failed or given-up delivery, and nothing
+  # landed on the exceptions topic.
   attempts=$(outbox_event "$issue" "stalled $marker" attempt_count)
   [ "$attempts" -lt 10 ] ||
     refuse "the held event was tried $attempts times, the dead-letter threshold the outbox gives an event up at" || return 1
-  ! grep -qE 'agent delivery failed|deferred|given up' "$evidence/logs/listener_a.log" ||
-    refuse "the listener's log names a failed, deferred or given-up delivery for a held role forward" || return 1
+  [ "$(agent_wakes_reported "$omp_session")" -eq 0 ] ||
+    refuse "the listener's log reports a wake for $omp_session, which has a record, for a held role forward" || return 1
   # Dispatch's own log, in the words that code writes (internal/dispatch/outbox): the held event's
   # back-off is `dispatch outbox: event waits for its role's holder` at INFO, naming the holder it
   # waits on and that holder's state (waitForHolders, publisher.go), and nothing of this event is

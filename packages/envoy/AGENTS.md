@@ -3574,10 +3574,21 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A copy of Dispatch's outbox raises no report.
 
 - A released Legion role gets the copies kept for it when it comes back.
-  The release ends the role's process and leaves its claim standing.
-  The session's record is gone at most about five minutes after its last heartbeat, or at the stop once the daemon's clean stop runs.
-  A message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the claim at its next pass (`internal/store/reaper.go`).
-  Either way it is kept and raises the role's wake report.
+  The release ends the role's process.
+  A stop that finishes gives back each role claim the process holds, and then deletes the session's record (`releaseRoleClaims`, `shutDownSession`, `packages/pi-envoy/extensions/envoy.ts`).
+  Once the claims are given back the role has no claim, so a message to it is kept as `unclaimed` at once.
+  A stop that gives back nothing leaves the claim standing.
+  An older plugin's stop gives back nothing, and so may a stop whose request to give the claims back is not answered within its share of the stop (`SHUTDOWN_RELEASE_MS`, 250 ms), since the stop goes on without the answer.
+  Such a stop still deletes the record when its DELETE reaches the listener, and the holder then reads `gone`.
+  A message to the role is then kept as `holder_lapsed`.
+  It is kept as `unclaimed` once the role claim reaper releases the claim, at its first pass after the claim's last renewal is older than the live window (`ReapRoleClaims`, `internal/store/reaper.go`).
+  When such a stop deletes nothing either, the record stays.
+  The holder then reads live for the live window after its last heartbeat, and a message to the role is forwarded to its agent subject, not kept.
+  Past the live window the holder reads `unresponsive`, and a message to the role is kept as `holder_lapsed`.
+  The record reads `gone` at the gone horizon in a bucket this listener creates (`session.BucketMaxAge`).
+  A bucket an older build created expires the record at its 5-minute age, about when the live window ends, and the holder reads `gone` from then.
+  The role claim reaper releases the claim at its first pass after the holder reads `gone`, and a message to the role is kept as `unclaimed` from then.
+  Each keep raises the role's wake report.
   When the role comes back, its session registers again or claims the role, and either one hands it each copy kept for the role whose hour has not ended, as an Envoy card that carries `kept_at` (`subscribeHandler`, `roleSetHandler`).
   The card can arrive before the task the daemon gives the woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`).
   `envoy_inbox` lists it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds only what that process received.
@@ -6098,9 +6109,10 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   a topic published straight onto NATS, bypassing the API, reaches nobody.
   `ENVOY_SUBSCRIBE_ALL_TOPICS` is read no longer, and a start that still carries it logs one WARN naming it (`warnIgnoredEnv`, `cmd/listener/main.go`), as `ENVOY_HOST_BRIDGE` does.
   The listener's grant publishes all of `notifications.>` either way, but for the two lanes its publish deny names (`packages/envoy/infra/README.md`, "Permission sets").
-  Only Dispatch's own NATS user publishes Dispatch's lane, `notifications.dispatch.>`.
-  Only the user of the listener that receives GitHub's webhook publishes GitHub's lane, `notifications.github.>`, from that listener's webhook route and CI summary loop.
+  Only Dispatch's own NATS user publishes directly on Dispatch's lane, `notifications.dispatch.>`.
+  Only the user of the listener that receives GitHub's webhook publishes directly on GitHub's lane, `notifications.github.>`, from that listener's webhook route and CI summary loop.
   So the server refuses a `/v1/messages/publish` to Dispatch's lane on every listener but the one beside `envoy-dispatch`, which shares Dispatch's user, and to GitHub's lane on every listener but the webhook's, and the route answers `403`.
+  A session on a host can still have a message stored under either lane, by a stream update that adds a subject transform, since the host user keeps the stream's update; dispatch://INFRA-840 closes that gap.
 
 - A failed role delivery, or a fan-out's terminal capability refusal on any topic (a delivery mode the session does not advertise, or one that cannot be read unambiguously), publishes `notifications.envoy.exceptions.<original-topic>`, and so does a role send the publish route refused 404 because no live session holds the role (`publishRefusalException`).
 

@@ -231,10 +231,21 @@ itself.
 ### What a restored session gets
 
 A released Legion role gets the messages kept for it when it comes back. The release ends the
-role's process and leaves its claim standing. The session's record is gone at most about five
-minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
-the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
-the claim at its next pass. Either way it is kept and wakes the role. When the role comes
+role's process. A stop that finishes gives back each role claim the process holds, and then
+deletes the session's record. Once the claims are given back the role has no claim, so a message
+to it is kept as `unclaimed` at once. A stop that gives back nothing leaves the claim standing.
+An older plugin's stop gives back nothing, and so may a stop whose request to give the claims
+back is not answered in time, since the stop goes on without the answer. Such a stop still
+deletes the record when its request reaches the listener, and the holder then reads `gone`. A
+message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim
+reaper releases the claim, at its first pass after the claim's last renewal is older than the
+live window. When such a stop deletes nothing either, the record stays. The holder then reads
+`live` for the live window after its last heartbeat, and a message to the role is forwarded to
+it, not kept. Past the live window the holder reads `unresponsive`, and a message to the role is
+kept as `holder_lapsed`. The record reads `gone` at the gone horizon, or at its 5-minute age in a
+session bucket an older listener created, about when the live window ends. The role claim reaper
+releases the claim at its first pass after that, and a message to the role is kept as
+`unclaimed` from then. Each kept message wakes the role. When the role comes
 back, its session registers again or claims the role, and either one hands it each message kept
 for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
 kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists
@@ -537,7 +548,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` | How often the listener deletes the stream consumers of sessions that read `gone`, as a Go duration; default `5m`. A session that deregisters has its consumer deleted with its registration, and one that simply ended — its pane closed, its box rebooted — deregisters nothing, so this sweep is what frees the slot it holds, within one pass of the session's record leaving the `envoy_sessions` bucket ([Messages a session missed](#messages-a-session-missed)). A pass deletes at most 256 consumers, each checked against the `envoy_sessions` bucket before it goes, and runs only on the listener task that holds its machine's durable binding; the rest wait for the next pass. |
 | `ENVOY_ROLE_CLAIM_REAP_INTERVAL` | How often the role claim reaper looks for role claims nobody has renewed inside the live window whose holder is `gone`, or which a hand-back marked, and releases them, as a Go duration; default `5m`. Nothing else releases a claim, and a claim its holder still renews is kept whatever that holder's session record says. While `ENVOY_SESSION_MAX_AGE` is below `ENVOY_SESSION_GONE_HORIZON`, keep it at or above that age: a record the bucket expires reads `gone` before the horizon, so a shorter period takes a merely stalled holder's role that much sooner. Once the maximum age covers the horizon no record goes early, and the period only says how long past the horizon a `gone` holder keeps its role: keep it well inside the horizon instead. |
 | `ENVOY_SESSION_MAX_AGE` | The `envoy_sessions` bucket's `MaxAge`, as a Go duration: how long a registration record survives in NATS. Unset, the listener leaves an existing bucket as it is, and creates a missing one at `2h`, an hour past the default gone horizon. A bucket an older listener created keeps its `5m` until this setting raises it. A listener whose bucket's age is at or below `ENVOY_SESSION_GONE_HORIZON` logs a warning at its start that names both values. `/healthz` reports the age in use as `session_max_age` and the gone horizon as `session_gone_horizon`. |
-| `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. With `github` the listener publishes GitHub's lane (`notifications.github.>`): on a NATS whose users envoy-infra renders, only a `listenerMachineId` user with `githubWebhook: true` may publish it, and under any other user those publishes are refused. |
+| `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. With `github` the listener publishes GitHub's lane (`notifications.github.>`): on a NATS whose users envoy-infra renders, only a `listenerMachineId` user with `githubWebhook: true` may publish on it directly, and under any other user those publishes are refused. A session on a host can still have a message stored under that lane, by a stream update that adds a subject transform, until dispatch://INFRA-840 closes that gap. |
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | Required with `github`: the webhook secret. |
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |

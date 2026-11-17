@@ -7,9 +7,12 @@ body: |-
   refused beside any other user kind. The hub's own listener, host users and listener users
   without the input are denied both lanes, and Dispatch's user is denied GitHub's lane and the
   listener's resume lane (`notifications.envoy.resume.>`); it keeps the kept lane and
-  `notifications.legion.wake`, which its outbox and the listener beside it publish. A deployment
-  whose listener user receives GitHub's webhook sets `githubWebhook: true` on that user in the
-  change that moves its envoy-infra pin, or that listener's GitHub publishes are refused.
+  `notifications.legion.wake`, which its outbox and the listener beside it publish. Each deny
+  refuses a direct publish on its lane. A session on a host can still have a message stored under
+  either lane, by a stream update that adds a subject transform, since the host user keeps the
+  stream's update; dispatch://INFRA-840 closes that gap. A deployment whose listener user receives
+  GitHub's webhook sets `githubWebhook: true` on that user in the change that moves its envoy-infra
+  pin, or that listener's GitHub publishes are refused.
 time: 2026-11-16T18:39:48Z
 custom:
     Issue: pr4194

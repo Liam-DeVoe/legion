@@ -3,13 +3,16 @@ body: |-
   A listener's wake report that comes while an idle release is still stopping the session's pod
   is no longer dropped: the daemon applies it again every 30 seconds until the release records
   the claim released, for at most 15 minutes after the report, and then drops it with one
-  warning. A wake after a cancelled release, whose start is already queued, takes nothing. The
-  task of a role woken by a message says what reaches it when Envoy stored or kept the message,
-  and that a message Envoy did not store or keep must be sent again; the task of a role woken by
-  a message to its session no longer says that nothing kept the message. A role wake report of
-  another project decodes to no fact and writes no `processed_events` row. The role is read in
-  either form of its name, the token alone or `<PROJECT>.<token>`, and a token named under
-  another project is no fact either. A waiting retry logs
+  warning. A wake records the time the daemon took it as the pod's resume time, not the time of
+  the listener's report, so a wake that waited for a release is not reported stuck, and its claim
+  is not reported stranded, while the new pod is still being built. A wake after a cancelled
+  release, whose start is already queued, takes nothing. The task of a role woken by a message
+  says what reaches it when Envoy stored or kept the message, and that a message Envoy did not
+  store or keep must be sent again; the task of a role woken by a message to its session no
+  longer says that nothing kept the message. A role wake report of another project decodes to no
+  fact and writes no `processed_events` row. The role is read in either form of its name, the
+  token alone or `<PROJECT>.<token>`, and a token named under another project is no fact either.
+  A waiting retry logs
   `an intake fact waits and is applied again after its delay` at info.
 time: 2026-11-16T18:39:58Z
 custom:

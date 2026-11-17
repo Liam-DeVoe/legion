@@ -40,6 +40,7 @@ import {
   STORE_BEAT_MS,
 } from "@legion/envoy-client/askgate-marker";
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
+import * as consumerDeliveryModule from "@legion/envoy-client/consumer-delivery";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import type {
   DeliveryLedgerHost,
@@ -21451,8 +21452,9 @@ describe("consumer delivery", () => {
     natsState.failConnects = 99;
     const session = await bootConsumer("consumer-start-outage", { withoutRelay: true });
     const start = Date.now();
-    // Past the start race's two minutes (`INBOUND_FIRST_OPEN_BOUND_MS`).
-    const pastBound = start + 2 * 60_000 + 1_000;
+    // A namespace read, so this file still loads at a commit whose module lacks the export.
+    const FIRST_OPEN_BOUND_MS = consumerDeliveryModule.INBOUND_FIRST_OPEN_BOUND_MS ?? 120_000;
+    const pastBound = start + FIRST_OPEN_BOUND_MS + 1_000;
     try {
       setSystemTime(new Date(pastBound));
       await session.tickWithoutNats();

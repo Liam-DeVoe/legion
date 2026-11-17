@@ -3234,10 +3234,20 @@ server refuses both to every other set built on these entries:
   event there. `WebhookListenerHostPermissions` takes this lane off its deny.
 
 The Legion daemon trusts an event on Dispatch's lane as Dispatch's, and it applies a merge and a
-deciding review from an event on GitHub's lane. With the deny, a session on a host cannot pose as
-either. Nor can a caller of a listener's `/v1/messages/publish`: the server refuses the publish,
-and the route answers `403`. The exceptions are the two listeners whose user publishes the lane:
-the listener beside `envoy-dispatch`, which shares Dispatch's user, and the webhook listener.
+deciding review from an event on GitHub's lane. The deny refuses a direct publish on either lane by
+a session on a host. It also refuses one by a caller of a listener's `/v1/messages/publish`: the
+server refuses the publish, and the route answers `403`. The exceptions are the two listeners whose
+user publishes the lane: the listener beside `envoy-dispatch`, which shares Dispatch's user, and the
+webhook listener.
+
+The deny alone does not stop a session on a host from posing as Dispatch or as GitHub. The base
+entries keep the stream's create and update, `$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS` and
+`$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS`, and `HostPermissions` gives them to the host user that
+every session on the host shares. Such a session can update the stream to add a subject transform,
+or a `Sources` entry with transforms, and then publish on a subject the deny allows. The stream
+stores that message under Dispatch's lane or GitHub's, and the daemon trusts it there.
+dispatch://INFRA-840, which gives each session a credential of its own in place of the shared host
+user, closes this gap.
 
 It subscribes to `_INBOX.>`, and to the role lanes in the queue group every listener shares,
 `notifications.role.> envoy-roles`, so each role message is forwarded once whichever machine's
@@ -3288,9 +3298,11 @@ left out, then each of the session's the base lacks, and `notifications.>` itsel
 shared host user's sessions at today's reach until dispatch://INFRA-840;
 a listener connecting as this user can give its sessions no consumer, so it refuses their
 registrations `no_grant`. Its publish direction keeps the base entries' deny of Dispatch's lane
-and GitHub's lane, so no session on the host publishes either. A `gcp:NatsHub` user with
-`machineId` holds it, and a hub's own `listener` holds `ListenerPermissions` for the hub's
-hostname. Sharing one user makes the host one
+and GitHub's lane, so no session on the host publishes directly on either. A session on the host
+can still have a message stored under either lane, by a stream update that adds a subject
+transform, until dispatch://INFRA-840 closes that gap (see the base entries' deny above). A
+`gcp:NatsHub` user with `machineId` holds it, and a hub's own `listener` holds
+`ListenerPermissions` for the hub's hostname. Sharing one user makes the host one
 trust domain: any process that reaches the server as it, a listener's own process or any session on
 the host, holds the whole grant above, host sessions included, since sessions run as the Unix user
 that already reads the host's seed. This repository's listener and a session, connected as one

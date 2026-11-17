@@ -10,9 +10,11 @@ body: |-
   report that the stream must store before it acknowledges the message, and logs
   `listener agent wake reported`. A report the stream did not store is tried again after the same
   wait, and at the stream's 20th delivery the listener logs `listener agent wake not stored` and
-  acknowledges. A read of the session record that did not answer sends the message back for the
-  wait, logs `listener agent record unread` once, and reports the wake at the last delivery. The
-  metric label `unplaceable_no_record` is now `wake_reported`.
+  acknowledges. A read of the session record that did not answer logs
+  `listener agent record unread` once for the message, at the first such read, also when that
+  read is at the last delivery. Below the last delivery the listener sends the message back for
+  the wait, and at the last delivery it reports the wake. The metric label
+  `unplaceable_no_record` is now `wake_reported`.
 time: 2026-11-16T18:39:47Z
 custom:
     Issue: pr4194

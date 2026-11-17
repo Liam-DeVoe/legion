@@ -22,13 +22,16 @@ func publishes(r core.Rules, subject string) bool {
 	return matches(r.Allow) && !matches(r.Deny)
 }
 
-// Check l5 of dispatch://INFRA-3589: only Dispatch's NATS user may publish Dispatch's lane, and
-// only the user of the listener that receives GitHub's webhook may publish GitHub's lane. The
-// Legion daemon trusts an event on either lane as its source's. Every other set built on the
-// listener grant still publishes the rest of notifications.>, a role lane among them. Dispatch's
-// user may not publish the listener's resume lane, which only a listener holding the session
-// consumers' calls writes; it still publishes the kept lane and the wake topic, as the outbox and
-// the listener beside envoy-dispatch do. The listener sets keep the resume and kept lanes.
+// Check l5 of dispatch://INFRA-3589: only Dispatch's NATS user may publish directly on Dispatch's
+// lane, and only the user of the listener that receives GitHub's webhook may publish directly on
+// GitHub's lane. The Legion daemon trusts an event on either lane as its source's. A session on a
+// host can still have a message stored under either lane, by a stream update that adds a subject
+// transform, until dispatch://INFRA-840 closes that gap; this test checks the deny alone. Every
+// other set built on the listener grant still publishes the rest of notifications.>, a role lane
+// among them. Dispatch's user may not publish the listener's resume lane, which only a listener
+// holding the session consumers' calls writes; it still publishes the kept lane and the wake
+// topic, as the outbox and the listener beside envoy-dispatch do. The listener sets keep the
+// resume and kept lanes.
 func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 	const (
 		machine  = "example-host-a"

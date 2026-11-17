@@ -40,10 +40,19 @@ const inboxes = nats.InboxPrefix + ">"
 //     event there.
 //
 // No other program publishes either lane. A listener without GitHub's webhook publishes neither,
-// and Dispatch asks GitHub to send a missed delivery again rather than publish it itself. So a
-// session on a host cannot pose as Dispatch or as GitHub. Nor can a caller of a listener's
-// /v1/messages/publish, but on the listener whose user publishes that lane: the one beside
-// envoy-dispatch, which shares Dispatch's user, and the webhook listener.
+// and Dispatch asks GitHub to send a missed delivery again rather than publish it itself. So the
+// deny refuses a direct publish on either lane by a session on a host. It also refuses one by a
+// caller of a listener's /v1/messages/publish, but on the listener whose user publishes that
+// lane: the one beside envoy-dispatch, which shares Dispatch's user, and the webhook listener.
+//
+// The deny alone does not stop a session on a host from posing as Dispatch or as GitHub.
+// listenerGrant allows the stream's create and update ($JS.API.STREAM.CREATE and STREAM.UPDATE on
+// ENVOY_NOTIFICATIONS), and HostPermissions gives that grant to the host user that every session
+// on the host shares. Such a session can update the stream to add a subject transform, or a
+// Sources entry with transforms, and then publish on a subject the deny allows. The stream stores
+// that message under Dispatch's lane or GitHub's, and the Legion daemon trusts it there.
+// dispatch://INFRA-840 closes this gap: it gives each session a credential of its own in place of
+// the shared host user.
 const (
 	dispatchLane = bus.DispatchTopicPrefix + ">"
 	githubLane   = contracts.GithubTopicPrefix + ">"
@@ -71,9 +80,10 @@ const (
 //     watchers' consumer create and delete, and their flow-control replies;
 //   - the purge of the interest bucket, which its delete-marker collection sends.
 //
-// The publish deny names Dispatch's lane and GitHub's lane (dispatchLane, githubLane), which one
-// user alone publishes each. It is a fresh slice at each call, so a grant that takes one lane off
-// (publishing) changes no other call's.
+// The publish deny names Dispatch's lane and GitHub's lane (dispatchLane, githubLane), on which
+// one user alone publishes directly each; the comment on dispatchLane says what the deny does not
+// stop. It is a fresh slice at each call, so a grant that takes one lane off (publishing) changes
+// no other call's.
 //
 // Subscribe: reply inboxes, then the role lanes in the machine's queue group (bus.ListenerQueue),
 // which a listener of an earlier release subscribes in, and in the queue group every listener
@@ -316,7 +326,10 @@ func DaemonPermissions() Permissions {
 // listener whose user no session shares takes ListenerHostPermissions instead, which holds those
 // calls beside the same notifications.> subscribe. The publish direction keeps the listener
 // grant's deny too, joined with the session's as the allows are, so no session on a host and no
-// listener connecting as a host user may publish Dispatch's lane or GitHub's.
+// listener connecting as a host user may publish directly on Dispatch's lane or GitHub's. A
+// session on a host can still have a message stored under either lane: this set keeps the
+// stream's update, and a stream update that adds a subject transform stores its publish there.
+// dispatch://INFRA-840 closes that gap (the comment on dispatchLane says how).
 //
 // That subscribe is this set's own, not one it takes from the session's: SessionPermissions holds
 // it no longer. It is the reach the sessions sharing a host user already have - one user is one
