@@ -1,19 +1,19 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FinishedIssue, PlanRecord, ProjectPlans } from "@legion/contracts";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer";
 import { executeDispatchTool } from "../../../packages/envoy-client/src/dispatch-execute";
+import { fakeDispatchFetch } from "../../../packages/envoy-client/test/fake-dispatch";
+import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 
-// plan-ratings-read.sh (the read of a deployed issue's plan and ratings after the merge) against a
-// fake `dispatch` on PATH: it logs its arguments, prints FAKE_DISPATCH_OUT as the real command's
-// answer would print, and exits FAKE_DISPATCH_EXIT. The whole answer below is what `dispatch plans`
-// (packages/envoy-client/src/dispatch-commands/plans.ts) prints of typed finished issues, rendered
-// by that command itself, so a line the command prints and the script cannot read fails here: a
-// header, then one finished issue per line, newest close first. Bun drops the answer's types when
-// it runs this file, so packages/envoy-client's typecheck, whose tsconfig includes it, holds the
-// answer to the contract's types.
+// plan-ratings-read.sh (the read of a deployed issue's plan and ratings after the merge) against
+// the fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH. The whole answer below is
+// what `dispatch plans` (packages/envoy-client/src/dispatch-commands/plans.ts) prints of typed
+// finished issues, rendered by that command itself, so a line the command prints and the script
+// cannot read fails here: a header, then one finished issue per line, newest close first. Bun
+// drops the answer's types when it runs this file, so packages/envoy-client's typecheck, whose
+// tsconfig includes it, holds the answer to the contract's types.
 const script = join(import.meta.dir, "..", "plan-ratings-read.sh");
 const dir = temporaryDirectory("plan-ratings-read-test");
 
@@ -84,9 +84,9 @@ function finished(
 }
 
 // A whole answer: an issue its owner planned in two tasks, rated once; an issue rated twice whose
-// second reason holds a quotation mark and a line break; the issue rated once; an issue whose
-// owner's plan has a first task with no steps, which `dispatch plans` prints as `-`; and an issue
-// finished before the release that rates each plan, which lists no plan, no rating and no time.
+// second reason holds a quotation mark and a line break; the issue rated once; an issue its owner
+// planned in one task, unrated; and an issue Legion never ran, or ran before the release that
+// records each step, which lists no plan, no rating and no time.
 const answer: ProjectPlans = {
   project,
   issues: [
@@ -117,7 +117,7 @@ const answer: ProjectPlans = {
       8400,
       1
     ),
-    finished("INFRA-30", "2026-11-19T10:00:00Z", planOf("INFRA-30", [[]]), [], 300, 0),
+    finished("INFRA-30", "2026-11-19T10:00:00Z", planOf("INFRA-30", [["implementer"]]), [], 300, 0),
     finished("INFRA-7", "2026-11-01T08:00:00Z", null, [], null, 0),
   ],
 };
@@ -125,16 +125,10 @@ const answer: ProjectPlans = {
 /** The whole answer's lines as `dispatch plans` printed them, and the line of the issue judged. */
 let whole: string[] = [];
 let line42 = "";
+// read runs the script with args against the fake dispatch, which prints out and exits exit, on
+// path, which by default finds the fake first.
+const read = fakeDispatchRead(script, dir, [project, key]);
 beforeAll(async () => {
-  writeFileSync(
-    join(dir, "dispatch"),
-    `#!/usr/bin/env bash
-printf '%s\\n' "$*" >>"$FAKE_DISPATCH_LOG"
-printf '%s' "$FAKE_DISPATCH_OUT"
-exit "\${FAKE_DISPATCH_EXIT:-0}"
-`,
-    { mode: 0o755 }
-  );
   const rendered = await executeDispatchTool({
     tool: "dispatch_plans",
     args: { project },
@@ -146,7 +140,8 @@ exit "\${FAKE_DISPATCH_EXIT:-0}"
     exec: async (file, argv) => {
       throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
     },
-    fetchImpl: (async () => Response.json(answer)) as unknown as typeof fetch,
+    fetchImpl: fakeDispatchFetch({ routes: { [`/api/v1/projects/${project}/plans`]: answer } })
+      .fetchImpl,
   });
   whole = rendered.text.split("\n");
   line42 = whole.find((line) => line.startsWith(`${key} `)) ?? "";
@@ -158,32 +153,6 @@ exit "\${FAKE_DISPATCH_EXIT:-0}"
  */
 function printed(lines: string[] = whole): string {
   return `${lines.join("\n")}\n`;
-}
-
-// changed is whole with the line that matches pick replaced by its edit.
-function changed(pick: RegExp, edit: (line: string) => string): string {
-  return printed(whole.map((line) => (pick.test(line) ? edit(line) : line)));
-}
-
-let runs = 0;
-function read(out: string, args: string[] = [project, key], exit = 0) {
-  const log = join(dir, `calls-${++runs}`);
-  writeFileSync(log, "");
-  const result = Bun.spawnSync(["bash", script, ...args], {
-    env: {
-      PATH: `${dir}:/usr/bin:/bin`,
-      HOME: dir,
-      FAKE_DISPATCH_LOG: log,
-      FAKE_DISPATCH_OUT: out,
-      FAKE_DISPATCH_EXIT: String(exit),
-    },
-  });
-  return {
-    code: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-    calls: readFileSync(log, "utf8"),
-  };
 }
 
 describe("plan-ratings-read.sh", () => {
@@ -205,7 +174,7 @@ describe("plan-ratings-read.sh", () => {
     expect(code).toBe(0);
   });
 
-  test("an issue its owner planned passes, exit 0, naming the owner's plan, among a plan whose first task has no steps", () => {
+  test("an issue its owner planned in two tasks passes, exit 0, naming the owner's plan", () => {
     const { code, stdout } = read(printed(), [project, "INFRA-44"]);
     expect(stdout).toContain(
       `PASS: INFRA-44: ${owner}, ratings 3/5 "Two tasks were one too many.", time 1h2m, failed steps 0`
@@ -224,7 +193,7 @@ describe("plan-ratings-read.sh", () => {
 
   test("a plan with no rating fails, exit 1, naming it", () => {
     const { code, stdout } = read(
-      changed(/^INFRA-42 /, (line) => line.replace(/ratings .* time/, "ratings none time"))
+      changed(whole, /^INFRA-42 /, (line) => line.replace(/ratings .* time/, "ratings none time"))
     );
     expect(stdout).toContain(`FAIL: ${key} lists no rating: ${key} closed`);
     expect(stdout).not.toContain("lists no plan");
@@ -234,7 +203,7 @@ describe("plan-ratings-read.sh", () => {
 
   test("a rating with an empty reason fails, exit 1, naming it", () => {
     const { code, stdout } = read(
-      changed(/^INFRA-42 /, (line) => line.replace(/4\/5 "[^"]*"/, '4/5 ""'))
+      changed(whole, /^INFRA-42 /, (line) => line.replace(/4\/5 "[^"]*"/, '4/5 ""'))
     );
     expect(stdout).toContain(`FAIL: ${key} lists a rating with no reason: ${key} closed`);
     expect(code).toBe(1);
@@ -246,7 +215,7 @@ describe("plan-ratings-read.sh", () => {
   // or its ratings, so the issue is judged by those, and the verdict says its time is unknown.
   test("a plan and a rating whose time Dispatch does not know pass, exit 0, saying the time is unknown", () => {
     const { code, stdout } = read(
-      changed(/^INFRA-42 /, (line) => line.replace("time 2h20m", "time -"))
+      changed(whole, /^INFRA-42 /, (line) => line.replace("time 2h20m", "time -"))
     );
     expect(stdout).toContain(
       `PASS: ${key}: ${plan}, ratings 4/5 "The plan fit the work; the review sent it back once.", time unknown, failed steps 1`
@@ -310,11 +279,18 @@ describe("plan-ratings-read.sh", () => {
     );
     expect(short.code).toBe(2);
     const torn = read(
-      changed(/^INFRA-43 /, (line) => line.replace(/, 5\/5 .*" time/, ', 5/5 "torn time'))
+      changed(whole, /^INFRA-43 /, (line) => line.replace(/, 5\/5 .*" time/, ', 5/5 "torn time'))
     );
     expect(torn.stdout).toContain("UNKNOWN: the line is no finished issue: INFRA-43 closed");
     expect(torn.stdout).not.toContain("PASS");
     expect(torn.code).toBe(2);
+  });
+
+  test("no dispatch command on PATH is UNKNOWN, exit 2, naming what is missing", () => {
+    // The PATH the script gets holds no directory: bash is named by the path read found it at.
+    const { code, stdout } = read("", [project, key], 0, join(dir, "no-such-directory"));
+    expect(stdout).toContain("UNKNOWN: no dispatch command is on PATH, so nothing was read");
+    expect(code).toBe(2);
   });
 
   test("a wrong count of arguments, a malformed key or an issue of another project is refused, exit 2, reading nothing", () => {
