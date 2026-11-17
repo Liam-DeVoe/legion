@@ -717,6 +717,34 @@ def decision_readers(path, doc):
                 break
 
 
+def triggers(path, doc):
+    """Rule 3's triggers for the workflow `path`: its on: events are TRIGGERS', its push trigger
+    has PUSH_KEYS' keys alone, and it runs on PUSH_BRANCHES' branches. YAML reads a bare `on` key
+    as true, so the trigger is found under either."""
+    want = plan.TRIGGERS.get(path)
+    if want is None or not isinstance(doc, dict):
+        return
+    on = doc.get("on", doc.get(True))
+    events = [on] if isinstance(on, str) else on if isinstance(on, list) else list(on) if isinstance(on, dict) else None
+    why = "a push to main is what releases, so another trigger skips every release with a green run"
+    if events is None or sorted(events) != sorted(want):
+        problem(f"{path}'s on: is {rendered(on)}, where {PLAN}'s TRIGGERS names the events {rendered(list(want))}: {why}",
+                path)
+    push = on.get("push") if isinstance(on, dict) else None
+    if not isinstance(push, dict):
+        problem(f"{path}'s on.push is {rendered(push)}, not a mapping with the branches {rendered(list(plan.PUSH_BRANCHES))}: "
+                f"{why}", path)
+        return
+    if sorted(push) != sorted(plan.PUSH_KEYS):
+        problem(f"{path}'s on.push sets {rendered(sorted(push))}, where {PLAN}'s PUSH_KEYS names "
+                f"{rendered(list(plan.PUSH_KEYS))}: a branches-ignore: or tags: filter changes which pushes run it", path)
+    branches = push.get("branches")
+    branches = [branches] if isinstance(branches, str) else branches
+    if branches != list(plan.PUSH_BRANCHES):
+        problem(f"{path}'s on.push.branches is {rendered(push.get('branches'))}, where {PLAN}'s PUSH_BRANCHES names "
+                f"{rendered(list(plan.PUSH_BRANCHES))}: {why}", path)
+
+
 def job_outputs(path, doc):
     """Rule 3's outputs for the workflow `path`: each job of JOB_OUTPUTS has a literal outputs:
     mapping, and each output that carries a decision on holds the value the module names."""
@@ -757,6 +785,7 @@ def version_steps(path, doc):
     for spec in plan.VERSION_STEPS:
         if spec.workflow == path:
             version_step(doc, spec)
+    triggers(path, doc)
     job_outputs(path, doc)
     decision_readers(path, doc)
 

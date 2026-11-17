@@ -57,7 +57,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the package and the fix" \
   "$(contains "$out" 'it lacks packages/envoy/internal/delta/, which go names; run `.github/scripts/check-legion-version-inputs.sh write`')"
-check "points at the block" "$(contains "$out" '::error file=.github/workflows/release.yaml,line=9::')"
+check "points at the block, line 11 below the fixture's on: and env: heads" \
+  "$(contains "$out" '::error file=.github/workflows/release.yaml,line=11::')"
 
 echo "case: a package no target links, added to the block"
 root=$(written added)
@@ -484,6 +485,27 @@ replace "$root/.github/workflows/release-envoy-listener.yaml" $'    needs: ["bui
 run_check "$root"
 check "exits 1 on docker's needs changed" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "docker's needs: is \`\[\"targets\"\]\`, $needs_rule \`\[\"build\", \"targets\"\]\` for it")"
+
+# Each workflow's on: events, push keys and push branches are pinned: a push to main is what
+# releases, so another filter skips every release with a green run and no release step changes.
+trigger_rule="where $plan_file's"
+echo "case: a workflow's push branch changed, an event taken away, or a push filter added"
+root=$(written on-branches)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    branches: ["main"]\n' $'    branches: ["elsewhere"]\n'
+run_check "$root"
+check "exits 1 on branches: [elsewhere] on the listener" "$(is "$status" 1)"
+check "names the branches and the module's" \
+  "$(contains "$out" "release-envoy-listener.yaml's on.push.branches is \`\[\"elsewhere\"\]\`, $trigger_rule PUSH_BRANCHES names \`\[\"main\"\]\`")"
+root=$(written on-events)
+replace "$root/.github/workflows/release.yaml" $'  workflow_dispatch:\n' ''
+run_check "$root"
+check "exits 1 on workflow_dispatch taken from release.yaml" "$(is "$status" 1)"
+check "names the events and the module's" "$(contains "$out" "release.yaml's on: is .*, $trigger_rule TRIGGERS names the events")"
+root=$(written on-push-keys)
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    paths: ["**"]\n    tags: ["v*"]\n'
+run_check "$root"
+check "exits 1 on a tags: filter added to release.yaml's push" "$(is "$status" 1)"
+check "names the keys" "$(contains "$out" "release.yaml's on.push sets \`\[\"branches\", \"paths\", \"tags\"\]\`, $trigger_rule PUSH_KEYS names")"
 
 # The four decision jobs' own if: (position 0), which the fixtures render on each job: one `if:
 # false` there skips every reader of the job at once.

@@ -23,11 +23,11 @@ handoff='.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS $
 # fixture: `version <job>:<step id>`, one of VERSION_STEPS with its if:, env: and its run: as a
 # `|` block; `before <name>`, one of STEPS_BEFORE_VERSION_STEPS; `outputs release|listener:<job>`,
 # the job's JOB_OUTPUTS; `job-head release|listener:<job>`, the job's own if: and needs:;
-# `chain release|listener`, the jobs whose entry is their own if: alone; or `readers
-# release|listener:<job> <steps before>`, the job's DECISION_READERS after that many steps, each at
-# its position when the module names it by one, with `run: "true"` fillers between. Every
-# fixture's jobs are built from these, so each starts pinned as the check requires and each case
-# of the harness changes one piece of it.
+# `chain release|listener`, the jobs whose entry is their own if: alone; `on release|listener`,
+# the workflow's on:; or `readers release|listener:<job> <steps before>`, the job's
+# DECISION_READERS after that many steps, each at its position when the module names it by one,
+# with `run: "true"` fillers between. Every fixture's jobs are built from these, so each starts
+# pinned as the check requires and each case of the harness changes one piece of it.
 step() {
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$@" <<'PY'
 import json
@@ -53,6 +53,18 @@ elif kind == "job-head":
     if plan.JOB_NEEDS.get(key):
         lines.append(f"    needs: {json.dumps(list(plan.JOB_NEEDS[key]))}")
     print("\n".join(lines))
+    sys.exit(0)
+elif kind == "on":
+    # The workflow's on: as TRIGGERS, PUSH_KEYS and PUSH_BRANCHES name it, every push key but the
+    # branches set to all paths.
+    path = {"release": plan.RELEASE, "listener": plan.LISTENER}[name]
+    out = ["on:"]
+    for event in plan.TRIGGERS[path]:
+        out.append(f"  {event}:")
+        if event == "push":
+            out += [f"    {key}: {json.dumps(list(plan.PUSH_BRANCHES) if key == 'branches' else ['**'])}"
+                    for key in plan.PUSH_KEYS]
+    print("\n".join(out))
     sys.exit(0)
 elif kind == "chain":
     # Each job of the workflow whose DECISION_READERS entry is its own if: alone (the jobs the
@@ -126,6 +138,8 @@ envoy_build_job_head=$(step job-head listener:release_build)
 envoy_publish_job_head=$(step job-head listener:release_publish)
 release_chain=$(step chain release)
 listener_chain=$(step chain listener)
+release_on=$(step on release)
+listener_on=$(step on listener)
 login_uses=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c 'import release_version_inputs as p; print(p.LOGIN)')
 confirm_version='          VERSION: "${{ needs.release_build.outputs.version }}"'
 # The listener's, as release-envoy-listener.yaml writes them: the envoy module but its excluded
@@ -173,9 +187,7 @@ fixture() {
   printf '{"agent-secrets-client": ["darwin/arm64"]}\n' > "$root/.github/agent-secrets-client-targets.json"
   cat > "$root/.github/workflows/release-envoy-listener.yaml" <<EOF
 name: Release Envoy Listener
-on:
-  push:
-    branches: [main]
+$listener_on
 env:
   LEGION_ENVOY_VERSION_ARGS: >-
     --patch-path .github/go-release-targets.json
@@ -206,9 +218,7 @@ $envoy_publish_readers
 YAML
   cat > "$root/.github/workflows/release.yaml" <<EOF
 name: Release Packages
-on:
-  push:
-    branches: [main]
+$release_on
 env:
   LEGION_VERSION_ARGS: >-
     --patch-path .github/go-release-targets.json
