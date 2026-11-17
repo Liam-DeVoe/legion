@@ -96,32 +96,16 @@ func (w Walk) steps() []phase.Phase {
 }
 
 // MovesBack says whether a move of w's task from the phase from to the phase to goes back by the
-// task's own order: the place of to stands before the place of from, a step before a later step
-// by its position, every step before the retro, and the retro before the merge. A phase the line
-// does not hold has no place, so a move into or out of it goes back nowhere. A run with no plan
-// rows walks today's line, so it reads phase.MovesBack, as it always did. A task in another order
-// than today's so counts its move back from testing to reviewing (the steps
-// `implementer reviewer tester`), and not the review's approval from reviewing to testing, which
-// moves it on.
+// task's own order: to stands before from on w's line, its steps in the task's order, then the
+// retro, then the merge. Each role runs at most one step of a task, so each phase stands at one
+// place of the line. A phase the line does not hold goes back nowhere, and nothing goes back into
+// it. A run with no plan rows walks today's line, phase.Order, so this is phase.MovesBack for it,
+// as it always was. A task in another order than today's so counts its move back from testing to
+// reviewing (the steps `implementer reviewer tester`), and not the review's approval from
+// reviewing to testing, which moves it on.
 func (w Walk) MovesBack(from, to phase.Phase) bool {
-	if !w.Stored {
-		return phase.MovesBack(from, to)
-	}
-	at, ok := w.PlaceOf(from)
-	back, before := w.PlaceOf(to)
-	return ok && before && w.rank(back) < w.rank(at)
-}
-
-// rank is the order of place on w's line: a step at its position from 1, then the retro, then the
-// merge.
-func (w Walk) rank(place record.TaskPlace) int {
-	switch place.Kind {
-	case record.PlaceRetro:
-		return len(w.steps()) + 1
-	case record.PlaceMerge:
-		return len(w.steps()) + 2
-	}
-	return place.Position
+	back := slices.Index(w.Line, to)
+	return back >= 0 && back < slices.Index(w.Line, from)
 }
 
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in (A-8): done
