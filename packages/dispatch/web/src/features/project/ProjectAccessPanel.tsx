@@ -295,6 +295,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
     .filter((name) => !listedGroups.includes(name));
   const groupRefusal = refusal ?? groupsRefusal(groups, available);
   const pendingOf = (match: (change: AccessChange) => boolean) => write.pending.some(match);
+  const visibilityPending = pendingOf((change) => change.kind === "visibility");
   const refusalIn = (part: AccessPart): ReactNode => {
     const refused = write.refused;
     if (refused === undefined) {
@@ -400,17 +401,19 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
         </h2>
         <div className="mt-1 flex items-center gap-3">
           {/* The switch follows Dispatch's answer, not the press: it reads the stored visibility,
-              and is busy while a change of it is out. A refusal, the reader's or Dispatch's,
-              leaves it where it was. */}
+              and a refusal from Dispatch leaves it where it was. While a change of it is out, or
+              while the reader is refused it, it cannot be pressed, and says so with
+              `aria-disabled`, never `disabled`: a browser takes the focus off a control that
+              becomes disabled under it, which would drop a keyboard reader who pressed the switch
+              to the page's body. */}
           <Switch
             aria-describedby={refusal === null ? undefined : noteId}
-            aria-disabled={refusal === null ? undefined : true}
+            aria-disabled={refusal === null && !visibilityPending ? undefined : true}
             aria-label="Private"
             checked={isPrivate}
-            className="disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-            disabled={pendingOf((change) => change.kind === "visibility")}
+            className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
             onClick={() => {
-              if (refusal !== null) return;
+              if (refusal !== null || visibilityPending) return;
               write.save({ kind: "visibility", visibility: isPrivate ? "public" : "private" });
             }}
             title={refusal ?? undefined}

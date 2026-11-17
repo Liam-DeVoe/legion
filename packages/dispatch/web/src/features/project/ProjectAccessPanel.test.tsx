@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -579,6 +579,77 @@ for (const [code, reason] of [
     }
   });
 }
+
+/** The HTML focus fixup rule, which a browser runs and happy-dom does not: a focused control that
+ *  becomes disabled loses the focus to the document's body
+ *  (https://html.spec.whatwg.org/multipage/interaction.html#focus-fixup-rule). The body is
+ *  focused rather than the control blurred, because happy-dom's `blur()` refuses a disabled
+ *  element. Returns what stops it. */
+function runFocusFixup(): () => void {
+  const observer = new MutationObserver((records) => {
+    for (const { target } of records) {
+      if (
+        target === document.activeElement &&
+        target instanceof HTMLElement &&
+        target.matches(":disabled")
+      ) {
+        document.body.focus();
+      }
+    }
+  });
+  observer.observe(document.body, {
+    attributeFilter: ["disabled"],
+    attributes: true,
+    subtree: true,
+  });
+  return () => observer.disconnect();
+}
+
+// A keyboard reader who presses the switch keeps their place through its write and the refusal
+// that answers it, so their next key reaches the switch rather than the page's body. While the
+// write is out the switch says it cannot be pressed, and a press of it sends nothing.
+test("a keyboard press of the switch keeps the focus through its write and refusal, and Enter then presses it again", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel();
+  const refused = Promise.withResolvers<ProjectAccess>();
+  const patch = spyOn(api, "patchProjectAccess")
+    .mockReturnValueOnce(refused.promise)
+    .mockImplementationOnce(panel.lands(access({ visibility: "private" })));
+  const stopFocusFixup = runFocusFixup();
+  try {
+    const toggle = await screen.findByRole("switch", { name: "Private" });
+    act(() => toggle.focus());
+    await user.keyboard(" ");
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    // The write is out: the switch says it cannot be pressed, either way a control can say so,
+    // and keeps the focus.
+    await waitFor(() => expect(toggle.matches(":disabled, [aria-disabled='true']")).toBe(true));
+    expect(toggle).toHaveFocus();
+    // A press now is swallowed, not queued behind the write that is out: once that write is
+    // answered, it is still the only one sent.
+    await user.keyboard(" ");
+
+    refused.reject(
+      new ApiError(409, {
+        code: "PRIVATE_PROJECTS_OFF",
+        error: "this deployment cannot make a project private yet: nothing was changed",
+      })
+    );
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(patch).toHaveBeenCalledTimes(1);
+    await within(screen.getByRole("region", { name: "Visibility" })).findByRole("alert");
+    expect(toggle).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+    expect(patch).toHaveBeenLastCalledWith("CORE", { visibility: "private" }, keyedAttempt);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+  } finally {
+    stopFocusFixup();
+    panel.restore();
+    patch.mockRestore();
+  }
+});
 
 test("a person who is not the owner cannot press the switch", async () => {
   const user = userEvent.setup();
