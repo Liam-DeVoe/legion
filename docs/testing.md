@@ -332,8 +332,8 @@ A Bun test waits and is guarded as R2 and R5 above say:
 
 - A command sets one guard, its `--timeout`.
   A row or a hook sets no timeout of its own, neither a third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads the command's guard and not a row's.
-  The one exception R5 allows is a hook whose work is one measured download with no shared wait in it, as the judge-omp `beforeAll` of `packages/pi-legion/scripts/skill-scenarios/rig.test.ts` pulls the judges' image:
-  such a hook takes a guard of its own, at least twice its slowest CI reading, and the `"//"` note of its package's `package.json`, where the command's guards are written, gives that number with the readings and their runs.
+  The one exception R5 allows is a hook or a row whose work is one measured download or one measured process run with no shared wait in it, as the judge-omp `beforeAll` of `packages/pi-legion/scripts/skill-scenarios/rig.test.ts` pulls the judges' image and each of its rows that runs a judge holds that judge's `docker run`:
+  such a hook or row takes a guard of its own, at least twice its slowest reading on a machine that runs the suite (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's guards are written, gives that number with the readings and their runs.
   A file whose rows need a much larger guard than the rest runs in a second `bun test` command of the same script, with its own `--timeout` and the same preload, as `packages/pi-envoy`'s `-omp` files do.
 
 These rules are how a file leaves nothing behind:

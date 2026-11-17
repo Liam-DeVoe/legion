@@ -23,10 +23,11 @@
     "agents"
   ],
   "//": [
-    "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (a builds Job) or on CI; one hook keeps a guard of its own, the last line here.",
+    "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (a builds Job) or on CI; one hook and the rows beside it keep a guard of their own, the last two lines here.",
     "The first, 15000: under the loops the slowest hook, rig-isolation.test.ts's beforeAll, took 3,408.91 ms and the slowest row 2,100.99 ms; on CI (the builds farm runs no Docker) no judge-omp row of rig.test.ts but the first took more than 3,342.44 ms (job 126217454413, push run 41722033995) over the 1,341 green jobs the last line names, and the first's time was the judges' image's pull, which that hook now makes.",
     "The second, 300000: a call the abort does not end: the worker ends its own process ..., 117,806.72 ms under the loops (77,259.43 ms on CI).",
-    "rig.test.ts's judge-omp beforeAll, which pulls the judges' image once for the file (rig.sh judge-image), has its own guard, 240000: the first judge-omp row paid for that pull until it moved there, and took 119,329.07 ms in job 134109871047 of #4267's pull-request run 44097039395 (2026-11-17T15:00:12Z), the slowest; over the 1,341 green pi-legion jobs of main's merge-group and push runs, 2026-10-29T12:58Z to 2026-11-17T16:22Z, every one of whose logs GitHub kept, it took at most 15,772.79 ms (job 126587011431, push run 41833651040)."
+    "rig.test.ts's judge-omp beforeAll, which pulls the judges' image once for the file (rig.sh judge-image), has its own guard, 240000: the first judge-omp row paid for that pull until it moved there, and took 119,329.07 ms in job 134109871047 of #4267's pull-request run 44097039395 (2026-11-17T15:00:12Z), the slowest; over the 1,341 green pi-legion jobs of main's merge-group and push runs, 2026-10-29T12:58Z to 2026-11-17T16:22Z, every one of whose logs GitHub kept, it took at most 15,772.79 ms (job 126587011431, push run 41833651040).",
+    "rig.test.ts's judge-omp rows that run a judge (judgeRow) have their own guard too, the hook's 240000 for now: each holds its judge's docker run, which took 27,176 ms on a dev box at a 1-minute load of 1,245 (2026-11-17, dispatch://INFRA-3149/comment/062ca07f-e3e4-4d0c-9927-8e54d4d3f134), past this command's 15000. It waits for the dev box's readings of completed runs, and once they come it is at least twice their slowest."
   ],
   "scripts": {
     "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
