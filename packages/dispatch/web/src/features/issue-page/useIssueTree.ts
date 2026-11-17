@@ -11,7 +11,6 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import {
   ambiguousTargets,
   buildIssueTree,
@@ -46,18 +45,19 @@ export interface IssueTreeView {
 }
 
 /**
- * The documents whose blocks the tree reads: the spec and the plan, Verification and decisions
- * documents, whose typed blocks are the ones the page draws (the root spec's R2), each the one
- * the issue read names by its id (`primarySpec`, `roleDocument`). That id is the server's own
- * answer to which document plays the part - the one in that role, or a role-less one under the
- * role's slug, which is how a row a rolling deploy left with no role still plays it
- * (`api/artifacts.go`'s `documentPlays`) - and the coverage and results reads find the
- * document by the same rule. The artifact's own `role` is no answer: the server omits it on
- * such a row, so a plan read by its role would leave that plan's tasks out of the tree while
- * the coverage counts them. A block read for every document of the issue was 25 of a first
- * load's 47 requests on the tester's built page (the tester's finding F17 on
- * dispatch://INFRA-1196), so no other document's blocks are read: four reads at most, and
- * fewer where one document plays two parts or the issue holds none in a part.
+ * The documents whose blocks the tree reads: the spec and the plan and Verification documents,
+ * whose typed blocks are the ones the page draws (the root spec's R2), each the one the issue
+ * read names by its id (`primarySpec`, `roleDocument`). That id is the server's own answer to
+ * which document plays the part - the one in that role, or a role-less one under the role's
+ * slug, which is how a row a rolling deploy left with no role still plays it
+ * (`api/artifacts.go`'s `documentPlays`) - and the coverage and results reads find the document
+ * by the same rule. The artifact's own `role` is no answer: the server omits it on such a row,
+ * so a plan read by its role would leave that plan's tasks out of the tree while the coverage
+ * counts them. A block read for every document of the issue was 25 of a first load's 47
+ * requests on the tester's built page (the tester's finding F17 on dispatch://INFRA-1196), so no
+ * other document's blocks are read: three reads at most, and fewer where one document plays two
+ * parts or the issue holds none in a part. A decision is a node of the tree read wherever it is
+ * written (`decision-nodes/decision-nodes.ts`), so no decisions document's blocks are read.
  */
 function treeDocumentIds(issue: IssueDetails): string[] {
   const ids = new Set<string>();
@@ -65,7 +65,6 @@ function treeDocumentIds(issue: IssueDetails): string[] {
     primarySpec(issue),
     roleDocument(issue, "plan"),
     roleDocument(issue, "verification"),
-    roleDocument(issue, "decisions"),
   ]) {
     if (document !== undefined) ids.add(document.id);
   }
@@ -109,17 +108,18 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  * reads are; `buildIssueTree` is pure and holds none of them, so the model is testable without a
  * server and the page makes no request per node.
  *
- * The reads are the issue's own (handed in, because the page already has it), the coverage, the
- * decisions, the results, the issue's asks, and the blocks of the spec and of the plan,
- * Verification and decisions documents (`treeDocumentIds`) - ids, types and
- * attributes, never text, which is how a `serves` edge is held without reading a document the
- * reader has not opened (R20). Every one of them is a key another surface of this issue already
- * reads, so opening the Conversation or the Decisions panel after the tree finds them answered
- * rather than fetching again. The conversation's comments and messages are nodes of this tree
- * too, its turns, and the comments also say which decisions a person asked to change
- * (`tree-drafts.ts`'s `treeDrafts`, `decision-review.ts`). No document is a node of the tree
- * (R3), so nothing here reads a document's own text. The reader's login says which open
- * questions wait on the reader (`IssueTreeReads.viewer`).
+ * The reads are the issue's own (handed in, because the page already has it), the tree read
+ * (`useTreeRead`), whose nodes the decisions are, with their review state, the coverage, the
+ * results, the issue's asks, and the blocks of the spec and of the plan and Verification
+ * documents (`treeDocumentIds`) - ids, types and attributes, never text, which is how a
+ * `serves` edge is held without reading a document the reader has not opened (R20). Every one
+ * of them is a key another surface of this issue already reads, so opening the Conversation or
+ * the Decisions panel after the tree finds them answered rather than fetching again. The
+ * conversation's comments and messages are nodes of this tree too, its turns, and a person's
+ * comment the tree read hangs under a decision is a change they asked of it
+ * (`decision-review.ts`). No document is a node of the tree (R3), so nothing here reads a
+ * document's own text. The reader's login says which open questions wait on the reader
+ * (`IssueTreeReads.viewer`).
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
  * batched request (`referenceTargetsQuery`; a tree holding more addresses than the server reads
@@ -136,7 +136,6 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
   const coverage = useQuery(issueCoverageQuery(key));
-  const decisions = useQuery(issueDecisionsQuery(key, true));
   const results = useQuery(issueResultsQuery(key));
   const asks = useQuery({
     queryKey: ["asks", key],
@@ -184,24 +183,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       asks: asks.data,
       comments: comments.data,
       coverage: coverage.data,
-      decisions: decisions.data,
       tree: answer,
       issue,
       messages: messages.data,
       results: results.data,
       viewer,
     }),
-    [
-      asks.data,
-      comments.data,
-      coverage.data,
-      decisions.data,
-      answer,
-      issue,
-      messages.data,
-      results.data,
-      viewer,
-    ]
+    [asks.data, comments.data, coverage.data, answer, issue, messages.data, results.data, viewer]
   );
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
   const refs = useMemo(() => treeReferences(unnamed), [unnamed]);
@@ -219,7 +207,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     !asks.isPending &&
     !comments.isPending &&
     !coverage.isPending &&
-    !decisions.isPending &&
     !messages.isPending &&
     !results.isPending &&
     !who.isPending &&

@@ -2,17 +2,17 @@ import { expect, test } from "bun:test";
 
 import type {
   Artifact,
-  ArtifactBlock,
   Comment,
   Decision,
+  DecisionKeep,
   DisplayTree,
   IssueCoverage,
-  IssueDecisions,
   IssueDetails,
 } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
-import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-review";
-import { buildIssueTree, type DocumentBlocks, type TreeNode } from "./issue-tree";
+import { decisionNodes } from "./decision-nodes/decision-nodes";
+import { anchorQuote, changeAnchor } from "./decision-review";
+import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { treeContext } from "./tree-drafts";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 import { waitingOnReader } from "./waiting";
@@ -22,7 +22,8 @@ import { waitingOnReader } from "./waiting";
  * (`waitingOnReader`) and the tree's own `waiting` on each node (dispatch://INFRA-1196 R7, R13,
  * R35). The two must agree, or the count puts the focus on a node that does not wait, or counts
  * one it can never reach. Both read the tree read's answer, which each case writes as the
- * contract gives it (dispatch://INFRA-1253 R8).
+ * contract gives it (dispatch://INFRA-1253 R8), and its decisions are that answer's decision
+ * nodes (`decisionNodes`).
  */
 
 const KEY = "CORE-1";
@@ -48,7 +49,6 @@ function issueDocument(id: string, slug: string, primary = false): Artifact {
 }
 
 const spec = issueDocument("artifact-spec", "spec", true);
-const made = issueDocument("artifact-decisions", "decisions-md");
 
 /** One open ask of the issue, waiting on the person `person`. */
 function openAsk(id: string, kind: "approval" | "question", person: string): OpenAsk {
@@ -80,7 +80,7 @@ function openAsk(id: string, kind: "approval" | "question", person: string): Ope
 const issue: IssueDetails = {
   advances: [],
   advances_revision: 0,
-  artifacts: [spec, made],
+  artifacts: [spec],
   assignee: "alice",
   blocked_by: [],
   children: [],
@@ -89,7 +89,7 @@ const issue: IssueDetails = {
   components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
-  decisions_artifact_id: made.id,
+  decisions_artifact_id: "",
   design_gates: [],
   external_links: [],
   holder_state: null,
@@ -123,6 +123,9 @@ const issue: IssueDetails = {
   updated_at: "2026-11-05T00:00:00Z",
   verification_artifact_id: "",
 };
+
+/** The issue with no open ask, so a case's count is its decisions' alone. */
+const quiet: IssueDetails = { ...issue, open_asks: [] };
 
 const coverage: IssueCoverage = {
   gaps: [],
@@ -178,28 +181,19 @@ function waitingDecision(blockId: string, shaped: readonly string[]): Decision {
   };
 }
 
-const decisions: IssueDecisions = {
-  decisions: [
-    waitingDecision("listed", ["r1"]),
-    waitingDecision("untied", []),
-    waitingDecision("changed", ["r1"]),
-  ],
-  document: `dispatch://${KEY}/artifact/decisions-md`,
-  open_questions: [],
-};
-
-/** The Change a person asked of the decision `changed`, after its words last changed. */
+/** A person's comment on the decision `changed`, anchored to its words, after they last
+ *  changed. */
 const change: Comment = {
   anchor: {
-    artifact_id: made.id,
-    block_id: "changed-words",
+    artifact_id: spec.id,
+    block_id: "changed",
     mark_id: "change-1",
     orphaned: false,
     quote: "The words of changed.",
     version: 3,
   },
   answers: null,
-  artifact_id: made.id,
+  artifact_id: spec.id,
   ask_id: null,
   author: { id: "alice", kind: "user" },
   body: "Say which pages this covers.",
@@ -258,6 +252,11 @@ const statement = treeNode("r1", "requirement", {
   text: "The first.",
 });
 
+/** The issue's open asks as the tree read answers them, each under the issue. */
+const askNodes = (issue.open_asks ?? []).map((ask) =>
+  treeNode(ask.id, "ask", { author: ask.author, made_at: ask.created_at, text: ask.question })
+);
+
 /** A person's comment as the tree read answers it, under the node `parent`. */
 function commentNode(comment: Comment, parent: string): TreeAnswerNode {
   return treeNode(comment.id, "comment", {
@@ -268,32 +267,30 @@ function commentNode(comment: Comment, parent: string): TreeAnswerNode {
   });
 }
 
-/** A decision as the tree read answers its node, with the members the decisions read answers
- *  for it; a block of the decisions document at `position` where it is one. */
-function decisionNode(row: Decision, position?: number): TreeAnswerNode {
-  return treeNode(row.block_id, "decision", {
+/** An agent's decision as the tree read answers its node: a decision block of the spec, with the
+ *  members the read answers on it (`waitingDecision`'s) and the words `The words of <id>.`,
+ *  unless the case gives it others. */
+function decisionNode(
+  id: string,
+  shaped: readonly string[],
+  extra: Partial<TreeAnswerNode> = {}
+): TreeAnswerNode {
+  const row = waitingDecision(id, shaped);
+  return treeNode(id, "decision", {
+    asks: row.asks,
     changed_at: row.changed_at,
-    ...(position === undefined
-      ? {}
-      : { document: { artifact_id: made.id, position, slug: "decisions-md" } }),
+    changed_version: row.changed_version,
+    document: { artifact_id: spec.id, position: 1, slug: "spec" },
     kept: row.kept,
+    kind: row.kind,
     links: row.links,
     replaced: row.replaced,
-    text: row.text,
-    unsure: row.unsure,
+    text: `The words of ${id}.`,
+    text_sha256: row.text_sha256,
     waiting_review: row.waiting_review,
+    ...extra,
   });
 }
-
-/** The issue's tree read: its statement, its open asks, and the Change under the issue, where the
- *  read hangs a comment anchored in the decisions document, whose sections are no nodes. */
-const issueTree = answerOf([
-  statement,
-  ...(issue.open_asks ?? []).map((ask) =>
-    treeNode(ask.id, "ask", { author: ask.author, made_at: ask.created_at, text: ask.question })
-  ),
-  commentNode(change, KEY),
-]);
 
 /** Whether `reference` names a statement of the issue, as the header reads it: by the coverage
  *  read's statements, each addressed as the tree addresses it, and none while that read has not
@@ -304,6 +301,32 @@ function statementsOf(read: IssueCoverage | undefined): (reference: string) => b
   return (reference) => statements.has(nodeIdOf(reference));
 }
 const isStatement = statementsOf(coverage);
+
+/** The decisions the count of `about` is handed over `tree`: its decision nodes, as the header
+ *  reads them (`IssuePropertiesRow.tsx`). */
+function decisionsOf(tree: TreeAnswer, about: IssueDetails = issue) {
+  return decisionNodes(tree, { issue: about });
+}
+
+/** How many decisions wait on alice over `tree`, in the count, and the id of each node of the
+ *  tree that waits on her, with the statements `read` holds: none while it has not answered. */
+function waits(
+  tree: TreeAnswer,
+  read: IssueCoverage | undefined,
+  about: IssueDetails = quiet
+): readonly [number, readonly string[]] {
+  return [
+    waitingOnReader(about, "alice", decisionsOf(tree, about), statementsOf(read), tree).decisions,
+    waitingIn(
+      buildIssueTree({
+        ...(read === undefined ? {} : { coverage: read }),
+        issue: about,
+        tree,
+        viewer: "alice",
+      })
+    ),
+  ];
+}
 
 /** The id of every node of `root` that waits on the reader. */
 function waitingIn(root: TreeNode): string[] {
@@ -430,105 +453,117 @@ function changePlaces(
 // open approval request whose turn is theirs. The tree marks the same question and the same
 // decision; an approval request is no node of it. While the login is not known, nothing waits.
 test("what waits on the reader is their open questions, the review list and their approval requests", () => {
-  const counted = waitingOnReader(issue, "alice", decisions, isStatement, [change], issueTree);
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
-
-  const root = buildIssueTree({
-    comments: [change],
-    coverage,
-    decisions,
-    issue,
-    tree: issueTree,
-    viewer: "alice",
-  });
-  // The decisions no node holds are drawn first under the issue (`addDecisions`).
-  expect(waitingIn(root)).toEqual(["decisions-md#b-listed", "mine"]);
-
-  const unknown = waitingOnReader(issue, undefined, decisions, isStatement, [change], issueTree);
-  expect(unknown.total).toBe(0);
-  expect(
-    waitingIn(buildIssueTree({ comments: [change], coverage, decisions, issue, tree: issueTree }))
-  ).toEqual([]);
-});
-
-// R3, R7 and R13: a Change belongs to the decision whose block holds the block the person wrote it
-// in (`Anchor.block_id`), though another decision holds its words too: the read hangs it under
-// that decision's node. Here the first decision holds the second's words and is tied to no
-// statement, so it is on no review list, and the Change is written in the second: the second
-// decision then waits on its agent, and nothing waits on the reader, in the count as in the tree.
-// A count that read the quote alone would put the Change on the first decision and count the
-// second as waiting. The Decisions filter, which reads the decisions document's blocks until
-// part U, finds the same decision by the section that holds the anchor's block, and where the
-// anchor stores no block, the quote alone decides: the first decision whose words hold it.
-test("waitingOnReader counts a Change under the decision whose block holds its anchor", () => {
-  const worded = (blockId: string, shaped: readonly string[], text: string): Decision => ({
-    ...waitingDecision(blockId, shaped),
-    text,
-  });
-  const first = worded("d1", [], "## Keep the model pure\n\nKeep the model pure. Draw it once.");
-  const second = worded("d2", ["r1"], "## Draw it once\n\nDraw it once.");
-  const both: IssueDecisions = { ...decisions, decisions: [first, second] };
-  const anchor = {
-    artifact_id: made.id,
-    block_id: "d2-words",
-    mark_id: "c-change",
-    orphaned: false,
-    quote: "Draw it once.",
-    version: 3,
-  };
-  const moved: Comment = { ...change, anchor, id: "c-change" };
-  // The decisions document's blocks in their order, as the blocks read answers them: each
-  // decision's heading, then its paragraph.
-  const placed = (id: string, type: string, from: number, to: number): ArtifactBlock => ({
-    attributes: [],
-    from,
-    id,
-    references: { asks: 0, comments: 0 },
-    to,
-    token: id,
-    type,
-  });
-  const documents: DocumentBlocks[] = [
-    {
-      artifactId: made.id,
-      blocks: [
-        placed("d1", "heading", 0, 24),
-        placed("d1-words", "paragraph", 26, 62),
-        placed("d2", "heading", 64, 80),
-        placed("d2-words", "paragraph", 82, 96),
-      ],
-    },
-  ];
-  // The two decisions as the tree read answers their nodes, and the Change under the second.
   const tree = answerOf([
     statement,
-    decisionNode(first, 0),
-    decisionNode(second, 1),
-    commentNode(moved, "d2"),
+    ...askNodes,
+    decisionNode("listed", ["r1"]),
+    decisionNode("untied", []),
+    decisionNode("changed", ["r1"]),
+    commentNode(change, "changed"),
   ]);
-  const counted = waitingOnReader(issue, "alice", both, isStatement, [moved], tree);
-  const root = buildIssueTree({
-    comments: [moved],
-    coverage,
-    decisions: both,
-    issue,
-    tree,
-    viewer: "alice",
+  const decisions = decisionsOf(tree);
+  const counted = waitingOnReader(issue, "alice", decisions, isStatement, tree);
+  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
+  expect(waitingIn(buildIssueTree({ coverage, issue, tree, viewer: "alice" }))).toEqual([
+    "mine",
+    "spec#b-listed",
+  ]);
+
+  const unknown = waitingOnReader(issue, undefined, decisions, isStatement, tree);
+  expect(unknown.total).toBe(0);
+  expect(waitingIn(buildIssueTree({ coverage, issue, tree }))).toEqual([]);
+});
+
+// R7, R13, R35: a decision the count counts is a decision node of the tree read, by the review
+// state the read answers on it: one that waits for a person's review and that a link ties to a
+// statement. One kept as it reads now, one replaced, and one that waits but is tied to nothing
+// do not count, and the tree marks the same one waiting. Before the tree read answers there is
+// no decision to count.
+test("waitingOnReader counts a waiting decision node", () => {
+  const keep: DecisionKeep = {
+    artifact_id: spec.id,
+    block_id: "kept",
+    changed_version: 2,
+    kept_at: "2026-11-05T12:00:00Z",
+    kept_by: "alice",
+  };
+  const tree = answerOf([
+    statement,
+    decisionNode("waits", ["r1"]),
+    decisionNode("kept", ["r1"], { kept: keep, waiting_review: false }),
+    decisionNode("replaced", ["r1"], { replaced: true, waiting_review: false }),
+    decisionNode("untied", []),
+  ]);
+
+  expect(waitingOnReader(quiet, "alice", decisionsOf(tree, quiet), isStatement, tree)).toEqual({
+    approvals: [],
+    asks: 0,
+    decisions: 1,
+    total: 1,
   });
-  const waitingDecisions = waitingIn(root).filter((id) => id.startsWith("decisions-md#"));
+  expect(waits(tree, coverage)).toEqual([1, ["spec#b-waits"]]);
+  expect(waitingOnReader(quiet, "alice", [], isStatement, undefined).decisions).toBe(0);
+});
 
-  expect(counted.decisions).toBe(0);
-  expect(waitingDecisions).toEqual([]);
-  expect(counted.decisions).toBe(waitingDecisions.length);
-  expect(parentsOf(root, moved.id)).toEqual(["decisions-md#b-d2"]);
-  expect(decisionChangeComments(both, [moved], issue.artifacts, documents)).toEqual(
-    new Map([["c-change", second.ref]])
-  );
+// R3, R13: a Change is the comment the tree read hangs under its decision, which is where the
+// read hangs a comment anchored inside the decision's words. A person's comment anchored to the
+// second decision's words that the read hangs elsewhere - under the issue, or under the first
+// decision, whose words hold the same sentence - is no Change of it, and the second decision
+// still waits on the reader; once the read hangs it under the second decision, that decision
+// waits on its agent, in the count as in the tree. No quote is matched for it.
+test("a Change is only the comment under its decision", () => {
+  const first = decisionNode("d1", [], { text: "Keep the model pure. Draw it once." });
+  const second = decisionNode("d2", ["r1"], { text: "Draw it once." });
+  const asked: Comment = {
+    ...change,
+    anchor: {
+      artifact_id: spec.id,
+      block_id: "d2",
+      mark_id: "c-asked",
+      orphaned: false,
+      quote: "Draw it once.",
+      version: 3,
+    },
+    id: "c-asked",
+  };
+  const hungUnder = (parent: string) => {
+    const tree = answerOf([statement, first, second, commentNode(asked, parent)]);
+    const root = buildIssueTree({ coverage, issue: quiet, tree, viewer: "alice" });
+    return { drawnUnder: parentsOf(root, asked.id), waits: waits(tree, coverage) };
+  };
 
-  const unplaced: Comment = { ...moved, anchor: { ...anchor, block_id: null } };
-  expect(decisionChangeComments(both, [unplaced], issue.artifacts, documents)).toEqual(
-    new Map([["c-change", first.ref]])
-  );
+  expect(hungUnder(KEY)).toEqual({ drawnUnder: [KEY], waits: [1, ["spec#b-d2"]] });
+  expect(hungUnder("d1")).toEqual({ drawnUnder: ["spec#b-d1"], waits: [1, ["spec#b-d2"]] });
+  expect(hungUnder("d2")).toEqual({ drawnUnder: ["spec#b-d2"], waits: [0, []] });
+});
+
+// R3 and choice 1 of dispatch://INFRA-4097's plan: a person's comment under a decision is a
+// Change only while it is newer than the decision's words and than the Keep the read answers on
+// it. One made before the words last changed asked for a change they have since had, and one
+// made before that Keep was answered by it, so the decision waits on the reader again; one newer
+// than both is a Change, and the decision waits on its agent, in the count as in the tree.
+test("a Change older than the decision's last change is no Change", () => {
+  // The decision's words last changed at 10:00 (`waitingDecision`).
+  const keptAt = (at: string): Partial<TreeAnswerNode> => ({
+    kept: { artifact_id: spec.id, block_id: "d1", changed_version: 2, kept_at: at, kept_by: "bob" },
+  });
+  const madeAt = (at: string, extra: Partial<TreeAnswerNode> = {}) =>
+    waits(
+      answerOf([
+        statement,
+        decisionNode("d1", ["r1"], extra),
+        commentNode({ ...change, created_at: at }, "d1"),
+      ]),
+      coverage
+    );
+
+  expect(madeAt("2026-11-05T09:00:00Z")).toEqual([1, ["spec#b-d1"]]);
+  expect(madeAt("2026-11-05T11:00:00Z")).toEqual([0, []]);
+  expect(madeAt("2026-11-05T11:00:00Z", keptAt("2026-11-05T12:00:00Z"))).toEqual([
+    1,
+    ["spec#b-d1"],
+  ]);
+  expect(madeAt("2026-11-05T13:00:00Z", keptAt("2026-11-05T12:00:00Z"))).toEqual([0, []]);
 });
 
 // R7, R13 and R35: a statement is a requirement the coverage read holds, as the header's count is
@@ -539,77 +574,36 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
 // waits, in the tree as in the count.
 test("a tie to a requirement the coverage read does not hold puts no decision on the review list", () => {
   const plan = issueDocument("artifact-plan", "plan-md");
-  const planned: IssueDetails = {
-    ...issue,
-    artifacts: [spec, made, plan],
-    plan_artifact_id: plan.id,
-  };
+  const planned: IssueDetails = { ...quiet, artifacts: [spec, plan], plan_artifact_id: plan.id };
+  const tiedToPlan = decisionNode("planned", ["p1"]);
   const tree = answerOf([
     statement,
     treeNode("p1", "requirement", {
       document: { artifact_id: plan.id, position: 0, slug: "plan-md" },
     }),
+    decisionNode("listed", ["r1"]),
+    {
+      ...tiedToPlan,
+      links: (tiedToPlan.links ?? []).map((link) => ({
+        ...link,
+        to: { ...link.to, id: plan.id, ref: `dispatch://${KEY}/artifact/plan-md#b-p1` },
+      })),
+    },
   ]);
-  const tiedToPlan = waitingDecision("planned", ["p1"]);
-  const toPlan: Decision = {
-    ...tiedToPlan,
-    links: (tiedToPlan.links ?? []).map((link) => ({
-      ...link,
-      to: { ...link.to, id: plan.id, ref: `dispatch://${KEY}/artifact/plan-md#b-p1` },
-    })),
-  };
-  const both: IssueDecisions = {
-    ...decisions,
-    decisions: [waitingDecision("listed", ["r1"]), toPlan],
-  };
-  const waitingDecisions = (read: IssueCoverage | undefined): string[] =>
-    waitingIn(
-      buildIssueTree({
-        ...(read === undefined ? {} : { coverage: read }),
-        decisions: both,
-        issue: planned,
-        tree,
-        viewer: "alice",
-      })
-    ).filter((id) => id.startsWith("decisions-md#"));
 
-  expect(waitingDecisions(coverage)).toEqual(["decisions-md#b-listed"]);
-  expect(waitingOnReader(planned, "alice", both, isStatement, [], tree).decisions).toBe(1);
-
-  expect(waitingDecisions(undefined)).toEqual([]);
-  expect(waitingOnReader(planned, "alice", both, statementsOf(undefined), [], tree).decisions).toBe(
-    0
-  );
+  expect(waits(tree, coverage, planned)).toEqual([1, ["spec#b-listed"]]);
+  expect(waits(tree, undefined, planned)).toEqual([0, []]);
 });
 
-// R3 and R13: a decision node's Change is the comment the tree read hangs under it, so the count
-// finds it with no block of the decisions document read, and with no decisions document at all,
-// and matches no quote: the comment here is anchored nowhere. The decision then waits on its
-// agent, in the count as in the tree; without the Change it waits on the reader in both.
-test("a Change under its decision node is counted without the decisions document", () => {
-  const bare: IssueDetails = { ...issue, artifacts: [spec], decisions_artifact_id: "" };
-  const row = waitingDecision("noded", ["r1"]);
-  const read: IssueDecisions = { decisions: [row], document: null, open_questions: [] };
-  const asked: Comment = { ...change, anchor: null, id: "c-noded" };
-  const waits = (tree: TreeAnswer): readonly [number, readonly string[]] => [
-    waitingOnReader(bare, "alice", read, isStatement, [asked], tree).decisions,
-    waitingIn(
-      buildIssueTree({
-        comments: [asked],
-        coverage,
-        decisions: read,
-        issue: bare,
-        tree,
-        viewer: "alice",
-      })
-    ),
-  ];
+// R13: a decision node no document holds has no address and no document a Keep could be written
+// against, so it is no decision of the page's (`decisionNodes`): though the read answers it
+// waiting and tied to a statement, the count does not count it and the tree does not mark it
+// waiting.
+test("a decision node no document holds waits on nobody", () => {
+  const tree = answerOf([statement, decisionNode("loose", ["r1"], { document: undefined })]);
 
-  expect(waits(answerOf([statement, decisionNode(row), commentNode(asked, "noded")]))).toEqual([
-    0,
-    [],
-  ]);
-  expect(waits(answerOf([statement, decisionNode(row)]))).toEqual([1, ["noded"]]);
+  expect(decisionsOf(tree)).toEqual([]);
+  expect(waits(tree, coverage)).toEqual([0, []]);
 });
 
 /** An intro of the decisions document that holds none of the quotes below. */
@@ -924,10 +918,8 @@ test("a Change of a decision read with no reading names an occurrence only where
 
 // One rule reads a decision for a Change: a reading that holds no blocks - a `text_tree` with no
 // `content` - is no reading, so the decision is read by its stored markdown. Its quote is then its
-// first paragraph's markdown, which the document's reading lines up with here, and a Change
-// quoting its words is placed on it. Read as that reading's words, which are none, the decision
-// would hold no block to quote, and a Change quoting the first decision's words would be placed
-// on none.
+// first paragraph's markdown, which the document's reading lines up with here. Read as that
+// reading's words, which are none, the decision would hold no block to quote.
 test("a decision whose reading holds no blocks is read by its stored markdown", () => {
   const worded = (blockId: string, heading: string, text: string): Decision => ({
     ...waitingDecision(blockId, []),
@@ -948,19 +940,4 @@ test("a decision whose reading holds no blocks is read by its stored markdown", 
     { occurrence: 1, quote: "Keep the model pure." },
     { occurrence: 2, quote: "Keep the model pure." },
   ]);
-  const quoted: Comment = {
-    ...change,
-    anchor: {
-      artifact_id: made.id,
-      block_id: null,
-      mark_id: "c-quoted",
-      orphaned: false,
-      quote: "Keep the model pure.",
-      version: 3,
-    },
-    id: "c-quoted",
-  };
-  expect(
-    decisionChangeComments({ ...decisions, decisions: rows }, [quoted], issue.artifacts, undefined)
-  ).toEqual(new Map([["c-quoted", first.ref]]));
 });

@@ -127,19 +127,12 @@ const comment: Comment = {
 };
 
 /** A read the tree is built from, by what it reads: each is one the batched name read waits on. */
-type TreeRead =
-  | "asks"
-  | "blocks"
-  | "comments"
-  | "coverage"
-  | "decisions"
-  | "login"
-  | "messages"
-  | "results";
+type TreeRead = "asks" | "blocks" | "comments" | "coverage" | "login" | "messages" | "results";
 
 /** Every read the hook makes, answered empty but for the plan's one task block, the reader's
  *  login and `comments`. The `held` read stays out until its `until` settles, and then answers
- *  as it would have. */
+ *  as it would have. The decisions read is no read of the hook's: every decision is a node of
+ *  the tree read, so the decisions read refuses. */
 function stubTreeReads(
   answerNames: (refs: readonly string[]) => Promise<{
     targets: ReferenceTarget[];
@@ -159,10 +152,7 @@ function stubTreeReads(
       await answered("coverage");
       return { gaps: [], has_plan: true, issue: KEY, requirements: [], spec_artifact_id: "" };
     }),
-    spyOn(api, "getIssueDecisions").mockImplementation(async () => {
-      await answered("decisions");
-      return { decisions: [], document: null, open_questions: [] };
-    }),
+    spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("the hook read the decisions")),
     spyOn(api, "getIssueResults").mockImplementation(async () => {
       await answered("results");
       return { checks: [], issue: KEY, verification_artifact_id: "" };
@@ -285,7 +275,6 @@ const TREE_READS: readonly TreeRead[] = [
   "comments",
   "asks",
   "coverage",
-  "decisions",
   "messages",
   "results",
   "blocks",
@@ -293,11 +282,11 @@ const TREE_READS: readonly TreeRead[] = [
 ];
 
 // The tester's F17: the names come last and all at once. While any one read of the tree is still
-// out - the comments, the asks, the coverage, the decisions, the messages, the results, the
-// plan's blocks or the reader's login - the addresses known so far are not read; once it
-// answers, every address the tree holds - a block's own, and one a comment's words cite - is
-// read in one request, and the page publishes the answer to every surface beside it
-// (`reference-names.tsx`).
+// out - the comments, the asks, the coverage, the messages, the results, the plan's blocks or the
+// reader's login - the addresses known so far are not read; once it answers, every address the
+// tree holds - a block's own, and one a comment's words cite - is read in one request, and the
+// page publishes the answer to every surface beside it (`reference-names.tsx`). The decisions are
+// nodes of the tree read, so no decisions read is made.
 test("The names are read in one batched request, after every other read has answered", async () => {
   const cited = "dispatch://CORE-7";
   for (const read of TREE_READS) {
@@ -345,6 +334,7 @@ test("The names are read in one batched request, after every other read has answ
       expect(asked, `one names read after the ${read} read answers`).toHaveLength(1);
       expect(asked[0]).toContain(TASK_REF);
       expect(asked[0]).toContain(cited);
+      expect(api.getIssueDecisions).not.toHaveBeenCalled();
       view.unmount();
     } finally {
       out.resolve();
@@ -596,21 +586,22 @@ test("once the second read has nothing left to name, the first read's newer name
 });
 
 // The tester's F17: one block read for every document of the issue was 25 of a first load's 47
-// requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
-// documents, whose typed blocks the page draws, and of no other document: each the one the issue
-// read names by its id, as the server answers which document plays which part.
-test("Only the spec and the plan, Verification and decisions documents have their blocks read", async () => {
+// requests. The tree reads the blocks of the spec and of the plan and Verification documents,
+// whose typed blocks the page draws, and of no other document: each the one the issue read names
+// by its id, as the server answers which document plays which part. A decisions document's
+// blocks are not read: every decision is a node of the tree read.
+test("Only the spec and the plan and Verification documents have their blocks read", async () => {
   const notes = issueDocument("artifact-notes", "notes-md");
+  const decisions = issueDocument("artifact-decisions", "decisions-md", { role: "decisions" });
   const read = [
     issueDocument("artifact-spec", "spec", { primary: true }),
     plan,
     issueDocument("artifact-verification", "verification-md", { role: "verification" }),
-    issueDocument("artifact-decisions", "decisions-md", { role: "decisions" }),
   ];
   const withDocuments: IssueDetails = {
     ...issue,
-    artifacts: [...read, notes],
-    decisions_artifact_id: "artifact-decisions",
+    artifacts: [...read, decisions, notes],
+    decisions_artifact_id: decisions.id,
     plan_artifact_id: plan.id,
     primary_artifact_id: "artifact-spec",
     verification_artifact_id: "artifact-verification",
@@ -633,6 +624,8 @@ test("Only the spec and the plan, Verification and decisions documents have thei
       expect(api.getArtifactBlocks).toHaveBeenCalledWith(one.id);
     }
     expect(api.getArtifactBlocks).not.toHaveBeenCalledWith(notes.id);
+    expect(api.getArtifactBlocks).not.toHaveBeenCalledWith(decisions.id);
+    expect(api.getIssueDecisions).not.toHaveBeenCalled();
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();

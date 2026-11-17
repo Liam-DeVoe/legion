@@ -9,7 +9,7 @@ import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { Artifact, Decision, IssueDecisions, IssueDetails } from "../../api/types";
+import type { Artifact, DecisionKeep, IssueDetails } from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
 import { MarginProvider } from "../margin/margin-context";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
@@ -36,6 +36,7 @@ import { CONTROL_LABELS, EMPTY_STATE_LINES, NODE_TYPE_NAMES, type NodeType } fro
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
+import { issueTreeKey, type TreeAnswer, type TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * What a reader does to the tree with the keyboard alone (dispatch://INFRA-1196 R6, R9, R23).
@@ -63,22 +64,61 @@ const decisionsDocument: Artifact = {
   versions: [],
 };
 
-const decision: Decision = {
+/** The issue's one decision as the tree read answers its node (dispatch://INFRA-1253 R8): an
+ *  agent's decision of the decisions document that waits for review, whose first paragraph is the
+ *  words a Change is anchored to. */
+const decision: TreeAnswerNode = {
   asks: [],
-  block_id: "d1",
+  attributes: {},
+  author: null,
   changed_at: null,
   changed_version: 1,
-  heading: "Ship behind a flag",
+  document: { artifact_id: decisionsDocument.id, position: 0, slug: decisionsDocument.slug },
+  id: "d1",
   kept: null,
   kind: "agent",
   links: [],
-  ref: `dispatch://${KEY}/decisions#b-d1`,
+  made_at: "2026-11-05T00:00:00Z",
+  parent: KEY,
+  rank: null,
   replaced: false,
-  text: "## Ship behind a flag\n\nWe ship it behind a flag.",
+  state: "live",
+  supertag: "decision",
+  text: "Ship behind a flag\n\nWe ship it behind a flag.",
   text_sha256: "sha256:one",
   unsure: false,
+  visibility: "project",
   waiting_review: true,
 };
+
+/** The decision's own address, by which its row and Keep and Change find it (`decisionNodes`). */
+const DECISION_REF = buildDispatchReference({
+  block: { id: decision.id },
+  key: KEY,
+  kind: "artifact",
+  slug: decisionsDocument.slug,
+});
+
+/** What Dispatch answers a Keep of `decision` with. */
+const KEPT: DecisionKeep = {
+  artifact_id: decisionsDocument.id,
+  block_id: decision.id,
+  changed_version: 1,
+  kept_at: "2026-11-06T00:00:00Z",
+  kept_by: "alice",
+};
+
+/** The tree read's answer holding `nodes`, on one page. */
+function treeAnswer(nodes: readonly TreeAnswerNode[]): TreeAnswer {
+  return {
+    converted: false,
+    cursor: null,
+    nodes: [...nodes],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  };
+}
 
 function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
   return {
@@ -144,19 +184,24 @@ function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode
 
 /** The tree alone, under the page's keymap and the focused node it sets. `reveal` is the chain
  *  down to the node an address names, which the tree is then to put the focus on
- *  (`slots/body.tsx`); `redraw` draws the same tree again, as a read answering does. */
+ *  (`slots/body.tsx`); `redraw` draws the same tree again, as a read answering does. `tree` is the
+ *  tree read's answer the page holds, which a decision's Keep and Change find their node in, with
+ *  the asks read beside it (`DecisionActions.tsx`). */
 function renderTree(
   root: TreeNode,
   {
     artifacts = [],
-    decisions,
     reveal,
-  }: { artifacts?: Artifact[]; decisions?: IssueDecisions; reveal?: readonly TreeNode[] } = {}
+    tree,
+  }: { artifacts?: Artifact[]; reveal?: readonly TreeNode[]; tree?: TreeAnswer } = {}
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
+  if (tree !== undefined) {
+    client.setQueryData(issueTreeKey(KEY), tree);
+    client.setQueryData(["asks", KEY], []);
+  }
   const edited: (string | undefined)[] = [];
   const seen: { path?: string } = {};
   const focused: { node?: FocusedNode } = {};
@@ -191,6 +236,7 @@ function renderTree(
   const view = render(draw());
   return {
     address: () => seen.path,
+    client,
     edited,
     focusedNode: () => focused.node,
     redraw: () => view.rerender(draw()),
@@ -328,10 +374,7 @@ function controlOutside(): { readonly control: HTMLElement; readonly presses: ()
 test("the whole tree is one tab stop, and the focused row's keys work its controls", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const kept = spyOn(api, "keepDecision").mockResolvedValue({
-    ...decision,
-    waiting_review: false,
-  } as never);
+  const kept = spyOn(api, "keepDecision").mockResolvedValue(KEPT);
   const root = node({
     children: [
       node({
@@ -344,7 +387,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
           },
         ],
         id: "decisions#b-d1",
-        reference: decision.ref,
+        reference: DECISION_REF,
         type: "decision",
         waiting: true,
       }),
@@ -354,7 +397,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
   });
   const view = renderTree(root, {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    tree: treeAnswer([decision]),
   });
   try {
     const [row] = rowsFor(view.container, "decisions#b-d1");
@@ -378,7 +421,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
 
     await user.keyboard("{Shift>}K{/Shift}");
     await waitFor(() => expect(kept).toHaveBeenCalled());
-    expect(kept.mock.calls[0]?.[1]).toBe(decision.block_id);
+    expect(kept.mock.calls[0]?.[1]).toBe(decision.id);
 
     await user.keyboard("{Shift>}C{/Shift}");
     const field = await view.findByRole("textbox", { name: "Your change" });
@@ -396,7 +439,7 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
     children: [
       node({
         id: "decisions#b-d1",
-        reference: decision.ref,
+        reference: DECISION_REF,
         type: "decision",
         waiting: true,
       }),
@@ -406,7 +449,7 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   });
   const view = renderTree(root, {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    tree: treeAnswer([decision]),
   });
   try {
     const [row] = rowsFor(view.container, "decisions#b-d1");
@@ -432,7 +475,7 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
 function decisionTree(): TreeNode {
   return node({
     children: [
-      node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting: true }),
+      node({ id: "decisions#b-d1", reference: DECISION_REF, type: "decision", waiting: true }),
     ],
     id: KEY,
     type: "issue",
@@ -447,11 +490,11 @@ function decisionTree(): TreeNode {
 test("Keep keeps the focus on its decision's row while its write is out, and after", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const answer = Promise.withResolvers<never>();
+  const answer = Promise.withResolvers<DecisionKeep>();
   const kept = spyOn(api, "keepDecision").mockReturnValue(answer.promise);
   const view = renderTree(decisionTree(), {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    tree: treeAnswer([decision]),
   });
   try {
     const [row] = rowsFor(view.container, "decisions#b-d1");
@@ -464,7 +507,14 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
     expect(document.activeElement, "the focus stayed on Keep, which its write disables").toBe(row);
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 
-    await act(async () => answer.resolve({ ...decision, waiting_review: false } as never));
+    // Kept, and the tree the Keep read again answers the decision kept (`DecisionActions.tsx`).
+    await act(async () => {
+      answer.resolve(KEPT);
+      view.client.setQueryData(
+        issueTreeKey(KEY),
+        treeAnswer([{ ...decision, kept: KEPT, waiting_review: false }])
+      );
+    });
     await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
     expect(document.activeElement).toBe(row);
     expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
@@ -482,7 +532,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
   const sent = spyOn(api, "createComment").mockReturnValue(answer.promise);
   const view = renderTree(decisionTree(), {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    tree: treeAnswer([decision]),
   });
   try {
     const [row] = rowsFor(view.container, "decisions#b-d1");
@@ -518,7 +568,7 @@ test("a Change the reader typed in comes back with its decision's body", async (
   const user = userEvent.setup();
   const root = node({
     children: [
-      node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting: true }),
+      node({ id: "decisions#b-d1", reference: DECISION_REF, type: "decision", waiting: true }),
       node({ id: "comment-1", text: "The next words.", type: "comment" }),
     ],
     id: KEY,
@@ -526,7 +576,7 @@ test("a Change the reader typed in comes back with its decision's body", async (
   });
   const view = renderTree(root, {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    tree: treeAnswer([decision]),
   });
   const [row] = rowsFor(view.container, "decisions#b-d1");
   if (row === undefined) throw new Error("the decision has no row");
@@ -1986,11 +2036,12 @@ test("a node whose words are only a bare address is named by its short form, in 
 });
 
 // The reviewer's finding on the outline's empty line: a tree with no node is also one whose reads
-// are still out - the asks, the comments, the messages, the decisions, the coverage, the results
-// and the documents' blocks each draw nodes once they answer, and only the children come with the
-// issue - so the line that the issue holds nothing was drawn on every cold load of an issue with
-// no children, and rows then drawn in its place. The body draws it only once those reads have
-// answered, and nothing in its place before. Here every read has answered but the comments'.
+// are still out - the asks, the comments, the messages, the coverage, the results and the
+// documents' blocks each draw nodes once they answer, and only the children come with the issue -
+// so the line that the issue holds nothing was drawn on every cold load of an issue with no
+// children, and rows then drawn in its place. The body draws it only once those reads have
+// answered, and nothing in its place before. Here every read has answered but the comments', the
+// tree read among them, with no node and so no decision.
 test("the outline says the issue holds nothing only once the reads its nodes come from have answered", async () => {
   setViewport(1440);
   const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
@@ -2001,7 +2052,7 @@ test("the outline says the issue holds nothing only once the reads its nodes com
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(issueTreeKey(KEY), treeAnswer([]));
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(["issue-messages", KEY], []);
   // The comments' read, held out until the case answers it.

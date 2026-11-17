@@ -21,7 +21,6 @@ import {
   pageWaitingChip,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
@@ -31,6 +30,7 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { decisionNodes } from "./decision-nodes/decision-nodes";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -80,18 +80,24 @@ export function IssuePropertiesRow({
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
-  // decisions, the coverage's statements, the comments a Change is written as, and the decisions
-  // the tree read answers as nodes, with each Change it hangs under one - so it costs no
-  // request of its own (`waiting.ts`). A Change of a decision no node holds is read by its
-  // quote, as `decision-review.ts` reads it with no blocks read.
+  // coverage's statements, and the decisions the tree read answers as nodes, with each Change it
+  // hangs under one - so it costs no request of its own (`waiting.ts`). The asks read, which says
+  // which answered question is a person's decision (`decisionNodes`), is watched by an observer
+  // that is never enabled, as Keep and Change watch it (`DecisionActions.tsx`): the outline holds
+  // it, and a person's decision never waits for review, so the count is the same without it.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  const decisions = useQuery(issueDecisionsQuery(issue.key, true));
   const coverage = useQuery(issueCoverageQuery(issue.key));
-  const comments = useQuery({
-    queryFn: () => api.listComments(issue.key),
-    queryKey: ["comments", issue.key],
+  const asks = useQuery({
+    enabled: false,
+    queryFn: () => api.listIssueAsks(issue.key, "all"),
+    queryKey: ["asks", issue.key],
   });
   const tree = useTreeRead(issue).answer;
+  const decisions = useMemo(
+    () =>
+      tree === undefined ? [] : decisionNodes(tree, { asks: asks.data, issue: { key: issue.key } }),
+    [asks.data, issue.key, tree]
+  );
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
@@ -102,12 +108,11 @@ export function IssuePropertiesRow({
       waitingOnReader(
         issue,
         viewer,
-        decisions.data,
+        decisions,
         (reference) => statements.has(nodeIdOf(reference)),
-        comments.data,
         tree
       ),
-    [issue, viewer, decisions.data, statements, nodeIdOf, comments.data, tree]
+    [issue, viewer, decisions, statements, nodeIdOf, tree]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.

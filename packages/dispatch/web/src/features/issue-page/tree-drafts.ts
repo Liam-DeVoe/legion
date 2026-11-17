@@ -6,7 +6,6 @@ import type {
   Ask,
   CheckBlock,
   CheckResult,
-  Decision,
   DisplayTree,
   IssueChild,
   IssueDetails,
@@ -20,15 +19,8 @@ import {
   parseNodeReference,
   shortForm,
 } from "../refs/routes";
-import { type TextSource, textSourceOf } from "../refs/text-references";
+import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
-import {
-  decisionChangeComments,
-  decisionChanges,
-  decisionNodes,
-  decisionsDocumentId,
-  inReviewList,
-} from "./decision-review";
 import { artifactsBySlug } from "./issue-artifacts";
 import type {
   IssueTreeReads,
@@ -41,7 +33,6 @@ import type {
 import {
   type AskState,
   type CheckState,
-  type DecisionState,
   type GapKind,
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
@@ -55,15 +46,14 @@ import {
  * F's rules for the drafts `buildIssueTree` places (dispatch://INFRA-1196 R4,
  * `dispatch://INFRA-1196/artifact/plan-md#b-t13`), which the tree read keeps
  * (dispatch://INFRA-4062 R1): how this issue addresses a node and names what a reference points
- * at (`treeContext`), a node's words read to plain words, how a check stands (`checkStanding`),
- * and the drafts of today's decisions read (`addDecisions`), which no node of the tree read holds
- * until part U.
+ * at (`treeContext`), a node's words read to plain words, and how a check stands
+ * (`checkStanding`).
  *
- * Every other node is drafted from the tree read (`tree-read/tree-nodes.ts`'s
- * `treeDraftsFrom`), which places and orders each one. Every function here is pure and takes the
- * reads as its input, and no request is made per node. Where a read sends the server's reading
- * of a node's words beside them, the draft keeps it with the record the words are, which is what
- * the row draws (`TreeNode.tree`).
+ * Every node is drafted from the tree read (`tree-read/tree-nodes.ts`'s `treeDraftsFrom`),
+ * which places and orders each one. Every function here is pure and takes the reads as its
+ * input, and no request is made per node. Where a read sends the server's reading of a node's
+ * words beside them, the draft keeps it with the record the words are, which is what the row
+ * draws (`TreeNode.tree`).
  *
  * The tree is the issue's conversation and what it revealed (dispatch://INFRA-1196 R1, R3): a
  * document, an artifact and a handoff are nodes of the issue and not of its conversation, so
@@ -676,149 +666,6 @@ export function askState(ask: Ask): AskState | undefined {
   const token =
     ask.state === "resolved" && ask.resolution !== undefined ? ask.resolution.kind : ask.state;
   return words[token] === undefined ? undefined : (token as AskState);
-}
-
-/**
- * Each decision of today's decisions read that no node of the tree read holds
- * (`decisionNodes`) - a section of the issue's `decisions.md`, until part U moves those onto
- * decision nodes - drafted as F drafts it, beside the drafts of the tree read, with its Changes
- * under it.
- *
- * It stands under the question it answers (R4): the asks its blocks mention (`Decision.asks`),
- * the first of them where it is edited and every other one a transclusion, as a check stands
- * under each requirement it serves. An ask the tree draws no node for - another issue's, or an
- * approval request - places nothing and stays the decision's chip, so a decision that names no
- * question of this issue stands under the issue, as any node whose parent is absent does, and
- * never inside `decisions.md`, which is no node at all. Wherever it stands it comes before its
- * siblings, but for the issue's memo, the first callout of its spec, which comes first: F drew
- * these decisions above the statements and the conversation. It names every node it links as a
- * chip, since a link places nothing, and each whole document its words cite (`addDocumentChips`).
- *
- * Its Change is a comment of the issue whose quote its words hold, by decision 65's rule, with no
- * block of the decisions document read (`decisionChangeComments`). The read hangs that comment
- * under the issue, since no node holds the decision, so it is drawn under the decision it
- * changes, which then waits on its agent. Whether a decision waits on the reader is the review
- * list's rule (`inReviewList`), read once every statement has its draft, as the header's count
- * reads it (`waiting.ts`).
- *
- * `asks` names the node each ask of the issue is drawn by, by the ask's id (`askNodeIds`).
- */
-export function addDecisions(
-  drafts: Map<string, Draft>,
-  reads: IssueTreeReads,
-  context: TreeContext,
-  asks: ReadonlyMap<string, string>
-): void {
-  const all = reads.decisions?.decisions ?? [];
-  const held = decisionNodes(all, reads.tree);
-  const rows = all.filter((decision) => !held.has(decision.ref));
-  const artifacts = reads.issue.artifacts;
-  const placed = decisionChangeComments(
-    reads.decisions,
-    reads.comments,
-    artifacts,
-    undefined,
-    reads.tree
-  );
-  const changes = decisionChanges(reads.decisions, reads.comments, artifacts, undefined, placed);
-  // The words are a block of the decisions document, which is what their references resolve
-  // against (`TreeNode.source`). The read names that document by its address, and a source
-  // names a document by its id.
-  const source = textSourceOf("artifact", decisionsDocumentId(artifacts, reads.decisions));
-  const memo = [...drafts.values()]
-    .filter(
-      (draft) =>
-        draft.type === "callout" &&
-        draft.parents.length === 0 &&
-        draft.id.startsWith(blockNodeId(context.specSlug, ""))
-    )
-    .sort((one, other) => one.order - other.order)[0];
-  const first = memo?.order ?? -1;
-  // A statement is a requirement the coverage read holds, as the header's count is handed the
-  // coverage read's statements (`waitingOnReader`'s `isStatement`): a `requirement` no coverage
-  // row holds is a block and nothing more, and a tie to it puts no decision on the list.
-  const isStatement = (reference: string): boolean =>
-    drafts.get(context.nodeIdOf(reference) ?? "")?.counts !== undefined;
-  const made = new Map<string, Draft>();
-  rows.forEach((decision, index) => {
-    const id = context.nodeIdOf(decision.ref);
-    if (id === undefined) return;
-    // Each a fraction of one past the memo's order, so they stand together before every
-    // sibling the read orders after it.
-    const draft = blank(id, "decision", first + (index + 1) / (rows.length + 1));
-    const answers = decision.asks ?? [];
-    // A target with no address of its own is named by nothing, so there is no chip to draw for
-    // it (`GraphNode.ref` is optional). The section links a block once for each of its
-    // paragraphs that links it, and names an ask once for each that cites it
-    // (`api/decisions.go`), so each target is one chip, stale where any of its links is.
-    const linked = new Map<string, NodeChip>();
-    for (const link of decision.links ?? []) {
-      const ref = link.to.ref;
-      if (ref === undefined) continue;
-      const stale = link.stale || linked.get(ref)?.stale === true;
-      linked.set(ref, { ...context.chipOf(ref), stale });
-    }
-    draft.chips = [
-      ...linked.values(),
-      ...[...new Set(answers)]
-        .filter((ask) => !asks.has(ask))
-        .map((ask) =>
-          context.chipOf(buildDispatchReference({ id: ask, key: context.key, kind: "ask" }))
-        ),
-    ];
-    draft.parents = answers.flatMap((ask) => {
-      const parent = asks.get(ask);
-      return parent === undefined ? [] : [parent];
-    });
-    if (decision.changed_at !== null) draft.at = decision.changed_at;
-    draft.reference = decision.ref;
-    draft.replaced = decision.replaced;
-    draft.source = source;
-    draft.text = decision.text;
-    draft.tree = decision.text_tree;
-    // How the decision stands with the reader, drawn as this node's own state word and shape
-    // the way every other state is (R21).
-    const changed = changes.has(decision.ref);
-    draft.state = decisionState(decision, changed);
-    if (decision.kept !== null && !decision.waiting_review) {
-      draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
-    }
-    if (decision.unsure) draft.unsure = true;
-    // Nothing waits on a reader whose login has not resolved, as `waiting.ts` counts it.
-    draft.waiting = context.viewer !== undefined && inReviewList(decision, isStatement, changed);
-    made.set(id, draft);
-  });
-  addDocumentChips(made, reads, context);
-  for (const [id, draft] of made) drafts.set(id, draft);
-  // Each Change of these decisions stands under the decision it changes, where the read hangs it
-  // under the issue: a comment the read places under another node is a reply, in its thread.
-  for (const [comment, ref] of placed) {
-    const draft = drafts.get(comment);
-    const decision = context.nodeIdOf(ref);
-    if (
-      draft?.type === "comment" &&
-      draft.parents.length === 0 &&
-      decision !== undefined &&
-      made.has(decision)
-    ) {
-      draft.parents = [decision];
-    }
-  }
-}
-
-/**
- * How a decision stands with the reader, in the states the page draws
- * (`NODE_STATE_WORDS.decision`, R2): replaced by a later one first, since nothing waits on it
- * any longer; then a change the reader asked for, which waits on its agent and not on the
- * reader (`decision-review.ts`); then waiting for review; then kept, by the person whose name the
- * row draws after it (`TreeNode.keptBy`). A person's own decision is in none of them: it is
- * theirs, and the row draws no state.
- */
-function decisionState(decision: Decision, changed: boolean): DecisionState | undefined {
-  if (decision.replaced) return "replaced";
-  if (changed) return "change_requested";
-  if (decision.waiting_review) return "waiting_review";
-  return decision.kept === null ? undefined : "kept";
 }
 
 /**

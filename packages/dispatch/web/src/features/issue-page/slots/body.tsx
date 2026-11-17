@@ -5,7 +5,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { buildIssuePath } from "../../refs/routes";
 import { useAddressTarget } from "../address-target";
 import { IssuePresetPanels } from "../IssuePresetPanels";
@@ -43,7 +42,6 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
     combine: (answers) => answers.every((answer) => answer.data !== undefined),
     queries: [
       issueCoverageQuery(key),
-      issueDecisionsQuery(key, true),
       issueResultsQuery(key),
       { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] },
       { queryFn: () => api.listComments(key), queryKey: ["comments", key] },

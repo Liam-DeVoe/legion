@@ -18,7 +18,6 @@ import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import {
-  addDecisions,
   addressesAsShortForms,
   BLANK_LINE,
   type Draft,
@@ -27,7 +26,7 @@ import {
   type TreeContext,
   treeContext,
 } from "./tree-drafts";
-import { askNodeIds, treeDraftsFrom } from "./tree-read/tree-nodes";
+import { treeDraftsFrom } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -59,10 +58,9 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  *
  * The tree read (`IssueTreeReads.tree`), whose answer the page keeps whole (dispatch://INFRA-4062
  * R7), and the reads that tell what the answer does not, each matched to its node by its address:
- * the issue read, the coverage read, the decisions read, the results read, the asks, and the one
- * batched reference read, which names what a chip points at outside the answer. Until part U the
- * decisions read also draws each decision no node of the answer holds, a section of
- * `decisions.md`, as F drew it (`tree-drafts.ts`'s `addDecisions`). No document's blocks are read.
+ * the issue read, the coverage read, the results read, the asks, and the one batched reference
+ * read, which names what a chip points at outside the answer. Every decision is a node of the
+ * answer, with its review state on it (dispatch://INFRA-1253 R8). No document's blocks are read.
  */
 
 /** One tie of a node that places nothing, drawn beside the node as its target's name. */
@@ -223,10 +221,9 @@ export interface TreeNode {
   /** The node's own whole text; `""` where the model holds none. */
   readonly text: string;
   /** The server's reading of `text`, where the read that carried the text sends one: the tree
-   *  read's `text_tree` for every node it answers, and a decision's (`Decision.text_tree`) for a
-   *  decision of the decisions read. The row draws the node's words from it, so stored markdown
-   *  is drawn as what it says and the browser parses none of it (R20). A node whose read sends
-   *  none draws `text` as stored. */
+   *  read's `text_tree` for every node it answers. The row draws the node's words from it, so
+   *  stored markdown is drawn as what it says and the browser parses none of it (R20). A node
+   *  whose read sends none draws `text` as stored. */
   readonly tree?: DisplayTree;
   /** Whether this placement is a transclusion rather than the node's edited place. */
   readonly transcluded: boolean;
@@ -272,9 +269,7 @@ export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
   readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
-  readonly decisions?: IssueDecisions;
-  /** The issue's comments with each body's reading: what a Change of a decision the tree read
-   *  holds no node for is found among (`addDecisions`). */
+  /** The issue's comments with each body's reading. The tree read answers each as a node. */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   readonly issue: IssueDetails;
   /** The issue's messages with their replies. The tree read answers each as a node. */
@@ -501,16 +496,14 @@ function namingContext(reads: IssueTreeReads): TreeContext {
 
 /**
  * The issue's whole tree, from the reads it was given: the drafts of the tree read
- * (`treeDraftsFrom`), each where the read places it, with F's drafts of each decision of today's
- * decisions read that no node of the answer holds (`addDecisions`, until part U). Until the tree
- * read has answered every page (`IssueTreeReads.tree`), the tree is the issue alone, since a
- * node the read places under one not yet read would otherwise be drawn in the wrong place.
+ * (`treeDraftsFrom`), each where the read places it. Until the tree read has answered every page
+ * (`IssueTreeReads.tree`), the tree is the issue alone, since a node the read places under one
+ * not yet read would otherwise be drawn in the wrong place.
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const context = namingContext(reads);
   if (reads.tree === undefined) return assemble(reads.issue, [], context.chipOf);
   const drafts = treeDraftsFrom(reads.tree, reads, { ...context, chipLine, lineWords });
-  addDecisions(drafts, reads, context, askNodeIds(drafts, reads.tree, reads));
   return assemble(reads.issue, [...drafts.values()], context.chipOf);
 }
 

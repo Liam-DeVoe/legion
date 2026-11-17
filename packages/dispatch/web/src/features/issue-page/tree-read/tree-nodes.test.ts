@@ -5,15 +5,14 @@ import { api } from "../../../api/client";
 import type {
   Artifact,
   Ask,
-  Comment,
-  Decision,
   DecisionLink,
   DisplayTree,
   IssueCoverage,
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { decisionChanges, decisionNodeChanges } from "../decision-review";
+import { decisionNodes } from "../decision-nodes/decision-nodes";
+import { decisionNodeChanges } from "../decision-review";
 import {
   assemble,
   buildIssueTree,
@@ -587,13 +586,14 @@ test("another issue's block keeps the read's id where its document has this issu
 // on the reader. A person's comment older than its words, and an agent's, stand under it too,
 // and neither is a Change, so without the newer one the decision waits for the reader's review.
 test("a Change is the comment the read hangs under its decision", () => {
-  const decision = node("d1", "decision", KEY, {
+  const decision = block("d1", "decision", KEY, SPEC, 1, {
     changed_at: "2026-11-05T00:00:00Z",
     kept: null,
     links: [linkTo(`dispatch://${KEY}/spec#b-r1`)],
     replaced: false,
     waiting_review: true,
   });
+  const drawnDecision = blockNodeId("spec", "d1");
   const earlier = [
     block("r1", "requirement", KEY, SPEC, 0),
     decision,
@@ -616,12 +616,12 @@ test("a Change is the comment the read hangs under its decision", () => {
   ]);
   expect(
     ["c-older", "c-agent", "c-change"].map((id) => placementsOf(root, id).map((one) => one.parent))
-  ).toEqual([["d1"], ["d1"], ["d1"]]);
-  expect(nodeOf(root, "d1")).toMatchObject({ state: "change_requested", waiting: false });
+  ).toEqual([[drawnDecision], [drawnDecision], [drawnDecision]]);
+  expect(nodeOf(root, drawnDecision)).toMatchObject({ state: "change_requested", waiting: false });
 
   const unchanged = answer(earlier);
   expect(decisionNodeChanges(unchanged).size).toBe(0);
-  expect(nodeOf(drawn(unchanged, reads).root, "d1")).toMatchObject({
+  expect(nodeOf(drawn(unchanged, reads).root, drawnDecision)).toMatchObject({
     state: "waiting_review",
     waiting: true,
   });
@@ -664,85 +664,62 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
   });
 });
 
-// R3, decision 65: a decision of today's decisions read - a section of `decisions.md`, which no
-// node of the answer holds - finds its Change by its words, with no block of the decisions
-// document read: the change is the first decision whose words hold the anchor's quote. The read
-// hangs the comment under the issue, since no node holds the decision, and the outline draws it
-// under the decision it changes, which reads Change requested; a comment quoting words no
-// decision holds is no change and stays where the read hangs it.
-test("a decisions.md section finds its Change by its words", () => {
-  const section = (id: string, heading: string, words: string): Decision => ({
-    asks: [],
-    block_id: id,
-    changed_at: "2026-11-05T00:00:00Z",
-    changed_version: 1,
-    heading,
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: `dispatch://${KEY}/artifact/decisions-md#b-${id}`,
-    replaced: false,
-    text: `## ${heading}\n\n${words}`,
-    text_sha256: "sum",
-    unsure: false,
-    waiting_review: true,
-  });
-  const anchored = (id: string, quote: string): Comment => ({
-    anchor: {
-      artifact_id: DECISIONS.id,
-      block_id: `${id}-block`,
-      mark_id: id,
-      orphaned: false,
-      quote,
-      version: 1,
-    },
-    answers: null,
-    artifact_id: null,
-    ask_id: null,
-    author: { id: "alice", kind: "user" },
-    body: `Change ${id}.`,
-    created_at: "2026-11-06T00:00:00Z",
-    deliveries: [],
-    edited_at: null,
-    id,
-    issue_key: KEY,
-    mentions: [],
-    reply_block: null,
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-  });
-  const keep = section("d1", "Keep it", "Keep the model pure.");
-  const draw = section("d2", "Draw it", "Draw it once.");
-  const comments = [
-    anchored("c-change", "Draw it once."),
-    anchored("c-stray", "Words no decision holds."),
-  ];
-  const decisions = {
-    decisions: [keep, draw],
-    document: `dispatch://${KEY}/artifact/decisions-md`,
+// The rule `decision-nodes.ts` copies from this module (its own `referenceOf`, since importing
+// this module would close an import cycle): a decision's address is the address the outline's
+// draft of the same node carries, so Keep and Change, the review list and the count find a
+// decision by the address its row was drawn with. A decision of the spec, one of the decisions
+// document and one of another issue, each addressed in its document; an ask block and an ask of
+// the conversation that the asks read says are answered and that carry a `shaped` tie, each
+// addressed as the ask it is.
+test("a decision node's address is the outline's", () => {
+  const answered = {
+    at: "2026-11-06T12:00:00Z",
+    selected: [],
+    text: "All of them.",
+    user: "alice",
   };
-
-  const changes = decisionChanges(decisions, comments, issueDetails().artifacts, undefined);
-  expect([...changes].map(([ref, comment]) => [ref, comment.id])).toEqual([[draw.ref, "c-change"]]);
-  const root = buildIssueTree({
-    comments,
-    decisions: { ...decisions, open_questions: [] },
+  const tree = answer(
+    [
+      block("r1", "requirement", KEY, SPEC, 0),
+      block("d1", "decision", KEY, SPEC, 1, { kept: null, waiting_review: true }),
+      block("d2", "decision", KEY, DECISIONS, 0, { kept: null, waiting_review: true }),
+      node("d3", "decision", KEY, {
+        document: { artifact_id: "artifact-core-2-spec", position: 0, slug: "spec" },
+        issue: "CORE-2",
+        kept: null,
+        waiting_review: true,
+      }),
+      block("q1", "ask", KEY, SPEC, 2),
+      node("ask-2", "ask", KEY),
+    ],
+    [tuple("shaped", "q1", "r1"), tuple("shaped", "ask-2", "r1")]
+  );
+  const reads: IssueTreeReads = {
+    asks: [
+      question("ask-1", {
+        answer: answered,
+        artifact_id: SPEC.id,
+        block_id: "q1",
+        state: "answered",
+      }),
+      question("ask-2", { answer: answered, state: "answered" }),
+    ],
     issue: issueDetails(),
-    tree: answer(
-      comments.map((one) =>
-        node(one.id, "comment", KEY, { author: one.author, made_at: one.created_at })
-      )
-    ),
-  });
-  expect(
-    ["c-change", "c-stray"].map((id) => placementsOf(root, id).map((one) => one.parent))
-  ).toEqual([[blockNodeId("decisions-md", "d2")], [KEY]]);
-  expect(nodeOf(root, blockNodeId("decisions-md", "d2"))?.state).toBe("change_requested");
-  expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
+  };
+  const decisions = decisionNodes(tree, reads);
+  const idOf = treeIdOf(tree, reads);
+  const { drafts } = drawn(tree, reads);
+
+  expect(decisions.map((one) => one.ref)).toEqual([
+    `dispatch://${KEY}/artifact/spec#b-d1`,
+    `dispatch://${KEY}/artifact/decisions-md#b-d2`,
+    "dispatch://CORE-2/artifact/spec#b-d3",
+    `dispatch://${KEY}/ask/ask-1`,
+    `dispatch://${KEY}/ask/ask-2`,
+  ]);
+  expect(decisions.map((one) => drafts.get(idOf(one.node.id))?.reference)).toEqual(
+    decisions.map((one) => one.ref)
+  );
 });
 
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the

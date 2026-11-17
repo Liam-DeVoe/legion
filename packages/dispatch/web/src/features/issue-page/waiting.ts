@@ -1,11 +1,7 @@
-import type { IssueDecisions, IssueDetails } from "../../api/types";
+import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import {
-  type ChangeComment,
-  decisionChangeComments,
-  decisionChanges,
-  inReviewList,
-} from "./decision-review";
+import type { DecisionNode } from "./decision-nodes/decision-nodes";
+import { decisionNodeChanges, inReviewList } from "./decision-review";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -22,11 +18,10 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
  *
- * A decision the reader asked to change waits on its agent and is not counted
- * (`decisionChanges`), by the outline's one rule (`decisionChangeComments`): a decision node's
- * Change is a comment the tree read (`tree`) hangs under it, and the Change of a decision the
- * read holds no node for is a comment of the issue's (`comments`) whose quote its words hold
- * (decision 65), so the count reads no block of the decisions document.
+ * A decision is a decision node of the tree read (`decisionNodes`), and one the reader asked to
+ * change waits on its agent and is not counted, by the outline's one rule
+ * (`decisionNodeChanges`): its Change is a comment the tree read (`tree`) hangs under its node,
+ * so the count matches no quote and reads no block of a document.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -44,9 +39,8 @@ export interface WaitingOnReader {
 export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
-  decisions: IssueDecisions | undefined,
+  decisions: readonly DecisionNode[],
   isStatement: (reference: string) => boolean,
-  comments: readonly ChangeComment[] | undefined,
   tree: TreeAnswer | undefined
 ): WaitingOnReader {
   const open =
@@ -64,18 +58,12 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
-  const changes = decisionChanges(
-    decisions,
-    comments,
-    issue.artifacts,
-    undefined,
-    decisionChangeComments(decisions, comments, issue.artifacts, undefined, tree)
-  );
+  const changes = tree === undefined ? undefined : decisionNodeChanges(tree);
   const reviewing =
     viewer === undefined
       ? 0
-      : (decisions?.decisions ?? []).filter((decision) =>
-          inReviewList(decision, isStatement, changes.has(decision.ref))
+      : decisions.filter((decision) =>
+          inReviewList(decision, isStatement, changes?.has(decision.node.id) === true)
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }
