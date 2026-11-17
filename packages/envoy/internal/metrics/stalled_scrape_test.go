@@ -11,8 +11,9 @@ import (
 
 // stalledResponse is a scrape's response whose writes stop at the first one that carries at, as a
 // scrape client that stops reading stops the metrics server's writes once the socket's buffers are
-// full: the server's write then waits on the client for up to its WriteTimeout. entered is closed
-// when a write has stopped, and closing released lets every write through.
+// full: the server's write then waits on the client, until the server's write timeout where it
+// sets one. entered is closed when a write has stopped, and closing released lets every write
+// through.
 type stalledResponse struct {
 	at       []byte
 	header   http.Header
@@ -36,9 +37,8 @@ func (s *stalledResponse) Write(p []byte) (int, error) {
 // A scrape whose client stops reading blocks nothing that records. In each row the scrape's write
 // stops on the line of one metric's series, and that metric is then recorded to, or a metric
 // registered, which must return at once. A handler that held the metric's lock, or the registry's,
-// across its write to the scrape would hold the recording until the client read or the server's
-// WriteTimeout passed; the broker's NATS auth service, Dispatch and the listener record as they
-// answer and all serve this handler.
+// across its write to the scrape would hold the recording for as long as the client did not read;
+// Dispatch, the listener and the broker record as they answer requests and all serve this handler.
 func TestAStalledScrapeBlocksNoRecording(t *testing.T) {
 	r := New()
 	counter := r.NewCounter("envoy_test_answers_total", "Answers the test counts")
