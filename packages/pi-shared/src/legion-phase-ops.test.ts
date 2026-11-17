@@ -6,6 +6,8 @@ import { z } from "zod";
 import { createLegionDaemonClient } from "./daemon-client";
 import {
   type ClaimCapability,
+  type DeclaredNumber,
+  declaredNumber,
   executePhaseOp,
   legionToolDescription,
   PHASE_OP_SENTENCES,
@@ -116,6 +118,35 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       .filter((f) => f !== "op")
   );
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
+});
+
+// A number field is declared to the host with the bounds its own checks give, in whatever order
+// they were written, and with none on a side it bounds nowhere; the test above holds plan_rating's
+// declaration to 1 and 5. zod's `int()` writes the safe integer range into a schema's `_zod.bag`
+// as it attaches, over a bound written before it, so a reading of the bag declares that range for
+// a side with no bound, and in place of a `min()` written before `int()`. An exclusive bound,
+// which the host's number takes no form of, throws, and so does a check this does not map.
+test("a phase op's number field declares the bounds its checks give, in any order, and none on a side with none", () => {
+  const cases: readonly (readonly [z.ZodNumber, DeclaredNumber])[] = [
+    [z.number(), { int: false }],
+    [z.number().int(), { int: true }],
+    [z.number().min(1).int(), { int: true, min: 1 }],
+    [z.number().max(5).int(), { int: true, max: 5 }],
+    [z.number().int().min(1).max(5), { int: true, min: 1, max: 5 }],
+    [z.number().max(5).int().min(1), { int: true, min: 1, max: 5 }],
+    [z.number().min(1).min(3).max(9).max(5), { int: false, min: 3, max: 5 }],
+  ];
+  for (const [field, declared] of cases) {
+    expect(declaredNumber("n", field)).toStrictEqual(declared);
+  }
+  for (const field of [z.number().gt(0), z.number().int().lt(5), z.number().positive().int()]) {
+    expect(() => declaredNumber("n", field)).toThrow(
+      "phase op field n has an exclusive bound, which phaseOpParameters does not map"
+    );
+  }
+  expect(() => declaredNumber("n", z.number().int().multipleOf(2))).toThrow(
+    "phase op field n has a multiple_of check, which phaseOpParameters does not map"
+  );
 });
 
 test("the description sets the host's sentences before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
