@@ -106,11 +106,16 @@ type PushRequest struct {
 // reports a failure of its own before the guard runs — `legion leak-check pre-push` reading
 // git's update lines — must name the write in the same words the guard would, and two copies of
 // one sentence are two that drift apart.
+//
+// A push to a URL rather than to a remote, `git push https://user:token@github.com/...`, hands the
+// hook that URL as the remote's name, and every refusal and setup failure of the push is printed
+// for whoever reads the log, so the name is written without the user and password a URL can carry
+// (withoutUserinfo), as a failure that names the URL itself is.
 func PushName(remote string) string {
 	if remote == "" {
 		return "the push"
 	}
-	return "the push to " + remote
+	return "the push to " + withoutUserinfo(remote)
 }
 
 // Push checks a push before it is made, in three passes, and the first that refuses it is the
@@ -262,17 +267,27 @@ func (g *Guard) commits(ctx context.Context, dir string, held []string, update U
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates
 // (a sha of all zeros), and false for a remote sha this repository has never fetched, where the
-// destination's other refs alone say what it holds (Guard.commits).
+// destination's other refs alone say what it holds (Guard.commits). It asks as the read of what
+// the destination holds asks (Guard.advertised), fetching nothing (fetchesNothing): in a partial
+// clone, git fetches a commit the clone lacks from the promisor remote the moment cat-file asks
+// for it, so a remote sha the clone never fetched would be fetched to be answered.
 func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 	if sha == "" || zeroSHA(sha) {
 		return false, nil
 	}
-	status, _, err := g.run(ctx, child{argv: gitArgv("cat-file", "-e", sha+"^{commit}"), dir: dir})
+	status, _, err := g.run(ctx, child{argv: gitArgv("cat-file", "-e", sha+"^{commit}"), dir: dir, env: fetchesNothing})
 	if err != nil {
 		return false, err
 	}
 	return status == 0, nil
 }
+
+// fetchesNothing is the environment of a read of what a repository has that must fetch nothing
+// to answer: GIT_NO_LAZY_FETCH=1 (git 2.44 and later), under which an object a partial clone
+// lacks is answered missing rather than fetched from its promisor remote. The reads of what the
+// destination holds run so (Guard.advertised, Guard.holds); the reads of a commit's files do not,
+// since a commit read in a partial clone needs the blobs it lacks fetched (blobBatch).
+var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 
 // advertised are the commits the repository at url holds at its branches and tags, of those the
 // repository at dir has: what a push to url, or a fork's push of url's own commits, need not
@@ -288,16 +303,15 @@ func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 // kept, an annotated tag's peeled commit (<tag>^{}) too, where dir has it as a commit, which one
 // cat-file --batch-check of them all answers. A sha dir does not have holds nothing, since
 // rev-list cannot walk from it: where it is a commit ahead of dir's, the commits of dir's that it
-// reaches are read, which is the fail-closed direction. The cat-file runs with
-// GIT_NO_LAZY_FETCH=1 (git 2.44 and later), so that in a partial clone, as an issue pod's fork
-// clones are (--filter=blob:none), a sha dir lacks is answered missing rather than fetched from
-// the promisor remote: the read of what url holds fetches nothing, and a sha dir lacks holds
-// nothing there as it does anywhere. That one call alone runs so, since a merge read in a partial
-// clone needs the blobs it lacks fetched (mergeFiles). An empty answer, a repository with no
-// branch and no tag, holds nothing. A git that cannot be run, or that exits other than 0, is an
-// error naming url, never a repository read as holding nothing, and the error carries no
-// credential: the URL it names and git's standard error it quotes are each written without the
-// user and password a URL can carry (withoutUserinfo).
+// reaches are read, which is the fail-closed direction. The cat-file fetches nothing
+// (fetchesNothing), so that in a partial clone, as an issue pod's fork clones are
+// (--filter=blob:none), a sha dir lacks is answered missing rather than fetched from the promisor
+// remote: the read of what url holds fetches nothing, and a sha dir lacks holds nothing there as
+// it does anywhere. An empty answer, a repository with no branch and no tag, holds nothing. A git
+// that cannot be run, or that exits other than 0, is an error naming url, never a repository read
+// as holding nothing, and the error carries no credential: the URL it names and git's standard
+// error it quotes are each written without the user and password a URL can carry
+// (withoutUserinfo).
 func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, error) {
 	read := "git ls-remote " + withoutUserinfo(url)
 	var stderr strings.Builder
@@ -328,7 +342,7 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 	status, types, err := g.run(ctx, child{
 		argv:   gitArgv("cat-file", "--batch-check"),
 		dir:    dir,
-		env:    []string{"GIT_NO_LAZY_FETCH=1"},
+		env:    fetchesNothing,
 		stdin:  strings.NewReader(shas.String()),
 		stderr: &stderr,
 	})
@@ -369,11 +383,11 @@ func zeroSHA(sha string) bool {
 }
 
 // commitRecords is one commit as records. The identities and the message come from the commit
-// itself; the added and renamed paths and the added lines come from its diff where it has at
-// most one parent (diffTree), and from its files where it is a merge (mergeFiles). The records
-// come in one order whatever the shape, so that a report lists its lines alike from one run to
-// the next: the identities, the message, the paths in path order, then the lines in path order
-// and, within a file, line order.
+// itself; the added and renamed paths and the added lines come from its files and its diff where
+// it has at most one parent (commitFiles), and from its files where it is a merge (mergeFiles).
+// The records come in one order whatever the shape, so that a report lists its lines alike from
+// one run to the next: the identities, the message, the paths in path order, then the lines in
+// path order and, within a file, line order.
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
@@ -402,16 +416,12 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	var paths []string
 	var added []Record
 	if len(parents) > 1 {
-		if paths, added, err = g.mergeFiles(ctx, dir, commit, parents); err != nil {
-			return nil, err
-		}
+		paths, added, err = g.mergeFiles(ctx, dir, commit, parents)
 	} else {
-		if paths, err = g.addedPaths(ctx, dir, commit, len(parents)); err != nil {
-			return nil, err
-		}
-		if added, err = g.addedLines(ctx, dir, commit, len(parents)); err != nil {
-			return nil, err
-		}
+		paths, added, err = g.commitFiles(ctx, dir, commit, len(parents))
+	}
+	if err != nil {
+		return nil, err
 	}
 	slices.Sort(paths)
 	for _, path := range paths {
@@ -422,15 +432,18 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	return append(records, added...), nil
 }
 
-// diffTree is a diff-tree of a commit of at most one parent: --root for a root commit, whose
-// diff is otherwise empty. A merge is read from its files instead (mergeFiles).
+// diffTree is a diff-tree of a commit of at most one parent, which both lists its changes and
+// writes the patch of those it diffs (commitFiles): --root for a root commit, whose diff is
+// otherwise empty. Renames are found (-M), so that the diff of a renamed file is of the lines the
+// rename changed, and the list and the patch, which both read this shape, find the same ones. A
+// merge is read from its files instead (mergeFiles).
 //
 // Every file's patch is written as text, whatever an attribute says of the file: --text, since a
 // file .gitattributes marks -diff or binary, a .gitattributes the pushed commit adds itself
 // included, is otherwise "Binary files ... differ" and no line; --no-textconv, so that no diff
 // driver's textconv stands another text in for the file's own; and --no-ext-diff, so that no
 // external diff program writes the patch. Whether a file is binary is then its own content's to
-// say, as it is for a merge's (addedLines).
+// say, as it is for a merge's, and a binary file is in no patch (commitFiles).
 //
 // A git that refuses the diff answers a non-zero status, which Guard.git makes an error of and
 // Guard.Push a setup failure: a diff that could not be read refuses the push, and is never a
@@ -443,80 +456,289 @@ func diffTree(parents int, args ...string) []string {
 	return append(argv, args...)
 }
 
-// addedPaths are the paths a commit of at most one parent adds or renames a file to, which are
-// the paths the destination would hold that it does not hold already.
-func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int) ([]string, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
+// commitFiles are the paths a commit of at most one parent adds or renames a file to, which are
+// the paths the destination would hold that it does not hold already, and the lines it adds, each
+// as a record of the file it is added to and of its number in the commit's version of that file.
+//
+// Its changes are listed first (commitChanges), and each file a line could be read from is
+// classed before any is diffed, from one cat-file --batch that answers the files a blob at a time
+// as git writes them (blobBatch). A file is binary as a merge's is, by a zero byte in its first
+// 8000 bytes (binary), whatever an attribute says, and a binary file, the commit's or the
+// parent's, is read no further than those bytes and diffed not at all, whatever its size: the
+// commit's adds no line. A text file of the commit's is read only where it is at most blobBound
+// bytes, and one above that refuses the push as a setup failure naming the file and its size, as
+// a merge's does (mergeFiles says why); so does a text file of the parent's that a file of the
+// commit's is diffed against, whose removed lines the diff would write. Of the rest:
+//
+//   - a file the parent has no text of to diff it against — an added file, the far side of a
+//     change of type, which git's diff writes as one file removed and another added, and a file
+//     that replaces a binary one — adds every line it has, which the batch reads;
+//   - a file the commit modifies or renames from a text file of the parent's is diffed, and adds
+//     the lines the diff marks as added (addedLines);
+//   - and a submodule at a commit the parent's is not at adds the one line git's diff writes of
+//     it, "Subproject commit <sha>", as line 1.
+//
+// One diff answers for every file it diffs, whatever their number, and it diffs nothing else. It
+// is of the commit's modifications and renames alone (--diff-filter=MR), so that no file added,
+// removed or changed in type is in it, and it leaves out, by pathspec, each modification and
+// rename that is not diffed: a binary file, a submodule, and a file read whole. Where none is left
+// out, it is the diff of the whole commit, and where nothing is diffed, no diff runs. The paths
+// are written on its command line, since no diff command of git reads pathspecs from its standard
+// input (--pathspec-from-file is git add's, git commit's and their kin's), and they are as many as
+// the modifications and renames of binary files and submodules, which a commit seldom has many of.
+func (g *Guard) commitFiles(ctx context.Context, dir, commit string, parents int) ([]string, []Record, error) {
+	changes, err := g.commitChanges(ctx, dir, commit, parents)
+	if err != nil {
+		return nil, nil, err
+	}
+	var paths, ids []string
+	for _, change := range changes {
+		if change.status == 'A' || change.status == 'R' {
+			paths = append(paths, change.path)
+		}
+		if change.parent != "" {
+			ids = append(ids, change.parent)
+		}
+		if change.blob != "" {
+			ids = append(ids, change.blob)
+		}
+	}
+	batch := g.readBlobs(ctx, dir, ids)
+	records, unread, diffed, err := commitLines(batch, commit, changes)
+	if err = batch.close(err); err != nil {
+		return nil, nil, err
+	}
+	if diffed {
+		lines, err := g.addedLines(ctx, dir, commit, parents, unread)
+		if err != nil {
+			return nil, nil, err
+		}
+		records = append(records, lines...)
+	}
+	return paths, records, nil
+}
+
+// commitChange is one path at which a commit of at most one parent differs from its parent.
+type commitChange struct {
+	// path is where the commit has the file, and from is where the parent has the file it
+	// changes: the same path but for a rename.
+	path, from string
+	// status is diff-tree's letter for the change: A, D, M, R or T.
+	status byte
+	// blob is the commit's file at path where it is a blob, and "" where the commit has no file
+	// there or a submodule. submodule is the commit the commit's submodule at path is at, and ""
+	// where it has none there or renames the parent's submodule at that same commit: git's diff
+	// writes a submodule as the one line that names its commit, and writes no line of such a
+	// rename.
+	blob, submodule string
+	// parent is the parent's file at from that the commit's file is diffed against: a blob of the
+	// same kind, a regular file or a symbolic link, at a modification or a rename. It is "" for
+	// every other change, which git's diff writes as a file of the commit's own, and for a rename
+	// whose path, or the path it is from, lies under a path another modification or rename names:
+	// a pathspec names a directory's files too, so the one that leaves that other change out of the
+	// diff would leave this rename out with it (addedLines).
+	parent string
+}
+
+// paired is whether git's diff writes the change as the parent's file and the commit's together,
+// which is what a modification and a rename are, and what the diff of a commit's lines reads
+// (addedLines).
+func (c commitChange) paired() bool {
+	return c.status == 'M' || c.status == 'R'
+}
+
+// commitChanges are the paths at which a commit of at most one parent differs from its parent,
+// as one diff-tree writes them in its raw format, with its renames found as the diff of the
+// commit's lines finds them (diffTree):
+//
+//	git diff-tree -r -M --no-commit-id -z [--root] <commit>
+func (g *Guard) commitChanges(ctx context.Context, dir, commit string, parents int) ([]commitChange, error) {
+	out, err := g.git(ctx, dir, diffTree(parents, "-z", commit)...)
 	if err != nil {
 		return nil, err
 	}
+	var changes []commitChange
+	// named are the paths a modification or a rename is at or comes from.
+	named := map[string]bool{}
 	fields := strings.Split(out, "\x00")
-	var paths []string
 	for i := 0; i < len(fields); i++ {
-		switch status := fields[i]; {
-		case status == "":
-		case strings.HasPrefix(status, "R"):
-			// A rename is three fields: the status, the path it was at, and the path it is at.
-			// The destination learns the new path alone.
-			if i+2 < len(fields) {
-				paths = append(paths, fields[i+2])
+		if fields[i] == "" {
+			continue
+		}
+		// ":<parent's mode> <commit's mode> <parent's blob> <commit's blob> <status>[<score>]",
+		// then the path, and for a rename or a copy the path it is from first.
+		raw := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+		paths := 1
+		if len(raw) == 5 && (raw[4][0] == 'R' || raw[4][0] == 'C') {
+			paths = 2
+		}
+		if !strings.HasPrefix(fields[i], ":") || len(raw) != 5 || i+paths >= len(fields) {
+			return nil, fmt.Errorf("git diff-tree of commit %s wrote an entry of a shape it does not write", short(commit))
+		}
+		change := commitChange{from: fields[i+1], path: fields[i+paths], status: raw[4][0]}
+		i += paths
+		theirs, err := fileKind(raw[0])
+		if err != nil {
+			return nil, err
+		}
+		ours, err := fileKind(raw[1])
+		if err != nil {
+			return nil, err
+		}
+		switch ours {
+		case regularFile, symbolicLink:
+			change.blob = raw[3]
+			if change.paired() && theirs == ours {
+				change.parent = raw[2]
 			}
-			i += 2
-		default:
-			if i+1 < len(fields) {
-				paths = append(paths, fields[i+1])
+		case gitlink:
+			if !change.paired() || theirs != gitlink || raw[2] != raw[3] {
+				change.submodule = raw[3]
 			}
-			i++
+		}
+		if change.paired() {
+			named[change.path], named[change.from] = true, true
+		}
+		changes = append(changes, change)
+	}
+	for i, change := range changes {
+		if change.status == 'R' && (under(named, change.path) || under(named, change.from)) {
+			changes[i].parent = ""
 		}
 	}
-	return paths, nil
+	return changes, nil
 }
 
-// addedLines are the lines a commit of at most one parent adds, each as a record of the file it
-// is added to and of its number in the commit's version of that file. The diff is read with no
-// context lines, so every line of it that a patch marks as added is one, and the n-th of a hunk
-// headed "@@ -a[,b] +c[,d] @@" is line c+n-1. The "+++ b/<path>" that names the file is read
-// only where a header stands, between a "diff --" line and the hunk that follows it, so a line
-// of content that reads like one is not mistaken for the name of a file.
+// under is whether path lies in a directory that paths names, or in one of that directory's own.
+func under(paths map[string]bool, path string) bool {
+	for i := range len(path) {
+		if path[i] == '/' && paths[path[:i]] {
+			return true
+		}
+	}
+	return false
+}
+
+// commitLines are the lines of commit's files at changes that are read from batch rather than
+// diffed (commitFiles), and the paths the diff of the rest leaves out, unread: each modification
+// and rename that is not diffed, a rename by both its paths. diffed is whether a change is left to
+// the diff. batch answers, for each change with a blob of the commit's, the parent's file first
+// where the commit's is diffed against one (commitChange.parent), and then the commit's file.
+func commitLines(batch *blobBatch, commit string, changes []commitChange) (records []Record, unread []string, diffed bool, err error) {
+	ours, theirs := "commit "+short(commit)+"'s", "the parent of commit "+short(commit)+"'s"
+	for _, change := range changes {
+		var file string
+		switch {
+		case change.submodule != "":
+			records = append(records, Record{Label: change.path, Text: "Subproject commit " + change.submodule, File: change.path, Line: 1})
+		case change.blob == "":
+		case change.parent == "":
+			if file, _, err = batch.text(change.path, ours, "commit"); err != nil {
+				return nil, nil, false, err
+			}
+		default:
+			var diff bool
+			if diff, file, err = readPair(batch, change, ours, theirs); err != nil {
+				return nil, nil, false, err
+			}
+			if diff {
+				diffed = true
+				continue
+			}
+		}
+		records = append(records, fileLines(change.path, file)...)
+		if change.paired() {
+			unread = append(unread, change.path)
+			if change.from != change.path {
+				unread = append(unread, change.from)
+			}
+		}
+	}
+	return records, unread, diffed, nil
+}
+
+// readPair reads the next two blobs of batch, the parent's file at change and then the commit's,
+// whose owners theirs and ours name. It answers true where both are text, which the diff of the
+// commit's lines then reads (addedLines), and the commit's file where the parent's is binary,
+// which holds no line, so that every line of the commit's file is its own. A binary file of the
+// commit's answers neither, and a text file of either above blobBound is an error naming it
+// (commitFiles).
+func readPair(batch *blobBatch, change commitChange, ours, theirs string) (bool, string, error) {
+	rest, head, err := batch.head()
+	if err != nil {
+		return false, "", err
+	}
+	binaryParent, parentSize := binary(head), int64(len(head))+rest
+	if err := batch.skip(rest); err != nil {
+		return false, "", err
+	}
+	if rest, head, err = batch.head(); err != nil {
+		return false, "", err
+	}
+	switch size := int64(len(head)) + rest; {
+	case binary(head):
+		return false, "", batch.skip(rest)
+	case size > blobBound:
+		return false, "", aboveBound(ours, change.path, size, "commit")
+	case binaryParent:
+		file, err := batch.whole(head, rest)
+		return false, file, err
+	case parentSize > blobBound:
+		return false, "", aboveBound(theirs, change.from, parentSize, "commit")
+	}
+	return true, "", batch.skip(rest)
+}
+
+// fileLines are the lines of file, the commit's file at path, each as a record with its number in
+// the file: what the diff of the file against no file at all marks as added, every line but a
+// blank one, with its line ending off as a patch's added line has it off (addedLines).
+func fileLines(path, file string) []Record {
+	var records []Record
+	number := 0
+	for line := range strings.SplitSeq(file, "\n") {
+		number++
+		if text := strings.TrimRight(line, "\r"); strings.TrimSpace(text) != "" {
+			records = append(records, Record{Label: path, Text: text, File: path, Line: number})
+		}
+	}
+	return records
+}
+
+// addedLines are the lines the diff of a commit of at most one parent adds, of the files
+// commitFiles leaves to it, each as a record of the file it is added to and of its number in the
+// commit's version of that file. The diff is read with no context lines, so every line of it that
+// a patch marks as added is one, and the n-th of a hunk headed "@@ -a[,b] +c[,d] @@" is line
+// c+n-1. The "+++ b/<path>" that names the file is read only where a header stands, between a
+// "diff --" line and the hunk that follows it, so a line of content that reads like one is not
+// mistaken for the name of a file.
 //
-// Every file's patch is text (diffTree), and a file is binary as a merge's is (mergeFiles): a
-// file whose blob in the commit holds a zero byte in its first 8000 bytes (binary) adds no line.
-// The header names that blob whole in its "index <old>..<new>" line (--full-index), and its mode
-// in that line, a "new file mode" line or a "new mode" line; a submodule's commit is no blob, and
-// its line is read. The blobs of the files that add a line are read after the diff, with one
-// cat-file --batch that keeps the first 8000 bytes of each and none of the rest (blobBatch). The
-// added text alone would not say it: a zero byte before the lines a commit adds to a file is in
-// no line the diff marks as added.
-func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", "--full-index", commit)...)
+// The diff is of the commit's modifications and renames alone (--diff-filter=MR), each of unread
+// left out by the pathspec :(top,exclude,literal)<path>, which reads the path from the top of the
+// repository and as it is written, whatever directory the git runs in and whatever the
+// environment says of pathspecs (pathspecsAsWritten). That pathspec leaves out the files of a
+// directory of that name too, which are files no modification and no rename this diff reads is
+// at (commitChange.parent).
+func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, unread []string) ([]Record, error) {
+	args := diffTree(parents, "--unified=0", "--no-color", "--diff-filter=MR", commit)
+	if len(unread) > 0 {
+		args = append(args, "--")
+		for _, path := range unread {
+			args = append(args, ":(top,exclude,literal)"+path)
+		}
+	}
+	out, err := g.git(ctx, dir, args...)
 	if err != nil {
 		return nil, err
 	}
 	var records []Record
-	// blobs are the blobs of the files records were read from, by path, and "" for a file that is
-	// no blob.
-	blobs := map[string]string{}
 	path, header, next := "", false, 0
-	blob, mode := "", ""
 	for line := range strings.Lines(out) {
 		line = strings.TrimRight(line, "\r\n")
 		switch {
 		case strings.HasPrefix(line, "diff --"):
-			path, header, blob, mode = "", true, "", ""
+			path, header = "", true
 		case header && strings.HasPrefix(line, "+++ "):
 			path = diffPath(strings.TrimPrefix(line, "+++ "))
-		case header && (strings.HasPrefix(line, "new file mode ") || strings.HasPrefix(line, "new mode ")):
-			mode = line[strings.LastIndexByte(line, ' ')+1:]
-		case header && strings.HasPrefix(line, "index "):
-			// "index <old>..<new>", and " <mode>" after it where the commit keeps the file's mode.
-			fields := strings.Fields(line)
-			if len(fields) < 2 {
-				return nil, errors.New("git diff-tree wrote an index line of a shape it does not write")
-			}
-			_, blob, _ = strings.Cut(fields[1], "..")
-			if len(fields) > 2 {
-				mode = fields[2]
-			}
 		case strings.HasPrefix(line, "@@"):
 			header = false
 			if next, err = hunkStart(line); err != nil {
@@ -525,36 +747,12 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int)
 		case header || path == "":
 		case strings.HasPrefix(line, "+"):
 			if text := line[1:]; strings.TrimSpace(text) != "" {
-				if _, seen := blobs[path]; !seen {
-					file, err := isBlob(mode)
-					if err != nil {
-						return nil, err
-					}
-					blobs[path] = ""
-					if file {
-						blobs[path] = blob
-					}
-				}
 				records = append(records, Record{Label: path, Text: text, File: path, Line: next})
 			}
 			next++
 		}
 	}
-	var ids []string
-	for _, id := range blobs {
-		if id != "" {
-			ids = append(ids, id)
-		}
-	}
-	if len(ids) == 0 {
-		return records, nil
-	}
-	slices.Sort(ids)
-	binaries, err := g.binaries(ctx, dir, slices.Compact(ids))
-	if err != nil {
-		return nil, err
-	}
-	return slices.DeleteFunc(records, func(record Record) bool { return binaries[blobs[record.File]] }), nil
+	return records, nil
 }
 
 // hunkStart is c of a hunk header "@@ -a[,b] +c[,d] @@": the number of the line of the commit's
@@ -599,7 +797,7 @@ func diffPath(field string) string {
 // its first 8000 bytes (xdiff-interface.c's buffer_is_binary). The files are read as blobs, with
 // cat-file --batch, which applies no attribute, so a file .gitattributes marks -diff or binary is
 // read here as a commit of one parent reads it (diffTree). A binary file of the merge's adds no
-// line, as a binary file adds none to a commit of one parent (addedLines), and a parent's file
+// line, as a binary file adds none to a commit of one parent (commitFiles), and a parent's file
 // that is binary, absent or a submodule holds none.
 //
 // The read is bounded, since an issue pod's roles share one memory limit. A text file it takes,
@@ -654,7 +852,7 @@ func mergeLines(batch *blobBatch, merge string, changes []mergeChange) ([]Record
 		if change.blob == "" {
 			continue
 		}
-		file, ok, err := batch.text(change.path, ours)
+		file, ok, err := batch.text(change.path, ours, "merge")
 		if err != nil {
 			return nil, err
 		}
@@ -675,7 +873,7 @@ func mergeLines(batch *blobBatch, merge string, changes []mergeChange) ([]Record
 				}
 				continue
 			}
-			of, ok, err := batch.text(change.path, theirs)
+			of, ok, err := batch.text(change.path, theirs, "merge")
 			if err != nil {
 				return nil, err
 			}
@@ -790,16 +988,31 @@ func (g *Guard) mergeChanges(ctx context.Context, dir, merge string, parents []s
 	return slices.DeleteFunc(changes, func(change mergeChange) bool { return listed[change.path] != diffs }), nil
 }
 
-// isBlob is whether a mode diff-tree writes, in its raw format or in a patch's header, is a file
-// git holds as a blob: a regular file, or a symbolic link, whose target is its content. 000000 is
-// no file and 160000 a submodule's commit, of which this repository holds no lines.
-func isBlob(mode string) (bool, error) {
+// The kinds of file a mode diff-tree writes names, its bits under 0o170000: a regular file, and a
+// symbolic link, whose target is its content, are each a blob git holds; a gitlink is a
+// submodule's commit, of which this repository holds no lines; and 0 is no file, the 000000 of the
+// side of a change that has none.
+const (
+	regularFile  = 0o100000
+	symbolicLink = 0o120000
+	gitlink      = 0o160000
+)
+
+// fileKind is the kind of file a mode diff-tree writes, in its raw format or in a patch's header,
+// names.
+func fileKind(mode string) (uint64, error) {
 	bits, err := strconv.ParseUint(mode, 8, 32)
 	if err != nil {
-		return false, errors.New("git diff-tree wrote a mode of a shape it does not write")
+		return 0, errors.New("git diff-tree wrote a mode of a shape it does not write")
 	}
-	kind := bits & 0o170000
-	return kind == 0o100000 || kind == 0o120000, nil
+	return bits & 0o170000, nil
+}
+
+// isBlob is whether a mode diff-tree writes is a file git holds as a blob: a regular file, or a
+// symbolic link.
+func isBlob(mode string) (bool, error) {
+	kind, err := fileKind(mode)
+	return kind == regularFile || kind == symbolicLink, err
 }
 
 // binaryHead is how much of a file git's diff reads to tell whether it is binary
@@ -812,25 +1025,34 @@ func binary(head []byte) bool {
 	return bytes.IndexByte(head[:min(len(head), binaryHead)], 0) >= 0
 }
 
-// mergeFileBytes is the largest text file a merge's read takes (mergeFiles): 32 MiB. The read
-// holds at most two such files at once, the merge's and one parent's, and a set of the merge's
-// distinct lines, which is under 100 MiB at the bound for lines of ordinary length and some
-// hundreds of MiB for a file of nothing but short distinct lines: a small part of the 19 GiB an
-// issue pod's roles share at the default issue reservation (docs/kubernetes.md). It is over eight
-// times the largest text file this repository tracks, a test fixture of 3.7 MiB
+// fileBytes is the largest text file the read of a commit's files takes, a merge's (mergeFiles)
+// or a commit of one parent's (commitFiles): 32 MiB. A merge's read holds at most two such files
+// at once, the merge's and one parent's, and a set of the merge's distinct lines, which is under
+// 100 MiB at the bound for lines of ordinary length and some hundreds of MiB for a file of nothing
+// but short distinct lines: a small part of the 19 GiB an issue pod's roles share at the default
+// issue reservation (docs/kubernetes.md). It is over eight times the largest text file this
+// repository tracks, a test fixture of 3.7 MiB
 // (packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json, measured 2026-11-17), so that a
-// lock file or a fixture a merge resolves is far below it, and under the 50 MiB above which
+// lock file or a fixture a commit changes is far below it, and under the 50 MiB above which
 // GitHub warns of a file a push adds.
-const mergeFileBytes = 32 << 20
+const fileBytes = 32 << 20
 
-// blobBound is mergeFileBytes, held in a variable so that a test can lower it.
-var blobBound int64 = mergeFileBytes
+// blobBound is fileBytes, held in a variable so that a test can lower it.
+var blobBound int64 = fileBytes
+
+// aboveBound is the failure of a text file above blobBound: the file at path, of size bytes, that
+// whose names the owner of ("merge 1a2b3c4's"), in the read of a commit of the kind named
+// ("merge", "commit"). It names the file and its size, and the file is not read (mergeFiles says
+// why).
+func aboveBound(whose, path string, size int64, kind string) error {
+	return fmt.Errorf("%s file %s is %d bytes, more than the %d bytes a %s's file is read up to", whose, maskPath(path), size, blobBound, kind)
+}
 
 // blobBatch is one git cat-file --batch over the blobs ids names, read a blob at a time as git
 // writes them, so that what is held is the blob being read and never the batch: one git answers a
-// merge's hundreds of blobs, where a git apiece would be hundreds of processes. The blobs are read
-// in the order of ids, each one's first binaryHead bytes first (head). A blob cat-file does not
-// answer whole is an error, never a file read as empty, and the batch ends with close, which
+// commit's hundreds of blobs, where a git apiece would be hundreds of processes. The blobs are
+// read in the order of ids, each one's first binaryHead bytes first (head). A blob cat-file does
+// not answer whole is an error, never a file read as empty, and the batch ends with close, which
 // stops git where the reader stopped early.
 type blobBatch struct {
 	// ids are the blobs asked for, and read is how many of them have been read.
@@ -912,10 +1134,10 @@ func (b *blobBatch) isBinary() (bool, error) {
 }
 
 // text reads the next blob, which is the file at path that whose names the owner of ("merge
-// 1a2b3c4's"), and answers its content and true where it is text; a binary one it passes over,
-// answering false. A text file above blobBound is an error that names it, its owner and its size,
-// and is not read (mergeFiles says why).
-func (b *blobBatch) text(path, whose string) (string, bool, error) {
+// 1a2b3c4's") in the read of a commit of the kind named ("merge"), and answers its content and
+// true where it is text; a binary one it passes over, answering false. A text file above
+// blobBound is an error that names it, its owner and its size, and is not read (aboveBound).
+func (b *blobBatch) text(path, whose, kind string) (string, bool, error) {
 	rest, head, err := b.head()
 	if err != nil {
 		return "", false, err
@@ -924,15 +1146,21 @@ func (b *blobBatch) text(path, whose string) (string, bool, error) {
 		return "", false, b.skip(rest)
 	}
 	if size := int64(len(head)) + rest; size > blobBound {
-		return "", false, fmt.Errorf("%s file %s is %d bytes, more than the %d bytes a merge's file is read up to", whose, maskPath(path), size, blobBound)
+		return "", false, aboveBound(whose, path, size, kind)
 	}
+	file, err := b.whole(head, rest)
+	return file, err == nil, err
+}
+
+// whole reads the rest of the blob head read, rest bytes of it, and answers the blob whole.
+func (b *blobBatch) whole(head []byte, rest int64) (string, error) {
 	var content strings.Builder
 	content.Grow(len(head) + int(rest))
 	content.Write(head)
 	if _, err := io.CopyN(&content, b.out, rest); err != nil {
-		return "", false, b.cut(err)
+		return "", b.cut(err)
 	}
-	return content.String(), true, b.end()
+	return content.String(), b.end()
 }
 
 // skip passes over the rest of the blob head read, rest bytes of it, unread.
@@ -982,49 +1210,34 @@ func (b *blobBatch) close(failed error) error {
 	return failed
 }
 
-// binaries are which of the blobs ids names are binary (binary), read with one cat-file --batch
-// that keeps the first binaryHead bytes of each and none of the rest, whatever its size.
-func (g *Guard) binaries(ctx context.Context, dir string, ids []string) (map[string]bool, error) {
-	batch := g.readBlobs(ctx, dir, ids)
-	binaries := make(map[string]bool, len(ids))
-	var err error
-	for _, id := range ids {
-		if binaries[id], err = batch.isBinary(); err != nil {
-			break
-		}
-	}
-	if err = batch.close(err); err != nil {
-		return nil, err
-	}
-	return binaries, nil
-}
-
 // short is a commit as a report names it.
 func short(commit string) string {
 	return commit[:min(len(commit), 7)]
 }
 
-// git runs one git command in dir and answers its standard output and error together, failing
-// where git itself does: a record this package could not read is a setup failure, never a push
-// read as clean.
+// git is gitFed with nothing on its standard input. Each of its callers reads what git answers
+// as data: git show's identities and message split on zero bytes, and diff-tree's list of a
+// commit's changes and its patch.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
-	argv := gitArgv(args...)
-	status, printed, err := g.run(ctx, child{argv: argv, dir: dir})
-	if err != nil {
-		return "", err
-	}
-	if status != 0 {
-		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, strings.TrimSpace(printed))
-	}
-	return printed, nil
+	return g.gitFed(ctx, dir, "", args...)
 }
 
-// gitFed is git with input on its standard input, answering its standard output alone. What it
-// answers is read byte for byte, a diff split on zero bytes or a list of commits, so a warning
-// git writes to its standard error must not land in it; that error is what a failure carries.
+// gitFed runs one git command in dir with input on its standard input, and answers its standard
+// output alone, failing where git itself does: a record this package could not read is a setup
+// failure, never a push read as clean. What it answers is read as data — a list of commits, a
+// list of changes split on zero bytes, a patch — so a warning git writes to its standard error
+// must not land in it: a warning written in the middle of a patch's line would cut the line in
+// two, and the half after it would be read as no added line at all. That error is what a failure
+// carries. Its pathspecs are read as they are written (pathspecsAsWritten).
 func (g *Guard) gitFed(ctx context.Context, dir, input string, args ...string) (string, error) {
 	var stderr strings.Builder
-	status, out, err := g.run(ctx, child{argv: gitArgv(args...), dir: dir, stdin: strings.NewReader(input), stderr: &stderr})
+	status, out, err := g.run(ctx, child{
+		argv:   gitArgv(args...),
+		dir:    dir,
+		env:    pathspecsAsWritten,
+		stdin:  strings.NewReader(input),
+		stderr: &stderr,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -1033,3 +1246,10 @@ func (g *Guard) gitFed(ctx context.Context, dir, input string, args ...string) (
 	}
 	return out, nil
 }
+
+// pathspecsAsWritten is the environment under which git reads a pathspec this package writes as
+// it is written, whatever the caller's environment says of pathspecs. GIT_LITERAL_PATHSPECS=1
+// would read the magic of :(top,exclude,literal)<path> as part of a path no file is at, so that a
+// diff meant to leave one file out would name none and write nothing (addedLines), and
+// GIT_ICASE_PATHSPECS=1 would leave out a file whose path differs from one left out in case alone.
+var pathspecsAsWritten = []string{"GIT_LITERAL_PATHSPECS=0", "GIT_ICASE_PATHSPECS=0"}

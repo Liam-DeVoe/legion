@@ -87,11 +87,15 @@ It carries:
   The refusal names the file, with any path component that holds a term written `<forbidden>`, the line and the term's number in its entry's list, and never the term.
   The second and third passes read a push alike:
 
-  - every file as text, whatever `.gitattributes` says of it, the pushed commit's own included, and no line of a file whose blob holds a zero byte in its first 8000 bytes, which is how git's own diff tells a binary file (`diffTree` and `addedLines`, `internal/leakguard/push.go`);
+  - every file as text, whatever `.gitattributes` says of it, the pushed commit's own included, and no line of a file whose blob holds a zero byte in its first 8000 bytes, which is how git's own diff tells a binary file (`commitFiles`, `internal/leakguard/push.go`).
+    A commit of one parent has its files classed by their blobs before any is diffed, so a binary file, the commit's or its parent's, is read no further than those bytes and is in no diff, and the commit's one diff reads its modifications and renames of text files alone (`addedLines`);
 
   - a merge from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
     a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/push.go`).
-    The pod's roles share one memory limit, so the read holds one path's files at a time, and a text file above 32 MiB, the merge's own or a parent's at a path the merge changes, refuses the push as a setup error that names the file and its size (`mergeFileBytes`);
+    The pod's roles share one memory limit, so the read holds one path's files at a time;
+
+  - a text file above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`fileBytes`):
+    a commit's own file, or its parent's that the commit's is diffed against, and a merge's own file, or a parent's at a path the merge changes;
 
   - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/push.go`).
     Each push that adds a commit to a destination the guard scans costs that one read, which both passes share, and a read that fails refuses the push as a setup error that names the remote and the URL.
