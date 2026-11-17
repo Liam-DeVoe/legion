@@ -2862,8 +2862,10 @@ test("the default shapes keep main's class strings", async () => {
     edges: [],
     node: graphNode({ id: "ask-1", kind: "ask" }),
   });
-
-  stubs.getArtifactText.mockRejectedValueOnce(
+  // Every read of the document's text is refused, not the first alone: a load that reads the
+  // text more than once, as one that reads it before it connects and again when it admits the
+  // document does, meets the same refusal each time.
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(409, {
       code: "DOC_SCHEMA",
       error: "The document holds a node outside its schema.",
@@ -2879,7 +2881,7 @@ test("the default shapes keep main's class strings", async () => {
     undraw(repair);
   }
 
-  stubs.getArtifactText.mockRejectedValueOnce(
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: "The stored history cannot load." })
   );
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
@@ -2906,7 +2908,7 @@ test("the default shapes keep main's class strings", async () => {
     rebuildArtifact.mockRestore();
   }
 
-  stubs.getArtifactText.mockRejectedValueOnce(
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(404, { code: "PROXY_NOT_FOUND", error: "proxy not found" })
   );
   const unloaded = draw(proofDocument(), "outside");
@@ -3358,8 +3360,11 @@ test("Add in the priority's form returns the focus to its add control once its w
         await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
         // While the write is out the add control is disabled and holds no focus.
         expect(pickerShown(view)).toBe(false);
-        expect(addControlOf(view, surface)).toBeDisabled();
-        expect(document.activeElement).toBe(document.body);
+        // Inside, the case below asserts the add control while the write is out.
+        if (surface === "outside") {
+          expect(addControlOf(view, surface)).toBeDisabled();
+          expect(document.activeElement).toBe(document.body);
+        }
         const elsewhere = within(view.container).getByRole("button", { name: "Elsewhere" });
         if (reader === "moves on") elsewhere.focus();
         written.resolve({} as Issue);
@@ -3372,6 +3377,58 @@ test("Add in the priority's form returns the focus to its add control once its w
         patchIssue.mockRestore();
         undraw(view);
       }
+    }
+  }
+});
+
+// Add closes the priority's form and draws the add control in its place, disabled while Add's
+// write is out, so the focus falls to the body until the write settles. Inside `NoTooltips` the
+// add control is `aria-disabled` in place of `disabled` while the write is out, so it takes the
+// focus at once, and a press of it then opens no form. Outside `NoTooltips` it is `disabled`
+// while the write is out, as on `main`. On both sides the focus is on the add control once the
+// write settles.
+test("inside NoTooltips Add in the priority form keeps the focus on the add control while its save is out", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const written = Promise.withResolvers<Issue>();
+    const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+    const view = draw(addablePriorityLine(surface), surface);
+    try {
+      const scope = within(view.container);
+      addControlOf(view, surface).focus();
+      await user.keyboard("{Enter}");
+      const picker = await pickerOf(view);
+      await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
+      await user.selectOptions(picker, "evals-now");
+      scope.getByRole("button", { name: CONTROL_LABELS.add }).focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      expect(pickerShown(view)).toBe(false);
+      const add = addControlOf(view, surface);
+      if (surface === "inside") {
+        await waitFor(() => expect(add.getAttribute("aria-disabled")).toBe("true"));
+        expect(add.hasAttribute("disabled")).toBe(false);
+        expect(document.activeElement).toBe(add);
+        await user.keyboard("{Enter}");
+        await settleReads();
+        expect(pickerShown(view)).toBe(false);
+        expect(document.activeElement).toBe(add);
+      } else {
+        await waitFor(() => expect(add.hasAttribute("disabled")).toBe(true));
+        expect(add.hasAttribute("aria-disabled")).toBe(false);
+      }
+      written.resolve({} as Issue);
+      await waitFor(() => {
+        expect(add.hasAttribute("aria-disabled")).toBe(false);
+        expect(add.hasAttribute("disabled")).toBe(false);
+      });
+      await settleReads();
+      expect(patchIssue).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(add);
+    } finally {
+      written.resolve({} as Issue);
+      patchIssue.mockRestore();
+      undraw(view);
     }
   }
 });
@@ -3802,7 +3859,8 @@ test("inside NoTooltips Rebuild keeps its focus while it rebuilds", async () => 
   try {
     for (const surface of ["inside", "outside"] as const) {
       confirm.mockClear();
-      stubs.getArtifactText.mockRejectedValueOnce(
+      // Every text read is refused, however many the load makes.
+      stubs.getArtifactText.mockRejectedValue(
         new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: "The stored history cannot load." })
       );
       const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();

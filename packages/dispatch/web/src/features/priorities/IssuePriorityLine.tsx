@@ -125,6 +125,11 @@ export function IssuePriorityLine({
   const writeOwn = (ids: string[]) =>
     write.mutate({ advances: ids, advances_revision: issue.advances_revision });
   const busy = disabled || write.isPending;
+  // Inside `NoTooltips` the add control is `aria-disabled` while the write is out, in place of
+  // `disabled`, so it can hold the focus, and a press of it does nothing then; the line's own
+  // `disabled` still disables it, on both sides. Outside it is `disabled` while the write is out,
+  // as on `main`.
+  const addHoldsFocus = page !== null && !disabled;
   const addControl = useRef<HTMLButtonElement>(null);
   const picker = useRef<HTMLSelectElement>(null);
   // Opening the form puts the focus in its first field: the add control the form replaces leaves
@@ -134,16 +139,19 @@ export function IssuePriorityLine({
     if (adding) picker.current?.focus();
   }, [adding]);
   // Closing it - Add, Cancel or Escape - owes the add control, drawn again in its place, the
-  // focus the form held, for the same reason. The control takes it once it can hold it: Add's
-  // write disables the control until the write settles, and a disabled control holds no focus,
-  // so after an add the focus waits on the body until then. Only a focus still on the document
-  // is taken back (`focusOnDocument`): anywhere else, the reader put it there in between.
+  // focus the form held, for the same reason. The control takes it once it can hold it: outside
+  // `NoTooltips` Add's write disables the control until the write settles, and a disabled control
+  // holds no focus, so after an add the focus waits on the body until then; inside, the control
+  // holds it while the write is out (`addHoldsFocus`) and takes it at once. Only a focus still on
+  // the document is taken back (`focusOnDocument`): anywhere else, the reader put it there in
+  // between.
   const focusAddControl = useRef(false);
+  const addWaitsForWrite = write.isPending && !addHoldsFocus;
   useEffect(() => {
-    if (adding || write.isPending || !focusAddControl.current) return;
+    if (adding || addWaitsForWrite || !focusAddControl.current) return;
     focusAddControl.current = false;
     if (focusOnDocument()) addControl.current?.focus();
-  }, [adding, write.isPending]);
+  }, [adding, addWaitsForWrite]);
   const closeForm = () => {
     setPicked("");
     setAdding(false);
@@ -334,6 +342,9 @@ export function IssuePriorityLine({
         </form>
       ) : (
         <button
+          // Inside `NoTooltips` it is `aria-disabled` in place of `disabled` while the write is
+          // out (`addHoldsFocus`, above).
+          aria-disabled={(addHoldsFocus && write.isPending) || undefined}
           // One character and its name, as the remove control beside it is: an issue that
           // advances nothing still carries this control, and a word here puts the issue
           // header's metadata rail over its width on a desktop, which would leave every bare
@@ -351,8 +362,10 @@ export function IssuePriorityLine({
           // triggers' `sm:min-h-7`); below 1280 px `styles.css` gives each of them a 44 px floor
           // all the same (dispatch://INFRA-3935 R4). Outside it the class is `main`'s (R1).
           className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
-          disabled={busy}
-          onClick={() => setAdding(true)}
+          disabled={busy && !addHoldsFocus}
+          onClick={() => {
+            if (!write.isPending) setAdding(true);
+          }}
           ref={addControl}
           title={tooltips ? addPriorityControlName(issue.key) : undefined}
           type="button"
