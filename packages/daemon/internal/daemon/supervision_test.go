@@ -260,6 +260,22 @@ func TestAnOwnersLaunchReadsThePlanGuidanceCopy(t *testing.T) {
 	}
 }
 
+// A deployment that sets no plan_guidance boots as before: boot writes no copy of a guidance, and
+// an owner's launch reads none.
+func TestADeploymentWithNoPlanGuidanceGivesItsOwnerNone(t *testing.T) {
+	cfg := testConfig(t)
+	rt := fake.NewRuntime()
+	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
+
+	owner := lastLaunch(t, rt, d.spawn(architect()))
+	if owner.Prompt.PlanGuidancePath != "" {
+		t.Errorf("the architect's launch reads the plan guidance from %q, want none", owner.Prompt.PlanGuidancePath)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "plan-guidance.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("boot left %s (stat: %v), want no plan guidance copy", filepath.Join(cfg.StateDir, "plan-guidance.md"), err)
+	}
+}
+
 // Every launch, a root's and a worker's alike, carries the NATS nkey seed the daemon resolved as the
 // NATS_NKEY_SEED secret — from nats_nkey_seed_file, else NATS_NKEY_SEED_FILE, else NATS_NKEY_SEED —
 // which each runtime hands the agent behind a NATS_NKEY_SEED_FILE pointer, never as a value; and a
