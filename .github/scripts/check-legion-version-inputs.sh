@@ -31,8 +31,8 @@
 #   * the files that decide which version of each module the binary links: the workspace's go.work
 #     and go.work.sum (`go env GOWORK`), and the go.mod and go.sum of every module `go list -m`
 #     names there and of every module that provides one of those packages, each one that exists.
-# A path covers itself and the tree under it, as a git pathspec does. An exclude (`:(exclude)X`,
-# `:!X` or `:^X`) drops what it matches from every release whatever else names it.
+# A path covers itself and the tree under it, as a git pathspec does. An exclude, written
+# `:(exclude)X` or `:!X`, drops what it matches from every release whatever else names it.
 #
 # Fails on:
 #   1. a LEGION_GO_INPUTS block that is not exactly the one `write` writes, naming every path it
@@ -54,8 +54,12 @@
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
 #      inside a package directory go names (a file of the package, an embedded file among them);
-#      an exclude holding a wildcard, which git matches by its own glob rules and this check does
-#      not; or a path written with any other pathspec magic, which this check cannot read;
+#      an exclude spelled any way but `:(exclude)X` and `:!X` (`:^X` among them), or whose X is
+#      not canonical - a relative path with no `./`, no leading `/`, no `//` and no `..`, which git
+#      reads as the same path while a compare of paths as written does not - naming the canonical
+#      spelling; an exclude holding a wildcard, which git matches by its own glob rules and this
+#      check does not; a value holding a `${{ }}` expression, which GitHub renders into the paths
+#      first; or a path written with any other pathspec magic, which this check cannot read;
 #   6. a go command that fails, a package of this repository that go list cannot load, or a
 #      listing that does not name the program it lists, since what that program links is then
 #      unknown and a listing of nothing would pass everything.
@@ -95,6 +99,7 @@ esac
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 - "${1:-check}" <<'PY'
 import json
+import posixpath
 import re
 import shutil
 import sys
@@ -129,8 +134,10 @@ HEAD = [
     f"  # decides the binary from beyond ${HAND}'s paths, one path a line. An edit by",
     "  # hand is refused: that check, which the ci-filters job runs, names what go adds or drops.",
 ]
-# git's exclude magic, long and short: `:(exclude)X`, `:!X` and `:^X`.
-EXCLUDE = re.compile(r":(?:\(exclude\)|!|\^)(.+)")
+# The two spellings of git's exclude magic this check reads: the long form and the one short form.
+EXCLUDE_FORMS = (":(exclude)", ":!")
+# One component of a canonical path: what this repository's paths are spelled with.
+COMPONENT = re.compile(r"[A-Za-z0-9._+@-]+")
 # What git reads as a glob in a pathspec (its wildmatch: `*`, `?`, a `[` class, a `\` escape).
 WILDCARD = re.compile(r"[*?\[\\]")
 REPO = Path.cwd().resolve()
@@ -189,13 +196,31 @@ def env_of(path, doc):
     return env if isinstance(env, dict) else {}
 
 
+def canonical(payload):
+    """Whether `payload` is a path as this check compares paths: relative to the repository's root,
+    components of COMPONENT that are not `.` or `..`, single slashes, at most one trailing one. A
+    `./`, a leading `/` or a `//` is a path git reads as the same one and a string compare does not."""
+    parts = payload.removesuffix("/").split("/")
+    return bool(payload) and all(COMPONENT.fullmatch(part) and part not in (".", "..") for part in parts)
+
+
+def spelling(payload):
+    """The canonical spelling of `payload`, where there is one."""
+    norm = posixpath.normpath(payload.lstrip("/")) if payload.strip("/") else ""
+    return norm if canonical(norm) else None
+
+
 def pathspecs(path, doc, key):
     """The paths after `--` in the workflow env's `key`: the plain ones, and each exclude as
-    (its text, the path it drops). An exclude holding a wildcard, which git matches with its own
-    glob rules, and any other magic are refused."""
+    (its text, the path it drops). Rule 5's refusals: a value holding a `${{ }}` expression; an
+    exclude in any spelling but `:(exclude)` and `:!`, one holding a wildcard, and one whose path is
+    not canonical; and any other magic."""
     value = env_of(path, doc).get(key)
     if not isinstance(value, str):
         fatal(f"{path}'s workflow env: holds no {key} string", path)
+    if "${{" in value:
+        problem(f"{key} holds a `${{{{ }}}}` expression, which GitHub renders into the paths before the step reads "
+                f"them and this check does not; write the paths themselves", path)
     words = value.split()
     if "--" not in words:
         fatal(f"{path}'s {key} has no `--`, after which release-push.sh version reads its paths", path)
@@ -203,15 +228,27 @@ def pathspecs(path, doc, key):
     for word in words[words.index("--") + 1:]:
         if not word.startswith(":"):
             plain.append(word)
-        elif (match := EXCLUDE.fullmatch(word)) and WILDCARD.search(match.group(1)):
+            continue
+        form = next((form for form in EXCLUDE_FORMS if word.startswith(form)), None)
+        payload = word[len(form):] if form else word[2:]
+        fixed = spelling(payload)
+        either = f"`:(exclude){fixed}` or `:!{fixed}`" if fixed else "`:(exclude)<path>` or `:!<path>`"
+        if form is None and word.startswith(":^"):
+            problem(f"{key} names `{word}`, git's `:^` spelling of an exclude, which this check reads in two "
+                    f"spellings alone; write it {either}", path)
+        elif form is None:
+            problem(f"{key} names `{word}`, a pathspec with magic this check cannot read: it reads "
+                    f"plain paths and excludes alone, and cannot say what this one leaves out", path)
+        elif WILDCARD.search(payload):
             problem(f"{key} names `{word}`, an exclude with a wildcard, which git matches by its own glob "
                     f"rules and this check does not: it cannot say which path the exclude drops; name the "
                     f"paths it means instead", path)
-        elif match:
-            excludes.append((word, match.group(1)))
+        elif not canonical(payload):
+            problem(f"{key} names `{word}`, an exclude whose path is not canonical: git reads a `./`, a leading "
+                    f"`/`, a `//` or a `..` as another spelling of a path, and this check compares paths as "
+                    f"written; write it {f'`{form}{fixed}`' if fixed else either}", path)
         else:
-            problem(f"{key} names `{word}`, a pathspec with magic this check cannot read: it reads "
-                    f"plain paths and excludes alone, and cannot say what this one leaves out", path)
+            excludes.append((word, payload))
     return plain, excludes
 
 
