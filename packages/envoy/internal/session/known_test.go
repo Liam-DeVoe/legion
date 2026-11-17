@@ -713,6 +713,14 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	if _, ok := known.Get(stale); !ok {
 		t.Error("the repaired store answers no record of the session written before the failed move")
 	}
+	// Opened is the moved watcher's read completed, on the watcher's own goroutine, and the line
+	// saying the store is back is written by the retry once its move has returned (attemptRepair),
+	// so the two are not ordered: a count read when Opened turns true can find no line yet. The
+	// retry retires at an attempt after the one that wrote the line, both under repairMu, so its
+	// retirement is what the count waits for, and no attempt after it writes a second line.
+	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+		return !repairRunning(known)
+	})
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
 		t.Errorf("the repair logged %d lines saying the store is back, want one:\n%s", lines, logged())
 	}
