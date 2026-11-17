@@ -323,21 +323,61 @@ func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T)
 // cap - leaves nothing holding the service once its sockets have closed and it has shut down. A
 // burst of sockets, alice's and bob's, opens at once against both caps while bob is taken off
 // DOC's list and put back on it, each change announced on access.ChangedChannel to the running
-// room sync, and while the re-check runs in a loop beside it. Once the subtest that built the
-// service has ended and its cleanups have run, the service must be collected within the leak
-// report's budget (leakWaitBudget), as TestMain requires of every service a test builds.
+// room sync, while the re-check runs in a loop beside it, and while one re-check, begun before the
+// burst, is held inside its first read until every socket of the burst has been answered. Once the
+// subtest that built the service has ended and its cleanups have run, the service must be
+// collected within the leak report's budget (leakWaitBudget), as TestMain requires of every
+// service a test builds.
 func TestASocketBurstAtTheCapsWhileAccessIsRecheckedLeavesNoServiceAlive(t *testing.T) {
 	var built weak.Pointer[Service]
 	t.Run("the burst", func(t *testing.T) { socketBurstDuringAccessRechecks(t, &built) })
 	requireServiceCollected(t, built)
 }
 
+// heldRecheck marks the context of the one re-check recheckHolder holds.
+type heldRecheck struct{}
+
+// recheckHolder is a pgx.QueryTracer that holds the first statement a context marked heldRecheck
+// starts until release, and closes entered as that statement waits: the re-check is then inside
+// its first read, begun (schemaAdmissions.beginAccessCheck) and not ended, for as long as the
+// test chooses. Every other statement runs as it would.
+type recheckHolder struct {
+	once            sync.Once
+	entered, gate   chan struct{}
+	releaseOnce     sync.Once
+	holdsTheRecheck bool
+}
+
+func newRecheckHolder(holds bool) *recheckHolder {
+	return &recheckHolder{entered: make(chan struct{}), gate: make(chan struct{}), holdsTheRecheck: holds}
+}
+
+func (h *recheckHolder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	if ctx.Value(heldRecheck{}) == nil {
+		return ctx
+	}
+	h.once.Do(func() {
+		close(h.entered)
+		if h.holdsTheRecheck {
+			<-h.gate
+		}
+	})
+	return ctx
+}
+
+func (h *recheckHolder) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// release lets the held statement run.
+func (h *recheckHolder) release() { h.releaseOnce.Do(func() { close(h.gate) }) }
+
 // socketBurstDuringAccessRechecks runs the burst, and points built at the service it builds, weakly,
 // as soon as it is built: a burst that fails part way leaves a service to collect all the same.
 func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service]) {
 	// An odd number of changes, the first a removal, so bob ends off the list.
 	const bob, burst, changes = "bob@outside.example", 24, 7
-	database := storetest.Open(t)
+	holder := newRecheckHolder(true)
+	t.Cleanup(holder.release)
+	database := storetest.TracedStore(t, storetest.Open(t), holder)
 	service := New(Deps{
 		Store: database, Events: events.NewBroker(), Identity: headerIdentity(database), ServerURL: "https://dispatch.example",
 		Settle: time.Hour, MaxLiveRooms: 2, MaxDocConnections: 6,
@@ -378,10 +418,24 @@ func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service])
 	runRoomSync(t, newRoomSync(service))
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(server.Close)
-	// bob's socket, held through the burst, which the first removal closes.
+	// bob's socket, held through the burst, which the first removal closes. It is also the person
+	// the held re-check reads first, so that re-check makes a statement to be held in.
 	held := connectPeer(t, server.URL, ids[0], bob)
 	if err := held.WaitForText(peerMarkdown, "Room cap probe.\n", roomWait(t)); err != nil {
 		t.Fatalf("bob reads the first document: %v", err)
+	}
+
+	// The held re-check begins before the burst and is inside its first read when the burst
+	// starts; it is let go only once every socket of the burst has been answered.
+	heldDone := make(chan struct{})
+	go func() {
+		defer close(heldDone)
+		service.recheckAccess(context.WithValue(context.Background(), heldRecheck{}, true))
+	}()
+	select {
+	case <-holder.entered:
+	case <-time.After(roomWait(t)):
+		t.Fatalf("the held re-check made no statement within %s", roomWait(t))
 	}
 
 	var mu sync.Mutex
@@ -440,6 +494,18 @@ func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service])
 	}
 	close(start)
 	dials.Wait()
+	// A re-check beside the burst is one still open once every socket of it has been answered.
+	heldAcross := false
+	select {
+	case <-heldDone:
+	default:
+		heldAcross = true
+	}
+	holder.release()
+	<-heldDone
+	if heldAcross {
+		rechecks.Add(1)
+	}
 	close(done)
 	beside.Wait()
 	for _, connection := range admitted {
@@ -450,9 +516,9 @@ func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service])
 	case <-time.After(roomWait(t)):
 		t.Fatalf("bob's held socket was still open %s after he was taken off DOC's list", roomWait(t))
 	}
-	if refusals[http.StatusServiceUnavailable] == 0 || len(admitted) == 0 || rechecks.Load() == 0 {
-		t.Fatalf("the burst admitted %d sockets, refused %v, and ran %d re-checks beside them: want admissions, 503s at the caps and re-checks, or it tested nothing",
-			len(admitted), refusals, rechecks.Load())
+	if refusals[http.StatusServiceUnavailable] == 0 || len(admitted) == 0 || !heldAcross {
+		t.Fatalf("the burst admitted %d sockets, refused %v, and ran %d re-checks beside them, the held one still open as it ended: %t: want admissions, 503s at the caps and a re-check open across the burst, or it tested nothing",
+			len(admitted), refusals, rechecks.Load(), heldAcross)
 	}
 	t.Logf("the burst admitted %d sockets, refused %v, ran %d re-checks beside them, and closed bob's held socket with %d",
 		len(admitted), refusals, rechecks.Load(), held.CloseCode())
