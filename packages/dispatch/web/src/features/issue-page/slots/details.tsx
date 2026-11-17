@@ -85,9 +85,9 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
         // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
         // from these same writes. While that save is out the control is busy, `aria-disabled` and
-        // refusing to open, so `l` acts only while the control takes a press (`usableControl`).
-        // The key opens Details at the row first, so the drawer being closed is no refusal
-        // (`opensDetails`).
+        // refusing to open, so `l` acts only while the control takes a press (`usableControl`),
+        // which counts no refusal from Details being closed: the key opens Details at the row
+        // first.
         const name = labelsControlName(issue.key, {
           labels: issue.labels ?? [],
           saving: writes.labels.isPending,
@@ -96,8 +96,7 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         return usableControl(
           document.querySelector(
             `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
-          ),
-          { opensDetails: true }
+          )
         );
       },
     },

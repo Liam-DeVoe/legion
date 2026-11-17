@@ -27,6 +27,7 @@ import type {
   UserState,
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
+import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
@@ -1093,6 +1094,14 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
   }
 });
 
+/** Add's own control, found whether or not it is drawn on the screen, and never the priority
+ *  form's own Add button: only Add's control opens a menu. */
+function addMenuControl(): Element | null {
+  return document.querySelector(
+    `[aria-haspopup="menu"][aria-label="${CSS.escape(CONTROL_LABELS.add)}"]`
+  );
+}
+
 // A press on an entry of Add opens that property's control. While the priorities' save is out,
 // "Add a priority to CORE-1" is drawn disabled (`IssuePriorityLine`'s `busy`), so a press on
 // Add's Advances opens nothing and the focus falls to the page. Found by the tester on the
@@ -1157,7 +1166,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     await waitFor(() => expect(control).toBeDisabled());
     expect(
-      document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
+      addMenuControl(),
       "Add lists Advances while its control is disabled, so a press on it opens nothing"
     ).toBeNull();
     await act(async () =>
@@ -1168,7 +1177,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     );
     await waitFor(() =>
       expect(
-        document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
+        addMenuControl(),
         "Advances has no value and its control is enabled again, but Details draws no Add"
       ).not.toBeNull()
     );
@@ -1206,8 +1215,9 @@ function setAttributeUntil(element: Element, name: string, value: string): () =>
   return () => element.removeAttribute(name);
 }
 
-/** Each way a control stops taking a press (`usableControl`), set on "Add a priority to CORE-1"
- *  or on the element around it, with what undoes it. */
+/** Each way a control Add reaches stops taking a press (`usableControl`), or stops being found by
+ *  the name Add looks for, set on "Add a priority to CORE-1" or on the element around it, with
+ *  what undoes it. */
 const refusals = [
   ["disabled", (control: HTMLElement) => setAttributeUntil(control, "disabled", "")],
   [
@@ -1235,6 +1245,36 @@ const refusals = [
     },
   ],
   [
+    "under an element of visibility: hidden",
+    (_control: HTMLElement, around: HTMLElement) => {
+      around.style.visibility = "hidden";
+      return () => around.style.removeProperty("visibility");
+    },
+  ],
+  [
+    "under an element whose class the stylesheet draws as nothing",
+    (_control: HTMLElement, around: HTMLElement) => {
+      const sheet = document.createElement("style");
+      sheet.textContent = ".drawn-as-nothing { display: none; }";
+      document.head.append(sheet);
+      around.classList.add("drawn-as-nothing");
+      return () => {
+        around.classList.remove("drawn-as-nothing");
+        sheet.remove();
+      };
+    },
+  ],
+  [
+    // Another component's own commit renames its control in place, which draws Add no further
+    // time: Add finds the control again only by watching its name.
+    "renamed in place",
+    (control: HTMLElement) => {
+      const name = control.getAttribute("aria-label") ?? "";
+      control.setAttribute("aria-label", `${name}, renamed`);
+      return () => control.setAttribute("aria-label", name);
+    },
+  ],
+  [
     "removed from the page",
     (control: HTMLElement) => {
       const parent = control.parentNode;
@@ -1249,7 +1289,8 @@ const refusals = [
 
 // Add lists an entry only while its control takes a press (`usableControl`), whatever stops it
 // taking one - on the control or on an element around it - and lists it again once that is
-// undone, in a change no component of Add's draws. Each row is one rule of `usableControl`.
+// undone, in a change no component of Add's draws. Each row is one rule of `usableControl`, or
+// the name Add finds the control by, and each is a change Add's watch must see.
 test.each(
   refusals
 )("Add lists no entry whose control is %s, and lists it again once it is not", async (_name, refuse) => {
@@ -1277,15 +1318,12 @@ test.each(
       undo = refuse(control, screen.getByTestId("issue-advances"));
     });
     await waitFor(() =>
-      expect(
-        document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
-        "Add lists Advances while its control takes no press"
-      ).toBeNull()
+      expect(addMenuControl(), "Add lists Advances while its control takes no press").toBeNull()
     );
     await act(async () => undo());
     await waitFor(() =>
       expect(
-        document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
+        addMenuControl(),
         "Advances' control takes a press again, but Details draws no Add"
       ).not.toBeNull()
     );
@@ -1310,9 +1348,11 @@ test("with no checkVisibility, Add still lists a control that takes a press", as
   });
   getIssue.mockResolvedValue(advancesOnly);
   const checkVisibility = Object.getOwnPropertyDescriptor(Element.prototype, "checkVisibility");
-  Reflect.deleteProperty(Element.prototype, "checkVisibility");
-  const view = renderDetails();
+  // Unmounts what the case drew, once it has drawn it.
+  let unmount = () => {};
   try {
+    Reflect.deleteProperty(Element.prototype, "checkVisibility");
+    unmount = renderDetails().unmount;
     expect(checkVisibility, "the DOM has no checkVisibility of its own to take away").toBeDefined();
     expect(typeof document.body.checkVisibility).toBe("undefined");
     await screen.findByRole("link", { name: "CORE-3" });
@@ -1326,10 +1366,168 @@ test("with no checkVisibility, Add still lists a control that takes a press", as
       "with no checkVisibility, a control that is not on the page takes a press"
     ).toBe(false);
   } finally {
-    view.unmount();
+    unmount();
     if (checkVisibility !== undefined) {
       Object.defineProperty(Element.prototype, "checkVisibility", checkVisibility);
     }
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+/** No priority is live: the read the Advances row makes, answered empty. */
+const noLivePriorities = {
+  empty: "No priority is live now, so the list is empty.",
+  priorities: [],
+  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+  work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+};
+
+/** Details as the shell's drawer draws it: the details slot, whose panel the drawer's `aside`
+ *  holds under a box of the sheet's own (`MarginSheet.tsx`'s `SheetBody`, which the phone's
+ *  sheet hides while a margin thread is open), the box found by the test id `sheet-body`. */
+function renderDetailsDrawer(details: IssueDetails) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  return render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <MarginProvider>
+          <MarginSlotProvider drawsSlot>
+            <DetailsSlot issue={details} route={{ key: "CORE-1", kind: "issue" }} />
+            <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
+              <div data-testid="sheet-body">
+                <MarginBody />
+              </div>
+            </aside>
+          </MarginSlotProvider>
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// The phone's sheet hides the box that holds the panel while a margin thread is open
+// (`MarginSheet.tsx`'s `SheetBody`). That box is between the panel and Details' `aside`, where
+// `usableControl` reads every element, so a control of Details takes no press while it is
+// hidden: Add lists no entry then, and lists it again once the box is shown. Neither change is a
+// commit of Add's or a change inside the panel, so Add sees them only by watching the whole
+// `aside`; watching the panel alone, a read made while the box was hidden left Add gone.
+test("Add lists no entry while the box between the panel and Details' aside is hidden, and lists it again once it is shown", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  const view = renderDetailsDrawer(advancesOnly);
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      screen.getAllByRole("menuitem").map((entry) => entry.textContent),
+      "Add lists other than Advances"
+    ).toEqual([PROPERTY_LABELS.advances]);
+    await user.keyboard("{Escape}");
+    const box = screen.getByTestId("sheet-body");
+    expect(
+      box.contains(addMenuControl()) && box.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null,
+      "Add is not under the box in Details' aside"
+    ).toBe(true);
+    await act(async () => box.setAttribute("hidden", ""));
+    await waitFor(() =>
+      expect(
+        addMenuControl(),
+        "Add lists Advances while the box that holds the panel is hidden"
+      ).toBeNull()
+    );
+    await act(async () => box.removeAttribute("hidden"));
+    await waitFor(() =>
+      expect(
+        addMenuControl(),
+        "the box that holds the panel is shown again, but Details draws no Add"
+      ).not.toBeNull()
+    );
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// Details closed - its `aside` hidden (`Margin.tsx`), which a browser draws as `display: none`
+// and happy-dom draws as nothing at all, so the case sets that style too - is no refusal
+// (`usableControl`): what Add lists while Details is closed is what the reader finds on opening
+// it, so it is what Add lists once Details is open.
+test("Add lists the same entries while Details is closed as once it is open again", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  const view = renderDetailsDrawer(advancesOnly);
+  // Add's entries, read whether or not Details is drawn.
+  const listed = () =>
+    screen.queryAllByRole("menuitem", { hidden: true }).map((entry) => entry.textContent);
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(listed(), "Add lists other than Advances").toEqual([PROPERTY_LABELS.advances]);
+    const details = addMenuControl()?.closest<HTMLElement>(`aside[${DETAILS_ATTRIBUTE}]`);
+    if (details == null) throw new Error("Add is not in Details' aside");
+    await act(async () => {
+      details.setAttribute("hidden", "");
+      details.style.display = "none";
+    });
+    expect(listed(), "Add lists other entries while Details is closed").toEqual([
+      PROPERTY_LABELS.advances,
+    ]);
+    await act(async () => {
+      details.removeAttribute("hidden");
+      details.style.removeProperty("display");
+    });
+    expect(listed(), "Add lists other entries once Details is open again").toEqual([
+      PROPERTY_LABELS.advances,
+    ]);
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The assignee's control is the header's, and the header can be drawn after Details. Add then
+// finds no header to watch, so it watches the body for one drawn later, and lists Assignee once
+// a header that draws the assignee's control is on the page, though that is no commit of Add's.
+test("Add lists Assignee once a header drawn after it draws the assignee's control", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  // A value for every property Add lists but the assignee.
+  getIssue.mockResolvedValue({
+    ...advancesOnly,
+    advances: [{ id: "PRI-7", inherited: false }],
+    assignee: null,
+  });
+  const header = document.createElement("div");
+  header.setAttribute("data-issue-header", "");
+  const assignee = document.createElement("button");
+  assignee.type = "button";
+  assignee.setAttribute("aria-label", assigneeControlName("CORE-1"));
+  header.append(assignee);
+  const view = renderDetails();
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(priorities).toHaveBeenCalled());
+    expect(
+      addMenuControl(),
+      "Add is drawn before any header draws the assignee's control, which its one entry reaches"
+    ).toBeNull();
+    await act(async () => document.body.append(header));
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      screen.getAllByRole("menuitem").map((entry) => entry.textContent),
+      "Add lists other than Assignee once the header draws the assignee's control"
+    ).toEqual([PROPERTY_LABELS.assignee]);
+  } finally {
+    header.remove();
+    view.unmount();
     priorities.mockRestore();
     restore();
   }
@@ -1863,8 +2061,9 @@ test("while the labels are saving, the key l is off, and on again once the save 
 
 // `l` opens Details at the Labels row before it presses the labels' control
 // (`useOpenDetailsAt`), so Details being closed - its drawer's `aside` hidden, and the control
-// under it not drawn - leaves `l` on (`usableControl`'s `opensDetails`), while an element inside
-// the drawer that hides the row or takes it out of reach still turns it off.
+// under it not drawn - leaves `l` on (`usableControl`, which reads a closed Details as no
+// refusal), while an element inside the drawer that hides the row or takes it out of reach
+// still turns it off.
 test("with Details closed, l is on for the labels control, and off while its row inside Details is hidden or inert", async () => {
   const { restore } = stubIssueApi();
   const queryClient = new QueryClient({
