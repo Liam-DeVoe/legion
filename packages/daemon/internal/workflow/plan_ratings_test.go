@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -81,6 +83,12 @@ func planWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.PlanRec
 // steps are DefaultSteps. Its id is a version 5 uuid of the issue and its run, in the plan records'
 // own namespace, so a write sent again lands on the same plan and the next run gets a plan of its
 // own. No later move of the run writes another.
+//
+// The next run is the issue re-admitted, which stands it at admitted at the next generation
+// (admit's readmit), and its gate opened by a new engine over the same store, as after a restart,
+// through the admission's own start (StartFirstPhase). That run writes a plan of its own beside
+// the first, with run 2's generation and run 2's id, and the first stays as it was. A second
+// opening of that gate, by one more engine, writes no plan: the issue has left admitted.
 func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
@@ -88,18 +96,42 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect})
 
 	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
-	want := record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte("LEGION-208/1")).String(), Generation: 1, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
-	if plans := planWrites(t, pool, root.Key); len(plans) != 1 || !reflect.DeepEqual(plans[0], want) {
-		t.Fatalf("the move out of admitted wrote the plans %+v, want the one %+v", plans, want)
+	planOf := func(name string, generation uint64) record.PlanRecord {
+		return record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte(name)).String(), Generation: generation, Source: "default",
+			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 	}
-	if other := PlanID(root.Key, 2); other == want.ID {
-		t.Fatalf("the plan of run 2 has the id %s of run 1's", other)
+	first := planOf("LEGION-208/1", 1)
+	if plans := planWrites(t, pool, root.Key); len(plans) != 1 || !reflect.DeepEqual(plans[0], first) {
+		t.Fatalf("the move out of admitted wrote the plans %+v, want the one %+v", plans, first)
 	}
 
 	move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
 	if plans := planWrites(t, pool, root.Key); len(plans) != 1 {
 		t.Fatalf("the move out of planning left %d plan records, want the one the start wrote", len(plans))
+	}
+
+	readmitted := *issueRecord(t, pool, root.Key)
+	readmitted.Phase, readmitted.Generation = phase.Admitted, 2
+	seedIssue(t, pool, readmitted)
+	openTheGate := func() {
+		t.Helper()
+		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			engine := stepEngine(nil)
+			issue, err := engine.store.Issue(ctx, tx, root.Key)
+			if err != nil {
+				return err
+			}
+			return engine.StartFirstPhase(ctx, tx, *issue, nil)
+		})
+	}
+	openTheGate()
+	second := planOf("LEGION-208/2", 2)
+	if plans := planWrites(t, pool, root.Key); !reflect.DeepEqual(plans, []record.PlanRecord{first, second}) {
+		t.Fatalf("the gate of run 2 left the plans %+v, want run 1's %+v and run 2's %+v", plans, first, second)
+	}
+	openTheGate()
+	if plans := planWrites(t, pool, root.Key); len(plans) != 2 {
+		t.Fatalf("a second opening of run 2's gate left %d plan records, want the two the two runs wrote: %+v", len(plans), plans)
 	}
 }
 
