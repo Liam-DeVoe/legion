@@ -2310,60 +2310,82 @@ test("the question the page opened on takes back a focus a redraw drops, and kee
 });
 
 // From the answer on, the question's row the opening unfolded the path to again is the row the
-// opening focused (`unfoldTo`), as the row its landing focused was before: a later read that
-// takes that row out of the page - here one that places the question's thread under a node
-// that has arrived since, which nothing opens - has the opening unfold the path to the question
-// again. Read as nobody's row, the focus the answer's unfolding gave the question ended the
-// opening in the same render, and the later read left the focus on the page.
+// opening focused (`unfoldTo`), as the row its landing focused was before. It is held on screen
+// as the page grows, as that row was until the answer took it out of the page, which ended its
+// hold. A later read that takes it out of the page - here one that places the question's thread
+// under a node that has arrived since, which nothing opens - has the opening unfold the path to
+// the question again. Read as nobody's row, the focus the answer's unfolding gave the question
+// ended the opening in the same render, and the later read left the focus on the page. happy-dom
+// lays nothing out, so the row's box is given, and the size observers watching the page are
+// called by hand.
 test("the question the opening unfolded again after its answer keeps the focus through a later read", async () => {
   setViewport(1440);
-  const thread = (open: boolean) =>
-    node({
-      children: [
-        node({ id: "ask-mine", question: open, text: "Yours?", type: "ask", waiting: open }),
-      ],
-      held: 1,
-      id: "comment-1",
-      text: "The first words.",
-      type: "comment",
-    });
-  const tree = renderPageTree(node({ children: [thread(true)], id: KEY, type: "issue" }));
-  const { container } = tree.view;
-  await waitFor(() => expect(focusedRow(container)).toBe("ask-mine"));
+  const sizes = sizesByHand();
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    const thread = (open: boolean) =>
+      node({
+        children: [
+          node({ id: "ask-mine", question: open, text: "Yours?", type: "ask", waiting: open }),
+        ],
+        held: 1,
+        id: "comment-1",
+        text: "The first words.",
+        type: "comment",
+      });
+    const tree = renderPageTree(node({ children: [thread(true)], id: KEY, type: "issue" }));
+    const { container } = tree.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("ask-mine"));
 
-  // The answer folds the thread the frontier alone opened, and the opening unfolds it again.
-  tree.redraw(node({ children: [thread(false)], id: KEY, type: "issue" }));
-  await nextFrame();
-  expect(focusedRow(container), "the answer moved the focus off the question").toBe("ask-mine");
-  const unfolded = rowsFor(container, "ask-mine")[0];
+    // The answer folds the thread the frontier alone opened, and the opening unfolds it again.
+    tree.redraw(node({ children: [thread(false)], id: KEY, type: "issue" }));
+    await nextFrame();
+    expect(focusedRow(container), "the answer moved the focus off the question").toBe("ask-mine");
+    const unfolded = rowsFor(container, "ask-mine")[0];
+    if (unfolded === undefined) throw new Error("the answer's unfolding drew no row for ask-mine");
+    // What landed above it put its 28 px row 400 px below the screen's foot.
+    spyOn(unfolded, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, window.innerHeight + 400, 600, 28)
+    );
+    scrolled.mockClear();
+    await sizes.resized(document.body);
+    // Its foot is brought 8 px clear of the screen's (`identity-block.ts`'s `bringOnScreen`).
+    expect(
+      scrolled,
+      "the question's row the answer unfolded again was not held on screen"
+    ).toHaveBeenCalledWith({ top: 436 });
 
-  tree.redraw(
-    node({
-      children: [
-        node({
-          children: [thread(false)],
-          held: 2,
-          id: "comment-0",
-          text: "Older words.",
-          type: "comment",
-        }),
-      ],
-      id: KEY,
-      type: "issue",
-    })
-  );
-  await nextFrame();
-  expect(
-    rowsFor(container, "ask-mine"),
-    "the later read left the question folded away: the answer's unfolding ended the opening"
-  ).toHaveLength(1);
-  expect(rowsFor(container, "ask-mine")[0], "the later read kept the question's row").not.toBe(
-    unfolded
-  );
-  expect(
-    focusedRow(container),
-    "the later read left the focus off the question: the answer's unfolding ended the opening"
-  ).toBe("ask-mine");
+    tree.redraw(
+      node({
+        children: [
+          node({
+            children: [thread(false)],
+            held: 2,
+            id: "comment-0",
+            text: "Older words.",
+            type: "comment",
+          }),
+        ],
+        id: KEY,
+        type: "issue",
+      })
+    );
+    await nextFrame();
+    expect(
+      rowsFor(container, "ask-mine"),
+      "the later read left the question folded away: the answer's unfolding ended the opening"
+    ).toHaveLength(1);
+    expect(rowsFor(container, "ask-mine")[0], "the later read kept the question's row").not.toBe(
+      unfolded
+    );
+    expect(
+      focusedRow(container),
+      "the later read left the focus off the question: the answer's unfolding ended the opening"
+    ).toBe("ask-mine");
+  } finally {
+    sizes.restore();
+    scrolled.mockRestore();
+  }
 });
 
 // The opening unfolds the path to the question it opened on once for the row it focused there

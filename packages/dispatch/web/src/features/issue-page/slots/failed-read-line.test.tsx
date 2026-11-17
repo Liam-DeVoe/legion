@@ -617,9 +617,10 @@ test("a focus on a view's tree that draws rows stays on the tree, from outside t
 });
 
 // The app focuses its main element at each page change but the first (`app.tsx`), so a view's
-// address opened from another page starts with the focus on what holds the stage. Nobody put it
-// there, as nobody puts it on the page itself, and a refused read's Retry takes it. The case's
-// container stands for the app's main element.
+// address opened from another page, where the view draws its Retry in a later commit than the
+// page change, starts with the focus on what holds the stage. Nobody put it there, as nobody
+// puts it on the page itself, and a refused read's Retry takes it. The case's container stands
+// for the app's main element.
 test("a view opened from another page gives its failed read's Retry the focus the app put on what holds the view", async () => {
   for (const late of [false, true]) {
     const page = render(<RefusedViewPage drawn={false} late={late} />);
@@ -639,5 +640,72 @@ test("a view opened from another page gives its failed read's Retry the focus th
     } finally {
       page.unmount();
     }
+  }
+});
+
+/** The app's main element, which focuses itself in an effect as it mounts, as the app focuses it
+ *  at a page change (`app.tsx`), around a stage mounted in that same commit: React runs the
+ *  stage's effect, which places the focus, before this one. */
+function PageChangeMain({ children }: { children: ReactNode }): ReactNode {
+  const main = useRef<HTMLElement>(null);
+  useEffect(() => {
+    main.current?.focus();
+  }, []);
+  return (
+    <main ref={main} tabIndex={-1}>
+      {children}
+    </main>
+  );
+}
+
+// A view whose reads are cached - Back to its address from another page - draws its Retry in
+// the commit the page mounts in. The stage gives the Retry the focus there, and the app then
+// moves it to its main element, where it stayed: the stage takes it back in the next frame.
+test("a view that draws its failed read's Retry in the commit its page mounts in takes back the focus the app puts on its main element", async () => {
+  (document.activeElement as HTMLElement | null)?.blur();
+  const page = render(
+    <PageChangeMain>
+      <ViewStage view="verification">
+        <RefusedTreeView late={false} />
+      </ViewStage>
+    </PageChangeMain>
+  );
+  try {
+    expect(
+      document.activeElement,
+      "the app's main element did not take the focus after the stage placed it"
+    ).toBe(page.getByRole("main"));
+    await frames(1);
+    expect(
+      document.activeElement,
+      "the view drew its Retry as its page mounted, and left the focus on the app's main element"
+    ).toBe(page.getByRole("button", { name: "Retry" }));
+  } finally {
+    page.unmount();
+  }
+});
+
+// The same for a view whose reads are cached and answered, which draws its rows in that commit.
+test("a view that draws its rows in the commit its page mounts in takes back the focus the app puts on its main element", async () => {
+  (document.activeElement as HTMLElement | null)?.blur();
+  const page = render(
+    <PageChangeMain>
+      <ViewStage view="spec">
+        <TwoReadsView results="answered" statements="answered" />
+      </ViewStage>
+    </PageChangeMain>
+  );
+  try {
+    expect(
+      document.activeElement,
+      "the app's main element did not take the focus after the stage placed it"
+    ).toBe(page.getByRole("main"));
+    await frames(1);
+    expect(
+      document.activeElement,
+      "the view drew its rows as its page mounted, and left the focus on the app's main element"
+    ).toBe(page.container.querySelector(TAB_STOP_ROW));
+  } finally {
+    page.unmount();
   }
 });
