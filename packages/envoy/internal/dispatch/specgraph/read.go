@@ -156,6 +156,68 @@ func yamlCharacter(r rune) bool {
 		0xA0 <= r && r <= 0xD7FF || 0xE000 <= r && r <= 0xFFFD || 0x10000 <= r && r <= 0x10FFFF
 }
 
+// problemKind is one kind of problem that the reader gives (Parse, ReadLayout), an index of
+// problemKinds.
+type problemKind int
+
+// The kinds of problem that the reader gives. numProblemKinds counts them, so each new kind is a
+// place of problemKinds, and TestEachProblemOfTheReaderSaysWhetherItLosesANode fails until it has
+// a row.
+const (
+	yamlStops problemKind = iota
+	yamlDocument
+	noJSONForm
+	noNode
+	schemaDropped
+	schemaKept
+	timeLimitDropped
+	notPrinted
+	numProblemKinds
+)
+
+// problemKinds is each kind of problem that the reader gives: its Effect on the tree, which
+// readerProblem sets on each problem of the kind, and the format of its Detail, which begins with
+// its rule. A kind loses a node (LosesNode) when the tree can miss a node of the file or hold one
+// in another text than the file writes:
+//   - yamlStops: yaml.v3 stops reading the file, so no document after the fault is in the tree;
+//   - yamlDocument: yaml.v3 reads no data from one document, such as one with a key written two
+//     times, so it gives no node;
+//   - noJSONForm: the data of a document has no JSON form, such as a key that is not a string;
+//   - schemaDropped: the schema refuses a value that the node does not hold as the file writes it:
+//     a key that the node takes no field for (additional properties), a value of another type, a
+//     component kind that is not "component" or "interface", or any refusal of a document that
+//     gives no node;
+//   - timeLimitDropped: a time limit that is not a positive Go duration, which the check drops.
+//
+// A kind keeps each node (KeepsEachNode) when the tree holds each node as the file writes it:
+//   - noNode: a file with no document, which holds no node to lose;
+//   - schemaKept: the schema refuses a value that the node keeps, such as a value outside a closed
+//     set, a text that breaks a pattern or a missing key;
+//   - notPrinted: the file is not as Print writes its nodes, which read from it as they are.
+var problemKinds = [numProblemKinds]struct {
+	effect Effect
+	format string
+}{
+	yamlStops:        {LosesNode, "bad-yaml: %s"},
+	yamlDocument:     {LosesNode, "bad-yaml: %s"},
+	noJSONForm:       {LosesNode, "bad-yaml: the document holds a value that JSON cannot hold"},
+	noNode:           {KeepsEachNode, "no-node: a spec file holds one or more nodes"},
+	schemaDropped:    {LosesNode, "schema: %s"},
+	schemaKept:       {KeepsEachNode, "schema: %s"},
+	timeLimitDropped: {LosesNode, "bad-time-limit: %q is not a positive Go duration"},
+	notPrinted:       {KeepsEachNode, "not-printed: %s"},
+}
+
+// readerProblem is the problem of the kind kind at pos, of the node id ("" for none): its Detail
+// is the kind's format filled with args, its rule the word before the Detail's first colon, and its
+// Effect the kind's.
+func readerProblem(pos Position, id string, kind problemKind, args ...any) Problem {
+	k := problemKinds[kind]
+	p := idProblem(pos, id, fmt.Sprintf(k.format, args...))
+	p.Effect = k.effect
+	return p
+}
+
 // document is one YAML document of a spec file: the line of its "---" (or of its first line, for a
 // document that has none), and its data written as JSON, nil when the reader refused the data.
 type document struct {
@@ -182,7 +244,7 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 			if readerFaults[strings.TrimPrefix(err.Error(), "yaml: ")] {
 				line = max(refusedLine(data), 1)
 			}
-			problems = append(problems, yamlProblem(name, err.Error(), line))
+			problems = append(problems, yamlProblem(name, yamlStops, err.Error(), line))
 			stopped = true
 			break
 		}
@@ -192,14 +254,14 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 		switch err := doc.Decode(&value); {
 		case errors.As(err, &typeErr):
 			for _, entry := range typeErr.Errors {
-				problems = append(problems, yamlProblem(name, entry, d.line))
+				problems = append(problems, yamlProblem(name, yamlDocument, entry, d.line))
 			}
 		case err != nil:
-			problems = append(problems, yamlProblem(name, err.Error(), d.line))
+			problems = append(problems, yamlProblem(name, yamlDocument, err.Error(), d.line))
 		default:
 			js, err := json.Marshal(value)
 			if err != nil || !stringKeys(value) {
-				problems = append(problems, idProblem(Position{File: name, Line: d.line}, "", "bad-yaml: the document holds a value that JSON cannot hold"))
+				problems = append(problems, readerProblem(Position{File: name, Line: d.line}, "", noJSONForm))
 				break
 			}
 			d.data = js
@@ -207,19 +269,19 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 		documents = append(documents, d)
 	}
 	if len(documents) == 0 && len(problems) == 0 {
-		problems = append(problems, idProblem(Position{File: name, Line: 1}, "", "no-node: a spec file holds one or more nodes"))
+		problems = append(problems, readerProblem(Position{File: name, Line: 1}, "", noNode))
 	}
 	return documents, problems, stopped
 }
 
-// yamlProblem is the bad-yaml problem of one message of yaml.v3, without its "yaml: " prefix, at
-// the line the message names, else at line.
-func yamlProblem(name, msg string, line int) Problem {
+// yamlProblem is the bad-yaml problem of the kind kind (yamlStops or yamlDocument) for one message
+// of yaml.v3, without its "yaml: " prefix, at the line the message names, else at line.
+func yamlProblem(name string, kind problemKind, msg string, line int) Problem {
 	msg = strings.TrimPrefix(msg, "yaml: ")
 	if m := yamlLine.FindStringSubmatch(msg); m != nil {
 		line, _ = strconv.Atoi(m[1])
 	}
-	return idProblem(Position{File: name, Line: line}, "", "bad-yaml: "+msg)
+	return readerProblem(Position{File: name, Line: line}, "", kind, msg)
 }
 
 // stringKeys reports whether each mapping of value has strings for keys, as JSON's objects do:
@@ -277,7 +339,7 @@ func readFile(name string, data []byte) (documents []Document, problems []Proble
 	}
 	if len(problems) == 0 {
 		if u := firstUnprinted(data, nodes, lines); u.line > 0 {
-			problems = append(problems, idProblem(Position{File: name, Line: u.line}, nodeID(u.node), u.detail()))
+			problems = append(problems, readerProblem(Position{File: name, Line: u.line}, nodeID(u.node), notPrinted, u.detail()))
 		}
 	}
 	documents, uncounted = splitFile(data, read, nodes, lines, stop)
@@ -350,19 +412,29 @@ func splitFile(data []byte, documents []document, nodes []any, lines []int, stop
 	return result, uncounted
 }
 
-// schemaRefusals is one schema problem at pos, of the node id, for each place where the data inst
-// breaks the schema, each detail once.
-func schemaRefusals(pos Position, id string, inst any) []Problem {
+// schemaRefusal is one place where the data of a node breaks the schema: its detail, "<where>:
+// <message>", and whether the value at that place is one that no node holds as the data writes it:
+// a key that the node takes no field for (additional properties), or a value of another type.
+type schemaRefusal struct {
+	detail  string
+	dropped bool
+}
+
+// schemaRefusals is each place where the data inst breaks the schema, each detail once, in the
+// order of the details.
+func schemaRefusals(inst any) []schemaRefusal {
 	var refused *jsonschema.ValidationError
 	if !errors.As(nodeSchema().Validate(inst), &refused) {
 		return nil
 	}
-	var problems []Problem
+	var all []schemaRefusal
 	for _, leaf := range schemaLeaves(refused) {
-		problems = append(problems, idProblem(pos, id, "schema: "+schemaDetail(leaf)))
+		_, extra := leaf.ErrorKind.(*kind.AdditionalProperties)
+		_, otherType := leaf.ErrorKind.(*kind.Type)
+		all = append(all, schemaRefusal{detail: schemaDetail(leaf), dropped: extra || otherType})
 	}
-	slices.SortFunc(problems, func(a, b Problem) int { return strings.Compare(a.Detail, b.Detail) })
-	return slices.CompactFunc(problems, func(a, b Problem) bool { return a.Detail == b.Detail })
+	slices.SortFunc(all, func(a, b schemaRefusal) int { return strings.Compare(a.detail, b.detail) })
+	return slices.CompactFunc(all, func(a, b schemaRefusal) bool { return a.detail == b.detail })
 }
 
 // schemaProblems is each problem that the schema finds in the data of a node of tree, at the
@@ -381,34 +453,64 @@ func schemaProblems(tree Tree) []Problem {
 		if err != nil {
 			continue
 		}
-		problems = append(problems, schemaRefusals(n.pos, n.id, inst)...)
+		for _, r := range schemaRefusals(inst) {
+			refusal := schemaKept
+			if r.dropped {
+				refusal = schemaDropped
+			}
+			problems = append(problems, readerProblem(n.pos, n.id, refusal, r.detail))
+		}
 	}
 	return problems
 }
 
-// readNode checks the data of one document against the schema, and gives its node: nil for a
-// type that is not one of the four, or for a key whose value is of another type than the schema's.
+// readNode checks the data of one document against the schema, and gives its node (nodeOf) and
+// each problem. It sets the Effect of each problem of the schema by what the node keeps: a
+// refusal of a value that the node holds as the data writes it keeps each node (schemaKept); a
+// refusal of a document that gives no node, of a key that the node takes no field for, of a value
+// of another type, or of a component kind that the node drops, loses or changes the node
+// (schemaDropped). A time limit that the check drops is timeLimitDropped.
 func readNode(name string, d document) (any, []Problem) {
 	pos := Position{File: name, Line: d.line}
 	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(d.data))
 	if err != nil {
-		return nil, []Problem{idProblem(pos, "", "bad-yaml: the document holds a value that JSON cannot hold")}
+		return nil, []Problem{readerProblem(pos, "", noJSONForm)}
 	}
 	object, _ := inst.(map[string]any)
 	id, _ := object["id"].(string)
-	problems := schemaRefusals(pos, id, inst)
 	typ, _ := object["type"].(string)
+	node, keptKind, droppedLimit := nodeOf(d.data, typ, pos)
+	var problems []Problem
+	for _, r := range schemaRefusals(inst) {
+		refusal := schemaKept
+		if node == nil || r.dropped || !keptKind && strings.HasPrefix(r.detail, "/kind: ") {
+			refusal = schemaDropped
+		}
+		problems = append(problems, readerProblem(pos, id, refusal, r.detail))
+	}
+	if droppedLimit != "" {
+		problems = append(problems, readerProblem(pos, id, timeLimitDropped, droppedLimit))
+	}
+	return node, problems
+}
+
+// nodeOf is the node of data, the data of a document of the type typ at pos: nil for a type that
+// is not one of the four, or for a key whose value is of another type than its field's. keptKind is
+// false for a component whose kind the node does not hold, one that is not "component" or
+// "interface", and droppedLimit is a time limit that the check drops, one that is not a positive Go
+// duration ("" for none).
+func nodeOf(data []byte, typ string, pos Position) (node any, keptKind bool, droppedLimit string) {
 	switch typ {
 	case "requirement":
 		var f requirementFile
-		if json.Unmarshal(d.data, &f) != nil {
-			return nil, problems
+		if json.Unmarshal(data, &f) != nil {
+			return nil, true, ""
 		}
-		return Statement{ID: f.ID, Text: joinLines(f.Text), Kind: Kind(f.Kind), Parent: f.Parent, Serves: f.Serves, About: f.About, Pos: pos}, problems
+		return Statement{ID: f.ID, Text: joinLines(f.Text), Kind: Kind(f.Kind), Parent: f.Parent, Serves: f.Serves, About: f.About, Pos: pos}, true, ""
 	case "check":
 		var f checkFile
-		if json.Unmarshal(d.data, &f) != nil {
-			return nil, problems
+		if json.Unmarshal(data, &f) != nil {
+			return nil, true, ""
 		}
 		c := Check{
 			ID: f.ID, Serves: f.Serves, Claim: f.Claim, ProcedureText: joinLines(f.ProcedureText), FailingExample: joinLines(f.FailingExample),
@@ -420,26 +522,26 @@ func readNode(name string, d document) (any, []Problem) {
 		if f.TimeLimit != "" {
 			limit, err := time.ParseDuration(f.TimeLimit)
 			if err != nil || limit <= 0 {
-				problems = append(problems, idProblem(pos, id, fmt.Sprintf("bad-time-limit: %q is not a positive Go duration", f.TimeLimit)))
-			} else {
-				c.TimeLimit = limit
+				return c, true, f.TimeLimit
 			}
+			c.TimeLimit = limit
 		}
-		return c, problems
+		return c, true, ""
 	case "component":
 		var f componentFile
-		if json.Unmarshal(d.data, &f) != nil {
-			return nil, problems
+		if json.Unmarshal(data, &f) != nil {
+			return nil, true, ""
 		}
-		return Component{ID: f.ID, Name: f.Name, Purpose: joinLines(f.Purpose), Parent: f.Parent, Interface: f.Kind == "interface", Joins: f.Joins, Pos: pos}, problems
+		holds := f.Kind == "" || f.Kind == "component" || f.Kind == "interface"
+		return Component{ID: f.ID, Name: f.Name, Purpose: joinLines(f.Purpose), Parent: f.Parent, Interface: f.Kind == "interface", Joins: f.Joins, Pos: pos}, holds, ""
 	case "term":
 		var f termFile
-		if json.Unmarshal(d.data, &f) != nil {
-			return nil, problems
+		if json.Unmarshal(data, &f) != nil {
+			return nil, true, ""
 		}
-		return Term{ID: f.ID, Name: f.Name, Definition: joinLines(f.Definition), Pos: pos}, problems
+		return Term{ID: f.ID, Name: f.Name, Definition: joinLines(f.Definition), Pos: pos}, true, ""
 	}
-	return nil, problems
+	return nil, true, ""
 }
 
 // schemaLeaves is each error of the tree under e that has no cause of its own: the places where
@@ -494,12 +596,12 @@ type unprinted struct {
 	refused   error
 }
 
-// detail is the detail of the not-printed problem: the two texts of the line, quoted as Go quotes
-// a string so that a space at the end, a carriage return or a byte order mark shows, what differs
-// in kind, and the command that writes each node in its printed form.
+// detail is the detail of the not-printed problem after its rule: the two texts of the line,
+// quoted as Go quotes a string so that a space at the end, a carriage return or a byte order mark
+// shows, what differs in kind, and the command that writes each node in its printed form.
 func (u unprinted) detail() string {
 	if u.refused != nil {
-		return fmt.Sprintf("not-printed: print writes no document for the node at line %d: %v", u.line, u.refused)
+		return fmt.Sprintf("print writes no document for the node at line %d: %v", u.line, u.refused)
 	}
 	got, want := "past the end of the file", "nothing"
 	if u.got != "" {
@@ -508,7 +610,7 @@ func (u unprinted) detail() string {
 	if u.want != "" {
 		want = strconv.Quote(u.want)
 	}
-	return fmt.Sprintf("not-printed: line %d is %s, and print writes %s there (%s); spec-check print writes each node in that form", u.line, got, want, lineDifference(u.got, u.want))
+	return fmt.Sprintf("line %d is %s, and print writes %s there (%s); spec-check print writes each node in that form", u.line, got, want, lineDifference(u.got, u.want))
 }
 
 // lineDifference names in kind how the line got of a file differs from the line want that print

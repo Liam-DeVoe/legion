@@ -206,7 +206,7 @@ func TestReadRefuses(t *testing.T) {
 		}
 		detail := "not-printed: line " + strconv.Itoa(line) + " is " + quoted(got, "past the end of the file") + ", and print writes " +
 			quoted(want, "nothing") + " there (" + difference + "); spec-check print writes each node in that form"
-		return Problem{Position{"x.yaml", line}, node, "not-printed", detail}
+		return Problem{Pos: Position{"x.yaml", line}, Node: node, Rule: "not-printed", Detail: detail, Effect: KeepsEachNode}
 	}
 	for _, row := range []struct {
 		name  string
@@ -215,40 +215,40 @@ func TestReadRefuses(t *testing.T) {
 		nodes int // how many nodes the tree holds
 	}{
 		{name: "an open flow list", text: "---\ntype: [\n",
-			want: Problem{Position{"x.yaml", 2}, "-", "bad-yaml", "bad-yaml: line 2: did not find expected node content"}},
+			want: Problem{Pos: Position{"x.yaml", 2}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: line 2: did not find expected node content", Effect: LosesNode}},
 		{name: "a byte that is not UTF-8", text: strings.Replace(term, "work unit\n", "caf\xe9 unit\n", 1),
-			want: Problem{Position{"x.yaml", 4}, "-", "bad-yaml", "bad-yaml: invalid trailing UTF-8 octet"}},
+			want: Problem{Pos: Position{"x.yaml", 4}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: invalid trailing UTF-8 octet", Effect: LosesNode}},
 		{name: "a NUL byte", text: strings.Replace(term, "work unit\n", "work\x00unit\n", 1),
-			want: Problem{Position{"x.yaml", 4}, "-", "bad-yaml", "bad-yaml: control characters are not allowed"}},
+			want: Problem{Pos: Position{"x.yaml", 4}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: control characters are not allowed", Effect: LosesNode}},
 		// The reader of yaml.v3 names no line for a byte it refuses; the problem is at the line of
 		// that byte, also in a later document of a file larger than one read of the reader. The
 		// reader reads ahead of the parser, so the tree keeps the 24 nodes the parser had finished.
 		{name: "a byte that is not UTF-8 in the 30th document", text: strings.Repeat(term, 29) + strings.Replace(term, "work unit\n", "caf\xe9 unit\n", 1), nodes: 24,
-			want: Problem{Position{"x.yaml", 178}, "-", "bad-yaml", "bad-yaml: invalid trailing UTF-8 octet"}},
+			want: Problem{Pos: Position{"x.yaml", 178}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: invalid trailing UTF-8 octet", Effect: LosesNode}},
 		{name: "a control character in the 30th document", text: strings.Repeat(term, 29) + strings.Replace(term, "work unit\n", "work\x01unit\n", 1), nodes: 24,
-			want: Problem{Position{"x.yaml", 178}, "-", "bad-yaml", "bad-yaml: control characters are not allowed"}},
+			want: Problem{Pos: Position{"x.yaml", 178}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: control characters are not allowed", Effect: LosesNode}},
 		// A fault of the YAML on line 1, which yaml.v3 names with no line, keeps line 1 when a byte
 		// far after it is not UTF-8: only a fault of the reader takes the line of that byte.
 		{name: "a fault on line 1 before a byte that is not UTF-8", text: "@x\n" + strings.Repeat(term, 29) + strings.Replace(term, "work unit\n", "caf\xe9 unit\n", 1),
-			want: Problem{Position{"x.yaml", 1}, "-", "bad-yaml", "bad-yaml: found character that cannot start any token"}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: found character that cannot start any token", Effect: LosesNode}},
 		{name: "a key written two times", text: strings.Replace(term, "type: term\n", "type: term\ntype: term\n", 1),
-			want: Problem{Position{"x.yaml", 3}, "-", "bad-yaml", `bad-yaml: line 3: mapping key "type" already defined at line 2`}},
+			want: Problem{Pos: Position{"x.yaml", 3}, Node: "-", Rule: "bad-yaml", Detail: `bad-yaml: line 3: mapping key "type" already defined at line 2`, Effect: LosesNode}},
 		{name: "a key that is a number", text: "---\n1: x\n",
-			want: Problem{Position{"x.yaml", 1}, "-", "bad-yaml", "bad-yaml: the document holds a value that JSON cannot hold"}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: the document holds a value that JSON cannot hold", Effect: LosesNode}},
 		{name: "an empty file", text: "",
-			want: Problem{Position{"x.yaml", 1}, "-", "no-node", "no-node: a spec file holds one or more nodes"}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "-", Rule: "no-node", Detail: "no-node: a spec file holds one or more nodes", Effect: KeepsEachNode}},
 		{name: "a key that the node does not take", text: term + "surprise: true\n", nodes: 1,
-			want: Problem{Position{"x.yaml", 1}, "work-unit", "schema", "schema: node: additional properties 'surprise' not allowed"}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "work-unit", Rule: "schema", Detail: "schema: node: additional properties 'surprise' not allowed", Effect: LosesNode}},
 		{name: "a type that is no node kind", text: strings.Replace(term, "type: term", "type: plan_task", 1),
-			want: Problem{Position{"x.yaml", 1}, "work-unit", "schema", "schema: /type: value must be one of 'requirement', 'check', 'component', 'term'"}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "work-unit", Rule: "schema", Detail: "schema: /type: value must be one of 'requirement', 'check', 'component', 'term'", Effect: LosesNode}},
 		{name: "a text that is a string", text: "---\ntype: requirement\nid: a-claim-survives-a-restart\nkind: behavior\ntext: Legion keeps each claim.\n",
-			want: Problem{Position{"x.yaml", 1}, "a-claim-survives-a-restart", "schema", "schema: /text: got string, want array"}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "a-claim-survives-a-restart", Rule: "schema", Detail: "schema: /text: got string, want array", Effect: LosesNode}},
 		{name: "a document that is only its --- line", text: "---\n",
-			want: Problem{Position{"x.yaml", 1}, "-", "schema", "schema: node: got null, want object"}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "-", Rule: "schema", Detail: "schema: node: got null, want object", Effect: LosesNode}},
 		{name: "a name that is a number in the second document", text: term + strings.Replace(strings.Replace(term, "work-unit", "work-item", 1), "work unit", "12", 1), nodes: 1,
-			want: Problem{Position{"x.yaml", 7}, "work-item", "schema", "schema: /name: got number, want string"}},
+			want: Problem{Pos: Position{"x.yaml", 7}, Node: "work-item", Rule: "schema", Detail: "schema: /name: got number, want string", Effect: LosesNode}},
 		{name: "a query check with a test part", text: query, nodes: 1,
-			want: Problem{Position{"x.yaml", 1}, "each-claim-is-in-the-graph", "schema", "schema: /test: the node takes no such key"}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "each-claim-is-in-the-graph", Rule: "schema", Detail: "schema: /test: the node takes no such key", Effect: KeepsEachNode}},
 		{name: "a key out of its order", text: strings.Replace(term, "id: work-unit\nname: work unit\n", "name: work unit\nid: work-unit\n", 1), nodes: 1,
 			want: notPrinted(3, "work-unit", "name: work unit\n", "id: work-unit\n", "another order of keys")},
 		{name: "a comment", text: strings.Replace(term, "---\n", "---\n# The term of work.\n", 1), nodes: 1,
@@ -286,9 +286,9 @@ func TestReadRefuses(t *testing.T) {
 		{name: "a line separator in a quoted name", text: strings.Replace(term, "name: work unit", "name: 'work\u2028  unit'", 1), nodes: 1,
 			want: notPrinted(4, "work-unit", "name: 'work\u2028", "name: \"work\\Lunit\"\n", "the character U+2028, which YAML reads as a line break")},
 		{name: "a time limit that is not a Go duration", text: strings.Replace(program, "%s", "a day", 1), nodes: 1,
-			want: Problem{Position{"x.yaml", 1}, "a-restart-keeps-the-claim", "bad-time-limit", `bad-time-limit: "a day" is not a positive Go duration`}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "a-restart-keeps-the-claim", Rule: "bad-time-limit", Detail: `bad-time-limit: "a day" is not a positive Go duration`, Effect: LosesNode}},
 		{name: "a time limit of zero", text: strings.Replace(program, "%s", "0s", 1), nodes: 1,
-			want: Problem{Position{"x.yaml", 1}, "a-restart-keeps-the-claim", "bad-time-limit", `bad-time-limit: "0s" is not a positive Go duration`}},
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "a-restart-keeps-the-claim", Rule: "bad-time-limit", Detail: `bad-time-limit: "0s" is not a positive Go duration`, Effect: LosesNode}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -300,6 +300,75 @@ func TestReadRefuses(t *testing.T) {
 				t.Errorf("Parse(%q): the tree holds %d nodes, want %d: %+v", row.text, got, row.nodes, tree)
 			}
 		})
+	}
+}
+
+// readerRow is one input of the table of the reader's problems: the kind of problem that it gives,
+// its Effect, the Detail that it gives, and the file.
+type readerRow struct {
+	kind         problemKind
+	effect       Effect
+	detail, file string
+}
+
+// Each kind of problem of the reader is in one of two columns: it can lose a node of the files or
+// change one, so a comparison of the tree misses that text (LosesNode), or it leaves each node as the
+// files write it (KeepsEachNode). The table has one or more rows for each kind that the reader
+// declares (problemKinds), and Parse gives the row's problem for the row's file with the row's
+// Effect, so a new kind fails the test until it has a row. Every problem that Parse gives for
+// those files has one of the two Effects: a problem with no Effect fails, so no kind reads as one
+// that keeps each node by default. The rows of the schema hold each case of what the node keeps: a
+// value that the node holds, and a key, a type, a component kind or a whole node that it drops.
+func TestEachProblemOfTheReaderSaysWhetherItLosesANode(t *testing.T) {
+	t.Parallel()
+	const term = "---\ntype: term\nid: work-unit\nname: work unit\ndefinition:\n  - A work unit is work.\n"
+	const component = "---\ntype: component\nid: dispatch\nname: Dispatch\nkind: component\npurpose:\n  - It keeps each issue.\n"
+	const check = "---\ntype: check\nid: a-restart-keeps-the-claim\nserves: a-claim-survives-a-restart\nsubject: code\nprocedure: agent\n" +
+		"claim: The daemon reads the claim after it starts again.\nprocedure_text:\n  - An agent starts the daemon again.\nfailing_example:\n  - A daemon with no store.\n"
+	rows := []readerRow{
+		{yamlStops, LosesNode, "bad-yaml: line 8: did not find expected node content", term + "---\ntype: [\n"},
+		{yamlDocument, LosesNode, `bad-yaml: line 3: mapping key "type" already defined at line 2`, strings.Replace(term, "type: term\n", "type: term\ntype: term\n", 1)},
+		{noJSONForm, LosesNode, "bad-yaml: the document holds a value that JSON cannot hold", "---\n1: x\n"},
+		{noNode, KeepsEachNode, "no-node: a spec file holds one or more nodes", ""},
+		{schemaDropped, LosesNode, "schema: node: additional properties 'surprise' not allowed", term + "surprise: true\n"},
+		{schemaDropped, LosesNode, "schema: /name: got number, want string", strings.Replace(term, "name: work unit", "name: 12", 1)},
+		{schemaDropped, LosesNode, "schema: /type: value must be one of 'requirement', 'check', 'component', 'term'", strings.Replace(term, "type: term", "type: note", 1)},
+		{schemaDropped, LosesNode, "schema: /kind: value must be one of 'component', 'interface'", strings.Replace(component, "kind: component", "kind: service", 1)},
+		{schemaKept, KeepsEachNode, "schema: /subject: value must be one of 'code', 'production', 'graph'", strings.Replace(check, "subject: code", "subject: the logs", 1)},
+		{schemaKept, KeepsEachNode, "schema: node: missing property 'failing_example'", strings.Replace(check, "failing_example:\n  - A daemon with no store.\n", "", 1)},
+		{schemaKept, KeepsEachNode, "schema: /id: 'Work-Unit' does not match pattern '^[a-z0-9]+(-[a-z0-9]+)*$'", strings.Replace(term, "id: work-unit", "id: Work-Unit", 1)},
+		{timeLimitDropped, LosesNode, `bad-time-limit: "soon" is not a positive Go duration`, strings.Replace(check, "procedure: agent\n", "procedure: agent\ntime_limit: soon\n", 1)},
+		{notPrinted, KeepsEachNode, `not-printed: line 4 is "name: 'work unit'\n", and print writes "name: work unit\n" there (other quotes); spec-check print writes each node in that form`,
+			strings.Replace(term, "name: work unit", "name: 'work unit'", 1)},
+	}
+	name := map[Effect]string{LosesNode: "LosesNode", KeepsEachNode: "KeepsEachNode"}
+	covered := map[problemKind]bool{}
+	for _, row := range rows {
+		if start, _, _ := strings.Cut(problemKinds[row.kind].format, "%"); !strings.HasPrefix(row.detail, start) || row.effect != problemKinds[row.kind].effect {
+			t.Errorf("the row %q is not of its kind %d, %q with the Effect %s", row.detail, row.kind, problemKinds[row.kind].format, name[problemKinds[row.kind].effect])
+		}
+		covered[row.kind] = true
+		_, problems := Parse(map[string][]byte{"spec.yaml": []byte(row.file)})
+		given := 0
+		for _, p := range problems {
+			if _, ok := name[p.Effect]; !ok {
+				t.Errorf("Parse(%q) gives %+v, which has no Effect", row.file, p)
+			}
+			if p.Detail == row.detail {
+				given++
+				if p.Effect != row.effect {
+					t.Errorf("Parse(%q) gives %q the Effect %s, want %s", row.file, p.Detail, name[p.Effect], name[row.effect])
+				}
+			}
+		}
+		if given == 0 {
+			t.Errorf("Parse(%q) gives no problem %q, only %+v", row.file, row.detail, problems)
+		}
+	}
+	for kind := range numProblemKinds {
+		if !covered[kind] {
+			t.Errorf("kind %d of problem of the reader, %q, has no row in the table: give it the Effect of its column and a file that gives it", kind, problemKinds[kind].format)
+		}
 	}
 }
 

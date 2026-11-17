@@ -61,7 +61,8 @@ func TestFixtureHistoryListsBothPathsOfAMove(t *testing.T) {
 // ReadFixtureHistory reads each history.json of the scenarios, in the layout that the repository's
 // JSON formatter gives them, and refuses what the strict JSON reader refuses (a field it does not
 // know, one written in other letters or two times, a byte that is not UTF-8, text after the
-// history), a commit with no id and an id on two commits. A path of a tree keeps its own letters.
+// history, a value of another type, named with the form of history.json and its place), a commit
+// with no id and an id on two commits. A path of a tree keeps its own letters.
 func TestReadFixtureHistory(t *testing.T) {
 	t.Parallel()
 	paths, err := filepath.Glob("testdata/scenarios/*/history.json")
@@ -88,6 +89,7 @@ func TestReadFixtureHistory(t *testing.T) {
 		`{"commits":[{"id":"c1","files":{}}]} {}`:                   "text after the JSON value",
 		`{"commits":[{"files":{"a":"1"}}]}`:                         "a commit has no id",
 		`{"commits":[{"id":"c1"},{"id":"c1","files":{}}]}`:          `commit "c1" is in the history two times`,
+		`{"commits":"c1"}`:                                          `specgraph: history: it is not in the form {"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}: the value at "/commits" is of another type`,
 	} {
 		_, err := ReadFixtureHistory(strings.NewReader(text))
 		if err == nil || !strings.Contains(err.Error(), want) {

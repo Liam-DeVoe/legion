@@ -82,10 +82,22 @@ type scenarioResult struct {
 	TestCommit   string     `json:"test_commit"`
 }
 
+// The forms of the JSON files of a scenario that ReadScenario reads itself, with the type of each
+// value, as decodeJSON names them for a value of another type: the form of one element of each
+// array file, whose own form is "[<element>, …]", and the form of uncited.json.
+const (
+	subjectForm = `{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"<RFC 3339 time>"}`
+	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"<RFC 3339 time>","seq":<whole number>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
+	jobRunForm  = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
+	unitForm    = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
+	uncitedForm = `{"<commit>":{"<check id>":"<R48 rule>"}}`
+)
+
 // ReadScenario reads the scenario at the root of fsys, and refuses any file or field that the
 // format does not hold, with a *ScenarioError that names the file. Each JSON file is read by
 // decodeJSON, which refuses a byte that is not UTF-8, a member that the format does not name in
-// its own letters, a member that one object gives two times, and text after the value:
+// its own letters, a member that one object gives two times, text after the value, and a value of
+// another type than the file's form needs, which it names with the form and the place of the value:
 //
 //   - approved.json, as ReadApproved reads it, and with no cycle of parent and support relations
 //     among the current statements (R5: "Dispatch refuses a change that makes one"). The rules of
@@ -156,11 +168,11 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.Results, err = readResults(fsys, s.Approved); err != nil {
 		return s, err
 	}
-	if s.JobRuns, err = readEach[JobRun](fsys, "jobs.json", "job run"); err != nil {
+	if s.JobRuns, err = readEach[JobRun](fsys, "jobs.json", "job run", jobRunForm); err != nil {
 		return s, err
 	}
 	if holds["uncited.json"] {
-		if err := readJSON(fsys, "uncited.json", &s.Uncited); err != nil {
+		if err := readJSON(fsys, "uncited.json", &s.Uncited, uncitedForm); err != nil {
 			return s, err
 		}
 	}
@@ -181,7 +193,7 @@ func (s Scenario) Input(i int) Input {
 
 // readSubjects reads subjects.json.
 func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
-	subjects, err := readEach[ScenarioSubject](fsys, "subjects.json", "subject")
+	subjects, err := readEach[ScenarioSubject](fsys, "subjects.json", "subject", subjectForm)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +313,7 @@ func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (
 // readResults reads results.json, each result carrying the Digest of the approved version of its
 // check that check_version names.
 func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
-	read, err := readEach[scenarioResult](fsys, "results.json", "result")
+	read, err := readEach[scenarioResult](fsys, "results.json", "result", resultForm)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +370,7 @@ func checkVersionDigest(approved Approved, id string, v int) (string, bool) {
 
 // readUnits reads units.json.
 func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
-	units, err := readEach[Unit](fsys, "units.json", "unit")
+	units, err := readEach[Unit](fsys, "units.json", "unit", unitForm)
 	if err != nil {
 		return nil, err
 	}
@@ -397,29 +409,30 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 	return units, nil
 }
 
-// readEach reads the JSON array of the file name, each element a T as decodeJSON reads it; a fault
-// of an element names it as "<noun> <n>", from 1.
-func readEach[T any](fsys fs.FS, name, noun string) ([]T, error) {
+// readEach reads the JSON array of the file name, each element a T in the form form as decodeJSON
+// reads it, so the file is in the form "[<form>, …]"; a fault of an element names it as
+// "<noun> <n>", from 1, and a place in it from the element.
+func readEach[T any](fsys fs.FS, name, noun, form string) ([]T, error) {
 	var raw []jsontext.Value
-	if err := readJSON(fsys, name, &raw); err != nil {
+	if err := readJSON(fsys, name, &raw, "["+form+", …]"); err != nil {
 		return nil, err
 	}
 	all := make([]T, len(raw))
 	for i, element := range raw {
-		if err := decodeJSON(element, &all[i]); err != nil {
+		if err := decodeJSON(element, &all[i], form); err != nil {
 			return nil, scenarioFault(name, "%s %d: %w", noun, i+1, err)
 		}
 	}
 	return all, nil
 }
 
-// readJSON decodes the file name into v with decodeJSON.
-func readJSON(fsys fs.FS, name string, v any) error {
+// readJSON decodes the file name into v with decodeJSON, in the form form.
+func readJSON(fsys fs.FS, name string, v any, form string) error {
 	content, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
-	if err := decodeJSON(content, v); err != nil {
+	if err := decodeJSON(content, v, form); err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
 	return nil

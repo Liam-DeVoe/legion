@@ -18,9 +18,11 @@ const ciVariable = "GITHUB_ACTIONS"
 
 // runCompare is "spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]": it
 // compares the files of dir with the approved spec and answers 0 when the approved spec held each
-// text that they hold, 1 when it did not, and 2 for files that do not parse, a directory or a file
-// it cannot read, a directory that holds no spec file without --allow-empty, or arguments it does
-// not take.
+// text that they hold, 1 when it did not, and 2 for files with a problem of Parse that can lose a
+// node or change one (its Effect is specgraph.LosesNode), a directory or a file it cannot read, a
+// directory that holds no spec file without --allow-empty, or arguments it does not take. A problem
+// of Parse that leaves each node as the files write it (specgraph.KeepsEachNode), such as a
+// spelling that print does not write, is tree's to judge, and compare compares those files.
 //
 // It answers 2, before it reads an argument, in a CI job: R2 gives the comparison at each push to
 // Dispatch, and no CI job compares the files. No route of the Dispatch server calls
@@ -31,7 +33,8 @@ const ciVariable = "GITHUB_ACTIONS"
 // environment, such as sudo with its default env_reset or a container that docker run starts
 // without -e GITHUB_ACTIONS: there the command compares (TestTheBuiltBinary, "compare compares
 // behind a boundary that drops the environment"). spec-check guard names such a line in the
-// workflows, actions and scripts that it reads.
+// workflows, actions and scripts that it reads, when the command's name and compare stand next to
+// each other there.
 func runCompare(args []string, stdout, stderr io.Writer) int {
 	if os.Getenv(ciVariable) == "true" {
 		say(stderr, "compare does not run in a CI job (%s=true): R2 gives the comparison of the files with the approved spec at each push to Dispatch", ciVariable)
@@ -54,6 +57,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	}
 	j, err := read(stderr, dir)
 	what, empty := noSpecFile(j, err)
+	lost := slices.DeleteFunc(j.problems, func(p specgraph.Problem) bool { return p.Effect == specgraph.KeepsEachNode })
 	switch {
 	case empty:
 		// An instrument that read no file has not passed: every text of no file is approved. But
@@ -67,10 +71,10 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		say(stderr, "%s: %s, so compare reads it as the empty tree", dir, what)
 	case err != nil:
 		return cannotJudge(stderr, dir, err)
-	case len(j.problems) > 0:
-		// A document that does not read is missing from the tree, so a comparison of the tree would
-		// pass it.
-		j.sayProblems(stderr)
+	case len(lost) > 0:
+		// The tree misses the text of a document that the reader does not read into its node, or of a
+		// value that its node drops, so a comparison of the tree would pass that text.
+		judged{dir: dir, problems: lost}.sayProblems(stderr)
 		say(stderr, "%s: the files do not parse, so no comparison was made", dir)
 		return 2
 	}

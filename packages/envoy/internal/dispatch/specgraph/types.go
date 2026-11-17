@@ -105,11 +105,35 @@ type Tree struct {
 }
 
 // Problem is one fault of the files: where it is, the id of its node ("-" for a document with no
-// id or a fault of no document), its rule, and a Detail that begins with the rule.
+// id or a fault of no document), its rule, a Detail that begins with the rule, and, for a problem
+// of Parse, its Effect on the tree that Parse gives.
 type Problem struct {
 	Pos                Position
 	Node, Rule, Detail string
+	Effect             Effect
 }
+
+// Effect is what a problem of Parse does to the tree that Parse gives with it: LosesNode or
+// KeepsEachNode. The reader sets on each of its problems the Effect of its kind (problemKinds,
+// read.go). The zero value is no Effect, as on a problem of Validate or of Compare, and a caller
+// that compares the tree reads it as LosesNode, so no problem reads as one that keeps each node by
+// default.
+type Effect uint8
+
+const (
+	// LosesNode is the Effect of a problem after which the tree can miss a node that the files hold,
+	// or hold a node in another text than the files write: a document that the YAML library does not
+	// read, or whose data has no JSON form or gives no node, the documents after a fault that stops
+	// the reading, a key that the node takes no field for, a value of another type, or a component
+	// kind or a time limit that the node drops. A comparison of that tree with an approved spec would
+	// not see that text, so a caller that compares refuses the files.
+	LosesNode Effect = iota + 1
+	// KeepsEachNode is the Effect of a problem of form after which the tree holds each node in the
+	// text that the files write: a spelling that Print does not write, a file with no document, or a
+	// value that the schema refuses and the node keeps, such as a value outside a closed set or a
+	// missing key. The comparison of the files' own text decides.
+	KeepsEachNode
+)
 
 // StatementByID is the first statement the tree holds with id, and whether it holds one.
 func (t Tree) StatementByID(id string) (Statement, bool) {
