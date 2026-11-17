@@ -392,6 +392,78 @@ test("a subscribers' Retry pressed by keyboard over the agents held keeps the fo
   }
 });
 
+// A first read of the subscribers that failed holds no answer, and a fetch of such a read clears
+// its failure as it starts, so the press of its Retry took the line, and the Retry with it, away
+// while the read it sent was out: the focus of a reader who pressed Retry by keyboard went with
+// it. The line stays, its Retry busy and holding the focus, through a read that fails again, and
+// once a read answers the focus goes to the Subscribers control.
+test("a first read of the subscribers that failed keeps its line and its Retry, with the focus, while Retry reads again", async () => {
+  const refusal = () =>
+    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" });
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers")
+    .mockRejectedValueOnce(refusal())
+    .mockResolvedValue([SUBSCRIBER]);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const view = renderPeople();
+  try {
+    const failed = await screen.findByRole("alert");
+    expect(failed.textContent).toBe(STATE_LINES.subscribers_unreadable);
+    const subscribers = screen.getByRole("button", { name: SUBSCRIBERS });
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    // The read the Retry sends is held out until the case fails it.
+    const again = Promise.withResolvers<Subscriber[]>();
+    getIssueSubscribers.mockImplementationOnce(() => again.promise);
+
+    act(() => retry.focus());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(getIssueSubscribers).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(
+        retry,
+        "the line and its Retry went while the read Retry sent again is out"
+      ).toBeInTheDocument();
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      );
+    });
+    expect(retry, "Retry turned disabled while the read it sent again is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      retry
+    );
+
+    await act(async () => again.reject(refusal()));
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    const failedAgain = screen.getByRole("alert");
+    expect(failedAgain.textContent).toBe(STATE_LINES.subscribers_unreadable);
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      screen.getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      document.activeElement,
+      "the agents answered, and the focus fell to the page rather than to the Subscribers control"
+    ).toBe(subscribers);
+  } finally {
+    restoreFocus();
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+  }
+});
+
 // `/issues/<key>/collaborators` opens Details once per arrival at it (`DetailsHistory`), and
 // the collaborators' list with it: a reader who closed the list there and arrives at the same
 // address again - `t o`, or a link to the address they are on - finds it open.

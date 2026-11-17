@@ -1360,3 +1360,52 @@ test("a handoff's Retry pressed by keyboard hands the focus to its toggle before
     getHandoff.mockRestore();
   }
 });
+
+// Where a body is held, the line that says a read of it failed stays, its Retry busy, while the
+// read that Retry sent is out. A press of the busy Retry sends nothing, as every Retry of Details
+// drops it: a refetch would cancel the read in flight and send another. The press that sends the
+// read hands the focus to the toggle; a reader who comes back to the busy Retry and presses it
+// again keeps the focus there.
+test("a handoff's busy Retry sends no read while the one it sent is out, and keeps the focus", async () => {
+  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
+  // The read the Retry sends is held out until the case lets it land.
+  const again = Promise.withResolvers<Handoff>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHandoff();
+    unmount = drawn.unmount;
+    await userEvent.click(screen.getByRole("button", { name: CONTROL_LABELS.show_fields }));
+    await screen.findByText("Second pass");
+    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
+    await act(async () => {
+      await drawn.queryClient.invalidateQueries();
+    });
+    expect(getHandoff).toHaveBeenCalledTimes(2);
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    getHandoff.mockImplementation(() => again.promise);
+
+    for (let press = 0; press < 3; press += 1) await userEvent.click(retry);
+
+    expect(
+      getHandoff,
+      "each press of the busy Retry sent another read while one was out"
+    ).toHaveBeenCalledTimes(3);
+    expect(retry, "the Retry went while the read it sent is out").toBeInTheDocument();
+    expect(retry, "Retry does not read busy while the read it sent is out").toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
+    expect(
+      document.activeElement,
+      "a press of the busy Retry moved the focus off it to the toggle"
+    ).toBe(retry);
+
+    await act(async () => again.resolve(handoffRecord("Third pass")));
+    await screen.findByText("Third pass");
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    unmount?.();
+    getHandoff.mockRestore();
+  }
+});

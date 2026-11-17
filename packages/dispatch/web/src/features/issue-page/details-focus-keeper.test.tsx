@@ -407,9 +407,9 @@ test("a Retry that fails twice never leaves the focus on the page, and gets it b
 });
 
 /** Save, disabled while its write is out, and Pin above it, which reads Unpin once pressed: the
- *  write goes out, the reader presses Pin, where the keeper put the focus, and the write lands.
- *  Returns where the focus is after each step. */
-async function pinPressedWhileSaving(): Promise<string[]> {
+ *  write goes out, the reader presses Pin, where the keeper put the focus, by `press`, and the
+ *  write lands. Returns where the focus is after each step. */
+async function pinPressedWhileSaving(press: () => Promise<void>): Promise<string[]> {
   const box = drawBox(true, { pinned: false, writing: false }, (state, set) => (
     <>
       <button data-top={420} onClick={() => set({ ...state, pinned: !state.pinned })} type="button">
@@ -425,7 +425,7 @@ async function pinPressedWhileSaving(): Promise<string[]> {
     screen.getByRole("button", { name: "Save" }).focus();
     await box.change({ pinned: false, writing: true });
     seen.push(focusName());
-    await userEvent.keyboard("{Enter}");
+    await press();
     await settled();
     seen.push(focusName());
     await box.change({ pinned: true, writing: false });
@@ -439,7 +439,26 @@ async function pinPressedWhileSaving(): Promise<string[]> {
 test("a control the keeper moved the focus off takes it back no more once the reader pressed the control it went to", async () => {
   const restore = chromiumLayout();
   try {
-    expect(await pinPressedWhileSaving()).toEqual(["Pin", "Unpin", "Unpin"]);
+    expect(await pinPressedWhileSaving(() => userEvent.keyboard("{Enter}"))).toEqual([
+      "Pin",
+      "Unpin",
+      "Unpin",
+    ]);
+  } finally {
+    restore();
+  }
+});
+
+// A pointer press on the control that already holds the focus moves no focus, so no focusin says
+// the reader acted there: the press itself has to end the give-back, as a key does.
+test("a control the keeper moved the focus off takes it back no more once the reader pressed the control it went to by pointer", async () => {
+  const restore = chromiumLayout();
+  try {
+    expect(
+      await pinPressedWhileSaving(() =>
+        userEvent.click(screen.getByRole("button", { name: "Pin" }))
+      )
+    ).toEqual(["Pin", "Unpin", "Unpin"]);
   } finally {
     restore();
   }

@@ -1241,12 +1241,14 @@ test("Load older by keyboard keeps the focus in view when the older page extends
 // turns disabled or goes away and no site hands the focus on, the keeper gives it to the control
 // nearest to where the lost one stood, so the reader's next Tab goes on from that place. The
 // drawer's resize handle is fixed to the screen and as tall as it, so it stands at no distance from
-// any place in Details, and it comes before the body in the box's order: the keeper picks it every
-// time. From the handle the next Tab goes to Close and the one after to the first control of
-// Details, which scrolls Details back to its top. Found by the tester on a running build of
-// f589637b with a copy of a large real issue, at 1440 px and 768 px: the Retry of what the issue
-// blocks, pressed by keyboard with Details scrolled 500 px down, turned busy and then went once
-// its read answered; the focus was on the resize handle, and two Tabs took Details to 0.
+// any place in Details. When the keeper took the nearest control in the whole box, the handle came
+// before the body in the box's order and the keeper picked it every time; from the handle the next
+// Tab went to Close and the one after to the first control of Details, which scrolled Details back
+// to its top. Found by the tester on a running build of f589637b with a copy of a large real
+// issue, at 1440 px and 768 px: the Retry of what the issue blocks, pressed by keyboard with
+// Details scrolled 500 px down, turned busy and then went once its read answered; the focus was
+// on the resize handle, and two Tabs took Details to 0. The keeper now looks first in the
+// scrolling body of Details the lost control stood in, and skips a fixed or sticky control.
 test("a control of Details that goes away under the focus hands it to a control of Details' body, never the drawer's resize handle", async ({
   browser,
 }) => {
@@ -1299,12 +1301,13 @@ test("a control of Details that goes away under the focus hands it to a control 
 // cut to six lines only once it comes near the screen (`clamp-measurer.ts`), so turns far below
 // the reader are drawn whole. Moving the focus to Load older scrolls them into view, and Enter
 // pressed at once lands the next page before they are cut: the page's own hand-on puts the focus
-// on a new control in view, then the turns above it are cut, about a thousand pixels each, and
-// the reader's place is held on one of them, so the focused control moves up out of Details'
+// on a new control in view, then the turns above it are cut, about a thousand pixels each. While
+// the reader's place was held on one of those turns, the focused control moved up out of Details'
 // view. Found by the tester on a running build of f589637b with a copy of a large real issue: the
 // second press of Load older, made as the focus reached it, left the focus on a turn's time link
 // 212 px above Details' view at 1440 px (two runs of four), 224 px above at 768 px and 280 px
-// above at 390 px; a second and a half between the focus and Enter left it in view.
+// above at 390 px; a second and a half between the focus and Enter left it in view. The history
+// now has the place keeper hold the entry the focus is in once it has moved the focus there.
 test("Load older pressed as the focus reaches it keeps the focus in view while the turns above it are cut", async ({
   browser,
 }) => {

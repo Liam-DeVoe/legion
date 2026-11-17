@@ -95,6 +95,9 @@ function HandoffFields({
         failure={handoff.errorUpdateCount}
         message={ANSWER_LINES.handoff_unreadable}
         onRetry={() => {
+          // A press while the read is out sends nothing, as every Retry of Details drops it: a
+          // refetch would cancel the read in flight and send another.
+          if (handoff.isFetching) return;
           // The Retry goes with its line: at once where no body is held, as the read it sends
           // draws the loading line in this one's place, else once that read lands. A focus on
           // a control that goes falls to the page, so a focus on the Retry moves first to the

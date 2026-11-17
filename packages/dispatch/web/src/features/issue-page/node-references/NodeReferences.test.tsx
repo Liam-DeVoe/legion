@@ -293,6 +293,79 @@ test("the references' Retry pressed by keyboard over the list held keeps the foc
   }
 });
 
+// A first read of the list that failed holds no answer, and a fetch of such a read clears its
+// failure as it starts, so the press of its Retry took the line, and the Retry with it, away while
+// the read it sent was out: the focus of a reader who pressed Retry by keyboard went with it. The
+// line stays, its Retry busy and holding the focus, through a read that fails again, and once a
+// read answers the focus goes to the control that opens the list.
+test("a first read of the references that failed keeps its line and its Retry, with the focus, while Retry reads again", async () => {
+  const { getReferences } = draw(true);
+  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
+  const restoreFocus = emulateChromiumFocusFixup();
+  try {
+    const control = await screen.findByRole("button", {
+      name: NODE_REFERENCES_WORDS.what_references,
+    });
+    await userEvent.click(control);
+    const failed = await screen.findByRole("alert");
+    expect(failed.textContent).toBe(ANSWER_LINES.references_unreadable);
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    // The read the Retry sends is held out until the case fails it.
+    const again = Promise.withResolvers<GraphReferences>();
+    getReferences.mockImplementationOnce(() => again.promise);
+
+    act(() => retry.focus());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(
+        retry,
+        "the line and its Retry went while the read Retry sent again is out"
+      ).toBeInTheDocument();
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      );
+    });
+    expect(retry, "Retry turned disabled while the read it sent again is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      retry
+    );
+    expect(
+      screen.queryByText(ANSWER_LINES.references_loading),
+      "the list says it is loading beside the failure its Retry reads again"
+    ).toBeNull();
+
+    await act(async () => again.reject(new Error("the references' read failed")));
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    const failedAgain = screen.getByRole("alert");
+    expect(failedAgain.textContent).toBe(ANSWER_LINES.references_unreadable);
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      screen.getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+
+    await userEvent.keyboard("{Enter}");
+    await screen.findByRole("link", { name: "Thread 1 opens here." });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      document.activeElement,
+      "the list answered, and the focus fell to the page rather than to the control that opens it"
+    ).toBe(control);
+  } finally {
+    restoreFocus();
+  }
+});
+
 // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
 // end, that this page does not know. The list leaves such an edge out, as the Referenced-by panel
 // does (`drawsEdge`), rather than draw it under the word a mention takes.
