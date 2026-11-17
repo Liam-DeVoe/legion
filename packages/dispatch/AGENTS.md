@@ -1996,11 +1996,13 @@ port and serves on a unix socket alone, in a directory of mode 0700 that the
 run's user owns, made in the run's directory or in `/tmp` when the socket's
 path there would pass the 107 bytes a unix socket path may hold or would hold
 a `,`: psql (libpq) and the server (pgx) read the host of a `DATABASE_URL` as a
-list split at each `,`. A stop removes that directory, but a run killed hard
-(SIGKILL) removes nothing, so a `/tmp/pg-<i>-XXXXXX` one is then left outside
-the run's directory. The image provider bind-mounts that directory into its
-container with `--mount` and a quoted `source=`, which takes the `:` that
-`--volume` splits at, and runs the container as the run's user. So it needs
+list split at each `,`. A stop removes that directory. A run killed hard
+(SIGKILL) removes nothing, and the next start of a stack removes the directory
+with the rest of that run's Postgres, by the mark that names it
+(`e2e/harness-postgres-marks.ts`). The image provider bind-mounts that
+directory into its container with `--mount` and a quoted `source=`, which
+takes the `:` that `--volume` splits at, and runs the container as the run's
+user. So it needs
 Linux with a local Docker daemon: under Docker Desktop the server runs in the
 desktop's virtual machine, and under a remote `DOCKER_HOST` the mount is a
 directory of that other machine, so the run would not reach the socket;
@@ -2010,10 +2012,17 @@ server's dev sign-in requires of its database, beside a loopback address. With
 one worker and `DATABASE_URL` set, the run uses that database as stack 0's and
 starts no Postgres, exactly as it always has.
 
-The provider's own tests, `e2e/__tests__/harness-postgres-image-port.test.ts`
-and `harness-postgres-image-mount.test.ts`, skip without
-`DISPATCH_E2E_PG_IMAGE`; the visual job runs both, with its image digest,
-before its browser step.
+The provider's own tests, `e2e/__tests__/harness-postgres-image-port.test.ts`,
+`harness-postgres-image-mount.test.ts` and the image row of `harness-postgres-leftover.test.ts`,
+run in the visual job, with its image digest, before its browser step; the leftover file's
+binaries row runs in the `chromium-alone` leg of the alone job, whose container has the binaries,
+and `second-global-setup.test.ts` runs in the multiprocess job, the one runner job with Chromium,
+Go and Docker together. A test that needs a Postgres skips on a run that gives it none and never
+skips in CI, where it fails naming what to set (`e2e/__tests__/postgres-provider.ts`). The
+`dispatch-ui` job names no provider, so `bun run test` leaves out every file that calls
+`requirePostgres`, one `--path-ignore-patterns` each, and `e2e/__tests__/postgres-provider.test.ts`
+holds that list to those files and to the steps of `.github/workflows/dispatch-browser.yaml` that
+run them.
 
 A run of more than one worker is one stack per worker, and each stack has a
 Postgres, a file-store bucket and ports of its own, so five variables that name
@@ -2077,7 +2086,9 @@ run's rows, its flake rate and the legs that did not succeed, and is the one job
 that reports ci-ok, so a run gets one verdict and not seven.
 The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's typecheck, unit tests
 and build, beside the proof editor's typecheck and unit tests, and runs no browser row and no
-lint: Biome checks the whole tree once, in the `lint` job.
+lint: Biome checks the whole tree once, in the `lint` job. Its Postgres service is the server
+`LEGION_TEST_PG_DSN` names for the database cases of `e2e/__tests__/psql-session.test.ts`,
+`harness-stacks.test.ts` and `replace-blocks-guard.test.ts`.
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 

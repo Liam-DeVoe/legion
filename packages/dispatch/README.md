@@ -39,6 +39,15 @@ bun run test
 `bun run build:web` produces `web/dist` for the Dispatch server. `bun run dev`
 runs the Vite development server for interface work.
 
+`bun run test` runs the unit tests and `e2e/__tests__`. The database cases of
+`psql-session.test.ts`, `harness-stacks.test.ts` and `replace-blocks-guard.test.ts` make a
+database of their own on the server `LEGION_TEST_PG_DSN` names, through psql. The tests that
+start a stack's own Postgres call `requirePostgres` (`e2e/__tests__/postgres-provider.ts`), and
+`bun run test` leaves them out; run each by name with `DISPATCH_E2E_PG_IMAGE` or
+`DISPATCH_E2E_PG_BIN` set, as the jobs of `.github/workflows/dispatch-browser.yaml` that name a
+provider do. A test that lacks its Postgres skips on your machine and says so on one line; in CI
+(`CI=true`) it fails instead and names what to set.
+
 ## End-to-end tests
 
 `bun run e2e` builds `@legion/contracts` and the SPA and drives Playwright
@@ -202,8 +211,22 @@ and under a remote `DOCKER_HOST` the mount is a directory of that other
 machine, so the harness would not reach the socket; neither case has been
 measured. Each stack's socket directory is in the run's directory, or is
 `/tmp/pg-<i>-XXXXXX` when the socket's path there would be too long for a unix
-socket or would hold a `,`. A stop removes it, but a harness killed hard
-(SIGKILL) leaves that `/tmp` directory behind.
+socket or would hold a `,`. A stop removes it.
+
+A harness killed hard (SIGKILL) stops nothing, so its Postgres keeps serving,
+with its data and socket directories. Each start of a stack removes what such a
+harness left. Each Postgres carries a mark of the process that started it: a
+file in the run's directory, and the image provider's container also carries
+it as a label (`e2e/harness-postgres-marks.ts`). A start removes each Postgres
+whose process is gone: the container, or the postmaster through `pg_ctl`, and
+then the data and socket directories that the mark names. It leaves the
+Postgres of a process that still runs, and it leaves each mark of another boot,
+PID namespace or user, or from a machine with no `/proc`. It names those on one
+line, and it names on another line each mark that it cannot read, such as
+another user's run directory. A removal that fails is one line, and the start
+goes on. A start finds the files only in run directories of its own
+`TMPDIR`; it finds the containers wherever their stack ran. The logs of a
+killed run stay in its directory.
 
 ```bash
 cd packages/dispatch

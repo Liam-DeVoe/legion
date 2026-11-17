@@ -12,7 +12,9 @@
  *  Each stack's Postgres comes from `DISPATCH_E2E_PG_IMAGE` or `DISPATCH_E2E_PG_BIN`
  *  (`e2e/harness-postgres.ts`) and keeps its data under this run's own temporary directory, which
  *  `stopStacks` removes. A run of one stack with `DATABASE_URL` set uses that database and starts
- *  no Postgres, as this harness always has.
+ *  no Postgres, as this harness always has. A run killed hard (SIGKILL) stops nothing, so each
+ *  start first removes every Postgres whose mark names a process that is gone, and leaves every
+ *  other one (`e2e/harness-postgres-marks.ts`).
  *
  *  WHY NO CHECK COMPARES THE STACKS' PORTS WITH EACH OTHER. The wrapper this replaced held every
  *  lane itself and started the Playwright command afterwards, so it could compare every lane's
@@ -23,17 +25,22 @@
  *  answers; and the stack lines below name every port of every stack, so the log of such a run
  *  still shows the collision.
  */
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-
 import {
   pgBinVariable,
   pgImageVariable,
   type StackDatabase,
   stackPostgres,
 } from "./harness-postgres";
+import {
+  marksDirectory,
+  removeLeftoverPostgres,
+  runDirectoryPrefix,
+  servingPostmasters,
+} from "./harness-postgres-marks";
 import { type Harness, startHarness } from "./harness-start";
 import { Interrupted } from "./local-instance-support";
 
@@ -202,16 +209,36 @@ async function stackBucket(
 /** Removes the run's own directory, which holds every stack's data directory. `keepLogs` keeps
  *  the stacks' logs, the only record of what their servers said, and loses the data directories,
  *  which are the bulk of it; a directory a stack's Postgres made as another user (the image
- *  provider's container) can outlive the run rather than fail its exit status. */
+ *  provider's container) can outlive the run rather than fail its exit status. The marks of the
+ *  stacks' Postgres go last (`e2e/harness-postgres-marks.ts`), so a stop killed half-way leaves
+ *  no data directory without the mark that names it. A postmaster that still serves after its
+ *  stop keeps the whole directory: removing its data under it would leave it running with no mark
+ *  to find it by, and with the marks kept the next start removes it once this process has
+ *  ended. */
 function clearRunDir(keepLogs: boolean): void {
   if (runDir === "") return;
   const root = runDir;
   runDir = "";
+  const serving = servingPostmasters(root);
+  if (serving.length > 0) {
+    console.error(
+      `${named}: ${root} is left whole, since a postmaster still serves from it after its ` +
+        `stop (${serving.join(", ")}); the next start removes it once this process has ended`
+    );
+    return;
+  }
   const keep = keepLogs && stacks.some((stack) => stack.logDir !== undefined);
   // Every data directory under the run's own, named from that directory rather than from the
   // stacks that started: a stack that failed to start left a copy of the template there and no
   // entry among them, and those copies are the bulk this branch is here to lose.
-  const removed = keep ? readdirSync(root).map((entry) => join(root, entry, "pgdata")) : [root];
+  const entries = existsSync(root)
+    ? readdirSync(root).filter((entry) => entry !== marksDirectory)
+    : [];
+  const removed = [
+    ...entries.map((entry) => (keep ? join(root, entry, "pgdata") : join(root, entry))),
+    join(root, marksDirectory),
+    ...(keep ? [] : [root]),
+  ];
   for (const path of removed) {
     try {
       rmSync(path, { force: true, recursive: true });
@@ -251,8 +278,11 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
   const env = options.env ?? process.env;
   watchSignals();
   try {
+    // A run killed hard (SIGKILL) stopped none of its Postgres: each one whose stack's process
+    // is gone is removed here, before this run starts its own, and every other one is left.
+    await removeLeftoverPostgres();
     const given = (env.DATABASE_URL ?? "").trim();
-    runDir = mkdtempSync(join(tmpdir(), "dispatch-e2e-run-"));
+    runDir = mkdtempSync(join(tmpdir(), runDirectoryPrefix));
     // A run of one stack against the database the caller named starts no Postgres, which is what
     // every other user of this harness does (packages/dispatch/README.md).
     const postgres =

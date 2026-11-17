@@ -1386,11 +1386,12 @@ jobs:
   # The image provider's step came after those runs, so none of them measured it. Its two test
   # files took 13 s and 11 s in two runs on a Linux machine with a local Docker daemon that held
   # the image already, and the runner pulls the image in that step, a pull the browser step paid
-  # before and no run has timed apart. The image row of harness-postgres-leftover.test.ts, added
-  # to that step since, took about 20 s on a shared machine under a load of about 300, by its own
-  # comment. So that step takes the rule's floor, two minutes, until runs of it give a maximum,
-  # and the job budget is the browser step's 240 s plus that step's 120 s plus the same 314 s:
-  # 674 s -> 12 min.
+  # before and no run has timed apart. The image row of harness-postgres-leftover.test.ts and
+  # harness-postgres-image-ready.test.ts, added to that step since, took about 20 s and 12-23 s
+  # on a shared machine under a load of about 300, so the step's four files read about 67 s:
+  # 67 x 1.15 = 77 s, under the rule's floor. So that step takes the floor, two minutes, until
+  # runs of it give a maximum, and the job budget is the browser step's 240 s plus that step's
+  # 120 s plus the same 314 s: 674 s -> 12 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
@@ -1450,9 +1451,10 @@ jobs:
         working-directory: packages/envoy
       # The image provider's own tests: e2e/__tests__/harness-postgres-image-port.test.ts holds it
       # to a host port it never takes, harness-postgres-image-mount.test.ts to run directories
-      # whose path holds a `:`, a `"` or a `,`, and the image row of
-      # harness-postgres-leftover.test.ts to removing the container of a stack killed hard and
-      # no container of a stack that runs. None of them skips in CI
+      # whose path holds a `:`, a `"` or a `,`, harness-postgres-image-ready.test.ts to a start
+      # that answers only once the image's own init has stopped its temporary server, and the
+      # image row of harness-postgres-leftover.test.ts to removing the container of a stack killed
+      # hard and no container of a stack that runs. None of them skips in CI
       # (e2e/__tests__/postgres-provider.ts), and the dispatch-ui job, which runs e2e/__tests__
       # with no provider, leaves them out of its run; this job sets the image for its own stack.
       # The leftover file's binaries row runs in the alone job's chromium-alone leg, whose
@@ -1467,7 +1469,7 @@ jobs:
           export TMPDIR="$RUNNER_TEMP"
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          bun test e2e/__tests__/harness-postgres-image-port.test.ts e2e/__tests__/harness-postgres-image-mount.test.ts
+          bun test e2e/__tests__/harness-postgres-image-port.test.ts e2e/__tests__/harness-postgres-image-mount.test.ts e2e/__tests__/harness-postgres-image-ready.test.ts
           bun test -t '^image provider: ' e2e/__tests__/harness-postgres-leftover.test.ts
         working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against its baselines
