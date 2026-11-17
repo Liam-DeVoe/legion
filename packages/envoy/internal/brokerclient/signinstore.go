@@ -194,8 +194,10 @@ func (s SignInStore) Choose(person string) (SignInRecord, error) {
 				return record, nil
 			}
 		}
-		return SignInRecord{}, fmt.Errorf("%s names %s, who is not signed in on this machine; signed in here: %s; run: %s",
-			PersonVar, person, namesOf(records), SignInCommand)
+		// Not the value itself: a value this variable names nobody by is where a credential
+		// pasted into the wrong variable shows up, so the refusal names the variable alone.
+		return SignInRecord{}, fmt.Errorf("%s names nobody signed in on this machine; signed in here: %s; run: %s",
+			PersonVar, namesOf(records), SignInCommand)
 	case len(records) == 1:
 		return records[0], nil
 	default:

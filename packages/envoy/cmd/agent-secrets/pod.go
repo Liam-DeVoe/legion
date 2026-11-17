@@ -173,8 +173,10 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 			return exitUsageError
 		}
 	}
+	// The directory holds key.pem, so it is named by its flag and never by its path, and its
+	// errors print the system's reason alone (redact.File), as key.pem's own do (outKeyFile).
 	if err := os.MkdirAll(out, 0o700); err != nil {
-		fmt.Fprintf(stderr, "%s --pod: %v\n", prefix, err)
+		fmt.Fprintf(stderr, "%s --pod: make %s: %v\n", prefix, outDir, redact.File(err))
 		return 1
 	}
 	unlock, err := lockEnrollDir(filepath.Join(out, enrollLockFile))
@@ -212,7 +214,7 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 			return
 		}
 		if err := writeFileAtomic(filepath.Join(out, enrollmentErrorFile), []byte(line+"\n"), 0o600); err != nil {
-			fmt.Fprintf(stderr, "%s --pod: record that refusal in %s: %v\n", prefix, enrollmentErrorFile, err)
+			fmt.Fprintf(stderr, "%s --pod: record that refusal in %s in %s: %v\n", prefix, enrollmentErrorFile, outDir, redact.File(err))
 		}
 	}
 	token, err := readPodToken(tokenFile)
@@ -269,14 +271,14 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 		}
 	}
 	if err := writeFileAtomic(filepath.Join(out, enrollmentFile), []byte(enrollmentID+"\n"), 0o600); err != nil {
-		refuse(fmt.Sprintf("%s --pod: %v", prefix, err))
+		refuse(fmt.Sprintf("%s --pod: write %s in %s: %v", prefix, enrollmentFile, outDir, redact.File(err)))
 		return 1
 	}
 	// The id is written, so an earlier run's refusal is spent: selectSigner reads the error file
 	// only where it finds no id, and it now finds one. Removed after the id rather than before
 	// it, so a failed write above never leaves the directory with neither.
 	if err := os.Remove(filepath.Join(out, enrollmentErrorFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(stderr, "%s --pod: remove the earlier refusal in %s: %v\n", prefix, enrollmentErrorFile, err)
+		fmt.Fprintf(stderr, "%s --pod: remove the earlier refusal in %s in %s: %v\n", prefix, enrollmentErrorFile, outDir, redact.File(err))
 	}
 	// A pod keeps no credential helper to re-run this command, so it needs a renewer: say which
 	// one, on stderr, where it cannot be mistaken for the enrollment id. The key directory is
@@ -284,7 +286,11 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 	// else the $XDG_RUNTIME_DIR default (identity.go, keyDir), and never through --out: a pod
 	// that enrolled into a directory named by --out alone would otherwise be handed a command
 	// that exits 2, finding no session identity. Both words are shell-quoted (shellWord), so
-	// the line pastes as it reads whatever the directory and the token file are named.
+	// the line pastes as it reads whatever the directory and the token file are named. This is
+	// the one line that prints either path: it is a command to paste, both paths were just used
+	// (the token file read and its token accepted, the directory made and key.pem written in it),
+	// and a printed command names the path the run used, as the GCP forms' retry commands name
+	// the credentials file that signed them in.
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
 		prefix, shellWord(out), shellWord(tokenFile))
 	fmt.Fprintln(stdout, enrollmentID)
@@ -342,7 +348,7 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 // --out names, and its errors name key.pem by that flag (outKeyFile), never by its path.
 func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("make %s: %w", outDir, redact.File(err))
 	}
 	path := filepath.Join(dir, keyFile)
 	if exists(path) {
@@ -364,7 +370,10 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 
 // outKeyFile is how a message of enroll --pod names the session key it keeps: by the flag that
 // names its directory, since the key's path is the path of a file that holds a credential.
-const outKeyFile = "key.pem in the directory --out (or AGENT_SECRETS_KEY_DIR) names"
+const outKeyFile = "key.pem in " + outDir
+
+// outDir is the key directory as a message names it.
+const outDir = "the directory --out (or AGENT_SECRETS_KEY_DIR) names"
 
 // loadOutKey is loadKey for the key.pem in the directory --out names, saying outKeyFile where
 // loadKey says the key's path: the system's reason it cannot be read prints through redact.File,

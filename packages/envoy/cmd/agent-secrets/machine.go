@@ -34,7 +34,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets machine login: unexpected argument %q\n", positional[0])
+		fmt.Fprintln(stderr, "agent-secrets machine login: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)")
 		return exitUsageError
 	}
 	sock, _ := helperSocket()
@@ -110,7 +110,7 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets machine login-status: unexpected argument %q\n", positional[0])
+		fmt.Fprintln(stderr, "agent-secrets machine login-status: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)")
 		return exitUsageError
 	}
 	sock, _ := helperSocket()
@@ -196,7 +196,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument %q\n", form, positional[0])
+		fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)\n", form)
 		return exitUsageError
 	}
 	base, signer, err := machineContext()
