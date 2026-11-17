@@ -1258,6 +1258,23 @@ async function expectFocusKept(
   ).toEqual({ focus: "kept", writes: 1 });
 }
 
+/** The rule each priority's row holds after an Enter on `pressed` between the write landing and
+ *  the new read being drawn: the press was refused, so `pressed` says it takes no press
+ *  (`aria-disabled`) and the add control's form did not open. A control that took that Enter and
+ *  opened its form would keep the focus in the line and send no write, so the focus and the
+ *  writes alone cannot tell it from one that refused the press. */
+async function expectPressRefused(page: Page, pressed: Locator, moment: string): Promise<void> {
+  await nextFrames(page);
+  await expect(
+    priorityLine(page).getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }),
+    `${moment}: the press opened the add control's form`
+  ).toHaveCount(0);
+  await expect(pressed, `${moment}: the control pressed takes a press`).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
+}
+
 // A control of Details shared with the rest of the page keeps the focus where the reader pressed
 // it while its write is out and until the new read is drawn, and a second press meanwhile sends
 // nothing. Each row presses its control by keyboard and holds the write, presses Enter again
@@ -1353,6 +1370,10 @@ test.describe("the shared controls of Details keep the focus while their write l
       issue.releaseWrite();
       await issue.landed;
       await readHeld(page, issue);
+      await expect(
+        addPriority,
+        "the add control lost the focus as Add's write landed"
+      ).toBeFocused();
       await page.keyboard.press("Enter");
       await expectFocusKept(
         page,
@@ -1360,9 +1381,18 @@ test.describe("the shared controls of Details keep the focus while their write l
         issue,
         "after a second Enter between the added priority landing and the new read"
       );
+      await expectPressRefused(
+        page,
+        addPriority,
+        "after a second Enter between the added priority landing and the new read"
+      );
       await issue.releaseReads();
       await expect(advances.getByRole("link")).toHaveCount(2);
       await expectFocusKept(page, priorityLine(page), issue, "once the new read is drawn");
+      await expect(
+        addPriority,
+        "once the new read is drawn, the focus is not on the add control"
+      ).toBeFocused();
     });
   });
 
@@ -1452,8 +1482,10 @@ test.describe("the shared controls of Details keep the focus while their write l
 // none, and in the Advances row once it advances one. The first priority added and the last one
 // removed move the line from one place to the other, and a focus the line still holds when it
 // leaves moves with it, to the other place's add control, rather than fall to the page's body
-// with the line it left. These two rows read only where the focus is once the new read is drawn,
-// inside the line's new place and not on Add beside it, and the writes sent.
+// with the line it left. Each of these two rows presses Enter again on the control it pressed
+// while the issue's read after the write is held, which the control refuses, and reads, once the
+// new read is drawn, that the focus is on the add control of the line's new place, and the
+// writes sent.
 test("Details' Add a priority on an issue that advances none keeps the focus in Details' priority place once the line moves into the Advances row, and sends one write", async ({
   browser,
 }) => {
@@ -1485,6 +1517,13 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     await page.keyboard.press("Enter");
     await issue.landed;
     await readHeld(page, issue);
+    await expect(addPriority, "the add control lost the focus as Add's write landed").toBeFocused();
+    await page.keyboard.press("Enter");
+    await expectPressRefused(
+      page,
+      addPriority,
+      "after a second Enter between the added priority landing and the new read"
+    );
     await issue.releaseReads();
     // THREE advances the priority now, so its line is the Advances row.
     await expect(detailsRow(page, PROPERTY_LABELS.advances).getByRole("link")).toHaveCount(1);
@@ -1494,6 +1533,12 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
       issue,
       "once the new read moved the line into the Advances row"
     );
+    await expect(
+      detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
+        name: `${CONTROL_LABELS.add_priority} to ${three}`,
+      }),
+      "once the new read moved the line into the Advances row, the focus is not on its add control"
+    ).toBeFocused();
   });
 });
 
@@ -1515,17 +1560,29 @@ test("Details' priority Remove of an issue's last priority keeps the focus in De
     await page.keyboard.press("Enter");
     await issue.landed;
     await readHeld(page, issue);
+    await expect(remove, "Remove lost the focus as its write landed").toBeFocused();
+    await page.keyboard.press("Enter");
+    await expectPressRefused(
+      page,
+      remove,
+      "after a second Enter between the removal landing and the new read"
+    );
     await issue.releaseReads();
     // ONE advances nothing now, so its line is the control beside Add.
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
-    await expect(
-      priorityLine(page).getByRole("button", { name: `${CONTROL_LABELS.add_priority} to ${one}` })
-    ).toBeVisible();
+    const addPriority = priorityLine(page).getByRole("button", {
+      name: `${CONTROL_LABELS.add_priority} to ${one}`,
+    });
+    await expect(addPriority).toBeVisible();
     await expectFocusKept(
       page,
       priorityLine(page),
       issue,
       "once the new read moved the line back beside Add"
     );
+    await expect(
+      addPriority,
+      "once the new read moved the line back beside Add, the focus is not on its add control"
+    ).toBeFocused();
   });
 });
