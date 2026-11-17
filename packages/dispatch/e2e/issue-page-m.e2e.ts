@@ -1164,6 +1164,77 @@ test("loading older keeps the reader's place on an upload run the older page ext
   }
 });
 
+// The focus rule of `IssueHistory.tsx` (R3): Load older pressed by keyboard hands the focus to a
+// control the page it read added, never one out of the reader's view, where a press of Enter
+// would follow a link the reader cannot see. Here an agent's message stands between the run and
+// Load older, so the older page's files of the run land above that message and push every
+// control below it down by their height: the first new control below the message is the
+// issue's creation line, out of view under Details' foot. Found by the tester on a running build
+// of 864163bf with INFRA-1196's copy: after Load older pressed by keyboard the focus was on a
+// turn's time link at 1,425 px, the view ending at 900, with 13 files of a run (572 px) added
+// above the entry between that run and Load older; the next page's Retry did the same.
+test("Load older by keyboard keeps the focus in view when the older page extends a run above the entries under it", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A run above a message" });
+  const upload = (index: number) =>
+    uploadIssueFile(issue.key, {
+      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+      contentType: "image/png",
+      name: `shot-${index}.png`,
+    });
+  // Eight uploads, an agent's message, two more uploads within the minute: one run of ten whose
+  // newest upload sorts it above the message. The 197 messages after them leave the run's two
+  // newest uploads and the message at the foot of the log's first page.
+  for (let index = 0; index < 8; index += 1) await upload(index);
+  await createMessage(issue.key, { body: "Between the uploads" }, attentionSession);
+  for (let index = 8; index < 10; index += 1) await upload(index);
+  for (let index = 0; index < 197; index += 1) {
+    await createMessage(issue.key, { body: `Later message ${index}` }, attentionSession);
+  }
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const run = historyPanel(page).locator("[data-history-uploads]");
+    await expect(run).toHaveCount(1);
+    const firstPage = Number(await run.getAttribute("data-history-uploads"));
+    expect(
+      firstPage > 0 && firstPage < 10,
+      `the log's first page holds ${firstPage} of the run's 10 uploads, so the run does not straddle the page and the row proves nothing`
+    ).toBe(true);
+    await expect(
+      historyPanel(page).getByText("Between the uploads"),
+      "the message between the uploads is not drawn on the first page"
+    ).toHaveCount(1);
+    const loadOlder = historyPanel(page).getByRole("button", { name: CONTROL_LABELS.load_older });
+    await loadOlder.focus();
+    await nextFrames(page);
+    await page.keyboard.press("Enter");
+    await expect(run, "the older page did not extend the run").toHaveAttribute(
+      "data-history-uploads",
+      "10"
+    );
+    await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
+    await nextFrames(page);
+    const clip = await historyViewport(page);
+    const focused = await page.evaluate(() => {
+      const box = document.activeElement?.getBoundingClientRect();
+      return box === undefined ? null : { bottom: box.bottom, top: box.top };
+    });
+    expect(focused, "Load older left the focus nowhere").not.toBeNull();
+    expect(
+      (focused?.top ?? -1) >= clip.top - 1 && (focused?.bottom ?? 0) <= clip.bottom + 1,
+      `Load older handed the focus to a control out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
+    ).toBe(true);
+  } finally {
+    await context.close();
+  }
+});
+
 // The read mark draws one line in the history, "New since you last read", where the mark falls
 // among its entries (`history-model.ts`): a mark that moves back adds that line under the
 // entries the reader has not read, above the reader's place, so the reader's own entry has to
