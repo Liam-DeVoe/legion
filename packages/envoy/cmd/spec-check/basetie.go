@@ -24,23 +24,12 @@ func objectName(s string) bool {
 	return (len(s) == 40 || len(s) == 64) && strings.Trim(s, "0123456789abcdef") == ""
 }
 
-// pathList is a flag that may be given more than once, each value a path.
-type pathList []string
-
-func (p *pathList) String() string { return strings.Join(*p, " ") }
-
-func (p *pathList) Set(value string) error {
-	*p = append(*p, value)
-	return nil
-}
-
-// pointers is a pointer to each path, so the command can make each one absolute in place.
-func (p pathList) pointers() []*string {
-	out := make([]*string, len(p))
-	for i := range p {
-		out[i] = &p[i]
-	}
-	return out
+// commitName is the full object name of the commit that rev names in the git clone at repo, and
+// whether git could read one. --end-of-options makes git read a rev that starts with "-" as a
+// revision, never as an option, as GitHistory does.
+func commitName(repo, rev string) (string, bool) {
+	name, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", "--quiet", "--end-of-options", rev+"^{commit}").Output()
+	return strings.TrimSpace(string(name)), err == nil
 }
 
 // readTiesFiles reads the files of --ties, each in the form of specgraph.ReadCommitTies, as one
@@ -61,14 +50,13 @@ func readTiesFiles(paths []string) (specgraph.CommitTies, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		for _, commit := range slices.Sorted(maps.Keys(ties)) {
-			checks := ties[commit]
 			switch {
 			case !objectName(commit):
 				return nil, fmt.Errorf("%s: commit %q: not a full object name of 40 or 64 lower-case hex digits", path, commit)
 			case from[commit] != "":
 				return nil, fmt.Errorf("%s: commit %s: %s holds its ties too", path, commit, from[commit])
 			}
-			all[commit], from[commit] = checks, path
+			all[commit], from[commit] = ties[commit], path
 		}
 	}
 	return all, nil
@@ -87,55 +75,71 @@ func fileTie(files specgraph.CommitTies, commit, check string) specgraph.Tie {
 	return tie
 }
 
-// baseTies is the tie of each check at the base commit of --changed. A file that the change deleted
-// or moved out of a tie is in no tie at the head, so a result carries from the base only while no
-// file of the base's tie changed either (specgraph.Citations). With --ties the ties are those
-// files' ties of the base commit. Else they are derived on the first ask, as the head's are:
-// specgraph.GoTies with the base's own .github/scripts/go-test-reads.sh, in a checkout of the base
-// commit that the command removes when it ends. Citations asks only for a check whose test did not
-// run and whose tie at the head holds no changed path, so a run where each test ran makes no
-// checkout.
-type baseTies struct {
-	repo, commit string
-	files        specgraph.CommitTies // the ties of --ties, or nil
-	dir          string               // the checkout's directory, once made
-	err          error                // why the checkout could not be made
-	answers      map[string]readsAnswer
+// derivedTies is the tie of each check that the .github/scripts/go-test-reads.sh of a repository
+// derives (specgraph.GoTies), one check at a time on the first ask, each set of the script's
+// arguments asked once. specgraph.Citations asks for a check's tie only when its test did not run,
+// so a run where each test ran runs no script.
+type derivedTies struct {
+	reads   specgraph.TestReads
+	answers map[string]readsAnswer
 }
 
-// readsAnswer is one answer of go-test-reads.sh at the base, kept so each package asks once.
+// readsAnswer is one answer of go-test-reads.sh.
 type readsAnswer struct {
 	reads []string
 	err   error
 }
 
-// tie is the tie of c at the base commit, Known false with the cause when it cannot be derived.
-func (b *baseTies) tie(c specgraph.Check) specgraph.Tie {
-	if b.files != nil {
-		return fileTie(b.files, b.commit, c.ID)
+// newDerivedTies is the derived ties of the repository at root, whose go-test-reads.sh runs in
+// root, where the root go.work takes the import paths of the repository's modules.
+func newDerivedTies(root string) *derivedTies {
+	return &derivedTies{reads: specgraph.ScriptTestReads(root), answers: map[string]readsAnswer{}}
+}
+
+// tie is the tie of c, Known false with the cause when it cannot be derived.
+func (d *derivedTies) tie(c specgraph.Check) specgraph.Tie {
+	return specgraph.GoTies([]specgraph.Check{c}, ".", nil, d.once)[c.ID]
+}
+
+// once is the script's answer for its arguments, asked the first time only.
+func (d *derivedTies) once(workdir string, pkgs, env []string) ([]string, error) {
+	key := strings.Join(append(append([]string{workdir}, pkgs...), env...), "\x00")
+	answer, asked := d.answers[key]
+	if !asked {
+		answer.reads, answer.err = d.reads(workdir, pkgs, env)
+		d.answers[key] = answer
 	}
+	return answer.reads, answer.err
+}
+
+// baseCheckout is the tie of each check at the base commit of --changed, derived as the ties at the
+// head are, by the base's own .github/scripts/go-test-reads.sh, in a checkout of the base commit
+// that the first ask makes and close removes. A file that the change deleted or moved out of a tie
+// is in no tie at the head, so a result carries from the base only while no file of the base's
+// tie changed either (specgraph.Citations), which asks only for a check whose test did not run and
+// whose tie at the head covers no changed path: a run where each test ran makes no checkout.
+type baseCheckout struct {
+	repo, commit string
+	dir          string // the checkout's directory, once made
+	err          error  // why the checkout could not be made
+	ties         *derivedTies
+}
+
+// tie is the tie of c at the base commit, Known false with the cause when it cannot be derived.
+func (b *baseCheckout) tie(c specgraph.Check) specgraph.Tie {
 	if b.dir == "" && b.err == nil {
-		b.dir, b.err = checkout(b.repo, b.commit)
-		b.answers = map[string]readsAnswer{}
+		if b.dir, b.err = checkout(b.repo, b.commit); b.err == nil {
+			b.ties = newDerivedTies(filepath.Join(b.dir, "tree"))
+		}
 	}
 	if b.err != nil {
 		return specgraph.Tie{Why: b.err.Error()}
 	}
-	script := specgraph.ScriptTestReads(filepath.Join(b.dir, "tree"))
-	reads := func(workdir string, pkgs, env []string) ([]string, error) {
-		key := strings.Join(append(append([]string{workdir}, pkgs...), env...), "\x00")
-		answer, asked := b.answers[key]
-		if !asked {
-			answer.reads, answer.err = script(workdir, pkgs, env)
-			b.answers[key] = answer
-		}
-		return answer.reads, answer.err
-	}
-	return specgraph.GoTies([]specgraph.Check{c}, ".", nil, reads)[c.ID]
+	return b.ties.tie(c)
 }
 
 // close removes the checkout of the base commit.
-func (b *baseTies) close() {
+func (b *baseCheckout) close() {
 	if b.dir != "" {
 		os.RemoveAll(b.dir)
 	}

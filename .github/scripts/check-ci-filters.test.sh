@@ -862,7 +862,12 @@ check "reads the workspace file" "$(reads_hold go.work)"
 # still a change of the tie: the testdata of the package it tests, which the fixture does not have,
 # and the directory of a wildcard embed pattern whole, beside each file that the pattern matches.
 check "reads the testdata of the package it tests, a directory that does not exist" "$(reads_hold 'mod/lib/testdata/**')"
-check "and no testdata of a package it does not test" "$(is "$(reads_hold 'mod/other/testdata/**')" false)"
+# A package that the run only builds, as a dependency of the one it tests, holds no testdata entry:
+# go test ./cmd/app builds lib, which cmd/app imports, and runs no test of lib.
+run_reads mod ./cmd/app
+check "a run of a package that imports lib reads lib's package directory" "$(reads_hold 'mod/lib/*')"
+check "and the testdata of the package it tests" "$(reads_hold 'mod/cmd/app/testdata/**')"
+check "and no testdata of lib, which it does not test" "$(is "$(reads_hold 'mod/lib/testdata/**')" false)"
 mkdir -p "$root/mod/lib/static" "$root/mod/lib/golden"
 echo 'a' > "$root/mod/lib/static/a.txt"
 echo '{}' > "$root/mod/lib/golden/b.json"

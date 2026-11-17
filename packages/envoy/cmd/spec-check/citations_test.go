@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -268,7 +270,7 @@ func TestCitationsCommand(t *testing.T) {
 		{name: "code of the tie changed and the test ran", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 		}},
-		// D1: a pass that go test replayed from its cache did not run at this commit.
+		// A pass that go test replayed from its cache did not run at this commit.
 		{name: "code of the tie changed and go test replayed the test from its cache", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.reports["spec-report--go-checks"] = goReport("cached")
@@ -277,7 +279,7 @@ func TestCitationsCommand(t *testing.T) {
 			r.changed = "docs/x.md\n"
 			r.reports["spec-report--go-checks"] = goReport("cached")
 		}},
-		// D2: a changed path counts when the tie at either end holds it.
+		// A changed path counts when the tie at either end holds it.
 		{name: "the change deleted the test's testdata directory, which only the tie at the base holds", change: func(r *citationRun) {
 			r.baseTies = `{"` + citedCheck + `":["a/*","a/testdata/**","fixtures/a.json"]}`
 			r.changed = "a/testdata/answer.json\n"
@@ -642,7 +644,7 @@ func (g gitCase) cite(t *testing.T, binary, workflow, base string) result {
 	return got
 }
 
-// D2: without --ties, citations derives the tie at the base commit from a checkout of that commit
+// R8: without --ties, citations derives the tie at the base commit from a checkout of that commit
 // with the base's own go-test-reads.sh, so a file that the change deleted counts when the base's
 // tie holds it. The head deletes a/testdata and its script answers a/* alone; at the base the
 // script answers a/* and a/testdata/**. The control is the same change where the base's script
@@ -680,7 +682,7 @@ func TestCitationsReadsTheTieAtTheBaseCommit(t *testing.T) {
 	}
 }
 
-// D3: a carried result stands at the commit that the list starts from, so the base of changed is
+// R8: a carried result stands at the commit that the list starts from, so the base of changed is
 // the merge base with the default branch, never the branch's push before. Push 1 adds t.Skip to
 // TestA, push 2 changes docs alone. From the merge base the list holds a/a_test.go, and the skipped
 // test is refused at push 2; from push 1, the control, the list holds the docs alone, and the check
@@ -714,6 +716,46 @@ func TestCitationsFromTheMergeBase(t *testing.T) {
 	expect(t, g.cite(t, binary, workflow, push1), result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"})
 }
 
+// Without --ties, citations derives a tie only for a check whose test did not run: a run where
+// each test ran starts no go-test-reads.sh and makes no checkout of the base. The script of the
+// fixture writes a line to a file of the test each time it runs, at the head and at the base. The
+// control is the same run with the test skipped, where only docs/readme.md changed: the tie at the
+// head covers no changed path, so citations asks the script at the head and then at the base.
+func TestCitationsDerivesATieOnlyForATestThatDidNotRun(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	workflow := fixture(t, "citations", "workflow.yaml")
+	for _, row := range []struct {
+		outcome string
+		runs    int
+	}{{"pass", 0}, {"skip", 2}} {
+		t.Run(row.outcome, func(t *testing.T) {
+			t.Parallel()
+			g := newGitCase(t, `["a/*"]`)
+			runs := filepath.Join(t.TempDir(), "runs")
+			writeFile(t, filepath.Join(g.repo, ".github", "scripts", "go-test-reads.sh"),
+				[]byte("#!/bin/sh\necho run >> '"+runs+"'\necho '{\"reads\":[\"a/*\"],\"problems\":[]}'\n"))
+			writeFile(t, filepath.Join(g.reports, "spec-report--go-checks", "report.jsonl"), []byte(goReport(row.outcome)))
+			if err := os.MkdirAll(filepath.Join(g.repo, "docs"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(g.repo, "docs", "readme.md"), []byte("The answer.\n"))
+			base := commitAll(t, g.repo, "", "base")
+			writeFile(t, filepath.Join(g.repo, "docs", "readme.md"), []byte("The answer, again.\n"))
+			commitAll(t, g.repo, base, "docs")
+			dir := filepath.Join(g.repo, ".dispatch", "spec")
+			expect(t, g.cite(t, binary, workflow, base), result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"})
+			content, err := os.ReadFile(runs)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if got := strings.Count(string(content), "run\n"); got != row.runs {
+				t.Errorf("go-test-reads.sh ran %d times, want %d", got, row.runs)
+			}
+		})
+	}
+}
+
 // TestChanged runs changed in a scratch git repository: commit A holds a/data.json and a/a.go, B is
 // A with `git mv a/data.json docs/data.json`, and C adds to B a file whose name holds a line break.
 // Each git command, the command's own included, reads no configuration of this machine. C is made
@@ -731,14 +773,7 @@ func TestChanged(t *testing.T) {
 	repo := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
-		var stderr strings.Builder
-		cmd.Stderr = &stderr
-		out, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("git %q: %v\n%s%s", args, err, out, stderr.String())
-		}
-		return string(out)
+		return gitIn(t, repo, args...)
 	}
 	git("init", "-q")
 	if err := os.MkdirAll(filepath.Join(repo, "a"), 0o755); err != nil {
@@ -748,17 +783,17 @@ func TestChanged(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "a", "a.go"), []byte("package a\n"))
 	git("add", ".")
 	git("commit", "-q", "-m", "A")
-	a := strings.TrimSpace(git("rev-parse", "HEAD"))
+	a := git("rev-parse", "HEAD")
 	if err := os.Mkdir(filepath.Join(repo, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	git("mv", "a/data.json", "docs/data.json")
 	git("commit", "-q", "-m", "B")
-	b := strings.TrimSpace(git("rev-parse", "HEAD"))
+	b := git("rev-parse", "HEAD")
 
 	// The control: git's own diff reads the move as a rename and names the new path alone, so a
 	// command that left rename detection on would miss a/data.json.
-	if got := git("diff", "--name-only", a, b); got != "docs/data.json\n" {
+	if got := git("diff", "--name-only", a, b); got != "docs/data.json" {
 		t.Fatalf("git diff --name-only A B = %q; the control wants docs/data.json alone", got)
 	}
 	// The first line names the base by its full object name, whatever name --base gave it.
@@ -788,9 +823,9 @@ func TestChanged(t *testing.T) {
 	expect(t, runBinary(t, binary, "", "changed", "--repo", missing, "--base", a), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
 
 	writeFile(t, filepath.Join(repo, "a", "line\nbreak.go"), []byte("package a\n"))
-	blob := strings.TrimSpace(git("hash-object", "-w", "a/line\nbreak.go"))
+	blob := git("hash-object", "-w", "a/line\nbreak.go")
 	git("update-index", "--add", "--cacheinfo", "100644,"+blob+",a/line\nbreak.go")
-	c := strings.TrimSpace(git("commit-tree", strings.TrimSpace(git("write-tree")), "-p", b, "-m", "C"))
+	c := git("commit-tree", git("write-tree"), "-p", b, "-m", "C")
 	expect(t, runBinary(t, binary, "", "changed", "--repo", repo, "--base", b, "--head", c), result{code: 2,
 		stderr: "spec-check: " + repo + `: the path "a/line\nbreak.go" holds a line break, which a list of one path a line cannot hold` + "\n"})
 }

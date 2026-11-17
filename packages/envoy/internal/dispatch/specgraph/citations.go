@@ -1,6 +1,9 @@
 package specgraph
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // CodeTests finds how many tests a check's test part picks in the code at one commit. GoCode is
 // the one for runner go.
@@ -39,32 +42,49 @@ const (
 	citeTestNotRun       = "test-not-run"
 )
 
+// CitationInput is what Citations reads beyond the tree: the code at the commit, the jobs of the
+// workflow, the report of each leg of each job of the run, the paths that changed since the base
+// commit (AllChanged: the commit has no base commit), and the tie of a check at the commit, Tie,
+// and at the base commit, BaseTie. Changed must list the changes since the commit where each
+// result that this commit carries stands, which for a change's branch is its merge base with the
+// default branch, and never its push before: a list from that push misses the changes of the
+// pushes before it. A nil Tie or BaseTie answers a tie that is not known.
+type CitationInput struct {
+	Code       CodeTests
+	Jobs       WorkflowJobs
+	Reports    []JobReport
+	Changed    []string
+	AllChanged bool
+	Tie        func(Check) Tie
+	BaseTie    func(Check) Tie
+}
+
 // Citations finds each program check of t that CI refuses at the commit (R48), in the order of
 // t.Checks, with the first rule it breaks of these:
 //
 //   - no-test: the check names no runner or no selector, or one with no letter and no digit;
-//   - test-not-in-code, two-tests: code finds no test or more than one for its test part (R6: "a
-//     runner and a selector, which pick one test in the code"); test-lookup-failed: code cannot
-//     search for it, as for a package that go cannot list;
-//   - job-not-in-workflow, job-not-awaited: jobs has no job of its name, or the citations job
+//   - test-not-in-code, two-tests: in.Code finds no test or more than one for its test part (R6:
+//     "a runner and a selector, which pick one test in the code"); test-lookup-failed: in.Code
+//     cannot search for it, as for a package that go cannot list;
+//   - job-not-in-workflow, job-not-awaited: in.Jobs has no job of its name, or the citations job
 //     does not wait for it and so cannot read its report;
 //   - test-not-run: code that the check runs changed and the job did not run its test (R8: "CI
-//     runs a check again when that code changed"). The code changed when the check's tie is not
-//     known or ties does not hold it (R8: "A check whose tie to its code is unknown runs on each
-//     push to the branch"), when allChanged says that the commit has no base commit, or when a
-//     path of changed is in the tie at either end: the tie at this commit, ties, or the tie at the
-//     base commit of changed, baseTie (the first in sorted order named). The base commit is where
-//     each result that this commit carries stands, which for a change's branch is its merge base
-//     with the default branch and never its push before: a list from that push misses the changes
-//     of the pushes before it. A result carries from the base only while no file that its test
-//     read there changed, so a file that the change deleted or moved, which the tie at this commit
-//     no longer holds, counts by the base's tie. A base tie that baseTie cannot derive, or no
-//     baseTie, counts as changed. baseTie is asked only for a check whose test did not run and
-//     whose tie at this commit holds no changed path. Each report of the job, one per leg, must
-//     hold the test as a pass or a failure: a job that did not run, left no report, skipped the
-//     test, does not hold it, could not run it or replayed it from go test's cache did not run it.
-func Citations(t Tree, code CodeTests, jobs WorkflowJobs, reports []JobReport, changed []string, allChanged bool, ties map[string]Tie, baseTie func(Check) Tie) CitationFaults {
-	in := citations{code: code, jobs: jobs, reports: reports, changed: changed, allChanged: allChanged, ties: ties, baseTie: baseTie}
+//     runs a check again when that code changed"). Each report of the job, one per leg, must hold
+//     the test as a pass or a failure: a job that did not run, left no report, skipped the test,
+//     does not hold it, could not run it or replayed it from go test's cache did not run it. The
+//     code changed when the check's tie at the commit is not known (R8: "A check whose tie to its
+//     code is unknown runs on each push to the branch"), when AllChanged says that the commit has
+//     no base commit, or when a path of Changed is in the tie at either end, the tie at the commit
+//     or the tie at the base commit (the first in sorted order named). A result carries from the
+//     base only while no file that its test read there changed, so a file that the change deleted
+//     or moved, which the tie at the commit no longer holds, counts by the base's tie; while
+//     Changed holds a path that the tie at the commit does not cover, a tie at the base that is not
+//     known counts as changed too.
+//
+// Deriving a tie can run the repository's own tools, so Citations asks for the tie at the commit
+// only for a check whose test did not run, and for the tie at the base only when, besides, the tie
+// at the commit is known and covers no path of Changed.
+func Citations(t Tree, in CitationInput) CitationFaults {
 	var faults CitationFaults
 	for _, c := range t.Checks {
 		if c.Procedure != ProcedureProgram {
@@ -77,24 +97,13 @@ func Citations(t Tree, code CodeTests, jobs WorkflowJobs, reports []JobReport, c
 	return faults
 }
 
-// citations is the input of Citations beyond the tree.
-type citations struct {
-	code       CodeTests
-	jobs       WorkflowJobs
-	reports    []JobReport
-	changed    []string
-	allChanged bool
-	ties       map[string]Tie
-	baseTie    func(Check) Tie
-}
-
 // cite is the first rule that the program check c breaks and what it names, or "".
-func (in citations) cite(c Check) (rule, detail string) {
+func (in CitationInput) cite(c Check) (rule, detail string) {
 	if c.Test == nil || !hasWord(c.Test.Runner) || !hasWord(c.Test.Selector) {
 		return citeNoTest, "the check names no test"
 	}
 	test := *c.Test
-	switch n, err := in.code.Find(test); {
+	switch n, err := in.Code.Find(test); {
 	case err != nil:
 		return citeTestLookupFailed, fmt.Sprintf("%s could not be looked up in the code at this commit (%v)", test.Selector, err)
 	case n == 0:
@@ -102,14 +111,13 @@ func (in citations) cite(c Check) (rule, detail string) {
 	case n > 1:
 		return citeTwoTests, fmt.Sprintf("%s picks %d tests", test.Selector, n)
 	}
-	if !in.jobs.Jobs[test.Job] {
+	if !in.Jobs.Jobs[test.Job] {
 		return citeJobNotInWorkflow, fmt.Sprintf("no job %q", test.Job)
 	}
-	if !in.jobs.Awaited[test.Job] {
+	if !in.Jobs.Awaited[test.Job] {
 		return citeJobNotAwaited, fmt.Sprintf("the citations job does not wait for %q, so it cannot read its report", test.Job)
 	}
-	// The reports first: the base tie is a checkout of the base commit, asked for only when the
-	// test did not run.
+	// The reports first, since the ties are asked for only when the test did not run.
 	job, why := in.notRun(test)
 	if why == "" {
 		return "", ""
@@ -122,25 +130,26 @@ func (in citations) cite(c Check) (rule, detail string) {
 }
 
 // changeCause is why the code that check c runs counts as changed, or "" when it did not change.
-func (in citations) changeCause(c Check) string {
-	tie, ok := in.ties[c.ID]
+func (in CitationInput) changeCause(c Check) string {
+	tie := Tie{Why: "no tie at this commit was given"}
+	if in.Tie != nil {
+		tie = in.Tie(c)
+	}
 	switch {
-	case !ok:
-		return "its tie is unknown (no tie was derived for the check)"
 	case !tie.Known:
 		return fmt.Sprintf("its tie is unknown (%s)", tie.Why)
-	case in.allChanged:
+	case in.AllChanged:
 		return "no base commit"
 	}
 	if path := in.firstCovered(tie); path != "" {
 		return path + " changed"
 	}
-	if len(in.changed) == 0 {
+	if len(in.Changed) == 0 {
 		return ""
 	}
 	base := Tie{Why: "no tie at the base commit was given"}
-	if in.baseTie != nil {
-		base = in.baseTie(c)
+	if in.BaseTie != nil {
+		base = in.BaseTie(c)
 	}
 	if !base.Known {
 		return fmt.Sprintf("its tie at the base commit is unknown (%s)", base.Why)
@@ -151,10 +160,10 @@ func (in citations) changeCause(c Check) string {
 	return ""
 }
 
-// firstCovered is the first path of changed, in sorted order, that tie covers, or "".
-func (in citations) firstCovered(tie Tie) string {
+// firstCovered is the first path of Changed, in sorted order, that tie covers, or "".
+func (in CitationInput) firstCovered(tie Tie) string {
 	first := ""
-	for _, path := range in.changed {
+	for _, path := range in.Changed {
 		if tie.Covers(path) && (first == "" || path < first) {
 			first = path
 		}
@@ -165,10 +174,10 @@ func (in citations) firstCovered(tie Tie) string {
 // notRun is the job of test, with the first leg in sorted order whose report does not show test
 // run, and why it does not; why is "" when every leg ran test, and "the job did not run" when the
 // reports hold no leg of the job.
-func (in citations) notRun(test Test) (job, why string) {
+func (in CitationInput) notRun(test Test) (job, why string) {
 	reported := false
 	var first JobReport
-	for _, r := range in.reports {
+	for _, r := range in.Reports {
 		if r.Job != test.Job {
 			continue
 		}
@@ -202,20 +211,17 @@ func notRunInLeg(test Test, leg JobReport) string {
 	if err != nil || len(matched) == 0 {
 		return "its report does not hold it"
 	}
-	for _, o := range matched {
-		if o.Outcome == string(OutcomeCouldNotRun) {
-			return "it could not run"
-		}
+	// The first of these outcomes that a run of the test has decides.
+	someRun := func(outcome string) bool {
+		return slices.ContainsFunc(matched, func(o TestOutcome) bool { return o.Outcome == outcome })
 	}
-	for _, o := range matched {
-		if o.Outcome == outcomeCached {
-			return "its report holds a result that go test replayed from its cache, which did not run at this commit"
-		}
-	}
-	for _, o := range matched {
-		if o.Outcome == "skip" {
-			return "its report shows it skipped"
-		}
+	switch {
+	case someRun(string(OutcomeCouldNotRun)):
+		return "it could not run"
+	case someRun(outcomeCached):
+		return "its report holds a result that go test replayed from its cache, which did not run at this commit"
+	case someRun("skip"):
+		return "its report shows it skipped"
 	}
 	return ""
 }

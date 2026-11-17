@@ -136,23 +136,24 @@
 // it, so a file that the change deleted, or moved out of the tie, counts. --reports holds one
 // directory per report artifact of the run, spec-report--<job> or spec-report--<job>--<leg>, each
 // with the go test -json report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the
-// result of each job it waits for. The tie of each check at the commit is what <root>'s
-// .github/scripts/go-test-reads.sh says its test reads (GoTies), and at the base what the base's
-// own script says, in a checkout of the base commit that the command makes in a new temporary
-// directory when a check needs it and removes when it ends. --ties, which may be given more than
-// once, names a file of ties by commit, {"<commit>":{"<check>":["<path or pattern>",...]}}
-// (ReadCommitTies), each commit by its full object name; with it, the ties at the commit are the
-// files' ties of the commit that HEAD of <root> names (exit 2 when git cannot read it) and those
-// at the base the files' ties of the base line's commit. A commit or a check that the files do not
-// hold reads as a tie that is not known, and a commit key that is no full object name, or that two
-// of the files hold, is exit 2. Each refused check is one line on standard error, "spec-check:
-// <dir>/<file>:<line>: <check>: <detail>", where the detail begins with the rule, with
-// "spec-check: <dir>: <n> program checks; <k> refused" on standard output, exit 1; none is
-// "spec-check: <dir>: <n> program checks; each is cited", exit 0. --json writes the faults to a
-// file as one line of JSON, as checks and state write theirs, [{"check","rule","detail"}], [] for
-// none, making its directory. With --allow-empty, a directory that does not exist or holds no spec
-// file is "spec-check: <dir>: holds no spec file; no check to cite", exit 0. A spec file that does
-// not parse is exit 2 with its problems.
+// result of each job it waits for. The tie of a check whose test did not run, the one check whose
+// tie the rules read, is at the commit what <root>'s .github/scripts/go-test-reads.sh says its
+// test reads (GoTies), and at the base what the base's own script says, in a checkout of the base
+// commit that the command makes in a new temporary directory when a check needs it and removes
+// when it ends. --ties, which may be given more than once, names a file of ties by commit,
+// {"<commit>":{"<check>":["<path or pattern>",...]}} (ReadCommitTies), each commit by its full
+// object name; with it, the ties at the commit are the files' ties of the commit that HEAD of
+// <root> names (exit 2 when git cannot read it) and those at the base the files' ties of the base
+// line's commit. A commit or a check that the files do not hold reads as a tie that is not known,
+// and a commit key that is no full object name, or that two of the files hold, is exit 2. Each
+// refused check is one line on standard error, "spec-check: <dir>/<file>:<line>: <check>:
+// <detail>", where the detail begins with the rule, with "spec-check: <dir>: <n> program checks;
+// <k> refused" on standard output, exit 1; none is "spec-check: <dir>: <n> program checks; each is
+// cited", exit 0. --json writes the faults to a file as one line of JSON, as checks and state
+// write theirs, [{"check","rule","detail"}], [] for none, making its directory. With
+// --allow-empty, a directory that does not exist or holds no spec file is "spec-check: <dir>:
+// holds no spec file; no check to cite", exit 0. A spec file that does not parse is exit 2 with
+// its problems.
 //
 // changed prints the line "base <commit>", with the full object name of the base, then the paths
 // whose content differs between the trees of the two commits of the git clone at <root>, both
@@ -172,15 +173,15 @@
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
 // Each path of a file or a directory the command reads is printed absolute. Every line but the
 // usage, the JSON of checks and of state, the blocks of print, the statement, check and wait lines
-// of state, and the paths of changed is written by runnerlog.Say with the prefix "spec-check: ",
+// of state, and the list of changed is written by runnerlog.Say with the prefix "spec-check: ",
 // so no text a file name, a file or an argument holds starts a line of the runner's log or names a
 // workflow command. Each statement, check and wait line starts with its fixed word and passes
 // through runnerlog.Printable for the same reason. A JSON line holds no raw line break, as
 // encoding/json escapes each control character, and checks, state and the --json file of
 // citations write the "[" of each "##[" in it as \u005b, which a JSON reader reads back as "[".
 // print writes each block as the approved spec holds it, since a change copies it byte for byte; no
-// CI job runs print. changed writes each path as git gives it, the data of a file, which the
-// citations job writes its standard output to.
+// CI job runs print. changed writes its base line and each path as git gives it, the data of a
+// file, which the citations job writes its standard output to.
 package main
 
 import (
@@ -212,7 +213,7 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
 // checks and of state, the blocks of print, the statement, check and wait lines of state, and the
-// paths of changed.
+// list of changed.
 const prefix = "spec-check: "
 
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers

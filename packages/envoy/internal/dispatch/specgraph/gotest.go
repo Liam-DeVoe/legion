@@ -219,7 +219,7 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 			return nil, fmt.Errorf("specgraph: the go test report holds no event at byte %d: a value with no Action", decoder.InputOffset())
 		}
 		framed = framed || e.OutputType == "frame"
-		if e.Action == "output" && strings.HasPrefix(e.Output, "ok  \t"+e.Package+"\t(cached)") {
+		if e.Action == "output" && cachedLine(e.Output, e.Package) {
 			cached[e.Package] = true
 		}
 		if e.Test == "" {
@@ -279,4 +279,15 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 		outcomes = append(outcomes, this.outcome)
 	}
 	return outcomes, nil
+}
+
+// cachedLine is whether output is go test's summary line of the package pkg that it replayed from
+// its test cache, "ok  \t<pkg>\t(cached)" and what follows. It cuts each part in turn, so an event
+// builds no string.
+func cachedLine(output, pkg string) bool {
+	rest, ok := strings.CutPrefix(output, "ok  \t")
+	if ok {
+		rest, ok = strings.CutPrefix(rest, pkg)
+	}
+	return ok && strings.HasPrefix(rest, "\t(cached)")
 }

@@ -3195,9 +3195,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `changes` and `checks` read a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory:
   the first change that adds a spec file lists each statement as `added`, and a checkout with no spec file has no program check.
   Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
-  `runnerlog.Say` writes every line but the usage, the JSON of `checks` and `state`, the blocks of `print`, the statement, check and wait lines of `state` and the paths of `changed`, each named in its item below, with the fixed text `spec-check: `, escaped as the `cmd/architecture-check` item says, and `checks` writes the `[` of each `##[` in its JSON as `\u005b`.
+  `runnerlog.Say` writes every line but the usage, the JSON of `checks` and `state`, the blocks of `print`, the statement, check and wait lines of `state` and the list of `changed`, each named in its item below, with the fixed text `spec-check: `, escaped as the `cmd/architecture-check` item says, and `checks` writes the `[` of each `##[` in its JSON as `\u005b`.
   It opens no database.
-  `citations` runs `go list` in the repository root, which can download the workspace's modules, and the repository's `go-test-reads.sh`, and `changed` runs `git`; the other subcommands start no process and reach no network.
+  `citations` runs `go list` in the repository root, which can download the workspace's modules, `git`, and the repository's `go-test-reads.sh`, and for the tie at the base the base's own `go-test-reads.sh` in a temporary directory; `changed` runs `git`; the other subcommands start no process and reach no network.
 
 - The composite action `.github/actions/spec-check` runs `spec-check tree` as `.github/actions/architecture-check` runs its command (its own `README.md` is the caller's guide):
   it builds `cmd/spec-check` from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, removes setup-go's `go` problem matcher, runs over its `path` input (default `.dispatch/spec`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number of statements to the caller as its `count` output, on exit 0 and on exit 1.
@@ -3310,12 +3310,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - What `cmd/spec-check citations` counts as a change of a check's code (R8: a result at one commit counts at another "when no code that the check runs changed between the two"):
   a path of `--changed` that the check's tie at the commit or its tie at the base commit covers, so a file that the change deleted, or moved out of the tie, counts;
-  a tie that is not known at either end (R8: such a check runs on each push);
+  a tie at the commit that is not known (R8: such a check runs on each push), and a tie at the base that is not known while `--changed` holds a path that the tie at the commit does not cover;
   or `--all-changed`, for a commit with no base commit.
   `--changed` is what `spec-check changed` prints: its first line, `base <commit>`, names the commit where each result that the commit carries stands, and the paths after it changed since that commit.
   For a change's branch that commit is the merge base with the default branch, and never the branch's push before: a list from that push holds no change of the pushes before it, so a test that has not run since such a change would read as cited (`TestCitationsFromTheMergeBase`).
   The tie at the commit is what `<root>`'s `.github/scripts/go-test-reads.sh` says `go test <package>` reads (`specgraph.GoTies`): the closure that `check-ci-filters.sh` holds each filter to, with `ci_job_reads.py`'s RULES, and the package's `testdata` and the directory of each wildcard embed pattern, whole, as patterns that no file that exists decides.
-  The tie at the base is what the base's own script says, in a checkout of the base commit into a new temporary directory (`git read-tree` and `git checkout-index`, which change nothing of the clone), made only for a check whose test did not run and whose tie at the commit covers no changed path, and removed when the command ends (`TestCitationsReadsTheTieAtTheBaseCommit`).
+  Each tie is derived only for a check whose test did not run (`TestCitationsDerivesATieOnlyForATestThatDidNotRun`).
+  The tie at the base is what the base's own script says, in a checkout of the base commit into a new temporary directory (`git read-tree` and `git checkout-index`, which change nothing of the clone), made only when, besides, the tie at the commit covers no changed path, and removed when the command ends (`TestCitationsReadsTheTieAtTheBaseCommit`).
   A symbolic link in a tie whose target is outside it is the same case as a test that reads a file outside its package: the tie holds what the rows of `ci_job_reads.py` record, and a row for the target names it.
   `--ties`, which may be given more than once, names a file of ties by commit, `{"<commit>":{"<check>":["<path or pattern>",…]}}` (`specgraph.ReadCommitTies`), each commit by its full object name;
   with it, the ties at the commit are the files' ties of the commit that `HEAD` of `<root>` names, and those at the base the files' ties of the base line's commit.
@@ -3323,7 +3324,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `spec-check changed --repo <root> --base <commit> [--head <commit>]` prints the list that `citations --changed` reads: the line `base <commit>`, with the full object name of the base, then the paths whose content differs between the two commits' trees (`specgraph.GitHistory`, `git diff --no-renames`, so a move gives both paths), sorted, one a line on stdout, with `spec-check: <root>: <n> paths changed from <base> to <head>` on stderr;
   `--head` is `HEAD` when not given.
-  The paths are the data of a file and do not pass through `runnerlog.Say`, so a path that holds a line break, and a commit that git cannot read, are exit 2 with one line naming them.
+  The base line and the paths are the data of a file and do not pass through `runnerlog.Say`, so a path that holds a line break, and a commit that git cannot read, are exit 2 with one line naming them.
   `TestChanged` runs the built binary over a scratch git repository.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.

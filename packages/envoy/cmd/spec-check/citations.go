@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -49,7 +48,7 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 	allChanged := flags.Bool("all-changed", false, "the commit has no base commit, so every file counts as changed")
 	reportsDir := flags.String("reports", "", "the directory of the report artifacts of the run")
 	needsFile := flags.String("needs", "", "toJSON(needs) of the spec-citations job")
-	var tiesFiles pathList
+	var tiesFiles ids
 	flags.Var(&tiesFiles, "ties", "a file of ties by commit, {\"<commit>\":{\"<check>\":[…]}}; may be given more than once")
 	jsonFile := flags.String("json", "", "the file to write the faults to as JSON")
 	allowEmpty := flags.Bool("allow-empty", false, "read a directory that does not exist or holds no spec file as no check to cite")
@@ -62,7 +61,11 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 	case *changedFile != "" && *allChanged:
 		return usageFault(stderr, "citations: give --changed <file> or --all-changed, not both")
 	}
-	for _, path := range append([]*string{dir, repo, workflow, changedFile, reportsDir, needsFile, jsonFile}, tiesFiles.pointers()...) {
+	paths := []*string{dir, repo, workflow, changedFile, reportsDir, needsFile, jsonFile}
+	for i := range tiesFiles {
+		paths = append(paths, &tiesFiles[i])
+	}
+	for _, path := range paths {
 		if *path == "" {
 			continue
 		}
@@ -97,32 +100,38 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	var changed []string
-	var base *baseTies
+	var baseCommit string
 	if *changedFile != "" {
-		var commit string
-		if commit, changed, err = readChanged(*changedFile); err != nil {
+		if baseCommit, changed, err = readChanged(*changedFile); err != nil {
 			say(stderr, "%s", err)
 			return 2
 		}
-		base = &baseTies{repo: *repo, commit: commit}
-		defer base.close()
 	}
-	var files specgraph.CommitTies
-	var head string
+	// The tie of a check at the commit, and at the base commit of --changed; Citations asks for each
+	// only for a check whose test did not run.
+	var tie, baseTie func(specgraph.Check) specgraph.Tie
 	if len(tiesFiles) > 0 {
-		if files, err = readTiesFiles(tiesFiles); err != nil {
+		files, err := readTiesFiles(tiesFiles)
+		if err != nil {
 			say(stderr, "%s", err)
 			return 2
 		}
-		// The ties of the head are the files' ties of the commit that the repository is at.
-		name, err := exec.Command("git", "-C", *repo, "rev-parse", "--verify", "--quiet", "HEAD^{commit}").Output()
-		if err != nil {
+		// The ties at the commit are the files' ties of the commit that the repository is at.
+		head, ok := commitName(*repo, "HEAD")
+		if !ok {
 			say(stderr, "%s: git cannot read its commit HEAD, whose ties --ties gives", *repo)
 			return 2
 		}
-		head = strings.TrimSpace(string(name))
-		if base != nil {
-			base.files = files
+		tie = func(c specgraph.Check) specgraph.Tie { return fileTie(files, head, c.ID) }
+		if *changedFile != "" {
+			baseTie = func(c specgraph.Check) specgraph.Tie { return fileTie(files, baseCommit, c.ID) }
+		}
+	} else {
+		tie = newDerivedTies(*repo).tie
+		if *changedFile != "" {
+			base := &baseCheckout{repo: *repo, commit: baseCommit}
+			defer base.close()
+			baseTie = base.tie
 		}
 	}
 
@@ -148,22 +157,8 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	var ties map[string]specgraph.Tie
-	if files != nil {
-		ties = make(map[string]specgraph.Tie, len(j.tree.Checks))
-		for _, c := range j.tree.Checks {
-			ties[c.ID] = fileTie(files, head, c.ID)
-		}
-	} else {
-		// go-test-reads.sh runs in the root of the repository it is in, where the root go.work
-		// takes the import paths of the repository's modules.
-		ties = specgraph.GoTies(j.tree.Checks, ".", nil, specgraph.ScriptTestReads(*repo))
-	}
-	var baseTie func(specgraph.Check) specgraph.Tie
-	if base != nil {
-		baseTie = base.tie
-	}
-	faults := specgraph.Citations(j.tree, specgraph.GoCode{Dir: *repo}, jobs, reports, changed, *allChanged, ties, baseTie)
+	faults := specgraph.Citations(j.tree, specgraph.CitationInput{Code: specgraph.GoCode{Dir: *repo}, Jobs: jobs, Reports: reports,
+		Changed: changed, AllChanged: *allChanged, Tie: tie, BaseTie: baseTie})
 	if !writeFaults(stderr, *jsonFile, faults) {
 		return 2
 	}
@@ -299,26 +294,19 @@ func readChanged(path string) (base string, changed []string, err error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("%s: cannot be read: %w", path, err)
 	}
-	noBase := fmt.Errorf("%s:1: no base line %q, which spec-check changed writes first", path, baseLine+"<commit>")
-	n := 0
-	for line := range strings.Lines(string(content)) {
+	first, rest, _ := strings.Cut(string(content), "\n")
+	base, ok := strings.CutPrefix(first, baseLine)
+	if !ok || !objectName(base) {
+		return "", nil, fmt.Errorf("%s:1: no base line %q, which spec-check changed writes first", path, baseLine+"<commit>")
+	}
+	n := 1
+	for line := range strings.Lines(rest) {
 		n++
 		text := strings.TrimSuffix(line, "\n")
-		if n == 1 {
-			commit, ok := strings.CutPrefix(text, baseLine)
-			if !ok || !objectName(commit) {
-				return "", nil, noBase
-			}
-			base = commit
-			continue
-		}
 		if text == "" {
 			return "", nil, fmt.Errorf("%s:%d: an empty line, where a path was due", path, n)
 		}
 		changed = append(changed, text)
-	}
-	if n == 0 {
-		return "", nil, noBase
 	}
 	return base, changed, nil
 }

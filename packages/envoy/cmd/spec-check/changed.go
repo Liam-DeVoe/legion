@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
@@ -23,8 +22,10 @@ import (
 // change would read as cited. citations reads the tie of a check at the base commit through the
 // base line, so a file that the change deleted or moved out of the tie still counts.
 //
-// The paths are data for a file, as the citations job writes them, and do not pass through
-// runnerlog.Say, which would change them; the count line on stderr does.
+// The base line and the paths are data for a file, as the citations job writes them, and do not
+// pass through runnerlog.Say, which would change them; the count line on stderr does. The paths are
+// those between the two commits that git names when the command starts, so a ref that moves
+// meanwhile changes neither the base line nor the paths.
 func runChanged(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("changed", flag.ContinueOnError)
 	repoFlag := flags.String("repo", "", "the root of the git clone")
@@ -37,17 +38,17 @@ func runChanged(args []string, stdout, stderr io.Writer) int {
 	if !ok || !isDirectory(stderr, repo) {
 		return 2
 	}
-	// --end-of-options makes git read an id that starts with "-" as a revision, as GitHistory does.
-	baseName, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", "--quiet", "--end-of-options", *base+"^{commit}").Output()
-	if err != nil {
+	baseName, ok := commitName(repo, *base)
+	if !ok {
 		say(stderr, "%s: git cannot read commit %s", repo, *base)
 		return 2
 	}
-	if exec.Command("git", "-C", repo, "rev-parse", "--verify", "--quiet", "--end-of-options", *head+"^{commit}").Run() != nil {
+	headName, ok := commitName(repo, *head)
+	if !ok {
 		say(stderr, "%s: git cannot read commit %s", repo, *head)
 		return 2
 	}
-	changed, ok := specgraph.GitHistory{Dir: repo}.Changed(*base, *head)
+	changed, ok := specgraph.GitHistory{Dir: repo}.Changed(baseName, headName)
 	if !ok {
 		say(stderr, "%s: git diff from %s to %s failed", repo, *base, *head)
 		return 2
@@ -58,7 +59,7 @@ func runChanged(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	fmt.Fprintf(stdout, "%s%s\n", baseLine, strings.TrimSpace(string(baseName)))
+	fmt.Fprintf(stdout, "%s%s\n", baseLine, baseName)
 	for _, path := range changed {
 		fmt.Fprintln(stdout, path)
 	}

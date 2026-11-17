@@ -46,9 +46,10 @@ type citationCase struct {
 	reports    []JobReport
 	changed    []string
 	allChanged bool
-	ties       map[string]Tie
-	baseTies   map[string]Tie // the ties at the base commit; nil: no baseTie at all
-	asked      []string       // the checks whose base tie Citations asked for
+	ties       map[string]Tie // the ties at this commit; a check it does not hold has none derived
+	baseTies   map[string]Tie // the ties at the base commit; nil: no BaseTie at all
+	asked      []string       // the checks whose tie at this commit Citations asked for
+	askedBase  []string       // the checks whose tie at the base commit Citations asked for
 }
 
 // newCitationCase is the base of TestCitations: check-a, whose test is in the code once and whose
@@ -56,7 +57,7 @@ type citationCase struct {
 // holds TestA as a pass; nothing changed since the base commit.
 func newCitationCase(t *testing.T) *citationCase {
 	t.Helper()
-	tie := mustTie(t, "a/*", "fixtures/a.json")
+	tie := known("a/*", "fixtures/a.json")
 	return &citationCase{
 		tree: Tree{Checks: []Check{citationCheck}},
 		code: citationCode,
@@ -68,30 +69,27 @@ func newCitationCase(t *testing.T) *citationCase {
 	}
 }
 
-// mustTie is the known tie of paths.
-func mustTie(t *testing.T, paths ...string) Tie {
-	t.Helper()
-	tie, err := NewTie(paths)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tie
-}
-
-// citations runs Citations over the case, with a baseTie that answers baseTies and records each
-// check it is asked for.
+// citations runs Citations over the case, with a Tie that answers ties and a BaseTie that answers
+// baseTies, each recording the checks it is asked for.
 func (c *citationCase) citations() CitationFaults {
-	var baseTie func(Check) Tie
-	if c.baseTies != nil {
-		baseTie = func(check Check) Tie {
+	in := CitationInput{Code: c.code, Jobs: c.jobs, Reports: c.reports, Changed: c.changed, AllChanged: c.allChanged,
+		Tie: func(check Check) Tie {
 			c.asked = append(c.asked, check.ID)
+			if tie, ok := c.ties[check.ID]; ok {
+				return tie
+			}
+			return Tie{Why: "no tie was derived for the check"}
+		}}
+	if c.baseTies != nil {
+		in.BaseTie = func(check Check) Tie {
+			c.askedBase = append(c.askedBase, check.ID)
 			if tie, ok := c.baseTies[check.ID]; ok {
 				return tie
 			}
 			return Tie{Why: "no tie at the base"}
 		}
 	}
-	return Citations(c.tree, c.code, c.jobs, c.reports, c.changed, c.allChanged, c.ties, baseTie)
+	return Citations(c.tree, in)
 }
 
 // test sets the test part of check-a.
@@ -235,7 +233,7 @@ func TestCitations(t *testing.T) {
 			c.changed = []string{"a/a.go"}
 			c.reports = nil
 		}},
-		// D1: a run that go test replayed from its cache did not run at the commit, and R8 decides.
+		// A run that go test replayed from its cache did not run at the commit, and R8 decides.
 		{name: "code of the tie changed and go test replayed the test from its cache", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.outcome(outcomeCached)
@@ -244,7 +242,7 @@ func TestCitations(t *testing.T) {
 			c.changed = []string{"docs/x.md"}
 			c.outcome(outcomeCached)
 		}},
-		// D2: a changed path counts when the tie holds it at either end, the base commit or this one.
+		// A changed path counts when the tie holds it at either end, the base commit or this one.
 		{name: "the change deleted the test's testdata directory, which only the tie at the base holds", change: func(c *citationCase) {
 			c.baseTies[citationCheck.ID] = known("a/*", "a/testdata/**", "fixtures/a.json")
 			c.changed = []string{"a/testdata/answer.json"}
@@ -298,37 +296,41 @@ func known(paths ...string) Tie {
 	return Tie{Paths: slices.Sorted(slices.Values(paths)), Known: true}
 }
 
-// The tie at the base is a checkout of the base commit in production, so Citations asks for it only
-// when it decides: the check's test did not run, and the tie at this commit covers no changed path.
-func TestCitationsAsksForTheBaseTieOnlyWhenItDecides(t *testing.T) {
+// Deriving a tie runs the repository's own tools in production, and the tie at the base needs a
+// checkout of the base commit, so Citations asks for each only when it decides: the tie at this
+// commit when the check's test did not run, and the tie at the base when, besides, the tie at this
+// commit covers no changed path.
+func TestCitationsAsksForEachTieOnlyWhenItDecides(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
-		name   string
-		change func(c *citationCase)
-		asked  bool
+		name             string
+		change           func(c *citationCase)
+		asked, askedBase bool
 	}{
-		{"the test ran", func(c *citationCase) { c.changed = []string{"docs/x.md"} }, false},
-		{"nothing changed", func(c *citationCase) { c.outcome("skip") }, false},
+		{"the test ran", func(c *citationCase) { c.changed = []string{"docs/x.md"} }, false, false},
+		{"nothing changed", func(c *citationCase) { c.outcome("skip") }, true, false},
 		{"the tie at this commit covers a changed path", func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.outcome("skip")
-		}, false},
+		}, true, false},
 		{"no base commit", func(c *citationCase) {
 			c.allChanged = true
 			c.outcome("skip")
-		}, false},
+		}, true, false},
 		{"the test did not run, and the tie at this commit covers no changed path", func(c *citationCase) {
 			c.changed = []string{"docs/x.md"}
 			c.outcome("skip")
-		}, true},
+		}, true, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			c := newCitationCase(t)
 			row.change(c)
 			c.citations()
-			if want := map[bool][]string{true: {citationCheck.ID}}[row.asked]; !slices.Equal(c.asked, want) {
-				t.Errorf("Citations asked for the base tie of %q, want %q", c.asked, want)
+			once := func(asked bool) []string { return map[bool][]string{true: {citationCheck.ID}}[asked] }
+			if !slices.Equal(c.asked, once(row.asked)) || !slices.Equal(c.askedBase, once(row.askedBase)) {
+				t.Errorf("Citations asked for the tie at this commit of %q and at the base of %q, want %q and %q",
+					c.asked, c.askedBase, once(row.asked), once(row.askedBase))
 			}
 		})
 	}
