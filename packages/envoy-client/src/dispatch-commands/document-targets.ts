@@ -14,7 +14,7 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
-import { DocumentNotFoundError, DocumentReferenceError, dispatchAnswered } from "./failures";
+import { DocumentNotFoundError, dispatchAnswered } from "./failures";
 
 /** The document `artifactReference` names among `artifacts`. A bare reference is an id, a slug,
  * then a filename; a `canonical` one, the document part of a dispatch:// reference, is a slug by
@@ -37,9 +37,7 @@ function artifactByReference(
   if (bySlug !== undefined) return bySlug;
   const byName = artifacts.filter((candidate) => candidate.name === artifactReference);
   if (byName.length > 1) {
-    throw new DocumentReferenceError(
-      documentReferenceProblem(artifactReference, byName, owner, true)
-    );
+    throw new Error(documentReferenceProblem(artifactReference, byName, owner, true));
   }
   const [artifact] = byName;
   if (artifact === undefined) {

@@ -16625,46 +16625,57 @@ test("Dispatch's own not found of a referenced comment is read as a comment it d
 
 // A reference naming a project document is read the same way as one naming an issue: the
 // document is read on this failing path, so the refusal says whether the document or the item
-// is what Dispatch does not hold. A reference its project holds no single document for - none,
-// or two under a filename they share - is answered by the document's own refusal, which names
-// the documents that bear on it; it is an answer about the document, never a failed read.
-for (const [name, reference, documents, named, absent] of [
+// is what Dispatch does not hold. Each fixture answers the document route as this release's
+// server does (api/artifacts.go): the document itself; `404 ARTIFACT_NOT_FOUND`, after which the
+// client reads the project's documents and refuses the reference in its own words, an answer
+// about the document; and `400 ARTIFACT_REFERENCE_AMBIGUOUS` for a filename two documents share,
+// a refusal of the read that the command names as the read's failure, with the refusal's words.
+for (const [name, reference, routeAnswer, named, absent] of [
   [
     "a document that stands",
     "runbook",
-    [{ id: "artifact-1", name: "Runbook", slug: "runbook" }],
-    "CORE/runbook holds no comment 11111111-2222-4333-8444-555555555555",
-    undefined,
+    () => response({ id: "artifact-1", name: "Runbook", slug: "runbook" }),
+    ["CORE/runbook holds no comment 11111111-2222-4333-8444-555555555555"],
+    "the read of CORE/runbook failed",
   ],
   [
     "a document Dispatch does not hold",
     "runbook",
-    [],
-    'document "runbook" not found by slug',
+    () =>
+      response(
+        {
+          code: "ARTIFACT_NOT_FOUND",
+          error: `document "runbook" not found by slug; this project's documents: `,
+        },
+        404
+      ),
+    ['document "runbook" not found by slug'],
     "the read of CORE/runbook failed",
   ],
   [
     "a filename two documents share",
     "notes.md",
+    () =>
+      response(
+        {
+          code: "ARTIFACT_REFERENCE_AMBIGUOUS",
+          error:
+            '"notes.md" names 2 documents on this project; use a slug: notes-md (notes.md), notes-md-2 (notes.md)',
+        },
+        400
+      ),
     [
-      { id: "artifact-1", name: "notes.md", slug: "notes-md" },
-      { id: "artifact-2", name: "notes.md", slug: "notes-md-2" },
+      "the read of CORE/notes.md failed",
+      'ARTIFACT_REFERENCE_AMBIGUOUS: "notes.md" names 2 documents',
     ],
-    '"notes.md" names 2 documents',
-    "the read of CORE/notes.md failed",
+    "CORE/notes.md holds no comment",
   ],
 ] as const) {
   test(`dispatch_read names what it could not find under ${name}`, async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const { pathname } = new URL(String(url));
-      if (pathname === `/api/v1/projects/CORE/artifacts/${reference}`) {
-        return documents.length !== 1
-          ? response({ code: "NOT_FOUND", error: "not found" }, 404)
-          : response(documents[0]);
-      }
-      if (pathname === "/api/v1/projects/CORE/artifacts") {
-        return response(documents);
-      }
+      if (pathname === `/api/v1/projects/CORE/artifacts/${reference}`) return routeAnswer();
+      if (pathname === "/api/v1/projects/CORE/artifacts") return response([]);
       return response({ code: "NOT_FOUND", error: "not found" }, 404);
     };
     const error = await runWithFixture(
@@ -16674,8 +16685,8 @@ for (const [name, reference, documents, named, absent] of [
     );
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(named);
-    if (absent !== undefined) expect((error as Error).message).not.toContain(absent);
+    for (const words of named) expect((error as Error).message).toContain(words);
+    expect((error as Error).message).not.toContain(absent);
   });
 }
 
