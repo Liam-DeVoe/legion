@@ -2987,6 +2987,8 @@ GATES = [
           for path in files_but_tests(f"{ENVOY}/migrationid", suffix="", tree=True)],
         *[(path, "packages/envoy/docker/Dockerfile:119 COPY packages/envoy/roleholder ./roleholder")
           for path in files_but_tests(f"{ENVOY}/roleholder", suffix="", tree=True)],
+        *[(path, "packages/envoy/docker/Dockerfile:122 COPY packages/envoy/poolsetting ./poolsetting")
+          for path in files_but_tests(f"{ENVOY}/poolsetting", suffix="", tree=True)],
         # The second image this job builds. Its context is that directory alone, test file and
         # all, so the filter owes every file of it: check-image-trigger-paths.sh refuses a
         # trigger that leaves one out, and rule 17 of check-ci-filters.sh would otherwise write

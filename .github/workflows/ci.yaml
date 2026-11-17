@@ -4137,6 +4137,7 @@ jobs:
               - 'packages/envoy/internal/**'
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/migrationid/**'
+              - 'packages/envoy/poolsetting/**'
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/docker/rds-global-bundle.pem'
               # TestSmoke compiles in the root workspace.
@@ -4226,6 +4227,7 @@ jobs:
               - '!packages/envoy/internal/webhook/**/*_test.go'
               - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
@@ -4284,6 +4286,7 @@ jobs:
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/loadtest/**'
               - 'packages/envoy/migrationid/**'
+              - 'packages/envoy/poolsetting/**'
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'

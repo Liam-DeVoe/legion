@@ -117,6 +117,9 @@ COPY packages/envoy/going ./going
 COPY packages/envoy/migrationid ./migrationid
 # roleholder: the no-holder reasons envoy-listener's role publish refusal names.
 COPY packages/envoy/roleholder ./roleholder
+# poolsetting: whether a database URL names its pool size, which envoy-dispatch's and envoy-broker's
+# stores read.
+COPY packages/envoy/poolsetting ./poolsetting
 # The Go contracts file is generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go

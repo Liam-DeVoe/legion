@@ -177,7 +177,7 @@ env:
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
     packages/envoy/brokerclient/ packages/envoy/dispatchbody/ packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/roleholder/ packages/envoy/sessiontiming/
+    packages/envoy/migrationid/ packages/envoy/poolsetting/ packages/envoy/roleholder/ packages/envoy/sessiontiming/
     packages/envoy/internal/broker/oauthwire/ packages/envoy/internal/brokerclient/
     packages/envoy/internal/contracts/ packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
