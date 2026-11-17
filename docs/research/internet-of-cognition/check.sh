@@ -327,7 +327,25 @@
 #                  code. mark is one of verified, false, unverified,
 #                  not-externally-checkable, supported, unsupported and unreleased.
 #                  expect holds exactly one of equals, contains, matches, exit, at_most,
-#                  at_least and one_of. A predicate written as a sentence fails here.
+#                  at_least and one_of, or exit beside one other, and then both hold. A
+#                  predicate written as a sentence fails here, and so does a value of
+#                  another shape than its key takes (predicate_is_a_sentence): equals,
+#                  contains and matches take a string, one_of a list of one or more
+#                  strings, a bound a number, -?[0-9]+(.[0-9]+)?, and exit a whole number,
+#                  [0-9]+, each of the last two as a JSON number or a string; matches,
+#                  each candidate of one_of, a bound and exit hold no newline, and none
+#                  but equals is empty. The output, and the value of an equals or a
+#                  contains, are read as text without their trailing newlines, which
+#                  carry no content; no value is handed to a tool as a list of patterns,
+#                  a bound compares the two numbers as exact decimals, and a status that
+#                  was never recorded meets no exit. What each key holds (evaluate):
+#                    equals s     the whole output is s.
+#                    contains s   s, every line of it, is one substring of the output.
+#                    matches r    some line of the output matches r, as grep -E reads it.
+#                    one_of [s]   the whole output is one of the strings s.
+#                    at_most n    the output is exactly one number, and it is at most n.
+#                    at_least n   the output is exactly one number, and it is at least n.
+#                    exit n       the exit status recorded for the command is n.
 #                  A predicate reads the line the row measures, never what a tool prints
 #                  of its own progress: where a tool can write download, build or install
 #                  lines into the stream a predicate reads on a machine whose caches are
@@ -1279,7 +1297,8 @@ pr_commits() {
 # A bound reads the one number the output prints, which is how a score or a count is
 # recorded; a row that counts lines says so in its command, with wc -l. Output that is not
 # exactly one number holds no bound, so a traceback's line count never meets one, and the
-# number read is named in the failure.
+# number read is named in the failure. The two numbers are compared as the decimals they
+# are written as, never as floats, which would round two counts past 2^53 to one.
 bound() {
     local key="$1" value="$2" out="$3" read_value
     # Only the space around the number is taken off, so two numbers on two lines stay
@@ -1292,35 +1311,44 @@ bound() {
         return 1
     fi
     IOC_BOUND_READ="$read_value"
-    python3 -c 'import sys; a=float(sys.argv[1]); b=float(sys.argv[2]); sys.exit(0 if (a <= b if sys.argv[3]=="at_most" else a >= b) else 1)' "$read_value" "$value" "$key"
+    python3 -c 'import sys; from decimal import Decimal; a=Decimal(sys.argv[1]); b=Decimal(sys.argv[2]); sys.exit(0 if (a <= b if sys.argv[3]=="at_most" else a >= b) else 1)' "$read_value" "$value" "$key"
 }
 
-# evaluate <expect-json> <output-file>; prints nothing, returns 0 when it holds.
+# evaluate <expect-json> <output-file>; prints nothing, returns 0 when it holds, by what
+# the header's rule for expect gives each key: the output, and the value of an equals or a
+# contains, are read as text without their trailing newlines, and no value is handed to a
+# tool as a list of patterns. A predicate whose shape predicate_is_a_sentence refuses
+# holds over no output.
 evaluate() {
-    local spec="$1" out="$2" key value candidate
+    local spec="$1" out="$2" key value text candidate
     # An exit status beside a predicate over the output: both hold, or the row fails.
     if [ "$(printf '%s' "$spec" | jq 'type == "object" and has("exit") and length == 2')" = true ]; then
         evaluate "$(printf '%s' "$spec" | jq -c '{exit}')" "$out" &&
             evaluate "$(printf '%s' "$spec" | jq -c 'del(.exit)')" "$out"
         return
     fi
+    predicate_is_a_sentence "$spec" && return 2
     key="$(printf '%s' "$spec" | jq -r 'keys[0] // empty')"
     value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
     case "$key" in
     equals) [ "$(cat "$out")" = "$value" ] ;;
-    contains) grep -qF -- "$value" "$out" ;;
+    # The whole value, every line of it, is one substring of the output.
+    contains)
+        text="$(cat "$out")"
+        [[ "$text" == *"$value"* ]]
+        ;;
+    # One extended regular expression, on one line, which some line of the output matches.
     matches) grep -qE -- "$value" "$out" ;;
-    exit) [ "$(cat "$out.status" 2>/dev/null || echo 1)" = "$value" ] ;;
+    # A status that was never recorded is no status, and meets no value.
+    exit) [ "$(cat "$out.status" 2>/dev/null)" = "$value" ] ;;
     at_most | at_least) bound "$key" "$value" "$out" ;;
+    # A set membership: the whole output is one of the candidates, each one line.
     one_of)
-        # The candidates are read one per line, so a set of more than one holds when the
-        # output carries any one of them.
-        local found=1
+        text="$(cat "$out")"
         while IFS= read -r candidate; do
-            [ -n "$candidate" ] || continue
-            grep -qF -- "$candidate" "$out" && found=0
-        done < <(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k][]')
-        [ "$found" -eq 0 ]
+            [ "$text" = "$candidate" ] && return 0
+        done < <(printf '%s' "$spec" | jq -r '.one_of[]')
+        return 1
         ;;
     *) return 2 ;;
     esac
@@ -1328,23 +1356,54 @@ evaluate() {
 
 # A predicate is a bound, a set membership or an exit status. Anything else, and anything
 # whose value reads as a sentence, fails: that is what the Verification document asks for.
+#
+# predicate_is_a_sentence <expect-json>; true when any key of the predicate is none of the
+# seven, or carries a value of another shape than the header's rule for expect gives that
+# key, and IOC_PREDICATE_WHY then names the key and what its value is.
 predicate_is_a_sentence() {
-    # True when any key of the predicate is none of the seven, or carries a value of the
-    # wrong shape: a bound that is no number, an exit status that is no whole number.
-    local spec="$1" key value
+    local spec="$1" key type value
+    IOC_PREDICATE_WHY=""
     while IFS= read -r key; do
+        type="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | type')"
+        # The value as jq prints it raw, with every newline it holds, its last included.
+        value="$(printf '%s' "$spec" | jq -j --arg k "$key" '.[$k] | tostring' && printf .)"
+        value="${value%.}"
         case "$key" in
-        equals | contains | matches | one_of) ;;
+        equals)
+            [ "$type" = string ] || IOC_PREDICATE_WHY="its equals is a JSON $type, not a string"
+            ;;
+        contains)
+            if [ "$type" != string ]; then
+                IOC_PREDICATE_WHY="its contains is a JSON $type, not a string"
+            elif [ -z "${value//$'\n'/}" ]; then
+                IOC_PREDICATE_WHY="its contains is empty without its trailing newlines, and an empty value is a substring of any output"
+            fi
+            ;;
+        matches)
+            if [ "$type" != string ]; then
+                IOC_PREDICATE_WHY="its matches is a JSON $type, not a string"
+            elif [ -z "$value" ]; then
+                IOC_PREDICATE_WHY="its matches is empty, and an empty expression matches every line"
+            elif [[ "$value" == *$'\n'* ]]; then
+                IOC_PREDICATE_WHY="its matches holds a newline, and a matches is one regular expression over one line, where grep reads each line of it as an expression of its own"
+            fi
+            ;;
+        one_of)
+            if [ "$type" != array ] || ! printf '%s' "$spec" | jq -e '.one_of | length > 0 and (map(type == "string") | all)' >/dev/null; then
+                IOC_PREDICATE_WHY="its one_of is no list of one or more strings"
+            elif ! printf '%s' "$spec" | jq -e '.one_of | map(length > 0 and (split("\n") | length) == 1) | all' >/dev/null; then
+                IOC_PREDICATE_WHY="its one_of holds a candidate that is empty or holds a newline, and each candidate is one whole line the output can be"
+            fi
+            ;;
         at_most | at_least)
-            value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
-            printf '%s' "$value" | grep -qE '^-?[0-9]+(\.[0-9]+)?$' || return 0
+            [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] || IOC_PREDICATE_WHY="its $key is no one number"
             ;;
         exit)
-            value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
-            printf '%s' "$value" | grep -qE '^[0-9]+$' || return 0
+            [[ "$value" =~ ^[0-9]+$ ]] || IOC_PREDICATE_WHY="its exit is no one whole number"
             ;;
-        *) return 0 ;;
+        *) IOC_PREDICATE_WHY="its key $key is none of the seven" ;;
         esac
+        [ -z "$IOC_PREDICATE_WHY" ] || return 0
     done < <(printf '%s' "$spec" | jq -r 'keys[]')
     return 1
 }
@@ -1611,9 +1670,9 @@ prepare_env() {
 #     grep, that exits exactly 1 found nothing, and one that exits above 1 failed;
 #   - a bound, at_least or at_most, whose output is not exactly one number; a row that
 #     counts lines says so in its command, with wc -l;
-#   - a predicate any key of which is none of the seven or carries a value of the wrong
-#     shape, a row with two predicates over its output, and a row with a command and no
-#     predicate.
+#   - a predicate any key of which is none of the seven or carries a value of another
+#     shape than the header's rule for expect gives that key, a row with two predicates
+#     over its output, and a row with a command and no predicate.
 #
 # A row claims a failure in one way: IOC_EXPECT_STATUS=<n> written before the one command
 # that fails, which exempts that command's status n and nothing else, and an exit status
@@ -3671,7 +3730,7 @@ mode_replay() {
             fail predicate-form "$id carries $(printf '%s' "$expect" | jq -r 'if type == "object" then (keys | join(" and ")) else "no key" end') in one expect, and a row is held to exactly one predicate over its output, which an exit status may stand beside: $expect"
         elif [ -n "$expect" ] && predicate_is_a_sentence "$expect"; then
             bad_predicate=$((bad_predicate + 1))
-            fail predicate-form "$id carries a predicate that is not a bound, a set membership or an exit status: $expect"
+            fail predicate-form "$id carries a predicate that is not a bound, a set membership or an exit status of the shape the header's rule for expect gives it, since $IOC_PREDICATE_WHY: $expect"
         fi
         if [ "$kind" = quotation ]; then
             printf '%s' "$row" | jq -e '.evidence.marked // empty' >/dev/null ||

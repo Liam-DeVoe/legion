@@ -2765,6 +2765,129 @@ dir="$(fresh contains-both-lines)"
 plant_behaviour "$dir" "printf 'ran once\\nran twice\\n'" '{"contains":"ran once\nran twice"}'
 honest_result "a contains over two lines passes on output that holds both" replay-command "$(fixture_run "$dir" --replay)"
 
+# 103-109 come from the reading of every operator of expect after test round 32, whose
+# fault, case 102, was a value grep read as a list of patterns: each case is a key whose
+# value a tool read as something its rule does not say, and check.sh's header now states
+# what each key holds and the shape of its value.
+#
+# 103. A one_of is a set membership: the output is one of its candidates. At 6f7143ab
+# evaluate read each candidate with grep -qF, so a candidate held when it was a substring of
+# any line of the output, 'agreed' inside 'disagreed', and jq printed a candidate holding a
+# newline as two candidates, either of which held. The output without its trailing newlines
+# now equals one whole candidate, and predicate-form refuses a candidate that holds a
+# newline, and an empty one, which 6f7143ab skipped and which would now hold over empty
+# output. The case plants 'agreed' over output that is 'disagreed', which must fail, the
+# two forms predicate-form must refuse, and two candidates over output that is the second,
+# which passes. The nine one_of rows of claims.jsonl each print exactly one candidate.
+dir="$(fresh op-one-of-substring)"
+plant_behaviour "$dir" "printf 'disagreed\\n'" '{"one_of":["agreed"]}'
+case_result "a one_of over 'agreed' fails on output that is 'disagreed'" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-one-of-two-lines)"
+plant_behaviour "$dir" "printf 'flagged\\n'" '{"one_of":["agreed\nflagged"]}'
+case_result "a one_of candidate that holds a newline is refused" 'predicate-form: f-behaviour-1 .*its one_of holds a candidate that is empty or holds a newline' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-one-of-empty)"
+plant_behaviour "$dir" "printf '\\n'" '{"one_of":[""]}'
+case_result "an empty one_of candidate is refused" 'predicate-form: f-behaviour-1 .*its one_of holds a candidate that is empty or holds a newline' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-one-of-member)"
+plant_behaviour "$dir" "printf 'flagged\\n'" '{"one_of":["agreed","flagged"]}'
+honest_result "a one_of passes on output that is one of its candidates" 'replay-command|predicate-form' "$(fixture_run "$dir" --replay)"
+
+# 104. A matches is one extended regular expression over one line. At 6f7143ab evaluate
+# read it with grep -qE, which takes a value holding a newline as one expression per line,
+# any one of which is a match, and an empty expression, which matches every line. The
+# case plants a matches over two lines over output that holds only its first, and an empty
+# matches, which predicate-form must refuse, and an anchored matches of one line, which
+# passes.
+dir="$(fresh op-matches-two-lines)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"matches":"ran once\nran twice"}'
+case_result "a matches that holds a newline is refused" 'predicate-form: f-behaviour-1 .*its matches holds a newline' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-matches-empty)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"matches":""}'
+case_result "an empty matches is refused" 'predicate-form: f-behaviour-1 .*its matches is empty' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-matches-one-line)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"matches":"^ran once$"}'
+honest_result "a matches of one line passes on output a line of which it matches" 'replay-command|predicate-form' "$(fixture_run "$dir" --replay)"
+
+# 105. A contains is not empty. The empty value is a substring of any output, and so is a
+# value of newlines alone once its trailing newlines are off, so at 6f7143ab each held over
+# anything. The case plants both, which predicate-form must refuse, beside a contains of
+# one word of the output, which passes.
+dir="$(fresh op-contains-empty)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"contains":""}'
+case_result "an empty contains is refused" 'predicate-form: f-behaviour-1 .*its contains is empty' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-contains-newline)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"contains":"\n"}'
+case_result "a contains of one newline is refused" 'predicate-form: f-behaviour-1 .*its contains is empty' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-contains-word)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"contains":"ran"}'
+honest_result "a contains of one word of the output passes" 'replay-command|predicate-form' "$(fixture_run "$dir" --replay)"
+
+# 106. An equals, a contains and a matches take a string. At 6f7143ab evaluate read every
+# value through jq's tostring, which gives null the text 'null' and true the text 'true',
+# and a number the text jq prints for it, which differs between jq and jaq for 1.0; so
+# {"contains":null} held over output that prints null. The case plants a contains of null
+# and an equals of true over output that is that word, which predicate-form must refuse,
+# beside the equals of the string "true", which passes.
+dir="$(fresh op-type-null)"
+plant_behaviour "$dir" "printf 'null\\n'" '{"contains":null}'
+case_result "a contains of null is refused" 'predicate-form: f-behaviour-1 .*its contains is a JSON null, not a string' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-type-boolean)"
+plant_behaviour "$dir" "printf 'true\\n'" '{"equals":true}'
+case_result "an equals of true is refused" 'predicate-form: f-behaviour-1 .*its equals is a JSON boolean, not a string' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-type-string)"
+plant_behaviour "$dir" "printf 'true\\n'" '{"equals":"true"}'
+honest_result "an equals of the string true passes on output that is true" 'replay-command|predicate-form' "$(fixture_run "$dir" --replay)"
+
+# 107. The value of a bound and of an exit status is one number, read whole. At 6f7143ab
+# predicate_is_a_sentence held each to its form with grep -qE, which passes a value any
+# one line of which is a number, so a bound of '0' and a line 'zero' after it, and an exit
+# status the same, were predicates of the right shape; the row then failed only at its
+# run, as an output that does not meet it. The case plants both, which predicate-form must
+# refuse, beside a bound of '0' and an exit status of 0, which pass.
+dir="$(fresh op-bound-two-lines)"
+plant_behaviour "$dir" "printf '0\\n'" '{"at_most":"0\nzero"}'
+case_result "a bound whose value is a number and a line after it is refused" 'predicate-form: f-behaviour-1 .*its at_most is no one number' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-exit-two-lines)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"contains":"ran once","exit":"0\nzero"}'
+case_result "an exit status whose value is a number and a line after it is refused" 'predicate-form: f-behaviour-1 .*its exit is no one whole number' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-bound-one-number)"
+plant_behaviour "$dir" "printf '0\\n'" '{"at_most":"0"}'
+honest_result "a bound of one number passes on output that meets it" 'replay-command|predicate-form' "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-exit-one-number)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"contains":"ran once","exit":0}'
+honest_result "an exit status of one whole number passes beside a contains both of which hold" 'replay-command|predicate-form' "$(fixture_run "$dir" --replay)"
+
+# 108. A bound compares the two numbers exactly. At 6f7143ab bound compared them as python
+# floats, which hold whole numbers exactly only up to 2^53, so 9007199254740993 was at most
+# 9007199254740992. They are now compared as the decimals they are written as. The case
+# plants that bound, which must fail, beside the bound at the number itself, which passes.
+dir="$(fresh op-bound-past-float)"
+plant_behaviour "$dir" "printf '9007199254740993\\n'" '{"at_most":"9007199254740992"}'
+case_result "9007199254740993 is not at most 9007199254740992" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh op-bound-exact)"
+plant_behaviour "$dir" "printf '9007199254740993\\n'" '{"at_most":"9007199254740993"}'
+honest_result "9007199254740993 is at most 9007199254740993" 'replay-command|predicate-form' "$(fixture_run "$dir" --replay)"
+
+# 109. An exit status that was never recorded meets no exit predicate. At 6f7143ab evaluate
+# read a missing status file as the status 1, so {"exit":1}, the exit status of 47 rows,
+# held for a command whose status nothing recorded. run_recorded writes the status of
+# every row --replay runs, so no fixture row reaches that path, and the case calls the
+# gate's own evaluate: over an output with no status recorded beside it, {"exit":1} must
+# not hold, and over the same output with the status 1 recorded, it holds.
+mkdir -p "$WORK/op-status"
+printf 'ran once\n' >"$WORK/op-status/out"
+if evaluate '{"exit":1}' "$WORK/op-status/out"; then
+    case_failed "an exit status that was never recorded meets no exit predicate" "evaluate held {\"exit\":1} over an output with no status recorded"
+else
+    case_passed "an exit status that was never recorded meets no exit predicate"
+fi
+printf '1' >"$WORK/op-status/out.status"
+if evaluate '{"exit":1}' "$WORK/op-status/out"; then
+    case_passed "a recorded exit status of 1 meets {\"exit\":1}"
+else
+    case_failed "a recorded exit status of 1 meets {\"exit\":1}" "evaluate did not hold {\"exit\":1} over an output with the status 1 recorded"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
