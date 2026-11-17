@@ -1276,7 +1276,13 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 					s.Log.Error("session cannot enroll yet: the broker holds this session name for another principal, so it refuses the authority this box enrols under. This session keeps asking and signs nothing until it enrols; the person who holds the name signing in on this box (agent-secrets login) makes the next attempt theirs, and that one enrols, within five minutes of the sign-in",
 						"runtime_id", sess.RuntimeID(), "session_id", sess.SessionID(), "held_by_other", true, "enrolling_as", principal, "in", heldDelay, "error", err)
 				}
-
+				// One attempt per heldDelay: retryUntilStop waits its own delay after this
+				// returns, so what is waited here is the rest of it. A machine login installed
+				// meanwhile closes that retry's wake, so the next attempt comes as soon as
+				// this wait ends — the credential a machine login installs may be the one the
+				// name is held for. A person's sign-in closes nothing: the next attempt reads
+				// the file they wrote (brokerclient.SignInAuthority.Current), so they wait out
+				// the rest of this ladder, up to heldRetryCap.
 				if rest := heldDelay - delay; rest > 0 {
 					select {
 					case <-s.clock().After(rest):
@@ -1293,7 +1299,14 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			}
 			s.Log.Warn("enroll failed; retrying", "runtime_id", sess.RuntimeID(), "error", err, "in", delay)
 		}, func() error {
-
+			// ONE reading per attempt, compared with the generation this pass began at. An
+			// attempt that reads any other has found a rename and enrols nothing: the retry
+			// ends there (errRenamed) and the whole pass starts again, because the rename
+			// brought a lapsed id that must be revoked before the new runtime id can enrol at
+			// all. So every enrollment this retry can produce belongs to pass, and pass is
+			// what setEnrolledAt is given below: an answer for an identity the session has
+			// moved on from is installed on the identity it has now by nobody, and revoked by
+			// nobody either, since it may be the very enrollment that identity was handed back.
 			cur := sess.identity()
 			if cur.Generation != pass {
 				renamed = true
@@ -1303,7 +1316,6 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			id, lease, err = s.Broker.EnrollIdentity(ctx, cur)
 			return err
 		})
-
 		if renamed {
 			s.Log.Info("this session was named while it was enrolling; starting again under its new name", "runtime_id", sess.RuntimeID())
 			continue
@@ -1430,7 +1442,8 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 				"runtime_id", pass.RuntimeID, "enrollment_id", pass.EnrollmentID, "error", err, "in", delay)
 		}
 	}, func() error {
-
+		// The renew signs for ONE reading. A rename landing under it has given the session
+		// another identity, and this answer speaks for neither confirming nor refusing that.
 		if cur := sess.identity(); cur.Generation != pass.Generation || cur.EnrollmentID != pass.EnrollmentID {
 			return errRenamed
 		}
