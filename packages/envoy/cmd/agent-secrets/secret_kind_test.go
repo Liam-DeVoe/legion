@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
@@ -925,6 +926,8 @@ type kindStore interface {
 	valueReads() int
 	// readPermissions are the permissions the client names for this store's value read.
 	readPermissions() []string
+	// calls is how many calls the client has made of the store so far, refused ones included.
+	calls() int
 }
 
 // onEachStore runs test on each store the secret forms write, signed in as ada@example.com, with
@@ -946,20 +949,63 @@ func onEachStore(t *testing.T, test func(t *testing.T, store kindStore, broker *
 	})
 }
 
-// valueReads is a secrets.Local that counts GetSecretValue calls and answers each with refuse
-// when it is set, as IAM refuses the call or KMS the decryption.
+// valueReads is a secrets.Local that counts every call made of it and, of them, the
+// GetSecretValue calls, and answers each of those with refuse when it is set, as IAM refuses the
+// call or KMS the decryption.
 type valueReads struct {
 	*secrets.Local
 	reads  int
 	refuse error
+	all    atomic.Int32
 }
 
 func (v *valueReads) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	v.all.Add(1)
 	v.reads++
 	if v.refuse != nil {
 		return nil, v.refuse
 	}
 	return v.Local.GetSecretValue(ctx, in, o...)
+}
+
+func (v *valueReads) ListSecrets(ctx context.Context, in *secretsmanager.ListSecretsInput, o ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
+	v.all.Add(1)
+	return v.Local.ListSecrets(ctx, in, o...)
+}
+
+func (v *valueReads) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+	v.all.Add(1)
+	return v.Local.DescribeSecret(ctx, in, o...)
+}
+
+func (v *valueReads) CreateSecret(ctx context.Context, in *secretsmanager.CreateSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
+	v.all.Add(1)
+	return v.Local.CreateSecret(ctx, in, o...)
+}
+
+func (v *valueReads) PutSecretValue(ctx context.Context, in *secretsmanager.PutSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
+	v.all.Add(1)
+	return v.Local.PutSecretValue(ctx, in, o...)
+}
+
+func (v *valueReads) TagResource(ctx context.Context, in *secretsmanager.TagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error) {
+	v.all.Add(1)
+	return v.Local.TagResource(ctx, in, o...)
+}
+
+func (v *valueReads) UntagResource(ctx context.Context, in *secretsmanager.UntagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.UntagResourceOutput, error) {
+	v.all.Add(1)
+	return v.Local.UntagResource(ctx, in, o...)
+}
+
+func (v *valueReads) DeleteSecret(ctx context.Context, in *secretsmanager.DeleteSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error) {
+	v.all.Add(1)
+	return v.Local.DeleteSecret(ctx, in, o...)
+}
+
+func (v *valueReads) RestoreSecret(ctx context.Context, in *secretsmanager.RestoreSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.RestoreSecretOutput, error) {
+	v.all.Add(1)
+	return v.Local.RestoreSecret(ctx, in, o...)
 }
 
 // awsKindStore is Secrets Manager as kindStore: a secrets.Local behind valueReads.
@@ -993,6 +1039,8 @@ func (s awsKindStore) valueReads() int { return s.sm.reads }
 func (s awsKindStore) readPermissions() []string {
 	return []string{"secretsmanager:GetSecretValue", "kms:Decrypt"}
 }
+
+func (s awsKindStore) calls() int { return int(s.sm.all.Load()) }
 
 // gcpKindStore is Secret Manager as kindStore: a fakeSecretManager.
 type gcpKindStore struct{ fake *fakeSecretManager }
@@ -1064,15 +1112,22 @@ func (s gcpKindStore) valueReads() int {
 	return s.fake.accesses
 }
 
+func (s gcpKindStore) calls() int {
+	_, calls := s.fake.calledUnder()
+	return calls
+}
+
 func (s gcpKindStore) readPermissions() []string { return []string{"secretmanager.versions.access"} }
 
 // TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses: on both stores, for each of
-// the four kinds, create, set and retag refuse each value that kind's minter refuses before
-// anything is written: create writes no secret, set no version, retag no tag, and the broker is
-// asked to reread nothing. Each exits 2 naming what is wrong in the minter's own words, read back
-// from the minter driven with the same value, so the one decoder decides both, names the kind
-// after the article it takes ("an azure-login secret's"), and none prints the value. Set checks
-// the value under the kind tag the secret holds, since it names none.
+// the four kinds, create, set and retag refuse each value that kind's minter refuses, and leave
+// the store as they found it: create holds no secret, set no new version, retag no new tag. Each
+// exits 2 naming what is wrong in the minter's own words, read back from the minter driven with
+// the same value, so the one decoder decides both, names the kind after the article it takes ("an
+// azure-login secret's"), and none prints the value. Set checks the value under the kind tag the
+// secret holds, since it names none. The broker is asked to reread nothing, but for a create on
+// Secret Manager: that makes the secret before it reads the value and deletes it on the refusal,
+// then asks the broker to reread the name once, which the broker answers absent.
 func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
 		for _, row := range refusedKindValues(t) {
@@ -1087,16 +1142,22 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 				if row.kind == policy.KindAzureLogin {
 					named = "the broker refuses this value as an " + row.kind + " secret's"
 				}
+				_, madeFirst := store.(gcpKindStore)
 				for _, form := range []struct {
 					args []string
-					// wrote reports whether the form wrote anything: create a secret, set a
-					// version, retag a tag.
+					// wrote reports whether the form left anything written: a secret created, a
+					// version set, a tag retagged.
 					wrote func() bool
+					// rereads is the names the form asks the broker to reread.
+					rereads []string
 				}{
-					{append([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return store.has(t, "NEW_KEY") }},
-					{[]string{"set", "HELD_KEY"}, func() bool { return store.value(t, "HELD_KEY") != policytest.KindValue(row.kind) }},
-					{append([]string{"retag", "PLAIN_KEY", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return !maps.Equal(store.tags(t, "PLAIN_KEY"), plain) }},
+					{append([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return store.has(t, "NEW_KEY") }, nil},
+					{[]string{"set", "HELD_KEY"}, func() bool { return store.value(t, "HELD_KEY") != policytest.KindValue(row.kind) }, nil},
+					{append([]string{"retag", "PLAIN_KEY", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return !maps.Equal(store.tags(t, "PLAIN_KEY"), plain) }, nil},
 				} {
+					if madeFirst && form.args[0] == "create" {
+						form.rereads = []string{"NEW_KEY"}
+					}
 					asked, _ := broker.recorded()
 					useStdin(t, row.value)
 					stdout, stderr, code := runSecret(form.args...)
@@ -1112,8 +1173,9 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 					if form.wrote() {
 						t.Errorf("a refused %s of a %s value with %s wrote it", form.args[0], row.kind, row.name)
 					}
-					if rereads, _ := broker.recorded(); len(rereads) != len(asked) {
-						t.Errorf("a refused %s of a %s value with %s asked the broker to reread %v", form.args[0], row.kind, row.name, rereads[len(asked):])
+					rereads, answers := broker.recorded()
+					if got := rereads[len(asked):]; !slices.Equal(got, form.rereads) || slices.ContainsFunc(answers[len(asked):], func(r Reread) bool { return r.Served || r.Reason != policy.ReasonAbsent }) {
+						t.Errorf("a refused %s of a %s value with %s asked the broker to reread %v, answered %v; want %v, answered absent", form.args[0], row.kind, row.name, got, answers[len(asked):], form.rereads)
 					}
 				}
 			})
@@ -1192,7 +1254,7 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
 		if tags := store.tags(t, "PLAIN_KEY"); tags[policy.TagKind] != policy.KindGitHubApp || tags[policy.TagGitHubOwners] != "acme-org" {
 			t.Fatalf("tags after a retag whose value read is denied = %v; want github-app for acme-org", tags)
 		}
-		if strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, "the tags are written, but PLAIN_KEY's value was not checked as a github-app secret's") ||
+		if strings.Count(afterUsing(t, stderr, "secret retag"), "\n") != 1 || !strings.Contains(stderr, "the tags are written, but PLAIN_KEY's value was not checked as a github-app secret's") ||
 			!strings.Contains(stderr, "reports PLAIN_KEY unservable with the decoder's reason") {
 			t.Fatalf("stderr %q; want one line saying the value was not checked and the broker reports it unservable", stderr)
 		}

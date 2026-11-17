@@ -131,6 +131,23 @@ func blockHolds(alias, fromKind, table, column string) string {
 		and b.` + column + `::text = ` + alias + `.from_id))`
 }
 
+// blockRefListed is whether the block_refs row alias is listed: the types test of a typed
+// block's pointer, made the way the arm of graph_edges that answers the row makes it, so a read
+// of the rows themselves and a read of the view cannot answer one link differently.
+//
+// A row that names its node is the tuple arm's (migration 20261109215947): a mention is listed
+// whatever its target's type, and a pointer only while block_ref_listed holds of the targets the
+// attribute node declares now (block_pointer_targets), so a change of an attribute's targets
+// reaches every link of that attribute at its next read, with no pass over documents nobody
+// edits. A row that names no node, which a build before the store wrote, is the old block_refs
+// arm's, whose test reads the to_types the index copied into the row: such a row follows a
+// change of the targets only once a version is indexed again.
+func blockRefListed(alias string) string {
+	return `(case when ` + alias + `.node_kind is null
+		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + alias + `.to_id)
+		else ` + alias + `.kind = 'mentions' or block_ref_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + alias + `.to_id) end)`
+}
+
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
 // numbered parameter param, the set an "in" arm reads a document's blocks' edges by. A deleted
 // block has no row, so the edges at it drop out of every list until a version holds its id again.
@@ -354,7 +371,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
-			from block_refs b where b.artifact_id = ` + blocks + `::uuid and (b.to_types is null or block_ref_listed(b.to_types, b.to_id))
+			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b") + `
 			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd("b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()

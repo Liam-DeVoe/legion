@@ -148,7 +148,8 @@ type Options struct {
 	// names its files under any mode. Every project declares the memory experiment, so the list
 	// always holds its two arms, and a project that writes no `memory` block and no experiment of
 	// its own names no file in any arm. Nil is none.
-	// A variant's InstructionsPath is the daemon's to inline in the prompt and is not read here.
+	// A variant's InstructionsPath is the daemon's to compose into the prompt
+	// (runtime.ComposePrompt) and is not read here.
 	ExperimentVariants []runtime.Variant
 	// ProviderKeys maps each variable Oh My Pi reads to the key of the providers Secret
 	// (ProvidersSecretName) that holds its value. With any, every pod mounts exactly those keys at
@@ -190,7 +191,8 @@ type Options struct {
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
 	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
-	// `--mode rpc`, `--append-system-prompt`); Oh My Pi itself when nil.
+	// `--mode rpc`, `--append-system-prompt <the generation's prompt file>`); Oh My Pi itself when
+	// nil.
 	Agent []string
 	// Setup is the deployment's setup command (runtime.kubernetes.setup), an argv each role runs
 	// before each start of its Oh My Pi — after a stale-plugin relaunch's install, in the role's
@@ -324,10 +326,13 @@ type PodResources struct {
 // AgentSecrets is the secrets broker the runtime enrolls every pod with: the URL the
 // pod's `agent-secrets` client calls, and the audience and lifetime of the projected token each
 // pod carries for it. Nil enrolls none, and no pod carries the token, the key volume, the
-// variables, or the shim flags.
+// variables, or the shim flags. ExchangeAudience, when set, is the audience of a second projected
+// token every enrolled pod carries, the identity the broker's exchange trades for a broker token
+// (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one.
 type AgentSecrets struct {
-	URL, Audience string
-	TokenExpiry   time.Duration
+	URL, Audience    string
+	TokenExpiry      time.Duration
+	ExchangeAudience string
 }
 
 // InstallRef names the pieces of Agent Sandbox a cluster must have: the Sandbox CRD, and the
