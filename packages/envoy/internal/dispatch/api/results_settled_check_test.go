@@ -156,6 +156,36 @@ func TestWhileAnEditIsNotSettledTheResultsReadServesTheSettledCheck(t *testing.T
 	}
 }
 
+// TestTheResultsReadListsTheChecksInTheOrderOfTheNewestStoredVersion: a browser moves k1 above c1.
+// While the edit has not settled, the read lists c1 then k1, the order of the newest stored
+// version; once it settles, k1 then c1, the order of the version the settlement stores, which the
+// order of the block ids would not give.
+func TestTheResultsReadListsTheChecksInTheOrderOfTheNewestStoredVersion(t *testing.T) {
+	rig, documents := newUnsettledCIJobRig(t)
+	c1 := ciCheckBlock("c1", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`)
+	k1 := ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`"`)
+	if ciJobVerification != c1+"\n"+k1 {
+		t.Fatalf("fixture: the Verification document is %q, want c1 then k1", ciJobVerification)
+	}
+	order := func() []string {
+		var ids []string
+		for _, check := range readResults(t, rig.handler, rig.issue).Checks {
+			ids = append(ids, check.BlockID)
+		}
+		return ids
+	}
+	writeBrowserDocument(t, documents, rig.verification, k1+"\n"+c1)
+	if got := order(); !slices.Equal(got, []string{"c1", "k1"}) {
+		t.Fatalf("while the edit is unsettled the read lists %v, want the stored order [c1 k1]", got)
+	}
+	if err := documents.SettleIssueDocuments(context.Background(), rig.issue); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); !slices.Equal(got, []string{"k1", "c1"}) {
+		t.Fatalf("once the edit settles the read lists %v, want the new version's order [k1 c1]", got)
+	}
+}
+
 // TestACheckTheIndexDoesNotHoldYetIsNoCheckOfEitherRoute: a browser adds check c9 and the edit does
 // not settle. A tester's result of c9 is refused 400 UNKNOWN_CHECK, as the record route refused a
 // check the index did not hold before it read a check's state from the index, and the results read
