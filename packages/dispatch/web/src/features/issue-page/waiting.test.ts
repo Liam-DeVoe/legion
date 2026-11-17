@@ -431,6 +431,17 @@ test("a Change is only the comment under its decision", () => {
   expect(hungUnder("d2")).toEqual({ drawnUnder: ["spec#b-d2"], waits: [0, []] });
 });
 
+// The count and the tree find a decision node's Change in the same place, the comment the tree
+// read hangs under the node, and neither reads the comments read: so they agree while that read
+// has not answered yet, or answered before the Change was written, and the count does not call
+// the decision waiting on the reader while the outline draws it waiting on its agent.
+test("the count and the tree agree on a decision node's Change the comments read does not hold", () => {
+  const asked: Comment = { ...change, anchor: null, id: "c-noded" };
+  const tree = answerOf([statement, decisionNode("noded", ["r1"]), commentNode(asked, "noded")]);
+
+  expect(waits(tree, coverage)).toEqual([0, []]);
+});
+
 // A person's comment under a decision is a
 // Change only while it is newer than the decision's words and than the Keep the read answers on
 // it. One made before the words last changed asked for a change they have since had, and one

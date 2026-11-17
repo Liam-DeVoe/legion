@@ -507,7 +507,7 @@ test("a filter's parent line carries the marks of the parent it names", () => {
 function viewNode(
   id: string,
   supertag: string,
-  mark: "context" | "query",
+  mark: NonNullable<TreeAnswerNode["mark"]>,
   extra: Partial<TreeAnswerNode> = {}
 ): TreeAnswerNode {
   return {

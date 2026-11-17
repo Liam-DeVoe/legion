@@ -17,18 +17,16 @@ import { decisionNodeChanges } from "../decision-review";
 import {
   assemble,
   buildIssueTree,
-  drawnLine,
-  firstLineOf,
   type IssueTreeReads,
   lineWords,
   nodeWords,
   type TreeNode,
+  treeWordsOf,
 } from "../issue-tree";
-import { blockNodeId, treeContext } from "../tree-drafts";
+import { blockNodeId } from "../tree-drafts";
 import {
   blocksOfRole,
   type TreeDraftMark,
-  type TreeWords,
   treeDraftMarks,
   treeDraftsFrom,
   treeIdOf,
@@ -190,18 +188,10 @@ function tuple(kind: string, from: string, to: string): TreeTuple {
   return { from, kind, to };
 }
 
-/** What `buildIssueTree` hands `treeDraftsFrom`: F's reading of the reads' names, with F's word
- *  rules, the chip's line among them (`chipLine`, `drawnLine(firstLineOf(…))` of the first block
- *  of a reading). */
-function naming(reads: IssueTreeReads): TreeWords {
-  const chipLine = (tree: DisplayTree): string =>
-    drawnLine(firstLineOf(lineWords({ text: "", tree })));
-  return { ...treeContext(reads, chipLine), chipLine, lineWords };
-}
-
-/** The drafts `tree` holds, and the tree `assemble` builds from them. */
+/** The drafts `tree` holds, read by what `buildIssueTree` reads them by (`treeWordsOf`), and the
+ *  tree `assemble` builds from them. */
 function drawn(tree: TreeAnswer, reads: IssueTreeReads = { issue: issueDetails() }) {
-  const context = naming(reads);
+  const context = treeWordsOf(reads);
   const drafts = treeDraftsFrom(tree, reads, context);
   return { drafts, root: assemble(reads.issue, [...drafts.values()], context.chipOf) };
 }
@@ -478,7 +468,7 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
 // (`reads.tree`) still holds every node whole - a lens, a risk under it and the catalogue's
 // constraint among them, each with its state and its visibility - for the parts that draw them.
 test("a node of a kind the page does not draw reaches reads.tree and draws no row", () => {
-  const reads: IssueTreeReads & { readonly tree: TreeAnswer } = {
+  const reads: IssueTreeReads = {
     issue: issueDetails(),
     tree: answer(
       [
@@ -498,14 +488,6 @@ test("a node of a kind the page does not draw reaches reads.tree and draws no ro
     []
   );
   expect(reads.tree).toEqual(held);
-  expect(reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])).toEqual(
-    expect.arrayContaining([
-      ["other-1", UNDRAWN, "overtaken", "author"],
-      ["lens-1", "lens", "live", "author"],
-      ["risk-1", "risk", "proposed", "project"],
-      ["constraint-1", "constraint", "live", "project"],
-    ])
-  );
 });
 
 // R1 (plan's map, `id`): a typed block of this issue keeps F's `<slug>#b-<id>` from its
@@ -941,4 +923,52 @@ test("a read given up asks for no next page", async () => {
   } finally {
     read.mockRestore();
   }
+});
+
+/** Reads the tree once through `issueTreeQuery`, with every page `serve` answers for the cursor
+ *  it is asked with. The server answers at most `bound` pages and then refuses, so a walk that
+ *  never ends fails the case rather than holding it. */
+async function walkWith(serve: (cursor: string | undefined) => TreeAnswer, bound = 10) {
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) => {
+    if (read.mock.calls.length > bound) throw new Error(`more than ${bound} page reads`);
+    return serve(page?.cursor);
+  });
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const outcome = await client.fetchQuery(issueTreeQuery(KEY)).then(
+      (merged) => ({ nodes: merged.nodes.map((one) => one.id) }),
+      (error: unknown) => ({ error: String(error) })
+    );
+    return { cursors: read.mock.calls.map(([, page]) => page?.cursor), outcome };
+  } finally {
+    read.mockRestore();
+  }
+}
+
+// A page that names no next page is the last one, however the server writes "none": a server
+// whose paged answers leave an empty cursor out of the body, as Go's `omitzero` does, or write it
+// as the empty string, sends one page, and the walk ends there instead of asking for the first
+// page again, without end.
+test("a page that names no next page ends the walk, the cursor left out or empty", async () => {
+  const only = answer([block("r1", "requirement", KEY, SPEC, 0)]);
+  const { cursor: _none, ...leftOut } = only;
+  for (const last of [leftOut as TreeAnswer, { ...only, cursor: "" }]) {
+    expect(await walkWith(() => last)).toEqual({
+      cursors: [undefined],
+      outcome: { nodes: [KEY, "r1"] },
+    });
+  }
+});
+
+// A server that names the same next page again never ends a walk that follows it: the walk asks
+// for each page at most once and ends, with an answer or a failure, instead of asking without
+// end.
+test("a cursor the server names twice ends the walk", async () => {
+  const { cursors, outcome } = await walkWith((cursor) =>
+    cursor === undefined
+      ? { ...answer([block("r1", "requirement", KEY, SPEC, 0)]), cursor: "page-2" }
+      : { ...answer([]), cursor: "page-2", nodes: [node("c1", "comment", "r1")] }
+  );
+  expect(cursors).toEqual([undefined, "page-2"]);
+  expect(JSON.stringify(outcome)).not.toContain("page reads");
 });

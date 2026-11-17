@@ -2090,7 +2090,7 @@ test("the default shapes keep main's class strings", async () => {
   }
   stubs.listIssueAsks.mockResolvedValue([]);
 
-  stubs.getArtifactText.mockRejectedValueOnce(
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(409, {
       code: "DOC_SCHEMA",
       error: "The document holds a node outside its schema.",
@@ -2106,7 +2106,7 @@ test("the default shapes keep main's class strings", async () => {
     undraw(repair);
   }
 
-  stubs.getArtifactText.mockRejectedValueOnce(
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: "The stored history cannot load." })
   );
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
@@ -2133,7 +2133,7 @@ test("the default shapes keep main's class strings", async () => {
     rebuildArtifact.mockRestore();
   }
 
-  stubs.getArtifactText.mockRejectedValueOnce(
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(404, { code: "PROXY_NOT_FOUND", error: "proxy not found" })
   );
   const unloaded = draw(proofDocument(), "outside");

@@ -944,3 +944,22 @@ export function blocksOfRole(
     node.issue === undefined && kinds.includes(node.supertag) ? [blockOf(node, place, hung)] : []
   );
 }
+
+/**
+ * The pages of one read as one answer: every page's nodes and tuples in the order the pages
+ * came, so the walk's order holds across them, and what describes the issue rather than a page
+ * (`converted`, `tree`, `view_of`, `documents`) from the first. The answer has no next page.
+ * One page is its own answer, which is every issue the page size was set above. Here rather than
+ * beside the read (`tree-read.ts`' `readTree`), so the e2e helpers, which load this module and
+ * not that one, merge the pages the page received by the same rule.
+ */
+export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): TreeAnswer {
+  const [first] = pages;
+  if (pages.length === 1) return first;
+  return {
+    ...first,
+    cursor: null,
+    nodes: pages.flatMap((page) => page.nodes),
+    tuples: pages.flatMap((page) => page.tuples),
+  };
+}

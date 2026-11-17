@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import type { Artifact, ArtifactBlock } from "../../../api/types";
+import type { Artifact } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -232,7 +232,7 @@ function renderBody(
                 isClosed={false}
                 onEditing={() => {}}
                 plan={plan}
-                planBlocks={written?.map((id) => ({ id }) as ArtifactBlock)}
+                planBlocks={written?.map((id) => ({ id }))}
                 reveal={reveal}
                 root={root}
                 rootRow={false}

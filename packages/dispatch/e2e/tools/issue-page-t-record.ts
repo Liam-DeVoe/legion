@@ -64,37 +64,28 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { type Browser, devices, type Page, test } from "@playwright/test";
 
-import { PRESET_NAMES, type Preset } from "../../web/src/features/issue-page/page-words";
+import { PRESET_NAMES, PRESET_ORDER } from "../../web/src/features/issue-page/page-words";
+import type { Filter } from "../../web/src/features/issue-page/presets";
 import { baseUrl, getIssue } from "../api";
-import { nextFrames } from "../frames";
-import {
-  seedConversationState,
-  seedDecisionsFilter,
-  seedNoChildren,
-  seedNoSummary,
-  seedPlanOrder,
-  seedReplyNesting,
-  seedRequestBaseline,
-  seedReviewList,
-  seedSpineCases,
-  seedTwiceTheNodes,
-  seedUnbrokenChildTitle,
-  seedUnbrokenWords,
-  seedWholeIssue,
-  seedWholeIssueAdvancing,
-} from "../issue-layout-seed";
 import { gotoIssue, presetCount, presetToggle } from "../issue-page";
 import { DESKTOP, expectIssuePageDrawn, phase, unfoldEveryBranch } from "../issue-page-g";
 import { expectActivePreset, pickPreset } from "../issue-page-i";
 import {
   drawnRowReadings,
+  FIXTURE_FILE,
+  type FilterFixture,
   type KeyedRow,
   keyedRows,
   type RowReading,
+  SEEDS,
+  type SeededIssue,
+  type SeedFixture,
   seedKeys,
+  sortedFields,
+  steadily,
 } from "../issue-page-t";
 import { resetDatabase } from "../seed";
-import { type ApiRequests, expectLoadSettled, watchApiRequests } from "../traffic";
+import { type ApiRequests, watchApiRequests } from "../traffic";
 
 const usage =
   "usage: bun e2e/tools/issue-page-t-record.ts --recorded-on <commit> " +
@@ -105,34 +96,9 @@ const usage =
   "                 for each part main does not hold (else ISSUE_PAGE_T_PARTS, a comma-separated\n" +
   "                 list of <branch>=<commit>)";
 
-/** What every seed returns: the key of the issue the page opens. */
-interface SeededIssue {
-  readonly key: string;
-}
-
-/** The 14 seeds, by the name the fixture records each under, in the order the seed file writes
- *  them. */
-const SEEDS = {
-  seedWholeIssue,
-  seedWholeIssueAdvancing,
-  seedSpineCases,
-  seedNoChildren,
-  seedNoSummary,
-  seedReplyNesting,
-  seedUnbrokenWords,
-  seedUnbrokenChildTitle,
-  seedRequestBaseline,
-  seedTwiceTheNodes,
-  seedConversationState,
-  seedDecisionsFilter,
-  seedReviewList,
-  seedPlanOrder,
-} satisfies Readonly<Record<string, () => Promise<SeededIssue>>>;
-
-/** The four filters, in the order the view row draws them. Conversation, the fifth control, is
- *  the page with no filter on. */
-const FILTERS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly Preset[];
-type Filter = (typeof FILTERS)[number];
+/** The four filters, in the order the view row draws them (`PRESET_ORDER`). Conversation, the
+ *  fifth control, is the page with no filter on. */
+const FILTERS = PRESET_ORDER.filter((preset): preset is Filter => preset !== "conversation");
 
 /** The suite's own expect and action timeouts (`e2e/playwright.config.ts`), which the recorder's
  *  config sets for its one test as the suite's config does for every row. */
@@ -141,9 +107,6 @@ const ACTION_MS = 45_000;
 
 /** How long the one test may take: every seed, each with a body read for every row. */
 const RECORDING_MS = 60 * 60_000;
-
-/** How many readings a steady reading takes before it gives up on the page settling. */
-const STEADY_TRIES = 20;
 
 /** A commit: the short or the full hash. */
 const COMMIT = /^[0-9a-f]{7,64}$/;
@@ -161,7 +124,7 @@ const OUTPUT_VARIABLE = "ISSUE_PAGE_T_RECORDS";
 const thisFile = fileURLToPath(import.meta.url);
 const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
-const fixturePath = fileURLToPath(new URL("../fixtures/issue-page-t-rows.json", import.meta.url));
+const fixturePath = fileURLToPath(FIXTURE_FILE);
 
 /** The commits the fixture says it was recorded on. */
 interface RecordingBase {
@@ -182,20 +145,6 @@ interface PageReading {
   readonly loadRequests: number;
   readonly opened: readonly RowReading[];
   readonly rows: readonly RowReading[];
-}
-
-/** One filter in the fixture: the keys of the rows it draws, and its control's count. */
-interface FilterRecord {
-  readonly count: number;
-  readonly rows: readonly string[];
-}
-
-/** One seed in the fixture. */
-interface SeedRecord {
-  readonly filters: Readonly<Record<string, FilterRecord>>;
-  readonly loadRequests: number;
-  readonly opened: readonly KeyedRow[];
-  readonly rows: readonly KeyedRow[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -314,6 +263,10 @@ async function main(): Promise<number> {
     return 2;
   }
   const base = recordingBase();
+  // The one thing the fixture holds that no seed's record does (each is checked as it is made,
+  // `recordSeed`) and no commit's pattern rules out: the parts' branch names. Checked before the
+  // recording, so a name the fixture cannot hold fails at once.
+  expectNothingMinted(base.parts, "the parts");
   const scratch = mkdtempSync(join(tmpdir(), "issue-page-t-record-"));
   try {
     const config = join(scratch, "playwright.config.mjs");
@@ -330,7 +283,6 @@ async function main(): Promise<number> {
     if (status !== 0 || runner.signalCode !== null) return status === 0 ? 1 : status;
     const seeds: unknown = JSON.parse(readFileSync(records, "utf8"));
     const fixture = sortedFields({ parts: base.parts, recordedOn: base.recordedOn, seeds });
-    expectNothingMinted(fixture, "the fixture");
     mkdirSync(dirname(fixturePath), { recursive: true });
     writeFileSync(fixturePath, biomeFormatted(`${JSON.stringify(fixture, null, 2)}\n`));
     console.error(`wrote ${relative(process.cwd(), fixturePath)}`);
@@ -343,30 +295,6 @@ async function main(): Promise<number> {
 // ---------------------------------------------------------------------------------------------
 // The recording, which runs inside the runner.
 // ---------------------------------------------------------------------------------------------
-
-/**
- * Reads `read` until two readings in a row are the same. Before each reading it waits for the
- * page to go quiet, and after it for two frames, so a row or a count that is still arriving is
- * not recorded half drawn. A page that never settles fails the recording rather than leave a
- * half-drawn moment of it in the fixture.
- */
-async function steadily<T>(
-  page: Page,
-  traffic: ApiRequests,
-  what: string,
-  read: () => Promise<T>
-): Promise<T> {
-  let last: string | undefined;
-  for (let tries = 0; tries < STEADY_TRIES; tries += 1) {
-    await expectLoadSettled(traffic);
-    const reading = await read();
-    const said = JSON.stringify(reading);
-    if (said === last) return reading;
-    last = said;
-    await nextFrames(page);
-  }
-  throw new Error(`${what} changed at each of ${STEADY_TRIES} readings, so it never settled`);
-}
 
 /** Turns `filter` on, reads what it draws once it is steady, and turns it off again, which puts
  *  the page back on Conversation. */
@@ -446,13 +374,13 @@ function seedRecord(
   drawn: PageReading,
   keys: ReadonlyMap<string, string>,
   seed: string
-): SeedRecord {
+): SeedFixture {
   const opened = keyedRows(drawn.opened, keys);
   const rows = keyedRows(drawn.rows, keys);
   expectRowsNamedApart(opened, `In ${seed} as the page opens`);
   expectRowsNamedApart(rows, `In ${seed} with every branch open`);
   const filters = drawn.filters.map(({ count, filter, rows: filterRows }) => {
-    const record: FilterRecord = {
+    const record: FilterFixture = {
       count: countOf(count, `${seed}'s ${PRESET_NAMES[filter]} control`),
       rows: keyedRows(filterRows, keys).map((row) => row.key),
     };
@@ -466,9 +394,9 @@ async function recordSeed(
   browser: Browser,
   name: string,
   seed: () => Promise<SeededIssue>
-): Promise<SeedRecord> {
+): Promise<SeedFixture> {
   await resetDatabase();
-  const recorded: SeedRecord[] = [];
+  const recorded: SeedFixture[] = [];
   await phase(browser, seed, async (page, seeded) => {
     const drawn = await readPage(page, seeded.key);
     // A block's node is named under its document's slug (`seedKeys`), and the seeds return the
@@ -494,8 +422,8 @@ async function recordEverySeed(browser: Browser): Promise<void> {
         "which starts the runner itself"
     );
   }
-  const seeds: Record<string, SeedRecord> = {};
-  for (const [name, seed] of Object.entries(SEEDS)) {
+  const seeds: Record<string, SeedFixture> = {};
+  for (const [name, seed] of SEEDS) {
     const record = await recordSeed(browser, name, seed);
     seeds[name] = record;
     console.error(
@@ -509,20 +437,6 @@ async function recordEverySeed(browser: Browser): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // Shared by both.
 // ---------------------------------------------------------------------------------------------
-
-/** `value` with every object's fields in sorted order at every depth, so the bytes of the file
- *  do not depend on the order a reader or a seed wrote its fields in. A list keeps its order,
- *  which is the page's. */
-function sortedFields(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortedFields);
-  if (typeof value !== "object" || value === null) return value;
-  const fields: Readonly<Record<string, unknown>> = { ...value };
-  return Object.fromEntries(
-    Object.keys(fields)
-      .sort()
-      .map((field) => [field, sortedFields(fields[field])])
-  );
-}
 
 /** Fails at the first string of `value`, a field's name included, that holds a UUID or an
  *  instant, naming where it stands. */

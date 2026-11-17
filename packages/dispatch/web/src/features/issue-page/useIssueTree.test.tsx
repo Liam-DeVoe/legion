@@ -4,6 +4,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
+import { refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   Comment,
@@ -28,6 +30,7 @@ import {
   type TreeTuple,
   viewKey,
 } from "./tree-read/tree-read";
+import { ViewReadProvider } from "./tree-read/view-read";
 import { useIssueTree } from "./useIssueTree";
 
 /**
@@ -653,10 +656,10 @@ test("once the second read has nothing left to name, the first read's newer name
 });
 
 // The tester's F17 and dispatch://INFRA-4062 R5: one block read for every document of the issue
-// was 25 of a first load's 47 requests, and F's four were still four. The tree read answers
-// every typed block of every role document, so the outline costs that one request, with no
-// page left to ask for, and no document's blocks are read. Every decision is a node of the tree
-// read, so no decisions read is made either.
+// was 25 of a first load's 47 requests. The tree read answers every typed block of every role
+// document, so the outline costs that one request, with no page left to ask for, and no
+// document's blocks are read. Every decision is a node of the tree read, so no decisions read is
+// made either.
 test("the tree is read in one request, and no document's blocks are read", async () => {
   const withDocuments: IssueDetails = {
     ...issue,
@@ -1054,5 +1057,167 @@ test("a held view answer reaches presetView through root.views", async () => {
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** The stage of the issue as the page mounts it: the view reads' provider, which holds the
+ *  page's one refresh subscription, around the hook, on the app's own query client. */
+function stageWrapper(client: QueryClient, preset: "conversation" | "spec" = "conversation") {
+  return ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ViewReadProvider issue={issue} preset={preset}>
+        {children}
+      </ViewReadProvider>
+    </QueryClientProvider>
+  );
+}
+
+// The reader leaves the issue, someone comments on it, and the event of that comment refreshes
+// the issue's comments while no stage of the issue is mounted. When the reader comes back, the
+// comments are read again because the event marked them stale, and the tree has to be read
+// again too: otherwise the outline draws the tree as it stood when the reader left, without the
+// comment the comments read now holds, until some later event reaches the tree.
+test("an event while the reader is away is drawn when the reader comes back", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = stageWrapper(client);
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(first.result.current)).toBe(TASK_WORDS));
+    first.unmount();
+
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
+    (api.listComments as Mock<typeof api.listComments>).mockResolvedValue([comment]);
+    act(() => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+    });
+
+    const back = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(api.listComments).toHaveBeenCalledTimes(2));
+    await waitFor(
+      () =>
+        expect(
+          nodesInOrder(back.result.current).some((node) => node.id === comment.id),
+          "the comment is a row"
+        ).toBe(true),
+      { timeout: 3_000 }
+    );
+    back.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A write, and a turn later the event it raises, land while the open filter's view is being
+// read. Dropping the held views must not cancel that read: every event of a burst would start a
+// view walk of many pages over, and on a busy issue the filter would never draw. Once the read
+// out settles, the view is read again, at most once for the write and once for its event, so
+// it ends on an answer composed after the write.
+test("a write while the open view is being read cancels nothing and reads the view again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const specReads: { readonly after: boolean; readonly signal: AbortSignal | undefined }[] = [];
+  const out = Promise.withResolvers<void>();
+  let written = false;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+    async (_key, query, init) => {
+      if (query?.view !== "spec") return treeAnswer([]);
+      specReads.push({ after: written, signal: init?.signal ?? undefined });
+      await out.promise;
+      return { ...treeAnswer([]), nodes: [{ ...task, mark: "query" }] };
+    }
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client, "spec") });
+    await waitFor(() => expect(view.result.current.blocksRead).toBe(true));
+    await waitFor(() => expect(specReads.length).toBe(1));
+
+    written = true;
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await act(async () => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+      await Bun.sleep(0);
+    });
+    expect(
+      specReads.filter((read) => read.signal?.aborted === true).length,
+      "no view read is cancelled"
+    ).toBe(0);
+
+    await act(async () => {
+      out.resolve();
+      await Bun.sleep(1_500);
+    });
+    const again = specReads.filter((read) => read.after).length;
+    expect(again, "the view is read again after the write").toBeGreaterThanOrEqual(1);
+    expect(again, "the write and its event read the view at most twice").toBeLessThanOrEqual(2);
+    expect(specReads.filter((read) => read.signal?.aborted === true).length).toBe(0);
+    view.unmount();
+  } finally {
+    out.resolve();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// Two replies sent close together while the live feed is down: the second reply's invalidation
+// of the comments lands while the comments read the first reply started is still out, so the
+// comments query is already marked invalid and the cache reports no new invalidation. The
+// comments are read once more for the second reply all the same, and the tree has to be too:
+// otherwise the outline stops at the tree read made for the first reply, and the second reply is
+// no row until some later write.
+test("a second write while the first write's comments read is out reads the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const second: Comment = { ...comment, created_at: "2026-11-05T02:00:00Z", id: "comment-2" };
+  let written: Comment[] = [];
+  let commentsOut: { readonly promise: Promise<void>; readonly resolve: () => void } | undefined;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+    treeAnswer(written)
+  );
+  (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => {
+    await commentsOut?.promise;
+    return [...written];
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+
+    // The first reply: its comments read stays out, and the tree is read again for it.
+    commentsOut = Promise.withResolvers<void>();
+    written = [comment];
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await waitFor(
+      () =>
+        expect(nodesInOrder(view.result.current).some((node) => node.id === comment.id)).toBe(true),
+      { timeout: 3_000 }
+    );
+
+    // The second reply, while the first reply's comments read is still out.
+    written = [comment, second];
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await act(async () => {
+      commentsOut?.resolve();
+      await Bun.sleep(0);
+    });
+    await waitFor(
+      () =>
+        expect(
+          nodesInOrder(view.result.current).some((node) => node.id === second.id),
+          "the second reply is a row"
+        ).toBe(true),
+      { timeout: 3_000 }
+    );
+    view.unmount();
+  } finally {
+    commentsOut?.resolve();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
   }
 });

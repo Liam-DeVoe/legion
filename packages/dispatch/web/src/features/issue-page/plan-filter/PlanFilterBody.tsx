@@ -115,7 +115,7 @@ export function PlanFilterBody({
   /** The plan document's typed blocks in the order it writes them, or undefined while the tree
    *  read is out (`slots/view-plan.tsx`, from `useIssueTree`'s `blocksOf("plan")`): the plan's
    *  own order (`writtenOrder`). */
-  planBlocks: readonly ArtifactBlock[] | undefined;
+  planBlocks: readonly Pick<ArtifactBlock, "id">[] | undefined;
 }): ReactNode {
   // Which of the two the reader is looking at: the chart, which the filter opens on, or the
   // ordered steps.
