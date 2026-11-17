@@ -1,6 +1,7 @@
 package grapherase
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -359,7 +360,7 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
 	}
 	e.Writers = slices.SortedFunc(maps.Keys(writers), func(a, b ErasedWriter) int {
-		return strings.Compare(a.Kind+":"+a.ID, b.Kind+":"+b.ID)
+		return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.ID, b.ID))
 	})
 	return nil
 }

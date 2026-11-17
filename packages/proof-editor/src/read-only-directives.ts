@@ -30,8 +30,8 @@ function clientAttributes(
  * Drops, at any depth, every attribute the block schema marks `server` from each container
  * directive `remarkDecideTypedBlocks` kept a typed block (it draws every other one as
  * paragraphs), so each is read as absent: outside a document no server wrote them, so a body's
- * `:::ask{state="answered" …}` reads as the open decision its author wrote (a reader takes an ask
- * with no `state` as open), never as an answer nobody recorded. It runs after the decision, so a
+ * `:::ask{state="answered" …}` reads as the open ask its author wrote (a reader takes an ask with
+ * no `state` as open), never as an answer nobody recorded. It runs after the decision, so a
  * forged server attribute with a value the schema refuses (`:::ask{state="bogus"}`) still has the
  * block drawn as its fence lines.
  */
@@ -89,7 +89,7 @@ export function remarkReadOnlyDirectives(blockSchema: BlockSchema | undefined, s
  * paragraph line that opens like a directive stays text, as in the read-only parse.
  *
  * Unlike the read-only parse it keeps every `server` attribute. A paste carries a document the
- * server wrote, and that text can carry an answered decision's `state`, `answered_by` and
+ * server wrote, and that text can carry an answered ask block's `state`, `answered_by` and
  * `selected`, which the pasted block keeps as the live editor always did. Settlement owns them:
  * while two builds serve it writes each block's from its ask's row (`rollWindowAskAttributes`), so
  * a pasted `state="answered"` is put back to the row's state once the paste settles, and once the

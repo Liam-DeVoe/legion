@@ -3554,7 +3554,7 @@ func TestAnEditIsRefusedForTheOpenAsksOfTheBlocksItDropsItself(t *testing.T) {
 
 	var invalidAsk *ErrInvalidAskBlock
 	_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil)
-	if !errors.As(err, &invalidAsk) || !strings.Contains(err.Error(), "the open decision block decision,") {
+	if !errors.As(err, &invalidAsk) || !strings.Contains(err.Error(), "the open ask block decision,") {
 		t.Fatalf("delete of the open ask block = %v, want it refused for the block it drops", err)
 	}
 	if strings.Contains(err.Error(), "gone") {

@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
+import type { DecisionEntry } from "../../api/types";
 import {
   card,
   decisionUnsureBorder,
@@ -15,7 +16,7 @@ import {
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { buildReferencePath, parseDispatchReference } from "../refs/routes";
 import { regionOrigin } from "./ThreadList";
-import type { DecisionEntry, DecisionMarginItem, MarkPlacement } from "./useMarginItems";
+import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 /** The name a card gives an entry: an ask's question, else the first line of a decision's own
  *  words, past the line that opens its block. */

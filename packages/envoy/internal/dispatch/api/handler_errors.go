@@ -32,6 +32,10 @@ const (
 // drop or retype the block of an answered ask (docs.ErrAnsweredAskKept).
 const codeAnsweredAskKept = "ANSWERED_ASK_KEPT"
 
+// codeDecisionsAreNodes refuses an upload or a create of a decisions document on an issue
+// (decisionsAreNodes): a decision is a `decision` block of the spec. It stays for good.
+const codeDecisionsAreNodes = "DECISIONS_ARE_NODES"
+
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
 // document error by it, and both in one order, so the two cannot name one error differently.

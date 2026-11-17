@@ -434,9 +434,9 @@ func TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn(t *testing.T) {
 	}
 	requireSameNode(t, "the spec read's edges[].block", *atBlock, readNode(t, handler, blockRef))
 
-	decisions := uploadIssueDocument(t, handler, child.Key, "decisions.md", "Ship per "+blockRef+".\n")
-	decisionsRef := "dispatch://" + child.Key + "/artifact/" + decisions.Slug
-	response := blockLinksRequest(t, handler, url.Values{"from": {decisionsRef}, "to": {specRef}})
+	rollout := uploadIssueDocument(t, handler, child.Key, "rollout.md", "Ship per "+blockRef+".\n")
+	rolloutRef := "dispatch://" + child.Key + "/artifact/" + rollout.Slug
+	response := blockLinksRequest(t, handler, url.Values{"from": {rolloutRef}, "to": {specRef}})
 	succeeded(t, "GET /api/v1/block-links", response)
 	var raw struct {
 		From  map[string]json.RawMessage `json:"from"`
@@ -456,10 +456,10 @@ func TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn(t *testing.T) {
 		requireFactKeys(t, "block-links links[].to", link.To)
 	}
 	links := decodeBody[model.BlockLinks](t, response)
-	requireSameNode(t, "block-links from", links.From, readNode(t, handler, decisionsRef))
+	requireSameNode(t, "block-links from", links.From, readNode(t, handler, rolloutRef))
 	requireSameNode(t, "block-links to", links.To, readNode(t, handler, specRef))
 	if len(links.Links) != 1 {
-		t.Fatalf("links from decisions.md to the spec = %#v, want one", links.Links)
+		t.Fatalf("links from rollout.md to the spec = %#v, want one", links.Links)
 	}
 	for _, link := range links.Links {
 		requireSameNode(t, "block-links links[].from", link.From, readNode(t, handler, link.From.Ref))

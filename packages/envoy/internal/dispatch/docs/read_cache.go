@@ -365,21 +365,11 @@ func buildDocumentRead(artifactID string, stamp DocumentStamp, tree pmdoc.ValidD
 		return nil, rendered.tokenErr
 	}
 	read := &documentRead{artifactID: artifactID, stamp: stamp, markdown: rendered.markdown, token: rendered.token, blocks: rendered.blocks, paths: paths}
-	if holdsAskBlock(tree.Node()) {
+	if pmdoc.HoldsAskBlock(tree.Node()) {
 		read.tree = tree.Node()
 	}
 	read.weight = read.measure()
 	return read, nil
-}
-
-// holdsAskBlock reports whether tree holds an ask block anywhere.
-func holdsAskBlock(tree *pmdoc.Node) bool {
-	held := false
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		held = held || node.Type == "ask"
-		return !held
-	})
-	return held
 }
 
 // coldFold is a fold of a document's stored history: read, its rendering, which it stored; tree,

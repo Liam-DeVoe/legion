@@ -11,6 +11,7 @@ import type {
   Artifact,
   AskRead,
   Comment,
+  DecisionEntry,
   DecisionKeep,
   DecisionLink,
   DisplayTree,
@@ -19,8 +20,6 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionsPanel } from "./DecisionsPanel";
-
-type DecisionEntry = NonNullable<IssueDecisions["entries"]>[number];
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const askId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -32,15 +31,15 @@ const artifacts = [
     id: documentId,
     issue_key: "CORE-1",
     kind: "doc",
-    name: "decisions.md",
+    name: "notes.md",
     primary: false,
     project: "",
-    slug: "decisions-md",
+    slug: "notes-md",
   },
 ] as unknown as Artifact[];
 
 /** An entry of the Decisions read: by default an agent's decision under block `block` of
- *  decisions.md, whose node holds it. */
+ *  notes.md, whose node holds it. */
 function entry(
   fields: Partial<DecisionEntry> & Pick<DecisionEntry, "text"> & { block: string }
 ): DecisionEntry {
@@ -57,20 +56,20 @@ function entry(
     declined_note: null,
     document: {
       artifact_id: documentId,
-      block: `CORE-1/decisions-md#${block}`,
+      block: `CORE-1/notes-md#${block}`,
       block_id: block,
-      ref: "dispatch://CORE-1/artifact/decisions-md",
+      ref: "dispatch://CORE-1/artifact/notes-md",
     },
     kept: null,
     kept_by: null,
     kept_text_sum: null,
     kind: "agent",
     multiple: null,
-    node: { id: `CORE-1/decisions-md#${block}`, kind: "block" },
+    node: { id: `CORE-1/notes-md#${block}`, kind: "block" },
     options: null,
     question: null,
     readings: [],
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${block}`,
+    ref: `dispatch://CORE-1/artifact/notes-md#b-${block}`,
     replaced: false,
     resolution: null,
     selected: null,
@@ -203,7 +202,7 @@ test("the panel sorts the view into its four lists, in order", async () => {
       .getAllByRole("link")
       .map((link) => link.getAttribute("href"));
     expect(shaped).toEqual([
-      "/issues/CORE-1/artifacts/decisions-md#b-store",
+      "/issues/CORE-1/artifacts/notes-md#b-store",
       "/issues/CORE-1/spec#b-p1",
       "/issues/CORE-1/spec#b-p%202",
     ]);
@@ -251,7 +250,7 @@ test("Keep records the decision and moves it from Waiting for your review to You
   }
 });
 
-test("Change opens the comment composer on decisions.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
+test("Change opens the comment composer on notes.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);

@@ -409,18 +409,22 @@ export function ProofDocument({
       blockId,
       owner.kind === "issue" ? undefined : owner.project
     ) ?? renderedAskOf(liveTextQuery.data?.markdown, blockId);
-  // The answer state the server reads of the ask each block shows, by block id, which the
-  // editor's refusal of a reading in an open ask reads at each edit: a ref, so the editor made
-  // once reads the latest asks read.
+  // The server's read of the ask each mounted block shows, by block id, read once per render for
+  // the cards below and for the editor's refusal of a reading in an open ask, which reads the
+  // answer states at each edit: a ref, so the editor made once reads the latest asks read.
+  const servedAsks = new Map(
+    askBlockHosts.map((host) => {
+      const blockId = String(host.node.attrs.blockId);
+      return [blockId, servedAsk(blockId)] as const;
+    })
+  );
   const askStates = useRef<ReadonlyMap<string, string>>(new Map());
   askStates.current = new Map(
-    askBlockHosts.flatMap((host) => {
-      const blockId = String(host.node.attrs.blockId);
-      const served = servedAsk(blockId);
-      return served === undefined
+    [...servedAsks].flatMap(([blockId, served]) =>
+      served === undefined
         ? []
-        : [[blockId, "ask" in served ? served.ask.state : served.rendered.state] as const];
-    })
+        : [[blockId, "ask" in served ? served.ask.state : served.rendered.state] as const]
+    )
   );
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
   // Naming a version is the name dialog's form, which shows a refusal itself; a rebuild shows
@@ -487,8 +491,9 @@ export function ProofDocument({
     setIsNameDialogOpen(true);
   }, []);
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
-  // versions) refresh once it lands, since the server writes the outcome into the block, and a
-  // host that selected the question hears of its answer too.
+  // versions) refresh once it lands, since the server's ask node now holds the outcome the block
+  // shows, though the answer writes no version, and a host that selected the question hears of
+  // its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
@@ -1235,7 +1240,7 @@ export function ProofDocument({
               owner={owner.kind === "document" ? owner : undefined}
               readOnly={blocksReadOnly}
               rowResolution={isClosed}
-              served={servedAsk(blockId)}
+              served={servedAsks.get(blockId)}
             />
           );
         })}

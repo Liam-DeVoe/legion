@@ -298,7 +298,7 @@ func blockRefCarries(fromKind, alias string) string {
 func TupleKinds() []string {
 	kinds := append([]string{
 		TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
-		graphstore.TupleFollowedBy, "from_ask", graphstore.TupleDecidedBy,
+		graphstore.TupleFollowedBy, TupleFromAsk, graphstore.TupleDecidedBy,
 		graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
 		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
 		graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
@@ -551,14 +551,14 @@ var backlinkArms = map[string][]backlinkArm{
 		// asks_anchor_artifact, on the same coalesce the join makes; the store states the same
 		// fact as an ask's anchored_to, answered while the ask's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join asks k on coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = a.id`, toID: `a.ref_key`,
-			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: "anchored_to", projectedIn: "asks"},
+			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "asks"},
 		// comments_anchor_artifact, on the same cast the join makes; the store states the same
 		// fact as a comment's anchored_to, answered while the comment's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
 			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "comments"},
 		// asks_artifact_id, and the ask's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: "owned_by", projectedIn: "asks"},
+			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "asks"},
 		// comments_artifact_id, and the comment's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "comments"},
@@ -619,7 +619,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// store states the same fact as an ask's followed_by, answered while the follower row of
 		// that ask and that session carries the ask's node (projectionCarries' session test).
 		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`,
-			fromKind: "ask", fromID: `f.ask_id::text`, projected: `f.node_kind`, tupleKind: "followed_by", projectedIn: "ask_followers"},
+			fromKind: "ask", fromID: `f.ask_id::text`, projected: `f.node_kind`, tupleKind: graphstore.TupleFollowedBy, projectedIn: "ask_followers"},
 		// graph_tuples_inbound: what a session wrote of the kinds the view answers its
 		// authored_by from.
 		authoredByReasoning,
@@ -758,7 +758,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	// that node, stands (migration 20261116094101). An ask's shaped declares no targets, so it
 	// carries no types test.
 	if target.kind == BlockNodeKind {
-		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = 'shaped'
+		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
 			and `+currentTuple("r")+` and `+blockRefCarries(graphstore.KindAsk, "r"),
 			liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
 	}

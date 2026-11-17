@@ -63,6 +63,52 @@ func (section decisionSection) blockIDs() []string {
 	return ids
 }
 
+// blockRanges is the byte range of each block of a rendering, by block id, as its offsets give it.
+func blockRanges(offsets []pmdoc.BlockOffset) map[string][2]int {
+	ranges := make(map[string][2]int, len(offsets))
+	for _, offset := range offsets {
+		ranges[offset.ID] = [2]int{offset.From, offset.To}
+	}
+	return ranges
+}
+
+// sectionText is the markdown of a section whose blocks are ids (decisionSection.blockIDs) in
+// markdown, the rendering whose block ranges are ranges (blockRanges): from the start of the first
+// of those blocks the rendering holds to the end of the last, and false where it holds none of them
+// or that span lies outside markdown.
+func sectionText(markdown string, ranges map[string][2]int, ids []string) (string, bool) {
+	start, end := -1, -1
+	for _, id := range ids {
+		span, found := ranges[id]
+		if !found {
+			continue
+		}
+		if start < 0 || span[0] < start {
+			start = span[0]
+		}
+		if span[1] > end {
+			end = span[1]
+		}
+	}
+	if start < 0 || end > len(markdown) || start > end {
+		return "", false
+	}
+	return markdown[start:end], true
+}
+
+// sectionChangedVersion is the greatest version changes, a document's block index
+// (refs.BlockChanges), records as changing one of ids, a section's blocks
+// (decisionSection.blockIDs), and 0 where it records none.
+func sectionChangedVersion(changes map[string]refs.BlockChange, ids []string) int {
+	version := 0
+	for _, id := range ids {
+		if change, found := changes[id]; found && change.Version > version {
+			version = change.Version
+		}
+	}
+	return version
+}
+
 // unsure is the section's `Unsure:` paragraph, the first top-level paragraph whose text opens with
 // unsurePrefix, and the rest of that paragraph's text; nil where it holds none.
 func (section decisionSection) unsure() (*pmdoc.Node, string) {

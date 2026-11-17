@@ -352,6 +352,15 @@ const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
   "&lt;": "<",
 };
 
+/** The start of a markdown line that opens the ask block `blockId`, as a regular expression's
+ *  source: any quote and list markers, the directive's colons, and the block's id as the renderer
+ *  writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut cannot hold),
+ *  ended by a space or the closing brace. */
+function askOpenerSource(blockId: string): string {
+  const id = typedBlockIdAttribute(blockId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^[> \\t-]*:{3,}ask\\{${id}[ }]`;
+}
+
 /**
  * The ask the block `blockId` shows, as `markdown`, a document's live text (`GET
  * /api/v1/artifacts/{id}/text`), renders it on the block's opening line: the server writes there,
@@ -366,8 +375,7 @@ export function renderedAskOf(
   markdown: string | undefined,
   blockId: string
 ): ServedAsk | undefined {
-  const id = typedBlockIdAttribute(blockId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const openers = markdown?.match(new RegExp(`^[> \\t-]*:{3,}ask\\{${id}[ }].*$`, "gm")) ?? [];
+  const openers = markdown?.match(new RegExp(`${askOpenerSource(blockId)}.*$`, "gm")) ?? [];
   if (openers.length !== 1) {
     return undefined;
   }
@@ -396,8 +404,7 @@ export function renderedAskOf(
  * block is read from the server's read of the ask.
  */
 export function recordsAnswerState(markdown: string, blockId: string): boolean {
-  const id = blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^[> \\t-]*:{3,}ask\\{#${id}[ }][^\\n]*\\bstate="`, "m").test(markdown);
+  return new RegExp(`${askOpenerSource(blockId)}[^\\n]*\\bstate="`, "m").test(markdown);
 }
 
 /** A mounted decision block: the React card portals into its two slots. A new object is issued

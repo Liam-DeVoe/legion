@@ -5,7 +5,7 @@ Read this when a tree's architect sends you a matter, when a `held` wake carries
 pod. Three matters come to you from an architect: a child that looks independent of its tree,
 capacity (an architect says its tree cannot run what it needs under the slots it has), and a
 conflict between trees. An issue-design decision is not one of them: the owning architect writes
-it as a decision block and opens its own finding asks. Send a design decision back to that
+it as an ask block and opens its own finding asks. Send a design decision back to that
 architect with `envoy_publish` to its role, because it is not yours to make.
 
 For capacity, the only lever is order. You cannot change `admission.cap`: it is the operator's

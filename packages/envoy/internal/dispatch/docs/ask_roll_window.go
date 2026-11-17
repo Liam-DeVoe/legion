@@ -105,6 +105,8 @@ func storedAskAttributes() []string {
 // may hold, as the release before does: the answer route (KeepAskBlockInStep) and settlement
 // (withholdAnswersWithoutRoom) write a block whose answer the document has no room for without
 // them (rollWindowAskAttributesWithheld), and the ask keeps the answer whole.
+//
+// kept for one release: roll-window-attributes
 func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	if !twoBuilds {
 		return nil

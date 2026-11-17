@@ -508,7 +508,7 @@ test("without the server's read the frame stamps the state the block records", (
 test("a block that records no state reads as open where no server read is given", () => {
   // Settlement takes the state off a live block once the answer is held on the ask's node alone,
   // and the editor gives the attribute no default: a block with no ask row and no read of one
-  // shows the open decision it was written as.
+  // shows the open ask it was written as.
   const card = renderCard({ indexed: false, node: askNode({}), readOnly: true });
   try {
     expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("open");

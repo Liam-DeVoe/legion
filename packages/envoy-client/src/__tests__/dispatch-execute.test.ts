@@ -8600,7 +8600,8 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain(
       "(document id artifact-42) is already approved at version 3 by sjawhar"
     );
-    expect(result.text).not.toContain("ask ");
+    // No request was opened, so no ask is named: the text speaks of ask blocks, never "(ask <id>)".
+    expect(result.text).not.toContain("(ask ");
     expect(result.text).not.toContain("plan-gap-analyst");
     expect(result.details).toMatchObject({ issue: "DSP-42", artifact: "artifact-42", version: 3 });
     expect(followedAsk(result.details)).toBeNull();
@@ -8609,7 +8610,7 @@ describe("executeDispatchTool", () => {
   // A request asks the human to agree to every point of the latest version, and an open block is
   // a question they have not decided yet. An answer is held on the ask and writes no version; only
   // a version the release before wrote records a block's state, settled there by that release.
-  describe("dispatch_request_approval with decision blocks in the document", () => {
+  describe("dispatch_request_approval with ask blocks in the document", () => {
     const opening = (block: string, state: string) =>
       `:::ask{#${block} urgency="med" multiple="false" state="${state}"}\nQuestion of ${block}?\n:::`;
     // A block as this release renders it: its answer is held on the ask's node, never on the block.
@@ -8713,7 +8714,7 @@ describe("executeDispatchTool", () => {
       );
       const lines = refusal.split("\n");
       expect(lines.slice(0, 4)).toEqual([
-        "dispatch request-approval was not called: spec.md (version 4) has 4 open decision blocks. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
+        "dispatch request-approval was not called: spec.md (version 4) has 4 open ask blocks. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
         '- "Question of b-1?" (block b-1, ask ask-b-1)',
         "- block b-2, whose ask Dispatch has not opened yet",
         "- block b-3, which version 4 does not hold yet",
@@ -8889,7 +8890,7 @@ describe("executeDispatchTool", () => {
         (error: Error) => error.message
       );
       expect(refusal.split("\n").slice(0, 2)).toEqual([
-        "dispatch request-approval was not called: spec.md (version 4) has 1 open decision block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
+        "dispatch request-approval was not called: spec.md (version 4) has 1 open ask block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
         '- "Question of b-1?" (block b-1, ask ask-b-1)',
       ]);
       expect(posts).toEqual([]);
@@ -8988,7 +8989,7 @@ describe("executeDispatchTool", () => {
         (error: Error) => error.message
       );
       expect(refusal.split("\n").slice(0, 2)).toEqual([
-        "dispatch request-approval was not called: spec.md (version 4) has 1 open decision block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
+        "dispatch request-approval was not called: spec.md (version 4) has 1 open ask block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
         '- "Question of b-1?" (block b-1, ask ask-b-1)',
       ]);
       expect(refusal).not.toContain("block b-2");
@@ -9055,7 +9056,7 @@ describe("executeDispatchTool", () => {
         (error: Error) => error.message
       );
       expect(refusal.split("\n").slice(0, 2)).toEqual([
-        "dispatch request-approval was not called: spec.md (version 4) has 1 open decision block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
+        "dispatch request-approval was not called: spec.md (version 4) has 1 open ask block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
         '- "Question of b-1?" (block b-1, ask ask-b-1), answered but still open in version 4: it settles into a version on its own in about two seconds; wait for that version',
       ]);
       expect(refusal).not.toContain("block b-2");
@@ -9080,7 +9081,7 @@ describe("executeDispatchTool", () => {
     });
   });
 
-  describe("dispatch_doc_edit over a decision block", () => {
+  describe("dispatch_doc_edit over an ask block", () => {
     // A callout holding the open block b-1, then b-2, whose ask a human has answered.
     const blocks = [
       { id: "p-1", type: "paragraph", from: 0, to: 9 },
@@ -9177,9 +9178,9 @@ describe("executeDispatchTool", () => {
       ]) {
         const { outcome, reads, edits } = edit(ops);
         expect((await outcome).split("\n")).toEqual([
-          "dispatch doc-edit was not called: it would remove a decision block whose ask is still open, and the human's question would leave their Inbox unanswered.",
+          "dispatch doc-edit was not called: it would remove an ask block whose ask is still open, and the human's question would leave their Inbox unanswered.",
           '- "Where should the nightly file be written?" (block b-1, ask ask-b-1)',
-          "A decision block leaves the document once its ask is answered or resolved. Until then, reword it with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
+          "An ask block leaves the document once its ask is answered or resolved. Until then, reword it with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
         ]);
         const [line] = (await outcome).split("\n");
         expect(cliRefusals(await outcome)).toEqual([{ line, command: "doc-edit" }]);
@@ -9203,9 +9204,9 @@ describe("executeDispatchTool", () => {
           { op: "insert", after: "block:p-1", markdown },
         ]);
         expect((await outcome).split("\n")).toEqual([
-          "dispatch doc-edit was not called: it would remove a decision block whose ask is still open, and the human's question would leave their Inbox unanswered.",
+          "dispatch doc-edit was not called: it would remove an ask block whose ask is still open, and the human's question would leave their Inbox unanswered.",
           '- "Where should the nightly file be written?" (block b-1, ask ask-b-1)',
-          "A decision block leaves the document once its ask is answered or resolved. Until then, reword it with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
+          "An ask block leaves the document once its ask is answered or resolved. Until then, reword it with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
         ]);
         expect(edits).toEqual([]);
       }
@@ -9718,7 +9719,7 @@ describe("executeDispatchTool", () => {
     });
 
     expect(result.text).toBe(
-      "# Spec\n\nApproval: approved v2 by sjawhar, changed since (now v4) - the human's own answer to a decision block carries the approval when that answer is the whole change since v2; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v2"
+      "# Spec\n\nApproval: approved v2 by sjawhar, changed since (now v4) - request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v2"
     );
   });
 
@@ -10367,7 +10368,7 @@ describe("executeDispatchTool", () => {
   // dashes, so the server reads back what it wrote and the command prints it (INFRA-1520 R6). It
   // prints under the decision-block lines: the tool description promises those come after the
   // result's first line, and up to 2000 bytes of markdown above them would not keep that promise.
-  test("prints the decision block's check under the Applied line and the markdown it wrote under that", async () => {
+  test("prints the ask block's check under the Applied line and the markdown it wrote under that", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;
       if (path === "/api/v1/issues/DSP-42") {
@@ -10418,7 +10419,7 @@ describe("executeDispatchTool", () => {
 
     expect(result.text).toBe(
       "Applied 1 ops (version 3)\n" +
-        "Decision block ask-block-1:\n" +
+        "Ask block ask-block-1:\n" +
         "Related-item check searched and found nothing.\n" +
         "## Plan\n\n- first\n- second\n\nb-9 paragraph: removed\n" +
         "Document token: sha256:after-edit"
@@ -15092,14 +15093,12 @@ describe("executeDispatchTool", () => {
     expect(requested).toContain(`/api/v1/issues/DSP-42/messages/${message}`);
   });
 
-  // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
-  // whatever its fragment, as the SPA and the server read the same page.
-  test("maps the SPA's decisions page to the issue's decisions.md", () => {
+  // The Decisions tab reads the issue's decision nodes, so its page names the issue's Decisions
+  // page, whatever its fragment, as the SPA and the server read the same page.
+  test("maps the SPA's decisions page to the issue's Decisions reference", () => {
     const server = "http://dispatch.test";
     for (const page of ["/issues/DSP-42/decisions", "/issues/DSP-42/decisions#b-ship-it"]) {
-      expect(dispatchRefFromUrl(`${server}${page}`, server)).toBe(
-        "dispatch://DSP-42/artifact/decisions-md"
-      );
+      expect(dispatchRefFromUrl(`${server}${page}`, server)).toBe("dispatch://DSP-42/decisions");
     }
   });
 

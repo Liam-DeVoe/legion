@@ -68,11 +68,18 @@ import (
 // count of what the restore and the conversion owe reads whole tables too, so where it read zero it
 // is read again only when something can have made it non-zero (recountOwed).
 //
-// The runner takes a session advisory lock of its own (decisionStepLock), so two processes that
-// boot together do not run it both at once: a booting process waits for it, so every process has
-// phase 1 behind it before it serves, and a tick that finds it held skips, since the holder is
-// doing the work. A failure on one batch of phase 1 rolls back that batch, and one on one ask of
-// phase 2 that ask; either is logged with its reason and tried again at the next tick.
+// The runner takes a session advisory lock of its own (decisionStepLock) for phases 1 and 2, so
+// two processes that boot together do not run them both at once: a booting process waits for it,
+// so every process has phase 1 behind it before it serves, and a tick that finds it held skips,
+// since the holder is doing the work. Phase 3 takes a second key of its own
+// (decisionRestoreLock) once phases 1 and 2 are behind it and the first key is released, so a
+// process that boots while a pass of phase 3 runs - every owed issue, one transaction each - or
+// while someone runs it by hand waits for no part of that pass; a tick that finds the second key
+// held skips phase 3. A tick runs no phase 3 after a catch-up that failed: the restore's finder
+// reads an answer from its ask's node, and an answer the catch-up did not state there would read
+// as none. A failure on one batch of phase 1 rolls back that batch, and one on one ask of phase 2
+// that ask; either is logged with its reason and tried again at the next tick.
+// kept for one release: decisions-step
 type DecisionStep struct {
 	database *store.Store
 	commit   string
@@ -189,9 +196,15 @@ func NewDecisionStep(database *store.Store, commit string, logger *slog.Logger) 
 	}
 }
 
-// decisionStepLock is the session advisory lock the step's passes take ("DDECISNS"), a single
-// 64-bit key apart from every other single-key advisory lock of the server.
+// decisionStepLock is the session advisory lock the step's first two phases take ("DDECISNS"), a
+// single 64-bit key apart from every other single-key advisory lock of the server.
 const decisionStepLock int64 = 0x4444454349534E53
+
+// decisionRestoreLock is the session advisory lock the step's third phase takes ("DRESTORE"), a
+// single 64-bit key apart from decisionStepLock and every other single-key advisory lock of the
+// server: a pass of the third phase holds it, and never the step's own lock, which a booting
+// process waits for (Boot).
+const decisionRestoreLock int64 = 0x44524553544F5245
 
 // decisionStepApplication is what pg_stat_activity names the connection the step holds its lock
 // on.
@@ -222,8 +235,10 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 // shared pool, so a tick with no work - every tick once the fleet is one build and every row is
 // stated - costs those probes and dials no connection. Otherwise it takes the step's lock on a
 // connection of its own, skips where another process holds it, since the holder is doing the
-// work, and runs each phase with work. A failure of a phase is logged and tried again at the next
-// tick; it answers a failure of the probes or of the lock.
+// work, and runs each of phases 1 and 2 with work; then, where phase 3 has work and no catch-up
+// of this tick failed, it releases the step's lock and takes phase 3's (takeRestoreLock), and
+// runs phase 3, or skips it where another process holds that lock. A failure of a phase is logged
+// and tried again at the next tick; it answers a failure of the probes or of a lock.
 func (s *DecisionStep) Tick(ctx context.Context) error {
 	work, err := s.probe(ctx)
 	if err != nil {
@@ -263,18 +278,47 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 			s.logger.Error("dispatch: decisions step catch-up; the next tick tries again", "error", err)
 		}
 		s.catchUpOwed = work.other || failed || err != nil
+		// The restore's finder reads an ask's answer from its node, which an answer the catch-up
+		// did not state leaves unanswered, so phase 3 waits for a tick whose catch-up went through,
+		// as RunByHand refuses it.
+		restore = restore && !failed && err == nil
 	}
-	if restore {
-		if _, failures, err := s.RestoreAndConvert(ctx, "", true, false); err != nil {
-			s.logger.Error("dispatch: decisions step restore and conversion; the next tick tries again", "error", err)
-		} else {
-			for _, failure := range failures {
-				s.logger.Error("dispatch: decisions step restore and conversion of an issue; the next tick tries again",
-					"issue", failure.Issue, "error", failure.Err)
-			}
+	if !restore {
+		return nil
+	}
+	if restoring, err := takeRestoreLock(ctx, conn, false); err != nil || !restoring {
+		return err
+	}
+	if _, failures, err := s.RestoreAndConvert(ctx, "", true, false); err != nil {
+		s.logger.Error("dispatch: decisions step restore and conversion; the next tick tries again", "error", err)
+	} else {
+		for _, failure := range failures {
+			s.logger.Error("dispatch: decisions step restore and conversion of an issue; the next tick tries again",
+				"issue", failure.Issue, "error", failure.Err)
 		}
 	}
 	return nil
+}
+
+// takeRestoreLock releases the step's lock (decisionStepLock), which conn holds, and takes phase
+// 3's (decisionRestoreLock) on conn, so the pass of phase 3 it is taken for holds no lock a
+// booting process waits for: it waits for the lock where wait, as a command run by hand does, and
+// otherwise tries once, reporting whether it took it, as a tick does.
+func takeRestoreLock(ctx context.Context, conn *pgx.Conn, wait bool) (bool, error) {
+	if _, err := conn.Exec(ctx, `select pg_advisory_unlock($1)`, decisionStepLock); err != nil {
+		return false, fmt.Errorf("release the decision step's lock: %w", err)
+	}
+	if wait {
+		if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionRestoreLock); err != nil {
+			return false, fmt.Errorf("take the lock of the decision step's third phase: %w", err)
+		}
+		return true, nil
+	}
+	var locked bool
+	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, decisionRestoreLock).Scan(&locked); err != nil {
+		return false, fmt.Errorf("take the lock of the decision step's third phase: %w", err)
+	}
+	return locked, nil
 }
 
 // UseDocuments gives the step the document service its third phase writes the documents through.
@@ -514,6 +558,7 @@ const decisionStepMarksKept = 8
 // events again, with whatever else needed nothing. The mark is the process's own: a process that
 // takes the step over reads its window again from where it opens, and an event already stated is
 // left out of its read as it is of every read.
+// kept for one release: catch-up
 func (s *DecisionStep) catchUp(ctx context.Context) (bool, error) {
 	var start int64
 	if err := s.database.Pool.QueryRow(ctx, `

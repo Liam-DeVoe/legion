@@ -12,13 +12,13 @@ import { ApiError, api } from "../../api/client";
 import type {
   Artifact,
   Comment,
+  DecisionEntry,
   DecisionLink,
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
 import {
   anchoredThreadComments,
-  type DecisionEntry,
   fetchPinnedEvents,
   marginItemId,
   useMarginItems,

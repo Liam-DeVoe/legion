@@ -261,38 +261,27 @@ func AnswerFacts(askID, state string, answer *model.AskAnswer, resolution *model
 func answerFacts(askID string, change Change, held heldAnswer) ([]graphstore.Node, []graphstore.Tuple, error) {
 	var nodes []graphstore.Node
 	var tuples []graphstore.Tuple
-	value := func(kind, to string) {
+	tuple := func(kind, toKind, toID string, asserted bool) {
 		tuples = append(tuples, graphstore.Tuple{
 			FromKind: graphstore.KindAsk, FromID: askID, Kind: kind,
-			ToKind: graphstore.KindValue, ToID: to,
-			At: change.At, Who: change.Who, SourceEvent: change.Event, Asserted: true,
+			ToKind: toKind, ToID: toID,
+			At: change.At, Who: change.Who, SourceEvent: change.Event, Asserted: asserted,
 		})
 	}
+	value := func(kind, to string) { tuple(kind, graphstore.KindValue, to, true) }
 	retract := func(kind string) {
 		if current, holds := held.values[kind]; holds {
-			tuples = append(tuples, graphstore.Tuple{
-				FromKind: graphstore.KindAsk, FromID: askID, Kind: kind,
-				ToKind: graphstore.KindValue, ToID: current,
-				At: change.At, Who: change.Who, SourceEvent: change.Event, Asserted: false,
-			})
+			tuple(kind, graphstore.KindValue, current, false)
 		}
 	}
 	relate := func(kind, login string) {
 		for _, current := range held.relations[kind] {
 			if current != login {
-				tuples = append(tuples, graphstore.Tuple{
-					FromKind: graphstore.KindAsk, FromID: askID, Kind: kind,
-					ToKind: graphstore.KindPerson, ToID: current,
-					At: change.At, Who: change.Who, SourceEvent: change.Event, Asserted: false,
-				})
+				tuple(kind, graphstore.KindPerson, current, false)
 			}
 		}
 		if login != "" {
-			tuples = append(tuples, graphstore.Tuple{
-				FromKind: graphstore.KindAsk, FromID: askID, Kind: kind,
-				ToKind: graphstore.KindPerson, ToID: login,
-				At: change.At, Who: change.Who, SourceEvent: change.Event, Asserted: true,
-			})
+			tuple(kind, graphstore.KindPerson, login, true)
 		}
 	}
 	value(graphstore.TupleAnswerState, change.State)

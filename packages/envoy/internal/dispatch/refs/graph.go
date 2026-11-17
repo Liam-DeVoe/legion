@@ -706,6 +706,13 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 	return rows.Err()
 }
 
+// RetiredDecisionsSlug is the slug of an issue's decisions document, which the decisions step
+// retires (dispatch://INFRA-1150 R11): the address `dispatch://KEY/artifact/<this slug>` of a
+// retired one resolves to the issue KEY, as every retired document's address does
+// (loadArtifactNodes). It is the one place the server spells that slug: api refuses a new
+// document that would take it.
+const RetiredDecisionsSlug = "decisions-md"
+
 // loadArtifactNodes resolves artifact nodes. An artifact is made by its creator; its last change
 // is its latest version, by that version's authors. It belongs to its issue, else to the session
 // whose conversation owns it, else (a project document) to no node.

@@ -1861,11 +1861,6 @@ func rowDifferences(held projection) string {
 // reads as a proposed one and a live one as `a live node no row projects`; but a node whose row is
 // owed by a writer that has not run yet (projection.owed).
 func nodeDifferences(held projection) string {
-	owed := ""
-	if held.owed != "" {
-		owed = `
-		  and not ` + held.owed
-	}
 	return `
 		select case when node.state ~ '^[aeiou]' then 'an ' else 'a ' end || node.state
 		       || ' node no row projects',
@@ -1873,8 +1868,18 @@ func nodeDifferences(held projection) string {
 		from (` + presentNodes(held) + `) node (kind, id, digest, state)
 		where not exists (
 			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
-			where row.node_kind = node.kind and row.node_address = node.id)` + owed + `
+			where row.node_kind = node.kind and row.node_address = node.id)` + notOwed(held) + `
 		order by 2`
+}
+
+// notOwed is the clause a node-side read of held appends to leave out a node whose row is owed
+// (projection.owed), empty for a kind whose every node has its row.
+func notOwed(held projection) string {
+	if held.owed == "" {
+		return ""
+	}
+	return `
+		  and not ` + held.owed
 }
 
 // tripleRowDifferences reads the rows of a kind held triple by triple against the store: every
@@ -1905,11 +1910,6 @@ func tripleRowDifferences(held projection) string {
 // every tuple no row states the triple of, at from_kind:from_id kind -> to_kind:to_id, but a tuple
 // of a node whose row is owed by a writer that has not run yet (projection.owed).
 func tupleDifferences(held projection) string {
-	owed := ""
-	if held.owed != "" {
-		owed = `
-		  and not ` + held.owed
-	}
 	return `
 		select 'a tuple no row projects',
 		       node.kind || ':' || node.id || ' ' || node.tie || ' -> ' || node.to_kind || ':' || node.to_id
@@ -1917,7 +1917,7 @@ func tupleDifferences(held projection) string {
 		where not exists (
 			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, kind, to_kind, to_id)
 			where row.node_kind = node.kind and row.node_address = node.id
-			  and row.kind = node.tie and row.to_kind = node.to_kind and row.to_id = node.to_id)` + owed + `
+			  and row.kind = node.tie and row.to_kind = node.to_kind and row.to_id = node.to_id)` + notOwed(held) + `
 		order by 2`
 }
 
@@ -1956,19 +1956,15 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 		fmt.Fprintln(w, "census: store absent (the database holds no graph_nodes: this branch's migrations have not run, so no kind was read)")
 	}
 	for _, kind := range r.Kinds {
+		// A kind held triple by triple counts tuples where every other kind counts nodes.
 		side := "node"
 		if kind.Triples {
 			side = "tuple"
-			fmt.Fprintf(w, "census: store kind=%s tuples=%s rows=%s table=%s rows_without_a_tuple=%s tuples_without_a_row=%s addresses_past_bound=%s\n",
-				kind.Kind, pgmigrate.Thousands(kind.Nodes), pgmigrate.Thousands(kind.Rows), kind.Table,
-				pgmigrate.Thousands(kind.RowDifferences), pgmigrate.Thousands(kind.NodeDifferences),
-				pgmigrate.Thousands(kind.PastBound))
-		} else {
-			fmt.Fprintf(w, "census: store kind=%s nodes=%s rows=%s table=%s rows_without_a_node=%s nodes_without_a_row=%s addresses_past_bound=%s\n",
-				kind.Kind, pgmigrate.Thousands(kind.Nodes), pgmigrate.Thousands(kind.Rows), kind.Table,
-				pgmigrate.Thousands(kind.RowDifferences), pgmigrate.Thousands(kind.NodeDifferences),
-				pgmigrate.Thousands(kind.PastBound))
 		}
+		fmt.Fprintf(w, "census: store kind=%s %ss=%s rows=%s table=%s rows_without_a_%s=%s %ss_without_a_row=%s addresses_past_bound=%s\n",
+			kind.Kind, side, pgmigrate.Thousands(kind.Nodes), pgmigrate.Thousands(kind.Rows), kind.Table,
+			side, pgmigrate.Thousands(kind.RowDifferences), side, pgmigrate.Thousands(kind.NodeDifferences),
+			pgmigrate.Thousands(kind.PastBound))
 		fmt.Fprintf(w, "census: store kind=%s checks %s\n", kind.Kind, kind.Note)
 		if kind.CountsUnmarked {
 			fmt.Fprintf(w, "census: store kind=%s unmarked_rows=%s (rows a writer of the release before wrote, which name no node yet and graph_edges' old arms answer)\n",

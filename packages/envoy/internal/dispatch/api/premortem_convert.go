@@ -208,14 +208,65 @@ type documentHeading struct {
 	text        string
 }
 
+// codeFence is the fence a line opens or closes a fenced code block with (three or more
+// backticks or tildes, at most three spaces in), else "". A heading inside such a block is the
+// code's own text.
+func codeFence(line string) string {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return ""
+	}
+	for _, marker := range []string{"```", "~~~"} {
+		if strings.HasPrefix(trimmed, marker) {
+			run := 0
+			for run < len(trimmed) && trimmed[run] == marker[0] {
+				run++
+			}
+			return trimmed[:run]
+		}
+	}
+	return ""
+}
+
+// fenceAfter is the fence a fenced code block stands open under once line is read, where fenced is
+// the one it stood open under before ("" for none), and whether line is a fence line, which is the
+// block's own and no text of the document's: a fence line opens a block where none is open, and
+// closes the open one where it is a fence of the same marker at least as long.
+func fenceAfter(fenced, line string) (string, bool) {
+	fence := codeFence(line)
+	switch {
+	case fence == "":
+		return fenced, false
+	case fenced == "":
+		return fence, true
+	case strings.HasPrefix(fence, fenced[:1]) && len(fence) >= len(fenced):
+		return "", true
+	}
+	return fenced, true
+}
+
+// markdownHeading is a line's ATX heading level and title, or level 0 for a line that is no
+// heading: one to six `#` and a space, the title being the rest of the line trimmed, closing
+// hashes and all.
+func markdownHeading(line string) (int, string) {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
+		return 0, ""
+	}
+	return level, strings.TrimSpace(line[level:])
+}
+
 // parsePremortem reads a pre-mortem's markdown: the verdict, under the level-2 heading that opens
 // with "Verdict"; risk 0, under the level-2 heading "Risk 0, ..."; each numbered risk, under a
 // level-3 heading "<n>\. ..." beneath "The ten ways it goes wrong"; and the two closing sections,
 // each under its level-2 heading. A section runs to the next heading of its level or above, and its
 // text is its lines word for word, without the blank lines around them. Headings and fenced code
-// blocks are read as the decisions view reads them (markdownHeading, codeFence), so a heading
-// inside a fenced code block is the code's own text. A section missing, a risk numbered twice, and
-// a risk without its early warning or its prevention are refused, naming what is wrong.
+// blocks are read line by line (markdownHeading, fenceAfter), so a heading inside a fenced code
+// block is the code's own text. A section missing, a risk numbered twice, and a risk without its
+// early warning or its prevention are refused, naming what is wrong.
 func parsePremortem(markdown string) (premortem, error) {
 	lines := strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n")
 	var headings []documentHeading
