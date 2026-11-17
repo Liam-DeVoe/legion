@@ -389,7 +389,7 @@ Each item below names a script, then what it proves.
 - `plan-ratings-read.sh`
 
   the read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to done: `dispatch plans --project <PROJECT>` run once in the operator's own shell with the operator's own credential, and the line of `<ISSUE>` judged.
-  It passes only when the issue is listed with a plan, at least one rating, each with a reason, and a time;
+  It passes only when the issue is listed with a plan and at least one rating, each with a reason, and prints the issue's time as `unknown` where Dispatch knows none;
   a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
@@ -4998,7 +4998,7 @@ The check after the merge: once the release that rates each plan reaches a deplo
 It runs `dispatch plans --project <PROJECT>` once and prints what the command printed, then one verdict on the line of `<ISSUE>`, an issue of `<PROJECT>`.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
 It sets none of those, reads no credential of its own, writes nothing and starts nothing.
-It judges no other issue: a finished issue Legion never ran, or ran before the release that rates each plan, lists `plan none`, `ratings none` and `time -`, which is true of what Dispatch holds of it.
+It judges no other issue: a finished issue Legion never ran lists `plan none`, `ratings none` and `time -`, and one it ran before the release that rates each plan lists `plan none` and `ratings none`, with the span of the step records the release that records each step wrote of it, or `time -` where there are none, which is true of what Dispatch holds of each.
 The issue's own `time -` is no fault either: it is Dispatch knowing no span of the issue's step records (no record has a start, none has an end, or the latest end is before the earliest start), which says nothing of its plan or its ratings, so the verdict prints that time as `unknown` and judges the rest.
 
 | exit | printed | when |
@@ -5009,7 +5009,7 @@ The issue's own `time -` is no fault either: it is Dispatch knowing no span of t
 
 `scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints an answer the real command rendered: envoy-client's `dispatch plans` code prints typed finished issues, so a line it prints that this script cannot read fails the test.
 Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an answer holding a plan whose first task has no steps (`(1 tasks: -)`) is read, an empty read is `UNKNOWN`, and each fault above has its row.
-[`plan-ratings.sh`](#plan-ratingssh)'s first step runs it on the output of the real `dispatch plans` over the Dispatch this checkout builds, so a change of the line the command prints that this script cannot read fails that proof.
+[`plan-ratings.sh`](#plan-ratingssh)'s first step runs it on the output of the real `dispatch plans` over the Dispatch this checkout builds, so it also reads finished issues a real Dispatch served rather than ones the test typed.
 
 ## plan-pointer-drive.sh
 
