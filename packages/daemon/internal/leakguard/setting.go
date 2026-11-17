@@ -1,0 +1,43 @@
+package leakguard
+
+import "github.com/sjawhar/legion/daemon/internal/ghrepo"
+
+// Setting is the deployment's shared public leak check as its operator names it: the daemon's
+// `leak_check` block in legion.yaml, or RepositoryVar and CheckerVar in the daemon's environment
+// (internal/config). Legion holds no name of it: the deployment supplies both values, and a
+// turnkey install runs with neither.
+//
+// Repository is the repository the check is published from by tag, whose `leak-check` directory
+// the daemon reads at a pod's pin and pushes to the pod's launcher (Source). CheckerSHA256 is the
+// sha256, in lowercase hex, of that check's public_leak_check.py: the program cmd/legion's rule
+// for a gh call that writes nothing was proven against (GhRequest.ProvenCheck), which the runtime
+// tells every role it starts under CheckerVar.
+//
+// Both are set, or neither, which the loader holds the setting to. The zero Setting is a
+// deployment that runs no shared leak check of its own: the daemon reads and pushes none, a role
+// pod starts without it, and the guard refuses no write for its absence (Guard.sharedCheck).
+type Setting struct {
+	Repository    ghrepo.Repository
+	CheckerSHA256 string
+}
+
+// Configured is whether the deployment names a shared leak check at all.
+func (s Setting) Configured() bool { return !s.Repository.IsZero() }
+
+// RepositoryVar is the daemon's environment fallback for Setting.Repository, which the file's
+// `leak_check.repository` overrides.
+const RepositoryVar = "LEGION_LEAK_CHECK_REPOSITORY"
+
+// CheckerVar is the daemon's environment fallback for Setting.CheckerSHA256, which the file's
+// `leak_check.checker_sha256` overrides, and the variable the runtime tells every role it starts
+// that sha256 under (runtime/sandbox's mainEnvironment, runtime/tmux's panePairs). In a role's
+// environment it is the one sign that the deployment runs a shared leak check: a role's shim reads
+// the pod's install only under it (Installed), the guard refuses a write for want of a check only
+// under it (Guard.sharedCheck), and `legion gh` names it as the checker its read rule was proven
+// against (GhRequest.ProvenCheck). It is exported because each of those reads it, and a second copy
+// of the string in any of them is one an edit here would silently part from.
+const CheckerVar = "LEGION_LEAK_CHECK_SHA256"
+
+// configured is whether env names the deployment's checker (CheckerVar): the role runs under a
+// deployment that runs a shared leak check.
+func configured(env []string) bool { return value(env, CheckerVar) != "" }

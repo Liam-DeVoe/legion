@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -166,6 +167,60 @@ func TestALauncherNamingNoPinIsSentNoLeakCheckAndStarts(t *testing.T) {
 	}
 }
 
+// A deployment that names no shared leak check (Options.LeakCheckSetting, the zero Setting)
+// pushes none, whatever pin a launcher's hello names — the worker image carries its pin whatever
+// the deployment runs — and starts the role: the daemon reads nothing, the launcher is sent no
+// slice, and the role's start carries neither PUBLIC_LEAK_CHECK nor the checker
+// (leakguard.CheckerVar), so its shim reads no install (leakguard.Installed) and its guard refuses
+// no write for the check's absence. Under the deployment's own setting the same launcher is pushed
+// the check and its role is told both, the checker being the setting's own.
+func TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setting leakguard.Setting
+		pushed  bool
+		told    map[string]string
+	}{
+		{name: "no setting", setting: leakguard.Setting{}, told: map[string]string{}},
+		{name: "the deployment's setting", setting: testLeakCheck, pushed: true, told: map[string]string{
+			leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: testLeakCheck.CheckerSHA256,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := servedLeakCheck()
+			g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false),
+				withOptions(func(o *Options) { o.LeakCheck, o.LeakCheckSetting = source, tc.setting }))
+			spec := workerSpec(t)
+			loc := g.spawn(spec)
+			if loc.Sandbox.Generation != spec.Generation {
+				t.Fatalf("the launch left %+v, want generation %d", loc, spec.Generation)
+			}
+			frames := g.sent(spec.Claim)
+			if pushed := countOf(frames, shimwire.TypeLauncherLeakCheck) > 0; pushed != tc.pushed || countOf(frames, shimwire.TypeLauncherStart) != 1 {
+				t.Fatalf("the launcher was sent %v, want the role's start with the check pushed = %t", frameTypes(frames), tc.pushed)
+			}
+			if reads := source.reads(); (len(reads) > 0) != tc.pushed {
+				t.Fatalf("the daemon read the check at %v, want a read = %t", reads, tc.pushed)
+			}
+			told := map[string]string{}
+			for _, frame := range frames {
+				start, ok := frame.(shimwire.LauncherStart)
+				if !ok {
+					continue
+				}
+				for _, pair := range start.Env {
+					if name, value, _ := strings.Cut(pair, "="); name == leakguard.CheckVar || name == leakguard.CheckerVar {
+						told[name] = value
+					}
+				}
+			}
+			if !maps.Equal(told, tc.told) {
+				t.Fatalf("the role's start told it %v of the leak check, want %v", told, tc.told)
+			}
+		})
+	}
+}
+
 // A launcher whose hello says it holds its pin installed — its pod's launcher process took the
 // check before the daemon restarted — is sent nothing of it, and the daemon does not read
 // GitHub for a running pod.
@@ -196,11 +251,11 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 		want    string
 	}{
 		"the daemon holds no credential": {
-			want: leakguard.Cause("the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra", nil),
+			want: leakguard.Cause("the daemon runs with no GitHub App, so it cannot read example-org/deployment", nil),
 		},
 		"the daemon's read is refused": {
-			source: &fakeLeakCheck{err: errors.New(leakguard.Cause("GitHub answered the read of theorem-labs/agent-infra at "+testLeakCheckTag+" with HTTP 404: Not Found", nil))},
-			want:   leakguard.Cause("GitHub answered the read of theorem-labs/agent-infra at "+testLeakCheckTag+" with HTTP 404: Not Found", nil),
+			source: &fakeLeakCheck{err: errors.New(leakguard.Cause("GitHub answered the read of example-org/deployment at "+testLeakCheckTag+" with HTTP 404: Not Found", nil))},
+			want:   leakguard.Cause("GitHub answered the read of example-org/deployment at "+testLeakCheckTag+" with HTTP 404: Not Found", nil),
 		},
 		"the pod's launcher refuses the install": {
 			source:  servedLeakCheck(),

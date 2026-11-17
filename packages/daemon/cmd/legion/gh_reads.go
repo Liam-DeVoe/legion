@@ -16,19 +16,23 @@ const ghCheckedOnlyVisibility = "checked-only"
 // ghReadsProvenCheck is the shared check ghWritesNothing's rule was proven against: its tag,
 // which is the tag the worker image pins (`ARG LEAK_CHECK_TAG` in
 // packages/daemon/docker/worker.Dockerfile, which TestGhReadsAreProvenAgainstThePinnedCheck holds
-// to this one), and the sha256 of that tag's leak-check/public_leak_check.py. The guard lets the
-// shared check alone read a call that writes nothing only where the public_leak_check.py beside
-// the check it resolved hashes to this (leakguard.GhRequest.ProvenCheck), so a pod under another
-// pin, a tmux pane's check of another version, and a check edited under the same tag get the
-// whole guard. A bump of the pin fails that test until the tag, the sha256 and the tests' port of
-// the check all move: port the new check's gh_guard, is_read, READ_ALL, READ_TWO, collect and
-// api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (both in
+// to this one). The sha256 of that tag's leak-check/public_leak_check.py is the deployment's, not
+// this binary's: the operator names it (config's `leak_check.checker_sha256`, or
+// LEGION_LEAK_CHECK_SHA256 in the daemon's environment), the runtime tells every role it as
+// leakguard.CheckerVar, and `legion gh` hands it to the guard (leakguard.GhRequest.ProvenCheck).
+// The guard lets the shared check alone read a call that writes nothing only where the
+// public_leak_check.py beside the check it resolved hashes to it, so a pod under another pin, a
+// tmux pane's check of another version, a check edited under the same tag, and every role of a
+// deployment that names no checker get the whole guard. A bump of the pin fails that test until
+// the tag and the tests' port of the check both move, and the deployment names the new checker:
+// port the new check's gh_guard, is_read, READ_ALL, READ_TWO, collect and api_read into
+// ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (both in
 // gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness against it with 0 mismatching
-// rows, then write its tag here and the sha256 of its public_leak_check.py, `git show
-// <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own repository.
-var ghReadsProvenCheck = struct{ tag, sha256 string }{
-	tag:    "leak-check-v15",
-	sha256: "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554",
+// rows, then write its tag here, and have the deployment set its checker to the sha256 of its
+// public_leak_check.py, `git show <tag>:leak-check/public_leak_check.py | sha256sum` in the shared
+// check's own repository.
+var ghReadsProvenCheck = struct{ tag string }{
+	tag: "leak-check-v15",
 }
 
 // ghRateLimitRead is the exact `gh api rate_limit`, a GitHub API call with no repository content,

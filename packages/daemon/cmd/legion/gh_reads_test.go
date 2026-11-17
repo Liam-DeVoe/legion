@@ -275,12 +275,15 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 }
 
 // The read rule is proven against the check the worker image pins: the tag ghReadsProvenCheck
-// names is worker.Dockerfile's `ARG LEAK_CHECK_TAG`, its sha256 is one of a public_leak_check.py,
-// and it is the sha256 of the public_leak_check.py the tests' port of the check was written
-// against (ghPinnedCheckPortSHA256, gh_pinned_check_test.go). A bump of the pin fails here until
-// the tag, the sha256 and that port all move.
+// names is worker.Dockerfile's `ARG LEAK_CHECK_TAG`, and the sha256 of the public_leak_check.py
+// the tests' port of the check was written against (ghPinnedCheckPortSHA256,
+// gh_pinned_check_test.go) is one a deployment can name as its checker (config's
+// `leak_check.checker_sha256`, 64 lowercase hex digits), which is the value a deployment that runs
+// that check sets. The binary holds no checker of its own: `legion gh` trusts the rule under the
+// one its role is told (leakguard.CheckerVar), which TestGhReadsUnderTheDeploymentsChecker holds.
+// A bump of the pin fails here until the tag and that port both move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
-	const prove = "port the check's gh_guard, is_read, collect and api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
+	const prove = "port the check's gh_guard, is_read, collect and api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag in ghReadsProvenCheck and have the deployment name the sha256 of its public_leak_check.py as leak_check.checker_sha256"
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
@@ -292,11 +295,8 @@ func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
 	if string(pinned[1]) != ghReadsProvenCheck.tag {
 		t.Errorf("the worker image pins %s, and the read rule was proven against %s: for %s, %s", pinned[1], ghReadsProvenCheck.tag, pinned[1], prove)
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(ghReadsProvenCheck.sha256) {
-		t.Errorf("ghReadsProvenCheck's sha256 is %q, want 64 lowercase hex digits", ghReadsProvenCheck.sha256)
-	}
-	if ghPinnedCheckPortSHA256 != ghReadsProvenCheck.sha256 {
-		t.Errorf("ghReadsProvenCheck names the public_leak_check.py whose sha256 is %s, and ghPinnedCheckReads ports the one whose sha256 is %s: for %s, %s", ghReadsProvenCheck.sha256, ghPinnedCheckPortSHA256, ghReadsProvenCheck.tag, prove)
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(ghPinnedCheckPortSHA256) {
+		t.Errorf("ghPinnedCheckPortSHA256 is %q, want 64 lowercase hex digits, which leak_check.checker_sha256 takes: for %s, %s", ghPinnedCheckPortSHA256, ghReadsProvenCheck.tag, prove)
 	}
 }
 
@@ -407,8 +407,17 @@ const (
 // ghGuardRig answers a run of `legion gh args…` with stdin against the shared check at the path
 // check (ghCheckAt), a stand-in gh that answers the visibility read `public` and every call with
 // exit 7 after recording it, and a state directory of the run's own, so no visibility is kept
-// from another run. The caller's environment names a pager and two browsers.
+// from another run. The caller's environment names a pager and two browsers, and the
+// deployment's checker as the runtime tells a role it (leakguard.CheckerVar), which is the
+// stand-in check's own (ghProvenProgramSHA256).
 func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
+	t.Helper()
+	return ghGuardRigWith(t, ghProvenProgramSHA256)
+}
+
+// ghGuardRigWith is ghGuardRig with checker as the deployment's checker the caller's environment
+// names, and none at all where checker is empty: a role of a deployment that names no checker.
+func ghGuardRigWith(t *testing.T, checker string) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
 	t.Helper()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -430,10 +439,13 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 		ghRecord, checkRecord, state := filepath.Join(records, "gh"), filepath.Join(records, "check"), filepath.Join(records, "state")
 		env := map[string]string{
 			"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-			"PUBLIC_LEAK_CHECK": check, testProvenCheckEnv: ghProvenProgramSHA256,
+			"PUBLIC_LEAK_CHECK": check, leakguard.CheckerVar: checker,
 			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": state,
 			"LEGION_ROLE": "merger", "LEGION_ISSUE": "issue-9", "LEAK_CHECK_STANDIN_TARGET": "acme/widgets",
 			"GH_PAGER": "rig-pager", "GH_BROWSER": "rig-gh-browser", "BROWSER": "rig-browser",
+		}
+		if checker == "" {
+			delete(env, leakguard.CheckerVar)
 		}
 		code, _, stderr := legionGhIn(t, t.TempDir(), env, stdin, args...)
 		return ghGuardRecord{
@@ -444,13 +456,9 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 	}
 }
 
-// testProvenCheckEnv names, to this package's test binary run as `legion` (TestMain), the sha256
-// of the public_leak_check.py its tests count as proven, in place of ghReadsProvenCheck's.
-const testProvenCheckEnv = "LEGION_TEST_PROVEN_CHECK_SHA256"
-
 // ghProvenProgram is the public_leak_check.py of the stand-in checks these tests count as the one
 // the read rule was proven against, and ghProvenProgramSHA256 is its sha256, which the rig names
-// to `legion gh` under testProvenCheckEnv.
+// to `legion gh` as the deployment's checker (leakguard.CheckerVar), as the runtime tells a role.
 const ghProvenProgram = "# stands for the shared check the read rule was proven against\n"
 
 var ghProvenProgramSHA256 = func() string {
@@ -600,7 +608,7 @@ func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 	hangs := leakguardtest.Recording("cat >/dev/null 2>&1\nticks=0\nwhile [ \"$ticks\" -lt 600 ]; do sleep 0.05; ticks=$((ticks+1)); done\nexit 0\n")
 	command := legionGhCommand(t, t.TempDir(), map[string]string{
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-		"PUBLIC_LEAK_CHECK": ghCheckAt(t, hangs), testProvenCheckEnv: ghProvenProgramSHA256,
+		"PUBLIC_LEAK_CHECK": ghCheckAt(t, hangs), leakguard.CheckerVar: ghProvenProgramSHA256,
 		"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord,
 	}, "pr", "view", "1", "-R", "acme/widgets")
 	printed, err := os.Create(filepath.Join(records, "printed"))
@@ -651,6 +659,34 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 				guardedWhole(t, run(t, ghCheckWithProgram(t, ghCheckPasses, program.text), "", args...), args)
 			})
 		}
+	}
+}
+
+// `legion gh` trusts its read rule under the checker its role is told (leakguard.CheckerVar), the
+// deployment's, and under no other: a read under the proven stand-in check, its role told that
+// check's own checker, is read by the check alone; the same read under the same check, its role
+// told another checker or none — a deployment that names no checker — gets the whole guard, the
+// visibility read included.
+func TestGhReadsUnderTheDeploymentsChecker(t *testing.T) {
+	args := []string{"pr", "view", "1", "-R", "acme/widgets"}
+	for _, tc := range []struct {
+		name, checker string
+		checkedOnly   bool
+	}{
+		{name: "the check's own checker", checker: ghProvenProgramSHA256, checkedOnly: true},
+		{name: "another checker", checker: strings.Repeat("0", 64)},
+		{name: "no checker", checker: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ghGuardRigWith(t, tc.checker)(t, ghCheckAt(t, ghCheckPasses), "", args...)
+			if !tc.checkedOnly {
+				guardedWhole(t, got, args)
+				return
+			}
+			if got.code != 7 || strings.Contains(got.gh, "visibility ") || !strings.Contains(got.log, `visibility="checked-only"`) {
+				t.Errorf("legion gh %q = exit %d, gh %q, log %q; want gh's own 7, no visibility read and a checked-only line", args, got.code, got.gh, got.log)
+			}
+		})
 	}
 }
 

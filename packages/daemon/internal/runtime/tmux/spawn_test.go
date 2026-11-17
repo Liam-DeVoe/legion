@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -467,6 +468,7 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 		EnvoyURL: "http://127.0.0.1:9020", NATSURLs: []string{"nats://a:4222"},
 		DispatchURL: "http://127.0.0.1:18766", DispatchTokenFile: "/state/secrets/" + runtime.DispatchTokenFileName,
 		GHOwnersDir: "/state/secrets/legion-omp-legion-43-tester-gh", GHDefault: "acme", GH: "/usr/bin/gh",
+		LeakCheckSHA256: strings.Repeat("5e", 32),
 	}
 	owned := maps.Clone(runtimeOwned)
 	maps.Copy(owned, composed)
@@ -494,6 +496,36 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 	}
 	if ownedNames["PUBLIC_LEAK_CHECK"] {
 		t.Error("PUBLIC_LEAK_CHECK is in ownedNames, so a spec that points its pane at another copy of the check is refused")
+	}
+}
+
+// A pane is told the deployment's checker (leakguard.CheckerVar) exactly where the deployment
+// names a shared leak check, once and with the setting's own value: under it a pane with no check
+// refuses its public writes and a pane's `legion gh` names it as the checker its read rule was
+// proven against. A deployment that names none tells its panes nothing of it, so they refuse no
+// write for the check's absence.
+func TestAPaneIsToldTheDeploymentsCheckerOnlyWhereItNamesOne(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	for _, tc := range []struct {
+		name, sha string
+		want      []string
+	}{
+		{name: "a deployment that names a check", sha: checker, want: []string{checker}},
+		{name: "a deployment that names none", sha: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := testSpec()
+			in := PaneInputs{StateDir: "/state", Workspace: "/state/workspaces/LEGION-43", LeakCheckSHA256: tc.sha}
+			var told []string
+			for _, pair := range panePairs(spec, in, secretFiles("/state", spec)) {
+				if value, ok := strings.CutPrefix(pair, leakguard.CheckerVar+"="); ok {
+					told = append(told, value)
+				}
+			}
+			if !slices.Equal(told, tc.want) {
+				t.Errorf("the pane was told %s %q, want %q", leakguard.CheckerVar, told, tc.want)
+			}
+		})
 	}
 }
 

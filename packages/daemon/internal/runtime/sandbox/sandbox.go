@@ -54,6 +54,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -127,6 +128,9 @@ type Runtime struct {
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
 	memoryGuard *shimwire.LauncherMemoryGuard
+	// leakCheck is Options.LeakCheckSetting: the deployment's shared public leak check, whose
+	// install and checker every role is told where it is configured (mainEnvironment).
+	leakCheck leakguard.Setting
 	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
 	// encoded once here. Every input of a shape — the image, the kind's reservation, the
 	// operator's volumes and mounts and the disk — is set at construction and never written
@@ -387,7 +391,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
+		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard, leakCheck: opts.LeakCheckSetting,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
@@ -408,7 +412,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
 	// before any of its roles start, take its memory guard's kill reports, and log what they could
 	// not carry or record, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
+	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape is encoded here and only read afterwards.
 	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}

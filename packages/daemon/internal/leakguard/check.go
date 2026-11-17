@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,7 +55,9 @@ const pointerFile = "public-leak-check/path"
 // Resolve is the shared public leak check's path, found the way the check itself says to find
 // it: CheckVar, then public-leak-check.sh on PATH, then the pointer file under the
 // configuration home, whose content is the path of the script. The guard's own Check option
-// stands in front of all three, and is how a test hands the guard a stand-in.
+// stands in front of all three, and is how a test hands the guard a stand-in. Where none of the
+// three names a check at all — CheckVar unset, no check on PATH, and no pointer file — the error
+// is a noneNamed, which sharedCheck reads apart from a check that is named and not there.
 //
 // Every call resolves again, and no answer is kept. The check is published often, and a guard
 // that resolved one copy at start would keep running it: a text the current check refuses would
@@ -77,18 +80,47 @@ func (g *Guard) Resolve() (string, error) {
 		}
 	}
 	if config == "" {
-		return "", errors.New(CheckVar + " names none, " + checkName + " is on no PATH entry, and there is no configuration home to read a pointer file from")
+		return "", noneNamed{errors.New(CheckVar + " names none, " + checkName + " is on no PATH entry, and there is no configuration home to read a pointer file from")}
 	}
 	pointer := filepath.Join(config, pointerFile)
 	content, err := os.ReadFile(pointer)
 	if err != nil {
-		return "", fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, pointer, err)
+		err = fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, pointer, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", noneNamed{err}
+		}
+		return "", err
 	}
 	named := strings.TrimSpace(string(content))
 	if named == "" {
 		return "", fmt.Errorf("the pointer file %s names no check", pointer)
 	}
 	return found(named, "the pointer file "+pointer)
+}
+
+// noneNamed is Resolve's answer where no place it looks names a check at all, as against a check
+// that is named and not there, a pointer file that cannot be read, and one that names nothing,
+// each of which is a broken setup whatever the deployment runs.
+type noneNamed struct{ error }
+
+func (n noneNamed) Unwrap() error { return n.error }
+
+// sharedCheck is the shared check a write of what runs (Resolve), or "" and no error where none is
+// named and the environment names no deployment checker (CheckerVar): a deployment that runs no
+// shared leak check of its own (Setting.Configured) refuses no write for the check's absence, and
+// the write gets the rest of the guard, the visibility read and the private-name pass. Under a
+// deployment that names one, and wherever a check is named but cannot be resolved, the answer is
+// the setup failure whyNoCheck, which refuses the write.
+func (g *Guard) sharedCheck(what string) (string, error) {
+	check, err := g.Resolve()
+	if err == nil {
+		return check, nil
+	}
+	var none noneNamed
+	if errors.As(err, &none) && !configured(g.base()) {
+		return "", nil
+	}
+	return "", &SetupFailure{What: what, Why: whyNoCheck, Err: err}
 }
 
 // found is path, once a file is there: a name taken from a variable, an option or a pointer file

@@ -425,9 +425,11 @@ func TestTheHelpRunSeesOnlyPathHomeAndTmpdir(t *testing.T) {
 
 // A role's shim reads the install and starts no agent unless it is the pin's: an absent check, an
 // install that records no tag and one of another tag are each refused naming the pin and what is
-// there. With no pin, which is every tmux pane, nothing is read and nothing refused.
+// there. With no pin, which is every tmux pane, nothing is read and nothing refused; and with the
+// pin but no deployment checker (CheckerVar), which is every role of a deployment that runs no
+// shared leak check, nothing is read either, even where there is no install at all.
 func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
-	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}
+	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag, CheckerVar + "=" + strings.Repeat("5e", 32)}
 	installedAt := func(t *testing.T) string {
 		t.Helper()
 		dir := filepath.Join(t.TempDir(), "leak-check")
@@ -446,6 +448,12 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 	})
 	t.Run("no pin", func(t *testing.T) {
 		check, err := Installed([]string{"PATH=/usr/bin:/bin"}, filepath.Join(t.TempDir(), "absent"))
+		if err != nil || check != "" {
+			t.Fatalf("Installed = %q, %v; want no check and no refusal", check, err)
+		}
+	})
+	t.Run("the pin and no checker", func(t *testing.T) {
+		check, err := Installed([]string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}, filepath.Join(t.TempDir(), "absent"))
 		if err != nil || check != "" {
 			t.Fatalf("Installed = %q, %v; want no check and no refusal", check, err)
 		}

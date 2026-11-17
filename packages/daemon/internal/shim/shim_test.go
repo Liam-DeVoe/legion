@@ -583,8 +583,12 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 	}
 }
 
-// theTag is the pin a pod's worker image carries, as these tests spell one.
+// theTag is the pin a pod's worker image carries, as these tests spell one, and theChecker the
+// deployment's checker the runtime tells a role of a deployment that runs a shared leak check
+// (leakguard.CheckerVar): a stand-in sha256, since no test here runs the check's program.
 const theTag = "leak-check-v15"
+
+var theChecker = leakguard.CheckerVar + "=" + strings.Repeat("5e", 32)
 
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
 // made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
@@ -626,7 +630,7 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			extra := []string{leakguard.TagVariable + "=" + theTag}
+			extra := []string{leakguard.TagVariable + "=" + theTag, theChecker}
 			if tc.already != "" {
 				extra = append(extra, leakguard.CheckVar+"="+tc.already)
 			}
@@ -648,9 +652,9 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 	}
 }
 
-// A role whose environment carries the pin and whose pod holds no install of it runs no agent at
-// all: the shim ends with exit 1 and the read's own refusal. Every write path of such a role would
-// refuse anyway.
+// A role whose environment carries the pin and the deployment's checker and whose pod holds no
+// install of the pin runs no agent at all: the shim ends with exit 1 and the read's own refusal.
+// Every write path of such a role would refuse anyway.
 func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -665,7 +669,7 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			child := newOMP(t, leakguard.TagVariable+"="+theTag)
+			child := newOMP(t, leakguard.TagVariable+"="+theTag, theChecker)
 			cfg := config(t, path, child)
 			cfg.LeakCheckDir = tc.dir(t)
 			sh := run(t, cfg, newClock())
@@ -691,22 +695,34 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	}
 }
 
-// A tmux pane's environment carries no pin, and its shim reads no install at all: the agent
-// starts where no install exists, and the shim names no check of its own for it.
-func TestWithNoPinTheAgentStartsWithNoInstall(t *testing.T) {
-	path := socketPath(t)
-	daemon := listen(t, path)
-	child := newOMP(t)
-	cfg := config(t, path, child)
-	cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
-	sh := run(t, cfg, newClock())
+// A tmux pane's environment carries no pin, and a role of a deployment that runs no shared leak
+// check carries the image's pin and no checker (leakguard.CheckerVar): the shim of either reads no
+// install at all, the agent starts where no install exists, and the shim names no check of its
+// own for it.
+func TestWithNoPinOrNoCheckerTheAgentStartsWithNoInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+	}{
+		{"no pin", nil},
+		{"the pin and no checker", []string{leakguard.TagVariable + "=" + theTag}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t, tc.env...)
+			cfg := config(t, path, child)
+			cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
+			sh := run(t, cfg, newClock())
 
-	daemon.accept(t).open(t)
-	if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
-		t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
-	}
-	if sh.log.count("the shared public leak check") != 0 {
-		t.Errorf("the shim logged an install with no pin; log:\n%s", sh.log)
+			daemon.accept(t).open(t)
+			if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
+				t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
+			}
+			if sh.log.count("the shared public leak check") != 0 {
+				t.Errorf("the shim logged an install it should not have read; log:\n%s", sh.log)
+			}
+		})
 	}
 }
 

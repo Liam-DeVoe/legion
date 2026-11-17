@@ -546,8 +546,14 @@ whole record.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
-image pins, and pushes it to the pod's launcher, which installs it before any role of the pod
-starts ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)).
+image pins, from the repository the deployment names (`LEGION_LEAK_CHECK_REPOSITORY` and
+`LEGION_LEAK_CHECK_SHA256` in the daemon's environment, or `leak_check.repository` and
+`leak_check.checker_sha256` in `legion.yaml`), and pushes it to the pod's launcher, which installs
+it before any role of the pod starts
+([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). A
+deployment that names no check runs none: the daemon logs `daemon: the deployment leak check is
+not configured` once at boot, and no launch is refused for the check and no claim carries this
+sentence.
 A start whose check could not be installed is not sent, and it is charged as a launch failure, so
 a claim that keeps meeting it fails with `launch failures ran out: <the refusal>` and the cause
 word `launch_refused`, or `died` where the refused launches were the relaunch of a process that
@@ -566,7 +572,8 @@ listing alone. What follows the colon says where to look:
 
 - `the daemon runs with no GitHub App, so it cannot read example-org/deployment`, or `the daemon
   could not mint its read-only token for example-org/deployment: …`: the daemon's GitHub App
-  configuration, and the implement App's installation on example-org.
+  configuration, and the implement App's installation on the owner of the repository the
+  deployment names.
 - `GitHub refused the daemon's implement App the reading permissions on example-org, …`: what the
   account grants the implement App's installation on example-org. The read lease needs contents,
   pull requests and metadata read. The daemon asks for no wider token in its place.
