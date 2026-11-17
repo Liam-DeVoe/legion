@@ -1846,7 +1846,8 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 // (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
 // retro, which the last of them to leave starts (startHeldRetro), and keeps the last step's
 // handoff for the retro's task, which no clear of a handoff takes. The architect is told the pass
-// and the hold.
+// and the hold. No role is told that its phase ended (phaseEnded): only a head that conflicts with
+// its base sends that, and its move goes back to implementing, never into the retro.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
 	handoff record.PhaseRow, pr *record.PullRequest, reason string, beneath []string) error {
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr)
@@ -1858,10 +1859,7 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason)); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath)); err != nil {
-		return err
-	}
-	return e.phaseEnded(ctx, tx, issue, trigger, from, to, phase.RoleFor(to), reason)
+	return e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath))
 }
 
 // noticeFor is what a transition on trigger out of from into to tells the architect: that from
