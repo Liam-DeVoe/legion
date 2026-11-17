@@ -41,7 +41,7 @@ func TestIssueBranchAndBranchIssueAreOneRule(t *testing.T) {
 // that branch, a dot and the give's number, 2 or more. Every form names its issue, so each GitHub
 // event on a task's branch reaches its issue, and a branch whose part after the key is none of the
 // forms is no task's and no issue's: a capital letter, a second word, a number below 2 or with a
-// leading zero, and the slug `lock`, since git refuses a ref whose name ends in `.lock`.
+// leading zero, and the words no slug may be (notSlugs), `lock` and `removing`.
 func TestATaskBranchNamesItsIssueAndSlug(t *testing.T) {
 	if got := TaskBranch("ACME-1", ""); got != "legion/ACME-1" {
 		t.Fatalf("TaskBranch(no slug) = %q", got)
@@ -64,6 +64,8 @@ func TestATaskBranchNamesItsIssueAndSlug(t *testing.T) {
 		"legion/ACME-1.d.2.3":          {"", "", "false"},
 		"legion/ACME-1..2":             {"", "", "false"},
 		"legion/ACME-1.lock":           {"", "", "false"},
+		"legion/ACME-1.removing":       {"", "", "false"},
+		"legion/ACME-1.removing.2":     {"", "", "false"},
 		"main":                         {"", "", "false"},
 	} {
 		issue, slug, ok := BranchTask(branch)

@@ -2,6 +2,7 @@ package claim
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -24,9 +25,21 @@ func BranchIssue(branch string) (string, bool) {
 
 // taskSlug is the shape of a task's slug in its branch and its directory: a lower-case letter or
 // digit, then at most 39 lower-case letters, digits and hyphens. It holds no dot, so the first dot
-// of a task's branch ends the issue key, and every slug is a valid component of a git ref and of a
-// path but one: git refuses a ref whose name ends in `.lock`, so `lock` is no slug (IsTaskSlug).
+// of a task's branch ends the issue key, and a slug is a component of a git ref and of a path. A
+// word of that shape can still be no slug (notSlugs).
 var taskSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+
+// notSlugs are the words of a slug's shape (taskSlug) that no slug may be, each for its reason.
+var notSlugs = []string{
+	// git refuses a ref whose name ends in `.lock` (git check-ref-format), so legion/<KEY>.lock
+	// is no branch GitHub or jj can hold.
+	"lock",
+	// internal/workspace renames a working copy it removes to its directory and `.removing`
+	// (removingSuffix), beside the working copies of the other tasks of its issue, so the working
+	// copy of a task of this slug, `<key>.removing`, is the path the issue's own working copy is
+	// renamed to and deleted from.
+	"removing",
+}
 
 // laterGive is the part of a task's branch after the issue key for a later give of a slug in one
 // generation (TaskBranchOfGive): the slug, a dot and the give's number, 2 or more, written with no
@@ -34,8 +47,11 @@ var taskSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 // no first give of any slug is a later give of another.
 var laterGive = regexp.MustCompile(`^([^.]+)\.([2-9]|[1-9][0-9]+)$`)
 
-// IsTaskSlug reports whether slug is the shape a task's slug has (taskSlug).
-func IsTaskSlug(slug string) bool { return slug != "lock" && taskSlug.MatchString(slug) }
+// IsTaskSlug reports whether slug is a task's slug: of a slug's shape (taskSlug) and none of the
+// words no slug may be (notSlugs).
+func IsTaskSlug(slug string) bool {
+	return taskSlug.MatchString(slug) && !slices.Contains(notSlugs, slug)
+}
 
 // TaskBranch is the GitHub branch of a task of issue's plan: the issue's own branch (IssueBranch)
 // for slug "", legion/<issue>.<slug> otherwise.
