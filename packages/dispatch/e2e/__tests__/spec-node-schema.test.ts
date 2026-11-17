@@ -15,7 +15,9 @@ import { parseAllDocuments } from "yaml";
 
 /** The path of path under packages/envoy/internal/dispatch/specgraph. */
 function specgraphPath(path: string): string {
-  return fileURLToPath(new URL(`../../../envoy/internal/dispatch/specgraph/${path}`, import.meta.url));
+  return fileURLToPath(
+    new URL(`../../../envoy/internal/dispatch/specgraph/${path}`, import.meta.url)
+  );
 }
 
 /** The text of path under packages/envoy/internal/dispatch/specgraph. */
@@ -77,7 +79,10 @@ interface DecodedDocument {
 }
 
 describe("each YAML fixture of specgraph", () => {
-  const decoded = JSON.parse(specgraph("testdata/fixtures.decoded.json")) as Record<string, DecodedDocument[]>;
+  const decoded = JSON.parse(specgraph("testdata/fixtures.decoded.json")) as Record<
+    string,
+    DecodedDocument[]
+  >;
   const fixtures = readdirSync(specgraphPath("testdata"), { recursive: true, encoding: "utf8" })
     .filter((name) => name.endsWith(".yaml"))
     .sort();
