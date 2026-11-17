@@ -216,13 +216,16 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 	}
 }
 
-// A completion names a rating by its members, never by their values: `"planReason": ""` is a
-// reason named, and empty. So a completion that does not end the retro and carries it, or either
-// member alone, is refused PLAN_RATING_UNEXPECTED; the retro's completion carrying it alone is
-// refused PLAN_RATING_INPUT for the rating it lacks, from a plugin at PlanRatingContract and from
-// one before it alike, rather than told it carries no rating or taken unrated; and with a rating
-// it is refused as blank. Each body is sent raw, since HandoffCompleteRequest's encoding leaves an
-// empty reason out. Nothing is recorded, and the completion each case corrects to is taken.
+// A completion names a rating by its members written with a value, whatever the value:
+// `"planReason": ""` is a reason named, and empty. So a completion that does not end the retro and
+// carries it, or either member alone, is refused PLAN_RATING_UNEXPECTED; the retro's completion
+// carrying it alone is refused PLAN_RATING_INPUT for the rating it lacks, from a plugin at
+// PlanRatingContract and from one before it alike, rather than told it carries no rating or taken
+// unrated; and with a rating it is refused as blank. A member written null names nothing: it
+// decodes to nil and reads as left out, so the completion outside the retro that writes both
+// members null is taken, and its fact carries no rating. That body alone is written by hand, since
+// HandoffCompleteRequest leaves a nil member out rather than writing it null. A refusal records
+// nothing, and the completion each case corrects to is taken.
 func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 	post := func(t *testing.T, h *harness, grant, members string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -233,28 +236,38 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 		return h.request(http.MethodPost, "/legion/v1/handoff/complete",
 			fmt.Sprintf(`{"grantId":%s,"summary":"done","verdict":"","commit":"c0ffee"%s}`, encoded, members), nil)
 	}
+	type rating struct {
+		rating *int
+		reason *string
+	}
+	complete := func(h *harness, grant string, r rating) *httptest.ResponseRecorder {
+		return h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "done", Commit: "c0ffee", PlanRating: r.rating, PlanReason: r.reason})
+	}
 
 	t.Run("outside the retro", func(t *testing.T) {
 		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 		seedIssueAt(t, h, "LEGION-208", phase.Merging)
 		merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-		for _, members := range []string{`,"planReason":""`, `,"planReason":"fit"`, `,"planRating":4`} {
-			refused(t, post(t, h, merger.grant(t), members), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+		for _, named := range []rating{{reason: new("")}, {reason: new("fit")}, {rating: new(4)}} {
+			refused(t, complete(h, merger.grant(t), named), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
 		}
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusals = %#v, want none applied", got)
 		}
-		completion(t, post(t, h, merger.grant(t), ""))
+		completion(t, post(t, h, merger.grant(t), `,"planRating":null,"planReason":null`))
+		if fact := lastCompletion(t, facts); fact.PlanRating != nil {
+			t.Fatalf("the completion writing both members null was taken rated %+v, want no rating", *fact.PlanRating)
+		}
 	})
 
 	for _, band := range []struct {
 		name     string
 		contract int
-		// taken is the members of the completion the claim's plugin is taken with.
-		taken string
+		// taken is the rating of the completion the claim's plugin is taken with.
+		taken rating
 	}{
-		{name: "a plugin at PlanRatingContract", contract: PlanRatingContract, taken: `,"planRating":4,"planReason":"fit"`},
-		{name: "a plugin before it", contract: PlanRatingContract - 1, taken: ""},
+		{name: "a plugin at PlanRatingContract", contract: PlanRatingContract, taken: rating{rating: new(4), reason: new("fit")}},
+		{name: "a plugin before it", contract: PlanRatingContract - 1},
 	} {
 		t.Run("the retro of "+band.name, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
@@ -269,19 +282,22 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != band.contract {
 				t.Fatalf("the claim is %s at contract %d, want working at %d: this case proves nothing", c.State, c.PluginContract, band.contract)
 			}
-			for i, row := range []struct{ members, says string }{
-				{members: `,"planReason":""`, says: "planReason comes with no planRating"},
-				{members: `,"planRating":4,"planReason":""`, says: "planReason is blank"},
+			for i, row := range []struct {
+				named rating
+				says  string
+			}{
+				{named: rating{reason: new("")}, says: "planReason comes with no planRating"},
+				{named: rating{rating: new(4), reason: new("")}, says: "planReason is blank"},
 			} {
-				message := refused(t, post(t, h, grants[i], row.members), http.StatusBadRequest, "PLAN_RATING_INPUT")
+				message := refused(t, complete(h, grants[i], row.named), http.StatusBadRequest, "PLAN_RATING_INPUT")
 				if !strings.Contains(message, row.says) {
-					t.Fatalf("the refusal of %s = %q, want it to say %q", row.members, message, row.says)
+					t.Fatalf("the refusal = %q, want it to say %q", message, row.says)
 				}
 			}
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("facts after the refusals = %#v, want none applied", got)
 			}
-			completion(t, post(t, h, grants[2], band.taken))
+			completion(t, complete(h, grants[2], band.taken))
 		})
 	}
 }

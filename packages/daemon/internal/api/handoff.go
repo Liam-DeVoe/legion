@@ -52,8 +52,11 @@ import (
 // ends the retro carries and no other completion does (PlanRatingContract). Both are pointers for
 // the reason WakeAt is: a completion naming no rating is told from one naming 0, which is refused
 // as outside 1 to 5, and a completion naming no reason from one naming "", which is refused as
-// blank, so a completion that names either member is held to the rule of the rating, as the
-// contract's LegionHandoffCompleteRequest holds the two by presence.
+// blank, so a completion that names either member with a value is held to the rule of the rating.
+// A member written null reads as left out, since encoding/json decodes null into a pointer as nil;
+// the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
+// (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
+// plugin sends one.
 type HandoffCompleteRequest struct {
 	GrantID        string     `json:"grantId"`
 	Summary        string     `json:"summary"`
