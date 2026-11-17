@@ -350,7 +350,7 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
@@ -808,7 +808,7 @@ jobs:
           name: dispatch-e2e-binaries
           path: packages/envoy/out/dispatch-e2e-broker
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
