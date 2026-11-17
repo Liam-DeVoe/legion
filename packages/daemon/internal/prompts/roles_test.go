@@ -592,6 +592,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// (dispatch://INFRA-1303). The whole rule is in the worker skill's red-at-the-head page,
 		// which this mode-neutral part may not name.
 		{"core/tester.md", "The role that holds the issue's phase re-runs a red at the head of the pull request that the change did not cause"},
+		// A tester whose issue has no `ci_check` check read "a check CI runs is recorded from CI's
+		// job" and "by hand you drive only the changed behaviour" beside "except a `ci_check` job" as
+		// no CI to read, and passed a red head without seeing it (dispatch://INFRA-1303,
+		// trial-k-head-5 of its batch of record: "No `ci_check` lane; drove it by hand").
+		{"core/tester.md", "Read the head's checks on GitHub before any verdict, whether or not a check of the issue carries `ci_check`."},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and `dispatch results` derives that result
 		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or

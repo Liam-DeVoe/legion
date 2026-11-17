@@ -715,6 +715,8 @@ const NEVER_WAITING_POINTS_AT_THE_PAGE =
   "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: that the counted set must report the check before any re-run, since a task naming a red is not that set; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
 const TESTER_EVIDENCE_POINTS_AT_THE_PAGE =
   "A red at the head that the change did not make is the tester's to re-run once, and `skill://legion-worker/references/red-at-the-head.md` holds the rule.";
+const TESTER_READS_THE_HEAD =
+  "The tester reads the head's checks on GitHub before any verdict, whether or not a check of the issue carries `ci_check`.";
 
 /**
  * What the four files INFRA-1303 wrote or changed get wrong about a red at the head: the worker
@@ -777,6 +779,11 @@ export function redAtTheHeadFaults(pages: {
         sentence: TESTER_EVIDENCE_POINTS_AT_THE_PAGE,
         because:
           "a tester reading its evidence rule reaches the re-run rule only through this pointer",
+      },
+      {
+        sentence: TESTER_READS_THE_HEAD,
+        because:
+          "a tester whose issue has no `ci_check` check read 'by hand it drives only the changed behaviour' beside 'except a `ci_check` job' as no CI to read, and passed a red head it never saw",
       },
     ]),
   ];
