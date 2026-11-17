@@ -334,6 +334,7 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1"})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Rounds: 2})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -645,6 +646,7 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 				// The reviewer has completed its round, so GitHub's approval on a green head is the
 				// review's second half and ends it.
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "claim", HandoffRecord: "review-1", HandoffVersion: 1})
+				seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 				seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 			},
 			fact: func() intake.Fact {
@@ -1088,6 +1090,7 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", HeadSHA: headOne, ConflictingHead: headOne, CheckedHead: headOne, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1"})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	// Two rounds counted already, so a third counted round would reach the cap of three and post.
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Rounds: 2})
 	engine := testEngine(config.DesignGateRootIssues, nil)
