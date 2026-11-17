@@ -6330,9 +6330,13 @@ each issue's pod (every role of it alike) and the image probe's.
   A registration that would take a claim past it is refused `409` (`this claim holds the most session names one claim may (2048) …`), recording nothing.
   The claim keeps its names, so a claim that records a session still resumes it; a claim that needs a new one after a fresh start starts none until an operator frees the names of its older sessions.
   The refusal's Warn line gives the statement that does so in its `release` field: it deletes the claim's holds recorded more than 13 hours ago, except every name of the session the claim records and of the one it last abandoned, and only once the claim's last session switch is more than 13 hours ago.
+  The same line's `release_after` field gives the earliest time the statement can free anything, as an absolute UTC time: the claim's last switch plus 13 hours.
+  A claim that needs a new session was usually just given one by `forget-session`, so the statement frees nothing until then; run it after that time and check that PostgreSQL answers `DELETE n` with `n` above 0, since `DELETE 0` means the window has not passed.
   The hours count from that switch, not from when a hold was written: a claim changes sessions only by forgetting the one it records, and every session it ran before then had ended by then.
   The broker keeps an ended session's grants for its carry window from when its enrollment went dormant, which a failed revoke puts up to the longest lease, an hour, after the process ended; 13 hours is the default window, 12 hours, plus that hour, so a claim that later takes a freed name takes no grant.
   A deployment with a longer `BROKER_SESSION_CARRY_SECONDS` puts its window plus an hour in both places of the statement.
+  One case the 13 hours do not cover: a lease does not run while no broker is serving, and the daemon's revoke is three tries ten seconds apart, so after a broker outage longer than about 45 minutes an enrollment the revoke missed can go dormant later than an hour after its process ended.
+  The daemon logs that missed revoke at Error, `supervise: agent-secrets: enrollment not revoked after every attempt; the lease ends it`; when that line appears for the claim, wait 13 hours after it, not after the switch, before running the statement.
   Run the release only while the boot names no claim for that claim's names: after a rollback, the next boot holds again any freed name another claim records (`HoldRecordedSessions`).
 
 - A project whose daemon moves to a new database starts with an empty table, so no session recorded in the old one is held; the broker's carry window, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default), bounds what an old session's grants can still reach.
