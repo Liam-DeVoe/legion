@@ -135,7 +135,8 @@ export const issueCollaboratorsQuery = (key: string | undefined) =>
 /** The step records Legion wrote of one issue (`GET /api/v1/issues/{key}/steps`), which the Steps
  *  tab draws. A step write appends no event of its own, so the event feed refreshes this key on
  *  the issue's events that come with a phase moving (`changesSteps` in `event-refresh.ts`), each
- *  naming it exactly as it names every issue target. */
+ *  naming it exactly as it names every issue target. The tab reads it only through its catch-up,
+ *  which each such refresh starts (`features/steps/StepsTab.tsx`). */
 export const issueStepsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "steps"],

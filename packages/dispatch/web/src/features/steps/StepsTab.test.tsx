@@ -1,12 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the table's own scroll events below, which user-event has no form for
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { fireEvent, screen, within } from "@testing-library/react";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { installResizeObserver, layOutScrollBox } from "../../__tests__/scroll-box";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { refreshQueries } from "../../api/query-refresh";
@@ -17,7 +17,7 @@ import { stepRecord as record } from "./step-record-fixture";
 
 function renderTab(read: () => Promise<IssueSteps>) {
   const listSteps = spyOn(api, "listSteps").mockImplementation(read);
-  const view = renderWithQueries(<StepsTab issueKey="CORE-1" />);
+  const view = renderWithQueries(<StepsTab active issueKey="CORE-1" />);
   return {
     listSteps,
     restore: () => {
@@ -130,7 +130,7 @@ test("an event of the issue redraws the Steps tab's rows with what the records n
     };
     const listSteps = spyOn(api, "listSteps").mockImplementation(async () => answer);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const view = renderWithQueries(<StepsTab issueKey="CORE-1" />, {
+    const view = renderWithQueries(<StepsTab active issueKey="CORE-1" />, {
       wrapper: ({ children }) => (
         <QueryClientProvider client={client}>{children}</QueryClientProvider>
       ),
@@ -377,26 +377,33 @@ test("the Steps tab says so when no step of the issue has run in Legion", async 
 });
 
 // A failed read names what it could not read and why, in the server's words, and offers the
-// read again; it never reads as an issue with no steps.
+// read again; it never reads as an issue with no steps. The clock stands still, so the read after
+// the failed one is Retry's and not a later read of the tab's catch-up.
 test("the Steps tab says what failed when the read fails, and reads again on Retry", async () => {
-  const user = userEvent.setup();
-  let answer: () => Promise<IssueSteps> = async () => {
-    throw new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
-  };
-  const tab = renderTab(() => answer());
-  try {
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Couldn't load the steps of CORE-1: the database is busy");
-    expect(screen.queryByRole("region", { name: "Steps empty state" })).toBeNull();
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    let answer: () => Promise<IssueSteps> = async () => {
+      throw new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
+    };
+    const tab = renderTab(() => answer());
+    try {
+      await tick(0);
+      const alert = screen.getByRole("alert");
+      expect(alert.textContent).toContain(
+        "Couldn't load the steps of CORE-1: the database is busy"
+      );
+      expect(screen.queryByRole("region", { name: "Steps empty state" })).toBeNull();
 
-    answer = async () => ({
-      issue: "CORE-1",
-      tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
-    });
-    await user.click(within(alert).getByRole("button", { name: "Retry" }));
-    await screen.findByRole("table", { name: "Steps of task default" });
-    await waitFor(() => expect(tab.listSteps).toHaveBeenCalledTimes(2));
-  } finally {
-    tab.restore();
-  }
+      answer = async () => ({
+        issue: "CORE-1",
+        tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+      });
+      await user.click(within(alert).getByRole("button", { name: "Retry" }));
+      await tick(0);
+      expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
+      expect(tab.listSteps).toHaveBeenCalledTimes(2);
+    } finally {
+      tab.restore();
+    }
+  });
 });

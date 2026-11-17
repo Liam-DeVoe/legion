@@ -1,7 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode } from "react";
+import { focusManager, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Fragment, type ReactNode, useEffect, useState } from "react";
 
 import { issueStepsQuery } from "../../api/queries";
+import { onRefresh } from "../../api/query-refresh";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
@@ -214,13 +215,63 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
   );
 }
 
+/** When the shown tab reads again after a catch-up starts, in ms from the start; it also reads at
+ *  once. A step record leaves the daemon on an outbox lane of its own, which neither waits for
+ *  the issue's events nor sends one, so the event that starts a catch-up can reach the page before
+ *  its record. A write that lane fails waits at most 64 s before it is tried again, so the list
+ *  covers a record that needed one or two retries. A record later than the last read shows at the
+ *  next start. */
+const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as const;
+
+/**
+ * Reads the issue's records through `refetch` at once and at each of `CATCH_UP_READS_MS` after
+ * every start: the tab shown, the page shown again, and each refresh the event feed asks of this
+ * read - an event of the issue that comes with a phase moving (`changesSteps` in
+ * `api/event-refresh.ts`), or a refresh of the whole cache. A start replaces the catch-up running,
+ * so a tab holds one list of timers at most; a tab not shown, or a hidden page, reads nothing and
+ * holds no timer. A read never cancels one already out, as the event feed's never does.
+ */
+function useCatchUp(
+  issueKey: string,
+  shown: boolean,
+  refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>
+): void {
+  const queryClient = useQueryClient();
+  const [visible, setVisible] = useState(() => focusManager.isFocused());
+  useEffect(() => focusManager.subscribe(setVisible), []);
+  useEffect(() => {
+    if (!shown || !visible) {
+      return;
+    }
+    let timers: number[] = [];
+    const read = () => void refetch({ cancelRefetch: false });
+    const start = () => {
+      for (const timer of timers) {
+        window.clearTimeout(timer);
+      }
+      read();
+      timers = CATCH_UP_READS_MS.map((ms) => window.setTimeout(read, ms));
+    };
+    start();
+    const stopHearing = onRefresh(queryClient, issueStepsQuery(issueKey).queryKey, start);
+    return () => {
+      stopHearing();
+      for (const timer of timers) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [issueKey, queryClient, refetch, shown, visible]);
+}
+
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`): one table per task, in the order
  * of each task's first step, and one row per run of a step - its role, type, agent, model,
- * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them.
+ * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them,
+ * and only through its catch-up (`useCatchUp`), so the query fetches nothing on its own.
  */
-export function StepsTab({ issueKey }: { issueKey: string }): ReactNode {
-  const query = useQuery(issueStepsQuery(issueKey));
+export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
+  const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false });
+  useCatchUp(issueKey, active, query.refetch);
   if (query.isPending) {
     return <p className={textMutedOnCanvas}>Loading steps…</p>;
   }
