@@ -187,7 +187,9 @@ export function oneLineCut({
 }
 
 /** A typed block's source line in a text: its opening `:::requirement{#r1}`, or its closing
- *  `:::`. The pattern of `RowText.tsx`'s `DIRECTIVE_LINE`, which that module keeps to itself. */
+ *  `:::`. A copy of part G's `DIRECTIVE_LINE` (`RowText.tsx`'s `withoutDirectiveLines`), which
+ *  that module keeps to itself; this part imports G's export in its place, and deletes the copy,
+ *  once G exports it and is under this part's base (decision 94). */
 const SOURCE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
 
 /** A text's words with each reference it cites unnamed while a line is cut from them, and the
