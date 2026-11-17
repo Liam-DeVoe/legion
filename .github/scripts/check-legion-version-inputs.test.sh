@@ -330,6 +330,19 @@ check "exits 1" "$(is "$status" 1)"
 check "names the output and the module's binding" \
   "$(contains "$out" "legion_build's output skip is \`true\`, where $plan_file names \`\${{ steps.version.outputs.skip }}\` for it")"
 
+echo "case: a build job's notes output set to 'false' (N3b)"
+root=$(written output-notes)
+replace "$root/.github/workflows/release.yaml" $'      notes: "${{ steps.notes.outputs.notes }}"\n' $'      notes: \'false\'\n'
+run_check "$root"
+check "exits 1 on legion_build's notes: 'false' (N3b)" "$(is "$status" 1)"
+check "names the output and the module's value" \
+  "$(contains "$out" "legion_build's output notes is \`false\`, where $plan_file names \`\${{ steps.notes.outputs.notes }}\` for it")"
+root=$(written output-notes-listener)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'      notes: "${{ steps.notes.outputs.notes }}"\n' $'      notes: \'false\'\n'
+run_check "$root"
+check "exits 1 on release_build's notes: 'false'" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release_build's output notes is \`false\`, where")"
+
 echo "case: the listener's job output version is \"0.0.0\""
 root=$(written output-version)
 replace "$root/.github/workflows/release-envoy-listener.yaml" $'      version: "${{ steps.version.outputs.version }}"\n' $'      version: "0.0.0"\n'
@@ -337,7 +350,7 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "release_build's output version is \`0.0.0\`, where")"
 root=$(written outputs-expression)
-replace "$root/.github/workflows/release.yaml" $'    outputs:\n      version: "${{ steps.version.outputs.version }}"\n      skip: "${{ steps.version.outputs.skip }}"\n' \
+replace "$root/.github/workflows/release.yaml" $'    outputs:\n      version: "${{ steps.version.outputs.version }}"\n      skip: "${{ steps.version.outputs.skip }}"\n      notes: "${{ steps.notes.outputs.notes }}"\n' \
   $'    outputs: ${{ fromJSON(needs.setup.outputs.decision) }}\n'
 run_check "$root"
 check "exits 1 on an expression in place of the outputs" "$(is "$status" 1)"

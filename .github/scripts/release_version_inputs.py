@@ -29,10 +29,10 @@ accounts for are one plan, kept here.
                                pinned because the decision is the step's only product: an `if:
                                false` throws away what the step computed, and the release
                                downstream is skipped all the same.
-  JOB_OUTPUTS                  the job outputs that carry a decision on: each build job's version
-                               and skip, and publish's version and tag, as written here. A job
-                               output `skip: "true"`, or publish's `tag: ''`, throws the decision
-                               away as an `if: false` does.
+  JOB_OUTPUTS                  the job outputs that carry a decision on: each build job's version,
+                               skip and notes, and publish's version and tag, as written here. A
+                               job output `skip: "true"`, `notes: 'false'`, or publish's `tag:
+                               ''`, throws the decision away as an `if: false` does.
   STEPS_BEFORE_VERSION_STEPS   every step that may run before one of those in its job: an action
                                at its pin with its with:, or a run: text, and in each case its
                                env:, all exactly. Any other step is code this check does not read,
@@ -105,10 +105,12 @@ RUNNER = "ubuntu-24.04"
 
 
 # The job outputs a build job hands its version step's decision on with: what the publish steps
-# read as needs.<job>.outputs.version and .skip.
+# read as needs.<job>.outputs.version and .skip, and .notes, which decides whether the release
+# body gets its changelog.
 DECISION = {
     "version": "${{ steps.version.outputs.version }}",
     "skip": "${{ steps.version.outputs.skip }}",
+    "notes": "${{ steps.notes.outputs.notes }}",
 }
 # publish's: the version and tag of the legion release it made, which worker_image_release reads
 # to tag the worker image and name it in the release body.
