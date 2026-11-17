@@ -1676,6 +1676,11 @@ answer, the question, the record, the writer's answer, the definition and the ow
 So the run takes no grade that was made with another input mode, another prompt, another layout,
 another added grader, another vocabulary or another grader. It gives that judgement itself.
 
+A judgement of a text that the change left byte for byte as the agent wrote it reads no writer's
+answer, as under change 1, so the run takes the baseline's grade: the person reads the same text,
+so its scores must be the baseline's; `define` alone still reads the answer, as it judges the new
+definition and not the text.
+
 An answer or a grade that the run takes is marked `reused` and keeps the call of the run that
 made it. The figures count no call and no cost for it: the model table and the cost in
 `scores.md` hold only the calls this run made. The change's own calls are always this run's, but
@@ -1781,7 +1786,9 @@ answer. A line keeps the answer as `writer_answer`. A run made before the harnes
 line, of a change that asks the writer a side question, for a case with a session part, is
 graded with no writer's answer. Each judgement that reads the writer's answer in its input mode
 reads none. Its `input_sha256` then differs from the earlier grade's, so the run grades it again.
-Under the `final` modes these are `lost`, `added`, `undefined` and `define`. The regrade's line
+Under the `final` modes these are `lost`, `added`, `undefined` and `define`. A text the change
+left unchanged reads no writer's answer in any judgement but `define` (see "Grades of another
+run"), so its line is counted only where a `define` grade reads the answer. The regrade's line
 records `writer_answer_not_kept`. `scores.json` counts these lines as `writer_answers_not_kept`,
 and `scores.md` gives the count. A line with no session part had no answer, and is not counted.
 So a regrade of such a run does not call the grader for `added` alone. To grade `added` alone

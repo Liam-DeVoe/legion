@@ -286,15 +286,25 @@ func tag(name, text string) string {
 	return "<" + name + ">\n" + strings.TrimSpace(text) + "\n</" + name + ">\n"
 }
 
-// parts are the context a call reads: the parts c gives that the input has.
+// parts are the context a call reads: the parts c gives that the input has, and no writer's
+// answer where the judgement is asked as change 1 asks it (asBaseline).
 func (in GradeInput) parts(c contextParts) contextParts {
 	return contextParts{
 		Question:     c.Question && in.Question != "",
 		Record:       c.Record && in.Record != "",
 		Session:      c.Session && !in.Session.Empty(),
-		WriterAnswer: c.WriterAnswer && in.WriterAnswer != "",
+		WriterAnswer: c.WriterAnswer && in.WriterAnswer != "" && !in.asBaseline(),
 	}
 }
+
+// asBaseline says the judgement is asked exactly as change 1 asks it: the change left the text
+// byte for byte as the agent wrote it, and the judgement is not define. The person reads the
+// same text as under change 1, so its scores must be the baseline's. So the judgement reads
+// nothing that the change added: no writer's answer, the one such input that a judgement other
+// than define reads. Its input_sha256 is then the baseline grade's, and --grades-from takes that
+// grade with no call. define judges the change's definition, not the text, and still reads the
+// writer's answer.
+func (in GradeInput) asBaseline() bool { return in.Text == in.Original && in.Judgement != JDefine }
 
 // user is the judgement's user message, the session part aside: its subject, then the context
 // parts p.
@@ -519,10 +529,11 @@ func (g *Grader) addedGrader(j Judgement) string {
 	return AddedOld
 }
 
-// readsWriterAnswer is whether judgement j reads the writer's answer in its input mode, where the
-// case has one. A sentence judgement reads its candidates alone.
-func (g *Grader) readsWriterAnswer(j Judgement) bool {
-	return !judgementSpecs[j].sentences && g.Inputs.context(j).WriterAnswer
+// readsWriterAnswer is whether the judgement reads the writer's answer in its input mode, where
+// the case has one. A sentence judgement reads its candidates alone, and a judgement asked as
+// change 1 asks it reads none (asBaseline).
+func (g *Grader) readsWriterAnswer(in GradeInput) bool {
+	return !judgementSpecs[in.Judgement].sentences && g.Inputs.context(in.Judgement).WriterAnswer && !in.asBaseline()
 }
 
 // gradeRequest is one call of a judgement, ready to make: its request; the context parts it

@@ -190,3 +190,99 @@ func TestARunTakesAnotherRunsGradesOfTheSameText(t *testing.T) {
 		t.Errorf("--grades-from a directory with no results = %d: %s", code, stderr)
 	}
 }
+
+// A text that change 6 left as the agent wrote it is the text change 1 graded. Each judgement of
+// it but define reads no writer's answer, so a run takes change 1's grade with no call; define
+// reads the answer and is graded. A line that keeps no answer for such a text lost none that a
+// judgement reads. A changed text of the same case reads the writer's answer.
+func TestAnUnchangedTextTakesTheBaselinesGrades(t *testing.T) {
+	const question = "question/comment:q1@11"
+	build, sessions := writeFixture(t)
+	key := keyFile(t)
+	exposure := filepath.Join(t.TempDir(), "exposure.log")
+	score := func(out string, extra ...string) *modeltest.Model {
+		t.Helper()
+		stand := modeltest.New(t, allJudgementRules(t)...)
+		args := append([]string{"score", "--cases", build, "--sessions", sessions, "--out", out, "--gateway", stand.URL, "--gateway-key-file", key,
+			"--draws", "50", "--exposure-log", exposure}, extra...)
+		if code, _, stderr := runHarness(args...); code != 0 {
+			t.Fatalf("score %v = %d:\n%s", extra, code, stderr)
+		}
+		return stand
+	}
+	baseline := t.TempDir()
+	score(baseline)
+	was := readLines(t, baseline)[question]
+	// texts is the directory of a change 6 run made of the baseline's lines, whose line of the
+	// question case holds text, answer and definition.
+	texts := func(text string, answer *string, definition string) string {
+		t.Helper()
+		dir := t.TempDir()
+		for _, name := range []string{"run.json", "cases.jsonl"} {
+			data, err := os.ReadFile(filepath.Join(baseline, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rewriteResults(t, dir, func(r *CaseResult) {
+			if r.CaseID == question {
+				r.Text, r.TextSHA256, r.WriterAnswer, r.Definition = text, sha256Hex([]byte(text)), answer, definition
+			}
+			r.Change = changeDefine
+		})
+		p := readRunParams(t, dir)
+		p.Change, p.Model, p.Models[RoleCandidate], p.Groups = changeDefine, laneA, laneA, []string{GroupQuestion}
+		if err := writeJSON(filepath.Join(dir, "run.json"), p); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	answer := writerAnswer
+
+	// The text as the agent wrote it, with the writer's answer and a definition.
+	out := t.TempDir()
+	stand := score(out, "--texts-from", texts(was.Text, &answer, fixtureDefinition), "--grades-from", baseline)
+	if requests := stand.Requests(); len(requests) != 1 || !strings.Contains(requests[0].Text, markDefinition) || !strings.Contains(requests[0].Text, tag("writer_answer", writerAnswer)) {
+		t.Errorf("the run made %d calls, want define's alone, with the writer's answer", len(requests))
+	}
+	line := readLines(t, out)[question]
+	if line.Error != "" || line.Reader == nil || !line.Reader.Reused || line.Grades[JUndefined] == nil {
+		t.Errorf("the unchanged text's line: error %q, reader %+v, undefined grade %+v", line.Error, line.Reader, line.Grades[JUndefined])
+	}
+	for j, g := range line.Grades {
+		switch {
+		case j == JDefine:
+			if g.Reused || g.Call == nil || g.Error != "" {
+				t.Errorf("the define grade %+v is not this run's", g)
+			}
+		case j == JLost || j == JAdded:
+			if !g.ByConstruction {
+				t.Errorf("the unchanged text's %s grade %+v is not by construction", j, g)
+			}
+		case !g.Reused || g.InputSHA256 != was.Grades[j].InputSHA256:
+			t.Errorf("the unchanged text's %s grade %+v is not the baseline's %+v", j, g, was.Grades[j])
+		}
+	}
+	if line.Grades[JDefine] == nil {
+		t.Error("the unchanged text has no define grade")
+	}
+
+	// The same text, on a line that keeps no writer's answer and no definition.
+	out = t.TempDir()
+	stand = score(out, "--texts-from", texts(was.Text, nil, ""), "--grades-from", baseline)
+	if line := readLines(t, out)[question]; len(stand.Requests()) != 0 || line.WriterAnswerNotKept || line.Error != "" {
+		t.Errorf("an unchanged text whose line keeps no answer: %d calls, writer_answer_not_kept %t, error %q", len(stand.Requests()), line.WriterAnswerNotKept, line.Error)
+	}
+
+	// A text the change changed: each judgement that reads the writer's answer in its input mode
+	// reads it.
+	stand = score(t.TempDir(), "--texts-from", texts(fixtureNewText, &answer, fixtureDefinition), "--grades-from", baseline)
+	for _, marker := range []string{markLost, markAdded, markUndefined, markDefinition} {
+		if got := requestsOf(stand, marker); len(got) != 1 || !strings.Contains(got[0], tag("writer_answer", writerAnswer)) {
+			t.Errorf("the changed text's %d calls of %q do not read the writer's answer", len(got), marker)
+		}
+	}
+}

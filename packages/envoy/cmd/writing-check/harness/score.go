@@ -247,7 +247,8 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 	reply := c.Group == GroupAnswer
 
 	// Every judgement gets the case's whole context; the grader's input modes decide what each
-	// call reads of it.
+	// call reads of it. A judgement of a text the change left as the agent wrote it, define
+	// aside, reads what change 1's reads (GradeInput.asBaseline).
 	base := GradeInput{Reply: reply, Question: question, Original: c.Agent.Text, Text: text, Definition: applied.Definition,
 		WriterAnswer: applied.WriterAnswer, Record: record, Session: session}
 	if s.vocabulary != nil && s.wants(JUndefined) {
@@ -338,9 +339,7 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 	}
 	// A judgement that reads the writer's answer in its input mode reads none where the line of
 	// --texts-from kept none: the line says so, and the figures count it.
-	res.WriterAnswerNotKept = applied.AnswerNotKept && slices.ContainsFunc(cr.planned, func(in GradeInput) bool {
-		return s.grader.readsWriterAnswer(in.Judgement)
-	})
+	res.WriterAnswerNotKept = applied.AnswerNotKept && slices.ContainsFunc(cr.planned, s.grader.readsWriterAnswer)
 	return cr
 }
 
