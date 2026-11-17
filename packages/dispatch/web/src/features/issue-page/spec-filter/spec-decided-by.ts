@@ -2,7 +2,7 @@ import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from ".
 import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { drawnLine, firstLineOf, isStatement, lineWordsRaw, type TreeNode } from "../issue-tree";
-import { LEADING_LABEL, referenceStandIns } from "../one-line";
+import { LEADING_LABEL, referenceStandIns, SENTENCE_END } from "../one-line";
 import {
   isReader,
   NODE_TYPE_NAMES,
@@ -282,21 +282,24 @@ export function specDecidedBy({
 }
 
 /**
- * The first sentence of `text`, word for word: everything up to the first full stop, question
- * mark or exclamation mark followed by a space or the end of the text, and the whole text where
- * it holds none, with no limit of characters (R5). Line breaks inside it are spaces, because
- * the line it is drawn on is one line. A leading label is no sentence end (`LEADING_LABEL`): a
- * first word of at most five characters that ends in `.` and holds a digit (`R1.`, `12.`) opens
- * the sentence, as `firstLineOf` reads one.
+ * The first sentence of `text`, word for word: everything up to its first sentence end
+ * (`SENTENCE_END`) - a full stop, question mark or exclamation mark, with the closing quote or
+ * bracket the writer put after it, where the text stops or a word that does not start in lower
+ * case follows - and the whole text where it holds none, with no limit of characters (R5). A
+ * mark before a word in lower case ends an abbreviation (`e.g. in`), not the sentence. Line
+ * breaks inside it are spaces, because the line it is drawn on is one line. A leading label is
+ * no sentence end (`LEADING_LABEL`): a first word of at most five characters that ends in `.`
+ * and holds a digit (`R1.`, `12.`) opens the sentence, as `firstLineOf` reads one. It is the
+ * rule the issue's three sentences are split by, so the page splits the same words one way.
  *
  * It is not `firstLineOf`, which cuts a row's first line at 100 characters (R1): a person's
  * answer is quoted word for word, and a sentence of theirs is as long as they wrote it.
  */
 export function firstSentenceOf(text: string): string {
   const whole = text.replace(/\s+/gu, " ").trim();
-  const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
-  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
-  return rest === undefined ? whole : `${label}${rest}`;
+  const label = LEADING_LABEL.exec(whole)?.[0].length ?? 0;
+  const end = SENTENCE_END.exec(whole.slice(label));
+  return end === null ? whole : whole.slice(0, label + end.index + end[0].length);
 }
 
 /** Every node of the tree by its id, the first placement of a node drawn under more than one

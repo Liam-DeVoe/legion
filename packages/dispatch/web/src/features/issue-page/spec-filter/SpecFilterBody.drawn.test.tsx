@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQueries, useQuery } from "@tanstac
 import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { api } from "../../../api/client";
@@ -22,7 +22,15 @@ import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
-import { artifact, issueTree, KEY, node, READER } from "../decisions-filter/decisions-fixtures";
+import {
+  artifact,
+  issueTree,
+  KEY,
+  node,
+  openAsk,
+  READER,
+} from "../decisions-filter/decisions-fixtures";
+import { conversationPath } from "../decisions-filter/decisions-parts";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
@@ -91,6 +99,18 @@ function Named({
 function FocusedProbe(): ReactNode {
   const focused = useFocusedNode();
   return <output data-focused-node={focused?.id ?? ""} data-focused-type={focused?.type ?? ""} />;
+}
+
+/** Where the page's router stands, written where a case reads it: a key that goes to a node in
+ *  the conversation moves it there. */
+function LocationProbe(): ReactNode {
+  const { hash, pathname, search } = useLocation();
+  return <output data-location={`${pathname}${search}${hash}`} />;
+}
+
+/** Where the page's router stands, as `LocationProbe` writes it. */
+function locationOf(view: RenderResult): string {
+  return view.container.querySelector("[data-location]")?.getAttribute("data-location") ?? "";
 }
 
 /** The documents whose blocks the page's tree is built from, as `useIssueTree.ts` finds them:
@@ -287,6 +307,7 @@ function drawBody(
                   <FocusedNodeProvider>
                     <IssueScope />
                     <FocusedProbe />
+                    <LocationProbe />
                     <TreeReads issue={issue} />
                     {drawn ? (
                       <SpecFilterBody
@@ -1760,12 +1781,39 @@ test("w on a statement says nothing of a missing decision while the decisions re
   }
 });
 
-// R11: `q` with no open question to go to says so only once every read the body draws from is
-// in. While the asks read or the decisions read is out a question may yet arrive, and `q` says
-// nothing.
-test("q says nothing of a next question while the asks or the decisions read is out", async () => {
+// R5 and R35: `w` on a row that is no statement walks the decisions for the one behind it, so
+// while the decisions read is out and it finds none it says nothing, rather than that no
+// decision is recorded behind the row, which the view cannot know yet.
+test("w on an address-named row says nothing of a missing decision while the decisions read is out", async () => {
   const user = userEvent.setup();
-  for (const out of [{ asks: "out" }, { decisions: "out" }] as const) {
+  const tree = issueTree([
+    statement("r1"),
+    node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
+  ]);
+  const { read, view } = drawBody(tree, [], { decisions: "out", named: ["comment-1"] });
+  try {
+    const row = rowOf(view, "comment-1");
+    act(() => row.focus());
+    await user.keyboard("w");
+    expect(
+      row.querySelector("[data-row-report]")?.textContent ?? "",
+      "w on comment-1 says no decision is recorded while the decisions read is out"
+    ).toBe("");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R11: `q` walks the open questions, which the asks read brings, so it says there is no next
+// question once that read is in, and nothing while it is out, since a question may yet arrive.
+// No question comes from the decisions read, so `q` does not wait on it.
+test("q says there is no next question once the asks read is in, and nothing while it is out", async () => {
+  const user = userEvent.setup();
+  for (const [out, said] of [
+    [{ asks: "out" }, ""],
+    [{ decisions: "out" }, KEY_REPORTS.no_next_question],
+  ] as const) {
     const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]), [], out);
     try {
       const row = rowOf(view, "spec#b-r1");
@@ -1773,12 +1821,157 @@ test("q says nothing of a next question while the asks or the decisions read is 
       await user.keyboard("q");
       expect(
         row.querySelector("[data-row-report]")?.textContent ?? "",
-        `q on r1 says there is no next question while the ${Object.keys(out)[0]} read is out`
-      ).not.toBe(KEY_REPORTS.no_next_question);
+        `q on r1 while the ${Object.keys(out)[0]} read is out`
+      ).toBe(said);
     } finally {
       view.unmount();
       read.mockRestore();
     }
+  }
+});
+
+// R11 and R35: each key waits on the reads it walks, and on no other. The results read is one
+// only the marks are drawn from, so while it is out or refused `q` with no open question, `w` on
+// a statement no decision shaped, and `w` on an address-named row with no decision behind it
+// each still say where they could not go.
+test("q and w still say where they could not go while the results read is out or refused", async () => {
+  const user = userEvent.setup();
+  const tree = issueTree([
+    statement("r1"),
+    node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
+  ]);
+  for (const results of ["out", "failed"] as const) {
+    const { read, view } = drawBody(tree, [], { named: ["comment-1"], results });
+    try {
+      if (results === "failed")
+        await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
+      const statementRow = rowOf(view, "spec#b-r1");
+      const other = rowOf(view, "comment-1");
+      for (const [row, key, said] of [
+        [statementRow, "q", KEY_REPORTS.no_next_question],
+        [statementRow, "w", KEY_REPORTS.no_decision],
+        [other, "w", KEY_REPORTS.no_decision],
+      ] as const) {
+        act(() => row.focus());
+        await user.keyboard(key);
+        expect(
+          row.querySelector("[data-row-report]")?.textContent ?? "",
+          `${key} on ${row.dataset.nodeId} while the results read is ${results}`
+        ).toBe(said);
+      }
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R11: the Spec view draws no row for an open question unless an address names one, so `q`
+// with an open question to go to goes to it in the conversation, at the address Enter on a
+// statement follows, where the outline puts the focus on it; it says there is no next question
+// only where the issue holds none.
+test("q goes to the next open question in the conversation, where the view draws no row for it", async () => {
+  const user = userEvent.setup();
+  const question = openAsk("ask-2");
+  const { read, view } = drawBody(issueTree([statement("r1"), question]));
+  try {
+    expect(conversationPath(question)).toBeDefined();
+    const row = rowOf(view, "spec#b-r1");
+    act(() => row.focus());
+    await user.keyboard("q");
+    expect(locationOf(view)).toBe(conversationPath(question) ?? "");
+    expect(row.querySelector("[data-row-report]")).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5: `w` on a row that is no statement - a node an address named - goes to the decision behind
+// it. A decision that heads no run of the view has no cell here, so `w` goes to it in the
+// conversation, as `q` goes to a question the view draws no row for, and never says that no
+// decision is recorded behind the row.
+test("w on an address-named row goes to its decision in the conversation where that decision heads no run", async () => {
+  const user = userEvent.setup();
+  const behind = decisionNode("d1", {
+    chips: [{ answered: true, gone: false, name: "A remark", ref: "comment-1" }],
+  });
+  const tree = issueTree([
+    statement("r1"),
+    node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
+    behind,
+  ]);
+  const made = [decision({ block_id: "d1", kind: "agent" })];
+  const { read, view } = drawBody(tree, made, { named: ["comment-1"] });
+  try {
+    expect(decisionBehind(tree, "comment-1")?.id).toBe(behind.id);
+    expect(conversationPath(behind)).toBeDefined();
+    const row = rowOf(view, "comment-1");
+    act(() => row.focus());
+    await user.keyboard("w");
+    expect(locationOf(view)).toBe(conversationPath(behind) ?? "");
+    expect(row.querySelector("[data-row-report]")).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5 and R35: which decision heads which run is known only once the decisions read and the asks
+// read are in. While the asks read is out a person's decision heads its run with an empty cell,
+// so `w` on an address-named row whose decision that is goes nowhere and says nothing, rather
+// than that no decision is recorded behind the row. Whether the node `w` found is a decision is
+// read off the tree it was found in, so with the body's decisions read out as well `w` still
+// does not take it for a question.
+test("w on an address-named row says nothing of its decision while the asks read is out", async () => {
+  const user = userEvent.setup();
+  const tree = issueTree([
+    statement("r1"),
+    node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
+    decisionNode("d1", {
+      chips: [{ answered: true, gone: false, name: "A remark", ref: "comment-1" }],
+    }),
+  ]);
+  const made = [
+    decision({
+      asks: ["ask-1"],
+      block_id: "d1",
+      kind: "person",
+      links: [shaped(statementRef("r1"))],
+    }),
+  ];
+  for (const out of [{ asks: "out" }, { asks: "out", decisions: "out" }] as const) {
+    const { read, view } = drawBody(tree, made, { named: ["comment-1"], ...out });
+    try {
+      const reads = Object.keys(out).join(" and ");
+      const row = rowOf(view, "comment-1");
+      act(() => row.focus());
+      await user.keyboard("w");
+      expect(
+        row.querySelector("[data-row-report]")?.textContent ?? "",
+        `w on comment-1 reports while the ${reads} read is out`
+      ).toBe("");
+      expect(locationOf(view), `w on comment-1 left the view while the ${reads} read is out`).toBe(
+        "/"
+      );
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R17: a statement's mark comes from its results, its coverage and the Verification document's
+// blocks, and from no other read, so it is drawn while the asks read is still out.
+test("a statement carries its mark while the asks read is out", () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
+  const { read, view } = drawBody(tree, [], { asks: "out", checks: [passed] });
+  try {
+    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met");
+  } finally {
+    view.unmount();
+    read.mockRestore();
   }
 });
 
@@ -1997,6 +2190,55 @@ test("a Retry that brings in a view with no row leaves the focus on the tree", a
     await waitFor(() =>
       expect(document.activeElement).toBe(view.container.querySelector("[data-spec-tree]"))
     );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R7 and R9: where two reads were refused, the line whose Retry brings its read in leaves while
+// it holds the focus, and the focus goes to the line still drawn, at its Retry: it never stays on
+// nothing.
+test("a Retry whose line leaves while another line stays hands the focus to that line's Retry", async () => {
+  const user = userEvent.setup();
+  const { read, view } = drawBody(issueTree([statement("r1")]), [], {
+    decisions: "failed",
+    results: "failed",
+  });
+  try {
+    const results = await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
+    const decisions = await waitFor(() => alertSaying(view, ANSWER_LINES.decisions_unreadable));
+    act(() => within(decisions).getByRole("button", { name: "Retry" }).focus());
+    read.decisions.mockResolvedValue(decisionsRead([]));
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(view.container.textContent).not.toContain(ANSWER_LINES.decisions_unreadable)
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(results).getByRole("button", { name: "Retry" }))
+    );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R7 and R9: the focus a Retry held goes on once that line's own reads are in, whatever other
+// read is still out: a Retry that brings in the statements while the results read is out hands
+// the focus to the view's first row.
+test("a Retry hands the focus on once its own line's reads are in, while another read is still out", async () => {
+  const user = userEvent.setup();
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]), [], {
+    coverage: "failed",
+    results: "out",
+  });
+  try {
+    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(retry));
+    read.coverage.mockResolvedValue(coverageRead([]));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
   } finally {
     view.unmount();
     read.mockRestore();

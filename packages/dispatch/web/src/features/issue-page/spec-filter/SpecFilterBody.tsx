@@ -194,8 +194,9 @@ export function SpecFilterBody({
   // The Verification document's blocks put each check under the statement it serves.
   const verificationBlocksHeld = verification === undefined || checksRead.data !== undefined;
   const decisionsHeld = decisionsRead.data !== undefined;
-  // The asks read brings a person's answer, which their decision is drawn by, and the answered
-  // question a statement hangs under, which heads its run (`spec-decided-by.ts`).
+  // The asks read brings a person's answer, which their decision is drawn by, the answered
+  // question a statement hangs under, which heads its run (`spec-decided-by.ts`), and the open
+  // questions `q` goes to (`tree-keys.ts`'s `nextQuestion`).
   const asksHeld = asksRead.data !== undefined;
   // The statements come from the spec's blocks and their coverage: until both are held the body
   // cannot say the issue holds no statement.
@@ -208,9 +209,6 @@ export function SpecFilterBody({
   // What decided each statement comes from the decisions read and the asks read: until both are
   // held a run whose cell draws no decision may yet have one, so nothing says that none did.
   const decidedHeld = decisionsHeld && asksHeld;
-  // Whether everything the body draws from is held, which is when `q` and `w` may say there is
-  // nowhere to go (`useTreeKeymap.ts`).
-  const readsHeld = statementsHeld && marked && decidedHeld;
   // Each line of the reads that failed with nothing held, in the page's words: the coverage's and
   // the spec's blocks' as the statements', the results' and the Verification document's blocks'
   // as the results', which leave every statement unmarked alike, then the decisions' and the
@@ -257,8 +255,8 @@ export function SpecFilterBody({
   const [openCell, setOpenCell] = useState<string | undefined>(undefined);
   // Where the tree's one tab stop rests, which outlives the focus leaving it (R9).
   const [stop, setStop] = useState<string | undefined>(undefined);
-  // What a key reported when it had nowhere to go, and the statement it was pressed on, which
-  // draws it under its words until the reader moves on (the tester's F16, `NodeRow`'s `report`).
+  // What a key reported when it had nowhere to go, and the row it was pressed on, which draws it
+  // under its words until the reader moves on (the tester's F16, `NodeRow`'s `report`).
   const [report, setReport] = useState<{ readonly line: string; readonly row: string }>();
   const reportHere = useCallback((line: string) => {
     const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
@@ -398,33 +396,32 @@ export function SpecFilterBody({
     if (goTo(reveal)) taken.current = reveal;
   }, [goTo, reveal, statements]);
   // A refused read can leave the view nothing to act on but a Retry: Tab from the tree never
-  // reaches the lines above it. So once the lines are drawn the first line's Retry takes the
-  // focus, where the view's key (`t s`) or the page opened at the view's address left it on
-  // nothing; a reader whose focus is anywhere else keeps it.
+  // reaches the lines above it. So whenever the lines change - one is drawn, or one leaves - and
+  // the focus is on nothing, the first line still drawn takes it at its Retry: where the view's
+  // key (`t s`) or the page opened at the view's address left the focus on nothing, and where a
+  // line that held it left because its reads answered, as they do after its own Retry. A line
+  // that held the focus and leaves no line behind hands it to the view's first row - the tree's
+  // one tab stop - or to the tree itself where the view draws no row, as a focus on the tree
+  // rests there. A reader whose focus is anywhere else keeps it.
   const box = useRef<HTMLDivElement | null>(null);
-  const firstUnreadable = unreadable[0]?.line;
+  // The line the focus is in, from a focus inside it until the focus lands on something outside
+  // it. A line taken off the page while it holds the focus leaves the focus on nothing, and
+  // nothing says where it went, so the line stays named here until the lines change.
+  const heldBy = useRef<string | undefined>(undefined);
+  const lines = unreadable.map(({ line }) => line).join(" ");
   useEffect(() => {
-    if (firstUnreadable === undefined) return;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
-    box.current
-      ?.querySelector<HTMLElement>(`[data-spec-unreadable="${firstUnreadable}"] button`)
-      ?.focus();
-  }, [firstUnreadable]);
-  // Whether the reader pressed a Retry while it held the focus, until the reads are held. The
-  // Retry is drawn no more once its read answers, which leaves the focus on nothing, so the
-  // view's first row - the tree's one tab stop - takes it, and the tree itself where the view
-  // draws no row, as a focus on the tree rests there; unless something else holds it by then.
-  const retried = useRef(false);
-  useEffect(() => {
-    if (!readsHeld || !retried.current) return;
-    retried.current = false;
-    const active = document.activeElement;
-    if (active !== null && active !== document.body) return;
-    (tree.current?.querySelector<HTMLElement>(TAB_STOP_ROW) ?? tree.current)?.focus({
-      preventScroll: true,
-    });
-  }, [readsHeld]);
+    const left = heldBy.current !== undefined && !lines.split(" ").includes(heldBy.current);
+    if (left) heldBy.current = undefined;
+    const retry = box.current?.querySelector<HTMLElement>("[data-spec-unreadable] button");
+    if (retry != null) retry.focus();
+    else if (left) {
+      (tree.current?.querySelector<HTMLElement>(TAB_STOP_ROW) ?? tree.current)?.focus({
+        preventScroll: true,
+      });
+    }
+  }, [lines]);
 
   useTreeKeymap({
     container: tree,
@@ -440,24 +437,33 @@ export function SpecFilterBody({
     onFold: NOTHING,
     onOpenDeeper: NOTHING,
     onPin: NOTHING,
-    onReport: reportHere,
-    // `w` and `q` can name a node this filter draws no row or cell for - a decision that shaped
-    // no statement of the view, an open question - and the row says the key went nowhere, in
-    // the words the outline says it in; for a decision, only once what decided each statement is
-    // held, since its cell may yet be drawn. Whether the node is a decision is read off the tree,
-    // which holds it whether or not the decisions read is in. A decision named from a statement
-    // is that statement's own cell's to answer, as the tree's key handler answers a `w` it takes
-    // first.
+    // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
+    // holds. `q` walks the open questions, which the asks read brings, so the flag is
+    // `asksHeld`; `w` walks the decisions, so its report waits on the decisions read as well,
+    // here (`decidedHeld`, which holds only where `asksHeld` does).
+    onReport: (line) => reportHere(line === KEY_REPORTS.no_decision && !decidedHeld ? "" : line),
+    // `q` and `w` reach here with the node the keymap found: the next open question, or the
+    // decision behind the focused row. Where the view draws a row or a cell for it the focus
+    // goes there, and a decision named from a statement is that statement's own cell's to
+    // answer, as the tree's key handler answers a `w` it takes first. Where the view draws
+    // nothing for it - an open question no address named, a decision that heads no run of the
+    // view - the key goes to it in the conversation, at the address Enter on a statement follows
+    // (`conversationPath`), which opens the outline there with the focus on it. Which decision
+    // heads which run is known only once what decided each statement is held: until then a
+    // decision with no cell may yet have one, and the key does nothing. Whether the node is a
+    // decision is read off the tree the keymap found it in, never off the body's decisions read.
     onReveal: (id) => {
-      const decided = nodesInOrder(root).some((one) => one.id === id && one.type === "decision");
+      const node = nodesInOrder(root).find((one) => one.id === id);
+      const decided = node?.type === "decision";
       if (decided && toOwnCell()) return;
       if (goTo(id)) return;
-      if (!decided) reportHere(KEY_REPORTS.no_next_question);
-      else reportHere(decidedHeld ? KEY_REPORTS.no_decision : "");
+      if (decided && !decidedHeld) return;
+      const path = node === undefined ? undefined : conversationPath(node);
+      if (path !== undefined) navigate(path);
     },
     onZoom: NOTHING,
     oneNodeAtATime: false,
-    readsHeld,
+    readsHeld: asksHeld,
     rows,
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
     // statement for the decision behind it (`tree-keys.ts`'s `decisionBehind`).
@@ -474,11 +480,23 @@ export function SpecFilterBody({
           Retry that asks those reads alone again. The lines stand over the tree and never in
           it: an alert inside a tree would break the tree's own structure of rows. */}
       {unreadable.map(({ failed, line }) => (
-        <div data-spec-unreadable={line} key={line}>
+        // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only read where the focus has gone, so the line needs no role of its own.
+        <div
+          data-spec-unreadable={line}
+          key={line}
+          onBlur={(event) => {
+            const next = event.relatedTarget;
+            if (next instanceof Node && !event.currentTarget.contains(next)) {
+              heldBy.current = undefined;
+            }
+          }}
+          onFocus={() => {
+            heldBy.current = line;
+          }}
+        >
           <QueryError
             message={ANSWER_LINES[line]}
             onRetry={() => {
-              retried.current = document.activeElement?.closest("[data-spec-unreadable]") != null;
               for (const read of failed) void read.refetch();
             }}
           />
@@ -581,6 +599,7 @@ export function SpecFilterBody({
             key={node.id}
             node={node}
             onFocus={(row) => focusStatement(row, node)}
+            {...(report?.row === node.id ? { report: report.line } : {})}
             tabStop={tabStop === node.id}
           />
         ))}
@@ -608,8 +627,8 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
   k: -1,
 };
 
-/** The row of the view's tree that holds its one tab stop, which takes the focus once the reads
- *  a pressed Retry asked for are held. */
+/** The row of the view's tree that holds its one tab stop, which takes the focus where a failed
+ *  read's line that held it leaves no line behind. */
 const TAB_STOP_ROW = '[data-node-row][tabindex="0"]';
 
 /** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
@@ -1268,16 +1287,7 @@ function Statement({
           </p>
         ) : null}
         <Because decision={decision} statement={statement} />
-        {report === undefined ? null : (
-          <p
-            className={`text-xs leading-5 ${pageMutedText}`}
-            data-row-report=""
-            role="status"
-            {...pageChrome}
-          >
-            {report}
-          </p>
-        )}
+        <RowReport line={report} />
       </div>
       {/* No mark until its reads hold an answer; the row's third column keeps its width, so
           the row does not move when the mark comes. */}
@@ -1293,17 +1303,21 @@ function Statement({
 
 /** A row the filter kept that is no statement: a node an address named, which outranks the
  *  filter (R20). It is drawn by its kind and its words in the statements' column, with no mark
- *  and no decision beside it, so nothing the filter kept is lost (R19). */
+ *  and no decision beside it, so nothing the filter kept is lost (R19). A key pressed on it with
+ *  nowhere to go says so under its words, as on a statement. */
 function OtherRow({
   focused,
   node,
   onFocus,
+  report,
   tabStop,
 }: {
   focused: boolean;
   node: TreeNode;
   /** Takes a focus anywhere in the row, once a press that gave it is over. */
   onFocus: (row: HTMLElement) => void;
+  /** What a key pressed on this row reported when it had nowhere to go. */
+  report?: string;
   tabStop: boolean;
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
@@ -1331,7 +1345,25 @@ function OtherRow({
       <CutWords className={`text-[15px] leading-6 ${pageWordsText}`} whole={focused}>
         <RowText markdown={node.text} source={node.source} tree={node.tree} />
       </CutWords>
+      <RowReport line={report} />
     </div>
+  );
+}
+
+/** What a key pressed on a row reported when it had nowhere to go, under the row's words, in the
+ *  words the outline says it in (the tester's F16, `NodeRow`'s `report`); nothing where it
+ *  reported nothing. */
+function RowReport({ line }: { line: string | undefined }): ReactNode {
+  if (line === undefined) return null;
+  return (
+    <p
+      className={`text-xs leading-5 ${pageMutedText}`}
+      data-row-report=""
+      role="status"
+      {...pageChrome}
+    >
+      {line}
+    </p>
   );
 }
 

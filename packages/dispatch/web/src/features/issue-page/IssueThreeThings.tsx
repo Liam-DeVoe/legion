@@ -4,7 +4,7 @@ import type { DisplayTree } from "../../api/types";
 import { pageInkBg, pageInkText, pageLineBorder, pageMutedText } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
-import { CAP, LEADING_LABEL, referenceStandIns } from "./one-line";
+import { CAP, LEADING_LABEL, referenceStandIns, SENTENCE_END } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
 
@@ -123,11 +123,6 @@ export function IssueThreeThings({
 
 /** How many bullets the head draws at most: the three the requirement names (R5). */
 const BULLETS = 3;
-
-/** A sentence end: its mark, with whatever closing quote or bracket the writer put after it,
- *  where the words stop, or where a space and a word that does not start in lower case follow:
- *  a mark before a word in lower case ends an abbreviation (`e.g. tester`), not a sentence. */
-const SENTENCE_END = /[.!?][)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
 
 /** How many characters of `words` its leading label takes: a first word that opens its
  *  sentence and ends none (`LEADING_LABEL`). */

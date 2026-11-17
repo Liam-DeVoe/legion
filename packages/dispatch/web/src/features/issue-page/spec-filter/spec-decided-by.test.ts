@@ -655,6 +655,17 @@ test("a first sentence that opens with a numbered label holds the sentence after
   expect(firstSentenceOf("R12345. Then more.")).toBe("R12345.");
 });
 
+// R5: a person's first sentence ends where the issue's three sentences end one. A mark before a
+// word in lower case ends an abbreviation, not the sentence, and a closing quote or bracket
+// after the mark belongs to the sentence it ends.
+test("a first sentence runs past an abbreviation, and holds the closing quote after its mark", () => {
+  expect(firstSentenceOf("Keep the memo, e.g. in the pane. Then more.")).toBe(
+    "Keep the memo, e.g. in the pane."
+  );
+  expect(firstSentenceOf('He said "go." Then he went.')).toBe('He said "go."');
+  expect(firstSentenceOf("Keep it (as written.) Then more.")).toBe("Keep it (as written.)");
+});
+
 /** The page's name for the statement r2, which opens with its label ("R2."). */
 const LABELLED = (reference: string) =>
   reference === statementRef("r2") ? "R2. Every address…" : undefined;

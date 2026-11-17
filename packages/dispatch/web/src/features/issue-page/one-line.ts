@@ -21,6 +21,14 @@ export const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase 
  *  exports it. */
 export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
+/** A sentence end: its mark, with whatever closing quote or bracket the writer put after it,
+ *  where the words stop, or where a space and a word that does not start in lower case follow:
+ *  a mark before a word in lower case ends an abbreviation (`e.g. tester`), not a sentence. It
+ *  is read past a leading label (`LEADING_LABEL`), which ends none: by the issue's three
+ *  sentences and by a person's quoted first sentence (`spec-decided-by.ts`'s `firstSentenceOf`),
+ *  so the same words are split one way wherever the page draws them. */
+export const SENTENCE_END = /[.!?][)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
+
 /**
  * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its
  * list is, and what an entry needs to say how wide its own words are drawn. The outline's rows
