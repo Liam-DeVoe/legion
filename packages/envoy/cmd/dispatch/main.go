@@ -458,8 +458,10 @@ func main() {
 
 	broker := events.NewBroker()
 	// The one admission limiter the API admits through, made before the document service so that
-	// service's compaction yields to the very requests this admits, and so the metrics endpoint
-	// reads the same counts (requestLoad, docs.Deps.Requests).
+	// service's compaction yields to the very requests this admits, so the metrics endpoint reads
+	// the same counts (requestLoad, docs.Deps.Requests), and so a document socket's admission reads
+	// take their place among the same places outside admission the API's DPoP decisions and
+	// heartbeat checks take theirs (admission.Outside, docs.Deps.Outside).
 	limiter := admission.New(admission.DefaultLimits())
 	documentService := newDocumentService(boot, docs.Deps{
 		Store:     database,
@@ -467,6 +469,7 @@ func main() {
 		Identity:  requestIdentity,
 		ServerURL: serverURL,
 		Requests:  requestLoad{limiter: limiter},
+		Outside:   limiter.Outside(),
 	})
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)

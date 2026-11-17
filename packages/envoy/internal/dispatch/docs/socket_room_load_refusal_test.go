@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
@@ -19,6 +20,8 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -305,8 +308,8 @@ func TestALoadNoAdmissionHoldsFailsAfterOneBoundOrLoadsOnceAConnectionFrees(t *t
 // admission, 503 with Retry-After and a WARN line naming the read and the pool. That read was ygo's
 // authorization's (authorize), whose refusal ygo answers 401 "unauthorized", which tells a browser
 // that is signed in that it is not. The pool fills once the admission has read the document's
-// issue, which reads it too, so the read of it the socket meets next is the fleet's: the document
-// itself is read through the rooms pool.
+// issue, which reads it too, and before it reads the live server processes (beforeSocketFleetRead),
+// so the read of it the socket meets next is the fleet's.
 func TestASocketWhoseFleetReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) {
 	logs := captureWarnings(t)
 	database := storetest.Open(t)
@@ -323,7 +326,7 @@ func TestASocketWhoseFleetReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 		}
 	})
 	var once atomic.Bool
-	service.afterSocketIssueRead = func(room string) {
+	service.beforeSocketFleetRead = func(room string) {
 		if room != artifactID || once.Swap(true) {
 			return
 		}
@@ -535,6 +538,226 @@ func TestASocketWaitingOnALoadAfterItsRoomRecordWasHandedOverIsRefused503(t *tes
 		}
 	case <-time.After(roomWait(t)):
 		t.Fatal("the settlement's warm-up load never ended")
+	}
+}
+
+// A socket whose read of its document's issue fails is refused by its admission, 503 with
+// Retry-After and a WARN line naming the read and the pool, unless the document is not there,
+// which alone is 404 "document not found": a busy request pool told a browser that the document it
+// was editing did not exist. The sign-in reads on a pool of its own here, so the issue read is the
+// first read of the request pool the socket makes, and every connection of that pool is held as
+// the socket opens.
+func TestASocketWhoseIssueReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	people := storetest.Reopened(t, database, func(*pgxpool.Config) {})
+	service := New(Deps{
+		Store:     database,
+		Events:    events.NewBroker(),
+		Identity:  identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(people.Pool, testSigningKey, nil)},
+		ServerURL: "https://dispatch.example",
+		Settle:    time.Hour,
+	})
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	server := newTestServer(t, service)
+	artifactID := createDocuments(t, database, 1)[0]
+
+	missing := <-answerSocketAsync(server.URL, uuid.NewString())
+	if missing.err != nil {
+		t.Fatal(missing.err)
+	}
+	if missing.status != http.StatusNotFound {
+		t.Fatalf("a socket to a document that is not there was answered %d %q, want 404", missing.status, missing.body)
+	}
+
+	var held []*pgxpool.Conn
+	t.Cleanup(func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	})
+	for range database.Pool.Stat().MaxConns() {
+		conn, err := database.Pool.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("hold a request-pool connection: %v", err)
+		}
+		held = append(held, conn)
+	}
+	answer := <-answerSocketAsync(server.URL, artifactID)
+	if answer.err != nil {
+		t.Fatal(answer.err)
+	}
+	t.Logf("the socket's handshake was answered %d %q", answer.status, answer.body)
+	if answer.status != http.StatusServiceUnavailable {
+		t.Fatalf("a socket whose issue read found the request pool busy was answered %d %q, want 503", answer.status, answer.body)
+	}
+	if answer.retryAfter != admission.RetryAfter {
+		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
+	}
+	line := logLineWith(logs.String(), "a document socket was refused")
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
+	}
+	for _, want := range []string{"its document's issue could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, store.ErrPoolBusy.Error()} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+}
+
+// A socket whose request the server ends while its admission waits for its failed room's recovery
+// - the heartbeat's re-resolution of the caller failed, which under load is a busy pool - is refused
+// as the admission's other refusals are, 503 with Retry-After and a WARN line with the cause, where
+// it was a bare 503 no line explained. The room fails before the socket opens and its eviction is
+// held off, so the admission's wait ends only with the request, which the server ends half a
+// second in.
+func TestASocketWhoseRequestTheServerEndsWhileItsFailedRoomRecoversIsRefused503(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	artifactID := createDocuments(t, database, 1)[0]
+	evict := make(chan struct{})
+	t.Cleanup(func() { close(evict) })
+	service.beforeFailedEviction = func(string) { <-evict }
+	service.failRoom(artifactID, errors.New("a test's failure of the room"))
+	cause := fmt.Errorf("re-resolve the socket's caller: %w", store.ErrPoolBusy)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeoutCause(r.Context(), 500*time.Millisecond, cause)
+		defer cancel()
+		service.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	t.Cleanup(server.Close)
+
+	answer := <-answerSocketAsync(server.URL, artifactID)
+	if answer.err != nil {
+		t.Fatal(answer.err)
+	}
+	t.Logf("the socket's handshake was answered %d %q", answer.status, answer.body)
+	if answer.status != http.StatusServiceUnavailable {
+		t.Fatalf("a socket whose request the server ended while its room recovered was answered %d %q, want 503", answer.status, answer.body)
+	}
+	if answer.retryAfter != admission.RetryAfter {
+		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
+	}
+	line := logLineWith(logs.String(), "a document socket was refused")
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
+	}
+	for _, want := range []string{"its failed room did not recover while it waited", "room=" + artifactID, "re-resolve the socket's caller"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+}
+
+// A document socket's admission reads - its caller's session, its document's issue, the live
+// server processes - hold one place of the request pool's work outside admission
+// (admission.Outside) for their whole length, and give it back once the last has run, before the
+// document's load, which reads the rooms pool and decodes and renders for as long as the document
+// takes. A socket that finds every place held is refused at once, 503 with Retry-After and a WARN
+// line, having read nothing of the request pool; a socket admitted holds its place while it reads,
+// none while its document loads - the admission's read and render of it, and its room's load - and
+// none once its socket is open. The places are the limiter's the API admits through, which
+// cmd/dispatch hands the service (Deps.Outside).
+func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	outside := admission.New(admission.DefaultLimits()).Outside()
+	deps := testServiceDeps(database)
+	deps.Settle = time.Hour
+	deps.Outside = outside
+	service := New(deps)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	server := newTestServer(t, service)
+	artifactID := createDocuments(t, database, 1)[0]
+	requestReads := func() uint64 {
+		for _, pool := range service.store.Pool.Stats() {
+			if pool.Name == store.RequestsPool {
+				return pool.Acquire.Count
+			}
+		}
+		t.Fatal("the request pool reports no figures")
+		return 0
+	}
+
+	for range admission.OutsideLimit {
+		if !outside.Take(admission.HeartbeatCheck) {
+			t.Fatalf("take a place outside admission: the %d places are held already", admission.OutsideLimit)
+		}
+	}
+	before := requestReads()
+	answer := <-answerSocketAsync(server.URL, artifactID)
+	read := requestReads() - before
+	for range admission.OutsideLimit {
+		outside.Release()
+	}
+	if answer.err != nil {
+		t.Fatal(answer.err)
+	}
+	t.Logf("with every place held the socket's handshake was answered %d %q after %d request-pool reads", answer.status, answer.body, read)
+	if answer.status != http.StatusServiceUnavailable {
+		t.Fatalf("a socket that found every place outside admission held was answered %d %q, want 503", answer.status, answer.body)
+	}
+	if answer.retryAfter != admission.RetryAfter {
+		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
+	}
+	if read != 0 {
+		t.Errorf("the refused socket took %d request-pool connections, want none: it is refused before its first read", read)
+	}
+	if refused := outside.Stats().Refused[admission.SocketAdmission]; refused != 1 {
+		t.Errorf("the places outside admission counted %d refused socket admissions, want 1", refused)
+	}
+	line := logLineWith(logs.String(), "a document socket was refused")
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
+	}
+	for _, want := range []string{"places outside admission are all held", "room=" + artifactID} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+
+	// Each figure is the places held at one moment of the admitted socket's open, -1 until it
+	// comes.
+	var whileReading, whileAdmissionLoads, whileRoomLoads atomic.Int64
+	whileReading.Store(-1)
+	whileAdmissionLoads.Store(-1)
+	whileRoomLoads.Store(-1)
+	service.beforeSocketFleetRead = func(room string) {
+		if room == artifactID {
+			whileReading.Store(int64(outside.Stats().InUse))
+		}
+	}
+	service.admissionRendered = func(room string) {
+		if room == artifactID {
+			whileAdmissionLoads.CompareAndSwap(-1, int64(outside.Stats().InUse))
+		}
+	}
+	service.bootstrapping = func(room string, _ []byte) {
+		if room == artifactID {
+			whileRoomLoads.CompareAndSwap(-1, int64(outside.Stats().InUse))
+		}
+	}
+	admitSocket(t, server.URL, artifactID, "a socket with places free")
+	if got := whileReading.Load(); got != 1 {
+		t.Errorf("the places held while the admitted socket read the live server processes = %d, want 1: its own", got)
+	}
+	if got := whileAdmissionLoads.Load(); got != 0 {
+		t.Errorf("the places held while the admitted socket's admission loaded and rendered its document = %d, want 0: that load reads no request pool", got)
+	}
+	if got := whileRoomLoads.Load(); got != 0 {
+		t.Errorf("the places held while the admitted socket's room loaded = %d, want 0", got)
+	}
+	if got := outside.Stats().InUse; got != 0 {
+		t.Errorf("the places held once the admitted socket was handed to ygo = %d, want 0: the socket's reads gave theirs back while it stays open", got)
 	}
 }
 

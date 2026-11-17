@@ -640,8 +640,9 @@ func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.
 		t.Errorf("the resident bytes after the first room's late unload = %d, want the %d the second room counted with its write: that unload takes back the bytes of the load that ended", got, r.second)
 	}
 
-	// The second room's unload takes back what that load counted, and nothing is left.
-	_ = r.socket.Close()
+	// The second room's unload takes back what that load counted, and nothing is left. The socket
+	// leaves first (leave), as a browser does before the room it left closes.
+	r.leave()
 	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
 		t.Fatalf("close the second room: %v", err)
 	}
@@ -681,8 +682,8 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 	// The second room unloads in full while the first unload waits. The first close holds the
 	// service's close gate for the room (roomServer.CloseRoom) until its unload returns, so the
 	// second room is closed by ygo's own CloseRoom, as ygo's idle sweep and a last browser's
-	// departure retire a room, taking no gate.
-	_ = r.socket.Close()
+	// departure retire a room, taking no gate. Its socket leaves first (leave).
+	r.leave()
 	if err := r.service.srv.Server.CloseRoom(r.room, true); err != nil {
 		t.Fatalf("close the second room: %v", err)
 	}
@@ -706,6 +707,25 @@ type reloadedRoom struct {
 	letFirstUnload func()
 	closed         chan error
 	unloaded       chan struct{}
+}
+
+// leave closes the second room's socket and waits until the service has seen it go. ygo runs a
+// socket's departure before the service forgets its connection (ServeHTTP, removeConnection),
+// and the departure of the room's last browser runs the settlement the room's write armed
+// (OnLastPeer, settleLastPeer). A close of the room made before that departure ran left the
+// settlement no room, so its warm-up loaded the room again (settleRoomWithin), a third load no
+// unload of these tests ends, and the check that nothing is counted failed whenever it ran
+// before that load had begun or had finished.
+func (r *reloadedRoom) leave() {
+	r.t.Helper()
+	_ = r.socket.Close()
+	deadline := time.Now().Add(roomWait(r.t))
+	for registeredConnections(r.service) != 0 {
+		if time.Now().After(deadline) {
+			r.t.Fatal("the second room's socket never left")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // unloadAcrossAReload loads a document's room, closes it, holds ygo's call of the room's unload,

@@ -24,6 +24,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -98,6 +99,11 @@ type Deps struct {
 	// and its settlements (RequestLoad, requestYield): cmd/dispatch hands the one limiter the API
 	// admits through. A service with none runs that work without ever waiting.
 	Requests RequestLoad
+	// Outside is the request pool's places for the work admission does not admit
+	// (admission.Outside), the one the API's limiter holds (admission.Limiter.Outside): a
+	// document socket's admission reads take one of them for their whole length (ServeHTTP).
+	// cmd/dispatch hands it; a service with none limits nothing.
+	Outside *admission.Outside
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -152,6 +158,7 @@ type Service struct {
 	persistence VersionedStore
 	events      *events.Broker
 	identity    identity.Identity
+	outside     *admission.Outside
 	serverURL   string
 	settle      time.Duration
 	// settleTimeout bounds a settlement a timer starts (settleRoom); settlementTimeout but in
@@ -387,6 +394,11 @@ type Service struct {
 	// loads the document's tree (loadTree). Nil outside tests; tests use it to close the issue
 	// while the socket loads.
 	afterSocketIssueRead func(room string)
+	// beforeSocketFleetRead runs in a document socket's admission (ServeHTTP) once it has read the
+	// document's issue, and before it reads the live server processes, the last of the reads its
+	// place outside admission holds. Nil outside tests; tests use it to fill the request pool
+	// between the two reads, and to see the place held while they run.
+	beforeSocketFleetRead func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
 	// to ygo. Nil outside tests; tests use it to hold two cold sockets of one room until both have
@@ -907,6 +919,7 @@ func New(deps Deps) *Service {
 		processID:         processID,
 		events:            deps.Events,
 		identity:          deps.Identity,
+		outside:           deps.Outside,
 		serverURL:         strings.TrimSuffix(deps.ServerURL, "/"),
 		settle:            settle,
 		settleTimeout:     settlementTimeout,

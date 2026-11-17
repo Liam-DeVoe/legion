@@ -28,10 +28,11 @@ import (
 //   - a document socket's admission reads, made before the socket is handed to ygo (docs'
 //     Service.ServeHTTP): its caller's session, its document's issue and the live server
 //     processes. A restart's reconnect sends every editor's socket through them at once. They hold
-//     one place between them for as long as the three take (Hold), taken before the first and
-//     given back before the hand-off, since the handler holds its request for the socket's whole
-//     life after it; a socket that finds every place held is refused as the document service
-//     refuses a socket it cannot serve now, 503 with Retry-After.
+//     one place between them for the three request-pool reads (Hold), taken before the first and
+//     given back before the recovery wait and the document's load, neither of which reads the
+//     request pool, and long before the hand-off, after which the handler holds its request for
+//     the socket's whole life; a socket that finds every place held is refused as the document
+//     service refuses a socket it cannot serve now, 503 with Retry-After.
 //
 // The pool's other users outside admission take none, each for a reason of its own: the live
 // socket's upgrade and an events subscription's head check are one statement for each socket

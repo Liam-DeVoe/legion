@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
@@ -205,14 +206,15 @@ func socketRoom(r *http.Request) string {
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
 //
-// A socket whose document, or the live server processes its page is admitted against, could not be
-// read is refused 503 with Retry-After before the upgrade (refuseAdmission, refuseUnservedSocket),
-// and so is one whose room's load, once ygo joins the socket to the room, found a pool busy or met a
-// request the server ended, and one ygo's authorization refuses for a room a busy pool failed: ygo
-// answers those with a 500 or a 401 of its own, which the socket's writer answers in its place
-// (socketAnswerWriter). A cold socket's load reads the store once, in the statement that checks
-// its preload against the head (takePreload), so it is refused within one acquire bound of the
-// pool it found busy.
+// A socket whose document's issue, document, or the live server processes its page is admitted
+// against could not be read, or whose request ended while it waited for its failed room's recovery,
+// is refused 503 with Retry-After before the upgrade (refuseAdmission, refuseUnservedSocket), a
+// document that is not there alone being 404, and so is one whose room's load, once ygo joins the
+// socket to the room, found a pool busy or met a request the server ended, and one ygo's
+// authorization refuses for a room a busy pool failed: ygo answers those with a 500 or a 401 of
+// its own, which the socket's writer answers in its place (socketAnswerWriter). A cold socket's
+// load reads the store once, in the statement that checks its preload against the head
+// (takePreload), so it is refused within one acquire bound of the pool it found busy.
 //
 // The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
 // and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
@@ -232,6 +234,20 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": " + s.hostname + "\r\n")}
 	}
 	room := socketRoom(r)
+	// The admission's reads of the request pool - the caller's session (requestActor), the
+	// document's issue and the live server processes - hold one place of the pool's work outside
+	// admission between them (admission.Outside), from before the first to right after the last,
+	// so a restart's reconnect of every editor holds no more of the pool than admission leaves.
+	// The place goes back before the wait for a failed room's recovery and the document's load,
+	// neither of which reads the request pool; the release on the way out gives it back for a
+	// socket refused before that. A socket that finds every place held reads nothing and is
+	// refused as one the server cannot serve now.
+	releaseReads, placed := s.outside.Hold(admission.SocketAdmission)
+	defer releaseReads()
+	if !placed {
+		refuseUnservedSocket(w, "dispatch: a document socket was refused: the request pool's places outside admission are all held", "room", room)
+		return
+	}
 	actor, err := s.requestActor(r)
 	if err != nil {
 		if errors.Is(err, identity.ErrSignInUnavailable) {
@@ -250,13 +266,41 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here "+id.String(), http.StatusNotFound)
 		return
 	}
+	// Only a document that is not there is not found: the read finds no document row (no artifact
+	// of that id, or one that is no document). Any other failure of the read - under load, the
+	// request pool with no connection free - is the admission's refusal, since the document may well
+	// be there.
 	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
 	}
+	if err != nil {
+		refuseAdmission(w, r, "dispatch: a document socket was refused: its document's issue could not be read", room, store.RequestsPool, err)
+		return
+	}
+	// The live server processes are read here, before ygo's authorization of the socket
+	// (authorize) admits its page against them (connectionState.fleet), so a read of them that
+	// fails - under load, the request pool with no connection free - is this admission's refusal:
+	// a refusal of authorize's reaches the browser as ygo's 401, which says it is not signed in.
+	// The read is the request's own, through the pool its reads take (queryFrom), the request pool
+	// here, and it needs nothing the document's load makes, so it runs beside the issue's read,
+	// under the same place.
+	if s.beforeSocketFleetRead != nil {
+		s.beforeSocketFleetRead(room)
+	}
+	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
+	if err != nil {
+		refuseAdmission(w, r, "dispatch: a document socket was refused: the live server processes could not be read", room, store.RequestsPool, err)
+		return
+	}
+	// The admission's reads of the request pool are done: the place goes back now, not after the
+	// recovery wait or the document's load, and not when the handler returns.
+	releaseReads()
+	// A socket holds no connection while it waits for a failed room's recovery, so the wait ends
+	// only with the request's context: the browser left, or the server ended the request.
 	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		refuseAdmission(w, r, "dispatch: a document socket was refused: its failed room did not recover while it waited", room, "", err)
 		return
 	}
 	if !s.reserveConnection() {
@@ -274,7 +318,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// is how a re-check closes the socket (RunSchemaAdmission).
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
-	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	connection := &connectionState{actor: actor, issue: issue, fleet: fleet, admission: &schemaAdmission{cancel: cancel}}
 	defer func() {
 		s.schemaAdmissions.remove(connection.admission)
 		s.releaseRoom(room)
@@ -306,17 +350,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer withdraw()
-	// The live server processes are read here, before ygo's authorization of the socket
-	// (authorize) admits its page against them, so a read of them that fails - under load, the
-	// request pool with no connection free - is this admission's refusal: a refusal of
-	// authorize's reaches the browser as ygo's 401, which says it is not signed in. The read is
-	// the request's own, through the pool its reads take (queryFrom), the request pool here.
-	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
-	if err != nil {
-		refuseAdmission(w, r, "dispatch: a document socket was refused: the live server processes could not be read", room, store.RequestsPool, err)
-		return
-	}
-	connection.fleet = fleet
 	connection.admission.documentSince = documentSince
 	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
@@ -334,23 +367,28 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}, r.WithContext(ctx))
 }
 
-// refuseAdmission answers a document socket whose admission's read - of its document, or of the
-// live server processes - failed with err, reading through the pool pool names. The browser left
-// while that read ran when the request's context ended with net/http's own context.Canceled,
-// which ends the read with the request's own cancellation (loadTree): nothing refused the socket,
-// and nobody is left to read an answer, so none is written and the line carries the client gone,
-// as a request whose client left in admission's queue does (accesslog.ClientGone). A context the
-// server ended under the socket carries a cause of its own - the heartbeat's re-resolution of the
-// caller failed (api's whileCallerResolves), which under load is a busy pool and not a browser
-// that left - and that socket's browser is still waiting, so it is refused like any other
-// (refuseUnservedSocket), with message, and with that cause.
+// refuseAdmission answers a document socket whose admission failed with err: a read - of its
+// document's issue, of its document, or of the live server processes - through the pool pool names,
+// or the wait for its failed room's recovery, which names none. The browser left while it ran when
+// the request's context ended with net/http's own context.Canceled, which ends the read or the
+// wait with the request's own cancellation (loadTree): nothing refused the socket, and nobody is
+// left to read an answer, so none is written and the line carries the client gone, as a request
+// whose client left in admission's queue does (accesslog.ClientGone). A context the server ended
+// under the socket carries a cause of its own - the heartbeat's re-resolution of the caller failed
+// (api's whileCallerResolves), which under load is a busy pool and not a browser that left - and
+// that socket's browser is still waiting, so it is refused like any other (refuseUnservedSocket),
+// with message, and with that cause.
 func refuseAdmission(w http.ResponseWriter, r *http.Request, message, room, pool string, err error) {
 	cause := context.Cause(r.Context())
 	if cause == context.Canceled {
 		accesslog.ClientGone(r.Context())
 		return
 	}
-	attrs := []any{"room", room, "pool", pool, "error", err}
+	attrs := []any{"room", room}
+	if pool != "" {
+		attrs = append(attrs, "pool", pool)
+	}
+	attrs = append(attrs, "error", err)
 	if cause != nil {
 		attrs = append(attrs, "cause", cause)
 	}
